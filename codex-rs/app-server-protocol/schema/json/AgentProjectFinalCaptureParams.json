@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "CaptureCursor": {
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "throughChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "throughChunk"
+      ],
+      "type": "object"
+    },
+    "ThreadId": {
+      "type": "string"
+    }
+  },
+  "properties": {
+    "operationId": {
+      "type": "string"
+    },
+    "recipientContextId": {
+      "type": "string"
+    },
+    "recipientCwd": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "recipientThreadId": {
+      "$ref": "#/definitions/ThreadId"
+    },
+    "resourceRef": {
+      "type": "string"
+    },
+    "rootThreadId": {
+      "$ref": "#/definitions/ThreadId"
+    },
+    "seen": {
+      "items": {
+        "$ref": "#/definitions/CaptureCursor"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "$ref": "#/definitions/ThreadId"
+    }
+  },
+  "required": [
+    "operationId",
+    "recipientContextId",
+    "recipientThreadId",
+    "resourceRef",
+    "rootThreadId",
+    "seen",
+    "threadId"
+  ],
+  "title": "FinalCaptureProjectRequest",
+  "type": "object"
+}

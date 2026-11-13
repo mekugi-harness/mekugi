@@ -492,6 +492,279 @@
       },
       "type": "object"
     },
+    "AgentEndParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "rootThreadId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rootThreadId",
+        "threadId"
+      ],
+      "title": "AgentEndParams",
+      "type": "object"
+    },
+    "AgentEndResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threadIds"
+      ],
+      "title": "AgentEndResponse",
+      "type": "object"
+    },
+    "AgentForeignOperation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "message"
+              ],
+              "title": "MessageAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "MessageAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "sideQuestion"
+              ],
+              "title": "SideQuestionAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "question",
+            "type"
+          ],
+          "title": "SideQuestionAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "pathPrefix": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentPath"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "enum": [
+                "list"
+              ],
+              "title": "ListAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ListAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "inspect"
+              ],
+              "title": "InspectAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "InspectAgentForeignOperation",
+          "type": "object"
+        }
+      ]
+    },
+    "AgentForeignOrigin": {
+      "additionalProperties": false,
+      "description": "Authenticated by the originating native runtime, then by the owning host connection.",
+      "properties": {
+        "actorId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "agentPath": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actorId",
+        "agentPath",
+        "callId",
+        "rootThreadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "AgentForeignRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/AgentForeignOperation"
+        },
+        "source": {
+          "$ref": "#/definitions/AgentForeignOrigin"
+        },
+        "targetThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        }
+      },
+      "required": [
+        "operation",
+        "source",
+        "targetThreadId"
+      ],
+      "title": "AgentForeignRequest",
+      "type": "object"
+    },
+    "AgentForeignResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "oneOf": [
+        {
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            },
+            "deliveryId": {
+              "type": "string"
+            },
+            "targetThreadId": {
+              "$ref": "#/definitions/ThreadId"
+            },
+            "type": {
+              "enum": [
+                "message"
+              ],
+              "title": "Messagev2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "accepted",
+            "deliveryId",
+            "targetThreadId",
+            "type"
+          ],
+          "title": "Messagev2::AgentForeignResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "answer": {
+              "type": "string"
+            },
+            "targetThreadId": {
+              "$ref": "#/definitions/ThreadId"
+            },
+            "type": {
+              "enum": [
+                "sideQuestion"
+              ],
+              "title": "SideQuestionv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "answer",
+            "targetThreadId",
+            "type"
+          ],
+          "title": "SideQuestionv2::AgentForeignResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "threads": {
+              "description": "Native thread records forwarded unchanged; the receiving tool validates them."
+            },
+            "type": {
+              "enum": [
+                "list"
+              ],
+              "title": "Listv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "threads",
+            "type"
+          ],
+          "title": "Listv2::AgentForeignResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "thread": {
+              "description": "Native thread record forwarded unchanged; the receiving tool validates it."
+            },
+            "type": {
+              "enum": [
+                "inspect"
+              ],
+              "title": "Inspectv2::AgentForeignResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "thread",
+            "type"
+          ],
+          "title": "Inspectv2::AgentForeignResponse",
+          "type": "object"
+        }
+      ],
+      "title": "AgentForeignResponse"
+    },
     "AgentMessageDelivery": {
       "enum": [
         "async"
@@ -621,6 +894,77 @@
     },
     "AgentPath": {
       "type": "string"
+    },
+    "AgentStatus": {
+      "description": "Agent lifecycle status, derived from emitted events.",
+      "oneOf": [
+        {
+          "description": "Agent is waiting for initialization.",
+          "enum": [
+            "pending_init"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Agent is currently running.",
+          "enum": [
+            "running"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Agent's current turn was interrupted and it may receive more input.",
+          "enum": [
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Agent is done. Contains the final assistant message.",
+          "properties": {
+            "completed": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "completed"
+          ],
+          "title": "CompletedAgentStatus",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Agent encountered an error.",
+          "properties": {
+            "errored": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "errored"
+          ],
+          "title": "ErroredAgentStatus",
+          "type": "object"
+        },
+        {
+          "description": "Agent has been shutdown.",
+          "enum": [
+            "shutdown"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Agent is not found.",
+          "enum": [
+            "not_found"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "AllowDenyRequirement": {
       "enum": [
@@ -2481,6 +2825,30 @@
             },
             "method": {
               "enum": [
+                "featureUse/read"
+              ],
+              "title": "FeatureUse/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/FeatureUseReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "FeatureUse/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/compact/start"
               ],
               "title": "Thread/compact/startRequestMethod",
@@ -2712,6 +3080,102 @@
             "params"
           ],
           "title": "Thread/loaded/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/inspect"
+              ],
+              "title": "Thread/inspectRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadInspectParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/inspectRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/subtree/list"
+              ],
+              "title": "Thread/subtree/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadSubtreeListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/subtree/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "agent/foreign/receive"
+              ],
+              "title": "Agent/foreign/receiveRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentForeignRequest"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Agent/foreign/receiveRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "agent/end"
+              ],
+              "title": "Agent/endRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/AgentEndParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Agent/endRequest",
           "type": "object"
         },
         {
@@ -8038,6 +8502,166 @@
         "remoteMcpServersConfig"
       ],
       "type": "string"
+    },
+    "FeatureUseCounts": {
+      "properties": {
+        "allWaits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "assignmentSources": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "compactionPreloads": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "compactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "completionChanges": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "finals": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "messageSources": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "messages": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "preloadRejections": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "progressWaits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "progressYields": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactionFailures": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "selfCompactionsCompleted": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestionFailures": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestionRejections": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sideQuestions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "spawnPreloads": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "spawns": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "waits": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "allWaits",
+        "assignmentSources",
+        "compactionPreloads",
+        "compactions",
+        "completionChanges",
+        "finals",
+        "messageSources",
+        "messages",
+        "preloadRejections",
+        "progressWaits",
+        "progressYields",
+        "selfCompactionFailures",
+        "selfCompactions",
+        "selfCompactionsCompleted",
+        "sideQuestionFailures",
+        "sideQuestionRejections",
+        "sideQuestions",
+        "spawnPreloads",
+        "spawns",
+        "waits"
+      ],
+      "type": "object"
+    },
+    "FeatureUseReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "threads": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "title": "FeatureUseReadParams",
+      "type": "object"
+    },
+    "FeatureUseReadResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threads": {
+          "additionalProperties": {
+            "$ref": "#/definitions/FeatureUseCounts"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "title": "FeatureUseReadResponse",
+      "type": "object"
     },
     "FeedbackRequirements": {
       "properties": {
@@ -20207,9 +20831,43 @@
             "null"
           ]
         },
+        "agentStatus": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cliVersion": {
           "description": "Version of the CLI that created the thread.",
           "type": "string"
+        },
+        "completedCompactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextWindow": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "createdAt": {
           "description": "Unix timestamp (in seconds) when the thread was created.",
@@ -20260,7 +20918,7 @@
           "type": "string"
         },
         "model": {
-          "description": "Current configured model when loaded, otherwise the latest persisted model. Null when unavailable. This is not per-turn execution telemetry.",
+          "description": "Effective model when inspected, otherwise the latest configured or persisted model. Null when unavailable.",
           "type": [
             "string",
             "null"
@@ -20318,7 +20976,7 @@
               "type": "null"
             }
           ],
-          "description": "Current configured reasoning effort when loaded, otherwise the latest persisted effort. Null when unset or unavailable. This is not per-turn execution telemetry."
+          "description": "Effective reasoning effort when inspected, otherwise the latest configured or persisted effort. Null when unset or unavailable."
         },
         "recencyAt": {
           "description": "Unix timestamp (in seconds) used for thread recency ordering.",
@@ -20346,6 +21004,13 @@
           "format": "int64",
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "serviceTier": {
+          "description": "Effective native settings and measurements; unavailable observations are null.",
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -21289,6 +21954,20 @@
     "ThreadInjectItemsResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ThreadInjectItemsResponse",
+      "type": "object"
+    },
+    "ThreadInspectParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Explicit inspection may read retained settings and context history, never to count compactions.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadInspectParams",
       "type": "object"
     },
     "ThreadItem": {
@@ -24513,6 +25192,20 @@
         "threadId"
       ],
       "title": "ThreadStatusChangedNotification",
+      "type": "object"
+    },
+    "ThreadSubtreeListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Native spawn subtree, including its root and ephemeral loaded descendants.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadSubtreeListParams",
       "type": "object"
     },
     "ThreadTimelineEntry": {

@@ -41,6 +41,161 @@
       ],
       "type": "string"
     },
+    "AgentEndParams": {
+      "additionalProperties": false,
+      "properties": {
+        "rootThreadId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rootThreadId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "AgentForeignOperation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "message"
+              ],
+              "title": "MessageAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "MessageAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "question": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "sideQuestion"
+              ],
+              "title": "SideQuestionAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "question",
+            "type"
+          ],
+          "title": "SideQuestionAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "pathPrefix": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentPath"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "enum": [
+                "list"
+              ],
+              "title": "ListAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ListAgentForeignOperation",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "inspect"
+              ],
+              "title": "InspectAgentForeignOperationType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "InspectAgentForeignOperation",
+          "type": "object"
+        }
+      ]
+    },
+    "AgentForeignOrigin": {
+      "additionalProperties": false,
+      "description": "Authenticated by the originating native runtime, then by the owning host connection.",
+      "properties": {
+        "actorId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "agentPath": {
+          "$ref": "#/definitions/AgentPath"
+        },
+        "callId": {
+          "type": "string"
+        },
+        "rootThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actorId",
+        "agentPath",
+        "callId",
+        "rootThreadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "AgentForeignRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/AgentForeignOperation"
+        },
+        "source": {
+          "$ref": "#/definitions/AgentForeignOrigin"
+        },
+        "targetThreadId": {
+          "$ref": "#/definitions/ThreadId"
+        }
+      },
+      "required": [
+        "operation",
+        "source",
+        "targetThreadId"
+      ],
+      "type": "object"
+    },
     "AgentMessageInputContent": {
       "oneOf": [
         {
@@ -84,6 +239,9 @@
           "type": "object"
         }
       ]
+    },
+    "AgentPath": {
+      "type": "string"
     },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
@@ -1233,6 +1391,21 @@
         "SESSIONS"
       ],
       "type": "string"
+    },
+    "FeatureUseReadParams": {
+      "additionalProperties": false,
+      "properties": {
+        "threads": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "type": "object"
     },
     "FeedbackSaveParams": {
       "properties": {
@@ -5012,6 +5185,9 @@
       ],
       "type": "string"
     },
+    "ThreadId": {
+      "type": "string"
+    },
     "ThreadInjectItemsParams": {
       "properties": {
         "items": {
@@ -5025,6 +5201,18 @@
       },
       "required": [
         "items",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadInspectParams": {
+      "description": "Explicit inspection may read retained settings and context history, never to count compactions.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
         "threadId"
       ],
       "type": "object"
@@ -6001,6 +6189,18 @@
         "clear"
       ],
       "type": "string"
+    },
+    "ThreadSubtreeListParams": {
+      "description": "Native spawn subtree, including its root and ephemeral loaded descendants.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
     },
     "ThreadTurnsListParams": {
       "properties": {
@@ -7051,6 +7251,30 @@
         },
         "method": {
           "enum": [
+            "featureUse/read"
+          ],
+          "title": "FeatureUse/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/FeatureUseReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "FeatureUse/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "thread/compact/start"
           ],
           "title": "Thread/compact/startRequestMethod",
@@ -7282,6 +7506,102 @@
         "params"
       ],
       "title": "Thread/loaded/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/inspect"
+          ],
+          "title": "Thread/inspectRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadInspectParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/inspectRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/subtree/list"
+          ],
+          "title": "Thread/subtree/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadSubtreeListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/subtree/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/foreign/receive"
+          ],
+          "title": "Agent/foreign/receiveRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentForeignRequest"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/foreign/receiveRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "agent/end"
+          ],
+          "title": "Agent/endRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentEndParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Agent/endRequest",
       "type": "object"
     },
     {

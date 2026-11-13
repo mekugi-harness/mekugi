@@ -4,16 +4,22 @@
 import type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
 import type { ExecCommandApprovalParams } from "./ExecCommandApprovalParams";
 import type { RequestId } from "./RequestId";
+import type { AgentForeignRequest } from "./v2/AgentForeignRequest";
 import type { AttestationGenerateParams } from "./v2/AttestationGenerateParams";
 import type { ChatgptAuthTokensRefreshParams } from "./v2/ChatgptAuthTokensRefreshParams";
+import type { ChildHostAdmissionRequest } from "./v2/ChildHostAdmissionRequest";
 import type { CommandExecutionRequestApprovalParams } from "./v2/CommandExecutionRequestApprovalParams";
 import type { DynamicToolCallParams } from "./v2/DynamicToolCallParams";
 import type { FileChangeRequestApprovalParams } from "./v2/FileChangeRequestApprovalParams";
+import type { FinalCaptureProjectRequest } from "./v2/FinalCaptureProjectRequest";
+import type { FinalCaptureRequest } from "./v2/FinalCaptureRequest";
 import type { McpServerElicitationRequestParams } from "./v2/McpServerElicitationRequestParams";
 import type { PermissionsRequestApprovalParams } from "./v2/PermissionsRequestApprovalParams";
+import type { ProgressFreezeRequest } from "./v2/ProgressFreezeRequest";
+import type { ProgressOutputRequest } from "./v2/ProgressOutputRequest";
 import type { ToolRequestUserInputParams } from "./v2/ToolRequestUserInputParams";
 
 /**
  * Request initiated from the server and sent to the client.
  */
-export type ServerRequest ={ "method": "item/commandExecution/requestApproval", id: RequestId, params: CommandExecutionRequestApprovalParams, } | { "method": "item/fileChange/requestApproval", id: RequestId, params: FileChangeRequestApprovalParams, } | { "method": "item/tool/requestUserInput", id: RequestId, params: ToolRequestUserInputParams, } | { "method": "mcpServer/elicitation/request", id: RequestId, params: McpServerElicitationRequestParams, } | { "method": "item/permissions/requestApproval", id: RequestId, params: PermissionsRequestApprovalParams, } | { "method": "item/tool/call", id: RequestId, params: DynamicToolCallParams, } | { "method": "account/chatgptAuthTokens/refresh", id: RequestId, params: ChatgptAuthTokensRefreshParams, } | { "method": "attestation/generate", id: RequestId, params: AttestationGenerateParams, } | { "method": "applyPatchApproval", id: RequestId, params: ApplyPatchApprovalParams, } | { "method": "execCommandApproval", id: RequestId, params: ExecCommandApprovalParams, };
+export type ServerRequest ={ "method": "agent/foreign/route", id: RequestId, params: AgentForeignRequest, } | { "method": "agent/hostAdmission/prepare", id: RequestId, params: ChildHostAdmissionRequest, } | { "method": "agent/progress/freeze", id: RequestId, params: ProgressFreezeRequest, } | { "method": "agent/progress/prepareOutput", id: RequestId, params: ProgressOutputRequest, } | { "method": "agent/finalCapture/prepare", id: RequestId, params: FinalCaptureRequest, } | { "method": "agent/finalCapture/project", id: RequestId, params: FinalCaptureProjectRequest, } | { "method": "item/commandExecution/requestApproval", id: RequestId, params: CommandExecutionRequestApprovalParams, } | { "method": "item/fileChange/requestApproval", id: RequestId, params: FileChangeRequestApprovalParams, } | { "method": "item/tool/requestUserInput", id: RequestId, params: ToolRequestUserInputParams, } | { "method": "mcpServer/elicitation/request", id: RequestId, params: McpServerElicitationRequestParams, } | { "method": "item/permissions/requestApproval", id: RequestId, params: PermissionsRequestApprovalParams, } | { "method": "item/tool/call", id: RequestId, params: DynamicToolCallParams, } | { "method": "account/chatgptAuthTokens/refresh", id: RequestId, params: ChatgptAuthTokensRefreshParams, } | { "method": "attestation/generate", id: RequestId, params: AttestationGenerateParams, } | { "method": "applyPatchApproval", id: RequestId, params: ApplyPatchApprovalParams, } | { "method": "execCommandApproval", id: RequestId, params: ExecCommandApprovalParams, };

@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "CaptureInterval": {
+      "properties": {
+        "changeId": {
+          "type": "string"
+        },
+        "firstChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "lastChunk": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "legacyRecordKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recordOrder": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "changeId",
+        "firstChunk",
+        "key",
+        "lastChunk",
+        "recordOrder"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "deliveredIntervals": {
+      "items": {
+        "$ref": "#/definitions/CaptureInterval"
+      },
+      "type": "array"
+    },
+    "recoveryRef": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "deliveredIntervals",
+    "text"
+  ],
+  "title": "ProgressOutputResponse",
+  "type": "object"
+}

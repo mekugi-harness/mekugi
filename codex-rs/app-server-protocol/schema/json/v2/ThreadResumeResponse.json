@@ -86,6 +86,77 @@
     "AgentPath": {
       "type": "string"
     },
+    "AgentStatus": {
+      "description": "Agent lifecycle status, derived from emitted events.",
+      "oneOf": [
+        {
+          "description": "Agent is waiting for initialization.",
+          "enum": [
+            "pending_init"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Agent is currently running.",
+          "enum": [
+            "running"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Agent's current turn was interrupted and it may receive more input.",
+          "enum": [
+            "interrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Agent is done. Contains the final assistant message.",
+          "properties": {
+            "completed": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "completed"
+          ],
+          "title": "CompletedAgentStatus",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Agent encountered an error.",
+          "properties": {
+            "errored": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "errored"
+          ],
+          "title": "ErroredAgentStatus",
+          "type": "object"
+        },
+        {
+          "description": "Agent has been shutdown.",
+          "enum": [
+            "shutdown"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Agent is not found.",
+          "enum": [
+            "not_found"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ApprovalsReviewer": {
       "description": "Configures who approval requests are routed to for review. Examples include sandbox escapes, blocked network access, MCP approval prompts, and ARC escalations. Defaults to `user`. `auto_review` uses a carefully prompted subagent to gather relevant context and apply a risk-based decision framework before approving or denying the request. The legacy value `guardian_subagent` is accepted for compatibility.",
       "enum": [
@@ -1502,9 +1573,43 @@
             "null"
           ]
         },
+        "agentStatus": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cliVersion": {
           "description": "Version of the CLI that created the thread.",
           "type": "string"
+        },
+        "completedCompactions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextWindow": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "createdAt": {
           "description": "Unix timestamp (in seconds) when the thread was created.",
@@ -1555,7 +1660,7 @@
           "type": "string"
         },
         "model": {
-          "description": "Current configured model when loaded, otherwise the latest persisted model. Null when unavailable. This is not per-turn execution telemetry.",
+          "description": "Effective model when inspected, otherwise the latest configured or persisted model. Null when unavailable.",
           "type": [
             "string",
             "null"
@@ -1613,7 +1718,7 @@
               "type": "null"
             }
           ],
-          "description": "Current configured reasoning effort when loaded, otherwise the latest persisted effort. Null when unset or unavailable. This is not per-turn execution telemetry."
+          "description": "Effective reasoning effort when inspected, otherwise the latest configured or persisted effort. Null when unset or unavailable."
         },
         "recencyAt": {
           "description": "Unix timestamp (in seconds) used for thread recency ordering.",
@@ -1641,6 +1746,13 @@
           "format": "int64",
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "serviceTier": {
+          "description": "Effective native settings and measurements; unavailable observations are null.",
+          "type": [
+            "string",
             "null"
           ]
         },
