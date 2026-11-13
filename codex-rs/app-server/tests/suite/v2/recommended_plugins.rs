@@ -37,12 +37,12 @@ enum RecommendationFeature {
 }
 
 #[tokio::test]
-async fn first_turn_after_external_login_waits_for_recommended_plugins() -> Result<()> {
+async fn first_turn_after_external_login_omits_plugin_suggestions_with_tool_suggest() -> Result<()> {
     recommended_plugins_after_external_login(RecommendationFeature::ToolSuggest).await
 }
 
 #[tokio::test]
-async fn first_turn_after_external_login_waits_for_recommended_plugins_without_tool_suggest()
+async fn first_turn_after_external_login_omits_plugin_advertisements_without_tool_suggest()
 -> Result<()> {
     recommended_plugins_after_external_login(RecommendationFeature::RecommendedPlugins).await
 }
@@ -188,15 +188,7 @@ async fn recommended_plugins_after_external_login(feature: RecommendationFeature
         .into_iter()
         .filter(|text| text.starts_with("<recommended_plugins>"))
         .collect::<Vec<_>>();
-    assert_eq!(
-        recommendations,
-        vec![concat!(
-            "<recommended_plugins>\n",
-            "Here is a list of plugins that are available but not installed.\n\n",
-            "- GitHub (github@openai-curated-remote)\n",
-            "</recommended_plugins>",
-        )]
-    );
+    assert!(recommendations.is_empty());
     let body = request.body_json();
     let tool_names = body
         .get("tools")
@@ -205,10 +197,7 @@ async fn recommended_plugins_after_external_login(feature: RecommendationFeature
         .flatten()
         .filter_map(|tool| tool.get("name").and_then(Value::as_str))
         .collect::<Vec<_>>();
-    assert_eq!(
-        tool_names.contains(&"request_plugin_install"),
-        matches!(feature, RecommendationFeature::ToolSuggest)
-    );
+    assert!(!tool_names.contains(&"request_plugin_install"));
     assert!(!tool_names.contains(&"list_available_plugins_to_install"));
     Ok(())
 }
