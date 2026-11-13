@@ -16,7 +16,7 @@ use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 
 #[path = "compact_token_budget_reload.rs"]
-mod reload;
+pub(crate) mod reload;
 
 /// Runs token-budget manual compaction as a normal compaction lifecycle.
 ///

@@ -148,6 +148,7 @@ impl ToolCallRuntime {
                     .get_or_insert_default()
                     .delivered_assistant_message = Some(text.clone());
             }
+            recorder.attach_capture_to_output(&mut response);
             recorder.attach_direct_call_to_output(
                 &mut response.item,
                 recorded_call,

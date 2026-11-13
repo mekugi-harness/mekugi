@@ -222,6 +222,10 @@ impl CodeModeService {
         self.dispatch_broker.close_cell(cell_id);
     }
 
+    pub(crate) fn has_active_cells(&self) -> bool {
+        !self.dispatch_broker.active_cell_ids().is_empty()
+    }
+
     pub(crate) fn start_turn_worker(
         &self,
         session: &Arc<Session>,

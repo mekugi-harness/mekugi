@@ -475,13 +475,13 @@ async fn multi_agent_v2_tools_emit_collaborator_analytics() -> Result<()> {
         ),
         (
             "send_message",
-            json!({"target": "worker", "message": "PRIVATE_MESSAGE"}),
+            json!({"target": "/root/worker", "message": "PRIVATE_MESSAGE"}),
         ),
         (
             "followup_task",
-            json!({"target": "worker", "message": "PRIVATE_FOLLOWUP"}),
+            json!({"target": "/root/worker", "message": "PRIVATE_FOLLOWUP"}),
         ),
-        ("interrupt_agent", json!({"target": "worker"})),
+        ("interrupt_agent", json!({"target": "/root/worker"})),
         ("list_agents", json!({})),
         (
             "send_message",

@@ -12791,6 +12791,17 @@ max_concurrent_threads_per_session = 9
     Ok(())
 }
 
+#[test]
+fn native_collaboration_defaults_preserve_stock_admission() {
+    let config = resolve_multi_agent_v2_config(&ConfigToml::default());
+    assert!(!config.disable_native_tools);
+    assert!(!config.non_code_mode_only);
+    assert_eq!(
+        config.max_concurrent_threads_per_session,
+        DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION,
+    );
+}
+
 #[tokio::test]
 async fn multi_agent_v2_default_session_thread_cap_counts_root() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;

@@ -267,6 +267,32 @@ pub(super) async fn ensure_conversation_listener(
         .thread_state_manager
         .thread_state(conversation_id)
         .await;
+    if let Some(disconnect) = listener_task_context
+        .thread_state_manager
+        .resource_host_disconnect(connection_id)
+        .await
+    {
+        let mut resources = crate::agent_host::host_resources(
+            &listener_task_context.outgoing,
+            connection_id,
+            disconnect,
+            conversation.agent_tree_shutdown_token(),
+        );
+        let feature_use = Arc::clone(&listener_task_context.thread_state_manager.feature_use);
+        resources.record_feature_use = Some(Arc::new(move |fact| {
+            if let Ok(mut features) = feature_use.lock() {
+                features.record(fact);
+            } else {
+                tracing::warn!("native feature accounting unavailable");
+            }
+        }));
+        let root_state = listener_task_context.thread_state_manager
+            .thread_state(conversation.agent_root_id()).await;
+        let mut root_state = root_state.lock().await;
+        if conversation.install_agent_host_resources(resources) {
+            root_state.resource_host = Some(connection_id);
+        }
+    }
     start_listener(
         listener_task_context,
         conversation_id,

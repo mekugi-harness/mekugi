@@ -194,6 +194,8 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
                 agent_type: None,
                 model: None,
                 reasoning_effort: None,
+                cwd: None,
+                preload: None,
             },
             HostThreadSpawnReservation {
                 thread_id: child_id,
@@ -250,6 +252,56 @@ async fn same_manager_creation_retains_step_executor_and_shares_exec_policy() ->
         parent.prepare_child(&invocation).await,
         Err(ThreadSpawnError::Preparation(message)) if message == "spawning tool call finished"
     ));
+    child.shutdown_and_wait().await?;
+    parent.shutdown_and_wait().await?;
+    Ok(())
+}
+
+
+#[tokio::test]
+async fn reserved_child_preloads_sources_before_first_input() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let workspace = tempfile::tempdir()?;
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf()).build().await?;
+    config.cwd = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(workspace.path())?;
+    config.features.enable(Feature::MultiAgentV2)?;
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"), config.model_provider.clone(), home.path().to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()));
+    let parent = manager.start_thread(StartThreadOptions::new(config)).await?.thread;
+    let call = spawn_call(&parent).await?;
+    let reservation = InvocationReservation::default();
+    reservation.reserve(&parent.session, &call.turn, &call.call_id)?;
+    let _guard = reservation.activate(&call);
+    let invocation = parent.tool_invocation(&call.turn.sub_id, &call.call_id)?;
+    let child_id = ThreadId::new();
+    let resources = crate::agent::host_resources::tests::admission_resources(Arc::new({
+        let source = workspace.path().join("source");
+        move |request, _| {
+            assert_eq!(request.thread_id, child_id);
+            std::fs::write(&source, "RESERVED_CHILD_PRELOAD").unwrap();
+            Box::pin(async move { Ok(codex_protocol::agent_capture::ChildHostAdmissionResponse {
+                thread_id: request.thread_id,
+            }) })
+        }
+    }));
+    assert!(parent.install_agent_host_resources(resources));
+    parent.create_child(&invocation, ThreadCreateRequest {
+        task_name: "reader".into(), fork_mode: None, agent_type: None, model: None,
+        reasoning_effort: None, cwd: None,
+        preload: Some(codex_protocol::protocol::ReloadSelection { sources: vec!["@source".to_string()] }),
+    }, HostThreadSpawnReservation {
+        thread_id: child_id, control: Arc::clone(&parent.session.services.agent_control),
+        turn_admission: None, usage_accounting: None,
+    }).await?;
+    std::fs::write(workspace.path().join("source"), "LATER_EDIT")?;
+    let child = manager.get_thread(child_id).await?;
+    let history = child.session.clone_history().await;
+    let text = serde_json::to_string(&history.raw_items().collect::<Vec<_>>())?;
+    assert!(text.contains("RESERVED_CHILD_PRELOAD"));
+    assert!(!text.contains("LATER_EDIT"));
+    assert_eq!(child.session.reload_selection().await, None);
     child.shutdown_and_wait().await?;
     parent.shutdown_and_wait().await?;
     Ok(())

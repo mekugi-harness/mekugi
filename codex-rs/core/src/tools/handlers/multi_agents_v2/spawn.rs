@@ -11,6 +11,7 @@ use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::ReloadSelection;
 use codex_tools::ToolSpec;
 use std::num::NonZeroUsize;
 
@@ -132,6 +133,8 @@ async fn handle_spawn_agent(
             agent_type: args.agent_type.clone(),
             model: args.model,
             reasoning_effort: args.reasoning_effort,
+            cwd: args.cwd,
+            preload: args.preload,
         },
     )
     .await
@@ -208,6 +211,8 @@ struct SpawnAgentArgs {
     reasoning_effort: Option<ReasoningEffort>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
+    cwd: Option<String>,
+    preload: Option<ReloadSelection>,
 }
 
 impl SpawnAgentArgs {

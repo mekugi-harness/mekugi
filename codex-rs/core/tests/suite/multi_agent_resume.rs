@@ -417,7 +417,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     drop(worker_completion);
 
     let followup_args = serde_json::to_string(&json!({
-        "target": "worker",
+        "target": "/root/worker",
         "message": FOLLOWUP_TASK,
     }))?;
     mount_sse_once_match(
@@ -551,7 +551,7 @@ openai_base_url = "{redirected_base_url}"
                 QUEUE_CALL_ID,
                 COLLABORATION_NAMESPACE,
                 "send_message",
-                r#"{"target":"worker","message":"queue-only context from an earlier parent turn"}"#,
+                r#"{"target":"/root/worker","message":"queue-only context from an earlier parent turn"}"#,
             ),
             ev_completed("resp-queue"),
         ]),
@@ -741,7 +741,7 @@ openai_base_url = "{redirected_base_url}"
     );
 
     let interrupt_args = serde_json::to_string(&json!({
-        "target": "worker",
+        "target": "/root/worker",
     }))?;
     mount_root_collaboration_call(
         &server,

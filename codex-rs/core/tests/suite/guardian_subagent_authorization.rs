@@ -1101,7 +1101,7 @@ async fn run_guardian_subagent_review(
         FOLLOWUP_CALL_ID,
         "collaboration",
         "followup_task",
-        &json!({ "target": "worker", "message": FORWARDED_AGENT_MESSAGE }).to_string(),
+        &json!({ "target": "/root/worker", "message": FORWARDED_AGENT_MESSAGE }).to_string(),
     );
     followup_call["item"]["encrypted_function_args"] = json!([]);
     mount_sse_once_match(

@@ -608,6 +608,19 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { live_writer::discard_thread(self, thread_id).await })
     }
 
+    fn completed_compactions(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, Option<u64>> {
+        Box::pin(async move {
+            let Some(db) = self.state_db.as_ref() else {
+                return Ok(None);
+            };
+            db.completed_compactions(thread_id)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("failed to read completed compactions: {error}"),
+                })
+        })
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,

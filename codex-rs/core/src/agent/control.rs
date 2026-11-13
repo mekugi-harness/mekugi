@@ -72,6 +72,7 @@ mod completion;
 mod delivery;
 mod execution;
 mod inspection;
+mod observation;
 mod interrupt;
 mod legacy;
 mod mailbox;
@@ -83,6 +84,7 @@ mod runtime;
 mod runtime_context;
 mod sender_context;
 mod service_tier;
+mod side_question;
 mod spawn;
 mod spawn_guard;
 mod spawn_telemetry;
@@ -265,8 +267,7 @@ impl LocalAgentControl {
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
         let observers = state.extensions.message_lifecycle_contributors();
-        let delivery = (!observers.is_empty())
-            .then(|| MessageDelivery::publish(context.sender_thread_id, observers));
+        let delivery = Some(MessageDelivery::publish_with_context(&context, observers));
         let log_content = crate::agent_communication::send_log_content(&communication);
         {
             // Keep unloaded delivery atomic with publication of a reloaded session.
@@ -360,18 +361,12 @@ impl LocalAgentControl {
 
     pub(crate) async fn list_agents(
         &self,
-        current_session_source: &SessionSource,
+        _current_session_source: &SessionSource,
         path_prefix: Option<&str>,
     ) -> CodexResult<Vec<LiveAgent>> {
         let state = self.runtime.upgrade()?;
         let resolved_prefix = path_prefix
-            .map(|prefix| {
-                current_session_source
-                    .get_agent_path()
-                    .unwrap_or_else(AgentPath::root)
-                    .resolve(prefix)
-                    .map_err(CodexErr::UnsupportedOperation)
-            })
+            .map(|prefix| AgentPath::try_from(prefix).map_err(CodexErr::UnsupportedOperation))
             .transpose()?;
 
         let mut live_agents = self.runtime.registry.live_agents();

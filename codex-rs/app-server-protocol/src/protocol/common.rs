@@ -773,6 +773,11 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnarchiveResponse,
     },
+    FeatureUseRead => "featureUse/read" {
+        params: v2::FeatureUseReadParams,
+        serialization: None,
+        response: v2::FeatureUseReadResponse,
+    },
     ThreadCompactStart => "thread/compact/start" {
         params: v2::ThreadCompactStartParams,
         serialization: thread_id(params.thread_id),
@@ -896,6 +901,28 @@ client_request_definitions! {
         params: v2::ThreadLoadedListParams,
         serialization: None,
         response: v2::ThreadLoadedListResponse,
+    },
+    ThreadInspect => "thread/inspect" {
+        params: v2::ThreadInspectParams,
+        serialization: None,
+        manual_payload_conversion: manual,
+        response: v2::ThreadReadResponse,
+    },
+    ThreadSubtreeList => "thread/subtree/list" {
+        params: v2::ThreadSubtreeListParams,
+        serialization: None,
+        manual_payload_conversion: manual,
+        response: v2::ThreadListResponse,
+    },
+    AgentForeignReceive => "agent/foreign/receive" {
+        params: v2::AgentForeignRequest,
+        serialization: None,
+        response: v2::AgentForeignResponse,
+    },
+    AgentEnd => "agent/end" {
+        params: v2::AgentEndParams,
+        serialization: thread_id(params.root_thread_id),
+        response: v2::AgentEndResponse,
     },
     ThreadRead => "thread/read" {
         params: v2::ThreadReadParams,
@@ -1893,6 +1920,31 @@ impl TryFrom<JSONRPCRequest> for ServerRequest {
 }
 
 server_request_definitions! {
+    AgentForeignRoute => "agent/foreign/route" {
+        params: v2::AgentForeignRequest,
+        response: v2::AgentForeignResponse,
+    },
+    AgentPrepareChildHost => "agent/hostAdmission/prepare" {
+        params: v2::ChildHostAdmissionRequest,
+        response: v2::ChildHostAdmissionResponse,
+    },
+    AgentFreezeProgress => "agent/progress/freeze" {
+        params: v2::ProgressFreezeRequest,
+        response: v2::ProgressFreezeResponse,
+    },
+    AgentPrepareProgressOutput => "agent/progress/prepareOutput" {
+        params: v2::ProgressOutputRequest,
+        response: v2::ProgressOutputResponse,
+    },
+    AgentPrepareFinalCapture => "agent/finalCapture/prepare" {
+        params: v2::FinalCaptureRequest,
+        response: v2::FinalCaptureResponse,
+    },
+    AgentProjectFinalCapture => "agent/finalCapture/project" {
+        params: v2::FinalCaptureProjectRequest,
+        response: v2::FinalCaptureProjectResponse,
+    },
+
     /// NEW APIs
     /// Sent when approval is requested for a specific command execution.
     /// This request is used for Turns started via turn/start.
@@ -3365,6 +3417,11 @@ mod tests {
                     model_provider: "openai".to_string(),
                     model: None,
                     reasoning_effort: None,
+                    service_tier: None,
+                    context_tokens: None,
+                    context_window: None,
+                    completed_compactions: None,
+                    agent_status: None,
                     created_at: 1,
                     updated_at: 2,
                     recency_at: Some(3),
@@ -3403,8 +3460,7 @@ mod tests {
 
         assert_eq!(response.id(), &RequestId::Integer(7));
         assert_eq!(response.method(), "thread/start");
-        assert_eq!(
-            json!({
+        let mut expected = json!({
                 "method": "thread/start",
                 "id": 7,
                 "response": {
@@ -3461,9 +3517,17 @@ mod tests {
                     "reasoningEffort": null,
                     "multiAgentMode": "explicitRequestOnly"
                 }
-            }),
-            serde_json::to_value(&response)?,
-        );
+            });
+        for field in [
+            "serviceTier",
+            "contextTokens",
+            "contextWindow",
+            "completedCompactions",
+            "agentStatus",
+        ] {
+            expected["response"]["thread"][field] = serde_json::Value::Null;
+        }
+        assert_eq!(expected, serde_json::to_value(&response)?);
         Ok(())
     }
 

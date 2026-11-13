@@ -1,7 +1,9 @@
 mod managed;
 mod model_catalog;
+mod observation;
 mod shared_instructions;
 mod shutdown;
+pub(crate) mod view;
 
 pub use shutdown::AgentTreeShutdown;
 pub use shutdown::AgentTreeShutdownFailure;

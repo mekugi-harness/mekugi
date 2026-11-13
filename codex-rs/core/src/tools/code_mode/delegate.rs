@@ -471,8 +471,7 @@ impl CoreTurnHost {
         if text.trim().is_empty() {
             return Ok(());
         }
-        self.session
-            .inject_if_running(vec![ResponseItemEnvelope {
+        let mut envelope = ResponseItemEnvelope {
                 item: ResponseItem::CustomToolCallOutput {
                     id: None,
                     call_id,
@@ -484,7 +483,12 @@ impl CoreTurnHost {
                     history_truncation_token_limit: Some(output_token_limit),
                     ..Default::default()
                 }),
-            }])
+            };
+        let receipts = self.session.services.executed_tool_calls
+            .capture_receipts_for_cell(&cell_id, &envelope.item);
+        envelope.metadata.get_or_insert_default().capture_deliveries = receipts;
+        self.session
+            .inject_if_running(vec![envelope])
             .await
             .map_err(|_| {
                 format!("failed to inject exec notify message for cell {cell_id}: no active turn")

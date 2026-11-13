@@ -36,14 +36,40 @@ impl Handler {
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
-        let ToolInvocation {
-            session,
-            turn,
-            payload,
-            ..
-        } = invocation;
-        let arguments = function_arguments(payload)?;
-        let args: ListAgentsArgs = parse_arguments(&arguments)?;
+        let args: ListAgentsArgs =
+            parse_arguments(&function_arguments(invocation.payload.clone())?)?;
+        if let Some(target) = args
+            .path_prefix
+            .as_deref()
+            .and_then(|value| super::foreign::target(&invocation, value))
+        {
+            use codex_app_server_protocol::{AgentForeignOperation, AgentForeignResponse};
+            let response = super::foreign::route(
+                &invocation,
+                target,
+                AgentForeignOperation::List { path_prefix: None },
+            )
+            .await?;
+            let AgentForeignResponse::List { threads } = response else {
+                return Err(super::foreign::invalid_response());
+            };
+            let threads: Vec<codex_app_server_protocol::Thread> =
+                serde_json::from_value(threads).map_err(|_| super::foreign::invalid_response())?;
+            if !threads.iter().any(|agent| agent.id == target.to_string()) {
+                return Err(super::foreign::invalid_response());
+            }
+            let agents = threads
+                .into_iter()
+                .filter_map(|thread| {
+                    thread.agent_status.map(|agent_status| ListedAgent {
+                        agent_name: thread.id,
+                        agent_status,
+                    })
+                })
+                .collect();
+            return Ok(boxed_tool_output(ListAgentsResult { agents }));
+        }
+        let ToolInvocation { session, turn, .. } = invocation;
         let agents = session
             .services
             .agent_control

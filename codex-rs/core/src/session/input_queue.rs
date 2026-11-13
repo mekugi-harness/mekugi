@@ -205,6 +205,35 @@ impl InputQueue {
         (activity_rx, pending_activity)
     }
 
+    pub(crate) async fn pending_wait_activity(
+        &self,
+        turn_state: Option<&Mutex<TurnState>>,
+    ) -> crate::thread_input::PendingWaitActivity {
+        let mut activity = crate::thread_input::PendingWaitActivity::default();
+        if let Some(turn_state) = turn_state {
+            let state = turn_state.lock().await;
+            activity.steered =
+                state.pending_input.pending_activity() == Some(InputQueueActivity::Steer);
+            for input in &state.pending_input.items {
+                match input {
+                    TurnInput::InterAgentCommunication(message) => activity.observe(message),
+                    TurnInput::ResponseItem(ResponseItemEnvelope {
+                        item: ResponseItem::AgentMessage { .. },
+                        ..
+                    }) => activity.message = true,
+                    _ => {}
+                }
+            }
+        }
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        // Transfer from the existing native mailbox without consuming its deliveries.
+        self.read_mailbox(&mut pending);
+        for mail in pending.iter() {
+            activity.observe(&mail.communication);
+        }
+        activity
+    }
+
     pub(crate) async fn enqueue_mailbox_communication(
         &self,
         communication: crate::PendingAgentMessage,
@@ -530,6 +559,51 @@ mod tests {
     use codex_protocol::protocol::InterAgentCommunication;
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
+
+    #[tokio::test]
+    async fn wait_observation_distinguishes_results_and_keeps_native_consumption() {
+        use crate::agent_communication::AgentCommunicationContext;
+        use crate::agent_communication::AgentCommunicationKind;
+        use crate::agent_communication::MessageDelivery;
+
+        let input_queue = InputQueue::new();
+        let sender = ThreadId::new();
+        let context = AgentCommunicationContext::new(AgentCommunicationKind::Result, sender);
+        let delivery = MessageDelivery::publish_with_context(&context, &[]);
+        let result = crate::PendingAgentMessage::new(
+            make_mail(
+                AgentPath::try_from("/root/worker").unwrap(),
+                AgentPath::root(),
+                "terminal outcome",
+                false,
+            ),
+            Some(delivery.clone()),
+        );
+        input_queue
+            .enqueue_mailbox_communication(result, Default::default())
+            .await;
+        let pending = input_queue.pending_wait_activity(None).await;
+        assert_eq!(pending.results, std::collections::HashSet::from([sender]));
+        assert!(!pending.message);
+        assert!(!pending.steered);
+
+        let turn_state = Mutex::new(TurnState::default());
+        let (mail, _) = input_queue.drain_mailbox_input_items().await;
+        input_queue
+            .extend_pending_input_and_notify_for_turn_state(&turn_state, mail)
+            .await;
+        let pending = input_queue.pending_wait_activity(Some(&turn_state)).await;
+        assert_eq!(pending.results, std::collections::HashSet::from([sender]));
+        assert!(!pending.message);
+        let consumed = input_queue
+            .take_pending_input_for_turn_state(&turn_state)
+            .await;
+        delivery.consumed(ThreadId::new());
+        assert!(!consumed.is_empty());
+        let pending = input_queue.pending_wait_activity(Some(&turn_state)).await;
+        assert!(pending.results.is_empty());
+        assert!(!pending.message);
+    }
 
     #[test]
     fn user_input_extension_data_round_trips_without_changing_legacy_input() {

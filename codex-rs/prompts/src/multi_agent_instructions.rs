@@ -17,6 +17,7 @@ All agents share the same directory. In detail:
 - All agents use the same current working directory.
 - As a result, edits made by one agent are immediately visible to all other agents.
 "#;
+const DEFAULT_MULTI_AGENT_V2_SUBAGENT_GUIDANCE: &str = "For the explicit-request-only delegation rule, an explicit delegation request in your authenticated parent assignment carries the parent's authority within that assignment, subject to higher-priority limits.\nAsk the user directly for clarification with functions.request_user_input_async. Questions share the session family's question dialog. Route assignment changes and blockers to your parent.\nInclude exact mchanges source references in your ordinary final answer so your parent can review retained changes.\n";
 
 /// Multi-agent role text and the captured capabilities used to render its context segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,14 @@ pub enum MultiAgentRoleInstructions {
 impl MultiAgentRoleInstructions {
     /// Content classification shared by role producers and inherited-history filtering.
     pub const KIND: &str = "multi_agent.role_instructions";
+
+    /// Preserve child coordination guidance for bundled, catalog and configured roles.
+    pub fn with_subagent_guidance(mut self) -> Self {
+        let (Self::Configured(text) | Self::Composed { base: text, .. }) = &mut self;
+        text.push('\n');
+        text.push_str(DEFAULT_MULTI_AGENT_V2_SUBAGENT_GUIDANCE);
+        self
+    }
 }
 
 impl ContextualUserFragment for MultiAgentRoleInstructions {

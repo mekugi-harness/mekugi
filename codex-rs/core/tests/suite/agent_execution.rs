@@ -379,7 +379,7 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
         FOLLOWUP_PROMPT,
         "followup-call",
         "followup_task",
-        json!({ "target": "first", "message": FOLLOWUP_TASK }),
+        json!({ "target": "/root/first", "message": FOLLOWUP_TASK }),
     )
     .await;
     let reloaded_worker_request =

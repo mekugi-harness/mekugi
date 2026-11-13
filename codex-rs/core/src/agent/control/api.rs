@@ -2,6 +2,7 @@
 //! Runtime loading, message delivery and shared state remain in their existing modules.
 
 use super::LocalAgentControl;
+use super::LocalAgentRuntime;
 use super::spawn::SpawnInitialInput;
 use crate::agent::api::AgentConfigUpdate;
 use crate::agent::api::AgentControl;
@@ -13,6 +14,7 @@ use crate::agent::api::DeliveryReceipt;
 use crate::agent::api::SendRequest;
 use crate::agent::api::SpawnRequest;
 use crate::agent::types::AgentExecutionGuard;
+use crate::agent::types::AgentMessage;
 use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent_communication::AgentCommunicationContext;
@@ -31,6 +33,36 @@ use codex_protocol::protocol::TokenUsage;
 use codex_rollout_trace::ThreadTraceContext;
 use futures::future::BoxFuture;
 use std::collections::HashSet;
+use tokio_util::sync::CancellationToken;
+
+impl LocalAgentRuntime {
+    /// Acquire ordinary BTW sources without starting or restoring the recipient.
+    /// The caller authenticates the destination before invoking this seam.
+    pub(crate) async fn acquire_recipient_message(
+        &self,
+        target: ThreadId,
+        text: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<String> {
+        if !crate::compact_token_budget::reload::has_message_sources(text) {
+            return Ok(text.to_string());
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(CodexErr::TurnAborted),
+            result = async {
+                self.ensure_agent_known(target)?;
+                let thread = self.upgrade()?.get_thread(target).await?;
+                let _residency_pin = self.pin_v2_residency(&thread).await?;
+                let session = &thread.session;
+                let step = session.capture_speculative_step_context(
+                    session.new_default_turn().await, cancellation,
+                ).await?;
+                crate::compact_token_budget::reload::acquire_message(session, &step, text, cancellation).await
+            } => result,
+        }
+    }
+}
 
 impl AgentControl for LocalAgentControl {
     fn identity(&self) -> SessionId {
@@ -142,7 +174,10 @@ impl AgentControl for LocalAgentControl {
                     // locally evicted recipients can retain mail without reloading.
                     // Loaded recipients go straight to delivery, which rejects sends
                     // racing an in-progress eviction when it acquires the residency pin.
+                    let needs_sources = matches!(&message, AgentMessage::Plaintext(text)
+                        if crate::compact_token_budget::reload::has_message_sources(text));
                     let _residency_pin = if mode == MessageDeliveryMode::TriggerTurn
+                        || needs_sources
                         || (self.runtime.upgrade()?.get_thread(target).await.is_err()
                             && self.runtime.registry.evicted_environments(target).is_none())
                     {
@@ -150,6 +185,23 @@ impl AgentControl for LocalAgentControl {
                             .await?
                     } else {
                         None
+                    };
+                    let message = if needs_sources {
+                        let AgentMessage::Plaintext(text) = message else {
+                            unreachable!("only plaintext messages have source references");
+                        };
+                        let thread = self.runtime.upgrade()?.get_thread(target).await?;
+                        let session = &thread.session;
+                        let cancellation = self.runtime.shutdown.child_token();
+                        let _cancel_on_drop = cancellation.clone().drop_guard();
+                        let step = session.capture_speculative_step_context(
+                            session.new_default_turn().await, &cancellation,
+                        ).await?;
+                        AgentMessage::Plaintext(crate::compact_token_budget::reload::acquire_message(
+                            session, &step, &text, &cancellation,
+                        ).await?)
+                    } else {
+                        message
                     };
                     let communication = message.into_communication(author, receiver_path, mode);
                     let kind = match mode {
@@ -167,6 +219,19 @@ impl AgentControl for LocalAgentControl {
                             start_options,
                         )
                         .await?;
+                    self.runtime.record_feature_use(
+                        caller,
+                        submission_id.clone(),
+                        match mode {
+                            MessageDeliveryMode::QueueOnly => codex_protocol::feature_use::FeatureUseEvent::MessageAccepted {
+                                sources: needs_sources,
+                                btw: false,
+                            },
+                            MessageDeliveryMode::TriggerTurn => codex_protocol::feature_use::FeatureUseEvent::AssignmentDelivered {
+                                sources: needs_sources,
+                            },
+                        },
+                    );
                     (receiver, submission_id)
                 }
             };

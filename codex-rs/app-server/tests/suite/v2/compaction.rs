@@ -11,6 +11,8 @@ use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::CodexErrorInfo;
+use codex_app_server_protocol::FeatureUseCounts;
+use codex_app_server_protocol::FeatureUseReadResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
@@ -581,6 +583,12 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
         }
     );
 
+    for _ in 0..2 {
+        let read = mcp.send_request("featureUse/read", Some(json!({"threads": [&thread_id]}))).await?;
+        let counts: FeatureUseReadResponse = mcp.read_response(read).await?;
+        assert_eq!(counts.threads[&thread_id], FeatureUseCounts { compactions: 1, ..Default::default() });
+    }
+
     // A completed turn after compaction permits bounded replay. Neither this turn nor
     // resume resends settings, so restoring the updated cwd and roots depends on the
     // checkpoint; startup metadata does not contain the extra root.
@@ -754,4 +762,52 @@ fn compaction_config(server_uri: &str, auto_compact_limit: i64) -> MockResponses
             "compact_prompt = \"{COMPACT_PROMPT}\"\nmodel_auto_compact_token_limit = {auto_compact_limit}"
         ))
         .with_provider_config("supports_websockets = false")
+}
+
+#[tokio::test]
+async fn self_reset_feature_facts_are_native_and_read_only() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let home = TempDir::new()?;
+    let source = home.path().join("reload.txt");
+    std::fs::write(&source, "native reset preload marker")?;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_function_call("reset", "new_context", &json!({
+                    "reload": {"sources": [format!("@{}", source.display())]}
+                }).to_string()),
+                responses::ev_completed("reset"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("answer", "reset complete"),
+                responses::ev_completed("answer"),
+            ]),
+        ],
+    ).await;
+    compaction_config(&server.uri(), 1_000_000)
+        .enable_feature(Feature::TokenBudget)
+        .write(home.path())?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized().await?;
+    let thread = app_server.start_thread(ThreadStartParams::default()).await?.thread.id;
+    send_turn_and_wait(&mut app_server, &thread, "Reset and reload").await?;
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].body_contains_text("native reset preload marker"));
+    let expected = FeatureUseCounts {
+        compactions: 1,
+        self_compactions: 1,
+        self_compactions_completed: 1,
+        compaction_preloads: 1,
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let read = app_server.send_request("featureUse/read", Some(json!({"threads": [&thread]}))).await?;
+        let counts: FeatureUseReadResponse = app_server.read_response(read).await?;
+        assert_eq!(counts.threads[&thread], expected);
+    }
+    Ok(())
 }

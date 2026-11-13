@@ -10,6 +10,37 @@ use std::sync::atomic::Ordering;
 const EXCLUDE_ATTACHED_THREADS: &str = " AND threads.attached_thread_parent_id IS NULL";
 
 impl StateRuntime {
+    /// Read the native completion metric without acquiring or decoding a rollout.
+    pub async fn completed_compactions(&self, id: ThreadId) -> anyhow::Result<Option<u64>> {
+        let count: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT completed_compactions FROM threads WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(self.pool.as_ref())
+                .await?;
+        count
+            .flatten()
+            .map(u64::try_from)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    /// Completion totals are monotonic, including when concurrent producers finish persistence
+    /// out of order. Metadata refreshes do not overwrite this session-lifetime metric.
+    pub async fn record_completed_compactions(
+        &self,
+        id: ThreadId,
+        count: u64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE threads SET completed_compactions = MAX(COALESCE(completed_compactions, 0), ?) WHERE id = ?",
+        )
+        .bind(i64::try_from(count)?)
+        .bind(id.to_string())
+        .execute_with_busy_retry(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
         let row = sqlx::query(
             r#"
@@ -1741,6 +1772,29 @@ mod tests {
     use std::path::PathBuf;
 
     const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
+
+    #[tokio::test]
+    async fn completed_compactions_are_retained_without_rollout_reads() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let config = crate::SqliteConfig::new_for_testing(directory.path().abs());
+        let runtime = StateRuntime::init(config.clone(), "test-provider".to_string()).await?;
+        let id = ThreadId::new();
+        assert_eq!(runtime.completed_compactions(id).await?, None);
+        let metadata = test_thread_metadata(directory.path(), id, directory.path().to_path_buf());
+        runtime.upsert_thread(&metadata).await?;
+        assert_eq!(runtime.completed_compactions(id).await?, None);
+        runtime.record_completed_compactions(id, 0).await?;
+        assert_eq!(runtime.completed_compactions(id).await?, Some(0));
+        runtime.record_completed_compactions(id, 2).await?;
+        runtime.record_completed_compactions(id, 1).await?;
+        runtime.upsert_thread(&metadata).await?;
+        drop(runtime);
+        let reopened = StateRuntime::init(config, "test-provider".to_string()).await?;
+        assert_eq!(reopened.completed_compactions(id).await?, Some(2));
+        assert!(!metadata.rollout_path.exists());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn upsert_thread_keeps_creation_memory_mode_for_existing_rows() {
         let codex_home = unique_temp_dir();

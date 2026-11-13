@@ -206,15 +206,19 @@ pub fn create_send_message_tool() -> ToolSpec {
         (
             "target".to_string(),
             JsonSchema::string(Some(
-                "Relative or canonical task name to message (from spawn_agent).".to_string(),
+                "Agent id or canonical task name to message (from spawn_agent). For another active session, use its exact thread ID.".to_string(),
             )),
         ),
         (
             "message".to_string(),
             JsonSchema::string(Some(
-                "Message text to queue on the target agent.".to_string(),
+                "Message text to queue on the target agent, or a side question with btw=true. Source references are read and frozen using the recipient's working directory and permissions.".to_string(),
             ))
             .with_encrypted(),
+        ),
+        (
+            "btw".to_string(),
+            JsonSchema::boolean(Some("Ask in a fork of the loaded recipient's context with tools disabled, without steering its work. Defaults to false.".to_string())),
         ),
     ]);
 
@@ -245,7 +249,7 @@ pub fn create_followup_task_tool() -> ToolSpec {
         (
             "message".to_string(),
             JsonSchema::string(Some(
-                "Message text to send to the target agent.".to_string(),
+                "Message text to send to the target agent. Source references are read and frozen using the recipient's working directory and permissions.".to_string(),
             ))
             .with_encrypted(),
         ),
@@ -303,8 +307,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
-            .to_string(),
+        description: "Wait for any (default) or all pending results from your descendant agents. Messages sent to you and new user input also end the wait. Omit yield_time_ms to wait without periodic progress updates; it is not a timeout. Final replies arrive as separate messages.".to_string(),
         strict: false,
         defer_loading: None,
         parameters: wait_agent_tool_parameters_v2(options),
@@ -312,11 +315,26 @@ pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     })
 }
 
+pub fn create_inspect_agent_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "inspect_agent".to_string(),
+        description: "Inspect an agent's model, reasoning effort, service tier, context usage and completed compactions without loading it or starting work. Unavailable values are null.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            BTreeMap::from([("target".to_string(), JsonSchema::string(Some("Canonical task name or exact native thread ID.".to_string())))]),
+            Some(vec!["target".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
 pub fn create_list_agents_tool() -> ToolSpec {
     let properties = BTreeMap::from([(
         "path_prefix".to_string(),
         JsonSchema::string(Some(
-            "Task-path prefix filter without a trailing slash. Omit to list all live agents."
+            "Task-path prefix filter, or exact foreign agent ID to list its tree. Omit to list local live agents."
                 .to_string(),
         )),
     )]);
@@ -539,16 +557,11 @@ fn wait_output_schema_v2() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "message": {
-                "type": "string",
-                "description": "Brief wait summary without the agent's final content, including any timeout adjustment."
-            },
-            "timed_out": {
-                "type": "boolean",
-                "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
-            }
+            "message": {"type": "string", "description": "Why the wait returned; agent replies arrive separately."},
+            "completed_agents": {"type": "array", "items": {"type": "string"}},
+            "progress": {"type": "string", "description": "Combined changed-agent summaries and exact retained ranges, with bounded-output recovery when needed."}
         },
-        "required": ["message", "timed_out"],
+        "required": ["message", "completed_agents", "progress"],
         "additionalProperties": false
     })
 }
@@ -649,9 +662,32 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
 fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<String, JsonSchema> {
     BTreeMap::from([
         (
+            "cwd".to_string(),
+            JsonSchema::string(Some(
+                "Child working directory. Omit to inherit yours; relative paths resolve from yours. Your working directory and permissions stay unchanged.".to_string(),
+            )),
+        ),
+        (
+            "preload".to_string(),
+            JsonSchema {
+                description: Some("Sources to read before the child starts. Relative paths resolve from its working directory, and reads use its permissions. AGENTS.md is loaded automatically. Read failures are reported.".into()),
+                ..JsonSchema::object(
+                BTreeMap::from([(
+                    "sources".to_string(),
+                    JsonSchema::array(
+                        JsonSchema::string(None),
+                        Some("Explicit source references acquired under child authority before first inference. Requires fork_turns: none.".to_string()),
+                    ),
+                )]),
+                Some(vec!["sources".to_string()]),
+                Some(false.into()),
+                )
+            },
+        ),
+        (
             "message".to_string(),
             JsonSchema::string(Some(
-                "Initial plain-text task for the new agent.".to_string(),
+                "Initial plain-text task for the new agent. Source references are read and frozen using the child's working directory and permissions.".to_string(),
             ))
             .with_encrypted(),
         ),
@@ -799,11 +835,11 @@ fn spawn_agent_tool_description_v2(
         format!(
             r#"
 {catalog_prefix}        Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name "task_3" the agent will have canonical task name `/root/task1/task_3`.
-You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}{catalog_suffix}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.
+For fork_turns=none, preload full applicable instructions/skills and needed owner evidence, not policy recaps; defer later-phase sources.
 
 Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context."#
         )
@@ -914,15 +950,16 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
     )
 }
 
-fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+fn wait_agent_tool_parameters_v2(_options: WaitAgentTimeoutOptions) -> JsonSchema {
+    let properties = BTreeMap::from([
+        ("wait_mode".to_string(), JsonSchema::string_enum(
+            vec![json!("any"), json!("all")],
+            Some("Wait until any (default) or all selected descendant agents finish, fail, or are interrupted.".to_string()),
+        )),
+        ("yield_time_ms".to_string(), JsonSchema::number(Some(
+            "Progress-update interval in milliseconds, minimum 300000. Omit to disable periodic updates. The interval starts summary collection; delivery waits for all requested summaries.".to_string(),
         ))),
-    )]);
-
+    ]);
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }
 

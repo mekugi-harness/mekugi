@@ -90,6 +90,8 @@ pub(crate) struct SessionState {
     pub(crate) history_reset: CancellationToken,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
     pub(crate) latest_token_usage_record: Option<TokenUsageRecord>,
+    /// Native successful completions, independent of context/window replacement.
+    pub(crate) completed_compactions: Option<u64>,
     pub(crate) mcp_dependency_prompted: HashSet<String>,
     pub(crate) additional_context: AdditionalContextStore,
     /// Settings used by the latest regular user turn, used for turn-to-turn
@@ -154,6 +156,7 @@ impl SessionState {
             history_reset: CancellationToken::new(),
             latest_rate_limits: None,
             latest_token_usage_record: None,
+            completed_compactions: Some(0),
             mcp_dependency_prompted: HashSet::new(),
             additional_context: AdditionalContextStore::default(),
             previous_turn_settings: None,

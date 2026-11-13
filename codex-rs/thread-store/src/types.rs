@@ -795,6 +795,9 @@ impl GitInfoPatch {
 /// inner `Option`, where `Some(None)` clears the field.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ThreadMetadataPatch {
+    /// Known native completion total, initialized only by fresh thread creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_compactions: Option<u64>,
     /// Replacement user-facing thread name.
     #[serde(
         default,
@@ -964,6 +967,9 @@ impl ThreadMetadataPatch {
         if next.token_usage.is_some() {
             self.token_usage = next.token_usage;
         }
+        if next.completed_compactions.is_some() {
+            self.completed_compactions = next.completed_compactions;
+        }
         if next.first_user_message.is_some() {
             self.first_user_message = next.first_user_message;
         }
@@ -1011,6 +1017,7 @@ impl ThreadMetadataPatch {
             && self.cli_version.is_none()
             && self.approval_mode.is_none()
             && self.permission_profile.is_none()
+            && self.completed_compactions.is_none()
             && self.first_user_message.is_none()
             && self.git_info.is_none()
             && self.memory_mode.is_none()

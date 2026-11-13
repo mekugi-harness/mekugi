@@ -51,6 +51,49 @@ pub(crate) struct ToolCallState {
     pub(crate) invocation: crate::agent::host::InvocationReservation,
 }
 
+/// A prepared result is not delivery. Only its complete text in native output
+/// may carry this receipt into history, where ordinary sampling confirms it.
+#[derive(Clone)]
+pub(crate) struct CaptureDeliveryCandidate {
+    pub(crate) rendered_text: String,
+    pub(crate) receipt: codex_history::CaptureDeliveryReceipt,
+}
+
+impl CaptureDeliveryCandidate {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.rendered_text.len() + self.receipt.context_id.len()
+            + self.receipt.operation_id.len()
+            + self.receipt.intervals.len() * std::mem::size_of::<codex_protocol::agent_capture::CaptureInterval>()
+            + self.receipt.intervals.iter().map(|interval| {
+                interval.key.len() + interval.change_id.len()
+                    + interval.legacy_record_key.as_ref().map_or(0, String::len)
+            }).sum::<usize>()
+    }
+
+    pub(crate) fn matches_output(&self, item: &ResponseItem) -> bool {
+        let output = match item {
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => output,
+            _ => return false,
+        };
+        if self.rendered_text.is_empty() {
+            return false;
+        }
+        // text(result) serializes objects, whereas text(result.output) emits raw text.
+        // Neither a partial rendering nor an arbitrary transform proves delivery.
+        let escaped = serde_json::to_string(&self.rendered_text).expect("serialize capture text");
+        let contains = |text: &str| {
+            text.contains(&self.rendered_text) || text.contains(&escaped)
+        };
+        match &output.body {
+            FunctionCallOutputBody::Text(text) => contains(text),
+            FunctionCallOutputBody::ContentItems(items) => items.iter().any(|item| {
+                matches!(item, FunctionCallOutputContentItem::InputText { text } if contains(text))
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolCallSource {
     Direct,

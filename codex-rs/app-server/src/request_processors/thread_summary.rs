@@ -1,3 +1,4 @@
+pub(super) use codex_core::with_thread_spawn_agent_metadata;
 use super::*;
 #[cfg(test)]
 use chrono::DateTime;
@@ -135,37 +136,6 @@ fn map_git_info(git_info: &CoreGitInfo) -> ConversationGitInfo {
     }
 }
 
-pub(super) fn with_thread_spawn_agent_metadata(
-    source: codex_protocol::protocol::SessionSource,
-    agent_nickname: Option<String>,
-    agent_role: Option<String>,
-) -> codex_protocol::protocol::SessionSource {
-    if agent_nickname.is_none() && agent_role.is_none() {
-        return source;
-    }
-
-    match source {
-        codex_protocol::protocol::SessionSource::SubAgent(
-            codex_protocol::protocol::SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth,
-                agent_path,
-                agent_nickname: existing_agent_nickname,
-                agent_role: existing_agent_role,
-            },
-        ) => codex_protocol::protocol::SessionSource::SubAgent(
-            codex_protocol::protocol::SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth,
-                agent_path,
-                agent_nickname: agent_nickname.or(existing_agent_nickname),
-                agent_role: agent_role.or(existing_agent_role),
-            },
-        ),
-        _ => source,
-    }
-}
-
 pub(crate) fn thread_response_active_permission_profile(
     active_permission_profile: Option<codex_protocol::models::ActivePermissionProfile>,
 ) -> Option<codex_app_server_protocol::ActivePermissionProfile> {
@@ -249,7 +219,7 @@ pub(crate) fn summary_to_thread(
 
     let created_at = parse_datetime(timestamp.as_deref());
     let updated_at = parse_datetime(updated_at.as_deref()).or(created_at);
-    let git_info = git_info.map(|info| ApiGitInfo {
+    let git_info = git_info.map(|info| codex_app_server_protocol::GitInfo {
         sha: info.sha,
         branch: info.branch,
         origin_url: info.origin_url,
@@ -285,6 +255,11 @@ pub(crate) fn summary_to_thread(
         created_at: created_at.map(|dt| dt.timestamp()).unwrap_or(0),
         model: None,
         reasoning_effort: None,
+        service_tier: None,
+        context_tokens: None,
+        context_window: None,
+        completed_compactions: None,
+        agent_status: None,
         updated_at: updated_at.map(|dt| dt.timestamp()).unwrap_or(0),
         recency_at: updated_at.map(|dt| dt.timestamp()),
         status: ThreadStatus::NotLoaded,

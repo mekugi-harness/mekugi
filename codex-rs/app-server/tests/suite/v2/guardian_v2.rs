@@ -499,7 +499,7 @@ async fn parent_response(
                     (
                         "guardian-followup-worker",
                         "followup_task",
-                        json!({ "target": "worker", "message": "Call the MCP tool again." }),
+                        json!({ "target": "/root/worker", "message": "Call the MCP tool again." }),
                     )
                 };
                 vec![

@@ -62,6 +62,15 @@ pub struct ResponseItemEnvelope {
     pub metadata: Option<CodexHarnessMetadata>,
 }
 
+/// Exact capture intervals present in this history item's complete rendered output.
+/// Sampling and the current native context determine whether they are acknowledged.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+pub struct CaptureDeliveryReceipt {
+    pub operation_id: String,
+    pub context_id: String,
+    pub intervals: Vec<codex_protocol::agent_capture::CaptureInterval>,
+}
+
 /// Metadata owned by the Codex harness and persisted with a response item.
 ///
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
@@ -74,6 +83,10 @@ pub struct CodexHarnessMetadata {
     /// Compaction carries this checkpoint without advancing it. Never model-visible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampled_through_sequence: Option<u64>,
+
+    /// Host-only evidence, never a separate capture cursor or model API field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_deliveries: Vec<CaptureDeliveryReceipt>,
 
     /// Complete retained records actually delivered by this Guardian message. Host-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -179,6 +192,7 @@ where
 impl CodexHarnessMetadata {
     /// Shortened messages no longer prove complete instruction or review delivery.
     pub fn mark_retained_sources_incomplete(&mut self) {
+        self.capture_deliveries.clear();
         self.guardian_review_ids.clear();
         self.guardian_source_order_guidance = false;
         self.guardian_retained_omissions = None;

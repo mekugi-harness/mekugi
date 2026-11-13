@@ -884,6 +884,7 @@ impl MessageProcessor {
                 connection_id,
                 ConnectionCapabilities {
                     request_attestation,
+                    ..Default::default()
                 },
             )
             .await;
@@ -1552,6 +1553,9 @@ impl MessageProcessor {
             ClientRequest::ThreadPredictionRequest { .. } => Err(method_not_found(
                 "thread/prediction/request is not implemented yet",
             )),
+            ClientRequest::FeatureUseRead { params, .. } => {
+                self.thread_processor.feature_use_read(params)
+            }
             ClientRequest::ThreadCompactStart { params, .. } => {
                 self.thread_processor
                     .thread_compact_start(&request_id, params)
@@ -1616,6 +1620,18 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadLoadedList { params, .. } => {
                 self.thread_processor.thread_loaded_list(params).await
+            }
+            ClientRequest::ThreadInspect { params, .. } => {
+                self.thread_processor.thread_inspect(params).await
+            }
+            ClientRequest::ThreadSubtreeList { params, .. } => {
+                self.thread_processor.thread_subtree_list(params).await
+            }
+            ClientRequest::AgentForeignReceive { params, .. } => {
+                self.thread_processor.agent_foreign_receive(&request_id, params, request_context.cancellation.clone()).await
+            }
+            ClientRequest::AgentEnd { params, .. } => {
+                self.thread_processor.agent_end(&request_id, params).await
             }
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(&request_id, params).await

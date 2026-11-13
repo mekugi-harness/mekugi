@@ -245,12 +245,22 @@ pub struct Thread {
     pub history_mode: ThreadHistoryMode,
     /// Model provider used for this thread (for example, 'openai').
     pub model_provider: String,
-    /// Current configured model when loaded, otherwise the latest persisted model.
-    /// Null when unavailable. This is not per-turn execution telemetry.
+    /// Effective model when inspected, otherwise the latest configured or persisted model.
+    /// Null when unavailable.
     pub model: Option<String>,
-    /// Current configured reasoning effort when loaded, otherwise the latest persisted effort.
-    /// Null when unset or unavailable. This is not per-turn execution telemetry.
+    /// Effective reasoning effort when inspected, otherwise the latest configured or persisted effort.
+    /// Null when unset or unavailable.
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Effective native settings and measurements; unavailable observations are null.
+    pub service_tier: Option<String>,
+    #[ts(type = "number | null")]
+    pub context_tokens: Option<u64>,
+    #[ts(type = "number | null")]
+    pub context_window: Option<u64>,
+    #[ts(type = "number | null")]
+    pub completed_compactions: Option<u64>,
+    pub agent_status: Option<codex_protocol::protocol::AgentStatus>,
+
     /// Unix timestamp (in seconds) when the thread was created.
     #[ts(type = "number")]
     pub created_at: i64,
@@ -323,6 +333,12 @@ struct ThreadCompatibility {
     model_provider: String,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
+    service_tier: Option<String>,
+    context_tokens: Option<u64>,
+    context_window: Option<u64>,
+    completed_compactions: Option<u64>,
+    agent_status: Option<codex_protocol::protocol::AgentStatus>,
+
     created_at: i64,
     updated_at: i64,
     recency_at: Option<i64>,
@@ -365,6 +381,12 @@ impl<'de> Deserialize<'de> for Thread {
             model_provider: thread.model_provider,
             model: thread.model,
             reasoning_effort: thread.reasoning_effort,
+            service_tier: thread.service_tier,
+            context_tokens: thread.context_tokens,
+            context_window: thread.context_window,
+            completed_compactions: thread.completed_compactions,
+            agent_status: thread.agent_status,
+
             created_at: thread.created_at,
             updated_at: thread.updated_at,
             recency_at: thread.recency_at,

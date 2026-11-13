@@ -29,11 +29,11 @@ impl ExecutedToolCalls {
     ) {
         {
             let mut state = self.lock_state();
-            let Some(state) = state.as_mut() else {
+            if !state.enabled {
                 // Disabling capture also stops replaying Direct records from history.
                 clear_direct_call_metadata(items);
                 return;
-            };
+            }
             for item in items.iter_mut() {
                 if let Some(call) = item.id().and_then(|id| state.direct_calls.get(id)) {
                     item.clear_executed_tool_calls();
@@ -52,7 +52,7 @@ impl ExecutedToolCalls {
                     .collect::<HashSet<_>>();
                 state.direct_calls.retain(|id, _| output_ids.contains(id));
             }
-            Self::attach_pending_to_prompt_with_state(state, items, retry_cache, request_kind);
+            Self::attach_pending_to_prompt_with_state(&mut state, items, retry_cache, request_kind);
         }
 
         // Argument truncation preserves inventory completeness; omitted calls or
@@ -275,6 +275,8 @@ impl ExecutedToolCalls {
                         cell.completion,
                         CellCompletion::Complete | CellCompletion::Incomplete
                     ) && !keep_truncated_binding
+                        && cell.dispatch_closed
+                        && cell.capture_candidates.is_empty()
                     {
                         // Retain the original binding while a live cell can dispatch or
                         // a closed cell still has results eligible for late backfill.

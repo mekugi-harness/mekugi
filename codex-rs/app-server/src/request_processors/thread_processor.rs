@@ -1,3 +1,4 @@
+use codex_core::{thread_from_stored_thread, build_thread_from_snapshot};
 #[path = "daemon_continuation.rs"]
 mod daemon_continuation;
 
@@ -35,8 +36,6 @@ use codex_app_server_protocol::ThreadRevertResponse;
 use codex_app_server_protocol::ThreadRevertedNotification;
 use codex_app_server_protocol::ThreadSampleParams;
 use codex_app_server_protocol::ThreadSampleResponse;
-use codex_app_server_protocol::ThreadSection;
-use codex_app_server_protocol::ThreadSectionAppearance;
 use codex_app_server_protocol::ThreadSectionChangedNotification;
 use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
@@ -886,6 +885,16 @@ impl ThreadRequestProcessor {
         }
     }
 
+    pub(crate) fn feature_use_read(
+        &self,
+        params: codex_app_server_protocol::FeatureUseReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let features = self.thread_state_manager.feature_use.lock()
+            .map_err(|_| internal_error("native feature accounting unavailable"))?;
+        let threads = features.read(params.threads);
+        Ok(Some(codex_app_server_protocol::FeatureUseReadResponse { threads }.into()))
+    }
+
     pub(crate) async fn thread_compact_start(
         &self,
         request_id: &ConnectionRequestId,
@@ -970,6 +979,82 @@ impl ThreadRequestProcessor {
         self.thread_loaded_list_response_inner(params)
             .await
             .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_foreign_receive(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: codex_app_server_protocol::AgentForeignRequest,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let root = self.thread_manager.loaded_agent_root(params.target_thread_id).await
+            .map_err(|error| invalid_request(format!("foreign target is unavailable: {error}")))?;
+        let state = self.thread_state_manager.thread_state(root).await;
+        if state.lock().await.resource_host != Some(request_id.connection_id) {
+            return Err(invalid_request("foreign delivery requires the owning resource connection"));
+        }
+        self.thread_manager.receive_foreign_agent_operation(params, cancellation).await
+            .map(|response| Some(response.into()))
+            .map_err(|error| invalid_request(format!("foreign operation failed: {error}")))
+    }
+
+    pub(crate) async fn agent_end(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: codex_app_server_protocol::AgentEndParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let root = ThreadId::from_string(&params.root_thread_id)
+            .map_err(|error| invalid_request(format!("invalid root agent ID: {error}")))?;
+        let target = ThreadId::from_string(&params.thread_id)
+            .map_err(|error| invalid_request(format!("invalid agent ID: {error}")))?;
+        let state = self.thread_state_manager.thread_state(root).await;
+        if state.lock().await.resource_host != Some(request_id.connection_id) {
+            return Err(invalid_request("agent end requires the owning resource connection"));
+        }
+        let thread_ids = self.thread_manager.end_agent(root, target).await
+            .map_err(|error| invalid_request(format!("agent end failed: {error}")))?
+            .into_iter().map(|id| id.to_string()).collect();
+        Ok(Some(codex_app_server_protocol::AgentEndResponse { thread_ids }.into()))
+    }
+
+    pub(crate) async fn thread_inspect(
+        &self,
+        params: codex_app_server_protocol::ThreadInspectParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let target = ThreadId::from_string(&params.thread_id)
+            .map_err(|error| invalid_request(format!("invalid thread ID: {error}")))?;
+        let thread = self
+            .thread_manager
+            .read_thread_details(target)
+            .await
+            .map_err(|error| internal_error(format!("failed to inspect thread: {error}")))?;
+        Ok(Some(ClientResponsePayload::ThreadInspect(
+            codex_app_server_protocol::ThreadReadResponse {
+                thread,
+                read_state: None,
+            },
+        )))
+    }
+
+    pub(crate) async fn thread_subtree_list(
+        &self,
+        params: codex_app_server_protocol::ThreadSubtreeListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let root = ThreadId::from_string(&params.thread_id)
+            .map_err(|error| invalid_request(format!("invalid root agent ID: {error}")))?;
+        let data = self
+            .thread_manager
+            .read_thread_subtree(root)
+            .await
+            .map_err(|error| internal_error(format!("failed to observe agent tree: {error}")))?;
+        Ok(Some(ClientResponsePayload::ThreadSubtreeList(
+            codex_app_server_protocol::ThreadListResponse {
+                data,
+                read_states: None,
+                next_cursor: None,
+                backwards_cursor: None,
+            },
+        )))
     }
 
     pub(crate) async fn thread_read(
@@ -1416,6 +1501,7 @@ impl ThreadRequestProcessor {
     }
 
     pub(crate) async fn shutdown_threads(&self) {
+        self.outgoing.shutdown_host_requests().await;
         let report = self
             .thread_manager
             .shutdown_all_threads_bounded(Duration::from_secs(10))
@@ -3206,6 +3292,10 @@ impl ThreadRequestProcessor {
         };
 
         thread.daybreak_enabled = pending_preference.resolve(thread.daybreak_enabled);
+        self.thread_manager
+            .populate_thread_observations(thread_id, &mut thread)
+            .await
+            .map_err(|error| ThreadReadViewError::Internal(error.to_string()))?;
 
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
@@ -6728,84 +6818,6 @@ fn set_thread_name_from_title(thread: &mut Thread, title: String) {
     thread.name = Some(title);
 }
 
-fn thread_from_stored_thread(
-    thread: StoredThread,
-    fallback_provider: &str,
-    fallback_cwd: &AbsolutePathBuf,
-) -> (Thread, Option<codex_thread_store::StoredThreadHistory>) {
-    let path = thread.rollout_path;
-    let git_info = thread.git_info.map(|info| ApiGitInfo {
-        sha: info.commit_hash.map(|sha| sha.0),
-        branch: info.branch,
-        origin_url: info.repository_url.map(String::from),
-    });
-    let cwd = AbsolutePathBuf::relative_to_current_dir(path_utils::normalize_for_native_workdir(
-        thread.cwd,
-    ))
-    .unwrap_or_else(|err| {
-        warn!("failed to normalize thread cwd while reading stored thread: {err}");
-        fallback_cwd.clone()
-    });
-    let source = with_thread_spawn_agent_metadata(
-        thread.source,
-        thread.agent_nickname.clone(),
-        thread.agent_role.clone(),
-    );
-    let history = thread.history;
-    let thread_id = thread.thread_id.to_string();
-    let thread = Thread {
-        id: thread_id.clone(),
-        environments: None,
-        extra: None,
-        session_id: thread_id,
-        forked_from_id: thread.forked_from_id.map(|id| id.to_string()),
-        attached_to_thread_id: thread.attached_to_thread_id.map(|id| id.to_string()),
-        parent_thread_id: thread.parent_thread_id.map(|id| id.to_string()),
-        preview: thread.preview,
-        ephemeral: false,
-        section: thread.section.map(|section| ThreadSection {
-            id: section.id,
-            name: section.name,
-            appearance: section
-                .appearance
-                .map(|appearance| ThreadSectionAppearance {
-                    icon: appearance.icon,
-                    color: appearance.color,
-                }),
-        }),
-        section_entered_at: thread
-            .section_entered_at
-            .map(|entered_at| entered_at.timestamp()),
-        project_id: thread.project_id,
-        history_mode: thread.history_mode.into(),
-        model_provider: if thread.model_provider.is_empty() {
-            fallback_provider.to_string()
-        } else {
-            thread.model_provider
-        },
-        model: thread.model,
-        reasoning_effort: thread.reasoning_effort,
-        created_at: thread.created_at.timestamp(),
-        updated_at: thread.updated_at.timestamp(),
-        recency_at: Some(thread.recency_at.timestamp()),
-        status: ThreadStatus::NotLoaded,
-        path,
-        cwd,
-        cli_version: thread.cli_version,
-        originator: thread.originator,
-        agent_nickname: source.get_nickname(),
-        agent_role: source.get_agent_role(),
-        source: source.into(),
-        can_accept_direct_input: None,
-        thread_source: thread.thread_source.map(Into::into),
-        git_info,
-        name: thread.name,
-        daybreak_enabled: thread.daybreak_enabled,
-        turns: Vec::new(),
-    };
-    (thread, history)
-}
-
 fn summary_from_stored_thread(
     thread: StoredThread,
     fallback_provider: &str,
@@ -6938,61 +6950,6 @@ fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
             _ => None,
         })
         .unwrap_or_default()
-}
-
-fn build_thread_from_snapshot(
-    thread_id: ThreadId,
-    session_id: String,
-    multi_agent_version: Option<codex_protocol::protocol::MultiAgentVersion>,
-    config_snapshot: &ThreadConfigSnapshot,
-    path: Option<PathBuf>,
-) -> Thread {
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    Thread {
-        id: thread_id.to_string(),
-        environments: Some(
-            config_snapshot
-                .environment_selections()
-                .iter()
-                .map(Into::into)
-                .collect(),
-        ),
-        extra: None,
-        session_id,
-        forked_from_id: None,
-        attached_to_thread_id: None,
-        parent_thread_id: config_snapshot.parent_thread_id.map(|id| id.to_string()),
-        preview: String::new(),
-        ephemeral: config_snapshot.ephemeral,
-        section: None,
-        section_entered_at: None,
-        project_id: None,
-        history_mode: config_snapshot.history_mode.into(),
-        model_provider: config_snapshot.model_provider_id.clone(),
-        model: Some(config_snapshot.model.clone()),
-        reasoning_effort: config_snapshot.reasoning_effort.clone(),
-        created_at: now,
-        updated_at: now,
-        recency_at: Some(now),
-        status: ThreadStatus::NotLoaded,
-        path,
-        cwd: config_snapshot.cwd().clone(),
-        cli_version: env!("CARGO_PKG_VERSION").to_string(),
-        originator: (!config_snapshot.originator.is_empty())
-            .then(|| config_snapshot.originator.clone()),
-        agent_nickname: config_snapshot.session_source.get_nickname(),
-        agent_role: config_snapshot.session_source.get_agent_role(),
-        source: config_snapshot.session_source.clone().into(),
-        can_accept_direct_input: Some(can_accept_direct_input(
-            multi_agent_version,
-            &config_snapshot.session_source,
-        )),
-        thread_source: config_snapshot.thread_source.clone().map(Into::into),
-        git_info: None,
-        name: None,
-        daybreak_enabled: None,
-        turns: Vec::new(),
-    }
 }
 
 fn paginate_background_terminals(

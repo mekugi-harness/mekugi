@@ -7,6 +7,12 @@ use crate::agent::host::AgentRuntimeServices;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
 use crate::config::Config;
+use crate::environment_selection::EnvironmentConfigOrigin;
+use crate::environment_selection::TurnEnvironmentSnapshot;
+use crate::environment_selection::TurnEnvironmentState;
+use crate::tools::handlers::resolve_tool_environment;
+use codex_file_system::EnvironmentAccess;
+use codex_file_system::GetMetadataOptions;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -390,4 +396,39 @@ fn validate_spawn_agent_reasoning_effort(
     Err(format!(
         "Reasoning effort `{requested_reasoning_effort}` is not supported for model `{model}`. Supported reasoning efforts: {supported}"
     ))
+}
+
+/// Resolve cwd through the invoking native environment without broadening child authority.
+pub(crate) async fn prepare_spawn_environments(
+    step: &StepContext,
+    cwd: Option<&str>,
+    config: &mut Config,
+) -> Result<TurnEnvironmentSnapshot, String> {
+    let mut environments = step.inherited_environments.clone();
+    let Some(cwd) = cwd else { return Ok(environments) };
+    if cwd.is_empty() {
+        return Err("child cwd must name an existing directory".to_string());
+    }
+    let parent = resolve_tool_environment(&step.environments, None)
+        .map_err(|error| format!("child cwd: {error}"))?;
+    let child = environments.environments.iter_mut().find_map(|candidate| match candidate {
+        TurnEnvironmentState::Ready(candidate)
+            if candidate.selection.environment_id == parent.selection.environment_id => Some(candidate),
+        _ => None,
+    }).ok_or_else(|| "child cwd environment cannot be inherited".to_string())?;
+    // Turn-local extra grants are not inherited. Admit the destination using child authority.
+    let access = child.fs_accessor(None);
+    let path = parent.cwd().join(cwd).map_err(|error| format!("child cwd: {error}"))?;
+    let path = access.canonicalize(&path).await.map_err(|error| format!("child cwd: {error}"))?;
+    if !access.get_metadata(&path, GetMetadataOptions::default()).await
+        .map_err(|error| format!("child cwd: {error}"))?.is_directory {
+        return Err("child cwd is not a directory".to_string());
+    }
+    drop(access);
+    if !child.environment().is_remote() {
+        config.cwd = path.to_abs_path().map_err(|error| format!("child cwd: {error}"))?;
+    }
+    child.selection.cwd = path;
+    child.config_origin = EnvironmentConfigOrigin::Owner;
+    Ok(environments)
 }

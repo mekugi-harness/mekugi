@@ -7,6 +7,7 @@ use crate::agent::api::SpawnRequest;
 use crate::agent::child_config::SpawnConfigOptions;
 use crate::agent::child_config::SpawnConfigVersion;
 use crate::agent::child_config::prepare_agent_spawn_config;
+use crate::agent::child_config::prepare_spawn_environments;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::types::AgentMessage;
 use crate::agent::types::LiveAgent;
@@ -23,6 +24,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::error::CodexErr;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::ReloadSelection;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
@@ -34,6 +36,8 @@ pub struct ThreadCreateRequest {
     pub agent_type: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub cwd: Option<String>,
+    pub preload: Option<ReloadSelection>,
 }
 
 pub(crate) struct ThreadSpawnRequest {
@@ -45,6 +49,8 @@ pub(crate) struct ThreadSpawnRequest {
     pub agent_type: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub cwd: Option<String>,
+    pub preload: Option<ReloadSelection>,
 }
 
 impl ThreadSpawnRequest {
@@ -66,6 +72,8 @@ impl ThreadSpawnRequest {
                 agent_type: self.agent_type,
                 model: self.model,
                 reasoning_effort: self.reasoning_effort,
+                cwd: self.cwd,
+                preload: self.preload,
             },
             self.message,
         ))
@@ -134,7 +142,19 @@ pub(crate) async fn prepare(
         agent_type,
         model,
         reasoning_effort,
+        cwd,
+        preload,
     } = request;
+    if fork_mode.is_some() && preload.is_some() {
+        session.services.local_agent_runtime.record_feature_use(
+            session.thread_id,
+            call_id,
+            codex_protocol::feature_use::FeatureUseEvent::PreloadRejected,
+        );
+        return Err(ThreadSpawnError::Preparation(
+            "Full-history forks cannot preload sources; omit preload or start fresh.".to_string(),
+        ));
+    }
     let role_name = agent_type
         .as_deref()
         .map(str::trim)
@@ -152,7 +172,13 @@ pub(crate) async fn prepare(
     )
     .await
     .map_err(ThreadSpawnError::Preparation)?;
-    let config = prepared.config;
+    let mut config = prepared.config;
+    let environments = prepare_spawn_environments(step_context, cwd.as_deref(), &mut config)
+        .await
+        .map_err(ThreadSpawnError::Preparation)?;
+    if fork_mode.is_some() {
+        config.multi_agent_v2.preserve_fork_prefix = true;
+    }
     let task_name = turn
         .session_source
         .get_agent_path()
@@ -202,7 +228,8 @@ pub(crate) async fn prepare(
                 parent_turn_id: Some(turn.sub_id.clone()),
                 root_turn_id: turn.turn_metadata_state.root_turn_id(),
                 turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
-                environments: Some(step_context.inherited_environments.clone()),
+                environments: Some(environments),
+                preload,
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),
                 multi_agent_v2_usage_hints,
                 cyber_access_program: turn.cyber_access_program,
@@ -210,4 +237,166 @@ pub(crate) async fn prepare(
         },
         task_name,
     ))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_login::CodexAuth;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    fn request() -> ThreadCreateRequest {
+        ThreadCreateRequest {
+            task_name: "worker".to_string(), fork_mode: None, agent_type: None,
+            model: None, reasoning_effort: None, cwd: None, preload: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn full_history_rejects_preload_and_preserves_native_prefix() {
+        let (session, turn) = crate::session::tests::make_session_and_context().await;
+        let step = StepContext::for_test(Arc::new(turn));
+        assert!(prepare(&session, &step, "fork", ThreadCreateRequest {
+            fork_mode: Some(SpawnAgentForkMode::FullHistory),
+            preload: Some(ReloadSelection { sources: vec![] }), ..request()
+        }).await.is_err());
+        let (settings, _) = prepare(&session, &step, "fork", ThreadCreateRequest {
+            fork_mode: Some(SpawnAgentForkMode::FullHistory), ..request()
+        }).await.unwrap();
+        assert!(settings.config.multi_agent_v2.preserve_fork_prefix);
+        assert_eq!(settings.options.preload, None);
+    }
+    #[tokio::test]
+    async fn native_cwd_preparation_preserves_parent_and_captured_permissions() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("recipient")).unwrap();
+        std::fs::write(directory.path().join("not-directory"), "text").unwrap();
+        let (session, turn, _events) =
+            crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+                CodexAuth::from_api_key("test"),
+                Vec::new(),
+                |config| {
+                    config.cwd = AbsolutePathBuf::from_absolute_path(directory.path()).unwrap();
+                    config
+                        .features
+                        .enable(codex_features::Feature::MultiAgentV2)
+                        .unwrap();
+                },
+            )
+            .await;
+        let step = session
+            .capture_step_context(turn, &CancellationToken::new())
+            .await
+            .unwrap();
+        let parent = step.environments.primary().unwrap();
+        let parent_cwd = parent.cwd().clone();
+        let parent_config = parent.config().clone();
+        let (prepared, _) = prepare(
+            &session,
+            &step,
+            "selected-cwd",
+            ThreadCreateRequest {
+                cwd: Some("recipient".to_string()),
+                ..request()
+            },
+        )
+        .await
+        .unwrap();
+        let child = prepared
+            .options
+            .environments
+            .as_ref()
+            .unwrap()
+            .primary()
+            .unwrap();
+        assert_eq!(
+            child.cwd().to_abs_path().unwrap().as_path(),
+            directory.path().join("recipient")
+        );
+        assert_eq!(child.config(), &parent_config);
+        assert_eq!(parent.cwd(), &parent_cwd);
+        assert_eq!(
+            child.config_origin,
+            crate::environment_selection::EnvironmentConfigOrigin::Owner
+        );
+        for cwd in ["", "missing", "not-directory"] {
+            assert!(
+                prepare(
+                    &session,
+                    &step,
+                    "invalid-cwd",
+                    ThreadCreateRequest {
+                        cwd: Some(cwd.to_string()),
+                        ..request()
+                    }
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert_eq!(parent.cwd(), &parent_cwd);
+    }
+
+    #[tokio::test]
+    async fn native_cwd_preparation_rejects_denied_directories() {
+        use crate::config::PermissionProfileSnapshot;
+        use crate::environment_selection::TurnEnvironmentState;
+        use codex_protocol::models::PermissionProfile;
+        use codex_protocol::permissions::FileSystemAccessMode;
+        use codex_protocol::permissions::FileSystemPath;
+        use codex_protocol::permissions::FileSystemSandboxEntry;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("denied")).unwrap();
+        let (session, turn, _events) =
+            crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+                CodexAuth::from_api_key("test"),
+                Vec::new(),
+                |config| {
+                    config.cwd = AbsolutePathBuf::from_absolute_path(directory.path()).unwrap();
+                },
+            )
+            .await;
+        let mut step = StepContext::for_test(turn);
+        let profile = PermissionProfile::read_only();
+        let mut policy = profile.file_system_sandbox_policy();
+        policy.entries.push(FileSystemSandboxEntry {
+            path: FileSystemPath::GlobPattern {
+                pattern: format!("{}/denied", directory.path().display()),
+            },
+            access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
+        });
+        let step_mut = Arc::get_mut(&mut step).unwrap();
+        let TurnEnvironmentState::Ready(environment) = &mut step_mut.environments.environments[0]
+        else {
+            panic!("ready parent environment");
+        };
+        environment.config_mut().permission_profile = PermissionProfileSnapshot::legacy(
+            PermissionProfile::from_runtime_permissions_with_enforcement(
+                profile.enforcement(),
+                &policy,
+                profile.network_sandbox_policy(),
+            ),
+        );
+        step_mut.inherited_environments = step_mut.environments.clone();
+        assert!(
+            prepare(
+                &session,
+                &step,
+                "denied-cwd",
+                ThreadCreateRequest {
+                    cwd: Some("denied".to_string()),
+                    ..request()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(session.reload_selection().await, None);
+    }
+
 }

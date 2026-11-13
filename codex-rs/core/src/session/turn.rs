@@ -743,11 +743,12 @@ pub(crate) async fn run_turn(
                 } else {
                     None
                 };
+                let self_reset_requested = auto_compaction_enabled
+                    && needs_follow_up
+                    && sess.take_new_context_window_request().await;
                 let should_roll_over = auto_compaction_enabled
                     && needs_follow_up
-                    && (sess.take_new_context_window_request().await
-                        || token_limit_reached
-                        || candidate.is_some());
+                    && (self_reset_requested || token_limit_reached || candidate.is_some());
                 if auto_compaction_enabled {
                     let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                     super::token_budget::maybe_record(
@@ -761,6 +762,12 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
+                    let reset_origin = if self_reset_requested {
+                        let state = sess.state.lock().await;
+                        Some((state.auto_compact_window_ids().window_id.clone(), state.history.input_sequence()))
+                    } else {
+                        None
+                    };
                     let compacted = run_auto_compact(
                         &sess,
                         Arc::clone(&step_context),
@@ -772,6 +779,19 @@ pub(crate) async fn run_turn(
                         &cancellation_token,
                     )
                     .await;
+                    if let Some((window_id, sequence)) = reset_origin {
+                        // A stopped post-hook cannot turn an installed context into a failed reset.
+                        let completed = sess.state.lock().await.auto_compact_window_ids().window_id != window_id;
+                        sess.services.local_agent_runtime.record_feature_use(
+                            sess.thread_id,
+                            format!("{window_id}:{sequence}"),
+                            if completed {
+                                codex_protocol::feature_use::FeatureUseEvent::SelfResetCompleted
+                            } else {
+                                codex_protocol::feature_use::FeatureUseEvent::SelfResetFailed
+                            },
+                        );
+                    }
                     match compacted {
                         Ok(true) => {
                             if run_pending_session_start_hooks(&sess, &turn_context).await {

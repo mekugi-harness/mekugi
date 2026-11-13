@@ -46,7 +46,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
         tx_sub,
         rx_event: rx_events,
         agent_status,
-        session_loop_termination: completed_session_loop_termination(),
+        session_loop_termination: std::future::pending::<()>().boxed().shared(),
     });
 
     let (tx_out, rx_out) = bounded(1);

@@ -43,6 +43,20 @@ impl AgentCommunicationKind {
 pub(crate) struct AgentCommunicationContext {
     kind: AgentCommunicationKind,
     pub(crate) sender_thread_id: ThreadId,
+    pub(crate) final_capture: Option<Arc<FinalCaptureAttachment>>,
+    pub(crate) result_operation: Option<String>,
+}
+
+/// Retained selection identity follows native mail until the recipient consumes it.
+/// Projection happens then, against that recipient's current context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FinalCaptureAttachment {
+    pub(crate) root_thread_id: ThreadId,
+    pub(crate) sender_thread_id: ThreadId,
+    pub(crate) operation_id: String,
+    pub(crate) recipient_cwd: Option<String>,
+    pub(crate) resource_ref: String,
+    pub(crate) full_text: String,
 }
 
 impl AgentCommunicationContext {
@@ -50,6 +64,8 @@ impl AgentCommunicationContext {
         Self {
             kind,
             sender_thread_id,
+            final_capture: None,
+            result_operation: None,
         }
     }
 }
@@ -131,6 +147,13 @@ impl PartialEq for PendingAgentMessage {
 }
 
 impl PendingAgentMessage {
+    /// A terminal notification remains eligible only while native mail is unread.
+    pub(crate) fn result_sender(&self) -> Option<ThreadId> {
+        self.delivery
+            .as_ref()
+            .and_then(MessageDelivery::result_sender)
+    }
+
     pub(crate) fn new(
         communication: InterAgentCommunication,
         delivery: Option<MessageDelivery>,
@@ -146,6 +169,9 @@ impl PendingAgentMessage {
 struct MessagePublication {
     input: MessageLifecycleInput,
     observers: Box<[Arc<dyn MessageLifecycleContributor>]>,
+    result_sender: Option<ThreadId>,
+    final_capture: Option<Arc<FinalCaptureAttachment>>,
+    result_operation: Option<String>,
 }
 
 /// Clones follow one logical delivery through queues and share its consumption state.
@@ -167,8 +193,48 @@ impl MessageDelivery {
         let publication = MessagePublication {
             input,
             observers: observers.into(),
+            result_sender: None,
+            final_capture: None,
+            result_operation: None,
         };
         Self(Arc::new(Mutex::new(Some(publication))))
+    }
+
+    pub(crate) fn publish_with_context(
+        context: &AgentCommunicationContext,
+        observers: &[Arc<dyn MessageLifecycleContributor>],
+    ) -> Self {
+        let delivery = Self::publish(context.sender_thread_id, observers);
+        if context.kind == AgentCommunicationKind::Result {
+            let mut publication = delivery
+                .0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let publication = publication.as_mut().expect("new publication");
+            publication.result_sender = Some(context.sender_thread_id);
+            publication.result_operation = context.result_operation.clone();
+            publication.final_capture = context.final_capture.clone();
+        }
+        delivery
+    }
+
+    pub(crate) fn final_capture(&self) -> Option<Arc<FinalCaptureAttachment>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+            .as_ref().and_then(|publication| publication.final_capture.clone())
+    }
+
+    pub(crate) fn result_operation(&self) -> Option<(ThreadId, String)> {
+        let publication = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let publication = publication.as_ref()?;
+        Some((publication.result_sender?, publication.result_operation.clone()?))
+    }
+
+    fn result_sender(&self) -> Option<ThreadId> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|publication| publication.result_sender)
     }
 
     /// Commit this delivery and release its publication state, even if clones remain.

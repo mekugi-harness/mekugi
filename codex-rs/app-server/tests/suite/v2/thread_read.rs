@@ -167,6 +167,49 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
     assert_eq!(thread.turns.len(), 0);
     assert_eq!(thread.status, ThreadStatus::NotLoaded);
 
+    use codex_protocol::protocol::{TokenCountEvent, TokenUsage, TokenUsageInfo};
+    let mut rollout = std::fs::OpenOptions::new()
+        .append(true)
+        .open(thread.path.as_ref().unwrap())?;
+    writeln!(
+        rollout,
+        "{}",
+        json!({
+            "timestamp": "2025-01-05T12:01:00Z",
+            "type": "event_msg",
+            "payload": EventMsg::TokenCount(TokenCountEvent {
+                info: Some(TokenUsageInfo {
+                    total_token_usage: TokenUsage::default(),
+                    last_token_usage: TokenUsage { total_tokens: 123, ..Default::default() },
+                    last_usage_includes_reasoning: None,
+                    model_context_window: Some(1000),
+                }),
+                rate_limits: None,
+            }),
+        })
+    )?;
+    for method in ["thread/read", "thread/subtree/list", "thread/inspect"] {
+        let id = mcp
+            .send_raw_request(method, Some(json!({"threadId": conversation_id})))
+            .await?;
+        let response: Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+        let observed = if method == "thread/subtree/list" {
+            &response["data"][0]
+        } else {
+            &response["thread"]
+        };
+        assert_eq!(observed["id"], conversation_id);
+        assert_eq!(
+            observed["contextTokens"],
+            if method == "thread/inspect" {
+                json!(123)
+            } else {
+                Value::Null
+            }
+        );
+        assert_eq!(observed["completedCompactions"], Value::Null);
+    }
+
     let list_id = mcp.send_raw_request("thread/list", Some(json!({}))).await?;
     let response: Value = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(list_id)).await??;
     let listed = response["data"]

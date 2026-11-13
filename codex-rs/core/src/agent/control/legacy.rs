@@ -109,9 +109,18 @@ impl LocalAgentControl {
 
     /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.
     pub(crate) async fn shutdown_agent_tree(&self, agent_id: ThreadId) -> CodexResult<String> {
+        self.shutdown_agent_tree_with_ids(agent_id)
+            .await
+            .map(|(submission, _)| submission)
+    }
+
+    pub(crate) async fn shutdown_agent_tree_with_ids(
+        &self,
+        agent_id: ThreadId,
+    ) -> CodexResult<(String, Vec<ThreadId>)> {
         let descendant_ids = self.runtime.live_thread_spawn_descendants(agent_id).await?;
         let result = self.shutdown_live_agent(agent_id).await;
-        for descendant_id in descendant_ids {
+        for &descendant_id in &descendant_ids {
             match self.shutdown_live_agent(descendant_id).await {
                 Ok(_) => {}
                 Err(err)
@@ -122,6 +131,10 @@ impl LocalAgentControl {
                 Err(err) => return Err(err),
             }
         }
-        result
+        result.map(|submission| {
+            let mut ended = descendant_ids;
+            ended.push(agent_id);
+            (submission, ended)
+        })
     }
 }

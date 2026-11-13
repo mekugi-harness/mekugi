@@ -6,6 +6,8 @@
 mod direct_tests;
 mod mcp_attribution;
 mod request_metadata;
+#[cfg(test)]
+mod capture_tests;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -20,6 +22,7 @@ use codex_code_mode::CellId;
 use codex_features::Feature;
 use codex_features::Features;
 use codex_history::InitialHistory;
+use codex_history::ResponseItemEnvelope;
 use codex_protocol::ResponseItemId;
 use codex_protocol::mcp::McpAttribution;
 use codex_protocol::mcp::McpAttributionSource;
@@ -35,6 +38,7 @@ use serde_json::Value as JsonValue;
 
 use crate::session::step_context::StepContext;
 use crate::tools::context::ToolCallSource;
+use crate::tools::context::CaptureDeliveryCandidate;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::metadata_metrics;
@@ -46,6 +50,7 @@ mod seen_ids;
 use seen_ids::SeenIds;
 
 const MAX_PENDING_EXECUTED_TOOL_CALLS: usize = 256;
+const MAX_PENDING_CAPTURE_BYTES: usize = 1024 * 1024;
 // Limits new Direct metadata retained in history and the append-only rollout
 // during one recorder lifetime. A new process cannot recover the exact prior
 // budget because raw result metadata is intentionally not deserialized.
@@ -54,11 +59,11 @@ const MAX_RETAINED_DIRECT_METADATA_BYTES: usize = 1024 * 1024;
 type ExecutedToolCallCache =
     HashMap<(std::mem::Discriminant<ResponseItem>, String), Vec<ExecutedToolCall>>;
 
-/// Best-effort recording shared by a session and its Code Mode broker. Disabled
-/// sessions allocate no recorder state; missing evidence remains incomplete.
+/// Cell ownership is shared with Code Mode even when optional analytics are disabled.
+/// Missing capture evidence and missing analytics both remain incomplete.
 #[derive(Clone, Default)]
 pub(crate) struct ExecutedToolCalls {
-    state: Arc<Mutex<Option<ExecutedToolCallRecorderState>>>,
+    state: Arc<Mutex<ExecutedToolCallRecorderState>>,
     retained_direct_metadata_bytes: Arc<AtomicUsize>,
     pending_direct_calls: Arc<AtomicUsize>,
     mcp_attribution: mcp_attribution::McpAttributionRecorder,
@@ -93,6 +98,7 @@ impl Drop for DirectCallPermit {
 
 #[derive(Default)]
 struct ExecutedToolCallRecorderState {
+    enabled: bool,
     // Disabling drops this lifetime, permanently invalidating prepared Direct records.
     recording: Arc<()>,
     // Full live Direct observations; persisted outputs keep their bounded projection.
@@ -152,6 +158,8 @@ struct RecordedCell {
     truncated_metadata_binding_valid: bool,
     observed_truncated_call: bool,
     dispatch_closed: bool,
+    capture_candidates: Vec<CaptureDeliveryCandidate>,
+    capture_terminal_output: Option<String>,
 }
 
 impl ExecutedToolCallRecorderState {
@@ -214,6 +222,7 @@ impl ExecutedToolCallRecorderState {
                 // whose output is about to make those records attachable again.
                 // Empty cells can free cell slots, but not pending-call slots.
                 (id != cell_id
+                    && cell.dispatch_closed
                     && (needs_cell_slot || !cell.pending_calls.is_empty())
                     && matches!(
                         cell.completion,
@@ -247,10 +256,70 @@ impl ExecutedToolCallRecorderState {
 }
 
 impl ExecutedToolCalls {
+    pub(crate) fn record_capture_candidate(
+        &self,
+        cell_id: &CellId,
+        candidate: CaptureDeliveryCandidate,
+    ) {
+        let mut state = self.lock_state();
+        let retained = state.cells.values().flat_map(|cell| &cell.capture_candidates);
+        let (count, bytes) = retained.fold((0, 0), |(count, bytes), candidate| {
+            (count + 1, bytes + candidate.retained_bytes())
+        });
+        // Shedding proof never discards output or acknowledges unseen evidence.
+        if count >= MAX_PENDING_EXECUTED_TOOL_CALLS
+            || bytes + candidate.retained_bytes() > MAX_PENDING_CAPTURE_BYTES
+        {
+            return;
+        }
+        if let Some(cell) = state.cells.get_mut(cell_id) {
+            cell.capture_candidates.push(candidate);
+        }
+    }
+
+    pub(crate) fn mark_terminal_capture_output(&self, cell_id: &CellId, call_id: &str) {
+        if let Some(cell) = self.lock_state().cells.get_mut(cell_id) {
+            cell.capture_terminal_output = Some(call_id.to_owned());
+        }
+    }
+
+    pub(crate) fn capture_receipts_for_cell(
+        &self,
+        cell_id: &CellId,
+        item: &ResponseItem,
+    ) -> Vec<codex_history::CaptureDeliveryReceipt> {
+        self.lock_state().cells.get(cell_id).map_or_else(Vec::new, |cell| {
+            cell.capture_candidates.iter()
+                .filter(|candidate| candidate.matches_output(item))
+                .map(|candidate| candidate.receipt.clone()).collect()
+        })
+    }
+
+    pub(crate) fn attach_capture_to_output(&self, output: &mut ResponseItemEnvelope) {
+        let Some(call_id) = output_call_id(&output.item) else { return; };
+        let mut state = self.lock_state();
+        let Some(cell_id) = state.output_cells.get(call_id).cloned() else { return; };
+        let Some(cell) = state.cells.get_mut(&cell_id) else { return; };
+        let receipts: Vec<_> = cell.capture_candidates.iter()
+            .filter(|candidate| candidate.matches_output(&output.item))
+            .map(|candidate| candidate.receipt.clone()).collect();
+        if cell.capture_terminal_output.as_deref() == Some(call_id) {
+            cell.capture_candidates.clear();
+            cell.capture_terminal_output = None;
+            if !state.enabled {
+                state.cells.remove(&cell_id);
+                state.output_cells.retain(|_, id| id != &cell_id);
+            }
+        }
+        if !receipts.is_empty() {
+            output.metadata.get_or_insert_default().capture_deliveries.extend(receipts);
+        }
+    }
+
     pub(crate) fn new(features: &Features, history: &InitialHistory) -> Self {
         Self {
-            state: Arc::new(Mutex::new(Self::is_enabled(features).then(|| {
-                ExecutedToolCallRecorderState {
+            state: Arc::new(Mutex::new(ExecutedToolCallRecorderState {
+                    enabled: Self::is_enabled(features),
                     seen_ids: SeenIds::from_history(history),
                     // Runtime cell IDs can restart after resume/fork; inherited wait
                     // handles cannot be distinguished from newly allocated handles.
@@ -259,8 +328,7 @@ impl ExecutedToolCalls {
                         InitialHistory::New | InitialHistory::Cleared
                     ),
                     ..Default::default()
-                }
-            }))),
+            })),
             retained_direct_metadata_bytes: Arc::new(AtomicUsize::new(0)),
             pending_direct_calls: Arc::new(AtomicUsize::new(0)),
             mcp_attribution: mcp_attribution::McpAttributionRecorder::new(history),
@@ -283,7 +351,7 @@ impl ExecutedToolCalls {
         self.mcp_attribution.mark_persisted(revision);
     }
 
-    fn lock_state(&self) -> MutexGuard<'_, Option<ExecutedToolCallRecorderState>> {
+    fn lock_state(&self) -> MutexGuard<'_, ExecutedToolCallRecorderState> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -297,9 +365,9 @@ impl ExecutedToolCalls {
         bounded: &[ResponseItem],
     ) {
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
+        if !state.enabled {
             return;
-        };
+        }
         // Request bounding clones the same items in the same order; it only edits metadata.
         for (original, bounded) in original.iter().zip(bounded) {
             let Some(metadata) = original.executed_tool_call_metadata() else {
@@ -328,11 +396,22 @@ impl ExecutedToolCalls {
     pub(crate) fn refresh(&self, features: &Features) {
         let enabled = Self::is_enabled(features);
         let mut state = self.lock_state();
-        if enabled != state.is_some() {
-            *state = enabled.then(|| ExecutedToolCallRecorderState {
+        if enabled != state.enabled {
+            // Refresh invalidates analytics permits, not running cells or capture delivery.
+            let cells = std::mem::take(&mut state.cells);
+            let output_cells = std::mem::take(&mut state.output_cells);
+            *state = ExecutedToolCallRecorderState {
+                enabled,
+                cells,
+                output_cells,
                 seen_ids: SeenIds::unobserved_history(),
                 ..Default::default()
-            });
+            };
+            for cell in state.cells.values_mut() {
+                cell.pending_calls.clear();
+                cell.completion = CellCompletion::Incomplete;
+                cell.truncated_metadata_binding_valid = false;
+            }
         }
     }
 
@@ -366,7 +445,12 @@ impl ExecutedToolCalls {
     }
 
     fn reserve_direct_call(&self) -> Option<DirectCallPermit> {
-        let recording = Arc::downgrade(&self.lock_state().as_ref()?.recording);
+        let state = self.lock_state();
+        if !state.enabled {
+            return None;
+        }
+        let recording = Arc::downgrade(&state.recording);
+        drop(state);
         self.pending_direct_calls
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |pending| {
                 (pending < MAX_PENDING_EXECUTED_TOOL_CALLS).then_some(pending + 1)
@@ -390,9 +474,9 @@ impl ExecutedToolCalls {
             return;
         };
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
+        if !state.enabled {
             return;
-        };
+        }
         if !permit.recording.ptr_eq(&Arc::downgrade(&state.recording)) {
             return;
         }
@@ -448,9 +532,9 @@ impl ExecutedToolCalls {
             return;
         };
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
+        if !state.enabled {
             return;
-        };
+        }
         if !state.seen_ids.observe_call_id(call_id) {
             state.invalidate_origin(call_id);
         }
@@ -466,22 +550,22 @@ impl ExecutedToolCalls {
             return;
         }
         // Release the lock before calling the output's trait method.
-        let recording = self.lock_state().is_some();
+        let recording = self.lock_state().enabled;
         if recording && let Some(metadata) = result.tool_result_metadata() {
             self.record_tool_result_metadata(source, call_id, metadata);
         }
     }
 
     fn record_call(&self, call: &ToolCall, source: &ToolCallSource, tool_mode: ToolMode) {
-        if self.lock_state().is_none() {
+        if !self.lock_state().enabled {
             return;
         }
         match source {
             ToolCallSource::Direct | ToolCallSource::DirectPlaintextMessage => {
                 let mut state = self.lock_state();
-                let Some(state) = state.as_mut() else {
+                if !state.enabled {
                     return;
-                };
+                }
                 let fresh = state.seen_ids.observe_call_id(&call.call_id);
                 if !fresh {
                     state.invalidate_origin(&call.call_id);
@@ -513,9 +597,9 @@ impl ExecutedToolCalls {
         original_bytes: usize,
     ) {
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
+        if !state.enabled {
             return;
-        };
+        }
         let unique_nested_id = state.seen_nested_ids.observe_call_id(&call_id);
         if !unique_nested_id {
             for retained in state.retained_calls.values_mut() {
@@ -582,9 +666,9 @@ impl ExecutedToolCalls {
         let metadata = ToolResultMetadata::new(metadata);
         let has_metadata = metadata.is_some();
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
+        if !state.enabled {
             return false;
-        };
+        }
         let call = state
             .cells
             .get_mut(&CellId::new(cell_id.clone()))
@@ -627,9 +711,6 @@ impl ExecutedToolCalls {
 
     pub(crate) fn register_cell(&self, cell_id: &CellId, output_call_id: &str) {
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
         if !state.observe_cell_origin(output_call_id) {
             state.invalidate_cell(cell_id);
         }
@@ -638,9 +719,6 @@ impl ExecutedToolCalls {
 
     pub(crate) fn start_cell(&self, cell_id: &CellId, output_call_id: &str) {
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
         let unique_cell = state.seen_ids.observe_runtime_cell_id(cell_id);
         let unique_origin = state.observe_cell_origin(output_call_id);
         if !unique_cell {
@@ -671,9 +749,6 @@ impl ExecutedToolCalls {
 
     pub(crate) fn finish_cell_recording(&self, cell_id: &CellId) {
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
         // A closed cell may still be referenced by the final wait output. Keep its
         // original binding while late truncated results remain eligible for backfill.
         let has_retained_truncated_calls = state.retained_calls.values().any(|retained| {
@@ -689,7 +764,10 @@ impl ExecutedToolCalls {
                 }
                 CellCompletion::Unobserved | CellCompletion::Incomplete => {
                     // Drop unverified cells only after emitting any partial records.
-                    if cell.pending_calls.is_empty() && !has_retained_truncated_calls {
+                    if cell.pending_calls.is_empty()
+                        && !has_retained_truncated_calls
+                        && cell.capture_candidates.is_empty()
+                    {
                         state.cells.remove(cell_id);
                     }
                 }

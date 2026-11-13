@@ -2923,6 +2923,50 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
 }
 
 #[tokio::test]
+async fn native_collaboration_is_available_inside_javascript() {
+    let (_session, mut turn) = make_session_and_context().await;
+    set_features(&mut turn, &[Feature::CodeMode, Feature::CodeModeOnly, Feature::MultiAgentV2]);
+    let router = plan_with_model(&turn, turn.model_info(), ToolPlanInputs::default());
+    for (tool, present, absent) in [
+        ("spawn_agent", &["cwd", "preload"][..], &[][..]),
+        ("send_message", &["btw"][..], &[][..]),
+        ("wait_agent", &["wait_mode", "yield_time_ms"][..], &["timeout_ms", "compact", "reload"][..]),
+    ] {
+        let tool = router.registered_tool(&ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool)).unwrap();
+        let spec = tool.spec();
+        let ToolSpec::Namespace(namespace) = spec.as_ref() else {
+            panic!("expected native collaboration namespace");
+        };
+        let ResponsesApiNamespaceTool::Function(function) = &namespace.tools[0] else {
+            panic!("expected native collaboration function");
+        };
+        let spec = ToolSpec::Function(function.clone());
+        for parameter in present {
+            assert!(has_parameter(&spec, parameter), "missing native parameter {parameter}");
+        }
+        for parameter in absent {
+            assert!(!has_parameter(&spec, parameter), "superseded parameter {parameter}");
+        }
+    }
+    let plan = ToolPlanProbe::from_router(router);
+    assert!(plan.can_manage_children);
+    for tool in [
+        "spawn_agent",
+        "send_message",
+        "followup_task",
+        "interrupt_agent",
+        "list_agents",
+        "wait_agent",
+    ] {
+        let name = ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool);
+        assert!(
+            plan.code_mode_tool_names.values().any(|nested| nested == &name),
+            "missing native JavaScript tool {name}",
+        );
+    }
+}
+
+#[tokio::test]
 async fn multi_agent_v2_can_disable_wait_agent() {
     let plan = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);

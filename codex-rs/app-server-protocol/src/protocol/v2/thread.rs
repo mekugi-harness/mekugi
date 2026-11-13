@@ -2351,3 +2351,19 @@ pub struct ContextCompactedNotification {
     pub thread_id: String,
     pub turn_id: String,
 }
+
+/// Native spawn subtree, including its root and ephemeral loaded descendants.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSubtreeListParams {
+    pub thread_id: String,
+}
+
+/// Explicit inspection may read retained settings and context history, never to count compactions.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInspectParams {
+    pub thread_id: String,
+}

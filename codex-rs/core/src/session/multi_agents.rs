@@ -72,7 +72,8 @@ pub(crate) fn resolve_usage_hints(
         subagent: resolve_role(
             config.subagent_usage_hint_text.as_deref(),
             multi_agent_messages.subagent,
-        ),
+        )
+        .map(MultiAgentRoleInstructions::with_subagent_guidance),
     }
 }
 

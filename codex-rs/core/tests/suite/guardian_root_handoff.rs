@@ -222,7 +222,7 @@ pub(crate) async fn handoff_scenario(native_history: bool) -> Result<Vec<Respons
         "Keep the deployment private.",
         "send-alpha",
         "send_message",
-        json!({"target":"alpha", "message":"Keep it private."}),
+        json!({"target":"/root/alpha", "message":"Keep it private."}),
     )
     .await?;
     expected.extend([
@@ -279,7 +279,7 @@ pub(crate) async fn handoff_scenario(native_history: bool) -> Result<Vec<Respons
         "Check the deployment status.",
         "followup-alpha",
         "followup_task",
-        json!({"target":"alpha", "message":"Check."}),
+        json!({"target":"/root/alpha", "message":"Check."}),
     )
     .await?;
     wait_for_event(&alpha, |event| matches!(event, EventMsg::TurnComplete(_))).await;

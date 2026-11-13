@@ -169,6 +169,63 @@ async fn live_fork_keeps_instructions_when_source_is_unloaded_during_setup() {
         .expect("shutdown fork");
 }
 
+#[tokio::test]
+async fn completed_compactions_survive_unload_without_reading_history() {
+    let (_home, config, _) = startup_fixture().await;
+    let state_db = init_state_db(&config).await.expect("state database");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db),
+    );
+    let thread = manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(ThreadHistoryMode::Paginated),
+            ..StartThreadOptions::new(config)
+        })
+        .await
+        .expect("start");
+    thread.thread.ensure_rollout_materialized().await;
+    thread.thread.flush_rollout().await.expect("flush");
+    let session = &thread.thread.session;
+    assert_eq!(session.completed_compactions().await, Some(0));
+    let context = session.new_default_turn().await;
+    let item = codex_protocol::items::TurnItem::ContextCompaction(
+        codex_protocol::items::ContextCompactionItem {
+            id: "completed-reset".into(),
+        },
+    );
+    session.emit_turn_item_started(&context, &item).await;
+    assert_eq!(session.completed_compactions().await, Some(0));
+    session.emit_turn_item_completed(&context, item).await;
+    assert_eq!(session.completed_compactions().await, Some(1));
+    thread.thread.shutdown_and_wait().await.expect("shutdown");
+    manager.remove_thread(&thread.thread_id).await;
+    tokio::fs::remove_file(thread.thread.rollout_path().expect("rollout"))
+        .await
+        .expect("remove fixture history");
+    assert_eq!(
+        manager
+            .read_thread_subtree(thread.thread_id)
+            .await
+            .expect("retained thread without history")[0]
+            .completed_compactions,
+        Some(1)
+    );
+    assert_eq!(
+        manager
+            .state
+            .thread_store
+            .completed_compactions(ThreadId::new())
+            .await
+            .expect("unknown count"),
+        None
+    );
+    assert!(manager.state.threads.read().await.is_empty());
+}
+
 async fn startup_fixture() -> (tempfile::TempDir, Config, ThreadManager) {
     let home = tempdir().unwrap();
     let mut config = test_config().await;

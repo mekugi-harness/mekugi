@@ -661,11 +661,11 @@ enabled_tools = []
         ),
         (
             "send_message",
-            json!({"target": "worker", "message": "Unread note for later"}),
+            json!({"target": "/root/worker", "message": "Unread note for later"}),
         ),
         (
             "followup_task",
-            json!({"target": "worker", "message": "Continue the child task"}),
+            json!({"target": "/root/worker", "message": "Continue the child task"}),
         ),
     ] {
         let call_id = format!("idle-eviction-{tool}");

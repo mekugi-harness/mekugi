@@ -19,6 +19,8 @@ use crate::tools::context::FunctionToolOutput;
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) btw: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,4 +100,19 @@ pub(super) async fn handle_message_string_tool(
     .await;
 
     Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_messages_remain_default_and_btw_is_explicit() {
+        let ordinary: SendMessageArgs = serde_json::from_str(r#"{"target":"worker","message":"hello"}"#).unwrap();
+        assert!(!ordinary.btw);
+        let side: SendMessageArgs = serde_json::from_str(r#"{"target":"worker","message":"question","btw":true}"#).unwrap();
+        assert!(side.btw);
+        assert!(serde_json::from_str::<FollowupTaskArgs>(r#"{"target":"worker","message":"work","btw":true}"#).is_err());
+    }
 }

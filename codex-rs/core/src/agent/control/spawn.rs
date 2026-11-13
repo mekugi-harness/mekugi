@@ -630,10 +630,15 @@ impl LocalAgentControl {
     pub(super) async fn spawn_agent_internal(
         &self,
         config: Config,
-        initial_input: SpawnInitialInput,
+        mut initial_input: SpawnInitialInput,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<(LiveAgent, ThreadConfigSnapshot)> {
+        if options.fork_mode.is_some() && options.preload.is_some() {
+            return Err(CodexErr::InvalidRequest(
+                "Full-history forks cannot preload sources".to_string(),
+            ));
+        }
         let membership = self.runtime.admit_start()?;
         let spawn_started_at = Instant::now();
         let state = self.runtime.upgrade()?;
@@ -849,6 +854,26 @@ impl LocalAgentControl {
         }));
         pending_spawn.wait_for_edge().await?;
         let edge_write = edge_write_started_at.elapsed();
+        if let Some(parent_thread_id) = parent_thread_id {
+            self.runtime
+                .prepare_child_host(
+                    codex_protocol::agent_capture::ChildHostAdmissionRequest {
+                        root_thread_id: self.session_id.into(),
+                        parent_thread_id,
+                        thread_id: child_thread_id,
+                        local_cwd: start_options
+                            .inherited_environments
+                            .as_ref()
+                            .map_or_else(
+                                || Some(config.cwd.clone()),
+                                |environments| environments.local_environment_cwd(),
+                            )
+                            .map(|cwd| cwd.to_string_lossy().into_owned()),
+                    },
+                    self.runtime.shutdown.child_token(),
+                )
+                .await?;
+        }
         let child_create_started_at = Instant::now();
         let new_thread = state
             .spawn_child_thread(
@@ -898,6 +923,62 @@ impl LocalAgentControl {
             None
         };
 
+        let needs_sources = match &initial_input {
+            SpawnInitialInput::UserInput(input) => input.iter().any(|item| matches!(item,
+                UserInput::Text { text, .. } if crate::compact_token_budget::reload::has_message_sources(text))),
+            SpawnInitialInput::InterAgentCommunication(message, _) =>
+                message.encrypted_content.is_none()
+                && crate::compact_token_budget::reload::has_message_sources(&message.content),
+        };
+        if needs_sources
+            || options
+                .preload
+                .as_ref()
+                .is_some_and(|selection| !selection.sources.is_empty())
+        {
+            let session = &new_thread.thread.session;
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            // Dropping the spawn cancels any native source reader before provisional-child cleanup.
+            let _cancel_on_drop = cancellation.clone().drop_guard();
+            let turn = session.new_default_turn().await;
+            let step = session.capture_step_context(turn, &cancellation).await?;
+            if let Some(selection) = options.preload.as_ref() {
+                crate::compact_token_budget::reload::preload(
+                    session,
+                    &step,
+                    selection,
+                    &cancellation,
+                )
+                .await?;
+            }
+            match &mut initial_input {
+                SpawnInitialInput::UserInput(input) => {
+                    for item in input {
+                        if let UserInput::Text { text, .. } = item {
+                            *text = crate::compact_token_budget::reload::acquire_message(
+                                session,
+                                &step,
+                                text,
+                                &cancellation,
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                SpawnInitialInput::InterAgentCommunication(message, _)
+                    if message.encrypted_content.is_none() =>
+                {
+                    message.content = crate::compact_token_budget::reload::acquire_message(
+                        session,
+                        &step,
+                        &message.content,
+                        &cancellation,
+                    )
+                    .await?;
+                }
+                SpawnInitialInput::InterAgentCommunication(_, _) => {}
+            }
+        }
         let start_options = TurnStartOptions {
             parent_turn_id: options.parent_turn_id,
             turn_trigger: options.turn_trigger,
@@ -937,6 +1018,19 @@ impl LocalAgentControl {
             residency_slot.commit(new_thread.thread_id);
         }
         let _membership = pending_spawn.disarm();
+        if let Some(parent) = parent_thread_id {
+            self.runtime.record_feature_use(
+                parent,
+                new_thread.thread_id.to_string(),
+                codex_protocol::feature_use::FeatureUseEvent::ChildAdmitted {
+                    preload: options
+                        .preload
+                        .as_ref()
+                        .is_some_and(|selection| !selection.sources.is_empty()),
+                    sources: needs_sources,
+                },
+            );
+        }
 
         // Notify a new thread has been created. This notification will be processed by clients
         // to subscribe or drain this newly created thread.

@@ -111,7 +111,7 @@ pub(super) fn tool(
                 json!({"type":"boolean","description":"Subscribe to new top-level posts. Default true."})
             }
             "author" | "target_agent" => {
-                json!({"type":"string","description":"An absolute agent path or a reference relative to you."})
+                json!({"type":"string","description":"A canonical agent path."})
             }
             "recent_first" => json!({"type":"boolean","description":"Newest first by default."}),
             "limit" => {
@@ -123,7 +123,7 @@ pub(super) fn tool(
             }
             "sort" => json!({"type":"string","enum":["created","activity"]}),
             "agents_to_notify" => {
-                json!({"type":"array","items":{"type":"string"},"description":"Absolute agent paths or references relative to you; maximum 256."})
+                json!({"type":"array","items":{"type":"string"},"description":"Canonical agent paths; maximum 256."})
             }
             "cursor" => {
                 json!({"type":"string","description":"Opaque next_cursor from the same query. Keep filters and sorting unchanged. Concurrent posts may shift pages; omit the cursor to refresh."})

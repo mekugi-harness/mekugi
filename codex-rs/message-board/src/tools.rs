@@ -305,7 +305,7 @@ impl BoardTool {
                     max_chars_per_post,
                 } = serde_json::from_str(raw).map_err(model_error)?;
                 let author = author
-                    .map(|path| self.caller_path.resolve(&path))
+                    .map(AgentPath::try_from)
                     .transpose()
                     .map_err(model_error)?;
                 let limit = page_limit(limit);
@@ -394,7 +394,7 @@ impl BoardTool {
                             SubscriptionRequest {
                                 target,
                                 target_agent: target_agent
-                                    .map(|path| self.caller_path.resolve(&path))
+                                    .map(AgentPath::try_from)
                                     .transpose()
                                     .map_err(model_error)?,
                                 change: if self.tool == MessageBoardTool::Subscribe {
@@ -468,7 +468,7 @@ impl BoardTool {
                                 agents_to_notify: agents_to_notify
                                     .unwrap_or_default()
                                     .into_iter()
-                                    .map(|path| self.caller_path.resolve(&path))
+                                    .map(AgentPath::try_from)
                                     .collect::<Result<_, _>>()
                                     .map_err(model_error)?,
                             },

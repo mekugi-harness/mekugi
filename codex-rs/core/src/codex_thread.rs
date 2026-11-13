@@ -251,6 +251,25 @@ impl CodexThread {
         self.session.services.local_agent_runtime.tree_id()
     }
 
+    pub fn agent_root_id(&self) -> ThreadId {
+        self.session.session_id().into()
+    }
+
+    /// Install the authenticated resource host once for this native tree.
+    pub fn install_agent_host_resources(&self, resources: crate::AgentHostResources) -> bool {
+        self.session
+            .services
+            .local_agent_runtime
+            .host_resources
+            .set(resources)
+            .is_ok()
+    }
+
+    /// Cancellation belongs to the native tree, not an observing renderer.
+    pub fn agent_tree_shutdown_token(&self) -> tokio_util::sync::CancellationToken {
+        self.session.services.local_agent_runtime.shutdown.clone()
+    }
+
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
         self.submit_with_trace(op, /*trace*/ None).await
     }

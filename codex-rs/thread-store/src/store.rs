@@ -264,6 +264,11 @@ pub trait ThreadStore: Any + Send + Sync {
     /// already-durable thread data.
     fn discard_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()>;
 
+    /// Passive native completion metric. Absence must not trigger history loading or migration.
+    fn completed_compactions(&self, _thread_id: ThreadId) -> ThreadStoreFuture<'_, Option<u64>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Loads persisted history for resume, fork, and memory jobs.
     fn load_history(
         &self,

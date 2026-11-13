@@ -231,6 +231,11 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     })
     .await?;
 
+    let read = app_server.send_request("featureUse/read", Some(json!({"threads": [&thread.id]}))).await?;
+    let counts: codex_app_server_protocol::FeatureUseReadResponse = app_server.read_response(read).await?;
+    assert_eq!(counts.threads[&thread.id].spawns, 1);
+    assert_eq!(counts.threads[&thread.id].preload_rejections, 0);
+
     let parent_texts = parent_request
         .single_request()
         .message_input_texts("developer");
@@ -785,7 +790,7 @@ features.shell_tool = false
                 NAMESPACE,
                 "followup_task",
                 &serde_json::to_string(&json!({
-                    "target": "worker",
+                    "target": "/root/worker",
                     "message": FOLLOWUP_TASK,
                 }))?,
             ),

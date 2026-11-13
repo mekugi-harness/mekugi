@@ -45,6 +45,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
+use crate::tools::handlers::multi_agents_v2::InspectAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
@@ -1542,7 +1543,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     // Spawn composes the selected description with inheritance and usage guidance.
                     /*description_override*/
                     None,
-                    model_messages.multi_agent_tool_parameters_override("spawn_agent"),
+                    // Native preparation owns cwd/preload and inheritance constraints.
+                    None,
                 ),
                 exposure,
                 native_review,
@@ -1552,8 +1554,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     multi_agent_v2_handler(
                         SendMessageHandlerV2,
                         tool_namespace,
-                        model_messages.multi_agent_tool_description_override("send_message"),
-                        model_messages.multi_agent_tool_parameters_override("send_message"),
+                        None,
+                        None,
                     ),
                     exposure,
                     native_review,
@@ -1574,8 +1576,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                     multi_agent_v2_handler(
                         WaitAgentHandlerV2::new(context.wait_agent_timeouts),
                         tool_namespace,
-                        model_messages.multi_agent_tool_description_override("wait_agent"),
-                        model_messages.multi_agent_tool_parameters_override("wait_agent"),
+                        None,
+                        None,
                     ),
                     exposure,
                 );
@@ -1589,6 +1591,10 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
                 ),
                 exposure,
                 native_review,
+            );
+            registry.register_trusted_with_exposure(
+                multi_agent_v2_handler(InspectAgentHandler, tool_namespace, None, None),
+                exposure,
             );
             registry.register_trusted_with_exposure(
                 multi_agent_v2_handler(

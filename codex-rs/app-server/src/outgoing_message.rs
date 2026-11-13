@@ -139,6 +139,8 @@ pub(crate) struct OutgoingMessageSender {
     verification_connections: Mutex<HashSet<ConnectionId>>,
     human_approval_connections: Mutex<HashSet<ConnectionId>>,
     next_server_request_id: AtomicI64,
+    host_request_shutdown: tokio_util::sync::CancellationToken,
+    host_request_tasks: std::sync::Mutex<tokio_util::task::TaskTracker>,
     sender: mpsc::Sender<OutgoingEnvelope>,
     process_reply_sender: mpsc::Sender<OutgoingEnvelope>,
     request_id_to_callback: Mutex<HashMap<RequestId, PendingCallbackEntry>>,
@@ -157,6 +159,8 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
 }
 
 struct PendingCallbackEntry {
+    /// Host resources have one authenticated recipient and are not renderer state.
+    resource_owner: Option<ConnectionId>,
     human_approval_recipients: HashSet<ConnectionId>,
     verification_owner: Option<ConnectionId>,
     verification_auth_revision: Option<u64>,
@@ -275,6 +279,8 @@ impl OutgoingMessageSender {
             verification_connections: Mutex::new(HashSet::new()),
             human_approval_connections: Mutex::new(HashSet::new()),
             next_server_request_id: AtomicI64::new(0),
+            host_request_shutdown: tokio_util::sync::CancellationToken::new(),
+            host_request_tasks: std::sync::Mutex::new(tokio_util::task::TaskTracker::new()),
             process_reply_sender: sender.clone(),
             sender,
             request_id_to_callback: Mutex::new(HashMap::new()),
@@ -381,7 +387,7 @@ impl OutgoingMessageSender {
         .await
     }
 
-    fn next_request_id(&self) -> RequestId {
+    pub(crate) fn next_request_id(&self) -> RequestId {
         RequestId::Integer(self.next_server_request_id.fetch_add(1, Ordering::Relaxed))
     }
 
@@ -391,7 +397,35 @@ impl OutgoingMessageSender {
         request: ServerRequestPayload,
         thread_id: Option<ThreadId>,
     ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
-        let id = self.next_request_id();
+        self.send_request_with_lifetime(
+            self.next_request_id(),
+            connection_ids,
+            request,
+            thread_id,
+            true,
+        )
+        .await
+    }
+
+    pub(crate) async fn send_request_with_lifetime(
+        &self,
+        id: RequestId,
+        connection_ids: Option<&[ConnectionId]>,
+        request: ServerRequestPayload,
+        thread_id: Option<ThreadId>,
+        replayable: bool,
+    ) -> (RequestId, oneshot::Receiver<ClientRequestResult>) {
+        let resource_owner = if replayable {
+            None
+        } else {
+            match connection_ids {
+                Some([owner]) => Some(*owner),
+                _ => {
+                    let (_, receiver) = oneshot::channel();
+                    return (id, receiver);
+                }
+            }
+        };
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
         let user_verification = matches!(
@@ -451,6 +485,7 @@ impl OutgoingMessageSender {
             request_id_to_callback.insert(
                 id,
                 PendingCallbackEntry {
+                    resource_owner,
                     human_approval_recipients: if requires_human_approval(&request) {
                         connection_ids.unwrap_or_default().iter().copied().collect()
                     } else {
@@ -571,7 +606,8 @@ impl OutgoingMessageSender {
         match entry {
             Some((id, entry)) => {
                 let completed_at_ms = now_unix_timestamp_ms();
-                if entry.verification_owner.is_none()
+                if entry.resource_owner.is_none()
+                    && entry.verification_owner.is_none()
                     && let Ok(response) = entry.request.response_from_result(result.clone())
                 {
                     tracing::info!("<- response: {response:?}");
@@ -625,6 +661,36 @@ impl OutgoingMessageSender {
         }
     }
 
+    pub(crate) fn host_request_shutdown(&self) -> tokio_util::sync::CancellationToken {
+        self.host_request_shutdown.clone()
+    }
+
+    pub(crate) fn track_host_request(
+        &self,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let tasks = self
+            .host_request_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !tasks.is_closed() {
+            tasks.spawn(future);
+        }
+    }
+
+    pub(crate) async fn shutdown_host_requests(&self) {
+        let tasks = {
+            let tasks = self
+                .host_request_tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.host_request_shutdown.cancel();
+            tasks.close();
+            tasks.clone()
+        };
+        tasks.wait().await;
+    }
+
     pub(crate) async fn cancel_all_requests(&self, error: Option<JSONRPCErrorError>) {
         let entries = {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
@@ -666,6 +732,12 @@ impl OutgoingMessageSender {
             .contains(&connection_id);
         let mut callbacks = self.request_id_to_callback.lock().await;
         let entry = callbacks.get(id)?;
+        if entry
+            .resource_owner
+            .is_some_and(|owner| owner != connection_id)
+        {
+            return None;
+        }
         if requires_human_approval(&entry.request)
             && (!human_approval || !entry.human_approval_recipients.contains(&connection_id))
         {
@@ -693,8 +765,10 @@ impl OutgoingMessageSender {
         let mut requests = request_id_to_callback
             .values()
             .filter_map(|entry| {
-                (entry.thread_id == Some(thread_id) && entry.verification_owner.is_none())
-                    .then_some(entry.request.clone())
+                (entry.thread_id == Some(thread_id)
+                    && entry.verification_owner.is_none()
+                    && entry.resource_owner.is_none())
+                .then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));
@@ -1045,6 +1119,57 @@ mod user_verification_cancel_context_tests;
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn host_shutdown_joins_backpressured_acquisition_and_rejects_late_work() {
+        use codex_protocol::agent_capture::FinalCaptureRequest;
+        use tokio_util::sync::CancellationToken;
+
+        let (tx, _rx) = mpsc::channel(1);
+        let outgoing = Arc::new(OutgoingMessageSender::new(
+            tx,
+            codex_analytics::AnalyticsEventsClient::disabled(),
+        ));
+        let callbacks = crate::agent_host::host_resources(
+            &outgoing,
+            ConnectionId(7),
+            CancellationToken::new(),
+            CancellationToken::new(),
+        );
+        let input = FinalCaptureRequest {
+            root_thread_id: ThreadId::new(),
+            thread_id: ThreadId::new(),
+            operation_id: "native-call".into(),
+            recipient_thread_id: ThreadId::new(),
+            recipient_cwd: None,
+            sources: Vec::new(),
+        };
+        // Reserve the only slot before admission, then wait until the request table
+        // proves acquisition reached the transport send rather than just task spawn.
+        let _capacity = outgoing.sender.reserve().await.unwrap();
+        let task = tokio::spawn((callbacks.prepare_final_capture)(
+            input.clone(),
+            CancellationToken::new(),
+        ));
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if !outgoing.request_id_to_callback.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        outgoing.shutdown_host_requests().await;
+        assert!(task.await.unwrap().is_err());
+        assert!(outgoing.request_id_to_callback.lock().await.is_empty());
+        assert!(
+            (callbacks.prepare_final_capture)(input, CancellationToken::new())
+                .await
+                .is_err()
+        );
+    }
+
     use std::time::Duration;
 
     use codex_app_server_protocol::AccountLoginCompletedNotification;

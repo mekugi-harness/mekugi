@@ -17,10 +17,10 @@ impl ExecutedToolCalls {
         retry_cache: &mut ExecutedToolCallCache,
     ) -> bool {
         let mut state = self.lock_state();
-        let Some(state) = state.as_mut() else {
+        if !state.enabled {
             return false;
-        };
-        Self::attach_pending_to_prompt_with_state(state, items, retry_cache, RequestKind::Sampling)
+        }
+        Self::attach_pending_to_prompt_with_state(&mut state, items, retry_cache, RequestKind::Sampling)
     }
 }
 
@@ -421,7 +421,7 @@ fn direct_retained_metadata_budget_sheds_results_then_calls_across_refresh() {
 async fn stale_runtime_refresh_preserves_recording_state() {
     let (session, _turn) = crate::session::tests::make_session_and_context().await;
     let calls = session.services.executed_tool_calls.clone();
-    assert!(calls.lock_state().is_none());
+    assert!(!calls.lock_state().enabled);
     let stale_owner = session.get_config().await;
     let mut stale_config = stale_owner.as_ref().clone();
     stale_config
@@ -441,7 +441,7 @@ async fn stale_runtime_refresh_preserves_recording_state() {
             .await,
         crate::ConfigRefreshOutcome::Stale
     );
-    assert!(calls.lock_state().is_none());
+    assert!(!calls.lock_state().enabled);
 }
 
 #[tokio::test]
@@ -475,7 +475,7 @@ async fn recorder_refreshes_without_changing_execution_features_or_claiming_miss
     let step = StepContext::for_test(Arc::new(turn));
     // The broker holds a clone before rollout enablement reaches the session.
     let calls = session.services.executed_tool_calls.clone();
-    assert!(calls.lock_state().is_none());
+    assert!(!calls.lock_state().enabled);
     let mut next_config = (*session.get_config().await).clone();
     let mut retry_cache = HashMap::new();
     let mut prior_generation = None;
@@ -488,10 +488,10 @@ async fn recorder_refreshes_without_changing_execution_features_or_claiming_miss
         let _ = session
             .refresh_runtime_config(current_config, next_config.clone())
             .await;
-        assert_eq!(calls.lock_state().is_some(), enabled);
+        assert_eq!(calls.lock_state().enabled, enabled);
         // A legacy file reload has no new rollout snapshot and must keep this setting.
         session.reload_user_config_layer().await;
-        assert_eq!(calls.lock_state().is_some(), enabled);
+        assert_eq!(calls.lock_state().enabled, enabled);
         // An already-running turn and future turns keep their execution feature policy.
         assert!(!ExecutedToolCalls::is_enabled(&step.turn.config.features));
         assert!(!ExecutedToolCalls::is_enabled(
@@ -634,7 +634,6 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
 
     {
         let state = recorder.lock_state();
-        let state = state.as_ref().unwrap();
         assert_eq!(
             state.pending_nested_calls,
             MAX_PENDING_EXECUTED_TOOL_CALLS + 1
@@ -680,7 +679,6 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
 
     {
         let state = recorder.lock_state();
-        let state = state.as_ref().unwrap();
         assert!(state.pending_wrapper_origins.is_empty());
         assert_eq!(state.pending_nested_calls, 0);
         let retained_cell = state.cells.get(&cell_id).expect("late result binding");
@@ -705,7 +703,6 @@ fn executed_tool_call_recorder_bounds_pending_calls_and_preserves_overflow() {
     assert!(!recorder.attach_pending_to_prompt(&mut [], &mut compacted_retry_cache));
     recorder.finish_cell_recording(&cell_id);
     let state = recorder.lock_state();
-    let state = state.as_ref().unwrap();
     assert!(state.retained_calls.is_empty());
     assert!(!state.cells.contains_key(&cell_id));
 }
@@ -819,8 +816,7 @@ fn empty_inventory_wait_requires_a_fresh_session() {
             }
             {
                 let state = recorder.lock_state();
-                let state = state.as_ref().unwrap();
-                assert_eq!(state.pending_nested_calls, MAX_PENDING_EXECUTED_TOOL_CALLS);
+                        assert_eq!(state.pending_nested_calls, MAX_PENDING_EXECUTED_TOOL_CALLS);
                 assert!(state.cells.len() < MAX_PENDING_EXECUTED_TOOL_CALLS);
                 assert!(!state.output_cells.values().any(|id| id == &cell));
                 let empty = state.cells.get(&cell).unwrap();
@@ -975,7 +971,6 @@ fn tool_call_completeness_survives_waits_without_changing_deltas() {
         assert_eq!(tool_calls_complete(&history[9]), Some(true));
 
         let state = recorder.lock_state();
-        let state = state.as_ref().unwrap();
         assert!(state.cells.is_empty());
         assert_eq!(state.pending_nested_calls, 0);
     }
@@ -1444,8 +1439,6 @@ fn closed_truncated_cell_is_reclaimed_safely_under_pressure() {
     assert!(
         !recorder
             .lock_state()
-            .as_ref()
-            .unwrap()
             .cells
             .contains_key(&cell)
     );
@@ -1468,19 +1461,18 @@ fn duplicate_pending_ids_do_not_consume_extra_capacity() {
     }
     {
         let state = recorder.lock_state();
-        let state = state.as_ref().unwrap();
         assert_eq!(state.pending_nested_calls, 1);
         assert_eq!(state.cells[&cell].pending_calls.len(), 1);
         assert!(!state.cells[&cell].truncated_metadata_binding_valid);
     }
     recorder.start_cell(&cell, "new-exec");
     assert_eq!(
-        recorder.lock_state().as_ref().unwrap().pending_nested_calls,
+        recorder.lock_state().pending_nested_calls,
         0
     );
     record_nested_call(&recorder, &cell, "new");
     assert_eq!(
-        recorder.lock_state().as_ref().unwrap().pending_nested_calls,
+        recorder.lock_state().pending_nested_calls,
         1
     );
 }
@@ -1733,7 +1725,7 @@ fn mapping_pressure_preserves_existing_cells_and_late_partial_records() {
     recorder.attach_to_prompt(&mut items, &mut HashMap::new());
     assert_eq!(items, expected);
     assert_eq!(
-        recorder.lock_state().as_ref().unwrap().pending_nested_calls,
+        recorder.lock_state().pending_nested_calls,
         0
     );
 }

@@ -680,6 +680,13 @@ impl ContextManager {
                 .unwrap_or_else(|| with_serialization_allowance(policy));
             truncate_function_output_payload(output, policy, estimate_tool_audio_tokens);
         }
+        // Persisted originals may be longer than the actual model history. A shortened
+        // output cannot acknowledge the original complete capture intervals.
+        if processed.item != *item
+            && let Some(metadata) = processed.metadata.as_mut()
+        {
+            metadata.capture_deliveries.clear();
+        }
         if let Some(review_history) = &mut self.review_history
             && !is_guardian_context_message(item)
         {

@@ -1,4 +1,5 @@
 pub mod account;
+pub mod agent_capture;
 mod agent_path;
 pub mod auth;
 mod context_window_id;
@@ -33,6 +34,7 @@ pub use guardian_transcript::TranscriptFormat;
 pub mod dynamic_tools;
 mod environment;
 pub mod error;
+pub mod feature_use;
 pub mod exec_output;
 pub mod hooks;
 pub mod items;
@@ -63,3 +65,5 @@ pub mod security_risk;
 pub mod shell_environment;
 pub mod turn_input;
 pub mod user_input;
+
+pub mod agent_metrics;

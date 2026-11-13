@@ -77,7 +77,14 @@ impl ToolExecutor<ToolInvocation> for NewContextWindowHandler {
                     })
                     .await;
             }
+            let preload = invocation.session.reload_selection().await
+                .is_some_and(|selection| !selection.sources.is_empty());
             invocation.session.request_new_context_window().await;
+            invocation.session.services.local_agent_runtime.record_feature_use(
+                invocation.session.thread_id,
+                invocation.call_id,
+                codex_protocol::feature_use::FeatureUseEvent::SelfResetRequested { preload },
+            );
 
             Ok(boxed_tool_output(FunctionToolOutput::from_text(
                 NEW_CONTEXT_WINDOW_MESSAGE.to_string(),

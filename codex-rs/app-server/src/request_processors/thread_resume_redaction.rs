@@ -232,6 +232,12 @@ mod tests {
             model_provider: "mock_provider".to_string(),
             model: None,
             reasoning_effort: None,
+            service_tier: None,
+            context_tokens: None,
+            context_window: None,
+            completed_compactions: None,
+            agent_status: None,
+
             created_at: 0,
             updated_at: 0,
             recency_at: Some(0),

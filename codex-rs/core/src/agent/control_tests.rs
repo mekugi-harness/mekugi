@@ -4088,8 +4088,8 @@ async fn resume_and_cold_fork_restore_mcp_attribution_in_constructed_requests(
     record_invalid_source: bool,
 ) {
     let harness = AgentControlHarness::new().await;
-    let source = harness
-        .manager
+    let manager = &harness.manager;
+    let source = manager
         .start_thread(StartThreadOptions {
             history_mode: Some(ThreadHistoryMode::Legacy),
             ..StartThreadOptions::new(harness.config.clone())
@@ -4098,6 +4098,10 @@ async fn resume_and_cold_fork_restore_mcp_attribution_in_constructed_requests(
         .expect("start legacy source");
     let source_thread_id = source.thread_id;
     let source_thread = source.thread;
+    let runtime = &source_thread.session.services.local_agent_runtime;
+    let fresh = manager.read_thread_subtree(source_thread_id).await.unwrap();
+    assert_eq!(fresh[0].can_accept_direct_input, Some(true));
+    assert!(runtime.registered_root(source_thread_id).is_none());
     let turn_context = source_thread.session.new_default_turn().await;
     source_thread
         .session
@@ -4147,17 +4151,19 @@ async fn resume_and_cold_fork_restore_mcp_attribution_in_constructed_requests(
         .shutdown_and_wait()
         .await
         .expect("shutdown source thread");
-    assert!(
-        harness
-            .manager
-            .remove_thread(&source_thread_id)
-            .await
-            .is_some()
-    );
+    assert!(manager.remove_thread(&source_thread_id).await.is_some());
     drop(source_thread);
+    assert!(
+        manager
+            .read_thread_details(source_thread_id)
+            .await
+            .unwrap()
+            .agent_status
+            .is_none()
+    );
+    assert!(manager.get_thread(source_thread_id).await.is_err());
 
-    let forked = harness
-        .manager
+    let forked = manager
         .fork_legacy_thread(
             ForkSnapshot::Interrupted,
             StartThreadOptions::new(harness.config.clone()),
@@ -4165,8 +4171,7 @@ async fn resume_and_cold_fork_restore_mcp_attribution_in_constructed_requests(
         )
         .await
         .expect("fork unloaded source thread");
-    let resumed = harness
-        .manager
+    let resumed = manager
         .resume_legacy_thread_from_rollout(
             harness.config.clone(),
             rollout_path,
@@ -4176,6 +4181,14 @@ async fn resume_and_cold_fork_restore_mcp_attribution_in_constructed_requests(
         )
         .await
         .expect("resume source thread");
+    for thread in [&forked, &resumed] {
+        let runtime = &thread.thread.session.services.local_agent_runtime;
+        let before = runtime.registered_root(thread.thread_id);
+        let tree = manager.read_thread_subtree(thread.thread_id).await.unwrap();
+        assert_eq!(tree.len(), 1);
+        assert!(tree[0].agent_status.is_some());
+        assert_eq!(runtime.registered_root(thread.thread_id), before);
+    }
     let expected = McpAttribution {
         status: if record_invalid_source {
             McpAttributionStatus::AttributionError
@@ -5495,6 +5508,21 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
         .await
         .expect("grandchild spawn should succeed");
 
+    let tree = manager.read_thread_subtree(parent_thread_id).await.unwrap();
+    assert_eq!(tree.len(), 3);
+    let child = tree
+        .iter()
+        .find(|agent| agent.id == child_thread_id.to_string())
+        .unwrap();
+    assert_eq!(child.parent_thread_id, Some(parent_thread_id.to_string()));
+    assert_eq!(child.agent_role.as_deref(), Some("explorer"));
+    assert_eq!(
+        manager
+            .loaded_agent_root(grandchild_thread_id)
+            .await
+            .unwrap(),
+        parent_thread_id
+    );
     manager.remove_thread(&parent_thread_id).await;
 
     let mut subtree_thread_ids = manager
@@ -6194,4 +6222,362 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
         .shutdown_agent_tree(parent_thread_id)
         .await
         .expect("tree shutdown after partial subtree resume should succeed");
+}
+
+#[tokio::test]
+async fn v2_spawn_freezes_recipient_sources_and_preload_before_input_admission() {
+    let (home, mut config) = test_config().await;
+    let workspace = tempfile::tempdir().unwrap();
+    let recipient = workspace.path().join("recipient");
+    std::fs::create_dir(&recipient).unwrap();
+    std::fs::write(workspace.path().join("assignment"), "PARENT_SOURCE").unwrap();
+    std::fs::write(recipient.join("assignment"), "RECIPIENT_SOURCE").unwrap();
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.cwd =
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(workspace.path()).unwrap();
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_id, parent) = harness.start_thread().await;
+    let source = thread_spawn_source(
+        parent_id,
+        &parent.session_source,
+        next_thread_spawn_depth(&parent.session_source),
+        None,
+        Some("reader".to_string()),
+    )
+    .unwrap();
+    let resources = crate::agent::host_resources::tests::admission_resources(Arc::new({
+        let recipient = recipient.clone();
+        move |request, _| {
+            assert_eq!(request.parent_thread_id, parent_id);
+            assert_eq!(request.local_cwd.as_deref(), recipient.to_str());
+            std::fs::write(recipient.join("preload"), "PRELOAD_SOURCE").unwrap();
+            Box::pin(async move {
+                Ok(codex_protocol::agent_capture::ChildHostAdmissionResponse {
+                    thread_id: request.thread_id,
+                })
+            })
+        }
+    }));
+    assert!(parent.install_agent_host_resources(resources));
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let mut child_config = harness.config.clone();
+    let step = parent
+        .session
+        .capture_step_context(
+            parent.session.new_default_turn().await,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let environments = crate::agent::child_config::prepare_spawn_environments(
+        &step,
+        Some("recipient"),
+        &mut child_config,
+    )
+    .await
+    .unwrap();
+    let (agent, _) = control
+        .spawn(SpawnRequest {
+            caller: parent_id,
+            config: child_config,
+            input: AgentInput::UserInput(text_input("Read @assignment and @missing")),
+            source,
+            options: SpawnAgentOptions {
+                parent_thread_id: Some(parent_id),
+                environments: Some(environments),
+                preload: Some(codex_protocol::protocol::ReloadSelection {
+                    sources: vec!["@preload".to_string()],
+                }),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+    std::fs::write(recipient.join("assignment"), "CHANGED_AFTER_ACCEPTANCE").unwrap();
+    let child = harness.manager.get_thread(agent.thread_id).await.unwrap();
+    wait_for_recorded_user_message(&child, "RECIPIENT_SOURCE").await;
+    let history = child.session.clone_history().await;
+    let serialized = serde_json::to_string(&history.raw_items().collect::<Vec<_>>()).unwrap();
+    assert!(
+        serialized.contains("PRELOAD_SOURCE"),
+        "child history: {serialized}"
+    );
+    assert!(serialized.contains("CONTENT NOT ATTACHED"));
+    assert!(!serialized.contains("PARENT_SOURCE"));
+    assert!(!serialized.contains("CHANGED_AFTER_ACCEPTANCE"));
+    assert_eq!(parent.config().await.cwd.as_path(), workspace.path());
+    assert_eq!(child.session.reload_selection().await, None);
+    child.shutdown_and_wait().await.unwrap();
+    parent.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_message_restores_evicted_recipient_without_starting_a_turn() {
+    let (home, mut config) = test_config().await;
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("source"),
+        "RECIPIENT_AUTHORIZED_BYTES",
+    )
+    .unwrap();
+    config.cwd =
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(workspace.path()).unwrap();
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::Sqlite).unwrap();
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let root = harness
+        .manager
+        .start_thread(StartThreadOptions {
+            history_mode: Some(ThreadHistoryMode::Paginated),
+            ..StartThreadOptions::new(harness.config.clone())
+        })
+        .await
+        .unwrap();
+    let (parent_id, parent) = (root.thread_id, root.thread);
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let child =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "reader").await;
+    let thread = harness.manager.get_thread(child.thread_id).await.unwrap();
+    thread
+        .inject_response_items(vec![assistant_message(
+            "persisted",
+            Some(MessagePhase::FinalAnswer),
+        )])
+        .await
+        .unwrap();
+    thread.session.mark_interrupted();
+    *thread.session.active_turn.lock().await = None;
+    assert_eq!(
+        harness.manager.try_evict_v2_thread(thread).await.unwrap(),
+        ThreadEvictionOutcome::Evicted
+    );
+    let request = |message: &str| SendRequest {
+        caller: parent_id,
+        target: AgentTarget::Id(child.thread_id),
+        resume_config: harness.config.clone(),
+        input: AgentInput::Message {
+            message: AgentMessage::Plaintext(message.to_string()),
+            mode: MessageDeliveryMode::QueueOnly,
+        },
+        start_options: Default::default(),
+    };
+    control.send(request(r"No read: \@source")).await.unwrap();
+    assert!(harness.manager.get_thread(child.thread_id).await.is_err());
+    control.send(request("Read @source")).await.unwrap();
+    std::fs::write(workspace.path().join("source"), "CHANGED_AFTER_ACCEPTANCE").unwrap();
+    let restored = harness.manager.get_thread(child.thread_id).await.unwrap();
+    assert!(restored.session.active_turn.lock().await.is_none());
+    assert!(harness.manager.captured_ops().iter().any(|(id, op)| *id == child.thread_id && matches!(op,
+        Op::InterAgentCommunication { communication, .. }
+            if !communication.trigger_turn && communication.content.contains("RECIPIENT_AUTHORIZED_BYTES")
+                && !communication.content.contains("CHANGED_AFTER_ACCEPTANCE")
+    )));
+    restored.shutdown_and_wait().await.unwrap();
+    parent.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn child_host_admission_does_not_invent_a_local_workspace() {
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (_, parent) = harness.start_paginated_thread().await;
+    let admitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let resources = crate::agent::host_resources::tests::admission_resources(Arc::new({
+        let admitted = admitted.clone();
+        move |request, _| {
+            assert_eq!(request.local_cwd, None);
+            admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(codex_protocol::agent_capture::ChildHostAdmissionResponse {
+                    thread_id: request.thread_id,
+                })
+            })
+        }
+    }));
+    assert!(parent.install_agent_host_resources(resources));
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let child =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "reader").await;
+    assert!(admitted.load(std::sync::atomic::Ordering::SeqCst));
+    harness
+        .manager
+        .get_thread(child.thread_id)
+        .await
+        .unwrap()
+        .shutdown_and_wait()
+        .await
+        .unwrap();
+    parent.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn end_agent_validates_tree_and_joins_only_selected_subtree() {
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let manager = &harness.manager;
+    let (root, parent) = harness.start_paginated_thread().await;
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let child =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "child").await;
+    let sibling =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "sibling").await;
+    let child_thread = manager.get_thread(child.thread_id).await.unwrap();
+    let grandchild = spawn_v2_reload_test_child(
+        &control,
+        harness.config.clone(),
+        &child_thread,
+        "grandchild",
+    )
+    .await;
+    assert!(
+        manager
+            .end_agent(ThreadId::new(), child.thread_id)
+            .await
+            .is_err()
+    );
+    assert!(manager.end_agent(root, root).await.is_err());
+    for id in [
+        root,
+        child.thread_id,
+        grandchild.thread_id,
+        sibling.thread_id,
+    ] {
+        assert!(manager.get_thread(id).await.is_ok());
+    }
+    let mut ended = manager.end_agent(root, child.thread_id).await.unwrap();
+    ended.sort_by_key(|id| id.to_string());
+    let mut expected = vec![child.thread_id, grandchild.thread_id];
+    expected.sort_by_key(|id| id.to_string());
+    assert_eq!(ended, expected);
+    for id in ended {
+        assert!(manager.get_thread(id).await.is_err());
+    }
+    for id in [root, sibling.thread_id] {
+        assert!(manager.get_thread(id).await.is_ok());
+    }
+    control.shutdown_agent_tree(root).await.unwrap();
+}
+
+#[tokio::test]
+async fn foreign_operations_preserve_identity_and_cannot_restore_or_enroll_senders() {
+    use codex_app_server_protocol::{
+        AgentForeignOperation as Operation, AgentForeignOrigin, AgentForeignRequest,
+        AgentForeignResponse as Response,
+    };
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let manager = &harness.manager;
+    let (root, parent) = harness.start_paginated_thread().await;
+    let runtime = &parent.session.services.local_agent_runtime;
+    let control = runtime.control(parent.session.session_id());
+    let child =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "recipient").await;
+    let sender = ThreadId::new();
+    let request = AgentForeignRequest {
+        source: AgentForeignOrigin {
+            root_thread_id: ThreadId::new(),
+            actor_id: sender,
+            agent_path: AgentPath::try_from("/root/foreign").unwrap(),
+            turn_id: "foreign-turn".into(),
+            call_id: "foreign-call".into(),
+        },
+        target_thread_id: child.thread_id,
+        operation: Operation::Message {
+            message: "frozen foreign message".into(),
+        },
+    };
+    let response = manager
+        .receive_foreign_agent_operation(request.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        matches!(response, Response::Message { accepted: true, target_thread_id, .. } if target_thread_id == child.thread_id)
+    );
+    assert!(
+        manager
+            .captured_ops()
+            .iter()
+            .any(|(target, op)| *target == child.thread_id
+                && matches!(op,
+                    Op::InterAgentCommunication { communication, .. } if !communication.trigger_turn
+                        && communication.content.contains(&sender.to_string())
+                        && communication.content.contains("foreign-call")
+                        && communication.content.contains("frozen foreign message")
+                ))
+    );
+    assert!(runtime.ensure_agent_known(sender).is_err());
+    let mut inspect = request.clone();
+    inspect.operation = Operation::Inspect;
+    assert!(
+        matches!(manager.receive_foreign_agent_operation(inspect.clone(), CancellationToken::new()).await.unwrap(),
+        Response::Inspect { thread } if thread["id"] == child.thread_id.to_string() && thread["canAcceptDirectInput"] == false)
+    );
+    let mut list = request.clone();
+    list.operation = Operation::List { path_prefix: None };
+    assert!(
+        matches!(manager.receive_foreign_agent_operation(list, CancellationToken::new()).await.unwrap(),
+        Response::List { threads } if threads.as_array().is_some_and(|threads| threads.len() == 2 && threads.iter().any(|thread| thread["id"] == root.to_string())))
+    );
+    let mut local = request.clone();
+    local.source.root_thread_id = root;
+    let before = manager.captured_ops().len();
+    assert!(
+        manager
+            .receive_foreign_agent_operation(local, CancellationToken::new())
+            .await
+            .is_err()
+    );
+    let canceled = CancellationToken::new();
+    canceled.cancel();
+    assert!(
+        manager
+            .receive_foreign_agent_operation(request.clone(), canceled)
+            .await
+            .is_err()
+    );
+    assert_eq!(manager.captured_ops().len(), before);
+    control.shutdown_agent_tree(child.thread_id).await.unwrap();
+    let cold = manager.read_thread_details(child.thread_id).await.unwrap();
+    assert!(cold.agent_status.is_none());
+    assert_eq!(cold.parent_thread_id, Some(root.to_string()));
+    for operation in [
+        Operation::Inspect,
+        Operation::Message {
+            message: "no restore".into(),
+        },
+        Operation::SideQuestion {
+            question: "no restore".into(),
+        },
+    ] {
+        let mut request = request.clone();
+        request.operation = operation;
+        assert!(
+            manager
+                .receive_foreign_agent_operation(request, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert!(manager.get_thread(child.thread_id).await.is_err());
+    }
+    control.shutdown_agent_tree(root).await.unwrap();
 }

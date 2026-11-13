@@ -597,6 +597,14 @@ impl TurnContext {
         Arc::clone(&self.next_step_settings.load().model_info)
     }
 
+    /// Passive paired observation of the settings used by the next native step.
+    pub(crate) fn capture_current_model_settings(
+        &self,
+    ) -> (Arc<CatalogModel>, Option<ReasoningEffortConfig>) {
+        let settings = self.next_step_settings.load();
+        (Arc::clone(&settings.model_info), settings.effective_reasoning_effort())
+    }
+
     /// Legacy: returns the frozen initial-turn model metadata.
     /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn model_info(&self) -> &Arc<CatalogModel> {

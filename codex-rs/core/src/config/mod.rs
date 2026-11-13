@@ -1460,11 +1460,11 @@ impl MultiAgentV2Config {
             hide_spawn_agent_metadata: true,
             expose_spawn_agent_model_overrides: true,
             wait_agent_enabled: true,
-            disable_native_tools: true,
+            disable_native_tools: false,
             disable_direct_message: false,
             message_board_in_memory: false,
             message_board_remote: None,
-            non_code_mode_only: true,
+            non_code_mode_only: false,
         }
     }
 }
@@ -2918,7 +2918,9 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
     let wait_agent_enabled = base
         .and_then(|config| config.wait_agent_enabled)
         .unwrap_or(default.wait_agent_enabled);
-    let disable_native_tools = true;
+    let disable_native_tools = base
+        .and_then(|config| config.disable_native_tools)
+        .unwrap_or(default.disable_native_tools);
     let disable_direct_message = base
         .and_then(|config| config.disable_direct_message)
         .unwrap_or(default.disable_direct_message);

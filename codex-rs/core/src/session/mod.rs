@@ -1,4 +1,5 @@
 pub(crate) mod startup;
+pub(crate) mod auxiliary_snapshot;
 
 use crate::McpRefreshReason;
 use crate::PromptCacheKey;
@@ -254,6 +255,7 @@ pub(crate) use file_audio::FileAudioDurations;
 
 mod approved_plan;
 mod code_mode_warning;
+mod capture_delivery;
 mod config_refresh;
 pub(crate) mod context_window;
 mod daemon_recovery;
@@ -1737,6 +1739,20 @@ impl Session {
     }
 
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
+        let completed_compactions = match &conversation_history {
+            InitialHistory::Resumed(_) => match self.state_db() {
+                Some(db) => db
+                    .completed_compactions(self.thread_id)
+                    .await
+                    .unwrap_or_else(|error| {
+                        warn!("failed to read completed compactions: {error}");
+                        None
+                    }),
+                None => None,
+            },
+            InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => Some(0),
+        };
+        self.state.lock().await.completed_compactions = completed_compactions;
         let (is_subagent, is_paginated_subagent) = {
             let state = self.state.lock().await;
             let session_configuration = &state.session_configuration;
@@ -1923,6 +1939,20 @@ impl Session {
                 mark_thread_memory_mode_polluted_if_external_context(self, &turn_context, item)
                     .await;
             }
+        }
+        self.persist_completed_compactions().await;
+    }
+
+    pub(crate) async fn completed_compactions(&self) -> Option<u64> {
+        self.state.lock().await.completed_compactions
+    }
+
+    async fn persist_completed_compactions(&self) {
+        let count = self.state.lock().await.completed_compactions;
+        if let (Some(db), Some(count)) = (self.state_db(), count)
+            && let Err(error) = db.record_completed_compactions(self.thread_id, count).await
+        {
+            warn!("failed to retain completed compactions: {error}");
         }
     }
 
@@ -3096,6 +3126,14 @@ impl Session {
         content_token_count: Option<u64>,
         user_input_extension_data: Option<&BTreeMap<String, Value>>,
     ) {
+        let is_compaction = matches!(&item, TurnItem::ContextCompaction(_));
+        if is_compaction {
+            self.services.local_agent_runtime.record_feature_use(
+                self.thread_id,
+                item.id(),
+                codex_protocol::feature_use::FeatureUseEvent::ResetCompleted,
+            );
+        }
         record_turn_ttfm_metric(turn_context, &item).await;
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
             contributor
@@ -3122,6 +3160,10 @@ impl Session {
                 );
                 completed_at_ms
             });
+        if is_compaction {
+            let mut state = self.state.lock().await;
+            state.completed_compactions = state.completed_compactions.map(|count| count + 1);
+        }
         self.send_event(
             turn_context,
             EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -3134,6 +3176,9 @@ impl Session {
             }),
         )
         .await;
+        if is_compaction {
+            self.persist_completed_compactions().await;
+        }
     }
 
     /// Adds an execpolicy amendment to both the in-memory and on-disk policies so future
@@ -4090,6 +4135,7 @@ impl Session {
             .iter()
             .map(|envelope| envelope.item.clone())
             .collect::<Vec<_>>();
+        let progress_deliveries;
         {
             let mut state = self.state.lock().await;
             state
@@ -4131,9 +4177,30 @@ impl Session {
             state
                 .pending_audio_duration_ids
                 .extend(file_audio::file_ids(&items).cloned());
+            let previous_items = state.history.annotated_items().len();
             state
                 .history
                 .record_annotated_items(&mut items, model_info.truncation_policy.into());
+            progress_deliveries = state.history.annotated_items()[previous_items..]
+                .iter()
+                .filter_map(|item| item.metadata.as_ref())
+                .flat_map(|metadata| &metadata.capture_deliveries)
+                .filter(|receipt| !receipt.intervals.is_empty())
+                .map(|receipt| receipt.operation_id.clone())
+                .collect::<Vec<_>>();
+            if items.iter().any(|item| matches!(item.item,
+                ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::ToolSearchOutput { .. }
+            )) {
+                self.publish_progress_snapshots(&state.history);
+            }
+        }
+        for operation in progress_deliveries {
+            self.services.local_agent_runtime.record_feature_use(
+                self.thread_id, operation,
+                codex_protocol::feature_use::FeatureUseEvent::ProgressDelivered,
+            );
         }
         for image in image_preparations {
             self.services
@@ -4634,12 +4701,32 @@ impl Session {
     ) {
         let communication = communication.into();
         let mut response_item = communication.to_model_input_item();
+        let capture = communication.delivery.as_ref().and_then(|delivery| delivery.final_capture());
+        let capture_text = match capture.as_ref() {
+            Some(capture) => self.project_final_capture(capture).await,
+            None => String::new(),
+        };
         if let ResponseItem::AgentMessage {
             content,
             internal_chat_message_metadata_passthrough,
             ..
         } = &mut response_item
         {
+            if !capture_text.is_empty() {
+                content.push(codex_protocol::models::AgentMessageInputContent::InputText {
+                    text: capture_text,
+                });
+                // Existing metadata described only the original message content.
+                if let Some(metadata) = internal_chat_message_metadata_passthrough {
+                    if let Some(items) = &mut metadata.content_item_metadata {
+                        items.push(ContentItemMetadata::tool(Some(
+                            turn_context.config.multi_agent_v2.tool_namespace.clone()
+                                .map(ContentItemNamespace::from)
+                                .unwrap_or(ContentItemNamespace::Functions),
+                        )));
+                    }
+                }
+            }
             internal_chat_message_metadata_passthrough
                 .get_or_insert_default()
                 .content_item_metadata
@@ -4699,6 +4786,14 @@ impl Session {
             );
         }
         if let Some(delivery) = &communication.delivery {
+            if let Some((sender, operation)) = delivery.result_operation() {
+                self.services.local_agent_runtime.record_feature_use(
+                    sender, operation,
+                    codex_protocol::feature_use::FeatureUseEvent::FinalDelivered {
+                        changes: capture.is_some(),
+                    },
+                );
+            }
             delivery.consumed(self.thread_id);
         }
         self.persist_rollout_items(&[

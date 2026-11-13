@@ -89,12 +89,12 @@ async fn idle_eviction_preserves_worker_context_for_followup() -> Result<()> {
         ),
         (
             "send_message",
-            json!({"target": "worker", "message": "Use the new API for the migration."}),
+            json!({"target": "/root/worker", "message": "Use the new API for the migration."}),
             "",
         ),
         (
             "followup_task",
-            json!({"target": "worker", "message": "Continue the migration with the queued note."}),
+            json!({"target": "/root/worker", "message": "Continue the migration with the queued note."}),
             "I will continue with Mira using the new API.",
         ),
     ] {

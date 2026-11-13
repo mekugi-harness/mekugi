@@ -2,8 +2,39 @@
 
 use crate::session::InputQueueActivity;
 use crate::session::session::Session;
+use codex_protocol::ThreadId;
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::watch;
+
+/// Non-consuming view of native input. Final mail is not ordinary addressed mail.
+#[derive(Default)]
+pub(crate) struct PendingWaitActivity {
+    pub(crate) steered: bool,
+    pub(crate) message: bool,
+    pub(crate) results: HashSet<ThreadId>,
+}
+
+impl PendingWaitActivity {
+    pub(crate) fn observe(&mut self, message: &crate::PendingAgentMessage) {
+        if let Some(sender) = message.result_sender() {
+            self.results.insert(sender);
+        } else {
+            self.message = true;
+        }
+    }
+}
+
+pub(crate) async fn pending_wait_activity(session: &Session, turn_id: &str) -> PendingWaitActivity {
+    let turn_state = session
+        .input_queue
+        .turn_state_for_sub_id(&session.active_turn, turn_id)
+        .await;
+    session
+        .input_queue
+        .pending_wait_activity(turn_state.as_deref())
+        .await
+}
 
 /// Why a native or host input-activity wait finished.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -91,6 +91,7 @@ impl ThreadMetadataSync {
             cli_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             git_info: git_info.map(git_info_patch_from_observation),
             memory_mode: Some(params.metadata.memory_mode),
+            completed_compactions: Some(0),
             ..Default::default()
         };
         Self {
@@ -440,6 +441,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.approval_mode.is_some()
         || update.permission_profile.is_some()
         || update.token_usage.is_some()
+        || update.completed_compactions.is_some()
         || update.first_user_message.is_some()
         || update.git_info.is_some()
         || update.memory_mode.is_some()

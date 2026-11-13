@@ -1,6 +1,8 @@
 mod shared;
 
 mod account;
+mod agent_observation;
+pub use codex_protocol::agent_capture::*;
 mod application;
 mod apps;
 mod attestation;
@@ -15,6 +17,7 @@ mod diagnostics;
 mod environment;
 mod experimental_feature;
 mod feedback;
+mod feature_use;
 mod fs;
 mod gcp;
 mod hook;
@@ -45,6 +48,7 @@ mod user_verification;
 mod windows_sandbox;
 
 pub use account::*;
+pub use agent_observation::*;
 pub use application::*;
 pub use apps::*;
 pub use attestation::*;
@@ -59,6 +63,7 @@ pub use diagnostics::*;
 pub use environment::*;
 pub use experimental_feature::*;
 pub use feedback::*;
+pub use feature_use::*;
 pub use fs::*;
 pub use gcp::*;
 pub use hook::*;

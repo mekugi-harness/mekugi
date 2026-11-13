@@ -124,6 +124,7 @@ impl TurnSummary {
 
 #[derive(Default)]
 pub(crate) struct ThreadState {
+    pub(crate) resource_host: Option<ConnectionId>,
     goal_resume_lock: Arc<Mutex<()>>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
@@ -397,13 +398,15 @@ struct ThreadStateManagerInner {
     thread_ids_by_connection: HashMap<ConnectionId, HashSet<ThreadId>>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
+    pub(crate) resource_disconnect: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct ThreadStateManager {
+    pub(crate) feature_use: Arc<StdMutex<crate::feature_use::FeatureUse>>,
     state: Arc<Mutex<ThreadStateManagerInner>>,
     // Extension event sinks are synchronous, so they need an await-free way to
     // enqueue work on the active per-thread listener.
@@ -462,6 +465,18 @@ impl ThreadStateManager {
             .await
             .live_connections
             .insert(connection_id, capabilities);
+    }
+
+    pub(crate) async fn resource_host_disconnect(
+        &self,
+        connection: ConnectionId,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.state
+            .lock()
+            .await
+            .live_connections
+            .get(&connection)
+            .map(|capabilities| capabilities.resource_disconnect.clone())
     }
 
     pub(crate) async fn first_attestation_capable_connection_for_thread(
@@ -739,7 +754,9 @@ impl ThreadStateManager {
     pub(crate) async fn remove_connection(&self, connection_id: ConnectionId) -> Vec<ThreadId> {
         {
             let mut state = self.state.lock().await;
-            state.live_connections.remove(&connection_id);
+            if let Some(capabilities) = state.live_connections.remove(&connection_id) {
+                capabilities.resource_disconnect.cancel();
+            }
             let thread_ids = state
                 .thread_ids_by_connection
                 .remove(&connection_id)

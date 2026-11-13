@@ -83,7 +83,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         "send a note",
         "queued-mail",
         "send_message",
-        json!({ "target": "first", "message": MAIL }),
+        json!({ "target": "/root/first", "message": MAIL }),
     )
     .await;
     test.submit_turn("send a note").await?;
@@ -121,7 +121,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         "send while unloaded",
         "late-mail",
         "send_message",
-        json!({ "target": "first", "message": LATE_MAIL }),
+        json!({ "target": "/root/first", "message": LATE_MAIL }),
     )
     .await;
     test.submit_turn("send while unloaded").await?;
@@ -151,7 +151,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         "drain the note",
         "followup",
         "followup_task",
-        json!({ "target": "first", "message": FOLLOWUP }),
+        json!({ "target": "/root/first", "message": FOLLOWUP }),
     )
     .await;
     let (at_sampling, pending_at_sampling) = mpsc::channel();
@@ -195,7 +195,7 @@ async fn idle_mail_survives_eviction_and_preserves_followup_order() -> Result<()
         "send after followup",
         "after-followup",
         "send_message",
-        json!({ "target": "first", "message": AFTER_FOLLOWUP }),
+        json!({ "target": "/root/first", "message": AFTER_FOLLOWUP }),
     )
     .await;
     test.submit_turn("send after followup").await?;

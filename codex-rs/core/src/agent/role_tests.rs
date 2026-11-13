@@ -231,88 +231,24 @@ async fn apply_role_preserves_unspecified_keys() {
 }
 
 #[tokio::test]
-async fn apply_role_personality_keeps_inherited_instructions() {
-    for (parent_personality, role_contents, provenance) in [
-        (
-            "friendly",
-            "personality = \"none\"",
-            BaseInstructionsProvenance::Model {
-                model: "parent-model".to_string(),
-            },
-        ),
-        (
-            "friendly",
-            "[features]\npersonality = false",
-            BaseInstructionsProvenance::Model {
-                model: "parent-model".to_string(),
-            },
-        ),
-        (
-            "none",
-            "[features]\npersonality = false",
-            BaseInstructionsProvenance::Model {
-                model: "parent-model".to_string(),
-            },
-        ),
-        (
-            "friendly",
-            "personality = \"none\"\n[features]\npersonality = false",
-            BaseInstructionsProvenance::Model {
-                model: "parent-model".to_string(),
-            },
-        ),
-        (
-            "friendly",
-            "personality = \"pragmatic\"",
-            BaseInstructionsProvenance::Model {
-                model: "parent-model".to_string(),
-            },
-        ),
-        (
-            "none",
-            "personality = \"friendly\"",
-            BaseInstructionsProvenance::Model {
-                model: "parent-model".to_string(),
-            },
-        ),
-        (
-            "friendly",
-            "personality = \"none\"",
-            BaseInstructionsProvenance::Custom,
-        ),
-    ] {
-        let (home, mut config) = test_config_with_cli_overrides(vec![
-            (
-                "personality".to_string(),
-                TomlValue::String(parent_personality.to_string()),
-            ),
-            ("features.personality".to_string(), TomlValue::Boolean(true)),
-        ])
-        .await;
-        let role_path = write_role_config(&home, "personality-role.toml", role_contents).await;
-        config.agent_roles.insert(
-            "custom".to_string(),
-            AgentRoleConfig {
-                description: None,
-                config_file: Some(role_path),
-                nickname_candidates: None,
-            },
-        );
+async fn role_personality_configuration_preserves_parent_instructions() {
+    for personality in ["none", "friendly", "pragmatic"] {
+        let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+        let contents = format!("personality = \"{personality}\"");
+        let role_path = write_role_config(&home, "personality-role.toml", &contents).await;
+        config.agent_roles.insert("custom".to_string(), AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        });
+        let provenance = BaseInstructionsProvenance::Model { model: "parent-model".to_string() };
         config.base_instructions = Some("inherited instructions".to_string());
         config.base_instructions_provenance = Some(provenance.clone());
 
-        apply_role_to_config(&mut config, Some("custom"))
-            .await
-            .expect("custom role should apply");
+        apply_role_to_config(&mut config, Some("custom")).await.expect("role should apply");
 
-        let expected = (Some("inherited instructions".to_string()), Some(provenance));
-        assert_eq!(
-            (
-                config.base_instructions,
-                config.base_instructions_provenance
-            ),
-            expected
-        );
+        assert_eq!(config.base_instructions.as_deref(), Some("inherited instructions"));
+        assert_eq!(config.base_instructions_provenance, Some(provenance));
     }
 }
 

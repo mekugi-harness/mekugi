@@ -141,6 +141,8 @@ mod models_refresh_worker;
 mod notification_media;
 mod otel_config;
 mod otel_reloader;
+mod agent_host;
+mod feature_use;
 mod outgoing_message;
 mod plugin_config_reload;
 mod request_processors;

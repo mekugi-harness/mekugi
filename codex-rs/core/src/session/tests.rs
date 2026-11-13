@@ -11029,9 +11029,9 @@ async fn build_initial_context_adds_multi_agent_v2_root_usage_hint_as_developer_
         "expected standalone root usage hint developer message, got {developer_messages:?}"
     );
     assert!(
-        !developer_messages
+        !developer_messages.iter().any(|message| message
             .iter()
-            .any(|message| message.as_slice() == ["Subagent guidance."]),
+            .any(|text| text.starts_with("Subagent guidance."))),
         "did not expect subagent usage hint for root thread, got {developer_messages:?}"
     );
 }
@@ -11072,11 +11072,20 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
             .contains("<context_window>\nAgent name: /root/worker\n")),
         "expected subagent context window to include its canonical name, got {developer_messages:?}"
     );
+    let subagent_guidance = developer_messages
+        .iter()
+        .flatten()
+        .find(|text| text.starts_with("Subagent guidance."))
+        .expect("standalone subagent usage hint developer message");
     assert!(
-        developer_messages
-            .iter()
-            .any(|message| message.as_slice() == ["Subagent guidance."]),
-        "expected standalone subagent usage hint developer message, got {developer_messages:?}"
+        subagent_guidance
+            .contains("authenticated parent assignment carries the parent's authority")
+    );
+    assert!(subagent_guidance.contains("functions.request_user_input_async"));
+    assert!(subagent_guidance.contains("Route assignment changes and blockers to your parent."));
+    assert!(
+        subagent_guidance
+            .contains("Include exact mchanges source references in your ordinary final answer")
     );
     assert!(
         !developer_messages

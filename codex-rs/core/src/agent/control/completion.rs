@@ -8,6 +8,7 @@ use crate::TurnStartOptions;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
+use crate::agent_communication::FinalCaptureAttachment;
 use crate::session_prefix::format_guardian_interruption_message;
 use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
@@ -21,6 +22,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_rollout_trace::ThreadTraceContext;
 use tracing::debug;
+use std::sync::Arc;
 
 impl LocalAgentControl {
     /// Routes a captured terminal outcome without retaining the child's live turn context.
@@ -103,9 +105,57 @@ impl LocalAgentControl {
                 &status,
             ),
         };
-        let Some(message) = message else {
+        let Some(mut message) = message else {
             return;
         };
+        let mut context =
+            AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
+        if let AgentStatus::Completed(answer) = &status {
+            context.result_operation = Some(outcome.turn_id.clone());
+            let sources = answer.as_deref()
+                .map(crate::compact_token_budget::reload::completion_sources)
+                .unwrap_or_default();
+            if !sources.is_empty() {
+                let prepared = async {
+                    let resources = self.runtime.host_resources.get()
+                        .ok_or_else(|| "capture resource owner unavailable".to_string())?;
+                    let recipient_cwd = match self.inspect_agent(parent_thread_id).await
+                        .map_err(|error| error.to_string())? {
+                        crate::agent::api::AgentInfo::Loaded { config, .. } =>
+                            Some(config.cwd().to_string_lossy().into_owned()),
+                        crate::agent::api::AgentInfo::Unloaded(_) => {
+                            let manager = self.runtime.upgrade().map_err(|error| error.to_string())?;
+                            let stored = manager.read_stored_thread(codex_thread_store::ReadThreadParams {
+                                thread_id: parent_thread_id, include_archived: true, include_history: false,
+                            }).await.map_err(|error| error.to_string())?;
+                            Some(stored.cwd.to_string_lossy().into_owned())
+                        }
+                    };
+                    let request = codex_protocol::agent_capture::FinalCaptureRequest {
+                        root_thread_id: self.session_id.into(),
+                        thread_id: outcome.thread_id,
+                        operation_id: outcome.turn_id.clone(),
+                        recipient_thread_id: parent_thread_id,
+                        recipient_cwd: recipient_cwd.clone(),
+                        sources,
+                    };
+                    let capture = (resources.prepare_final_capture)(request, self.runtime.shutdown.child_token())
+                        .await.map_err(|error| error.to_string())?;
+                    Ok::<_, String>(capture.capture.map(|capture| Arc::new(FinalCaptureAttachment {
+                        root_thread_id: self.session_id.into(),
+                        sender_thread_id: outcome.thread_id,
+                        operation_id: outcome.turn_id.clone(),
+                        recipient_cwd,
+                        resource_ref: capture.resource_ref,
+                        full_text: capture.full_text,
+                    })))
+                }.await;
+                match prepared {
+                    Ok(capture) => context.final_capture = capture,
+                    Err(error) => message.push_str(&format!("\nCONTENT NOT ATTACHED: {error}\n")),
+                }
+            }
+        }
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = trace.is_enabled().then(|| message.clone());
@@ -116,8 +166,6 @@ impl LocalAgentControl {
             message,
             /*trigger_turn*/ false,
         );
-        let context =
-            AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
         let delivery = self
             .send_inter_agent_communication(
                 parent_thread_id,

@@ -73,7 +73,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         "queue a followup",
         "queued-mail",
         "followup_task",
-        json!({ "target": "first", "message": QUEUED_TASK }),
+        json!({ "target": "/root/first", "message": QUEUED_TASK }),
     )
     .await;
     let worker = mount_completed_worker(&server, QUEUED_TASK, "queued-mail").await;
@@ -197,7 +197,7 @@ async fn queued_mail_and_cancelled_eviction_keep_worker_ownership() -> Result<()
         "send during eviction",
         "late-mail",
         "send_message",
-        json!({ "target": "first", "message": "must not disappear behind shutdown" }),
+        json!({ "target": "/root/first", "message": "must not disappear behind shutdown" }),
     )
     .await;
     let send = test.submit_turn("send during eviction");

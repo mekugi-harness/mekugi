@@ -560,6 +560,11 @@ async fn apply_metadata_update(
                     message: format!("failed to update thread metadata for {thread_id}: {err}"),
                 })?;
             }
+            if let Some(count) = patch.completed_compactions
+                && let Err(err) = state_db.record_completed_compactions(thread_id, count).await
+            {
+                warn!("failed to retain completed compactions for {thread_id}: {err}");
+            }
             if existing.is_some()
                 && let Some(project_id) = project_id.as_ref()
             {
@@ -794,6 +799,7 @@ fn has_observed_metadata_facts(patch: &ThreadMetadataPatch) -> bool {
         || patch.approval_mode.is_some()
         || patch.permission_profile.is_some()
         || patch.token_usage.is_some()
+        || patch.completed_compactions.is_some()
         || patch.first_user_message.is_some()
 }
 

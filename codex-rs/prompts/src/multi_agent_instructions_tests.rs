@@ -42,3 +42,30 @@ fn role_segment_filters_base_and_appends_bundled_guidance() {
         );
     }
 }
+
+#[test]
+fn subagent_guidance_preserves_selected_role_and_attribution() {
+    let configured = MultiAgentRoleInstructions::Configured("Configured role.".to_string());
+    let composed = MultiAgentRoleInstructions::Composed {
+        base: "Catalog role.".to_string(),
+        marked: true,
+        omit_update_plan_instructions: false,
+        max_concurrency: 2,
+        wait_agent_enabled: false,
+        expose_model_overrides: false,
+    };
+    for instructions in [configured, composed] {
+        let markers = instructions.markers();
+        let base = instructions.body().into_text().unwrap();
+        let instructions = instructions.with_subagent_guidance();
+        let text = instructions.body().into_text().unwrap();
+        assert_eq!(instructions.markers(), markers);
+        assert!(text.starts_with(base.lines().next().unwrap()));
+        assert!(text.contains("authenticated parent assignment carries the parent's authority"));
+        assert!(text.contains("functions.request_user_input_async"));
+        assert!(text.contains("Route assignment changes and blockers to your parent."));
+        assert!(
+            text.contains("Include exact mchanges source references in your ordinary final answer")
+        );
+    }
+}
