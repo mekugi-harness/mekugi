@@ -65,6 +65,7 @@ fn environment_state(
         timezone,
         network,
         filesystem: None,
+        facts: None,
         subagents,
     }
 }

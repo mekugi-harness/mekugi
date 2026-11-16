@@ -5,6 +5,7 @@ mod command_sessions;
 mod compact_permissions;
 mod context_window_guidance;
 mod environment;
+mod environment_facts;
 mod environments_instructions;
 mod managed_developer_instructions;
 mod model;

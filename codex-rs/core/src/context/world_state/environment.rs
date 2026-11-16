@@ -4,6 +4,7 @@ use super::SectionTransition;
 use super::WorldStateSection;
 use super::WorldStateUpdate;
 use super::WorldStateUpdateContent;
+use super::environment_facts::EnvironmentFacts;
 use crate::context::ContextualUserFragment;
 use crate::context::environment_context::FileSystemContext;
 use crate::context::environment_context::NetworkContext;
@@ -17,6 +18,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::input_text;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
 use serde::Serialize;
@@ -42,6 +44,7 @@ pub(crate) struct EnvironmentsState {
     network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
     subagents: Option<String>,
+    facts: Option<EnvironmentFacts>,
 }
 
 impl EnvironmentsState {
@@ -78,7 +81,24 @@ impl EnvironmentsState {
                 )
             }),
             subagents: None,
+            facts: None,
         }
+    }
+
+    pub(crate) async fn with_facts(
+        mut self,
+        cwd: &AbsolutePathBuf,
+        previous: Option<&serde_json::Value>,
+    ) -> Self {
+        self.facts = match previous
+            .and_then(|value| serde_json::from_value::<EnvironmentsSnapshot>(value.clone()).ok())
+            .and_then(|snapshot| snapshot.facts)
+            .filter(|facts| &facts.cwd == cwd)
+        {
+            Some(facts) => Some(facts),
+            None => Some(EnvironmentFacts::acquire(cwd).await),
+        };
+        self
     }
 
     pub(crate) fn with_subagents(mut self, subagents: String) -> Self {
@@ -107,6 +127,7 @@ impl EnvironmentsState {
             network: self.network.clone(),
             filesystem: self.filesystem.clone(),
             subagents: self.subagents.clone(),
+            facts: self.facts.clone(),
         }
     }
 }
@@ -142,6 +163,7 @@ impl WorldStateSection for EnvironmentsState {
             network: self.network.as_ref().map(NetworkContext::render),
             filesystem: self.filesystem.as_ref().map(FileSystemContext::render),
             subagents: self.subagents.clone(),
+            facts: self.facts.clone(),
         };
         let empty = EnvironmentsSnapshot::default();
         let previous = match previous {
@@ -154,7 +176,8 @@ impl WorldStateSection for EnvironmentsState {
             || current.current_date != previous.current_date
             || current.timezone != previous.timezone
             || current.network != previous.network
-            || current.filesystem != previous.filesystem;
+            || current.filesystem != previous.filesystem
+            || current.facts != previous.facts;
         let multiple_environments = self.environments.len() > 1;
         let previous_multiple_environments = previous.environments.len() > 1;
         let mut updates = self
@@ -196,6 +219,10 @@ impl WorldStateSection for EnvironmentsState {
                 network: self.network.clone(),
                 filesystem: self.filesystem.clone(),
                 subagents: self.subagents.clone(),
+                facts: self
+                    .facts
+                    .clone()
+                    .filter(|_| current.facts != previous.facts),
             });
             WorldStateUpdate {
                 placement: Placement::Mergeable,
@@ -240,6 +267,7 @@ pub(crate) struct RenderedEnvironments {
     network: Option<NetworkContext>,
     filesystem: Option<FileSystemContext>,
     pub(crate) subagents: Option<String>,
+    facts: Option<EnvironmentFacts>,
 }
 
 enum EnvironmentUpdate {
@@ -329,6 +357,12 @@ impl ContextualUserFragment for RenderedEnvironments {
             }
             rendered.push_str("  </subagents>\n");
         }
+        if let Some(facts) = &self.facts {
+            rendered.push_str(
+                "  Reuse captured facts; re-check only facts later work may have changed.\n",
+            );
+            push_xml_escaped_text(&mut rendered, &facts.text);
+        }
         input_text(rendered)
     }
 }
@@ -392,6 +426,8 @@ pub(crate) struct EnvironmentsSnapshot {
     network: Option<String>,
     filesystem: Option<String>,
     subagents: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    facts: Option<EnvironmentFacts>,
 }
 
 #[derive(Deserialize, Serialize)]

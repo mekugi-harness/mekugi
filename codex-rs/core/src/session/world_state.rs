@@ -328,6 +328,7 @@ impl Session {
                 send_user_message_async_available,
             ));
         }
+        let previous_world_state = self.state.lock().await.history.world_state_checkpoint();
         if turn_context.config.include_environment_context {
             world_state.host_roster_reader = self.host_roster_reader(turn_context).cloned();
             let current_date = if turn_context.config.include_environment_context_time {
@@ -347,6 +348,18 @@ impl Session {
                     turn_context,
                     &step_context.environments,
                     current_date,
+                )
+                .await
+                .with_facts(
+                    step_context
+                        .environments
+                        .local_environment_cwd()
+                        .as_ref()
+                        .unwrap_or(&turn_context.config.cwd),
+                    previous_world_state
+                        .as_ref()
+                        .filter(|_| !new_window)
+                        .and_then(|value| value.state.get("environments")),
                 )
                 .await
                 .with_subagents(environment_subagents),
@@ -397,7 +410,6 @@ impl Session {
             ));
         }
         let environments = step_context.environments.to_selections();
-        let previous_world_state = self.state.lock().await.history.world_state_checkpoint();
         for contributor in self.services.extensions.context_contributors() {
             for section in contributor
                 .contribute_world_state(WorldStateContributionInput {
