@@ -315,9 +315,6 @@ async fn websocket_transport_allows_turn_interrupt_during_drain() -> Result<()> 
     "clientUserMessageId": "queued-before-drain",
     "input": [{"type": "text", "text": "continue from queue"}],
 }); "persisted queue")]
-#[test_case::test_case("thread/goal/set", json!({
-    "objective": "continue the goal",
-}); "goal continuation")]
 #[tokio::test]
 async fn websocket_transport_drain_stops_automatic_turns(
     rpc_method: &str,

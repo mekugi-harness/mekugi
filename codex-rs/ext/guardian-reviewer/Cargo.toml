@@ -18,7 +18,6 @@ codex-analytics = { workspace = true }
 codex-context-fragments = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-features = { workspace = true }
-codex-feedback = { workspace = true }
 codex-file-system = { workspace = true }
 codex-guardian-context = { workspace = true }
 codex-history = { workspace = true }

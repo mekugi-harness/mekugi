@@ -298,7 +298,6 @@ impl InProcessClientStartArgs {
             cloud_config_bundle: self.cloud_config_bundle,
             embedded_network_policy: self.embedded_network_policy,
             thread_config_loader: Arc::new(NoopThreadConfigLoader),
-            feedback: self.feedback,
             log_db: self.log_db,
             state_db: self.state_db,
             environment_manager: self.environment_manager,

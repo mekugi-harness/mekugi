@@ -65,7 +65,6 @@ use codex_core::config::find_codex_home;
 use codex_exec_server::EnvironmentManager;
 use codex_exec_server::ExecServerRuntimeOptions;
 use codex_features::Feature;
-use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::state_db as rollout_state_db;
 use codex_state::log_db;
@@ -95,17 +94,12 @@ fn is_unsupported_untrusted_approval_policy_error(err: &std::io::Error) -> bool 
     )
 }
 
-pub use codex_agent_message_board_host::delete_agent_message_boards;
-pub use codex_agent_message_board_host::install_agent_message_board;
-
 mod analytics_utils;
-mod app_info;
 mod app_server_tracing;
 mod attestation;
 mod auth_mode;
 mod bespoke_event_handling;
 mod code_mode_host;
-mod codex_home_metrics;
 mod command_exec;
 mod config_layer;
 mod startup_config;
@@ -142,7 +136,6 @@ mod models;
 mod models_refresh_worker;
 mod notification_media;
 mod otel_config;
-mod otel_reloader;
 mod outgoing_message;
 mod plugin_config_reload;
 mod request_processors;
@@ -170,7 +163,6 @@ pub use crate::transport::take_remote_control_disabled_env;
 pub use crate::transport::verified_local_daemon_socket;
 
 const LOG_FORMAT_ENV_VAR: &str = "LOG_FORMAT";
-const OTEL_SERVICE_NAME: &str = "codex-app-server";
 #[cfg(debug_assertions)]
 const TEST_USER_CONFIG_FILE_ENV_VAR: &str = "CODEX_APP_SERVER_TEST_USER_CONFIG_FILE";
 
@@ -516,7 +508,7 @@ pub async fn run_main_with_transport_options(
     cli_config_overrides: CliConfigOverrides,
     loader_overrides: LoaderOverrides,
     strict_config: bool,
-    default_analytics_enabled: bool,
+    _default_analytics_enabled: bool,
     transport: AppServerTransport,
     session_source: SessionSource,
     auth: WebsocketAuthSettings,
@@ -652,20 +644,6 @@ pub async fn run_main_with_transport_options(
     .map(Arc::new)
     .map_err(std::io::Error::other)?;
 
-    let otel = codex_core::otel_init::build_provider(
-        &config,
-        env!("CARGO_PKG_VERSION"),
-        Some(OTEL_SERVICE_NAME),
-        default_analytics_enabled,
-    )
-    .map_err(|e| {
-        std::io::Error::new(
-            ErrorKind::InvalidData,
-            format!("error loading otel config: {e}"),
-        )
-    })?;
-    codex_core::otel_init::record_process_start(otel.as_ref(), OTEL_SERVICE_NAME);
-    codex_core::otel_init::install_sqlite_telemetry(otel.as_ref(), OTEL_SERVICE_NAME);
     let unix_socket_startup_lock = match &transport {
         AppServerTransport::UnixSocket { .. } => {
             let startup_lock_path = app_server_startup_lock_path(&codex_home)?;
@@ -733,7 +711,6 @@ pub async fn run_main_with_transport_options(
         outgoing_tx,
         analytics_events_client.clone(),
     ));
-    let feedback = CodexFeedback::new();
 
     // Install a simple subscriber so `tracing` output is visible. Users can
     // control the log level with `RUST_LOG` and switch to JSON logs with
@@ -755,26 +732,17 @@ pub async fn run_main_with_transport_options(
             .boxed(),
     };
 
-    let log_write_warning = log_write_warning::LogWriteWarningReporter::new(
-        feedback.clone(),
-        &outgoing_message_sender,
-        &config,
-    );
-    let feedback_layer = feedback.logger_layer();
-    let feedback_metadata_layer = feedback.metadata_layer();
+    let log_write_warning =
+        log_write_warning::LogWriteWarningReporter::new(&outgoing_message_sender);
     let log_db = state_db
         .clone()
         .map(|state_db| log_db::start(state_db, log_write_warning.clone()));
     let log_db_layer = log_db
         .clone()
         .map(|layer| layer.with_filter(log_db::default_filter()));
-    let (otel_layers, otel_logger_reload_handle) = otel_reloader::layers(otel.as_ref());
     let _ = tracing_subscriber::registry()
         .with(stderr_fmt)
-        .with(feedback_layer)
-        .with(feedback_metadata_layer)
         .with(log_db_layer)
-        .with(otel_layers)
         .try_init();
     if let Some(error) = state_db.as_ref().and_then(|db| db.diagnostic_logs_error()) {
         tracing::warn!(
@@ -948,20 +916,6 @@ pub async fn run_main_with_transport_options(
     }
     transport_accept_handles.push(remote_control_accept_handle);
 
-    // Only the standalone server measures its local home, not embedded/cloud runtimes.
-    if let Some(metrics) = otel.as_ref().and_then(codex_otel::OtelProvider::metrics) {
-        codex_home_metrics::spawn(&config, metrics.clone(), transport_shutdown_token.clone());
-    }
-
-    let otel_reloader_handle = otel_reloader::spawn(
-        otel,
-        otel_logger_reload_handle,
-        config_manager.clone(),
-        Arc::clone(&auth_manager),
-        default_analytics_enabled,
-        transport_shutdown_token.clone(),
-    );
-
     let outbound_handle = tokio::spawn(async move {
         let mut outbound_connections = HashMap::<ConnectionId, OutboundConnectionState>::new();
         loop {
@@ -1038,7 +992,7 @@ pub async fn run_main_with_transport_options(
             startup_cwd,
             config_manager,
             environment_manager,
-            feedback: feedback.clone(),
+
             log_db,
             state_db: state_db.clone(),
             config_warnings,
@@ -1423,7 +1377,6 @@ pub async fn run_main_with_transport_options(
     let _ = outbound_handle.await;
 
     transport_shutdown_token.cancel();
-    let _ = otel_reloader_handle.await;
     for handle in transport_accept_handles {
         let _ = handle.await;
     }

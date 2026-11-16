@@ -20,7 +20,6 @@ codex-api = { workspace = true }
 codex-agent-identity = { workspace = true }
 codex-aws-auth = { workspace = true }
 codex-http-client = { workspace = true }
-codex-feedback = { workspace = true }
 codex-features = { workspace = true }
 codex-login = { workspace = true }
 codex-runtime-agent-instance = { workspace = true }

@@ -26,7 +26,6 @@ use codex_config::LoaderOverrides;
 use codex_config::NoopThreadConfigLoader;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
-use codex_feedback::CodexFeedback;
 use codex_login::AuthCredentialsStoreMode;
 use codex_protocol::protocol::SessionSource;
 use core_test_support::responses;
@@ -150,7 +149,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{}/metrics", protocol = "json" 
         cloud_config_bundle: CloudConfigBundleLoader::default(),
         embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(NoopThreadConfigLoader),
-        feedback: CodexFeedback::new(),
+
         log_db: None,
         state_db: None,
         environment_manager: Arc::new(environment_manager),

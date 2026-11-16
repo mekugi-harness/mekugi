@@ -1,5 +1,4 @@
 use codex_config::types::PluginsConfigToml;
-use codex_connectors_extension::PluginAppProvider;
 use codex_core::config::Config;
 use codex_core_plugins::ExecutorPluginProviderError;
 use codex_core_plugins::PluginIdentity;
@@ -125,14 +124,7 @@ impl PluginContributor {
         };
         let metadata = match plugin {
             Some(plugin) => {
-                // MCP server and app declarations are separate
-                // executor-owned files. Read them together so a remote environment only
-                // pays for the slower read instead of both reads back-to-back.
-                let (servers, app_declarations) = tokio::join!(
-                    PluginMcpProvider.load(&plugin),
-                    PluginAppProvider.load(&plugin)
-                );
-                let servers = servers.unwrap_or_else(|err| {
+                let servers = PluginMcpProvider.load(&plugin).await.unwrap_or_else(|err| {
                     tracing::warn!(
                         selected_root = selected_root.id,
                         error = %err,
@@ -140,25 +132,13 @@ impl PluginContributor {
                     );
                     Vec::new()
                 });
-                let connector_ids = app_declarations
-                    .unwrap_or_else(|err| {
-                        tracing::warn!(
-                            selected_root = selected_root.id,
-                            error = %err,
-                            "failed to load selected plugin apps"
-                        );
-                        Vec::new()
-                    })
-                    .into_iter()
-                    .map(|declaration| declaration.connector_id.0)
-                    .collect();
                 let CapabilityRootLocation::Environment { environment_id, .. } =
                     &selected_root.location;
                 Some(SelectedPluginContribution {
                     plugin_display_name: plugin.plugin().manifest().display_name().to_string(),
                     source_environment_id: environment_id.clone(),
                     servers,
-                    connector_ids,
+                    connector_ids: Vec::new(),
                 })
             }
             None => None,

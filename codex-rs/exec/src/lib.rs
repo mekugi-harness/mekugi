@@ -801,7 +801,6 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         strict_config,
         cloud_config_bundle,
         embedded_network_policy,
-        feedback: CodexFeedback::new(),
         log_db: None,
         state_db: state_db.clone(),
         environment_manager: std::sync::Arc::new(environment_manager),

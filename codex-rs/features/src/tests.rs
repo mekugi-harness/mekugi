@@ -1017,3 +1017,34 @@ fn model_change_suppression_config_preserves_omission_and_explicit_values() {
         );
     }
 }
+
+#[test]
+fn mekugi_excludes_codex_services_even_when_configured() {
+    let excluded = [
+        Feature::Goals,
+        Feature::AgentMessageBoard,
+        Feature::AgentMessageBoardMcp,
+        Feature::Apps,
+        Feature::RuntimeMetrics,
+        Feature::GuardianV3,
+    ];
+    let features_toml = FeaturesToml::from(
+        excluded
+            .into_iter()
+            .map(|feature| (feature.key().to_string(), true))
+            .collect::<BTreeMap<_, _>>(),
+    );
+    let features = Features::from_sources(
+        FeatureConfigSource {
+            features: Some(&features_toml),
+            ..Default::default()
+        },
+        FeatureConfigSource::default(),
+        FeatureOverrides::default(),
+    );
+    for feature in excluded {
+        assert!(!features.enabled(feature), "{feature:?}");
+    }
+    assert!(features.enabled(Feature::MultiAgentV2));
+    assert!(features.enabled(Feature::CodeModeOnly));
+}

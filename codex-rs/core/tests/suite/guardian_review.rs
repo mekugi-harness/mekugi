@@ -33,7 +33,6 @@ use codex_otel::MetricsConfig;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::WindowsSandboxLevel;
-use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::PermissionProfileSnapshot;
 use codex_protocol::models::ResponseItem;
@@ -2397,15 +2396,13 @@ async fn interrupted_guardian_review_across_model_change_does_not_execute_the_co
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[tracing_test::traced_test]
-#[test_case(None, false, true; "legacy_fallback")]
-#[test_case(None, true, true; "otel_enabled")]
-#[test_case(Some("Acting model rejection instructions."), false, true; "catalog_override")]
-#[test_case(Some(""), false, true; "empty_override")]
-#[test_case(None, false, false; "feedback_disabled")]
+#[test_case(None, false; "legacy_fallback")]
+#[test_case(None, true; "otel_enabled")]
+#[test_case(Some("Acting model rejection instructions."), false; "catalog_override")]
+#[test_case(Some(""), false; "empty_override")]
 async fn guardian_denial_rejects_tool_call_with_rationale(
     rejection_instructions: Option<&'static str>,
     log_assessments: bool,
-    feedback_enabled: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
@@ -2453,7 +2450,6 @@ async fn guardian_denial_rejects_tool_call_with_rationale(
             });
         })
         .with_config(move |config| {
-            config.feedback_enabled = feedback_enabled;
             config.otel.log_user_prompt = true;
             config.otel.log_guardian_assessments = log_assessments;
             config.otel.exporter = OtelExporterKind::OtlpGrpc {
@@ -2548,104 +2544,20 @@ async fn guardian_denial_rejects_tool_call_with_rationale(
     assert_eq!(guardian_request.body_json()["model"], "gpt-5.6-luna");
 
     test.codex.shutdown_and_wait().await?;
-    let state_db = codex_state::StateRuntime::init(
-        test.config.sqlite.clone(),
-        test.config.model_provider_id.clone(),
-    )
-    .await?;
-    let durable = state_db.list_guardian_review_records().await?;
-    if feedback_enabled {
-        assert_eq!(
-            durable.len(),
-            1,
-            "the Guardian capture must persist, not just fall back to memory"
-        );
-        let feedback = codex_feedback::guardian_review_failures(
-            Some(&state_db),
-            &[test.session_configured.thread_id],
-        )
-        .await
-        .attachment
-        .expect("failed Guardian review");
-        let record: serde_json::Value = serde_json::from_slice(&feedback.buffer)?;
-        assert_eq!(
-            record,
-            serde_json::from_slice::<serde_json::Value>(&durable[0].record)?
-        );
-        assert_eq!(record["instructions"], guardian_request.instructions_text());
-        assert!(
-            guardian_request
-                .body_contains_text(record["action"].as_str().expect("reviewed action"))
-        );
-        let recorded_history: Vec<ResponseItem> =
-            serde_json::from_value(record["history"].clone())?;
-        let inspection_request = requests
-            .iter()
-            .find(|request| {
-                request
-                    .function_call_output_text("exec-guardian-inspect")
-                    .is_some()
-            })
-            .expect("Guardian request following its inspection tool");
-        assert!(
-            inspection_request
+    let inspection_request = requests
+        .iter()
+        .find(|request| {
+            request
                 .function_call_output_text("exec-guardian-inspect")
-                .expect("inspection output")
-                .contains("guardian-inspection-evidence")
-        );
-        let inspection_output = inspection_request
-            .input()
-            .into_iter()
-            .find(|item| {
-                item["type"] == "function_call_output" && item["call_id"] == "exec-guardian-inspect"
-            })
-            .expect("inspection response item");
-        assert!(recorded_history.contains(&serde_json::from_value(inspection_output)?));
-        assert!(recorded_history.iter().any(|item| {
-            matches!(item, ResponseItem::Message { role, content, .. }
-            if role == "assistant" && content.iter().any(|part| {
-                matches!(part, ContentItem::OutputText { text , .. }
-                    if Some(text.as_str()) == record["decision"].as_str())
-            }))
-        }));
-        assert_eq!(
-            json!({
-                "reviewed_thread_id": record["reviewed_thread_id"],
-                "reviewer_thread_id": record["reviewer_thread_id"],
-                "status": record["status"],
-                "decision": serde_json::from_str::<serde_json::Value>(
-                    record["decision"].as_str().expect("raw Guardian decision"),
-                )?,
-                "context_omitted": record["context_omitted"],
-            }),
-            json!({
-                "reviewed_thread_id": test.session_configured.thread_id,
-                "reviewer_thread_id": guardian_request.body_json()["client_metadata"]["thread_id"],
-                "status": "denied",
-                "decision": {
-                    "risk_level": "high",
-                    "user_authorization": "low",
-                    "outcome": "deny",
-                    "rationale": "The requested write has unacceptable test risk.",
-                },
-                "context_omitted": false,
-            })
-        );
-    } else {
-        assert!(
-            durable.is_empty(),
-            "disabled feedback must not retain Guardian evidence"
-        );
-        assert!(
-            codex_feedback::guardian_review_failures(
-                Some(&state_db),
-                &[test.session_configured.thread_id]
-            )
-            .await
-            .attachment
-            .is_none()
-        );
-    }
+                .is_some()
+        })
+        .expect("Guardian request following its inspection tool");
+    assert!(
+        inspection_request
+            .function_call_output_text("exec-guardian-inspect")
+            .expect("inspection output")
+            .contains("guardian-inspection-evidence")
+    );
 
     let tool_output = requests
         .iter()

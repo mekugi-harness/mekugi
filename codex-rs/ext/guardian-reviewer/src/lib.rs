@@ -28,7 +28,6 @@ pub use elicitation::GuardianElicitationReview;
 pub use elicitation::guardian_elicitation_review_request;
 pub use elicitation::mcp_elicitation_decline_without_message;
 pub use elicitation::mcp_elicitation_response_from_guardian_decision;
-mod feedback;
 mod metrics;
 mod model;
 mod node_repl_review_evidence;
@@ -121,9 +120,6 @@ pub use settings::guardian_cyber_access_program;
 pub use settings::reviewer_permission_profile;
 pub use settings::reviewer_tool_policy;
 
-pub use feedback::FailedReviewFeedback;
-pub use feedback::ReviewFeedbackContext;
-pub use feedback::ReviewFeedbackSettings;
 pub use reporting::ReviewDenials;
 pub use reporting::ReviewMetadata;
 pub use reporting::ReviewReport;

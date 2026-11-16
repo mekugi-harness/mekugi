@@ -89,7 +89,6 @@ use codex_core::check_execpolicy_for_warnings;
 use codex_core::config::Config;
 use codex_core::resolve_installation_id;
 use codex_exec_server::EnvironmentManager;
-use codex_feedback::CodexFeedback;
 use codex_protocol::protocol::SessionSource;
 pub use codex_rollout::StateDbHandle;
 pub use codex_state::log_db::LogDbLayer;
@@ -156,9 +155,7 @@ pub struct InProcessStartArgs {
     pub embedded_network_policy: EmbeddedNetworkPolicy,
     /// Loader used to fetch typed thread config sources before a thread starts.
     pub thread_config_loader: Arc<dyn ThreadConfigLoader>,
-    /// Feedback sink used by app-server/core telemetry and logs.
-    pub feedback: CodexFeedback,
-    /// SQLite tracing layer used to flush recently emitted logs before feedback upload.
+    /// SQLite tracing layer used for local diagnostics.
     pub log_db: Option<LogDbLayer>,
     /// Process-wide SQLite state handle shared with embedded app-server consumers.
     pub state_db: Option<StateDbHandle>,
@@ -478,11 +475,8 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 .with_process_reply_sender(process_reply_tx),
         );
 
-        let log_write_warning = crate::log_write_warning::LogWriteWarningReporter::new(
-            args.feedback.clone(),
-            &outgoing_message_sender,
-            &args.config,
-        );
+        let log_write_warning =
+            crate::log_write_warning::LogWriteWarningReporter::new(&outgoing_message_sender);
         if let Some(log_db) = &args.log_db {
             log_db.set_failure_reporter(log_write_warning.clone());
             if log_db.has_write_failure() {
@@ -526,7 +520,7 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
                 startup_cwd,
                 config_manager,
                 environment_manager: args.environment_manager,
-                feedback: args.feedback,
+
                 log_db: args.log_db,
                 state_db: args.state_db,
                 config_warnings: args.config_warnings,
@@ -927,7 +921,7 @@ mod tests {
             cloud_config_bundle: CloudConfigBundleLoader::default(),
             embedded_network_policy: Default::default(),
             thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
-            feedback: CodexFeedback::new(),
+
             log_db: None,
             state_db: Some(state_db),
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
@@ -977,6 +971,93 @@ mod tests {
             .shutdown()
             .await
             .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn mekugi_rejects_excluded_codex_service_requests() {
+        let client = start_test_client_with_options(
+            SessionSource::Cli,
+            DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+            Some(codex_app_server_protocol::InitializeCapabilities {
+                experimental_api: true,
+                ..Default::default()
+            }),
+        )
+        .await;
+        let report_path = client
+            ._test_codex_home
+            .as_ref()
+            .unwrap()
+            .path()
+            .join("feedback.zip");
+        let cases = [
+            (
+                "feedback/upload",
+                serde_json::json!({"classification": "bug"}),
+                "Codex feedback",
+            ),
+            (
+                "feedback/save",
+                serde_json::json!({"classification": "bug", "savePath": report_path}),
+                "Codex feedback",
+            ),
+            (
+                "thread/goal/set",
+                serde_json::json!({"threadId": "unused", "objective": "unused"}),
+                "Goals",
+            ),
+            (
+                "thread/goal/get",
+                serde_json::json!({"threadId": "unused"}),
+                "Goals",
+            ),
+            (
+                "thread/goal/clear",
+                serde_json::json!({"threadId": "unused"}),
+                "Goals",
+            ),
+            (
+                "app/list",
+                serde_json::json!({"forceRefetch": true}),
+                "ChatGPT Apps",
+            ),
+            (
+                "app/read",
+                serde_json::json!({"appIds": ["unused"]}),
+                "ChatGPT Apps",
+            ),
+            (
+                "app/installed",
+                serde_json::json!({"forceRefresh": true}),
+                "ChatGPT Apps",
+            ),
+        ];
+        for (id, (method, params, service)) in cases.into_iter().enumerate() {
+            let request: ClientRequest = serde_json::from_value(serde_json::json!({
+                "id": id as i64, "method": method, "params": params,
+            }))
+            .unwrap();
+            let error = client
+                .request(request)
+                .await
+                .expect("request transport")
+                .expect_err(method);
+            assert_eq!(error.code, -32600, "{method}");
+            assert_eq!(
+                error.message,
+                format!(
+                    "{service} {} supported by Mekugi",
+                    if service == "Codex feedback" {
+                        "is not"
+                    } else {
+                        "are not"
+                    }
+                ),
+                "{method}"
+            );
+        }
+        assert!(!report_path.exists());
+        client.shutdown().await.expect("shutdown");
     }
 
     /// Importing a project makes its change visible to an embedder before the import reply.

@@ -42,7 +42,6 @@ use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
-use codex_message_board::PostMetadata;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -416,46 +415,6 @@ async fn host_threads_preserve_lineage_settings_and_resume_routing() -> anyhow::
         .lock()
         .expect("agents lock")
         .insert("/root/worker".into(), child.thread_id);
-    for (thread, author, recipient, destination) in [
-        (&test.codex, "/root", "/root/worker", "new_channel_name"),
-        (&child.thread, "/root/worker", "/root", "channel_name"),
-    ] {
-        let arguments = serde_json::json!({
-            (destination): "design",
-            "text": "A shared decision.",
-            "agents_to_notify": [recipient],
-        });
-        let mock = responses::mount_sse_sequence(
-            &server,
-            vec![
-                responses::sse(vec![
-                    responses::ev_function_call_with_namespace(
-                        "post",
-                        "collaboration",
-                        "post",
-                        &arguments.to_string(),
-                    ),
-                    responses::ev_completed("post"),
-                ]),
-                responses::sse(vec![responses::ev_completed("done")]),
-            ],
-        )
-        .await;
-        thread
-            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: "Post a decision.".into(),
-                text_elements: Vec::new(),
-            }]))
-            .await?;
-        wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
-        let post: PostMetadata = serde_json::from_str(
-            &mock.requests()[1]
-                .function_call_output_text("post")
-                .expect("post result"),
-        )?;
-        assert_eq!(post.author.as_str(), author);
-    }
-
     // Rejected starts must leave the live tree's settings alone, whether the
     // requested root already exists or the factory returns the wrong identity.
     for reserved_thread_id in [root_id, ThreadId::new()] {

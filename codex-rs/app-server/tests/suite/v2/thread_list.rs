@@ -1179,7 +1179,6 @@ async fn thread_list_db_only_errors_distinguish_unavailable_database_from_empty_
     use codex_config::NoopThreadConfigLoader;
     use codex_core::config::ConfigBuilder;
     use codex_exec_server::EnvironmentManager;
-    use codex_feedback::CodexFeedback;
     use std::sync::Arc;
 
     let home = TempDir::new()?;
@@ -1231,7 +1230,7 @@ async fn thread_list_db_only_errors_distinguish_unavailable_database_from_empty_
             cloud_config_bundle: CloudConfigBundleLoader::default(),
             embedded_network_policy: Default::default(),
             thread_config_loader: Arc::new(NoopThreadConfigLoader),
-            feedback: CodexFeedback::new(),
+
             log_db: None,
             state_db,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),

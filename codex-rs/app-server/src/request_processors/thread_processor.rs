@@ -14,7 +14,6 @@ use super::persisted_resume_settings::PersistedResumeSettings;
 use super::persisted_resume_settings::latest_owned_thread_settings;
 use super::persisted_resume_settings::latest_persisted_model_settings;
 use super::thread_enrichment::enrich_loaded_threads;
-use super::thread_fork_goal::inherit_thread_goal_snapshot;
 use super::thread_input::can_accept_direct_input;
 use super::thread_input::ensure_direct_input_allowed;
 use super::thread_lifecycle::thread_closing_for_resume;
@@ -514,7 +513,6 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) thread_state_manager: ThreadStateManager,
     pub(super) thread_watch_manager: ThreadWatchManager,
     pub(super) thread_list_state_permit: Arc<Semaphore>,
-    pub(super) thread_goal_processor: ThreadGoalRequestProcessor,
     pub(super) state_db: Option<StateDbHandle>,
     pub(super) log_db: Option<LogDbLayer>,
     pub(super) background_tasks: TaskTracker,
@@ -555,7 +553,6 @@ impl ThreadRequestProcessor {
         thread_state_manager: ThreadStateManager,
         thread_watch_manager: ThreadWatchManager,
         thread_list_state_permit: Arc<Semaphore>,
-        thread_goal_processor: ThreadGoalRequestProcessor,
         state_db: Option<StateDbHandle>,
         log_db: Option<LogDbLayer>,
         skills_watcher: Arc<SkillsWatcher>,
@@ -575,7 +572,6 @@ impl ThreadRequestProcessor {
             thread_state_manager,
             thread_watch_manager,
             thread_list_state_permit,
-            thread_goal_processor,
             state_db,
             log_db,
             background_tasks: TaskTracker::new(),
@@ -4723,9 +4719,6 @@ impl ThreadRequestProcessor {
                     )
                     .await;
                 }
-                self.thread_goal_processor
-                    .emit_resume_goal_snapshot(thread_id)
-                    .await;
                 codex_thread
                     .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
                     .await;
@@ -5005,10 +4998,6 @@ impl ThreadRequestProcessor {
                 return Err(thread_closing_for_resume(existing_thread_id));
             };
 
-            let (emit_thread_goal_update, thread_goal_state_db) = self
-                .thread_goal_processor
-                .pending_resume_goal_state(existing_thread.as_ref())
-                .await;
             let paginated_turns = if paginated_resume && include_turns {
                 Some(self.paginated_thread_full_turns(existing_thread_id).await?)
             } else {
@@ -5071,8 +5060,6 @@ impl ThreadRequestProcessor {
                     config_snapshot,
                     instruction_sources,
                     thread_summary,
-                    emit_thread_goal_update,
-                    thread_goal_state_db,
                     include_turns,
                     initial_turns_page: params.initial_turns_page.clone(),
                     paginated_turns,
@@ -5779,7 +5766,6 @@ impl ThreadRequestProcessor {
                 ..StartThreadOptions::new(config)
             }
         };
-        let goals_enabled = options.config.features.enabled(Feature::Goals);
 
         let fallback_model_provider = options.config.model_provider_id.clone();
         let parent_trace = self.request_trace_context(&request_id).await;
@@ -5934,34 +5920,6 @@ impl ThreadRequestProcessor {
                 .await
                 .map_err(|err| core_thread_write_error("inherit source thread name", err))?;
         }
-        let inherited_goal = if defer_goal_continuation
-            && session_configured.rollout_path.is_some()
-            && goals_enabled
-        {
-            if let Some(state_db) = forked_thread.state_db().or_else(|| self.state_db.clone()) {
-                self.thread_goal_processor
-                    .flush_goal_progress_for_fork(source_thread_id)
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!("failed to flush source thread goal: {err}"))
-                    })?;
-                inherit_thread_goal_snapshot(&state_db, source_thread_id, thread_id)
-                    .await
-                    .map_err(|err| {
-                        internal_error(format!("failed to inherit source thread goal: {err}"))
-                    })?
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        if inherited_goal {
-            self.thread_goal_processor
-                .restore_inherited_goal_runtime(thread_id)
-                .await;
-        }
-
         let instruction_sources = forked_thread.legacy_instruction_sources().await;
 
         // Auto-attach a conversation listener when forking a thread.
@@ -6100,11 +6058,6 @@ impl ThreadRequestProcessor {
         if !attach_to_source {
             self.outgoing
                 .send_server_notification(ServerNotification::ThreadStarted(notif))
-                .await;
-        }
-        if inherited_goal {
-            self.thread_goal_processor
-                .emit_thread_goal_snapshot(thread_id)
                 .await;
         }
         Ok(())

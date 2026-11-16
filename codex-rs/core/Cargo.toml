@@ -39,7 +39,6 @@ codex-exec-server = { workspace = true }
 codex-extension-api = { workspace = true }
 codex-extension-items = { workspace = true }
 codex-features = { workspace = true }
-codex-feedback = { workspace = true }
 codex-file-system = { workspace = true }
 codex-login = { workspace = true }
 codex-memories-read = { workspace = true }
@@ -143,15 +142,12 @@ openssl-sys = { workspace = true, features = ["vendored"] }
 
 [dev-dependencies]
 codex-backend-client = { workspace = true }
-codex-message-board = { workspace = true }
-codex-agent-message-board-host = { workspace = true }
 assert_cmd = { workspace = true }
 assert_matches = { workspace = true }
 codex-exec-server-test-support = { workspace = true }
 codex-image-generation-extension = { workspace = true }
 codex-home = { workspace = true }
 codex-mcp-extension = { workspace = true }
-codex-message-board-mcp = { workspace = true }
 codex-otel = { workspace = true }
 codex-protocol-test-support = { workspace = true }
 codex-test-binary-support = { workspace = true }

@@ -1642,65 +1642,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-agent-message-board-client"
-version = "0.169.0"
-dependencies = [
- "anyhow",
- "chrono",
- "codex-extension-api",
- "codex-http-client",
- "codex-message-board",
- "codex-protocol",
- "eventsource-stream",
- "futures",
- "http 1.4.0",
- "pretty_assertions",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing",
- "url",
- "wiremock",
-]
-
-[[package]]
-name = "codex-agent-message-board-extension"
-version = "0.169.0"
-dependencies = [
- "codex-agent-message-board-client",
- "codex-config",
- "codex-extension-api",
- "codex-features",
- "codex-http-client",
- "codex-message-board",
- "codex-message-board-mcp",
- "codex-protocol",
- "codex-state",
- "codex-tools",
- "futures",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "codex-agent-message-board-host"
-version = "0.169.0"
-dependencies = [
- "chrono",
- "codex-agent-message-board-client",
- "codex-agent-message-board-extension",
- "codex-core",
- "codex-extension-api",
- "codex-features",
- "codex-message-board",
- "codex-protocol",
- "codex-state",
- "codex-thread-store",
- "futures",
-]
-
-[[package]]
 name = "codex-agent-roles"
 version = "0.169.0"
 dependencies = [
@@ -1789,7 +1730,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
- "codex-agent-message-board-host",
  "codex-analytics",
  "codex-app-server-daemon",
  "codex-app-server-protocol",
@@ -1797,7 +1737,6 @@ dependencies = [
  "codex-arg0",
  "codex-aws-auth",
  "codex-backend-client",
- "codex-chatgpt",
  "codex-cloud-config",
  "codex-code-mode",
  "codex-config",
@@ -1809,15 +1748,11 @@ dependencies = [
  "codex-extension-api",
  "codex-external-agent-migration",
  "codex-features",
- "codex-feedback",
  "codex-file-search",
  "codex-file-watcher",
  "codex-git-attribution",
  "codex-git-utils",
- "codex-goal-extension",
  "codex-guardian-v2",
- "codex-guardian-v3",
- "codex-history-notes-extension",
  "codex-home",
  "codex-hooks",
  "codex-http-client",
@@ -1827,7 +1762,6 @@ dependencies = [
  "codex-mcp-extension",
  "codex-memories-extension",
  "codex-memories-write",
- "codex-message-board",
  "codex-model-provider",
  "codex-model-provider-info",
  "codex-models-manager",
@@ -1897,7 +1831,6 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
- "zip",
 ]
 
 [[package]]
@@ -2165,34 +2098,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-chatgpt"
-version = "0.169.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "clap",
- "codex-connectors",
- "codex-core",
- "codex-features",
- "codex-git-utils",
- "codex-http-client",
- "codex-login",
- "codex-model-provider",
- "codex-plugin",
- "codex-protocol",
- "codex-runtime-agent-instance",
- "codex-utils-cargo-bin",
- "codex-utils-cli",
- "pretty_assertions",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "uuid",
- "wiremock",
-]
-
-[[package]]
 name = "codex-client"
 version = "0.169.0"
 dependencies = [
@@ -2270,7 +2175,6 @@ dependencies = [
  "codex-code-mode-runtime",
  "codex-http-client",
  "codex-otel",
- "codex-otel-trace-websocket",
  "codex-plugin-host",
  "codex-protocol",
  "codex-utils-cargo-bin",
@@ -2419,20 +2323,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-connectors-extension"
-version = "0.169.0"
-dependencies = [
- "codex-connectors",
- "codex-core-plugins",
- "codex-file-system",
- "codex-plugin",
- "codex-utils-path-uri",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "codex-context-fragments"
 version = "0.169.0"
 dependencies = [
@@ -2456,7 +2346,6 @@ dependencies = [
  "bm25",
  "chrono",
  "codex-agent-graph-store",
- "codex-agent-message-board-host",
  "codex-agent-roles",
  "codex-analytics",
  "codex-api",
@@ -2479,7 +2368,6 @@ dependencies = [
  "codex-extension-api",
  "codex-extension-items",
  "codex-features",
- "codex-feedback",
  "codex-file-system",
  "codex-git-utils",
  "codex-guardian-context",
@@ -2494,8 +2382,6 @@ dependencies = [
  "codex-mcp",
  "codex-mcp-extension",
  "codex-memories-read",
- "codex-message-board",
- "codex-message-board-mcp",
  "codex-model-provider",
  "codex-model-provider-info",
  "codex-models-manager",
@@ -2903,34 +2789,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-feedback"
-version = "0.169.0"
-dependencies = [
- "anyhow",
- "bytes",
- "codex-http-client",
- "codex-login",
- "codex-protocol",
- "codex-rollout",
- "codex-state",
- "flate2",
- "http 1.4.0",
- "httpdate",
- "log",
- "mime_guess",
- "pretty_assertions",
- "sentry",
- "serde_json",
- "tar",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wiremock",
- "zip",
-]
-
-[[package]]
 name = "codex-file-search"
 version = "0.169.0"
 dependencies = [
@@ -3016,31 +2874,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-goal-extension"
-version = "0.169.0"
-dependencies = [
- "anyhow",
- "chrono",
- "codex-analytics",
- "codex-core",
- "codex-extension-api",
- "codex-otel",
- "codex-prompts",
- "codex-protocol",
- "codex-rollout",
- "codex-state",
- "codex-tools",
- "codex-utils-absolute-path",
- "codex-utils-template",
- "pretty_assertions",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "codex-guardian-context"
 version = "0.169.0"
 dependencies = [
@@ -3063,7 +2896,6 @@ dependencies = [
  "codex-context-fragments",
  "codex-extension-api",
  "codex-features",
- "codex-feedback",
  "codex-file-system",
  "codex-guardian-context",
  "codex-history",
@@ -3134,37 +2966,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-guardian-v3"
-version = "0.169.0"
-dependencies = [
- "anyhow",
- "chrono",
- "codex-analytics",
- "codex-attachment-store",
- "codex-context-fragments",
- "codex-core",
- "codex-extension-api",
- "codex-guardian-reviewer",
- "codex-history",
- "codex-message-board",
- "codex-protocol",
- "codex-state",
- "codex-thread-store",
- "codex-tools",
- "codex-utils-string",
- "core_test_support",
- "futures",
- "insta",
- "pretty_assertions",
- "serde",
- "serde_json",
- "tempfile",
- "test-case",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "codex-history"
 version = "0.169.0"
 dependencies = [
@@ -3176,32 +2977,6 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "codex-history-notes-extension"
-version = "0.169.0"
-dependencies = [
- "codex-analytics",
- "codex-client",
- "codex-config",
- "codex-core",
- "codex-extension-api",
- "codex-http-client",
- "codex-login",
- "codex-model-provider",
- "codex-model-provider-info",
- "codex-protocol",
- "codex-tools",
- "codex-utils-output-truncation",
- "core_test_support",
- "http 1.4.0",
- "insta",
- "pretty_assertions",
- "serde_json",
- "tempfile",
- "tokio",
- "wiremock",
 ]
 
 [[package]]
@@ -3481,7 +3256,6 @@ dependencies = [
  "axum",
  "codex-config",
  "codex-connectors",
- "codex-connectors-extension",
  "codex-core",
  "codex-core-plugins",
  "codex-exec-server",
@@ -3578,59 +3352,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-message-board"
-version = "0.169.0"
-dependencies = [
- "base64 0.22.1",
- "caseless",
- "chrono",
- "codex-attachment-store",
- "codex-message-board-mcp",
- "codex-protocol",
- "codex-state",
- "codex-tools",
- "codex-utils-output-truncation",
- "futures",
- "pretty_assertions",
- "rmcp",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "codex-message-board-mcp"
-version = "0.169.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "clap",
- "codex-attachment-store",
- "codex-message-board",
- "codex-protocol",
- "codex-state",
- "codex-tools",
- "codex-utils-absolute-path",
- "codex-utils-cargo-bin",
- "codex-utils-output-truncation",
- "codex-utils-process",
- "futures",
- "rmcp",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
 name = "codex-model-provider"
 version = "0.169.0"
 dependencies = [
@@ -3641,7 +3362,6 @@ dependencies = [
  "codex-api",
  "codex-aws-auth",
  "codex-features",
- "codex-feedback",
  "codex-http-client",
  "codex-keyring-store",
  "codex-login",
@@ -3841,17 +3561,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "codex-otel-trace-websocket"
-version = "0.169.0"
-dependencies = [
- "anyhow",
- "axum",
- "futures",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -4939,7 +4648,6 @@ dependencies = [
  "assert_cmd",
  "base64 0.22.1",
  "codex-agent-graph-store",
- "codex-agent-message-board-host",
  "codex-analytics",
  "codex-arg0",
  "codex-attachment-store",
@@ -5435,16 +5143,6 @@ name = "deadpool-runtime"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
-
-[[package]]
-name = "debugid"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bef552e6f588e446098f6ba40d89ac146c8c7b64aade83c051ee00bb5d2bc18d"
-dependencies = [
- "serde",
- "uuid",
-]
 
 [[package]]
 name = "debugserver-types"
@@ -11665,45 +11363,6 @@ checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
 dependencies = [
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "sentry"
-version = "0.46.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f925d575b468e88b079faf590a8dd0c9c99e2ec29e9bab663ceb8b45056312f"
-dependencies = [
- "sentry-core",
-]
-
-[[package]]
-name = "sentry-core"
-version = "0.46.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26ab054c34b87f96c3e4701bea1888317cde30cc7e4a6136d2c48454ab96661c"
-dependencies = [
- "rand 0.9.3",
- "sentry-types",
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "sentry-types"
-version = "0.46.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eecbd63e9d15a26a40675ed180d376fcb434635d2e33de1c24003f61e3e2230d"
-dependencies = [
- "debugid",
- "hex",
- "rand 0.9.3",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "time",
- "url",
- "uuid",
 ]
 
 [[package]]

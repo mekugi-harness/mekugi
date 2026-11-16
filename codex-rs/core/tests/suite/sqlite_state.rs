@@ -995,8 +995,13 @@ async fn tool_call_logs_include_thread_id() -> Result<()> {
 
     test.submit_turn("run a shell command").await?;
 
-    let log_db_layer =
-        codex_state::log_db::start(db.clone(), Arc::new(codex_feedback::CodexFeedback::new()));
+    struct FailOnLogWriteError;
+    impl codex_state::LogWriteFailureReporter for FailOnLogWriteError {
+        fn report_failure(&self, diagnostic: &str) {
+            panic!("unexpected log write failure: {diagnostic}");
+        }
+    }
+    let log_db_layer = codex_state::log_db::start(db.clone(), Arc::new(FailOnLogWriteError));
     let subscriber = tracing_subscriber::registry().with(log_db_layer.clone());
     let dispatch = tracing::Dispatch::new(subscriber);
     tracing::dispatcher::with_default(&dispatch, || {

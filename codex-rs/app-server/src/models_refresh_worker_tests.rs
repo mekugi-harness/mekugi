@@ -9,7 +9,6 @@ use codex_config::LoaderOverrides;
 use codex_config::test_support::CloudConfigBundleFixture;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
-use codex_feedback::CodexFeedback;
 use codex_http_client::HttpClientFactory;
 use codex_models_manager::manager::ModelCatalogSettings;
 use codex_models_manager::manager::ModelsEndpointClient;
@@ -25,7 +24,6 @@ use tempfile::tempdir;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tracing_subscriber::layer::SubscriberExt;
 
 use super::*;
 
@@ -267,10 +265,21 @@ async fn background_refresh_blocks_invalid_requirements_then_recovers() -> anyho
         Arc::clone(&config),
         test_thread_manager(&config, Some(models_manager), auth_manager),
     ));
-    let feedback = CodexFeedback::new();
+    struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = tracing_subscriber::fmt::writer::MutexGuardWriter<'a, Vec<u8>>;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            tracing_subscriber::fmt::MakeWriter::make_writer(self.0.as_ref())
+        }
+    }
+    let log_buffer = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     // This test uses Tokio's current-thread runtime, so spawned refreshes share the subscriber.
     let _subscriber_guard = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(feedback.logger_layer()),
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(LogBuffer(Arc::clone(&log_buffer)))
+            .finish(),
     );
     let worker = spawn_with_interval(&catalog, Duration::from_millis(/*millis*/ 10));
     tokio::time::timeout(Duration::from_secs(/*secs*/ 10), async {
@@ -303,12 +312,7 @@ async fn background_refresh_blocks_invalid_requirements_then_recovers() -> anyho
     })
     .await?;
     drop(worker);
-    let logs = String::from_utf8(
-        feedback
-            .snapshot(/*session_id*/ None)
-            .log_attachment(/*logs_override*/ None)
-            .buffer,
-    )?;
+    let logs = String::from_utf8(log_buffer.lock().expect("captured logs").clone())?;
     assert!(logs.contains("model catalog refresh blocked by provider requirements"));
     assert!(logs.contains("error_kind=InvalidData"));
     assert!(!logs.contains("private-provider-token-marker"));

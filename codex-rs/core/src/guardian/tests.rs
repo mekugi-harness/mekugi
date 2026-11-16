@@ -3301,32 +3301,6 @@ async fn guardian_ephemeral_retry_preserves_parallel_trunk_and_fork_history() ->
         let refreshed_user_message = last_user_message_text_from_body(&refreshed_request_body);
         assert!(refreshed_user_message.contains("Now inspect whether pushing is safe."));
         assert!(refreshed_user_message.contains(&second_action));
-        let feedback = codex_feedback::guardian_review_failures(session.state_db().as_deref(), &[session.thread_id()]).await
-            .attachment
-            .expect("failed ephemeral review survives cleanup and subsequent allowed reviews");
-        let record: serde_json::Value = serde_json::from_slice(&feedback.buffer)?;
-        assert_eq!(
-            serde_json::json!({
-                "reviewed_thread_id": record["reviewed_thread_id"],
-                "reviewed_turn_id": record["reviewed_turn_id"],
-                "target_item_id": record["target_item_id"],
-                "reviewer_thread_id": record["reviewer_thread_id"],
-                "status": record["status"],
-                "decision": record["decision"],
-                "command": serde_json::from_str::<serde_json::Value>(
-                    record["action"].as_str().expect("reviewed action")
-                )?["command"],
-            }),
-            serde_json::json!({
-                "reviewed_thread_id": session.thread_id(),
-                "reviewed_turn_id": turn.sub_id,
-                "target_item_id": "shell-guardian-3",
-                "reviewer_thread_id": failed_ephemeral_request_body["client_metadata"]["thread_id"],
-                "status": "invalid_decision",
-                "decision": "not valid guardian json",
-                "command": ["git", "push"],
-            })
-        );
         server.shutdown().await;
 
         Ok(())

@@ -2,7 +2,6 @@
 
 //! Checks runtime release and notification delivery around listener shutdown.
 
-use super::super::thread_goal_processor::ThreadGoalRequestProcessor;
 use super::super::thread_processor::ThreadRequestProcessor;
 use super::super::thread_processor::ThreadResumeTarget;
 use super::*;
@@ -23,7 +22,6 @@ use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_arg0::Arg0DispatchPaths;
-use codex_goal_extension::GoalService;
 use codex_login::AuthManager;
 use codex_thread_store::PersistContext;
 use core_test_support::test_codex::test_codex;
@@ -65,15 +63,6 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
         &config.codex_home,
         outgoing.clone(),
     );
-    let thread_goal_processor = ThreadGoalRequestProcessor::new(
-        test.thread_manager.clone(),
-        outgoing.clone(),
-        config.clone(),
-        thread_state_manager.clone(),
-        /*state_db*/ None,
-        Arc::new(GoalService::new()),
-        config_manager.clone(),
-    );
     let processor = ThreadRequestProcessor::new(
         auth,
         test.thread_manager.clone(),
@@ -86,7 +75,6 @@ async fn listener_shutdown_releases_runtime_and_preserves_other_subscribers(
         thread_state_manager.clone(),
         thread_watch_manager.clone(),
         Arc::new(Semaphore::new(/*permits*/ 1)),
-        thread_goal_processor,
         /*state_db*/ None,
         /*log_db*/ None,
         skills_watcher.clone(),

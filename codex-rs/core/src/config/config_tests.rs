@@ -44,7 +44,6 @@ use codex_config::permissions_toml::WorkspaceRootsToml;
 use codex_config::types::AppToolApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_config::types::BundledSkillsConfig;
-use codex_config::types::FeedbackConfigToml;
 use codex_config::types::HistoryPersistence;
 use codex_config::types::McpServerEnvVar;
 use codex_config::types::McpServerOAuthConfig;
@@ -6888,26 +6887,6 @@ fn local_dev_builds_force_file_mcp_oauth_store_modes() {
         resolve_mcp_oauth_credentials_store_mode(OAuthCredentialsStoreMode::Keyring, "1.2.3"),
         OAuthCredentialsStoreMode::Keyring,
     );
-}
-
-#[tokio::test]
-async fn feedback_enabled_defaults_to_true() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let cfg = ConfigToml {
-        feedback: Some(FeedbackConfigToml::default()),
-        ..Default::default()
-    };
-
-    let config = Config::load_from_base_config_with_overrides(
-        cfg,
-        ConfigOverrides::default(),
-        codex_home.abs(),
-    )
-    .await?;
-
-    assert_eq!(config.feedback_enabled, true);
-
-    Ok(())
 }
 
 #[test]
@@ -14298,5 +14277,19 @@ fn sqlite_home_env_conflict_reports_an_override() -> std::io::Result<()> {
     );
     assert!(warnings.is_empty());
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn mekugi_disables_codex_feedback() -> anyhow::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg: ConfigToml = toml::from_str("[feedback]\nenabled = true")?;
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert!(!config.feedback_enabled);
     Ok(())
 }

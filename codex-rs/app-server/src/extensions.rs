@@ -2,10 +2,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 
-use codex_analytics::AnalyticsEventsClient;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ThreadGoal;
-use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadQueueChangedNotification;
 use codex_app_server_protocol::WarningNotification;
 use codex_core::ThreadManager;
@@ -16,15 +13,12 @@ use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::ExtensionWarning;
 use codex_extension_api::TurnStartAdmission;
-use codex_goal_extension::GoalExtensionConfig;
-use codex_goal_extension::GoalService;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_queue_extension::QueuedItemService;
-use codex_rollout::state_db::StateDbHandle;
 
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
@@ -35,10 +29,7 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) sample_responses: Arc<crate::thread_sample::SampleResponseRegistry>,
     pub(crate) event_sink: Arc<dyn ExtensionEventSink>,
     pub(crate) auth_manager: Arc<AuthManager>,
-    pub(crate) state_db: Option<StateDbHandle>,
-    pub(crate) analytics_events_client: AnalyticsEventsClient,
     pub(crate) thread_manager: Weak<ThreadManager>,
-    pub(crate) goal_service: Arc<GoalService>,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) executor_skill_provider: Arc<dyn codex_skills_extension::SkillProvider>,
     pub(crate) cloud_skill_provider: Option<Arc<dyn codex_skills_extension::SkillProvider>>,
@@ -57,10 +48,7 @@ pub(crate) fn thread_extensions(
         sample_responses,
         event_sink,
         auth_manager,
-        state_db,
-        analytics_events_client,
         thread_manager,
-        goal_service,
         environment_manager,
         executor_skill_provider,
         cloud_skill_provider,
@@ -81,22 +69,6 @@ pub(crate) fn thread_extensions(
     }
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
-    }
-    codex_history_notes_extension::install(&mut builder, auth_manager.clone());
-    crate::install_agent_message_board(&mut builder, thread_manager.clone());
-    if let Some(state_db) = state_db {
-        codex_goal_extension::install_with_backend(
-            &mut builder,
-            state_db,
-            analytics_events_client,
-            codex_otel::global(),
-            thread_manager.clone(),
-            goal_service,
-            |config: &Config| GoalExtensionConfig {
-                enabled: config.features.enabled(codex_features::Feature::Goals),
-                max_goal_token_budget: config.max_goal_token_budget,
-            },
-        );
     }
     codex_git_attribution::install(
         &mut builder,
@@ -219,38 +191,6 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                         .await;
                 });
             }
-            EventMsg::ThreadGoalUpdated(thread_goal_event) => {
-                let thread_id = thread_goal_event.thread_id;
-                let turn_id = thread_goal_event.turn_id;
-                let goal: ThreadGoal = thread_goal_event.goal.into();
-                if let Some(listener_command_tx) = self
-                    .thread_state_manager
-                    .current_listener_command_tx(thread_id)
-                {
-                    let command = ThreadListenerCommand::EmitThreadGoalUpdated {
-                        turn_id: turn_id.clone(),
-                        goal: goal.clone(),
-                    };
-                    if listener_command_tx.send(command).is_ok() {
-                        return;
-                    }
-                    tracing::warn!(
-                        "failed to enqueue extension goal update for {thread_id}: listener command channel is closed"
-                    );
-                }
-                let outgoing = Arc::clone(&self.outgoing);
-                tokio::spawn(async move {
-                    outgoing
-                        .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                            ThreadGoalUpdatedNotification {
-                                thread_id: thread_id.to_string(),
-                                turn_id,
-                                goal,
-                            },
-                        ))
-                        .await;
-                });
-            }
             msg => {
                 tracing::debug!(event_id = %event.id, ?msg, "dropping unsupported extension event");
             }
@@ -316,9 +256,7 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
 
 #[cfg(test)]
 mod tests {
-    use codex_protocol::protocol::ThreadGoal as CoreThreadGoal;
-    use codex_protocol::protocol::ThreadGoalStatus;
-    use codex_protocol::protocol::ThreadGoalUpdatedEvent;
+    use codex_analytics::AnalyticsEventsClient;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc;
     use tokio::time::timeout;
@@ -329,59 +267,6 @@ mod tests {
     use crate::thread_state::ConnectionCapabilities;
 
     use super::*;
-
-    #[tokio::test]
-    async fn app_server_event_sink_uses_listener_fifo_for_goal_updates_warnings_and_clears() {
-        let (outgoing_tx, _outgoing_rx) = mpsc::channel(4);
-        let outgoing = Arc::new(OutgoingMessageSender::new(
-            outgoing_tx,
-            AnalyticsEventsClient::disabled(),
-        ));
-        let thread_state_manager = ThreadStateManager::new();
-        let thread_id = ThreadId::default();
-        let (listener_command_tx, mut listener_command_rx) = mpsc::unbounded_channel();
-        thread_state_manager.register_listener_command_tx(thread_id, listener_command_tx.clone());
-        let sink = app_server_extension_event_sink(outgoing, thread_state_manager);
-
-        sink.emit(thread_goal_updated_event(thread_id, "turn-1"));
-        sink.emit_warning(ExtensionWarning {
-            thread_id: thread_id.to_string(),
-            turn_id: Some("turn-warning".to_string()),
-            message: "catalog was shortened".to_string(),
-        });
-        sink.emit(thread_goal_updated_event(thread_id, "turn-2"));
-        listener_command_tx
-            .send(ThreadListenerCommand::EmitThreadGoalCleared)
-            .expect("listener command channel should be open");
-
-        let mut observed = Vec::new();
-        for _ in 0..4 {
-            let command = timeout(Duration::from_secs(1), listener_command_rx.recv())
-                .await
-                .expect("timed out waiting for listener command")
-                .expect("listener command channel closed unexpectedly");
-            match command {
-                ThreadListenerCommand::EmitThreadGoalUpdated { turn_id, .. } => {
-                    observed.push(turn_id.expect("extension goal updates should include turn ids"));
-                }
-                ThreadListenerCommand::EmitWarning { message } => observed.push(message),
-                ThreadListenerCommand::EmitThreadGoalCleared => {
-                    observed.push("cleared".to_string())
-                }
-                _ => panic!("unexpected listener command"),
-            }
-        }
-
-        assert_eq!(
-            vec![
-                "turn-1".to_string(),
-                "catalog was shortened".to_string(),
-                "turn-2".to_string(),
-                "cleared".to_string()
-            ],
-            observed
-        );
-    }
 
     #[tokio::test]
     async fn app_server_event_sink_truncates_warning_before_listener_enqueue() {
@@ -602,25 +487,5 @@ mod tests {
         });
 
         assert!(outgoing_rx.try_recv().is_err());
-    }
-
-    fn thread_goal_updated_event(thread_id: ThreadId, turn_id: &str) -> Event {
-        Event {
-            id: turn_id.to_string(),
-            msg: EventMsg::ThreadGoalUpdated(ThreadGoalUpdatedEvent {
-                thread_id,
-                turn_id: Some(turn_id.to_string()),
-                goal: CoreThreadGoal {
-                    thread_id,
-                    objective: "wire extension events".to_string(),
-                    status: ThreadGoalStatus::Active,
-                    token_budget: Some(123),
-                    tokens_used: 45,
-                    time_used_seconds: 6,
-                    created_at: 7,
-                    updated_at: 8,
-                },
-            }),
-        }
     }
 }

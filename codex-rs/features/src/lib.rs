@@ -866,6 +866,11 @@ impl Features {
             .enable(Feature::MultiAgentV2)
             .disable(Feature::RetainClientToolOutputs)
             .disable(Feature::Goals)
+            .disable(Feature::AgentMessageBoard)
+            .disable(Feature::AgentMessageBoardMcp)
+            .disable(Feature::Apps)
+            .disable(Feature::RuntimeMetrics)
+            .disable(Feature::GuardianV3)
             .disable(Feature::SleepTool);
     }
 }

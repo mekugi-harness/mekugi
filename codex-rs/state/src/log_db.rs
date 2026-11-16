@@ -133,7 +133,7 @@ where
 }
 
 /// Receives a formatted, redacted diagnostic when a SQLite log batch is lost
-/// this propagatest to telemetry and feedback memory buffer to avoid lost reports
+/// without re-entering the SQLite tracing sink.
 pub trait LogWriteFailureReporter: Send + Sync {
     fn report_failure(&self, diagnostic: &str);
 }

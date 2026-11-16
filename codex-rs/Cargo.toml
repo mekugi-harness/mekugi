@@ -3,8 +3,6 @@ members = [
     "aws-auth",
     "analytics",
     "agent-graph-store",
-    "agent-message-board-client",
-    "agent-message-board-host",
     "agent-identity",
     "agent-roles",
     "backend-client",
@@ -19,7 +17,6 @@ members = [
     "app-server-protocol-noop-macros",
     "apply-patch",
     "arg0",
-    "feedback",
     "features",
     "install-context",
     "codex-backend-openapi-models",
@@ -52,16 +49,11 @@ members = [
     "exec-server",
     "exec-server/tests/support",
     "execpolicy",
-    "ext/agent-message-board",
-    "ext/connectors",
     "ext/extension-api",
     "ext/multi-env-copy-file",
-    "ext/goal",
     "ext/git-attribution",
     "ext/guardian-reviewer",
     "ext/guardian-v2",
-    "ext/guardian-v3",
-    "ext/history-notes",
     "ext/image-generation",
     "ext/items",
     "ext/memories",
@@ -78,8 +70,6 @@ members = [
     "codex-mcp",
     "memories/read",
     "memories/write",
-    "message-board",
-    "message-board-mcp",
     "model-provider-info",
     "mxc-sandbox",
     "models-manager",
@@ -95,7 +85,6 @@ members = [
     "response-debug-context",
     "sandboxing",
     "otel",
-    "otel-trace-websocket",
     "user-verification",
     "tools",
     "websocket-auth",
@@ -139,6 +128,18 @@ members = [
 # Mekugi ships these native entry points, not the upstream clients or SDKs.
 default-members = ["app-server", "code-mode-host", "bwrap"]
 exclude = [
+    "agent-message-board-client",
+    "agent-message-board-host",
+    "feedback",
+    "ext/agent-message-board",
+    "ext/connectors",
+    "ext/goal",
+    "ext/guardian-v3",
+    "ext/history-notes",
+    "message-board",
+    "message-board-mcp",
+    "otel-trace-websocket",
+    "chatgpt",
     "ansi-escape",
     "app-server-client",
     "app-server-test-client",
@@ -209,7 +210,6 @@ codex-arg0 = { path = "arg0" }
 codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
 codex-build-info = { path = "build-info" }
-codex-chatgpt = { path = "chatgpt" }
 codex-client = { path = "codex-client" }
 codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
 codex-cloud-config = { path = "cloud-config" }
@@ -225,12 +225,6 @@ codex-websocket-auth = { path = "websocket-auth" }
 codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
-codex-agent-message-board-client = { path = "agent-message-board-client" }
-codex-agent-message-board-extension = { path = "ext/agent-message-board" }
-codex-agent-message-board-host = { path = "agent-message-board-host" }
-codex-message-board = { path = "message-board" }
-codex-message-board-mcp = { path = "message-board-mcp" }
-codex-connectors-extension = { path = "ext/connectors" }
 codex-context-fragments = { path = "context-fragments" }
 codex-core = { path = "core" }
 codex-core-api = { path = "core-api" }
@@ -248,17 +242,13 @@ codex-execpolicy = { path = "execpolicy" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-extension-items = { path = "ext/items" }
 codex-multi-env-copy-file = { path = "ext/multi-env-copy-file" }
-codex-goal-extension = { path = "ext/goal" }
 codex-git-attribution = { path = "ext/git-attribution" }
 codex-guardian-reviewer = { path = "ext/guardian-reviewer" }
 codex-guardian-v2 = { path = "ext/guardian-v2" }
-codex-guardian-v3 = { path = "ext/guardian-v3" }
-codex-history-notes-extension = { path = "ext/history-notes" }
 codex-image-generation-extension = { path = "ext/image-generation" }
 codex-external-agent-migration = { path = "external-agent-migration" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
 codex-features = { path = "features" }
-codex-feedback = { path = "feedback" }
 codex-install-context = { path = "install-context" }
 codex-file-search = { path = "file-search" }
 codex-file-watcher = { path = "file-watcher" }
@@ -284,7 +274,6 @@ codex-mxc-sandbox = { path = "mxc-sandbox" }
 codex-network-proxy = { path = "network-proxy" }
 codex-ollama = { path = "ollama" }
 codex-otel = { path = "otel" }
-codex-otel-trace-websocket = { path = "otel-trace-websocket" }
 codex-plugin = { path = "plugin" }
 codex-model-provider = { path = "model-provider" }
 codex-process-hardening = { path = "process-hardening" }

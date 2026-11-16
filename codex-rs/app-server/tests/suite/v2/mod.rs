@@ -4,11 +4,7 @@ mod account_system_proxy;
 
 mod account_gcp;
 mod account_thread_usage;
-mod agent_message_board;
 mod analytics;
-mod app_installed;
-mod app_list;
-mod app_read;
 mod application_network;
 #[path = "attached_thread_tests.rs"]
 mod attached_thread;
@@ -71,7 +67,6 @@ mod experimental_feature_list;
 mod external_agent_config;
 mod external_agent_import_sync;
 mod external_agent_memory_concurrency;
-mod feedback;
 mod frozen_cloud_skills;
 mod fs;
 #[path = "gateway_oauth_tests.rs"]
@@ -80,7 +75,6 @@ mod gateway_oauth;
 mod gcp_setup;
 mod git_attribution;
 mod guardian_v2;
-mod history_notes_extension;
 mod hooks_list;
 mod host_skills;
 mod https_mock;
@@ -158,7 +152,6 @@ mod thread_environments;
 mod thread_fork;
 #[path = "thread_fork_multi_agent_tests.rs"]
 mod thread_fork_multi_agent;
-mod thread_goal_empty_responses;
 mod thread_inject_items;
 mod thread_list;
 mod thread_loaded_list;

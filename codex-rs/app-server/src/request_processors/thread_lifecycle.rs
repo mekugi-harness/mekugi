@@ -984,17 +984,6 @@ pub(super) async fn handle_thread_listener_command(
             .await;
             let _ = completion_tx.send(());
         }
-        ThreadListenerCommand::EmitThreadGoalUpdated { turn_id, goal } => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
-                        thread_id: conversation_id.to_string(),
-                        turn_id,
-                        goal,
-                    },
-                ))
-                .await;
-        }
         ThreadListenerCommand::EmitThreadQueueChanged => {
             let subscribed_connection_ids = thread_state_manager
                 .subscribed_connection_ids(conversation_id)
@@ -1014,18 +1003,6 @@ pub(super) async fn handle_thread_listener_command(
         }
         ThreadListenerCommand::EmitWarning { message } => {
             send_thread_warning(outgoing, thread_state_manager, conversation_id, message).await;
-        }
-        ThreadListenerCommand::EmitThreadGoalCleared => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
-                        thread_id: conversation_id.to_string(),
-                    },
-                ))
-                .await;
-        }
-        ThreadListenerCommand::EmitThreadGoalSnapshot { state_db } => {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
         }
         ThreadListenerCommand::ResolveServerRequest {
             request_id,
@@ -1298,16 +1275,6 @@ pub(super) async fn handle_pending_thread_resume_request(
         )
         .await;
     }
-    if pending.emit_thread_goal_update {
-        if let Some(state_db) = pending.thread_goal_state_db {
-            send_thread_goal_snapshot_notification(outgoing, conversation_id, &state_db).await;
-        } else {
-            tracing::warn!(
-                thread_id = %conversation_id,
-                "state db unavailable when reading thread goal for running thread resume"
-            );
-        }
-    }
     outgoing
         .replay_requests_to_connection_for_thread(connection_id, conversation_id)
         .await;
@@ -1316,41 +1283,6 @@ pub(super) async fn handle_pending_thread_resume_request(
     conversation
         .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
         .await;
-}
-
-pub(super) async fn send_thread_goal_snapshot_notification(
-    outgoing: &Arc<OutgoingMessageSender>,
-    thread_id: ThreadId,
-    state_db: &StateDbHandle,
-) {
-    match state_db.thread_goals().get_thread_goal(thread_id).await {
-        Ok(Some(goal)) => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalUpdated(
-                    ThreadGoalUpdatedNotification {
-                        thread_id: thread_id.to_string(),
-                        turn_id: None,
-                        goal: api_thread_goal_from_state(goal),
-                    },
-                ))
-                .await;
-        }
-        Ok(None) => {
-            outgoing
-                .send_server_notification(ServerNotification::ThreadGoalCleared(
-                    ThreadGoalClearedNotification {
-                        thread_id: thread_id.to_string(),
-                    },
-                ))
-                .await;
-        }
-        Err(err) => {
-            tracing::warn!(
-                thread_id = %thread_id,
-                "failed to read thread goal for resume snapshot: {err}"
-            );
-        }
-    }
 }
 
 pub(crate) fn populate_thread_turns_from_history(

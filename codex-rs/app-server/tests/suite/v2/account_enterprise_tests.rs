@@ -27,7 +27,6 @@ use codex_config::types::OAuthCredentialsStoreMode;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
-use codex_feedback::CodexFeedback;
 use codex_login::CODEX_ACCESS_TOKEN_ENV_VAR;
 use codex_protocol::protocol::SessionSource;
 use codex_rmcp_client::stored_oauth_credentials;
@@ -476,7 +475,7 @@ oauth = {{ client_id = "mcp-client", client_secret = "resource-secret", token_en
         strict_config: false,
         cloud_config_bundle: CloudConfigBundleLoader::default(),
         thread_config_loader: Arc::new(NoopThreadConfigLoader),
-        feedback: CodexFeedback::new(),
+
         log_db: None,
         state_db: Some(state_db),
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
@@ -1726,7 +1725,7 @@ oauth = {{ client_id = "mcp-client", authorization_server_issuer = "{origin}/as"
             strict_config: false,
             cloud_config_bundle: CloudConfigBundleLoader::default(),
             thread_config_loader: Arc::new(NoopThreadConfigLoader),
-            feedback: CodexFeedback::new(),
+
             log_db: None,
             state_db: None,
             environment_manager: Arc::new(EnvironmentManager::default_for_tests()),

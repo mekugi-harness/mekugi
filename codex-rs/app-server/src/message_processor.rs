@@ -26,12 +26,10 @@ use crate::outgoing_message::RequestContext;
 use crate::plugin_config_reload;
 use crate::plugin_config_reload::PluginStartupConfig;
 use crate::request_processors::AccountRequestProcessor;
-use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
 use crate::request_processors::ConfigRequestProcessor;
 use crate::request_processors::EnvironmentRequestProcessor;
-use crate::request_processors::FeedbackRequestProcessor;
 use crate::request_processors::FsRequestProcessor;
 use crate::request_processors::GitRequestProcessor;
 use crate::request_processors::InitializeRequestProcessor;
@@ -44,7 +42,6 @@ use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::ProjectRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
-use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadQueueRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::ThreadResumeTarget;
@@ -85,9 +82,6 @@ use codex_core::config::Config;
 use codex_core::config::ThreadStoreConfig;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::TurnStartAdmission;
-use codex_features::Feature;
-use codex_feedback::CodexFeedback;
-use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
 use codex_models_manager::manager::ModelCatalogSettings;
@@ -102,7 +96,6 @@ use codex_runtime_agent_instance::RuntimeAuthSlot;
 use codex_state::log_db::LogDbLayer;
 use codex_thread_store::LocalQueueStore;
 use codex_thread_store::QueueStore;
-use codex_thread_store::ThreadStoreError;
 use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
 use tokio::sync::broadcast;
@@ -158,14 +151,12 @@ pub(crate) struct MessageProcessor {
     turn_cost_worker: Option<TurnCostWorker>,
     skills_watcher: Arc<SkillsWatcher>,
     account_processor: Arc<AccountRequestProcessor>,
-    apps_processor: AppsRequestProcessor,
     catalog_processor: CatalogRequestProcessor,
     command_exec_processor: CommandExecRequestProcessor,
     process_exec_processor: ProcessExecRequestProcessor,
     config_processor: ConfigRequestProcessor,
     environment_processor: EnvironmentRequestProcessor,
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
-    feedback_processor: FeedbackRequestProcessor,
     fs_processor: FsRequestProcessor,
     git_processor: GitRequestProcessor,
     initialize_processor: InitializeRequestProcessor,
@@ -175,7 +166,6 @@ pub(crate) struct MessageProcessor {
     project_processor: ProjectRequestProcessor,
     pub(super) remote_control_processor: RemoteControlRequestProcessor,
     search_processor: SearchRequestProcessor,
-    thread_goal_processor: ThreadGoalRequestProcessor,
     thread_queue_processor: ThreadQueueRequestProcessor,
     thread_processor: ThreadRequestProcessor,
     turn_processor: TurnRequestProcessor,
@@ -269,7 +259,6 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) startup_cwd: Option<std::path::PathBuf>,
     pub(crate) config_manager: ConfigManager,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
-    pub(crate) feedback: CodexFeedback,
     pub(crate) log_db: Option<LogDbLayer>,
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
@@ -299,7 +288,6 @@ impl MessageProcessor {
             startup_cwd,
             config_manager,
             environment_manager,
-            feedback,
             log_db,
             state_db,
             config_warnings,
@@ -323,27 +311,8 @@ impl MessageProcessor {
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
-        let sqlite = config.sqlite_config().clone();
-        let guardian_v3_enabled = config.features.enabled(Feature::GuardianV3);
-        let thread_store = ThreadStoreBuilder::from_config(config.as_ref(), state_db.clone())
-            .with_additional_cleanup(move |thread_ids| {
-                let sqlite = sqlite.clone();
-                Box::pin(async move {
-                    crate::delete_agent_message_boards(&sqlite, &thread_ids).await?;
-                    if guardian_v3_enabled {
-                        let boards = thread_ids.into_iter().map(Into::into).collect::<Vec<_>>();
-                        codex_guardian_v3::delete_local_boards(&sqlite, &boards)
-                            .await
-                            .map_err(|err| ThreadStoreError::Internal {
-                                message: format!(
-                                    "failed to delete Guardian evidence boards: {err}"
-                                ),
-                            })?;
-                    }
-                    Ok(())
-                })
-            })
-            .build();
+        let thread_store =
+            ThreadStoreBuilder::from_config(config.as_ref(), state_db.clone()).build();
         // Queue persistence requires SQLite, so in-memory thread stores and
         // app servers without a state database do not have a queue backend.
         let queue_store: Option<Arc<dyn QueueStore>> = match &config.experimental_thread_store {
@@ -360,7 +329,6 @@ impl MessageProcessor {
                 restriction_product,
             ),
         );
-        let goal_service = Arc::new(GoalService::new());
         let turn_admission = TurnAdmission::default();
         let turn_start_admission: Arc<dyn TurnStartAdmission> = Arc::new(turn_admission.clone());
         let extension_event_sink =
@@ -393,10 +361,7 @@ impl MessageProcessor {
                         sample_responses: Arc::clone(&sample_responses),
                         event_sink: Arc::clone(&extension_event_sink),
                         auth_manager: auth_manager.clone(),
-                        state_db: state_db.clone(),
-                        analytics_events_client: analytics_events_client.clone(),
                         thread_manager: thread_manager.clone(),
-                        goal_service: Arc::clone(&goal_service),
                         environment_manager: Arc::clone(&environment_manager_for_extensions),
                         executor_skill_provider: Arc::clone(&executor_skill_provider),
                         cloud_skill_provider: cloud_skill_provider.clone(),
@@ -458,7 +423,6 @@ impl MessageProcessor {
         let thread_watch_manager =
             crate::thread_status::ThreadWatchManager::new_with_outgoing(outgoing.clone());
         let thread_list_state_permit = Arc::new(Semaphore::new(/*permits*/ 1));
-        let app_list_shutdown_token = CancellationToken::new();
         let request_serialization_queues = RequestSerializationQueues::default();
         let config_processor = ConfigRequestProcessor::new(
             outgoing.clone(),
@@ -483,12 +447,6 @@ impl MessageProcessor {
             config_manager.clone(),
             Arc::clone(&model_catalog),
         );
-        let apps_processor = AppsRequestProcessor::new(
-            Arc::clone(&thread_manager),
-            outgoing.clone(),
-            config_manager.clone(),
-            app_list_shutdown_token,
-        );
         let catalog_processor = CatalogRequestProcessor::new(
             outgoing.clone(),
             Arc::clone(&skills_watcher),
@@ -507,14 +465,6 @@ impl MessageProcessor {
         let process_exec_processor = ProcessExecRequestProcessor::new(
             outgoing.clone(),
             Arc::clone(&environment_manager_for_requests),
-        );
-        let feedback_processor = FeedbackRequestProcessor::new(
-            auth_manager.clone(),
-            Arc::clone(&thread_manager),
-            Arc::clone(&config),
-            feedback,
-            log_db.clone(),
-            state_db.clone(),
         );
         let git_processor = GitRequestProcessor::new();
         let marketplace_processor =
@@ -537,15 +487,6 @@ impl MessageProcessor {
         );
         let remote_control_processor = RemoteControlRequestProcessor::new(remote_control_handle);
         let search_processor = SearchRequestProcessor::new(outgoing.clone());
-        let thread_goal_processor = ThreadGoalRequestProcessor::new(
-            Arc::clone(&thread_manager),
-            outgoing.clone(),
-            Arc::clone(&config),
-            thread_state_manager.clone(),
-            state_db.clone(),
-            Arc::clone(&goal_service),
-            config_manager.clone(),
-        );
         let thread_queue_processor = ThreadQueueRequestProcessor::new(
             Arc::clone(&thread_manager),
             Arc::clone(&thread_store),
@@ -570,7 +511,6 @@ impl MessageProcessor {
             thread_state_manager.clone(),
             thread_watch_manager.clone(),
             Arc::clone(&thread_list_state_permit),
-            thread_goal_processor.clone(),
             state_db.clone(),
             log_db,
             Arc::clone(&skills_watcher),
@@ -653,14 +593,12 @@ impl MessageProcessor {
             turn_cost_worker,
             skills_watcher,
             account_processor,
-            apps_processor,
             catalog_processor,
             command_exec_processor,
             process_exec_processor,
             config_processor,
             environment_processor,
             external_agent_config_processor,
-            feedback_processor,
             fs_processor,
             git_processor,
             initialize_processor,
@@ -670,7 +608,6 @@ impl MessageProcessor {
             project_processor,
             remote_control_processor,
             search_processor,
-            thread_goal_processor,
             thread_queue_processor,
             thread_processor,
             turn_processor,
@@ -681,7 +618,6 @@ impl MessageProcessor {
 
     pub(crate) fn clear_runtime_references(&self) {
         self.account_processor.clear_external_auth();
-        self.apps_processor.shutdown();
         self.models_refresh_worker.shutdown();
         self.skills_watcher.shutdown();
     }
@@ -1448,18 +1384,10 @@ impl MessageProcessor {
                     .thread_set_name(request_id.clone(), params)
                     .await
             }
-            ClientRequest::ThreadGoalSet { params, .. } => {
-                self.thread_goal_processor
-                    .thread_goal_set(request_id.clone(), params)
-                    .await
-            }
-            ClientRequest::ThreadGoalGet { params, .. } => {
-                self.thread_goal_processor.thread_goal_get(params).await
-            }
-            ClientRequest::ThreadGoalClear { params, .. } => {
-                self.thread_goal_processor
-                    .thread_goal_clear(request_id.clone(), params)
-                    .await
+            ClientRequest::ThreadGoalSet { .. }
+            | ClientRequest::ThreadGoalGet { .. }
+            | ClientRequest::ThreadGoalClear { .. } => {
+                Err(invalid_request("Goals are not supported by Mekugi"))
             }
             ClientRequest::ThreadQueueAdd { params, .. } => self
                 .thread_queue_processor
@@ -1728,15 +1656,11 @@ impl MessageProcessor {
             ClientRequest::PluginShareDelete { params, .. } => {
                 self.plugin_processor.plugin_share_delete(params).await
             }
-            ClientRequest::AppsRead { params, .. } => self.apps_processor.apps_read(params).await,
-            ClientRequest::AppsList { params, .. } => {
-                self.apps_processor.apps_list(&request_id, params).await
+            ClientRequest::AppsRead { .. }
+            | ClientRequest::AppsList { .. }
+            | ClientRequest::AppsInstalled { .. } => {
+                Err(invalid_request("ChatGPT Apps are not supported by Mekugi"))
             }
-            ClientRequest::AppsInstalled { params, .. } => self
-                .apps_processor
-                .apps_installed(params)
-                .await
-                .map(|response| Some(response.into())),
             ClientRequest::SkillsConfigWrite { params, .. } => {
                 self.catalog_processor.skills_config_write(params).await
             }
@@ -2057,11 +1981,8 @@ impl MessageProcessor {
                     .process_resize_pty(request_id.clone(), params)
                     .await
             }
-            ClientRequest::FeedbackUpload { params, .. } => {
-                self.feedback_processor.feedback_upload(params).await
-            }
-            ClientRequest::FeedbackSave { params, .. } => {
-                self.feedback_processor.feedback_save(params).await
+            ClientRequest::FeedbackUpload { .. } | ClientRequest::FeedbackSave { .. } => {
+                Err(invalid_request("Codex feedback is not supported by Mekugi"))
             }
         };
 

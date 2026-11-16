@@ -4774,11 +4774,7 @@ impl Config {
                 .or(cfg.disable_paste_burst)
                 .unwrap_or(false),
             analytics_enabled: cfg.analytics.as_ref().and_then(|a| a.enabled),
-            feedback_enabled: cfg
-                .feedback
-                .as_ref()
-                .and_then(|feedback| feedback.enabled)
-                .unwrap_or(true),
+            feedback_enabled: false,
             tool_suggest,
             tui_notifications: cfg
                 .tui

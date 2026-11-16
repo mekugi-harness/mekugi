@@ -314,11 +314,6 @@ impl ReviewerRequest for PreparedReview {
                     .as_deref(),
             );
         }
-        if self.context.reviewer_selection == ReviewerSelection::FreshParentCheckpoint
-            || !recovery_requested
-        {
-            record_failed_review(&session.session, &self.params, &result.outcome).await;
-        }
         result
     }
 }

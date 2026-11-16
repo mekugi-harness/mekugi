@@ -9,7 +9,6 @@ use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
-use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::CapabilityRootLocation;
 use codex_app_server_protocol::EnvironmentAddResponse;
 use codex_app_server_protocol::EnvironmentInfoResponse;
@@ -45,8 +44,6 @@ use tokio::time::timeout;
 
 use super::analytics::mount_analytics_capture;
 use super::analytics::wait_for_matching_analytics_event;
-use super::app_list::connector_tool;
-use super::app_list::start_apps_server_with_delays;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(20);
 const EXECUTOR_ID: &str = "executor-1";
@@ -63,7 +60,6 @@ const RESTORED_SELECTED_SKILLS_MESSAGE: &str =
     "The previously listed selected-environment skills are available again.";
 const MCP_SERVER_NAME: &str = "executor_probe";
 const MCP_CALL_ID: &str = "selected-executor-mcp-call";
-const CONNECTOR_ID: &str = "calendar";
 
 #[derive(Clone, Copy)]
 enum PluginMention {
@@ -203,30 +199,7 @@ async fn managed_plugins_requirement_disables_selected_executor_plugin_capabilit
     executor_capability_discovery: bool,
 ) -> Result<()> {
     let responses_server = responses::start_mock_server().await;
-    let (apps_url, apps_server_handle) = start_apps_server_with_delays(
-        vec![AppInfo {
-            id: CONNECTOR_ID.to_string(),
-            name: "Calendar".to_string(),
-            description: None,
-            logo_url: None,
-            logo_url_dark: None,
-            icon_assets: None,
-            icon_dark_assets: None,
-            distribution_channel: None,
-            branding: None,
-            app_metadata: None,
-            labels: None,
-            install_url: None,
-            is_accessible: false,
-            is_enabled: true,
-            plugin_display_names: Vec::new(),
-        }],
-        vec![connector_tool(CONNECTOR_ID, "Calendar")?],
-        Duration::ZERO,
-        Duration::ZERO,
-    )
-    .await?;
-    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url)?;
+    let fixture = selected_capability_fixture(&responses_server.uri(), &responses_server.uri())?;
     let config_path = fixture.codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?.replace(
         "executor_capability_discovery = true",
@@ -279,38 +252,13 @@ async fn managed_plugins_requirement_disables_selected_executor_plugin_capabilit
     assert_selected_capabilities_absent(&response_mock.single_request());
 
     exec_server.kill().await?;
-    apps_server_handle.abort();
-    let _ = apps_server_handle.await;
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn selected_capability_stack_tracks_environment_selection_and_resume() -> Result<()> {
     let responses_server = responses::start_mock_server().await;
-    let (apps_url, apps_server_handle) = start_apps_server_with_delays(
-        vec![AppInfo {
-            id: CONNECTOR_ID.to_string(),
-            name: "Calendar".to_string(),
-            description: None,
-            logo_url: None,
-            logo_url_dark: None,
-            icon_assets: None,
-            icon_dark_assets: None,
-            distribution_channel: None,
-            branding: None,
-            app_metadata: None,
-            labels: None,
-            install_url: None,
-            is_accessible: false,
-            is_enabled: true,
-            plugin_display_names: Vec::new(),
-        }],
-        vec![connector_tool(CONNECTOR_ID, "Calendar")?],
-        Duration::ZERO,
-        Duration::ZERO,
-    )
-    .await?;
-    let fixture = selected_capability_fixture(&responses_server.uri(), &apps_url)?;
+    let fixture = selected_capability_fixture(&responses_server.uri(), &responses_server.uri())?;
 
     let response_mock = responses::mount_sse_sequence(
         &responses_server,
@@ -499,8 +447,6 @@ async fn selected_capability_stack_tracks_environment_selection_and_resume() -> 
     assert!(output.contains(EXECUTOR_ENV_VALUE));
 
     exec_server.kill().await?;
-    apps_server_handle.abort();
-    let _ = apps_server_handle.await;
     Ok(())
 }
 
@@ -547,7 +493,7 @@ fn selected_capability_fixture(
     std::fs::write(
         config_path,
         format!(
-            "{config}\n[features]\napps = true\nexecutor_capability_discovery = true\n\n[skills]\ninclude_instructions = true\n"
+            "{config}\n[features]\nexecutor_capability_discovery = true\n\n[skills]\ninclude_instructions = true\n"
         ),
     )?;
     write_chatgpt_auth(
@@ -589,17 +535,13 @@ fn selected_capability_fixture(
     std::fs::create_dir_all(&skill_dir)?;
     std::fs::write(
         manifest_dir.join("plugin.json"),
-        r#"{"name":"executor-demo","apps":"./.app.json","interface":{"displayName":"Executor Demo"}}"#,
+        r#"{"name":"executor-demo","interface":{"displayName":"Executor Demo"}}"#,
     )?;
     std::fs::write(
         skill_dir.join("SKILL.md"),
         format!(
             "---\nname: deploy\ndescription: {SKILL_DESCRIPTION}\n---\n\n{SKILL_BODY_MARKER}\n"
         ),
-    )?;
-    std::fs::write(
-        plugin.path().join(".app.json"),
-        format!(r#"{{"apps":{{"calendar":{{"id":"{CONNECTOR_ID}"}}}}}}"#),
     )?;
     std::fs::write(
         plugin.path().join(".mcp.json"),
@@ -651,14 +593,6 @@ fn assert_selected_plugin_tools_absent(request: &ResponsesRequest) {
         request
             .tool_by_name(&format!("mcp__{MCP_SERVER_NAME}"), "echo")
             .is_none()
-    );
-    let connector = request
-        .tool_by_name("mcp__codex_apps__calendar", "connector_calendar")
-        .expect("host connector should remain model-visible");
-    assert!(
-        connector["description"]
-            .as_str()
-            .is_some_and(|description| !description.contains(PLUGIN_DISPLAY_NAME))
     );
 }
 
@@ -717,14 +651,6 @@ fn assert_selected_plugin_tools(request: &ResponsesRequest) {
         request
             .tool_by_name(&format!("mcp__{MCP_SERVER_NAME}"), "echo")
             .is_some()
-    );
-    let connector = request
-        .tool_by_name("mcp__codex_apps__calendar", "connector_calendar")
-        .expect("selected connector should be model-visible");
-    assert!(
-        connector["description"]
-            .as_str()
-            .is_some_and(|description| description.contains(PLUGIN_DISPLAY_NAME))
     );
 }
 

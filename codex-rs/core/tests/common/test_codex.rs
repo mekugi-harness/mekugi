@@ -851,21 +851,10 @@ impl TestCodexBuilder {
         environment_manager: Arc<codex_exec_server::EnvironmentManager>,
     ) -> anyhow::Result<TestCodex> {
         let state_db = codex_core::init_state_db(&config).await;
-        let thread_store = self.thread_store.clone().unwrap_or_else(|| {
-            let sqlite = config.sqlite_config().clone();
-            ThreadStoreBuilder::from_config(&config, state_db.clone())
-                .with_additional_cleanup(move |thread_ids| {
-                    let sqlite = sqlite.clone();
-                    Box::pin(async move {
-                        codex_agent_message_board_host::delete_agent_message_boards(
-                            &sqlite,
-                            &thread_ids,
-                        )
-                        .await
-                    })
-                })
-                .build()
-        });
+        let thread_store = self
+            .thread_store
+            .clone()
+            .unwrap_or_else(|| ThreadStoreBuilder::from_config(&config, state_db.clone()).build());
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let user_instructions_provider =
             self.user_instructions_provider.clone().unwrap_or_else(|| {
@@ -893,10 +882,6 @@ impl TestCodexBuilder {
         );
         let thread_manager = Arc::new_cyclic(|manager| {
             let mut extensions = self.extensions.to_builder();
-            codex_agent_message_board_host::install_agent_message_board(
-                &mut extensions,
-                manager.clone(),
-            );
             if config.features.enabled(Feature::GuardianV2) {
                 codex_guardian_v2::install(&mut extensions, auth_manager.clone(), manager.clone());
             } else {

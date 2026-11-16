@@ -26,7 +26,6 @@ use codex_config::CloudConfigBundleLoader;
 use codex_config::LoaderOverrides;
 use codex_core::config::ConfigBuilder;
 use codex_exec_server::EnvironmentManager;
-use codex_feedback::CodexFeedback;
 use codex_http_client::HttpClientBuilder;
 use codex_http_client::cache_system_proxy_route_for_test;
 use codex_protocol::protocol::SessionSource;
@@ -189,7 +188,7 @@ async fn browser_login_bootstraps_through_system_proxy() -> Result<()> {
         cloud_config_bundle: CloudConfigBundleLoader::default(),
         embedded_network_policy: Default::default(),
         thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
-        feedback: CodexFeedback::new(),
+
         log_db: None,
         state_db: None,
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),

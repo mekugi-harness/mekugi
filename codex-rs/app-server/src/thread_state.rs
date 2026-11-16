@@ -1,7 +1,6 @@
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::ThreadGoal;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadHistoryTurnMetadata;
 use codex_app_server_protocol::ThreadItem;
@@ -21,7 +20,6 @@ use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::RolloutItem;
-use codex_rollout::state_db::StateDbHandle;
 use codex_utils_path_uri::LegacyAppPathString;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -49,8 +47,6 @@ pub(crate) struct PendingThreadResumeRequest {
     pub(crate) config_snapshot: ThreadConfigSnapshot,
     pub(crate) instruction_sources: Vec<LegacyAppPathString>,
     pub(crate) thread_summary: codex_app_server_protocol::Thread,
-    pub(crate) emit_thread_goal_update: bool,
-    pub(crate) thread_goal_state_db: Option<StateDbHandle>,
     pub(crate) include_turns: bool,
     pub(crate) initial_turns_page:
         Option<codex_app_server_protocol::ThreadResumeInitialTurnsPageParams>,
@@ -69,22 +65,11 @@ pub(crate) enum ThreadListenerCommand {
         request: Box<PendingThreadResumeRequest>,
         completion_tx: oneshot::Sender<()>,
     },
-    // EmitThreadGoalUpdated is used to order goal updates with running-thread resume responses and goal clears.
-    EmitThreadGoalUpdated {
-        turn_id: Option<String>,
-        goal: ThreadGoal,
-    },
     // EmitThreadQueueChanged orders durable queue updates with thread notifications.
     EmitThreadQueueChanged,
     // EmitWarning is used to order extension warnings with other thread notifications.
     EmitWarning {
         message: String,
-    },
-    // EmitThreadGoalCleared is used to order app-server goal clears with running-thread resume responses.
-    EmitThreadGoalCleared,
-    // EmitThreadGoalSnapshot is used to read and emit the latest goal state in the listener order.
-    EmitThreadGoalSnapshot {
-        state_db: StateDbHandle,
     },
     // ResolveServerRequest is used to notify the client that the request has been resolved.
     // It is executed in the thread listener's context to ensure that the resolved notification is ordered with regard to the request itself.

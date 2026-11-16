@@ -97,7 +97,6 @@ async fn selected_runtime_transport_stays_revoked(mode: RuntimeAuthMode) {
         Err(TransportError::Policy(NetworkPolicyDenied::Revoked))
     ));
     let auth_context = AuthRequestTelemetryContext::new(
-        setup.auth.as_ref().map(CodexAuth::auth_mode),
         setup.api_auth.as_ref(),
         /*agent_identity_telemetry*/ None,
         PendingUnauthorizedRetry::default(),
