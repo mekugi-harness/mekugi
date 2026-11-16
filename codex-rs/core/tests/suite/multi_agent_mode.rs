@@ -218,10 +218,9 @@ async fn mode_hints_override_reasoning_effort(
     let second_texts = developer_texts(&second_input);
     let (expected_hint, suppressed_hint) = match source {
         ModeHintSource::ConfiguredHint => (CUSTOM_MODE_HINT_TEXT, CATALOG_MODE_HINT_TEXT),
-        ModeHintSource::CatalogHint if disable_native_tools => (
-            "read the full multi-agent skill using its listed package locator",
-            CATALOG_MODE_HINT_TEXT,
-        ),
+        ModeHintSource::CatalogHint if disable_native_tools => {
+            (MULTI_AGENT_MODE_OPEN_TAG, CATALOG_MODE_HINT_TEXT)
+        }
         ModeHintSource::CatalogHint => (CATALOG_MODE_HINT_TEXT, CATALOG_EXPLICIT_TEXT),
     };
     let hosted_default = disable_native_tools && matches!(source, ModeHintSource::CatalogHint);

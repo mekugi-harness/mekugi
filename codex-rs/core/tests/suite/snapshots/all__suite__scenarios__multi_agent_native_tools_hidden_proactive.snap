@@ -68,8 +68,6 @@ Settings:
     Proactive multi-agent delegation is active. Any earlier developer instruction requiring an explicit user...message changes it. User requests override this hint. [hash=0917619915af4b51]
 
     If at any point you can parallelize work by delegating tasks to another agent (no matter if you are root...agent tools if it could save time or improve quality. [hash=bbd6628beb87c5af]
-
-    Before calling any multi-agent tool, read the full multi-agent skill using its listed package locator. S...context. If the read fails, make note of the blocker. [hash=104096cdd6a881da]
     </multi_agent_mode>
 04:message/user:
     <environment_context>
