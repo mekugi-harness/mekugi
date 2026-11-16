@@ -2244,11 +2244,10 @@ async fn multi_agent_catalog_parameters(
         vec![
             sse(vec![
                 ev_response_created("agents-response"),
-                ev_function_call_with_namespace(
+                ev_custom_tool_call(
                     "agents-call",
-                    "collaboration",
-                    "list_agents",
-                    r#"{"path_prefix":"/root"}"#,
+                    "exec",
+                    r#"text(await tools.collaboration__list_agents({path_prefix:"/root"}));"#,
                 ),
                 ev_completed("agents-response"),
             ]),
@@ -2265,6 +2264,36 @@ async fn multi_agent_catalog_parameters(
         test.codex.multi_agent_version(),
         Some(codex_protocol::protocol::MultiAgentVersion::V2)
     );
+    let requests = mock.requests();
+    let body = requests[0].body_json();
+    let tools = body["input"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["type"] == "additional_tools"))
+        .expect("model-visible tool catalog");
+    let exec = core_test_support::responses::namespace_child_tool(tools, "functions", "exec")
+        .expect("JavaScript execution interface");
+    let description = exec["description"].as_str().expect("exec description");
+    assert_eq!(
+        description.contains("collaboration__list_agents"),
+        !disable_native_tools
+    );
+    assert!(
+        core_test_support::responses::namespace_child_tool(tools, "collaboration", "list_agents")
+            .is_none()
+    );
+    let output =
+        super::code_mode::custom_tool_output_last_non_empty_text(&requests[1], "agents-call")
+            .expect("JavaScript result");
+    if disable_native_tools {
+        assert!(output.contains("not a function"), "{output}");
+    } else {
+        assert!(description.contains("path_prefix: string"));
+        assert!(description.contains("Inspect agents within this task path."));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output)?,
+            json!({"agents":[{"agent_name":"/root","agent_status":"running"}]})
+        );
+    }
     let (name, description) = if proactive {
         (
             "multi_agent_native_tools_hidden_proactive",
@@ -2278,7 +2307,7 @@ async fn multi_agent_catalog_parameters(
     } else {
         (
             "multi_agent_catalog_parameters",
-            "Astra calls list_agents using the selected catalog parameter schema.",
+            "Astra calls list_agents through JavaScript using the selected catalog parameter schema.",
         )
     };
     insta::assert_snapshot!(

@@ -2550,17 +2550,20 @@ async fn code_mode_only_exposes_code_executor_and_hides_nested_tools() {
         ..ToolPlanInputs::default()
     };
     let plain = probe_with(|_| {}, input).await;
-    assert_eq!(
-        plain.namespace_function_names("codex_app"),
-        &["lookup".to_string()]
-    );
-    plain.assert_visible_lacks(&[
+    assert!(plain.namespace_function_names("codex_app").is_empty());
+    plain.assert_visible_contains(&[
         codex_code_mode::PUBLIC_TOOL_NAME,
         codex_code_mode::WAIT_TOOL_NAME,
     ]);
     assert_eq!(
         (plain.tool_mode, plain.requires_code_mode_worker),
-        (ToolMode::Direct, false)
+        (ToolMode::CodeModeOnly, true)
+    );
+    assert!(
+        plain
+            .code_mode_tool_names
+            .values()
+            .any(|name| name == &ToolName::namespaced("codex_app", "lookup"))
     );
 
     let code_mode_only = probe_with(

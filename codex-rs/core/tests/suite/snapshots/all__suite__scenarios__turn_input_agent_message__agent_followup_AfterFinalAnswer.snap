@@ -1,6 +1,5 @@
 ---
 source: core/tests/suite/scenarios_turn_input_agent_message.rs
-assertion_line: 198
 expression: "context_snapshot::format_context_snapshot(\"Agent follow-ups interrupt at a reasoning boundary, preserve encrypted input, and start a new turn when not consumed before the final answer completes.\",\n&entries, &ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: Agent follow-ups interrupt at a reasoning boundary, preserve encrypted input, and start a new turn when not consumed before the final answer completes.
@@ -11,7 +10,15 @@ Scenario: Agent follow-ups interrupt at a reasoning boundary, preserve encrypted
     <MODEL_INSTRUCTIONS>
 01:message/developer:
     <PERMISSIONS_INSTRUCTIONS>
-02:message/developer:
+02:message/developer[3]:
+    [01] <context_window>
+    [02]
+        Agent name: /root/worker
+        First context window id: <UUID 1>
+        Current context window id: <UUID 1>
+
+    [03] </context_window>
+03:message/developer:
     You are an agent in a team of agents collaborating to complete a task.
 
     You can spawn sub-agents to handle subtasks, and those sub-agents can spawn their own sub-agents. All ag...nd capable, and have access to the same set of tools. [hash=876a93c54d3f61d6]
@@ -20,25 +27,25 @@ Scenario: Agent follow-ups interrupt at a reasoning boundary, preserve encrypted
     Child agents can also spawn their own sub-agents.
 
     When you provide a response in the final channel, that content is immediately delivered back to your parent agent.
-    <OMITTED 15 LINES; ~225 TOKENS; hash=fa366829bdb214be>
-    - All agents use the same current working directory.
-    - As a result, edits made by one agent are immediately visible to all other agents.
+    <OMITTED 10 LINES; ~68 TOKENS; hash=825bfe84b158ed00>
+
+    Agents share the filesystem, so edits are visible to other agents. Omitted `cwd` inherits the caller's working directory; relative `cwd` resolves there.
 
     When calling `wait_agent`, prefer longer waits (minutes) to avoid busy polling.
 
     There are 4 available concurrency slots, meaning that up to 4 agents can be active at once, including you.
 
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
-03:message/developer:
+04:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
+05:message/user:
     <ENVIRONMENT_CONTEXT>
-05:agent_message
 06:agent_message
+07:agent_message
 -- request 2 (request) --
-07:reasoning:summary=Checking the task:encrypted=true
-08:agent_message
+08:reasoning:summary=Checking the task:encrypted=true
+09:agent_message
 -- request 3 (request) --
-09:message/assistant:
+10:message/assistant:
     The first task is finished.
-10:agent_message
+11:agent_message

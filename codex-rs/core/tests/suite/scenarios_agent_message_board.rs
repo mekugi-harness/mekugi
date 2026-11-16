@@ -1,5 +1,6 @@
 //! Exercises board tools through the runtime, including resume and native mailbox notifications.
 
+use super::super::code_mode::custom_tool_output_last_non_empty_text;
 use anyhow::Context;
 use codex_core::TurnInputRequest;
 use codex_features::Feature;
@@ -165,11 +166,22 @@ async fn board_post_and_reads_reach_model_context_without_self_notices(
     in_memory: bool,
 ) -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
+    let javascript_tool = |call: &str, name: &str, mut arguments: Value| {
+        arguments.sort_all_objects();
+        sse(vec![
+            responses::ev_custom_tool_call(
+                call,
+                "exec",
+                &format!("text(await tools.collaboration__{name}({arguments}));"),
+            ),
+            ev_completed(call),
+        ])
+    };
     let mock = responses::mount_sse_sequence(&server, vec![
-        tool("create-design", "create_channel", json!({"channel_name":"design", "description":"Design decisions and tradeoffs."})),
-        tool("find-channels", "get_channels", json!({})),
-        tool("post-decision", "post", json!({"channel_name":"design", "text":"A shared decision.", "agents_to_notify":["/root"]})),
-        tool("find-decision", "search_posts", json!({"channel_name":"design","query":"decision"})),
+        javascript_tool("create-design", "create_channel", json!({"channel_name":"design", "description":"Design decisions and tradeoffs."})),
+        javascript_tool("find-channels", "get_channels", json!({})),
+        javascript_tool("post-decision", "post", json!({"channel_name":"design", "text":"A shared decision.", "agents_to_notify":["/root"]})),
+        javascript_tool("find-decision", "search_posts", json!({"channel_name":"design","query":"decision"})),
         done(),
     ]).await;
     let test = test_codex()
@@ -190,29 +202,32 @@ async fn board_post_and_reads_reach_model_context_without_self_notices(
     .await?;
     let requests = mock.requests();
     assert_eq!(requests.len(), 5);
-    assert!(
-        responses::namespace_child_tool(&requests[0].body_json(), "collaboration", "post")
-            .is_some()
-    );
+    let body = requests[0].body_json();
+    let description = body["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|tool| tool["name"] == "exec"))
+        .and_then(|tool| tool["description"].as_str())
+        .context("JavaScript execution interface")?;
+    for name in ["create_channel", "get_channels", "post", "search_posts"] {
+        assert!(description.contains(&format!("collaboration__{name}")));
+        assert!(responses::namespace_child_tool(&body, "collaboration", name).is_none());
+    }
     let channel_result: Value = serde_json::from_str(
-        &requests[2]
-            .function_call_output_text("find-channels")
+        &custom_tool_output_last_non_empty_text(&requests[2], "find-channels")
             .expect("channel list"),
     )?;
     assert_eq!(
         channel_result["results"],
         json!([{ "channel_name":"design", "description":"Design decisions and tradeoffs.", "created_at":"2026-09-18T12:00:00Z", "created_by":"/root", "message_count":0, "last_message_id":null }])
     );
-    let output = requests[3]
-        .function_call_output_text("post-decision")
-        .expect("post result");
+    let output =
+        custom_tool_output_last_non_empty_text(&requests[3], "post-decision").expect("post result");
     let post: Value =
         serde_json::from_str(&output).with_context(|| format!("post result: {output}"))?;
     assert_eq!(post["author"], "/root");
     assert_eq!(post["created_at"], "2026-09-18T12:00:00Z");
     let result: Value = serde_json::from_str(
-        &requests[4]
-            .function_call_output_text("find-decision")
+        &custom_tool_output_last_non_empty_text(&requests[4], "find-decision")
             .expect("search result"),
     )?;
     assert_eq!(result["results"][0]["text_preview"], "A shared decision.");
@@ -229,11 +244,18 @@ async fn board_post_and_reads_reach_model_context_without_self_notices(
         .collect::<Vec<_>>();
     for body in &mut bodies {
         for item in body["input"].as_array_mut().context("request input")? {
-            if item["type"] == "function_call_output" {
-                let mut output: Value =
-                    serde_json::from_str(item["output"].as_str().context("board output")?)?;
-                output.sort_all_objects();
-                item["output"] = Value::String(output.to_string());
+            if item["type"] == "custom_tool_call_output" {
+                match &mut item["output"] {
+                    Value::String(text) => *text = context_snapshot::normalize_json_lines(text),
+                    Value::Array(parts) => {
+                        for part in parts {
+                            if let Value::String(text) = &mut part["text"] {
+                                *text = context_snapshot::normalize_json_lines(text);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
