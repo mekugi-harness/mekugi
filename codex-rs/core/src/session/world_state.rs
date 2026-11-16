@@ -9,7 +9,6 @@ use crate::connectors;
 use crate::context::TokenBudgetContext;
 use crate::context::world_state::AgentsMdState;
 use crate::context::world_state::AppsInstructionsState;
-use crate::context::world_state::CollaborationModeState;
 use crate::context::world_state::CompactPermissionsState;
 use crate::context::world_state::ContextWindowGuidanceState;
 use crate::context::world_state::EnvironmentsInstructionsState;
@@ -302,14 +301,6 @@ impl Session {
             world_state.add_section(CompactPermissionsState::new(
                 exec_policy.as_ref(),
                 approval_context.approved_command_prefix_saved_heading(),
-            ));
-        }
-        if turn_context.config.include_collaboration_mode_instructions {
-            world_state.add_section(CollaborationModeState::from_collaboration_mode(
-                &settings.effective_collaboration_mode(),
-                model_messages.collaboration_modes(),
-                turn_context.config.update_plan_enabled,
-                turn_context.config.model_catalog.is_some(),
             ));
         }
         if !crate::guardian::is_basic_session_source(&turn_context.session_source) {

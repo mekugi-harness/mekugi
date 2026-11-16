@@ -12474,7 +12474,6 @@ async fn prompt_instruction_blocks_can_be_disabled_from_config() -> std::io::Res
         codex_home.path().join(CONFIG_TOML_FILE),
         r#"include_permissions_instructions = false
 include_apps_instructions = false
-include_collaboration_mode_instructions = false
 include_environment_context = false
 include_environment_context_time = false
 
@@ -12491,7 +12490,6 @@ include_instructions = false
 
     assert!(!config.include_permissions_instructions);
     assert!(!config.include_apps_instructions);
-    assert!(!config.include_collaboration_mode_instructions);
     assert!(!config.include_skill_instructions);
     assert!(!config.include_environment_context);
     assert!(!config.include_environment_context_time);

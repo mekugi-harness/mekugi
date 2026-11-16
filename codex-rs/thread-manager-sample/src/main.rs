@@ -284,7 +284,6 @@ async fn new_config(
         guardian_review_timeout: Some(std::time::Duration::from_secs(90)),
         include_permissions_instructions: false,
         include_apps_instructions: false,
-        include_collaboration_mode_instructions: false,
         include_skill_instructions: false,
         skill_max_context_tokens: None,
         cloud_skill_enabled: false,

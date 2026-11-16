@@ -13,14 +13,12 @@ use codex_protocol::openai_models::ToolMessage;
 use permissions::ResolvedApprovalMessages;
 use permissions::ResolvedPermissionMessages;
 
-mod collaboration;
 mod guardian;
 mod incremental_tools;
 mod multi_agent;
 pub(crate) mod permissions;
 mod plugins;
 
-pub use collaboration::ResolvedCollaborationModeMessages;
 pub use guardian::ResolvedAutoReviewMessages;
 pub use incremental_tools::ResolvedIncrementalToolMessages;
 pub use multi_agent::ResolvedMultiAgentMessages;
@@ -104,14 +102,6 @@ impl<'a> ResolvedModelMessages<'a> {
         ResolvedPermissionMessages::new(
             self.catalog_messages
                 .and_then(|messages| messages.permissions.as_ref()),
-        )
-    }
-
-    /// Resolves mode overrides while retaining bundled alternatives and absent values.
-    pub fn collaboration_modes(&self) -> ResolvedCollaborationModeMessages<'a> {
-        ResolvedCollaborationModeMessages::new(
-            self.catalog_messages
-                .and_then(|messages| messages.collaboration_modes.as_ref()),
         )
     }
 

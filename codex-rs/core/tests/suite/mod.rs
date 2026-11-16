@@ -75,7 +75,6 @@ mod code_mode_elicitation;
 mod code_mode_model_messages;
 mod codex_apps_protocol;
 mod codex_delegate;
-mod collaboration_instructions;
 mod compact;
 mod compact_remote;
 mod compact_resume_fork;

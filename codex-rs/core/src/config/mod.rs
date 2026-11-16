@@ -781,9 +781,6 @@ pub struct Config {
     /// Whether to inject the `<apps_instructions>` developer block.
     pub include_apps_instructions: bool,
 
-    /// Whether to inject the `<collaboration_mode>` developer block.
-    pub include_collaboration_mode_instructions: bool,
-
     /// Whether to inject the `<skills_instructions>` developer block.
     pub include_skill_instructions: bool,
 
@@ -4254,7 +4251,6 @@ impl Config {
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
         let include_permissions_instructions = cfg.include_permissions_instructions.unwrap_or(true);
         let include_apps_instructions = cfg.include_apps_instructions.unwrap_or(true);
-        let include_collaboration_mode_instructions = false;
         let include_skill_instructions = which::which("skills-mgr").is_err()
             && cfg
                 .skills
@@ -4593,7 +4589,6 @@ impl Config {
             compact_prompt,
             include_permissions_instructions,
             include_apps_instructions,
-            include_collaboration_mode_instructions,
             include_skill_instructions,
             skill_max_context_tokens,
             cloud_skill_enabled,

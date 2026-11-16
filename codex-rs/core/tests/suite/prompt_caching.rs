@@ -9,7 +9,6 @@ use codex_core::TurnInputRequest;
 use codex_core::shell::default_user_shell;
 use codex_features::Feature;
 use codex_models_manager::bundled_models_response;
-use codex_models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_prompts::render_model_instructions;
 use codex_protocol::config_types::CollaborationMode;
@@ -229,15 +228,6 @@ async fn prompt_tools_are_consistent_across_requests(
         }
     };
 
-    let mode_instructions = if custom_instructions {
-        "## Plan tool\nPreserve this custom collaboration policy.\n".to_string()
-    } else {
-        builtin_collaboration_mode_presets()
-            .into_iter()
-            .find(|preset| preset.mode == Some(ModeKind::Plan))
-            .and_then(|preset| preset.developer_instructions.flatten())
-            .expect("built-in Plan mode instructions")
-    };
     codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
@@ -250,7 +240,7 @@ async fn prompt_tools_are_consistent_across_requests(
                     settings: Settings {
                         model: "gpt-5.5".to_string(),
                         reasoning_effort: None,
-                        developer_instructions: Some(mode_instructions.clone()),
+                        developer_instructions: None,
                     },
                 }),
                 ..Default::default()
@@ -288,16 +278,6 @@ async fn prompt_tools_are_consistent_across_requests(
     assert_tool_names(&body1, &expected_tools_names);
 
     for request in [&req1, &req2] {
-        let developer_text = request
-            .single_request()
-            .message_input_texts("developer")
-            .join("\n");
-        if custom_instructions || expected_update_plan_enabled {
-            assert!(developer_text.contains(&mode_instructions));
-        } else {
-            assert!(!developer_text.contains("update_plan"));
-            assert!(developer_text.contains("Plan Mode (Conversational)"));
-        }
         if let Some(instructions) = &config.developer_instructions {
             assert!(
                 request

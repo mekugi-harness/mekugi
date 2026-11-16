@@ -1,6 +1,5 @@
 mod agents_md;
 mod apps_instructions;
-mod collaboration_mode;
 mod command_sessions;
 mod compact_permissions;
 mod context_window_guidance;
@@ -44,7 +43,6 @@ use std::sync::Arc;
 
 pub(crate) use agents_md::AgentsMdState;
 pub(crate) use apps_instructions::AppsInstructionsState;
-pub(crate) use collaboration_mode::CollaborationModeState;
 pub(crate) use command_sessions::CommandSession;
 pub(crate) use command_sessions::CommandSessionStatus;
 pub(crate) use command_sessions::CommandSessionsState;

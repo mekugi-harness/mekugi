@@ -27,7 +27,6 @@ members = [
     "plugin-host",
     "codex-home",
     "cloud-config",
-    "collaboration-mode-templates",
     "connectors",
     "config",
     "config-schema",
@@ -128,6 +127,7 @@ members = [
 # Mekugi ships these native entry points, not the upstream clients or SDKs.
 default-members = ["app-server", "code-mode-host", "bwrap"]
 exclude = [
+    "collaboration-mode-templates",
     "agent-message-board-client",
     "agent-message-board-host",
     "feedback",
@@ -211,7 +211,6 @@ codex-async-utils = { path = "async-utils" }
 codex-backend-client = { path = "backend-client" }
 codex-build-info = { path = "build-info" }
 codex-client = { path = "codex-client" }
-codex-collaboration-mode-templates = { path = "collaboration-mode-templates" }
 codex-cloud-config = { path = "cloud-config" }
 codex-cloud-tasks-client = { path = "cloud-tasks-client" }
 codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }

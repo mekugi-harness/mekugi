@@ -2234,10 +2234,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-collaboration-mode-templates"
-version = "0.169.0"
-
-[[package]]
 name = "codex-config"
 version = "0.169.0"
 dependencies = [
@@ -3608,7 +3604,6 @@ name = "codex-prompts"
 version = "0.169.0"
 dependencies = [
  "anyhow",
- "codex-collaboration-mode-templates",
  "codex-context-fragments",
  "codex-execpolicy",
  "codex-git-utils",
