@@ -231,8 +231,11 @@ async fn spawned_subagents_apply_configured_developer_instruction_precedence(
     })
     .await?;
 
-    let read = app_server.send_request("featureUse/read", Some(json!({"threads": [&thread.id]}))).await?;
-    let counts: codex_app_server_protocol::FeatureUseReadResponse = app_server.read_response(read).await?;
+    let read = app_server
+        .send_request("featureUse/read", Some(json!({"threads": [&thread.id]})))
+        .await?;
+    let counts: codex_app_server_protocol::FeatureUseReadResponse =
+        app_server.read_response(read).await?;
     assert_eq!(counts.threads[&thread.id].spawns, 1);
     assert_eq!(counts.threads[&thread.id].preload_rejections, 0);
 

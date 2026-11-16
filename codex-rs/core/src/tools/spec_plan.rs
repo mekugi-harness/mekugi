@@ -44,8 +44,8 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
-use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::InspectAgentHandler;
+use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
@@ -559,12 +559,8 @@ pub(crate) fn finalize_tool_router(
         }
     }
 
-    let model_visible_specs = build_model_visible_specs(
-        turn_context,
-        &registry,
-        &code_mode_tool_names,
-        hosted_specs,
-    );
+    let model_visible_specs =
+        build_model_visible_specs(turn_context, &registry, &code_mode_tool_names, hosted_specs);
     let tool_namespaces_info = include_tool_namespaces_info
         .then(|| {
             collect_tool_namespaces_info(&registry, &code_mode_tool_names, &model_visible_specs)
@@ -936,8 +932,7 @@ fn prepare_function_description_prefixes(
                 .map(|tool| tool.runtime.tool_name()),
         );
         available_tools.extend(
-            code_mode_tools(turn_context, registry)
-                .map(|(_, _, tool)| tool.runtime.tool_name()),
+            code_mode_tools(turn_context, registry).map(|(_, _, tool)| tool.runtime.tool_name()),
         );
         // These wrappers are generated after their inner descriptions are ready.
         if code_mode_enabled {
@@ -1528,12 +1523,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
             );
             if !turn_context.config.multi_agent_v2.disable_direct_message {
                 registry.register_trusted_with_native_review(
-                    multi_agent_v2_handler(
-                        SendMessageHandlerV2,
-                        tool_namespace,
-                        None,
-                        None,
-                    ),
+                    multi_agent_v2_handler(SendMessageHandlerV2, tool_namespace, None, None),
                     exposure,
                     native_review,
                 );

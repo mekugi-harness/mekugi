@@ -194,12 +194,21 @@ impl AgentControl for LocalAgentControl {
                         let session = &thread.session;
                         let cancellation = self.runtime.shutdown.child_token();
                         let _cancel_on_drop = cancellation.clone().drop_guard();
-                        let step = session.capture_speculative_step_context(
-                            session.new_default_turn().await, &cancellation,
-                        ).await?;
-                        AgentMessage::Plaintext(crate::compact_token_budget::reload::acquire_message(
-                            session, &step, &text, &cancellation,
-                        ).await?)
+                        let step = session
+                            .capture_speculative_step_context(
+                                session.new_default_turn().await,
+                                &cancellation,
+                            )
+                            .await?;
+                        AgentMessage::Plaintext(
+                            crate::compact_token_budget::reload::acquire_message(
+                                session,
+                                &step,
+                                &text,
+                                &cancellation,
+                            )
+                            .await?,
+                        )
                     } else {
                         message
                     };
@@ -223,13 +232,17 @@ impl AgentControl for LocalAgentControl {
                         caller,
                         submission_id.clone(),
                         match mode {
-                            MessageDeliveryMode::QueueOnly => codex_protocol::feature_use::FeatureUseEvent::MessageAccepted {
-                                sources: needs_sources,
-                                btw: false,
-                            },
-                            MessageDeliveryMode::TriggerTurn => codex_protocol::feature_use::FeatureUseEvent::AssignmentDelivered {
-                                sources: needs_sources,
-                            },
+                            MessageDeliveryMode::QueueOnly => {
+                                codex_protocol::feature_use::FeatureUseEvent::MessageAccepted {
+                                    sources: needs_sources,
+                                    btw: false,
+                                }
+                            }
+                            MessageDeliveryMode::TriggerTurn => {
+                                codex_protocol::feature_use::FeatureUseEvent::AssignmentDelivered {
+                                    sources: needs_sources,
+                                }
+                            }
                         },
                     );
                     (receiver, submission_id)

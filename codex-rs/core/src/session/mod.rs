@@ -1,5 +1,5 @@
-pub(crate) mod startup;
 pub(crate) mod auxiliary_snapshot;
+pub(crate) mod startup;
 
 use crate::McpRefreshReason;
 use crate::PromptCacheKey;
@@ -254,8 +254,8 @@ pub(crate) mod file_audio;
 pub(crate) use file_audio::FileAudioDurations;
 
 mod approved_plan;
-mod code_mode_warning;
 mod capture_delivery;
+mod code_mode_warning;
 mod config_refresh;
 pub(crate) mod context_window;
 mod daemon_recovery;
@@ -4188,17 +4188,21 @@ impl Session {
                 .filter(|receipt| !receipt.intervals.is_empty())
                 .map(|receipt| receipt.operation_id.clone())
                 .collect::<Vec<_>>();
-            if items.iter().any(|item| matches!(item.item,
-                ResponseItem::FunctionCallOutput { .. }
-                | ResponseItem::CustomToolCallOutput { .. }
-                | ResponseItem::ToolSearchOutput { .. }
-            )) {
+            if items.iter().any(|item| {
+                matches!(
+                    item.item,
+                    ResponseItem::FunctionCallOutput { .. }
+                        | ResponseItem::CustomToolCallOutput { .. }
+                        | ResponseItem::ToolSearchOutput { .. }
+                )
+            }) {
                 self.publish_progress_snapshots(&state.history);
             }
         }
         for operation in progress_deliveries {
             self.services.local_agent_runtime.record_feature_use(
-                self.thread_id, operation,
+                self.thread_id,
+                operation,
                 codex_protocol::feature_use::FeatureUseEvent::ProgressDelivered,
             );
         }
@@ -4701,7 +4705,10 @@ impl Session {
     ) {
         let communication = communication.into();
         let mut response_item = communication.to_model_input_item();
-        let capture = communication.delivery.as_ref().and_then(|delivery| delivery.final_capture());
+        let capture = communication
+            .delivery
+            .as_ref()
+            .and_then(|delivery| delivery.final_capture());
         let capture_text = match capture.as_ref() {
             Some(capture) => self.project_final_capture(capture).await,
             None => String::new(),
@@ -4713,14 +4720,20 @@ impl Session {
         } = &mut response_item
         {
             if !capture_text.is_empty() {
-                content.push(codex_protocol::models::AgentMessageInputContent::InputText {
-                    text: capture_text,
-                });
+                content.push(
+                    codex_protocol::models::AgentMessageInputContent::InputText {
+                        text: capture_text,
+                    },
+                );
                 // Existing metadata described only the original message content.
                 if let Some(metadata) = internal_chat_message_metadata_passthrough {
                     if let Some(items) = &mut metadata.content_item_metadata {
                         items.push(ContentItemMetadata::tool(Some(
-                            turn_context.config.multi_agent_v2.tool_namespace.clone()
+                            turn_context
+                                .config
+                                .multi_agent_v2
+                                .tool_namespace
+                                .clone()
                                 .map(ContentItemNamespace::from)
                                 .unwrap_or(ContentItemNamespace::Functions),
                         )));
@@ -4788,7 +4801,8 @@ impl Session {
         if let Some(delivery) = &communication.delivery {
             if let Some((sender, operation)) = delivery.result_operation() {
                 self.services.local_agent_runtime.record_feature_use(
-                    sender, operation,
+                    sender,
+                    operation,
                     codex_protocol::feature_use::FeatureUseEvent::FinalDelivered {
                         changes: capture.is_some(),
                     },

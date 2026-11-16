@@ -2928,14 +2928,27 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
 #[tokio::test]
 async fn native_collaboration_is_available_inside_javascript() {
     let (_session, mut turn) = make_session_and_context().await;
-    set_features(&mut turn, &[Feature::CodeMode, Feature::CodeModeOnly, Feature::MultiAgentV2]);
+    set_features(
+        &mut turn,
+        &[
+            Feature::CodeMode,
+            Feature::CodeModeOnly,
+            Feature::MultiAgentV2,
+        ],
+    );
     let router = plan_with_model(&turn, turn.model_info(), ToolPlanInputs::default());
     for (tool, present, absent) in [
         ("spawn_agent", &["cwd", "preload"][..], &[][..]),
         ("send_message", &["btw"][..], &[][..]),
-        ("wait_agent", &["wait_mode", "yield_time_ms"][..], &["timeout_ms", "compact", "reload"][..]),
+        (
+            "wait_agent",
+            &["wait_mode", "yield_time_ms"][..],
+            &["timeout_ms", "compact", "reload"][..],
+        ),
     ] {
-        let tool = router.registered_tool(&ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool)).unwrap();
+        let tool = router
+            .registered_tool(&ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool))
+            .unwrap();
         let spec = tool.spec();
         let ToolSpec::Namespace(namespace) = spec.as_ref() else {
             panic!("expected native collaboration namespace");
@@ -2945,10 +2958,16 @@ async fn native_collaboration_is_available_inside_javascript() {
         };
         let spec = ToolSpec::Function(function.clone());
         for parameter in present {
-            assert!(has_parameter(&spec, parameter), "missing native parameter {parameter}");
+            assert!(
+                has_parameter(&spec, parameter),
+                "missing native parameter {parameter}"
+            );
         }
         for parameter in absent {
-            assert!(!has_parameter(&spec, parameter), "superseded parameter {parameter}");
+            assert!(
+                !has_parameter(&spec, parameter),
+                "superseded parameter {parameter}"
+            );
         }
     }
     let plan = ToolPlanProbe::from_router(router);
@@ -2963,7 +2982,9 @@ async fn native_collaboration_is_available_inside_javascript() {
     ] {
         let name = ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, tool);
         assert!(
-            plan.code_mode_tool_names.values().any(|nested| nested == &name),
+            plan.code_mode_tool_names
+                .values()
+                .any(|nested| nested == &name),
             "missing native JavaScript tool {name}",
         );
     }

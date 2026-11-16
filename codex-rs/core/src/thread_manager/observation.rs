@@ -1,7 +1,7 @@
 //! Read-only inspection of retained evidence. No writer acquisition or restore.
+use super::view::{build_thread_from_snapshot, thread_from_stored_thread};
 use super::*;
 use codex_app_server_protocol::Thread;
-use super::view::{build_thread_from_snapshot, thread_from_stored_thread};
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
 

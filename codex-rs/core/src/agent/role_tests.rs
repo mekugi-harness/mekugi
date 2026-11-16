@@ -236,18 +236,28 @@ async fn role_personality_configuration_preserves_parent_instructions() {
         let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
         let contents = format!("personality = \"{personality}\"");
         let role_path = write_role_config(&home, "personality-role.toml", &contents).await;
-        config.agent_roles.insert("custom".to_string(), AgentRoleConfig {
-            description: None,
-            config_file: Some(role_path),
-            nickname_candidates: None,
-        });
-        let provenance = BaseInstructionsProvenance::Model { model: "parent-model".to_string() };
+        config.agent_roles.insert(
+            "custom".to_string(),
+            AgentRoleConfig {
+                description: None,
+                config_file: Some(role_path),
+                nickname_candidates: None,
+            },
+        );
+        let provenance = BaseInstructionsProvenance::Model {
+            model: "parent-model".to_string(),
+        };
         config.base_instructions = Some("inherited instructions".to_string());
         config.base_instructions_provenance = Some(provenance.clone());
 
-        apply_role_to_config(&mut config, Some("custom")).await.expect("role should apply");
+        apply_role_to_config(&mut config, Some("custom"))
+            .await
+            .expect("role should apply");
 
-        assert_eq!(config.base_instructions.as_deref(), Some("inherited instructions"));
+        assert_eq!(
+            config.base_instructions.as_deref(),
+            Some("inherited instructions")
+        );
         assert_eq!(config.base_instructions_provenance, Some(provenance));
     }
 }

@@ -602,7 +602,10 @@ impl TurnContext {
         &self,
     ) -> (Arc<CatalogModel>, Option<ReasoningEffortConfig>) {
         let settings = self.next_step_settings.load();
-        (Arc::clone(&settings.model_info), settings.effective_reasoning_effort())
+        (
+            Arc::clone(&settings.model_info),
+            settings.effective_reasoning_effort(),
+        )
     }
 
     /// Legacy: returns the frozen initial-turn model metadata.

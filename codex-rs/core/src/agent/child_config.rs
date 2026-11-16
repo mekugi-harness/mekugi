@@ -10,13 +10,13 @@ use crate::config::Config;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::TurnEnvironmentState;
-use crate::tools::handlers::resolve_tool_environment;
-use codex_file_system::EnvironmentAccess;
-use codex_file_system::GetMetadataOptions;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::tools::handlers::resolve_tool_environment;
 use codex_features::Feature;
+use codex_file_system::EnvironmentAccess;
+use codex_file_system::GetMetadataOptions;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::BaseInstructions;
@@ -405,28 +405,49 @@ pub(crate) async fn prepare_spawn_environments(
     config: &mut Config,
 ) -> Result<TurnEnvironmentSnapshot, String> {
     let mut environments = step.inherited_environments.clone();
-    let Some(cwd) = cwd else { return Ok(environments) };
+    let Some(cwd) = cwd else {
+        return Ok(environments);
+    };
     if cwd.is_empty() {
         return Err("child cwd must name an existing directory".to_string());
     }
     let parent = resolve_tool_environment(&step.environments, None)
         .map_err(|error| format!("child cwd: {error}"))?;
-    let child = environments.environments.iter_mut().find_map(|candidate| match candidate {
-        TurnEnvironmentState::Ready(candidate)
-            if candidate.selection.environment_id == parent.selection.environment_id => Some(candidate),
-        _ => None,
-    }).ok_or_else(|| "child cwd environment cannot be inherited".to_string())?;
+    let child = environments
+        .environments
+        .iter_mut()
+        .find_map(|candidate| match candidate {
+            TurnEnvironmentState::Ready(candidate)
+                if candidate.selection.environment_id == parent.selection.environment_id =>
+            {
+                Some(candidate)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| "child cwd environment cannot be inherited".to_string())?;
     // Turn-local extra grants are not inherited. Admit the destination using child authority.
     let access = child.fs_accessor(None);
-    let path = parent.cwd().join(cwd).map_err(|error| format!("child cwd: {error}"))?;
-    let path = access.canonicalize(&path).await.map_err(|error| format!("child cwd: {error}"))?;
-    if !access.get_metadata(&path, GetMetadataOptions::default()).await
-        .map_err(|error| format!("child cwd: {error}"))?.is_directory {
+    let path = parent
+        .cwd()
+        .join(cwd)
+        .map_err(|error| format!("child cwd: {error}"))?;
+    let path = access
+        .canonicalize(&path)
+        .await
+        .map_err(|error| format!("child cwd: {error}"))?;
+    if !access
+        .get_metadata(&path, GetMetadataOptions::default())
+        .await
+        .map_err(|error| format!("child cwd: {error}"))?
+        .is_directory
+    {
         return Err("child cwd is not a directory".to_string());
     }
     drop(access);
     if !child.environment().is_remote() {
-        config.cwd = path.to_abs_path().map_err(|error| format!("child cwd: {error}"))?;
+        config.cwd = path
+            .to_abs_path()
+            .map_err(|error| format!("child cwd: {error}"))?;
     }
     child.selection.cwd = path;
     child.config_origin = EnvironmentConfigOrigin::Owner;

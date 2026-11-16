@@ -764,7 +764,10 @@ pub(crate) async fn run_turn(
                 if should_roll_over {
                     let reset_origin = if self_reset_requested {
                         let state = sess.state.lock().await;
-                        Some((state.auto_compact_window_ids().window_id.clone(), state.history.input_sequence()))
+                        Some((
+                            state.auto_compact_window_ids().window_id.clone(),
+                            state.history.input_sequence(),
+                        ))
                     } else {
                         None
                     };
@@ -781,7 +784,8 @@ pub(crate) async fn run_turn(
                     .await;
                     if let Some((window_id, sequence)) = reset_origin {
                         // A stopped post-hook cannot turn an installed context into a failed reset.
-                        let completed = sess.state.lock().await.auto_compact_window_ids().window_id != window_id;
+                        let completed = sess.state.lock().await.auto_compact_window_ids().window_id
+                            != window_id;
                         sess.services.local_agent_runtime.record_feature_use(
                             sess.thread_id,
                             format!("{window_id}:{sequence}"),

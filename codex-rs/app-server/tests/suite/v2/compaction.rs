@@ -584,9 +584,17 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     );
 
     for _ in 0..2 {
-        let read = mcp.send_request("featureUse/read", Some(json!({"threads": [&thread_id]}))).await?;
+        let read = mcp
+            .send_request("featureUse/read", Some(json!({"threads": [&thread_id]})))
+            .await?;
         let counts: FeatureUseReadResponse = mcp.read_response(read).await?;
-        assert_eq!(counts.threads[&thread_id], FeatureUseCounts { compactions: 1, ..Default::default() });
+        assert_eq!(
+            counts.threads[&thread_id],
+            FeatureUseCounts {
+                compactions: 1,
+                ..Default::default()
+            }
+        );
     }
 
     // A completed turn after compaction permits bounded replay. Neither this turn nor
@@ -775,9 +783,14 @@ async fn self_reset_feature_facts_are_native_and_read_only() -> Result<()> {
         &server,
         vec![
             responses::sse(vec![
-                responses::ev_function_call("reset", "new_context", &json!({
-                    "reload": {"sources": [format!("@{}", source.display())]}
-                }).to_string()),
+                responses::ev_function_call(
+                    "reset",
+                    "new_context",
+                    &json!({
+                        "reload": {"sources": [format!("@{}", source.display())]}
+                    })
+                    .to_string(),
+                ),
                 responses::ev_completed("reset"),
             ]),
             responses::sse(vec![
@@ -785,14 +798,20 @@ async fn self_reset_feature_facts_are_native_and_read_only() -> Result<()> {
                 responses::ev_completed("answer"),
             ]),
         ],
-    ).await;
+    )
+    .await;
     compaction_config(&server.uri(), 1_000_000)
         .enable_feature(Feature::TokenBudget)
         .write(home.path())?;
     let mut app_server = TestAppServer::builder()
         .with_codex_home(home.path())
-        .build_initialized().await?;
-    let thread = app_server.start_thread(ThreadStartParams::default()).await?.thread.id;
+        .build_initialized()
+        .await?;
+    let thread = app_server
+        .start_thread(ThreadStartParams::default())
+        .await?
+        .thread
+        .id;
     send_turn_and_wait(&mut app_server, &thread, "Reset and reload").await?;
     let requests = mock.requests();
     assert_eq!(requests.len(), 2);
@@ -805,7 +824,9 @@ async fn self_reset_feature_facts_are_native_and_read_only() -> Result<()> {
         ..Default::default()
     };
     for _ in 0..2 {
-        let read = app_server.send_request("featureUse/read", Some(json!({"threads": [&thread]}))).await?;
+        let read = app_server
+            .send_request("featureUse/read", Some(json!({"threads": [&thread]})))
+            .await?;
         let counts: FeatureUseReadResponse = app_server.read_response(read).await?;
         assert_eq!(counts.threads[&thread], expected);
     }

@@ -33,9 +33,14 @@ impl Session {
             {
                 return Ok(state.clone_history());
             }
-            let requests = self.services.thread_extension_data
+            let requests = self
+                .services
+                .thread_extension_data
                 .get_or_init(PendingSnapshots::default);
-            let mut requests = requests.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut requests = requests
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             requests.retain(|request| !request.is_closed());
             let (send, receive) = oneshot::channel();
             requests.push(send);
@@ -63,10 +68,19 @@ impl Session {
     /// Called under the history lock only after an actual tool output is stored.
     /// Yielded process/cell handles remain verbatim; no process exit is required.
     pub(super) fn publish_progress_snapshots(&self, history: &ContextManager) {
-        let Some(requests) = self.services.thread_extension_data.get::<PendingSnapshots>() else {
+        let Some(requests) = self
+            .services
+            .thread_extension_data
+            .get::<PendingSnapshots>()
+        else {
             return;
         };
-        for request in requests.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain(..) {
+        for request in requests
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
             if !request.is_closed() {
                 let _ = request.send(history.clone());
             }
@@ -86,7 +100,8 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_waits_for_published_output_and_retains_running_handles() {
-        let (session, context, _events) = crate::session::tests::make_session_and_context_with_rx().await;
+        let (session, context, _events) =
+            crate::session::tests::make_session_and_context_with_rx().await;
         session.agent_status.send_replace(AgentStatus::Running);
         session.record_conversation_items(&context, context.model_info(), &[
             item(serde_json::json!({"type":"custom_tool_call","call_id":"call","name":"exec","input":"run"})),
@@ -99,41 +114,66 @@ mod tests {
             item(serde_json::json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"still working"}]})),
         ]).await;
         assert!(matches!(futures::poll!(snapshot.as_mut()), Poll::Pending));
-        let output = item(serde_json::json!({"type":"custom_tool_call_output","call_id":"call","output":"session_id=42; next_call: mread retained"}));
-        session.record_conversation_items(&context, context.model_info(), &[output.clone()]).await;
-        let history = snapshot.now_or_never().expect("publication resolves the snapshot").unwrap();
+        let output = item(
+            serde_json::json!({"type":"custom_tool_call_output","call_id":"call","output":"session_id=42; next_call: mread retained"}),
+        );
+        session
+            .record_conversation_items(&context, context.model_info(), &[output.clone()])
+            .await;
+        let history = snapshot
+            .now_or_never()
+            .expect("publication resolves the snapshot")
+            .unwrap();
         assert!(history.raw_items().any(|item| matches!(item,
             ResponseItem::CustomToolCallOutput { call_id, output, .. }
                 if call_id == "call" && output == &codex_protocol::models::FunctionCallOutputPayload::from_text("session_id=42; next_call: mread retained".to_string())
         )));
-        assert_eq!(completed_tool_items(history.annotated_items()).count(), history.annotated_items().len());
+        assert_eq!(
+            completed_tool_items(history.annotated_items()).count(),
+            history.annotated_items().len()
+        );
     }
 
     #[tokio::test]
     async fn yielded_cell_requires_a_new_output_not_cell_termination() {
-        let (session, context, _events) = crate::session::tests::make_session_and_context_with_rx().await;
+        let (session, context, _events) =
+            crate::session::tests::make_session_and_context_with_rx().await;
         session.agent_status.send_replace(AgentStatus::Running);
         let cell = codex_code_mode::CellId::new("background".to_owned());
-        session.services.code_mode_service.mark_cell_ready_for_dispatch(&cell, None);
+        session
+            .services
+            .code_mode_service
+            .mark_cell_ready_for_dispatch(&cell, None);
         let cancellation = CancellationToken::new();
         let mut snapshot = Box::pin(session.progress_history_snapshot(&cancellation));
         assert!(matches!(futures::poll!(snapshot.as_mut()), Poll::Pending));
-        let output = item(serde_json::json!({"type":"custom_tool_call_output","call_id":"wait","output":"Script running with cell ID background"}));
-        session.record_conversation_items(&context, context.model_info(), &[output.clone()]).await;
+        let output = item(
+            serde_json::json!({"type":"custom_tool_call_output","call_id":"wait","output":"Script running with cell ID background"}),
+        );
+        session
+            .record_conversation_items(&context, context.model_info(), &[output.clone()])
+            .await;
         let history = snapshot.now_or_never().unwrap().unwrap();
         assert!(history.raw_items().any(|item| matches!(item,
             ResponseItem::CustomToolCallOutput { call_id, output, .. }
                 if call_id == "wait" && output == &codex_protocol::models::FunctionCallOutputPayload::from_text("Script running with cell ID background".to_string())
         )));
         assert!(session.services.code_mode_service.has_active_cells());
-        session.services.code_mode_service.finish_cell_dispatch(&cell);
+        session
+            .services
+            .code_mode_service
+            .finish_cell_dispatch(&cell);
     }
 
     #[tokio::test]
     async fn cancellation_and_target_failure_settle_only_the_snapshot() {
-        let (session, _context, _events) = crate::session::tests::make_session_and_context_with_rx().await;
+        let (session, _context, _events) =
+            crate::session::tests::make_session_and_context_with_rx().await;
         let cell = codex_code_mode::CellId::new("background".to_owned());
-        session.services.code_mode_service.mark_cell_ready_for_dispatch(&cell, None);
+        session
+            .services
+            .code_mode_service
+            .mark_cell_ready_for_dispatch(&cell, None);
         session.agent_status.send_replace(AgentStatus::Running);
         let cancellation = CancellationToken::new();
         let mut snapshot = Box::pin(session.progress_history_snapshot(&cancellation));
@@ -145,10 +185,15 @@ mod tests {
         let cancellation = CancellationToken::new();
         let mut snapshot = Box::pin(session.progress_history_snapshot(&cancellation));
         assert!(matches!(futures::poll!(snapshot.as_mut()), Poll::Pending));
-        session.agent_status.send_replace(AgentStatus::Errored("provider stopped".into()));
+        session
+            .agent_status
+            .send_replace(AgentStatus::Errored("provider stopped".into()));
         let error = snapshot.await.unwrap_err().to_string();
         assert!(error.contains("provider stopped"));
-        session.services.code_mode_service.finish_cell_dispatch(&cell);
+        session
+            .services
+            .code_mode_service
+            .finish_cell_dispatch(&cell);
     }
 }
 
@@ -160,13 +205,17 @@ pub(crate) fn completed_tool_items(
     let mut search_outputs = HashSet::new();
     for envelope in history {
         match &envelope.item {
-            ResponseItem::FunctionCallOutput { call_id: Some(id), .. } => {
+            ResponseItem::FunctionCallOutput {
+                call_id: Some(id), ..
+            } => {
                 function_outputs.insert(id);
             }
             ResponseItem::CustomToolCallOutput { call_id, .. } => {
                 custom_outputs.insert(call_id);
             }
-            ResponseItem::ToolSearchOutput { call_id: Some(id), .. } => {
+            ResponseItem::ToolSearchOutput {
+                call_id: Some(id), ..
+            } => {
                 search_outputs.insert(id);
             }
             _ => {}
@@ -174,9 +223,15 @@ pub(crate) fn completed_tool_items(
     }
     history.iter().filter(move |envelope| match &envelope.item {
         ResponseItem::FunctionCall { call_id, .. }
-        | ResponseItem::LocalShellCall { call_id: Some(call_id), .. } => function_outputs.contains(call_id),
+        | ResponseItem::LocalShellCall {
+            call_id: Some(call_id),
+            ..
+        } => function_outputs.contains(call_id),
         ResponseItem::CustomToolCall { call_id, .. } => custom_outputs.contains(call_id),
-        ResponseItem::ToolSearchCall { call_id: Some(call_id), .. } => search_outputs.contains(call_id),
+        ResponseItem::ToolSearchCall {
+            call_id: Some(call_id),
+            ..
+        } => search_outputs.contains(call_id),
         _ => true,
     })
 }

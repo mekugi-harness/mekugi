@@ -166,7 +166,9 @@ impl CodeModeWaitHandler {
                         .executed_tool_calls
                         .register_cell(runtime_cell_id, &call_id);
                     if !matches!(response, RuntimeResponse::Yielded { .. }) {
-                        exec.session.services.executed_tool_calls
+                        exec.session
+                            .services
+                            .executed_tool_calls
                             .mark_terminal_capture_output(runtime_cell_id, &call_id);
                         telemetry.record_cell_timing(
                             runtime_cell_id,

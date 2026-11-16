@@ -10,12 +10,12 @@ use std::sync::Arc;
 
 use codex_file_system::EnvironmentAccess;
 use codex_file_system::GetMetadataOptions;
-use futures::StreamExt;
-use codex_protocol::protocol::ReloadSelection;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::protocol::ReloadSelection;
 use codex_skills_extension::HostSkillsSnapshot;
 use codex_utils_path_uri::PathUri;
+use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::session::session::Session;
@@ -65,7 +65,9 @@ pub(crate) async fn acquire_selection(
     selection: &ReloadSelection,
     cancellation: &CancellationToken,
 ) -> CodexResult<Option<String>> {
-    if selection.sources.is_empty() { return Ok(None) }
+    if selection.sources.is_empty() {
+        return Ok(None);
+    }
     check_capacity(selection.sources.iter().map(String::len).sum())?;
     let environment = resolve_tool_environment(&step.environments, None)
         .map_err(|error| CodexErr::Fatal(format!("Reload acquisition: {error}")))?;
@@ -110,7 +112,9 @@ async fn read_sources(
     // repeated references need neither rereads nor a second expansion pass.
     while let Some((reference, base, depth)) = pending.pop_front() {
         pending_bytes -= reference.len();
-        if cancellation.is_cancelled() { return Err(CodexErr::TurnAborted); }
+        if cancellation.is_cancelled() {
+            return Err(CodexErr::TurnAborted);
+        }
         let source = match parse_reference(&reference) {
             Ok(source) => source,
             Err(error) => {
@@ -214,7 +218,10 @@ async fn read_sources(
                 } else {
                     read_file(&access, &path).await
                 };
-                cached_bytes = cached_bytes.saturating_add(match &result { Ok(body) => body.len(), Err(error) => error.len() });
+                cached_bytes = cached_bytes.saturating_add(match &result {
+                    Ok(body) => body.len(),
+                    Err(error) => error.len(),
+                });
                 check_capacity(cached_bytes)?;
                 entry.insert(result)
             }
@@ -275,7 +282,10 @@ async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<Str
     if metadata.size > MAX_SOURCE_BYTES as u64 {
         return Err("source exceeds retained capture capacity".to_string());
     }
-    let mut stream = access.read_file_stream(path).await.map_err(|error| error.to_string())?;
+    let mut stream = access
+        .read_file_stream(path)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| error.to_string())?;
@@ -429,13 +439,25 @@ async fn read_external(
 }
 
 fn append_body(output: &mut String, source: &str, body: &str) -> CodexResult<()> {
-    check_capacity(output.len().saturating_add(source.len() * 6).saturating_add(body.len()).saturating_add(16))?;
+    check_capacity(
+        output
+            .len()
+            .saturating_add(source.len() * 6)
+            .saturating_add(body.len())
+            .saturating_add(16),
+    )?;
     output.push_str(&format!("\nSource {source:?}:\n{body}\n"));
     Ok(())
 }
 
 fn append_failure(output: &mut String, source: &str, error: &str) -> CodexResult<()> {
-    check_capacity(output.len().saturating_add(source.len() * 6).saturating_add(error.len()).saturating_add(48))?;
+    check_capacity(
+        output
+            .len()
+            .saturating_add(source.len() * 6)
+            .saturating_add(error.len())
+            .saturating_add(48),
+    )?;
     output.push_str(&format!(
         "\nSource {source:?}: CONTENT NOT ATTACHED: {error}\n"
     ));
@@ -616,10 +638,12 @@ fn references(text: &str) -> Vec<String> {
     found
 }
 
-
 fn check_capacity(bytes: usize) -> CodexResult<()> {
     if bytes > MAX_SOURCE_BYTES {
-        return Err(CodexErr::InvalidRequest("source acquisition exceeds retained capture capacity; select smaller ranges".to_string()));
+        return Err(CodexErr::InvalidRequest(
+            "source acquisition exceeds retained capture capacity; select smaller ranges"
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -631,14 +655,20 @@ pub(crate) async fn acquire_message(
     message: &str,
     cancellation: &CancellationToken,
 ) -> CodexResult<String> {
-    let selection = ReloadSelection { sources: references(message) };
+    let selection = ReloadSelection {
+        sources: references(message),
+    };
     let Some(sources) = acquire_selection(session, step, &selection, cancellation).await? else {
         return Ok(message.to_string());
     };
-    check_capacity(message.len().saturating_add(sources.len()).saturating_add(2))?;
+    check_capacity(
+        message
+            .len()
+            .saturating_add(sources.len())
+            .saturating_add(2),
+    )?;
     Ok(format!("{message}\n\n{sources}"))
 }
-
 
 pub(crate) fn has_message_sources(message: &str) -> bool {
     !references(message).is_empty()
@@ -663,7 +693,9 @@ pub(crate) async fn preload(
     use codex_protocol::models::FunctionCallOutputPayload;
     use codex_protocol::models::ResponseItem;
 
-    let Some(body) = acquire_selection(session, step, selection, cancellation).await? else { return Ok(()) };
+    let Some(body) = acquire_selection(session, step, selection, cancellation).await? else {
+        return Ok(());
+    };
     let tokens = codex_utils_output_truncation::approx_token_count(&body);
     let mut item = ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
         id: None,
@@ -673,11 +705,14 @@ pub(crate) async fn preload(
         output: FunctionCallOutputPayload::from_text(body),
         internal_chat_message_metadata_passthrough: None,
     });
-    item.metadata.get_or_insert_default().history_truncation_token_limit = Some(tokens);
-    session.record_annotated_conversation_items(&step.turn, &step.settings.model_info, vec![item]).await;
+    item.metadata
+        .get_or_insert_default()
+        .history_truncation_token_limit = Some(tokens);
+    session
+        .record_annotated_conversation_items(&step.turn, &step.settings.model_info, vec![item])
+        .await;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -690,27 +725,46 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let (session, turn, _events) =
             crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
-                CodexAuth::from_api_key("test"), Vec::new(), |config| {
+                CodexAuth::from_api_key("test"),
+                Vec::new(),
+                |config| {
                     config.cwd = AbsolutePathBuf::from_absolute_path(directory.path()).unwrap();
                 },
-            ).await;
+            )
+            .await;
         (directory, session, StepContext::for_test(turn))
     }
 
     #[test]
     fn message_references_leave_escaped_and_bare_paths_literal() {
-        assert_eq!(references(r#"Read @a.rs#L2-L4,L8 @"with spaces.txt" $skill/references/a.md mchanges:amber1..3. \@literal \$literal bare.rs user@example.com @@other"#),
-            vec!["@a.rs#L2-L4,L8", "@\"with spaces.txt\"", "$skill/references/a.md", "mchanges:amber1..3"]);
-        assert!(!has_message_sources(r"Use bare.rs and \@literal and \$skill"));
+        assert_eq!(
+            references(
+                r#"Read @a.rs#L2-L4,L8 @"with spaces.txt" $skill/references/a.md mchanges:amber1..3. \@literal \$literal bare.rs user@example.com @@other"#
+            ),
+            vec![
+                "@a.rs#L2-L4,L8",
+                "@\"with spaces.txt\"",
+                "$skill/references/a.md",
+                "mchanges:amber1..3"
+            ]
+        );
+        assert!(!has_message_sources(
+            r"Use bare.rs and \@literal and \$skill"
+        ));
     }
 
     #[test]
     fn completion_sources_select_only_explicit_retained_ranges() {
         assert_eq!(
-            completion_sources(r"Delivered mchanges:amber1,amber3..7 and @file $skill; \mchanges:literal1 is literal."),
+            completion_sources(
+                r"Delivered mchanges:amber1,amber3..7 and @file $skill; \mchanges:literal1 is literal."
+            ),
             vec!["mchanges:amber1,amber3..7"],
         );
-        assert_eq!(completion_sources("mchanges:amber1.."), vec!["mchanges:amber1.."]);
+        assert_eq!(
+            completion_sources("mchanges:amber1.."),
+            vec!["mchanges:amber1.."]
+        );
         assert!(completion_sources("No captures: amber1 @file $skill").is_empty());
     }
 
@@ -722,14 +776,28 @@ mod tests {
         std::fs::write(directory.path().join("third"), "THIRD @fourth").unwrap();
         std::fs::write(directory.path().join("fourth"), "EXCLUDED_DEPTH").unwrap();
         std::fs::write(directory.path().join("AGENTS.md"), "HOST_ONLY").unwrap();
-        let retained = ReloadSelection { sources: vec!["@retained".to_string()] };
-        session.record_retained_context(RetainedContextEvent::ReloadSelection { selection: retained.clone() }).await;
+        let retained = ReloadSelection {
+            sources: vec!["@retained".to_string()],
+        };
+        session
+            .record_retained_context(RetainedContextEvent::ReloadSelection {
+                selection: retained.clone(),
+            })
+            .await;
         let message = "Read @first @missing. Keep \\@literal and bare.rs unchanged.";
-        let frozen = acquire_message(&session, &step, message, &CancellationToken::new()).await.unwrap();
+        let frozen = acquire_message(&session, &step, message, &CancellationToken::new())
+            .await
+            .unwrap();
         std::fs::write(directory.path().join("first"), "CHANGED").unwrap();
         std::fs::write(directory.path().join("missing"), "LATER").unwrap();
         assert!(frozen.starts_with(message));
-        for expected in ["FIRST", "SECOND", "THIRD", "CONTENT NOT ATTACHED", "depth limit"] {
+        for expected in [
+            "FIRST",
+            "SECOND",
+            "THIRD",
+            "CONTENT NOT ATTACHED",
+            "depth limit",
+        ] {
             assert!(frozen.contains(expected), "{frozen}");
         }
         for excluded in ["CHANGED", "LATER", "EXCLUDED_DEPTH", "HOST_ONLY"] {
@@ -742,9 +810,20 @@ mod tests {
     async fn selected_lines_resolve_nested_sources_beside_the_selected_file() {
         let (directory, session, step) = fixture().await;
         std::fs::create_dir(directory.path().join("sub")).unwrap();
-        std::fs::write(directory.path().join("sub/first"), "EXCLUDED @not-selected\nINCLUDED @second\n").unwrap();
+        std::fs::write(
+            directory.path().join("sub/first"),
+            "EXCLUDED @not-selected\nINCLUDED @second\n",
+        )
+        .unwrap();
         std::fs::write(directory.path().join("sub/second"), "BESIDE_SOURCE").unwrap();
-        let text = acquire_message(&session, &step, "Read @sub/first#L2 @sub/first#L9", &CancellationToken::new()).await.unwrap();
+        let text = acquire_message(
+            &session,
+            &step,
+            "Read @sub/first#L2 @sub/first#L9",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert!(text.contains("INCLUDED"));
         assert!(text.contains("BESIDE_SOURCE"));
         assert!(text.contains("requested lines 9-9"));
@@ -758,7 +837,11 @@ mod tests {
         std::fs::write(directory.path().join("first"), "SOURCE").unwrap();
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        assert!(acquire_message(&session, &step, "Read @first", &cancelled).await.is_err());
+        assert!(
+            acquire_message(&session, &step, "Read @first", &cancelled)
+                .await
+                .is_err()
+        );
         assert!(check_capacity(MAX_SOURCE_BYTES + 1).is_err());
         let mut output = "x".repeat(MAX_SOURCE_BYTES - 10);
         assert!(append_body(&mut output, "@first", "SOURCE").is_err());
@@ -771,7 +854,16 @@ mod tests {
         let (directory, session, step) = fixture().await;
         let content = format!("{}END_OF_PRELOAD", "content ".repeat(5000));
         std::fs::write(directory.path().join("large"), &content).unwrap();
-        preload(&session, &step, &ReloadSelection { sources: vec!["@large".to_string()] }, &CancellationToken::new()).await.unwrap();
+        preload(
+            &session,
+            &step,
+            &ReloadSelection {
+                sources: vec!["@large".to_string()],
+            },
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let history = session.clone_history().await;
         let serialized = serde_json::to_string(&history.raw_items().collect::<Vec<_>>()).unwrap();
         assert!(serialized.contains("END_OF_PRELOAD"));
@@ -791,17 +883,33 @@ mod tests {
         let profile = PermissionProfile::read_only();
         let mut policy = profile.file_system_sandbox_policy();
         policy.entries.push(FileSystemSandboxEntry {
-            path: FileSystemPath::GlobPattern { pattern: format!("{}/*.env", directory.path().display()) },
-            access: FileSystemAccessMode::Deny, missing_path_behavior: None,
+            path: FileSystemPath::GlobPattern {
+                pattern: format!("{}/*.env", directory.path().display()),
+            },
+            access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         });
-        let TurnEnvironmentState::Ready(environment) = &mut Arc::get_mut(&mut step).unwrap().environments.environments[0] else {
+        let TurnEnvironmentState::Ready(environment) =
+            &mut Arc::get_mut(&mut step).unwrap().environments.environments[0]
+        else {
             panic!("ready recipient environment");
         };
         environment.config_mut().permission_profile = PermissionProfileSnapshot::legacy(
-            PermissionProfile::from_runtime_permissions_with_enforcement(profile.enforcement(), &policy, profile.network_sandbox_policy()));
-        let frozen = acquire_message(&session, &step, "Read @secret.env", &CancellationToken::new()).await.unwrap();
+            PermissionProfile::from_runtime_permissions_with_enforcement(
+                profile.enforcement(),
+                &policy,
+                profile.network_sandbox_policy(),
+            ),
+        );
+        let frozen = acquire_message(
+            &session,
+            &step,
+            "Read @secret.env",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert!(frozen.contains("CONTENT NOT ATTACHED"));
         assert!(!frozen.contains("DENIED_BYTES"));
     }
-
 }

@@ -20,8 +20,12 @@ fn candidate() -> CaptureDeliveryCandidate {
             operation_id: "progress".to_owned(),
             context_id: "context".to_owned(),
             intervals: vec![CaptureInterval {
-                key: "key".to_owned(), change_id: "amber1".to_owned(),
-                record_order: 1, legacy_record_key: None, first_chunk: 1, last_chunk: 2,
+                key: "key".to_owned(),
+                change_id: "amber1".to_owned(),
+                record_order: 1,
+                legacy_record_key: None,
+                first_chunk: 1,
+                last_chunk: 2,
             }],
         },
     }
@@ -29,9 +33,12 @@ fn candidate() -> CaptureDeliveryCandidate {
 
 #[test]
 fn only_complete_printed_output_carries_receipts_without_analytics() {
-    for text in ["nothing printed".to_owned(), "exact evidence".to_owned(),
-        candidate().rendered_text, serde_json::json!({"progress": candidate().rendered_text}).to_string()]
-    {
+    for text in [
+        "nothing printed".to_owned(),
+        "exact evidence".to_owned(),
+        candidate().rendered_text,
+        serde_json::json!({"progress": candidate().rendered_text}).to_string(),
+    ] {
         let recorder = ExecutedToolCalls::default();
         let cell = CellId::new("cell".to_owned());
         recorder.start_cell(&cell, "exec");
@@ -40,7 +47,10 @@ fn only_complete_printed_output_carries_receipts_without_analytics() {
         recorder.finish_cell_recording(&cell);
         let mut item = output("exec", text.clone());
         recorder.attach_capture_to_output(&mut item);
-        let count = item.metadata.as_ref().map_or(0, |m| m.capture_deliveries.len());
+        let count = item
+            .metadata
+            .as_ref()
+            .map_or(0, |m| m.capture_deliveries.len());
         assert_eq!(count, usize::from(text.contains("new line")), "{text}");
         assert!(recorder.lock_state().cells.is_empty());
     }
@@ -75,8 +85,16 @@ fn notification_matching_and_analytics_refresh_preserve_candidates() {
     features.disable(Feature::ExecutedToolCallMetadata);
     recorder.refresh(&features);
     let notification = output("notify", candidate().rendered_text);
-    assert_eq!(recorder.capture_receipts_for_cell(&cell, &notification.item).len(), 1);
-    assert_eq!(recorder.lock_state().cells[&cell].capture_candidates.len(), 1);
+    assert_eq!(
+        recorder
+            .capture_receipts_for_cell(&cell, &notification.item)
+            .len(),
+        1
+    );
+    assert_eq!(
+        recorder.lock_state().cells[&cell].capture_candidates.len(),
+        1
+    );
 }
 
 #[test]
@@ -87,5 +105,9 @@ fn oversized_candidate_never_acknowledges_evidence() {
     let mut candidate = candidate();
     candidate.rendered_text = "x".repeat(MAX_PENDING_CAPTURE_BYTES + 1);
     recorder.record_capture_candidate(&cell, candidate);
-    assert!(recorder.lock_state().cells[&cell].capture_candidates.is_empty());
+    assert!(
+        recorder.lock_state().cells[&cell]
+            .capture_candidates
+            .is_empty()
+    );
 }

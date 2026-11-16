@@ -1686,9 +1686,7 @@ async fn multi_agent_v2_send_message_rejects_interrupt_parameter() {
     let FunctionCallError::RespondToModel(message) = err else {
         panic!("expected model-facing parse error");
     };
-    assert!(message.starts_with(
-        "failed to parse function arguments: unknown field `interrupt`"
-    ));
+    assert!(message.starts_with("failed to parse function arguments: unknown field `interrupt`"));
 
     let ops = manager.captured_ops();
     let ops_for_agent: Vec<&Op> = ops

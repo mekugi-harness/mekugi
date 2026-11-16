@@ -61,13 +61,21 @@ pub(crate) struct CaptureDeliveryCandidate {
 
 impl CaptureDeliveryCandidate {
     pub(crate) fn retained_bytes(&self) -> usize {
-        self.rendered_text.len() + self.receipt.context_id.len()
+        self.rendered_text.len()
+            + self.receipt.context_id.len()
             + self.receipt.operation_id.len()
-            + self.receipt.intervals.len() * std::mem::size_of::<codex_protocol::agent_capture::CaptureInterval>()
-            + self.receipt.intervals.iter().map(|interval| {
-                interval.key.len() + interval.change_id.len()
-                    + interval.legacy_record_key.as_ref().map_or(0, String::len)
-            }).sum::<usize>()
+            + self.receipt.intervals.len()
+                * std::mem::size_of::<codex_protocol::agent_capture::CaptureInterval>()
+            + self
+                .receipt
+                .intervals
+                .iter()
+                .map(|interval| {
+                    interval.key.len()
+                        + interval.change_id.len()
+                        + interval.legacy_record_key.as_ref().map_or(0, String::len)
+                })
+                .sum::<usize>()
     }
 
     pub(crate) fn matches_output(&self, item: &ResponseItem) -> bool {
@@ -82,9 +90,7 @@ impl CaptureDeliveryCandidate {
         // text(result) serializes objects, whereas text(result.output) emits raw text.
         // Neither a partial rendering nor an arbitrary transform proves delivery.
         let escaped = serde_json::to_string(&self.rendered_text).expect("serialize capture text");
-        let contains = |text: &str| {
-            text.contains(&self.rendered_text) || text.contains(&escaped)
-        };
+        let contains = |text: &str| text.contains(&self.rendered_text) || text.contains(&escaped);
         match &output.body {
             FunctionCallOutputBody::Text(text) => contains(text),
             FunctionCallOutputBody::ContentItems(items) => items.iter().any(|item| {

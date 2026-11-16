@@ -517,9 +517,7 @@ impl RollbackPlanner {
                     // the model-history anchor. Its selection must follow the same cut, not
                     // the removed turn or a replay-time scan of paired lifecycle records.
                     if frame.record_index >= source.record_index {
-                        context.restore_reload_selection(
-                            self.reload_selection.as_deref().cloned(),
-                        );
+                        context.restore_reload_selection(self.reload_selection.as_deref().cloned());
                     }
                     if acceptance_order.is_some()
                         || context

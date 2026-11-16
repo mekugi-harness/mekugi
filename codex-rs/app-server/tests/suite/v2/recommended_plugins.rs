@@ -37,7 +37,8 @@ enum RecommendationFeature {
 }
 
 #[tokio::test]
-async fn first_turn_after_external_login_omits_plugin_suggestions_with_tool_suggest() -> Result<()> {
+async fn first_turn_after_external_login_omits_plugin_suggestions_with_tool_suggest() -> Result<()>
+{
     recommended_plugins_after_external_login(RecommendationFeature::ToolSuggest).await
 }
 

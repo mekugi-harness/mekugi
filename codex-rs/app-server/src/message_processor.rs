@@ -1628,7 +1628,13 @@ impl MessageProcessor {
                 self.thread_processor.thread_subtree_list(params).await
             }
             ClientRequest::AgentForeignReceive { params, .. } => {
-                self.thread_processor.agent_foreign_receive(&request_id, params, request_context.cancellation.clone()).await
+                self.thread_processor
+                    .agent_foreign_receive(
+                        &request_id,
+                        params,
+                        request_context.cancellation.clone(),
+                    )
+                    .await
             }
             ClientRequest::AgentEnd { params, .. } => {
                 self.thread_processor.agent_end(&request_id, params).await

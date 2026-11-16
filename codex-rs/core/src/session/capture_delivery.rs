@@ -304,7 +304,7 @@ mod tests {
             crate::session::tests::make_session_and_context_with_rx().await;
         let requests = Arc::new(Mutex::new(Vec::new()));
         let resources = crate::AgentHostResources {
-        route_foreign: None,
+            route_foreign: None,
             prepare_child: None,
             record_feature_use: None,
             freeze_progress: Arc::new(|_, _| Box::pin(async { panic!("not progress") })),

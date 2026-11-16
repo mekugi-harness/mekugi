@@ -206,10 +206,7 @@ impl MessageDelivery {
     ) -> Self {
         let delivery = Self::publish(context.sender_thread_id, observers);
         if context.kind == AgentCommunicationKind::Result {
-            let mut publication = delivery
-                .0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut publication = delivery.0.lock().unwrap_or_else(PoisonError::into_inner);
             let publication = publication.as_mut().expect("new publication");
             publication.result_sender = Some(context.sender_thread_id);
             publication.result_operation = context.result_operation.clone();
@@ -219,14 +216,20 @@ impl MessageDelivery {
     }
 
     pub(crate) fn final_capture(&self) -> Option<Arc<FinalCaptureAttachment>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-            .as_ref().and_then(|publication| publication.final_capture.clone())
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(|publication| publication.final_capture.clone())
     }
 
     pub(crate) fn result_operation(&self) -> Option<(ThreadId, String)> {
         let publication = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let publication = publication.as_ref()?;
-        Some((publication.result_sender?, publication.result_operation.clone()?))
+        Some((
+            publication.result_sender?,
+            publication.result_operation.clone()?,
+        ))
     }
 
     fn result_sender(&self) -> Option<ThreadId> {

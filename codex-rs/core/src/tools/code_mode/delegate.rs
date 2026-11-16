@@ -472,19 +472,22 @@ impl CoreTurnHost {
             return Ok(());
         }
         let mut envelope = ResponseItemEnvelope {
-                item: ResponseItem::CustomToolCallOutput {
-                    id: None,
-                    call_id,
-                    name: Some(PUBLIC_TOOL_NAME.to_string()),
-                    output: FunctionCallOutputPayload::from_text(text),
-                    internal_chat_message_metadata_passthrough: None,
-                },
-                metadata: Some(CodexHarnessMetadata {
-                    history_truncation_token_limit: Some(output_token_limit),
-                    ..Default::default()
-                }),
-            };
-        let receipts = self.session.services.executed_tool_calls
+            item: ResponseItem::CustomToolCallOutput {
+                id: None,
+                call_id,
+                name: Some(PUBLIC_TOOL_NAME.to_string()),
+                output: FunctionCallOutputPayload::from_text(text),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            metadata: Some(CodexHarnessMetadata {
+                history_truncation_token_limit: Some(output_token_limit),
+                ..Default::default()
+            }),
+        };
+        let receipts = self
+            .session
+            .services
+            .executed_tool_calls
             .capture_receipts_for_cell(&cell_id, &envelope.item);
         envelope.metadata.get_or_insert_default().capture_deliveries = receipts;
         self.session

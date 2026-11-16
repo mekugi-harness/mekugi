@@ -226,11 +226,15 @@ fn model_context_window_uses_model_value_without_override() {
 fn bundled_instructions_omit_personality_and_disabled_plan_tool() {
     let models: codex_protocol::openai_models::ModelsResponse =
         serde_json::from_str(include_str!("../models.json")).unwrap();
-    for instructions in std::iter::once(BASE_INSTRUCTIONS).chain(
-        models.models.iter().filter_map(|model| {
-            model.model_messages.as_ref()?.instructions_template.as_deref()
-        }),
-    ) {
+    for instructions in
+        std::iter::once(BASE_INSTRUCTIONS).chain(models.models.iter().filter_map(|model| {
+            model
+                .model_messages
+                .as_ref()?
+                .instructions_template
+                .as_deref()
+        }))
+    {
         assert!(!instructions.contains("# Personality"));
         assert!(!instructions.contains("update_plan"));
     }

@@ -1,4 +1,4 @@
-use codex_core::{thread_from_stored_thread, build_thread_from_snapshot};
+use codex_core::{build_thread_from_snapshot, thread_from_stored_thread};
 #[path = "daemon_continuation.rs"]
 mod daemon_continuation;
 
@@ -889,10 +889,15 @@ impl ThreadRequestProcessor {
         &self,
         params: codex_app_server_protocol::FeatureUseReadParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let features = self.thread_state_manager.feature_use.lock()
+        let features = self
+            .thread_state_manager
+            .feature_use
+            .lock()
             .map_err(|_| internal_error("native feature accounting unavailable"))?;
         let threads = features.read(params.threads);
-        Ok(Some(codex_app_server_protocol::FeatureUseReadResponse { threads }.into()))
+        Ok(Some(
+            codex_app_server_protocol::FeatureUseReadResponse { threads }.into(),
+        ))
     }
 
     pub(crate) async fn thread_compact_start(
@@ -987,13 +992,20 @@ impl ThreadRequestProcessor {
         params: codex_app_server_protocol::AgentForeignRequest,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let root = self.thread_manager.loaded_agent_root(params.target_thread_id).await
+        let root = self
+            .thread_manager
+            .loaded_agent_root(params.target_thread_id)
+            .await
             .map_err(|error| invalid_request(format!("foreign target is unavailable: {error}")))?;
         let state = self.thread_state_manager.thread_state(root).await;
         if state.lock().await.resource_host != Some(request_id.connection_id) {
-            return Err(invalid_request("foreign delivery requires the owning resource connection"));
+            return Err(invalid_request(
+                "foreign delivery requires the owning resource connection",
+            ));
         }
-        self.thread_manager.receive_foreign_agent_operation(params, cancellation).await
+        self.thread_manager
+            .receive_foreign_agent_operation(params, cancellation)
+            .await
             .map(|response| Some(response.into()))
             .map_err(|error| invalid_request(format!("foreign operation failed: {error}")))
     }
@@ -1009,12 +1021,21 @@ impl ThreadRequestProcessor {
             .map_err(|error| invalid_request(format!("invalid agent ID: {error}")))?;
         let state = self.thread_state_manager.thread_state(root).await;
         if state.lock().await.resource_host != Some(request_id.connection_id) {
-            return Err(invalid_request("agent end requires the owning resource connection"));
+            return Err(invalid_request(
+                "agent end requires the owning resource connection",
+            ));
         }
-        let thread_ids = self.thread_manager.end_agent(root, target).await
+        let thread_ids = self
+            .thread_manager
+            .end_agent(root, target)
+            .await
             .map_err(|error| invalid_request(format!("agent end failed: {error}")))?
-            .into_iter().map(|id| id.to_string()).collect();
-        Ok(Some(codex_app_server_protocol::AgentEndResponse { thread_ids }.into()))
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect();
+        Ok(Some(
+            codex_app_server_protocol::AgentEndResponse { thread_ids }.into(),
+        ))
     }
 
     pub(crate) async fn thread_inspect(

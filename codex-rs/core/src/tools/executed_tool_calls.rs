@@ -2,12 +2,12 @@
 //! lives in the private request metadata module; this recorder must never dispatch or await tools.
 
 #[cfg(test)]
+mod capture_tests;
+#[cfg(test)]
 #[path = "executed_tool_calls_direct_tests.rs"]
 mod direct_tests;
 mod mcp_attribution;
 mod request_metadata;
-#[cfg(test)]
-mod capture_tests;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -37,8 +37,8 @@ use indexmap::IndexMap;
 use serde_json::Value as JsonValue;
 
 use crate::session::step_context::StepContext;
-use crate::tools::context::ToolCallSource;
 use crate::tools::context::CaptureDeliveryCandidate;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::metadata_metrics;
@@ -262,7 +262,10 @@ impl ExecutedToolCalls {
         candidate: CaptureDeliveryCandidate,
     ) {
         let mut state = self.lock_state();
-        let retained = state.cells.values().flat_map(|cell| &cell.capture_candidates);
+        let retained = state
+            .cells
+            .values()
+            .flat_map(|cell| &cell.capture_candidates);
         let (count, bytes) = retained.fold((0, 0), |(count, bytes), candidate| {
             (count + 1, bytes + candidate.retained_bytes())
         });
@@ -288,21 +291,35 @@ impl ExecutedToolCalls {
         cell_id: &CellId,
         item: &ResponseItem,
     ) -> Vec<codex_history::CaptureDeliveryReceipt> {
-        self.lock_state().cells.get(cell_id).map_or_else(Vec::new, |cell| {
-            cell.capture_candidates.iter()
-                .filter(|candidate| candidate.matches_output(item))
-                .map(|candidate| candidate.receipt.clone()).collect()
-        })
+        self.lock_state()
+            .cells
+            .get(cell_id)
+            .map_or_else(Vec::new, |cell| {
+                cell.capture_candidates
+                    .iter()
+                    .filter(|candidate| candidate.matches_output(item))
+                    .map(|candidate| candidate.receipt.clone())
+                    .collect()
+            })
     }
 
     pub(crate) fn attach_capture_to_output(&self, output: &mut ResponseItemEnvelope) {
-        let Some(call_id) = output_call_id(&output.item) else { return; };
+        let Some(call_id) = output_call_id(&output.item) else {
+            return;
+        };
         let mut state = self.lock_state();
-        let Some(cell_id) = state.output_cells.get(call_id).cloned() else { return; };
-        let Some(cell) = state.cells.get_mut(&cell_id) else { return; };
-        let receipts: Vec<_> = cell.capture_candidates.iter()
+        let Some(cell_id) = state.output_cells.get(call_id).cloned() else {
+            return;
+        };
+        let Some(cell) = state.cells.get_mut(&cell_id) else {
+            return;
+        };
+        let receipts: Vec<_> = cell
+            .capture_candidates
+            .iter()
             .filter(|candidate| candidate.matches_output(&output.item))
-            .map(|candidate| candidate.receipt.clone()).collect();
+            .map(|candidate| candidate.receipt.clone())
+            .collect();
         if cell.capture_terminal_output.as_deref() == Some(call_id) {
             cell.capture_candidates.clear();
             cell.capture_terminal_output = None;
@@ -312,22 +329,26 @@ impl ExecutedToolCalls {
             }
         }
         if !receipts.is_empty() {
-            output.metadata.get_or_insert_default().capture_deliveries.extend(receipts);
+            output
+                .metadata
+                .get_or_insert_default()
+                .capture_deliveries
+                .extend(receipts);
         }
     }
 
     pub(crate) fn new(features: &Features, history: &InitialHistory) -> Self {
         Self {
             state: Arc::new(Mutex::new(ExecutedToolCallRecorderState {
-                    enabled: Self::is_enabled(features),
-                    seen_ids: SeenIds::from_history(history),
-                    // Runtime cell IDs can restart after resume/fork; inherited wait
-                    // handles cannot be distinguished from newly allocated handles.
-                    can_prove_wait_completion: matches!(
-                        history,
-                        InitialHistory::New | InitialHistory::Cleared
-                    ),
-                    ..Default::default()
+                enabled: Self::is_enabled(features),
+                seen_ids: SeenIds::from_history(history),
+                // Runtime cell IDs can restart after resume/fork; inherited wait
+                // handles cannot be distinguished from newly allocated handles.
+                can_prove_wait_completion: matches!(
+                    history,
+                    InitialHistory::New | InitialHistory::Cleared
+                ),
+                ..Default::default()
             })),
             retained_direct_metadata_bytes: Arc::new(AtomicUsize::new(0)),
             pending_direct_calls: Arc::new(AtomicUsize::new(0)),

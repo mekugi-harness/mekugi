@@ -239,7 +239,6 @@ pub(crate) async fn prepare(
     ))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,8 +249,13 @@ mod tests {
 
     fn request() -> ThreadCreateRequest {
         ThreadCreateRequest {
-            task_name: "worker".to_string(), fork_mode: None, agent_type: None,
-            model: None, reasoning_effort: None, cwd: None, preload: None,
+            task_name: "worker".to_string(),
+            fork_mode: None,
+            agent_type: None,
+            model: None,
+            reasoning_effort: None,
+            cwd: None,
+            preload: None,
         }
     }
 
@@ -259,13 +263,31 @@ mod tests {
     async fn full_history_rejects_preload_and_preserves_native_prefix() {
         let (session, turn) = crate::session::tests::make_session_and_context().await;
         let step = StepContext::for_test(Arc::new(turn));
-        assert!(prepare(&session, &step, "fork", ThreadCreateRequest {
-            fork_mode: Some(SpawnAgentForkMode::FullHistory),
-            preload: Some(ReloadSelection { sources: vec![] }), ..request()
-        }).await.is_err());
-        let (settings, _) = prepare(&session, &step, "fork", ThreadCreateRequest {
-            fork_mode: Some(SpawnAgentForkMode::FullHistory), ..request()
-        }).await.unwrap();
+        assert!(
+            prepare(
+                &session,
+                &step,
+                "fork",
+                ThreadCreateRequest {
+                    fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                    preload: Some(ReloadSelection { sources: vec![] }),
+                    ..request()
+                }
+            )
+            .await
+            .is_err()
+        );
+        let (settings, _) = prepare(
+            &session,
+            &step,
+            "fork",
+            ThreadCreateRequest {
+                fork_mode: Some(SpawnAgentForkMode::FullHistory),
+                ..request()
+            },
+        )
+        .await
+        .unwrap();
         assert!(settings.config.multi_agent_v2.preserve_fork_prefix);
         assert_eq!(settings.options.preload, None);
     }
@@ -398,5 +420,4 @@ mod tests {
         );
         assert_eq!(session.reload_selection().await, None);
     }
-
 }

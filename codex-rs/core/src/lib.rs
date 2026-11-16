@@ -64,8 +64,6 @@ pub use guardian::guardian_policy_model;
 pub use session::turn_context::TurnContext;
 pub use thread_startup_metadata::ThreadStartupMetadata;
 mod agent;
-pub use agent::host_resources::AgentHostResources;
-pub use agent::host_resources::CaptureResourceCallback;
 pub use agent::api::AgentConfigUpdate;
 pub use agent::api::AgentControl;
 pub use agent::api::AgentInfo;
@@ -75,6 +73,8 @@ pub use agent::api::AgentTurnOutcome;
 pub use agent::api::DeliveryReceipt;
 pub use agent::api::SendRequest;
 pub use agent::api::SpawnRequest;
+pub use agent::host_resources::AgentHostResources;
+pub use agent::host_resources::CaptureResourceCallback;
 pub use agent::types::AgentExecutionGuard;
 pub use agent::types::AgentMessage;
 pub use agent::types::AgentMetadata;
@@ -196,15 +196,15 @@ pub use thread_manager::PromptCacheKey;
 pub use thread_manager::StartThreadOptions;
 pub use thread_manager::StartupModels;
 pub use thread_manager::ThreadManager;
-pub use thread_manager::view::{
-    thread_from_stored_thread, build_thread_from_snapshot, with_thread_spawn_agent_metadata,
-};
 pub use thread_manager::ThreadRegistration;
 pub use thread_manager::ThreadShutdownReport;
 pub use thread_manager::build_models_manager;
 pub use thread_manager::build_startup_models;
 pub use thread_manager::local_agent_graph_store_from_state_db;
 pub use thread_manager::passthrough_image_store;
+pub use thread_manager::view::{
+    build_thread_from_snapshot, thread_from_stored_thread, with_thread_spawn_agent_metadata,
+};
 pub use thread_store_builder::ThreadStoreBuilder;
 pub use tools::MULTI_AGENT_V2_NAMESPACE_DESCRIPTION;
 pub use tools::handlers::WaitForEnvironmentToolConfig;

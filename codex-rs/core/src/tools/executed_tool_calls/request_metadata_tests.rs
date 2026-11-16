@@ -20,7 +20,12 @@ impl ExecutedToolCalls {
         if !state.enabled {
             return false;
         }
-        Self::attach_pending_to_prompt_with_state(&mut state, items, retry_cache, RequestKind::Sampling)
+        Self::attach_pending_to_prompt_with_state(
+            &mut state,
+            items,
+            retry_cache,
+            RequestKind::Sampling,
+        )
     }
 }
 
@@ -816,7 +821,7 @@ fn empty_inventory_wait_requires_a_fresh_session() {
             }
             {
                 let state = recorder.lock_state();
-                        assert_eq!(state.pending_nested_calls, MAX_PENDING_EXECUTED_TOOL_CALLS);
+                assert_eq!(state.pending_nested_calls, MAX_PENDING_EXECUTED_TOOL_CALLS);
                 assert!(state.cells.len() < MAX_PENDING_EXECUTED_TOOL_CALLS);
                 assert!(!state.output_cells.values().any(|id| id == &cell));
                 let empty = state.cells.get(&cell).unwrap();
@@ -1436,12 +1441,7 @@ fn closed_truncated_cell_is_reclaimed_safely_under_pressure() {
             &format!("live-exec-{index}"),
         );
     }
-    assert!(
-        !recorder
-            .lock_state()
-            .cells
-            .contains_key(&cell)
-    );
+    assert!(!recorder.lock_state().cells.contains_key(&cell));
     assert!(!recorder.record_tool_result_metadata(&source, "nested", &metadata));
     let mut expected = history.clone();
     expected[1].append_executed_tool_calls(vec![call]);
@@ -1466,15 +1466,9 @@ fn duplicate_pending_ids_do_not_consume_extra_capacity() {
         assert!(!state.cells[&cell].truncated_metadata_binding_valid);
     }
     recorder.start_cell(&cell, "new-exec");
-    assert_eq!(
-        recorder.lock_state().pending_nested_calls,
-        0
-    );
+    assert_eq!(recorder.lock_state().pending_nested_calls, 0);
     record_nested_call(&recorder, &cell, "new");
-    assert_eq!(
-        recorder.lock_state().pending_nested_calls,
-        1
-    );
+    assert_eq!(recorder.lock_state().pending_nested_calls, 1);
 }
 
 #[test]
@@ -1724,10 +1718,7 @@ fn mapping_pressure_preserves_existing_cells_and_late_partial_records() {
     }
     recorder.attach_to_prompt(&mut items, &mut HashMap::new());
     assert_eq!(items, expected);
-    assert_eq!(
-        recorder.lock_state().pending_nested_calls,
-        0
-    );
+    assert_eq!(recorder.lock_state().pending_nested_calls, 0);
 }
 
 #[test]

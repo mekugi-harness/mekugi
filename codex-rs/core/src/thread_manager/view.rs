@@ -2,11 +2,11 @@
 use crate::ThreadConfigSnapshot;
 use crate::path_utils;
 use codex_app_server_protocol::{
-    Thread, ThreadStatus, ThreadSection, ThreadSectionAppearance, GitInfo as ApiGitInfo,
+    GitInfo as ApiGitInfo, Thread, ThreadSection, ThreadSectionAppearance, ThreadStatus,
 };
+use codex_protocol::ThreadId;
 use codex_thread_store::StoredThread;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_protocol::ThreadId;
 use std::path::PathBuf;
 use tracing::warn;
 

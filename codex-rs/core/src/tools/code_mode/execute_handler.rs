@@ -144,7 +144,9 @@ impl CodeModeExecuteHandler {
             );
         } else {
             code_cell_trace.record_ended(&response);
-            exec.session.services.executed_tool_calls
+            exec.session
+                .services
+                .executed_tool_calls
                 .mark_terminal_capture_output(&cell_id, &call_id);
             exec.session
                 .services

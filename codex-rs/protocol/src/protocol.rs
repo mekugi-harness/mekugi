@@ -3317,7 +3317,10 @@ impl fmt::Display for SessionSource {
 impl SessionSource {
     pub fn can_accept_direct_input(&self, multi_agent_version: Option<MultiAgentVersion>) -> bool {
         multi_agent_version != Some(MultiAgentVersion::V2)
-            || !matches!(self, SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+            || !matches!(
+                self,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            )
     }
 
     pub fn from_startup_arg(value: &str) -> Result<Self, &'static str> {

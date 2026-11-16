@@ -286,8 +286,10 @@ pub(super) async fn ensure_conversation_listener(
                 tracing::warn!("native feature accounting unavailable");
             }
         }));
-        let root_state = listener_task_context.thread_state_manager
-            .thread_state(conversation.agent_root_id()).await;
+        let root_state = listener_task_context
+            .thread_state_manager
+            .thread_state(conversation.agent_root_id())
+            .await;
         let mut root_state = root_state.lock().await;
         if conversation.install_agent_host_resources(resources) {
             root_state.resource_host = Some(connection_id);

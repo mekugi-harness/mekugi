@@ -249,7 +249,11 @@ impl LocalAgentRuntime {
         operation: impl Into<String>,
         event: codex_protocol::feature_use::FeatureUseEvent,
     ) {
-        if let Some(record) = self.host_resources.get().and_then(|host| host.record_feature_use.as_ref()) {
+        if let Some(record) = self
+            .host_resources
+            .get()
+            .and_then(|host| host.record_feature_use.as_ref())
+        {
             record(codex_protocol::feature_use::FeatureUseFact {
                 thread_id: thread_id.to_string(),
                 operation: operation.into(),
