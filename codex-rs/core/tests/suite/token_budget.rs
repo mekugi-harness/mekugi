@@ -12,7 +12,6 @@ use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::McpServerConnectionStatus;
-use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::openai_models::ModelTokenBudgetConfig;
 use codex_protocol::protocol::CONTEXT_WINDOW_CLOSE_TAG;
 use codex_protocol::protocol::CONTEXT_WINDOW_GUIDANCE_CLOSE_TAG;

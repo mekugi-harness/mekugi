@@ -406,7 +406,7 @@ pub(crate) fn finalize_tool_router(
     let model_messages = ResolvedModelMessages::from_model(model_info);
     hosted_specs.retain(|spec| registry.tool_policy.allows(&ToolName::plain(spec.name())));
     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
-    enforce_strict_3p_tools(turn_context, model_info, &mut registry);
+    enforce_strict_3p_tools(turn_context, &mut registry);
     let tool_mode = TOOL_MODE;
     let code_mode_enabled = matches!(tool_mode, ToolMode::CodeMode | ToolMode::CodeModeOnly);
     if code_mode_enabled {
@@ -561,7 +561,6 @@ pub(crate) fn finalize_tool_router(
 
     let model_visible_specs = build_model_visible_specs(
         turn_context,
-        model_info,
         &registry,
         &code_mode_tool_names,
         hosted_specs,
@@ -631,11 +630,7 @@ fn tool_exposure_with_namespace_override(
 }
 
 /// Run after namespace overrides so eligible third-party tools always remain deferred.
-fn enforce_strict_3p_tools(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-    registry: &mut ToolRegistry,
-) {
+fn enforce_strict_3p_tools(turn_context: &TurnContext, registry: &mut ToolRegistry) {
     if !code_mode_only_strict_3p_tools(turn_context) {
         return;
     }
@@ -658,7 +653,6 @@ fn enforce_strict_3p_tools(
 #[instrument(level = "trace", skip_all)]
 fn build_model_visible_specs(
     turn_context: &TurnContext,
-    model_info: &ModelInfo,
     registry: &ToolRegistry,
     code_mode_tool_names: &BTreeMap<String, ToolName>,
     hosted_specs: Vec<ToolSpec>,
@@ -666,7 +660,7 @@ fn build_model_visible_specs(
     let mut specs = Vec::new();
     for tool in registry.entries() {
         let exposure = tool.exposure;
-        if !is_directly_visible(turn_context, model_info, tool) {
+        if !is_directly_visible(tool) {
             continue;
         }
 
@@ -674,7 +668,6 @@ fn build_model_visible_specs(
         let spec = Arc::unwrap_or_clone(tool.spec());
         specs.push(spec_for_model_request(
             turn_context,
-            model_info,
             exposure,
             &tool_name,
             code_mode_tool_names,
@@ -692,7 +685,6 @@ fn build_model_visible_specs(
 
 fn spec_for_model_request(
     turn_context: &TurnContext,
-    model_info: &ModelInfo,
     exposure: ToolExposure,
     tool_name: &ToolName,
     code_mode_tool_names: &BTreeMap<String, ToolName>,
@@ -882,12 +874,7 @@ fn agent_type_description(
     }
 }
 
-fn is_hidden_by_code_mode_only(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-    tool_name: &ToolName,
-    exposure: ToolExposure,
-) -> bool {
+fn is_hidden_by_code_mode_only(tool_name: &ToolName, exposure: ToolExposure) -> bool {
     let tool_mode = TOOL_MODE;
     tool_mode == ToolMode::CodeModeOnly
         && exposure.is_available_in_code_mode()
@@ -896,18 +883,9 @@ fn is_hidden_by_code_mode_only(
         ))
 }
 
-fn is_directly_visible(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-    tool: &RegisteredTool,
-) -> bool {
+fn is_directly_visible(tool: &RegisteredTool) -> bool {
     tool.exposure.is_direct()
-        && !is_hidden_by_code_mode_only(
-            turn_context,
-            model_info,
-            &tool.runtime.tool_name(),
-            tool.exposure,
-        )
+        && !is_hidden_by_code_mode_only(&tool.runtime.tool_name(), tool.exposure)
 }
 
 fn is_excluded_from_code_mode(turn_context: &TurnContext, tool_name: &ToolName) -> bool {
@@ -934,7 +912,7 @@ fn prepare_function_description_prefixes(
         let code_mode_enabled = matches!(TOOL_MODE, ToolMode::CodeMode | ToolMode::CodeModeOnly);
         let search_name = ToolName::plain(TOOL_SEARCH_TOOL_NAME);
         let search_visible = search_exposure.is_some_and(|exposure| {
-            !is_hidden_by_code_mode_only(turn_context, model_info, &search_name, exposure)
+            !is_hidden_by_code_mode_only(&search_name, exposure)
                 || (code_mode_enabled
                     && registry
                         .tool_policy
@@ -950,7 +928,7 @@ fn prepare_function_description_prefixes(
             registry
                 .entries()
                 .filter(|tool| {
-                    is_directly_visible(turn_context, model_info, tool)
+                    is_directly_visible(tool)
                         || (search_visible
                             && tool.exposure.is_deferred()
                             && tool.runtime.search_info().is_some())
@@ -958,7 +936,7 @@ fn prepare_function_description_prefixes(
                 .map(|tool| tool.runtime.tool_name()),
         );
         available_tools.extend(
-            code_mode_tools(turn_context, model_info, registry)
+            code_mode_tools(turn_context, registry)
                 .map(|(_, _, tool)| tool.runtime.tool_name()),
         );
         // These wrappers are generated after their inner descriptions are ready.
@@ -983,7 +961,6 @@ fn prepare_function_description_prefixes(
 /// A registered tool alone is not reachable when policy disallows the exec wrapper.
 fn code_mode_tools<'a>(
     turn_context: &'a TurnContext,
-    model_info: &'a ModelInfo,
     registry: &'a ToolRegistry,
 ) -> impl Iterator<Item = (String, Arc<ToolSpec>, &'a RegisteredTool)> {
     let tool_mode = TOOL_MODE;
@@ -1062,7 +1039,7 @@ fn register_code_mode_executors(
     let mut deferred_exec_prompt_tool_specs = Vec::new();
     let mut included_deferred_mcp_output_schema = false;
     let deferred_tools_guidance_enabled = model_info.supports_search_tool;
-    for (name, spec, tool) in code_mode_tools(turn_context, model_info, registry) {
+    for (name, spec, tool) in code_mode_tools(turn_context, registry) {
         code_mode_tool_names.insert(name, tool.runtime.tool_name());
         let exposure = tool.exposure;
         let cached_runtime = tool.cached_runtime().cloned();

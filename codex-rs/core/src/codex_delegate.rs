@@ -51,6 +51,7 @@ use crate::session::completed_session_loop_termination;
 ///
 /// Delegates never request approvals, and the returned IO yields their public events.
 /// Its submission channel accepts additional `Op`s for the sub-agent.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_codex_thread_interactive(
     config: Config,
