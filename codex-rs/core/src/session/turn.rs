@@ -1081,6 +1081,21 @@ pub(crate) async fn run_hooks_and_record_inputs(
             blocked_input = true;
             record_additional_contexts(sess, turn_context, hook_outcome.additional_contexts).await;
         } else {
+            let source_message = match input_item.as_ref() {
+                TurnInput::UserInput { content, .. } => {
+                    let text: Vec<_> = content
+                        .iter()
+                        .filter_map(|part| match part {
+                            UserInput::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    text.iter()
+                        .any(|text| crate::context_sources::has_message_sources(text))
+                        .then(|| text.join("\n"))
+                }
+                _ => None,
+            };
             if matches!(input_item.as_ref(), TurnInput::UserInput { content, .. } if !content.is_empty())
             {
                 accepted_user_input = true;
@@ -1102,6 +1117,9 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 input_persist_context,
             )
             .await;
+            if let Some(message) = source_message {
+                crate::context_sources::record_user_sources(sess, turn_context, &message).await?;
+            }
         }
     }
     // The batch has left the input queue. Persist every accepted item before the
@@ -1358,12 +1376,18 @@ async fn build_skills_and_plugins(
         .iter()
         .map(|(_, access)| access as &dyn EnvironmentAccess)
         .collect::<Vec<_>>();
+    // Explicit source references were read when this accepted input was recorded.
+    // Keep stock skill handling for selections that did not use source syntax.
+    let prompt_skills = mentioned_skills.iter().filter(|skill| {
+        !user_input.iter().any(|input| matches!(input,
+            UserInput::Text { text, .. } if crate::context_sources::message_supplies_skill(text, &skill.name)))
+    }).cloned().collect::<Vec<_>>();
     let HostSkillPrompts {
         fragments,
         injected: injected_host_skills,
         warnings: host_skill_warnings,
     } = skills_snapshot
-        .load_skill_prompts(&mentioned_skills, &accessors)
+        .load_skill_prompts(&prompt_skills, &accessors)
         .await;
     emit_explicit_skill_invocations(
         sess,

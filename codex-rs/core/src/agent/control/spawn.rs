@@ -924,10 +924,7 @@ impl LocalAgentControl {
         };
 
         let needs_sources = match &initial_input {
-            SpawnInitialInput::UserInput(input) => input.iter().any(|item| {
-                matches!(item,
-                UserInput::Text { text, .. } if crate::context_sources::has_message_sources(text))
-            }),
+            SpawnInitialInput::UserInput(_) => false,
             SpawnInitialInput::InterAgentCommunication(message, _) => {
                 message.encrypted_content.is_none()
                     && crate::context_sources::has_message_sources(&message.content)
@@ -949,19 +946,7 @@ impl LocalAgentControl {
                 crate::context_sources::preload(session, &step, selection, &cancellation).await?;
             }
             match &mut initial_input {
-                SpawnInitialInput::UserInput(input) => {
-                    for item in input {
-                        if let UserInput::Text { text, .. } = item {
-                            *text = crate::context_sources::acquire_message(
-                                session,
-                                &step,
-                                text,
-                                &cancellation,
-                            )
-                            .await?;
-                        }
-                    }
-                }
+                SpawnInitialInput::UserInput(_) => {}
                 SpawnInitialInput::InterAgentCommunication(message, _)
                     if message.encrypted_content.is_none() =>
                 {

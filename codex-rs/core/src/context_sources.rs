@@ -28,6 +28,9 @@ use crate::unified_exec::ExecCommandRequest;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecProcessManager;
 
+#[path = "context_sources_directory.rs"]
+mod directory;
+
 const MAX_REFERENCE_DEPTH: usize = 3;
 // Match retained capture capacity; charge cached reads, output and pending references.
 const MAX_SOURCE_BYTES: usize = 32 << 20;
@@ -41,6 +44,11 @@ enum Target {
 struct Source {
     target: Target,
     ranges: Vec<(usize, usize)>,
+}
+
+struct SourceBody {
+    text: String,
+    expand_references: bool,
 }
 
 /// Read selected sources without changing the recipient's reset selection.
@@ -64,7 +72,7 @@ pub(crate) async fn acquire_selection(
             let body = body?;
             if body.is_empty() { return Ok(None); }
             let body = format!(
-                "Reloaded context (tool output). These source bodies are already read context; reread only missing or changed content. Failed reads are not complete context.\n{body}"
+                "Source content (tool output). These source bodies are already read context; reread only missing or changed content. Failed reads are not complete context.\n{body}"
             );
             check_capacity(body.len())?;
             Ok(Some(body))
@@ -87,7 +95,7 @@ async fn read_sources(
         .map(|source| (source, environment.cwd().clone(), 1))
         .collect::<VecDeque<_>>();
     let mut cached_bytes = 0usize;
-    let mut files: HashMap<(PathUri, bool), Result<String, String>> = HashMap::new();
+    let mut files: HashMap<(PathUri, bool), Result<SourceBody, String>> = HashMap::new();
     let mut managed_skills = HashMap::new();
     let mut seen = HashSet::new();
     let mut changes_seen = HashSet::new();
@@ -200,25 +208,29 @@ async fn read_sources(
                         cancellation,
                     )
                     .await
+                    .map(|text| SourceBody {
+                        text,
+                        expand_references: true,
+                    })
                 } else {
                     read_file(&access, &path).await
                 };
                 cached_bytes = cached_bytes.saturating_add(match &result {
-                    Ok(body) => body.len(),
+                    Ok(body) => body.text.len(),
                     Err(error) => error.len(),
                 });
                 check_capacity(cached_bytes)?;
                 entry.insert(result)
             }
         };
-        let body = match body {
+        let acquired = match body {
             Ok(body) => body,
             Err(error) => {
                 append_failure(&mut output, &reference, error)?;
                 continue;
             }
         };
-        let body = match selected_lines(body, &source.ranges) {
+        let body = match selected_lines(&acquired.text, &source.ranges) {
             Ok(body) => body,
             Err(error) => {
                 append_failure(&mut output, &reference, &error)?;
@@ -232,14 +244,15 @@ async fn read_sources(
         } else {
             path.parent().unwrap_or_else(|| base.clone())
         };
-        for nested in references(&body) {
+        for nested in if acquired.expand_references {
+            references(&body)
+        } else {
+            Vec::new()
+        } {
             pending_bytes = pending_bytes.saturating_add(nested.len());
             check_capacity(pending_bytes)?;
             pending.push_back((nested, nested_base.clone(), depth + 1));
         }
-    }
-    if bodies.is_empty() {
-        return Ok(output);
     }
     // The source envelope preserves byte boundaries for Mekugi's existing output projection.
     // Framing and failures are not source bytes, even when they contain marker lookalikes.
@@ -256,11 +269,17 @@ async fn read_sources(
     Ok(result)
 }
 
-async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<String, String> {
+async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<SourceBody, String> {
     let metadata = access
         .get_metadata(path, GetMetadataOptions::default())
         .await
         .map_err(|error| error.to_string())?;
+    if metadata.is_directory {
+        return directory::read(access, path).await.map(|text| SourceBody {
+            text,
+            expand_references: false,
+        });
+    }
     if !metadata.is_file {
         return Err("source is not a regular file".to_string());
     }
@@ -279,7 +298,12 @@ async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<Str
         }
         bytes.extend_from_slice(&chunk);
     }
-    String::from_utf8(bytes).map_err(|error| error.to_string())
+    String::from_utf8(bytes)
+        .map(|text| SourceBody {
+            text,
+            expand_references: true,
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn source_path(
@@ -431,7 +455,8 @@ fn append_body(output: &mut String, source: &str, body: &str) -> CodexResult<()>
             .saturating_add(body.len())
             .saturating_add(16),
     )?;
-    output.push_str(&format!("\nSource {source:?}:\n{body}\n"));
+    let source = serde_json::to_string(source).expect("source reference is a string");
+    output.push_str(&format!("\nSource {source}:\n{body}\n"));
     Ok(())
 }
 
@@ -443,8 +468,10 @@ fn append_failure(output: &mut String, source: &str, error: &str) -> CodexResult
             .saturating_add(error.len())
             .saturating_add(48),
     )?;
+    let source = serde_json::to_string(source).expect("source reference is a string");
+    let error = serde_json::to_string(error).expect("source failure is a string");
     output.push_str(&format!(
-        "\nSource {source:?}: CONTENT NOT ATTACHED: {error}\n"
+        "\nSource {source}: CONTENT NOT ATTACHED: {error}\n"
     ));
     Ok(())
 }
@@ -611,6 +638,9 @@ fn references(text: &str) -> Vec<String> {
         }
         index = end.max(start + 1);
         while !exact_json && end > start + 1 && b".,:!?".contains(&text.as_bytes()[end - 1]) {
+            if matches!(&text[start..end], "@." | "@..") {
+                break;
+            }
             if changes && (text[start..end].ends_with("..") || end == start + "mchanges:".len()) {
                 break;
             }
@@ -659,6 +689,33 @@ pub(crate) fn has_message_sources(message: &str) -> bool {
     !references(message).is_empty()
 }
 
+pub(crate) fn message_supplies_skill(message: &str, name: &str) -> bool {
+    references(message).iter().any(|reference| {
+        matches!(parse_reference(reference), Ok(Source { target: Target::Skill(skill), .. }) if skill == name)
+    })
+}
+
+/// Acquire sources at accepted user-input recording, separately from user-authored text.
+#[tracing::instrument(level = "trace", skip_all)]
+pub(crate) fn record_user_sources<'a>(
+    session: &'a Arc<Session>,
+    turn: &'a Arc<crate::session::turn_context::TurnContext>,
+    message: &'a str,
+) -> futures::future::BoxFuture<'a, CodexResult<()>> {
+    Box::pin(async move {
+        let cancellation = CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        let step = session
+            .capture_speculative_step_context(Arc::clone(turn), &cancellation)
+            .await?;
+        let acquired = acquire_message(session, &step, message, &cancellation).await?;
+        if let Some(body) = acquired.get(message.len() + 2..) {
+            record_source_output(session, &step, "attachments", body.to_string()).await;
+        }
+        Ok(())
+    })
+}
+
 /// Final replies select retained changes, not another acquisition of file/skill sources.
 pub(crate) fn completion_sources(message: &str) -> Vec<String> {
     references(message)
@@ -674,20 +731,40 @@ pub(crate) async fn preload(
     selection: &ReloadSelection,
     cancellation: &CancellationToken,
 ) -> CodexResult<()> {
-    use codex_history::ResponseItemEnvelope;
-    use codex_protocol::models::FunctionCallOutputPayload;
-    use codex_protocol::models::ResponseItem;
-
     let Some(body) = acquire_selection(session, step, selection, cancellation).await? else {
         return Ok(());
     };
+    record_source_output(session, step, "preload", body).await;
+    Ok(())
+}
+
+async fn record_source_output(
+    session: &Arc<Session>,
+    step: &Arc<StepContext>,
+    name: &str,
+    body: String,
+) {
+    use codex_history::ResponseItemEnvelope;
+    use codex_protocol::items::FunctionCallOutputItem;
+    use codex_protocol::items::TurnItem;
+    use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_protocol::models::ResponseItem;
+
     let tokens = codex_utils_output_truncation::approx_token_count(&body);
-    let mut item = ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
-        id: None,
-        call_id: None,
-        name: Some("preload".to_string()),
+    let id = codex_protocol::ResponseItemId::with_suffix("context", uuid::Uuid::new_v4());
+    let output = FunctionCallOutputPayload::from_text(body);
+    let lifecycle = TurnItem::FunctionCallOutput(FunctionCallOutputItem {
+        id: id.to_string(),
+        name: name.to_string(),
         namespace: Some("context".to_string()),
-        output: FunctionCallOutputPayload::from_text(body),
+        output: output.body.clone(),
+    });
+    let mut item = ResponseItemEnvelope::new(ResponseItem::FunctionCallOutput {
+        id: Some(id),
+        call_id: None,
+        name: Some(name.to_string()),
+        namespace: Some("context".to_string()),
+        output,
         internal_chat_message_metadata_passthrough: None,
     });
     item.metadata
@@ -696,8 +773,15 @@ pub(crate) async fn preload(
     session
         .record_annotated_conversation_items(&step.turn, &step.settings.model_info, vec![item])
         .await;
-    Ok(())
+    session.emit_turn_item_started(&step.turn, &lifecycle).await;
+    session
+        .emit_turn_item_completed(&step.turn, lifecycle)
+        .await;
 }
+
+#[cfg(test)]
+#[path = "context_sources_tests.rs"]
+mod recording_tests;
 
 #[cfg(test)]
 mod tests {
@@ -706,7 +790,7 @@ mod tests {
     use codex_login::CodexAuth;
     use codex_utils_absolute_path::AbsolutePathBuf;
 
-    async fn fixture() -> (tempfile::TempDir, Arc<Session>, Arc<StepContext>) {
+    pub(super) async fn fixture() -> (tempfile::TempDir, Arc<Session>, Arc<StepContext>) {
         let directory = tempfile::tempdir().unwrap();
         let (session, turn, _events) =
             crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
