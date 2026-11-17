@@ -15,9 +15,6 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
 use codex_protocol::items::TurnItem;
 
-#[path = "compact_token_budget_reload.rs"]
-pub(crate) mod reload;
-
 /// Runs token-budget manual compaction as a normal compaction lifecycle.
 ///
 /// Token-budget compaction skips model/server summarization and installs a fresh context window
@@ -77,7 +74,18 @@ async fn run_compact_task_inner(
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(turn_context, &compaction_item)
         .await;
-    let reload = reload::acquire(sess, step_context, cancellation_token).await?;
+    let reload = match sess.reload_selection().await {
+        Some(selection) => {
+            crate::context_sources::acquire_selection(
+                sess,
+                step_context,
+                &selection,
+                cancellation_token,
+            )
+            .await?
+        }
+        None => None,
+    };
     if cancellation_token.is_cancelled() {
         return Err(CodexErr::TurnAborted);
     }

@@ -186,8 +186,7 @@ pub(super) async fn create_spawn(
         let step = session
             .capture_step_context(session.new_default_turn().await, &cancellation)
             .await?;
-        crate::compact_token_budget::reload::preload(session, &step, selection, &cancellation)
-            .await?;
+        crate::context_sources::preload(session, &step, selection, &cancellation).await?;
     }
     child.thread.emit_thread_ready_lifecycle().await;
     child

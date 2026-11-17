@@ -924,11 +924,14 @@ impl LocalAgentControl {
         };
 
         let needs_sources = match &initial_input {
-            SpawnInitialInput::UserInput(input) => input.iter().any(|item| matches!(item,
-                UserInput::Text { text, .. } if crate::compact_token_budget::reload::has_message_sources(text))),
-            SpawnInitialInput::InterAgentCommunication(message, _) =>
+            SpawnInitialInput::UserInput(input) => input.iter().any(|item| {
+                matches!(item,
+                UserInput::Text { text, .. } if crate::context_sources::has_message_sources(text))
+            }),
+            SpawnInitialInput::InterAgentCommunication(message, _) => {
                 message.encrypted_content.is_none()
-                && crate::compact_token_budget::reload::has_message_sources(&message.content),
+                    && crate::context_sources::has_message_sources(&message.content)
+            }
         };
         if needs_sources
             || options
@@ -943,19 +946,13 @@ impl LocalAgentControl {
             let turn = session.new_default_turn().await;
             let step = session.capture_step_context(turn, &cancellation).await?;
             if let Some(selection) = options.preload.as_ref() {
-                crate::compact_token_budget::reload::preload(
-                    session,
-                    &step,
-                    selection,
-                    &cancellation,
-                )
-                .await?;
+                crate::context_sources::preload(session, &step, selection, &cancellation).await?;
             }
             match &mut initial_input {
                 SpawnInitialInput::UserInput(input) => {
                     for item in input {
                         if let UserInput::Text { text, .. } = item {
-                            *text = crate::compact_token_budget::reload::acquire_message(
+                            *text = crate::context_sources::acquire_message(
                                 session,
                                 &step,
                                 text,
@@ -968,7 +965,7 @@ impl LocalAgentControl {
                 SpawnInitialInput::InterAgentCommunication(message, _)
                     if message.encrypted_content.is_none() =>
                 {
-                    message.content = crate::compact_token_budget::reload::acquire_message(
+                    message.content = crate::context_sources::acquire_message(
                         session,
                         &step,
                         &message.content,

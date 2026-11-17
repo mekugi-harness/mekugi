@@ -44,7 +44,7 @@ impl LocalAgentRuntime {
         text: &str,
         cancellation: &CancellationToken,
     ) -> Result<String> {
-        if !crate::compact_token_budget::reload::has_message_sources(text) {
+        if !crate::context_sources::has_message_sources(text) {
             return Ok(text.to_string());
         }
         tokio::select! {
@@ -58,7 +58,7 @@ impl LocalAgentRuntime {
                 let step = session.capture_speculative_step_context(
                     session.new_default_turn().await, cancellation,
                 ).await?;
-                crate::compact_token_budget::reload::acquire_message(session, &step, text, cancellation).await
+                crate::context_sources::acquire_message(session, &step, text, cancellation).await
             } => result,
         }
     }
@@ -175,7 +175,7 @@ impl AgentControl for LocalAgentControl {
                     // Loaded recipients go straight to delivery, which rejects sends
                     // racing an in-progress eviction when it acquires the residency pin.
                     let needs_sources = matches!(&message, AgentMessage::Plaintext(text)
-                        if crate::compact_token_budget::reload::has_message_sources(text));
+                        if crate::context_sources::has_message_sources(text));
                     let _residency_pin = if mode == MessageDeliveryMode::TriggerTurn
                         || needs_sources
                         || (self.runtime.upgrade()?.get_thread(target).await.is_err()
@@ -201,7 +201,7 @@ impl AgentControl for LocalAgentControl {
                             )
                             .await?;
                         AgentMessage::Plaintext(
-                            crate::compact_token_budget::reload::acquire_message(
+                            crate::context_sources::acquire_message(
                                 session,
                                 &step,
                                 &text,

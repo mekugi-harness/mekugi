@@ -45,7 +45,7 @@ impl Handler {
                 AgentForeignOperation as Operation, AgentForeignResponse as Response,
             };
             let message = message_content(args.message)?;
-            let sources = crate::compact_token_budget::reload::has_message_sources(&message);
+            let sources = crate::context_sources::has_message_sources(&message);
             analytics.set_receiver(target);
             let operation = if args.btw {
                 Operation::SideQuestion { question: message }
@@ -87,7 +87,7 @@ impl Handler {
             let runtime = &invocation.session.services.local_agent_runtime;
             let prepared = async {
                 let question = message_content(args.message)?;
-                let sources = crate::compact_token_budget::reload::has_message_sources(&question);
+                let sources = crate::context_sources::has_message_sources(&question);
                 let target =
                     resolve_agent_target(&invocation.session, &invocation.turn, &args.target)
                         .await?;

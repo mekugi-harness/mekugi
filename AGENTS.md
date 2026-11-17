@@ -57,7 +57,7 @@ Build prerequisites, profiles, artifacts and host integration are owned by
 - Keep normal-turn model input incremental and cache-stable. Bound injected content and use
   typed context fragments (`ContextualUserFragment`, re-exported by `core/src/context`).
 - Mekugi's deliberate summary-free reset/reload belongs to
-  `codex-rs/core/src/compact_token_budget.rs`, `compact_token_budget_reload.rs` and `session/`.
+  `codex-rs/core/src/compact_token_budget.rs`, `context_sources.rs` and `session/`.
   Reload acquires selected Codex preload and message sources; the rollout/checkpoint retains
   source selection and acquisition facts. Preserve these rather than introducing a Go
   history rewrite or summary fallback.

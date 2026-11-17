@@ -1,5 +1,5 @@
-//! Source acquisition for a replacement context. Files and skills use the selected native
-//! filesystem; managed skills and captured changes retain their external owners.
+//! Shared source acquisition for messages, preload and context reload. Files and skills use
+//! the selected native filesystem; managed skills and captured changes retain their external owners.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -43,22 +43,7 @@ struct Source {
     ranges: Vec<(usize, usize)>,
 }
 
-pub(super) async fn acquire(
-    session: &Arc<Session>,
-    step: &Arc<StepContext>,
-    cancellation: &CancellationToken,
-) -> CodexResult<Option<String>> {
-    let Some(selection) = session
-        .reload_selection()
-        .await
-        .filter(|s| !s.sources.is_empty())
-    else {
-        return Ok(None);
-    };
-    acquire_selection(session, step, &selection, cancellation).await
-}
-
-/// Freeze an explicit selection without changing the recipient's reset selection.
+/// Read selected sources without changing the recipient's reset selection.
 pub(crate) async fn acquire_selection(
     session: &Arc<Session>,
     step: &Arc<StepContext>,
@@ -648,7 +633,7 @@ fn check_capacity(bytes: usize) -> CodexResult<()> {
     Ok(())
 }
 
-/// Preserve the original attributed message and freeze referenced content before acceptance.
+/// Preserve the original attributed message and append its referenced source content.
 pub(crate) async fn acquire_message(
     session: &Arc<Session>,
     step: &Arc<StepContext>,

@@ -114,7 +114,7 @@ impl LocalAgentControl {
             context.result_operation = Some(outcome.turn_id.clone());
             let sources = answer
                 .as_deref()
-                .map(crate::compact_token_budget::reload::completion_sources)
+                .map(crate::context_sources::completion_sources)
                 .unwrap_or_default();
             if !sources.is_empty() {
                 let prepared = async {
