@@ -921,3 +921,42 @@ fn long_content_parts_keep_both_ends_and_fingerprint_only_the_omitted_middle() {
         .contains("<OMITTED")
     );
 }
+
+#[test]
+fn live_environment_facts_do_not_change_history_snapshots_or_leak_into_hashes() {
+    let frame = |agent: &str, facts: &str| {
+        tagged_message(
+            "user",
+            "environment_context",
+            &format!(
+                "\n<cwd>/tmp/project</cwd>\n<shell>bash</shell>\n<subagents>\n{agent}\n</subagents>\n{facts}"
+            ),
+        )
+    };
+    let expected = detailed(&[frame("worker", "")]);
+    for facts in [
+        "Observed at: 2026-01-01T00:00:00Z\nPlatform: linux\nHome: /private/home/alice\nOS: Debian\nKernel: Linux 6\nGit repository: yes\nBranch: private-branch\nStatus:\nprivate-file\nRecent commits:\nprivate-subject\n".to_string(),
+        "Observed at: 2027-02-02T01:02:03Z\nPlatform: macos\nHome: /Users/bob\nOS (macOS): 26\nKernel: Darwin\nGit repository: no\n".to_string(),
+        "Observed at: unavailable\nHome: unavailable\nGit repository: unavailable\n".to_string(),
+        "Observed at: 2028-03-03T00:00:00Z\n".to_string() + &"Status: private-value\n".repeat(100),
+    ] {
+        let supplement = format!("  Reuse captured facts; re-check only facts later work may have changed.\n{facts}");
+        assert_eq!(detailed(&[frame("worker", &supplement)]), expected);
+        assert_ne!(detailed(&[frame("different worker", &supplement)]), expected);
+    }
+}
+
+#[test]
+fn environment_facts_lookalikes_outside_native_context_remain_visible() {
+    let text = "<environment_context>\n  Reuse captured facts; re-check only facts later work may have changed.\nObserved at: fixture-time\nHome: fixture-home\n</environment_context>";
+    for item in [
+        message("user", &format!("Quoted context: {text}")),
+        message("user", text.trim_end_matches("</environment_context>")),
+        message("developer", text),
+        json!({"type": "function_call_output", "output": text}),
+    ] {
+        let rendered = detailed(&[item]);
+        assert!(rendered.contains("fixture-time"), "{rendered}");
+        assert!(rendered.contains("fixture-home"), "{rendered}");
+    }
+}

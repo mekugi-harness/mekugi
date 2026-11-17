@@ -194,17 +194,29 @@ impl Normalizer {
                 normalize_path(value, &aliases).as_deref().unwrap_or(value)
             )
         });
-        host.replace_all(&text, |captures: &regex_lite::Captures<'_>| {
-            let label = match &captures[2] {
-                "shell" => "HOST_SHELL",
-                "shell_version" => "HOST_SHELL_VERSION",
-                "current_date" => "CURRENT_DATE",
-                "timezone" => "HOST_TIMEZONE",
-                _ => unreachable!(),
-            };
-            format!("{}<{label}>", &captures[1])
-        })
-        .into_owned()
+        let text = host
+            .replace_all(&text, |captures: &regex_lite::Captures<'_>| {
+                let label = match &captures[2] {
+                    "shell" => "HOST_SHELL",
+                    "shell_version" => "HOST_SHELL_VERSION",
+                    "current_date" => "CURRENT_DATE",
+                    "timezone" => "HOST_TIMEZONE",
+                    _ => unreachable!(),
+                };
+                format!("{}<{label}>", &captures[1])
+            })
+            .into_owned();
+        // OS/Git acquisition has its own tests. Its appended live facts do not belong in
+        // history goldens: they contain host paths, timestamps and arbitrary repository data.
+        // Match only the native supplement, leaving the surrounding context and lookalikes intact.
+        const FACTS_START: &str = "  Reuse captured facts; re-check only facts later work may have changed.\nObserved at:";
+        if let Some((before, facts)) = text.split_once(FACTS_START)
+            && let Some((_, after)) = facts.rsplit_once("</environment_context>")
+        {
+            format!("{before}</environment_context>{after}")
+        } else {
+            text
+        }
     }
 
     fn path_aliases(&self) -> Vec<(String, String)> {
