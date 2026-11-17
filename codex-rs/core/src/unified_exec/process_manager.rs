@@ -20,6 +20,7 @@ use crate::codex_thread::BackgroundTerminalInfo;
 use crate::exec_env::CODEX_PERMISSION_PROFILE_ENV_VAR;
 use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::CODEX_VERSION_ENV_VAR;
+use crate::exec_env::SESSION_TMP_ENV_VAR;
 use crate::exec_env::create_env;
 use crate::exec_env::inject_apply_patch_env;
 use crate::exec_env::inject_permission_profile_env;
@@ -181,6 +182,7 @@ fn env_overlay_for_exec_server(
                     key.as_str(),
                     CODEX_PERMISSION_PROFILE_ENV_VAR
                         | CODEX_VERSION_ENV_VAR
+                        | SESSION_TMP_ENV_VAR
                         | codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR
                 ) || local_policy_env.get(*key) != Some(*value))
         })
@@ -1521,6 +1523,12 @@ impl UnifiedExecProcessManager {
         let mut env = apply_unified_exec_env(env);
         strip_output_env(&mut env);
         let mut explicit_env_overrides = shell_environment_policy.r#set.clone();
+        explicit_env_overrides.insert(
+            SESSION_TMP_ENV_VAR.to_string(),
+            crate::exec_env::session_tmp_path(context.session.session_id())
+                .to_string_lossy()
+                .into_owned(),
+        );
         strip_output_env(&mut explicit_env_overrides);
         let exec_server_env_config = ExecServerEnvConfig {
             policy: exec_env_policy_from_shell_policy(shell_environment_policy),

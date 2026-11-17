@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub(super) struct EnvironmentFacts {
     pub(super) cwd: AbsolutePathBuf,
     pub(super) text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) session_tmp: Option<std::path::PathBuf>,
 }
 
 impl EnvironmentFacts {
@@ -58,6 +60,7 @@ impl EnvironmentFacts {
         Self {
             cwd: cwd.clone(),
             text,
+            session_tmp: None,
         }
     }
 }

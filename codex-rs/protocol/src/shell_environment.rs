@@ -4,6 +4,7 @@ use crate::config_types::ShellEnvironmentPolicyInherit;
 use std::collections::HashMap;
 
 pub const CODEX_SESSION_ID_ENV_VAR: &str = "CODEX_SESSION_ID";
+pub const SESSION_TMP_ENV_VAR: &str = "SESSION_TMP";
 pub const CODEX_THREAD_ID_ENV_VAR: &str = "CODEX_THREAD_ID";
 pub const CODEX_TOOL_CALL_ID_ENV_VAR: &str = "CODEX_TOOL_CALL_ID";
 pub const CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR: &str = "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN";

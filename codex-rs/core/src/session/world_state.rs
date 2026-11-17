@@ -353,6 +353,7 @@ impl Session {
                         .and_then(|value| value.state.get("environments")),
                 )
                 .await
+                .with_session_tmp(crate::exec_env::session_tmp_path(self.session_id()))
                 .with_subagents(environment_subagents),
             );
         }

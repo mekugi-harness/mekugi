@@ -3,6 +3,62 @@ use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use maplit::hashmap;
 use pretty_assertions::assert_eq;
 
+#[test]
+fn session_tmp_is_prepared_private_and_reused() -> std::io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let session_id = SessionId::from(ThreadId::new());
+    let path = session_tmp_path(session_id);
+    prepare_session_tmp(session_id, home.path())?;
+    std::fs::write(path.join("retained"), "scratch")?;
+    prepare_session_tmp(session_id, home.path())?;
+    let mut env = HashMap::from([("SESSION_TMP".to_string(), "stale".to_string())]);
+    inject_session_env(&mut env, session_id);
+    assert_eq!(env["SESSION_TMP"], path.to_string_lossy());
+    assert_eq!(std::fs::read_to_string(path.join("retained"))?, "scratch");
+    assert_ne!(path, session_tmp_path(SessionId::from(ThreadId::new())));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path)?.permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    std::fs::remove_file(path.join("retained"))?;
+    std::fs::remove_dir(path)
+}
+
+#[cfg(unix)]
+#[test]
+fn session_tmp_rejects_symlinks_and_non_private_directories() -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
+    let home = tempfile::tempdir()?;
+    let session_id = SessionId::from(ThreadId::new());
+    let path = session_tmp_path(session_id);
+    symlink(home.path(), &path)?;
+    assert_eq!(
+        prepare_session_tmp(session_id, home.path())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    std::fs::remove_file(&path)?;
+    prepare_session_tmp(session_id, home.path())?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+    assert_eq!(
+        prepare_session_tmp(session_id, home.path())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(
+        std::fs::metadata(&path)?.permissions().mode() & 0o777,
+        0o755
+    );
+    std::fs::remove_dir(path)
+}
+
 fn make_vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
         .iter()

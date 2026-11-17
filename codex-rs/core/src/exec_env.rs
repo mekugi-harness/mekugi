@@ -11,9 +11,51 @@ use std::collections::HashMap;
 pub use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
 pub use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
 pub use codex_protocol::shell_environment::CODEX_TOOL_CALL_ID_ENV_VAR;
+pub use codex_protocol::shell_environment::SESSION_TMP_ENV_VAR;
 pub(crate) use codex_protocol::shell_environment::set_tool_call_id_env_var;
 
 pub(crate) const CODEX_VERSION_ENV_VAR: &str = "CODEX_VERSION";
+
+pub(crate) fn session_tmp_path(session_id: SessionId) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("mekugi-session-{session_id}"))
+}
+
+/// Keep scratch files across detach/resume, with the same directory for descendants.
+pub(crate) fn prepare_session_tmp(
+    session_id: SessionId,
+    codex_home: &std::path::Path,
+) -> std::io::Result<()> {
+    let path = session_tmp_path(session_id);
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(&path)?;
+    let mut private = metadata.is_dir();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        private &= metadata.uid() == std::fs::metadata(codex_home)?.uid()
+            && metadata.mode() & 0o777 == 0o700;
+    }
+    if !private {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "session temporary path is not a private owned directory: {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
 
 /// Informational name of the active permission profile. Child processes can
 /// overwrite this value, so it must not be treated as proof of enforcement.
@@ -39,6 +81,10 @@ pub fn create_env(
 
 /// Exposes the shared root-session identity and harness version to shell commands.
 pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: SessionId) {
+    env.insert(
+        SESSION_TMP_ENV_VAR.to_string(),
+        session_tmp_path(session_id).to_string_lossy().into_owned(),
+    );
     env.insert(CODEX_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
     if cfg!(windows) {
         env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_VERSION_ENV_VAR));

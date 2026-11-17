@@ -517,6 +517,71 @@ async fn exec_command_exports_originating_call_metadata_across_later_input() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_tmp_matches_world_facts_and_survives_exec_calls() -> Result<()> {
+    skip_if_target_windows!(Ok(()), "uses POSIX scratch-directory shell commands");
+    skip_if_no_network!(Ok(()));
+    let builder = test_codex().with_model("gpt-5.4").with_config(|config| {
+        config.include_environment_context = true;
+        config.permissions.shell_environment_policy.inherit = ShellEnvironmentPolicyInherit::None;
+        config
+            .permissions
+            .shell_environment_policy
+            .r#set
+            .insert("HOME".into(), config.cwd.to_string_lossy().into_owned());
+        config
+            .permissions
+            .shell_environment_policy
+            .r#set
+            .insert("SESSION_TMP".into(), "stale".into());
+    });
+    let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
+    let path = std::env::temp_dir().join(format!(
+        "mekugi-session-{}",
+        harness.test().session_configured.thread_id
+    ));
+    assert!(
+        path.is_dir(),
+        "session startup must prepare the scratch directory"
+    );
+    let responses = [
+        ("write-scratch", r#"test -d "$SESSION_TMP" && printf scratch > "$SESSION_TMP/probe" && printf '%s' "$SESSION_TMP""#),
+        ("read-scratch", r#"read -r value < "$SESSION_TMP/probe"; printf '%s' "$value""#),
+    ].into_iter().map(|(id, command)| sse(vec![
+        ev_response_created(id),
+        ev_function_call(id, "exec_command", &json!({"cmd": command, "login": true, "yield_time_ms": 5000}).to_string()),
+        ev_completed(id),
+    ])).chain(std::iter::once(sse(vec![ev_assistant_message("done", "done"), ev_completed("done")]))).collect();
+    mount_sse_sequence(harness.server(), responses).await;
+    harness
+        .submit_with_permission_profile(
+            "use the prepared scratch directory",
+            PermissionProfile::Disabled,
+        )
+        .await?;
+    assert_eq!(
+        parse_unified_exec_output(&harness.function_call_stdout("write-scratch").await)?
+            .output
+            .trim(),
+        path.to_string_lossy()
+    );
+    assert_eq!(
+        parse_unified_exec_output(&harness.function_call_stdout("read-scratch").await)?
+            .output
+            .trim(),
+        "scratch"
+    );
+    let requests = harness.request_bodies().await;
+    assert!(
+        requests[0]
+            .to_string()
+            .contains(&format!("SESSION_TMP: {}", path.display()))
+    );
+    std::fs::remove_file(path.join("probe"))?;
+    std::fs::remove_dir(path)?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exec_command_uses_installed_environment_shell_policy_with_explicit_overrides() -> Result<()>
 {
     skip_if_wine_exec!(

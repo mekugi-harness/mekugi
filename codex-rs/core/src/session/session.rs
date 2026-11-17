@@ -1098,6 +1098,7 @@ impl Session {
             });
         let context_window_id_generator =
             Arc::clone(&agent_control.runtime().context_window_id_generator);
+        crate::exec_env::prepare_session_tmp(session_id, &config.codex_home)?;
         let initial_auto_compact_window_ids =
             AutoCompactWindowIds::new_initial(context_window_id_generator());
         let restore_child_window = matches!(&initial_history, InitialHistory::Forked(_))

@@ -108,6 +108,13 @@ impl EnvironmentsState {
         self
     }
 
+    pub(crate) fn with_session_tmp(mut self, path: PathBuf) -> Self {
+        if let Some(facts) = &mut self.facts {
+            facts.session_tmp = Some(path);
+        }
+        self
+    }
+
     fn rendered_full(&self) -> RenderedEnvironments {
         RenderedEnvironments {
             updates: self
@@ -362,6 +369,11 @@ impl ContextualUserFragment for RenderedEnvironments {
                 "  Reuse captured facts; re-check only facts later work may have changed.\n",
             );
             push_xml_escaped_text(&mut rendered, &facts.text);
+            if let Some(path) = &facts.session_tmp {
+                rendered.push_str("SESSION_TMP: ");
+                push_xml_escaped_text(&mut rendered, &path.to_string_lossy());
+                rendered.push_str(" (prepared session scratch directory; use $SESSION_TMP)\n");
+            }
         }
         input_text(rendered)
     }
