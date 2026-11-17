@@ -89,7 +89,7 @@ Settings:
 09:message/assistant:
     The release is ready for validation.
 10:message/developer:
-    Context remaining: 0 tokens.
+    Your context window is nearly exhausted (only 0 tokens remaining).
 11:message/user:
     Suggest my next message.
 -- request 3 (turn) --

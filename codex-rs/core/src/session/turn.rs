@@ -639,6 +639,8 @@ pub(crate) async fn run_turn(
             sess.record_reasoning_effort_override(step_context.as_ref())
                 .await;
 
+            super::token_budget::maybe_record_context_usage(&sess, step_context.as_ref()).await;
+
             // Construct the input that we will send to the model.
             let sampling_request_input = sess
                 .clone_history()

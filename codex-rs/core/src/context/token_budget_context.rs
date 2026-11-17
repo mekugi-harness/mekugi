@@ -5,10 +5,12 @@ use crate::context::world_state::SectionTransition;
 use crate::context::world_state::WorldStateUpdate;
 use codex_context_fragments::AnnotatedContent;
 use codex_context_fragments::message_from_parts;
+use codex_prompts::ResolvedModelMessages;
 use codex_protocol::AgentPath;
 use codex_protocol::ContextWindowId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ContentItemMetadata;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::input_text;
 use codex_protocol::protocol::CONTEXT_WINDOW_CLOSE_TAG;
@@ -187,19 +189,52 @@ impl ContextualUserFragment for TokenBudgetRemainingContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TokenBudgetReminder {
     message: String,
+    usage_level: Option<i64>,
 }
 
 impl TokenBudgetReminder {
     pub(crate) fn new(message_template: &str, n_remaining: i64) -> Self {
         Self {
             message: message_template.replace("{n_remaining}", &n_remaining.to_string()),
+            usage_level: None,
+        }
+    }
+
+    pub(crate) const USAGE_KIND_PREFIX: &str = "context_usage.notice.";
+
+    pub(crate) fn context_usage(percent: i64, tokens: i64, window: i64) -> Self {
+        let urgent = if percent >= 90 {
+            let reminder = Self::new(
+                ResolvedModelMessages::bundled().token_budget_reminder_template(),
+                window.saturating_sub(tokens).max(0),
+            );
+            format!(" {} You must compact now.", reminder.message)
+        } else {
+            String::new()
+        };
+        Self {
+            message: format!(
+                "Mekugi context usage: {percent}% ({tokens}/{window} tokens).{urgent}"
+            ),
+            usage_level: Some(percent / 10 * 10),
         }
     }
 }
 
 impl ContextualUserFragment for TokenBudgetReminder {
     fn content_kind(&self) -> ContentItemKind {
-        ContentItemKind("token_budget.reminder".to_string())
+        ContentItemKind(match self.usage_level {
+            Some(level) => format!("{}{level}", Self::USAGE_KIND_PREFIX),
+            None => "token_budget.reminder".to_string(),
+        })
+    }
+
+    fn content_metadata(&self) -> ContentItemMetadata {
+        if self.usage_level.is_some() {
+            ContentItemMetadata::developer_instructions(false)
+        } else {
+            ContentItemMetadata::harness()
+        }
     }
 
     fn role(&self) -> &'static str {

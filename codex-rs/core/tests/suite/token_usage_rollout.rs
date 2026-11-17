@@ -114,3 +114,63 @@ async fn observed_response_usage_accumulates_per_turn_and_thread() -> Result<()>
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_usage_notice_reaches_sampled_input_and_survives_resume() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("first"),
+                ev_assistant_message("a", "done"),
+                ev_completed_with_tokens("first", 60_000),
+            ]),
+            sse(vec![
+                ev_response_created("second"),
+                ev_assistant_message("b", "done"),
+                ev_completed_with_tokens("second", 60_000),
+            ]),
+            sse(vec![
+                ev_response_created("third"),
+                ev_assistant_message("c", "done"),
+                ev_completed_with_tokens("third", 60_000),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_context_window = Some(100_000);
+            config.model_auto_compact_token_limit = Some(99_000);
+            config.model_post_turn_compact_threshold_percent = 0;
+        })
+        .build(&server)
+        .await?;
+    test.submit_turn("first").await?;
+    test.submit_turn("second").await?;
+    let home = test.home.clone();
+    let path = test.codex.rollout_path().unwrap();
+    test.codex.shutdown_and_wait().await?;
+    let resumed = test_codex().resume(&server, home, path).await?;
+    resumed.submit_turn("third").await?;
+    resumed.codex.shutdown_and_wait().await?;
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    for (index, request) in requests.iter().enumerate() {
+        let notices: Vec<_> = request
+            .input()
+            .into_iter()
+            .filter(|item| {
+                item["role"] == "developer" && item.to_string().contains("Mekugi context usage:")
+            })
+            .collect();
+        assert_eq!(notices.len(), usize::from(index > 0));
+        if index > 0 {
+            assert!(notices[0].to_string().contains("60000/"));
+            assert!(!notices[0].to_string().contains("system-reminder"));
+        }
+    }
+    Ok(())
+}
