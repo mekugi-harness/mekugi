@@ -98,6 +98,38 @@ fn serialize_workspace_write_environment_context() {
     assert_eq!(context.render().expect_text(), expected);
 }
 
+#[tokio::test]
+async fn environment_facts_render_without_a_second_timestamp() {
+    let directory = tempfile::tempdir().expect("create non-repository workspace");
+    let cwd = directory.path().to_path_buf().abs();
+    let context = environment_state(
+        [environment(
+            "local",
+            PathUri::from_abs_path(&cwd),
+            fake_shell_name(),
+        )],
+        Some("2026-02-26".to_string()),
+        Some("America/Los_Angeles".to_string()),
+        /*network*/ None,
+        /*subagents*/ None,
+    )
+    .with_facts(&cwd, /*previous*/ None)
+    .await;
+
+    let rendered = context.render().expect_text();
+    assert!(rendered.contains("<current_date>2026-02-26</current_date>"));
+    assert!(rendered.contains("<timezone>America/Los_Angeles</timezone>"));
+    assert!(rendered.contains(&format!("Platform: {}", std::env::consts::OS)));
+    #[cfg(unix)]
+    assert!(
+        rendered
+            .lines()
+            .any(|line| { line.starts_with("Kernel: ") && !line.contains("unavailable") })
+    );
+    assert!(rendered.contains("Git repository: no"));
+    assert!(!rendered.contains("Observed at:"));
+}
+
 #[test]
 fn serialize_environment_context_with_foreign_windows_cwd() {
     let mut context = environment_state(

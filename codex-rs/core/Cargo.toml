@@ -134,6 +134,12 @@ which = { workspace = true }
 whoami = { workspace = true }
 
 # Build OpenSSL from source for musl builds.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["system"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSProcessInfo", "std"] }
+
 [target.x86_64-unknown-linux-musl.dependencies]
 openssl-sys = { workspace = true, features = ["vendored"] }
 
