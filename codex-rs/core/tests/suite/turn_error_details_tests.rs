@@ -61,7 +61,6 @@ impl TurnLifecycleContributor for ErrorRecorder {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
-    Sampling,
     ManualCompaction,
     PostTurnCompaction,
 }
@@ -71,11 +70,7 @@ enum Phase {
 async fn turn_error_details_preserve_usage_reset_and_compaction_outcomes() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
-    for phase in [
-        Phase::Sampling,
-        Phase::ManualCompaction,
-        Phase::PostTurnCompaction,
-    ] {
+    for phase in [Phase::ManualCompaction, Phase::PostTurnCompaction] {
         let server = responses::start_mock_server().await;
         let denial = ResponseTemplate::new(429)
             .insert_header("x-codex-active-limit", "test_limit")

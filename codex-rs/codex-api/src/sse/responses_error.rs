@@ -1,6 +1,7 @@
 //! Classifies failed Responses events and their retry advice.
 //! Only rate-limit codes derive retry delays from plaintext messages.
 
+use crate::api_bridge::parse_usage_limit;
 use crate::error::ApiError;
 use crate::error::parse_terminal_provider_error;
 use crate::responses_headers::json_headers_to_http_headers;
@@ -21,6 +22,29 @@ struct Error {
     resets_at: Option<i64>,
     #[serde(default)]
     misalignment: Option<Value>,
+}
+
+pub(super) fn parse_stream_usage_limit(
+    error: Option<&Value>,
+    headers: Option<&Value>,
+) -> Option<ApiError> {
+    let error = error?;
+    let nested = error
+        .get("headers")
+        .and_then(Value::as_object)
+        .map(json_headers_to_http_headers);
+    let outer = headers
+        .and_then(Value::as_object)
+        .map(json_headers_to_http_headers);
+    let details = parse_usage_limit(error, outer.as_ref().or(nested.as_ref()))?;
+    let retry_after = nested
+        .as_ref()
+        .and_then(RetryAfter::from_headers)
+        .or_else(|| outer.as_ref().and_then(RetryAfter::from_headers));
+    Some(ApiError::UsageLimitReached {
+        details: Box::new(details),
+        retry_after,
+    })
 }
 
 pub(super) fn parse_failed_response(response: Option<Value>) -> ApiError {

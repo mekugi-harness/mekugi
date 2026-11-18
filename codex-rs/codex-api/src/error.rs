@@ -2,6 +2,7 @@ use crate::rate_limits::RateLimitError;
 use codex_client::TransportError;
 use codex_http_client::RetryAfter;
 use codex_protocol::error::ResponseIncompleteError;
+use codex_protocol::error::UsageLimitReachedError;
 use codex_protocol::protocol::MisalignmentErrorDetails;
 use http::StatusCode;
 use serde_json::Value;
@@ -27,6 +28,11 @@ pub enum ApiError {
     QuotaExceeded,
     #[error("usage not included")]
     UsageNotIncluded,
+    #[error("{details}")]
+    UsageLimitReached {
+        details: Box<UsageLimitReachedError>,
+        retry_after: Option<RetryAfter>,
+    },
     #[error("session budget exceeded")]
     SessionBudgetExceeded,
     #[error("retryable error: {message}")]

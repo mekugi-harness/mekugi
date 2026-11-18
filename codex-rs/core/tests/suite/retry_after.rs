@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::Utc;
 use codex_api::ApiError;
 use codex_api::map_api_error;
 use codex_client::RetryOn;
@@ -19,11 +20,14 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_with_timeout;
 use http::Method;
 use http::StatusCode;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::net::TcpSocket;
@@ -1459,7 +1463,7 @@ async fn websocket_provider_errors_are_terminal(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn websocket_usage_limit_with_malformed_nested_headers_is_terminal() -> Result<()> {
+async fn websocket_usage_limit_uses_outer_advice_and_can_be_interrupted() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let error = json!({
@@ -1485,15 +1489,158 @@ async fn websocket_usage_limit_with_malformed_nested_headers_is_terminal() -> Re
         .build_with_websocket_server(&server)
         .await?;
 
-    submit_user_input(&test, "surface the usage limit").await?;
-    assert_terminal_failure(
-        &test,
-        CodexErrorInfo::UsageLimitExceeded,
-        /*expected_retries*/ 0,
-    )
-    .await?;
+    submit_user_input(&test, "wait for the usage limit").await?;
+    let EventMsg::StreamError(wait) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_) | EventMsg::Error(_))
+    })
+    .await
+    else {
+        panic!("usage limit must remain live");
+    };
+    assert!(
+        wait.message
+            .starts_with("Usage limit reached. Retrying in ")
+    );
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnAborted(_))
+    })
+    .await;
     assert_eq!(server.single_connection().len(), 2);
     server.shutdown().await;
+    Ok(())
+}
+
+#[test_case::test_case(false; "http_reset_overrides_retry_after")]
+#[test_case::test_case(true; "sse_retry_after_without_reset")]
+#[tokio::test(flavor = "current_thread")]
+async fn sampling_waits_for_usage_limit_and_resumes_the_same_turn(sse: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let (deadline_tx, mut deadline_rx) = mpsc::unbounded_channel();
+    let (retry_tx, mut retry_rx) = mpsc::unbounded_channel();
+    let first = AtomicBool::new(true);
+    let requests = responses::mount_response_handler(&server, move |_| {
+        if first.swap(false, Ordering::Relaxed) {
+            let now = Utc::now();
+            return if sse {
+                deadline_tx
+                    .send(now + chrono::TimeDelta::seconds(1))
+                    .unwrap();
+                responses::sse_response(responses::sse(vec![json!({
+                    "type": "response.failed",
+                    "response": {"error": {
+                        "code": "usage_limit_reached", "headers": {"Retry-After": "1"}
+                    }}
+                })]))
+            } else {
+                let resets_at = now.timestamp() + 3;
+                deadline_tx
+                    .send(chrono::DateTime::from_timestamp(resets_at, 0).unwrap())
+                    .unwrap();
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "0")
+                    .set_body_json(json!({
+                        "error": {"code": "usage_limit_reached", "resets_at": resets_at}
+                    }))
+            };
+        }
+        retry_tx.send(Utc::now()).unwrap();
+        responses::sse_response(responses::sse(vec![responses::ev_completed("recovered")]))
+    })
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_user_input(&test, "resume the same request after reset").await?;
+    let EventMsg::TurnStarted(started) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnStarted(_))
+    })
+    .await
+    else {
+        unreachable!();
+    };
+    let EventMsg::StreamError(wait) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_) | EventMsg::Error(_))
+    })
+    .await
+    else {
+        panic!("usage limit must remain live");
+    };
+    assert!(
+        wait.message
+            .starts_with("Usage limit reached. Retrying in ")
+    );
+    let deadline = deadline_rx
+        .try_recv()
+        .expect("first request set the deadline");
+    let EventMsg::TurnComplete(completed) = wait_for_event_with_timeout(
+        &test.codex,
+        |event| matches!(event, EventMsg::TurnComplete(_) | EventMsg::Error(_)),
+        Duration::from_secs(5),
+    )
+    .await
+    else {
+        panic!("usage limit must resume instead of ending the turn");
+    };
+    assert_eq!(completed.turn_id, started.turn_id);
+    assert!(completed.error.is_none());
+    assert!(retry_rx.try_recv().expect("an automatic retry") >= deadline);
+    assert_eq!(requests.requests().len(), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_explicit_steer_supersedes_an_untimed_usage_limit() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let requests = responses::mount_response_sequence(
+        &server,
+        vec![
+            ResponseTemplate::new(429)
+                .set_body_json(json!({"error": {"type": "usage_limit_reached"}})),
+            responses::sse_response(responses::sse(vec![responses::ev_completed("steered")])),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config
+                .features
+                .disable(codex_features::Feature::InstantInterrupt)
+                .unwrap();
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+
+    submit_user_input(&test, "initial request").await?;
+    let EventMsg::StreamError(wait) = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_) | EventMsg::Error(_))
+    })
+    .await
+    else {
+        panic!("untimed usage limit must pause the turn");
+    };
+    assert!(wait.message.contains("Paused until"));
+    assert_eq!(requests.requests().len(), 1);
+
+    submit_user_input(&test, "change the current request").await?;
+    wait_for_turn_completion(&test).await;
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .body_json()
+            .to_string()
+            .contains("change the current request")
+    );
     Ok(())
 }
 

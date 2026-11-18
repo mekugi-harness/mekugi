@@ -1821,9 +1821,7 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
         "error": {
             "type": "usage_limit_reached",
             "message": "The usage limit has been reached",
-            "plan_type": "pro",
-            "resets_at": 1704067242,
-            "resets_in_seconds": 1234
+            "plan_type": "pro"
         },
         "headers": {
             "x-codex-primary-used-percent": "100.0",
@@ -1862,7 +1860,7 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
             text_elements: Vec::new(),
         }]))
         .await
-        .expect("submission should succeed while emitting usage limit error events");
+        .expect("submission should succeed while emitting usage limit status");
 
     let token_event =
         wait_for_event(&test.codex, |msg| matches!(msg, EventMsg::TokenCount(_))).await;
@@ -1901,14 +1899,23 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
         })
     );
 
-    let error_event = wait_for_event(&test.codex, |msg| matches!(msg, EventMsg::Error(_))).await;
-    let EventMsg::Error(error_event) = error_event else {
+    let error_event =
+        wait_for_event(&test.codex, |msg| matches!(msg, EventMsg::StreamError(_))).await;
+    let EventMsg::StreamError(error_event) = error_event else {
         unreachable!();
     };
+    assert!(error_event.message.contains("Paused until"));
     assert!(
-        error_event.message.contains("spend cap set by the owner"),
+        error_event
+            .additional_details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("spend cap set by the owner"),
         "unexpected error message for submission {submission:?}: {}",
-        error_event.message
+        error_event
+            .additional_details
+            .as_deref()
+            .unwrap_or_default()
     );
 
     server.shutdown().await;

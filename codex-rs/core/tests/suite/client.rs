@@ -3751,7 +3751,6 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
             "error": {
                 "type": "usage_limit_reached",
                 "message": "limit reached",
-                "resets_at": 1704067242,
                 "plan_type": "pro"
             }
         }));
@@ -3797,7 +3796,7 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
             text_elements: Vec::new(),
         }]))
         .await
-        .expect("submission should succeed while emitting usage limit error events");
+        .expect("submission should succeed while emitting usage limit status");
 
     let token_event = wait_for_event(&codex, |msg| matches!(msg, EventMsg::TokenCount(_))).await;
     let EventMsg::TokenCount(event) = token_event else {
@@ -3813,16 +3812,26 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
         })
     );
 
-    let error_event = wait_for_event(&codex, |msg| matches!(msg, EventMsg::Error(_))).await;
-    let EventMsg::Error(error_event) = error_event else {
+    let error_event = wait_for_event(&codex, |msg| matches!(msg, EventMsg::StreamError(_))).await;
+    let EventMsg::StreamError(error_event) = error_event else {
         unreachable!();
     };
+    assert!(error_event.message.contains("Paused until"));
     assert!(
-        error_event.message.contains("spend cap set by the owner"),
+        error_event
+            .additional_details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("spend cap set by the owner"),
         "unexpected error message for submission {submission:?}: {}",
-        error_event.message
+        error_event
+            .additional_details
+            .as_deref()
+            .unwrap_or_default()
     );
 
+    codex.submit(Op::Interrupt).await?;
+    wait_for_event(&codex, |msg| matches!(msg, EventMsg::TurnAborted(_))).await;
     Ok(())
 }
 

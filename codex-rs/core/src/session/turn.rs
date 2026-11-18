@@ -2135,13 +2135,6 @@ async fn run_sampling_request(
                     sess.set_total_tokens_full(&turn_context).await;
                     return Err(err);
                 }
-                CodexErrorDetails::UsageLimitReached(e) => {
-                    let rate_limits = e.rate_limits.clone();
-                    if let Some(rate_limits) = rate_limits {
-                        sess.update_rate_limits(&turn_context, *rate_limits).await;
-                    }
-                    return Err(err);
-                }
                 CodexErrorDetails::SessionBudgetExceeded
                 | CodexErrorDetails::InferenceHookDenied { .. }
                 | CodexErrorDetails::Fatal(_) => {
@@ -2164,6 +2157,17 @@ async fn run_sampling_request(
                 return Err(err);
             }
         }
+        // A provider wait must admit an explicit steer even if ordinary sampling
+        // is configured not to interrupt an in-flight response.
+        let _usage_limit_watch = if step_context.preempt.is_none()
+            && matches!(err.details(), CodexErrorDetails::UsageLimitReached(_))
+        {
+            sess.input_queue
+                .watch_user_input(&sess.active_turn, &turn_context.sub_id, preempt.clone())
+                .await
+        } else {
+            None
+        };
         let retry = handle_response_stream_error(
             &mut retry_state,
             max_retries,

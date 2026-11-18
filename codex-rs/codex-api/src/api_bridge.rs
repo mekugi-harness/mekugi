@@ -17,13 +17,13 @@ use codex_protocol::error::UnexpectedResponseError;
 use codex_protocol::error::UsageLimitReachedError;
 use codex_protocol::protocol::MisalignmentErrorDetails;
 use http::HeaderMap;
-use serde::Deserialize;
 use serde_json::Value;
 
 pub fn map_api_error(err: ApiError) -> CodexErr {
     let retry_after = match &err {
         ApiError::Retryable { retry_after, .. }
         | ApiError::RateLimitExceeded { retry_after, .. }
+        | ApiError::UsageLimitReached { retry_after, .. }
         | ApiError::ServerOverloaded { retry_after }
         | ApiError::PolicyCapacityUnavailable { retry_after }
         | ApiError::Transport(TransportError::Http { retry_after, .. }) => *retry_after,
@@ -62,6 +62,7 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
         ApiError::QuotaExceeded => CodexErr::QuotaExceeded,
         ApiError::UsageNotIncluded => CodexErr::UsageNotIncluded,
+        ApiError::UsageLimitReached { details, .. } => CodexErr::UsageLimitReached(*details),
         ApiError::SessionBudgetExceeded => CodexErr::SessionBudgetExceeded,
         ApiError::Retryable { message, .. } => CodexErr::Stream(message),
         ApiError::RateLimitExceeded { message, .. } => {
@@ -223,43 +224,17 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                 } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
                     CodexErr::InternalServerError
                 } else if status == http::StatusCode::TOO_MANY_REQUESTS {
-                    if let Ok(err) = serde_json::from_str::<UsageErrorResponse>(&body_text) {
-                        if err.error.error_type.as_deref() == Some("usage_limit_reached") {
-                            let limit_id = extract_header(headers.as_ref(), ACTIVE_LIMIT_HEADER);
-                            let promo_message = headers.as_ref().and_then(parse_promo_message);
-                            let rate_limit_reached_type =
-                                headers.as_ref().and_then(parse_rate_limit_reached_type);
-                            let rate_limits = headers
-                                .as_ref()
-                                .and_then(|map| {
-                                    parse_rate_limit_for_limit(map, limit_id.as_deref())
-                                })
-                                .map(|mut snapshot| {
-                                    snapshot.rate_limit_reached_type = rate_limit_reached_type;
-                                    snapshot
-                                });
-                            let resets_at = err
-                                .error
-                                .resets_at
-                                .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0));
-                            return CodexErr::UsageLimitReached(UsageLimitReachedError {
-                                plan_type: err.error.plan_type,
-                                resets_at,
-                                limit_window_minutes: err
-                                    .error
-                                    .limit_window_minutes
-                                    .as_ref()
-                                    .and_then(Value::as_u64)
-                                    .and_then(|minutes| u16::try_from(minutes).ok()),
-                                rate_limits: rate_limits.map(Box::new),
-                                promo_message,
-                                rate_limit_reached_type,
-                            });
-                        } else if err.error.error_type.as_deref() == Some("usage_not_included") {
+                    if let Some(error) = provider_error {
+                        if let Some(usage_limit) = parse_usage_limit(error, headers.as_ref()) {
+                            return CodexErr::UsageLimitReached(usage_limit);
+                        }
+                        let error_type = error.get("type").and_then(Value::as_str);
+                        if error_type == Some("usage_not_included") {
                             return CodexErr::UsageNotIncluded;
-                        } else if err.error.error_type.as_deref() == Some("insufficient_quota")
+                        }
+                        if error_type == Some("insufficient_quota")
                             || matches!(
-                                err.error.code.as_deref(),
+                                error.get("code").and_then(Value::as_str),
                                 Some(
                                     "insufficient_quota"
                                         | "credit_balance_exhausted"
@@ -394,17 +369,40 @@ fn extract_x_error_json_code(headers: Option<&HeaderMap>) -> Option<String> {
         .map(str::to_string)
 }
 
-#[derive(Debug, Deserialize)]
-struct UsageErrorResponse {
-    error: UsageErrorBody,
-}
-
-#[derive(Debug, Deserialize)]
-struct UsageErrorBody {
-    code: Option<String>,
-    #[serde(rename = "type")]
-    error_type: Option<String>,
-    plan_type: Option<PlanType>,
-    resets_at: Option<i64>,
-    limit_window_minutes: Option<Value>,
+/// Decode the same usage-limit reason in HTTP rejections and Responses events.
+pub(crate) fn parse_usage_limit(
+    error: &Value,
+    headers: Option<&HeaderMap>,
+) -> Option<UsageLimitReachedError> {
+    if !["type", "code"]
+        .into_iter()
+        .any(|key| error.get(key).and_then(Value::as_str) == Some("usage_limit_reached"))
+    {
+        return None;
+    }
+    let limit_id = extract_header(headers, ACTIVE_LIMIT_HEADER);
+    let rate_limit_reached_type = headers.and_then(parse_rate_limit_reached_type);
+    let rate_limits = headers
+        .and_then(|map| parse_rate_limit_for_limit(map, limit_id.as_deref()))
+        .map(|mut snapshot| {
+            snapshot.rate_limit_reached_type = rate_limit_reached_type;
+            Box::new(snapshot)
+        });
+    Some(UsageLimitReachedError {
+        plan_type: error
+            .get("plan_type")
+            .and_then(|value| serde_json::from_value::<PlanType>(value.clone()).ok()),
+        resets_at: error
+            .get("resets_at")
+            .and_then(Value::as_i64)
+            .filter(|seconds| *seconds > 0)
+            .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0)),
+        limit_window_minutes: error
+            .get("limit_window_minutes")
+            .and_then(Value::as_u64)
+            .and_then(|minutes| u16::try_from(minutes).ok()),
+        rate_limits,
+        promo_message: headers.and_then(parse_promo_message),
+        rate_limit_reached_type,
+    })
 }

@@ -158,6 +158,7 @@ impl SamplingExecution {
                 | ApiError::ResponseIncomplete(_)
                 | ApiError::QuotaExceeded
                 | ApiError::UsageNotIncluded
+                | ApiError::UsageLimitReached { .. }
                 | ApiError::SessionBudgetExceeded
                 | ApiError::RateLimit(_)
                 | ApiError::InvalidRequest { .. }

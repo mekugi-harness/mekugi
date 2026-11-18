@@ -1,4 +1,5 @@
 use super::responses_error::parse_failed_response;
+use super::responses_error::parse_stream_usage_limit;
 use crate::common::ReasoningRemovalReason;
 use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
@@ -403,7 +404,9 @@ pub fn process_responses_event(
     match event.kind.as_str() {
         "error" => {
             if let Some(error) =
-                parse_terminal_provider_error(event.error.as_ref(), /*status*/ None)
+                parse_stream_usage_limit(event.error.as_ref(), event.headers.as_ref()).or_else(
+                    || parse_terminal_provider_error(event.error.as_ref(), /*status*/ None),
+                )
             {
                 return Err(ResponsesEventError::Api(error));
             }
@@ -469,6 +472,15 @@ pub fn process_responses_event(
             }
         }
         "response.failed" => {
+            let response = event.response.as_ref();
+            if let Some(error) = parse_stream_usage_limit(
+                response.and_then(|response| response.get("error")),
+                response
+                    .and_then(|response| response.get("headers"))
+                    .or(event.headers.as_ref()),
+            ) {
+                return Err(ResponsesEventError::Api(error));
+            }
             return Err(ResponsesEventError::Api(parse_failed_response(
                 event.response,
             )));

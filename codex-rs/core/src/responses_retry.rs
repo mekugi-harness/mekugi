@@ -2,6 +2,7 @@
 //! Content-filter guidance is recorded for sampling requests before retry decisions.
 //! Server advice controls timing without extending configured retry limits.
 
+use std::future::pending;
 use std::time::Duration;
 
 use crate::client::ModelClientSession;
@@ -10,6 +11,7 @@ use crate::context::ContextualUserFragment;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use chrono::Utc;
 use codex_client::RetryOperation;
 use codex_features::Feature;
 use codex_http_client::RetryAfter;
@@ -96,6 +98,36 @@ pub(crate) async fn handle_response_stream_error(
 ) -> Result<(), CodexErr> {
     let turn_context = &step_context.turn;
     if matches!(request, ResponsesStreamRequest::Sampling)
+        && let CodexErrorDetails::UsageLimitReached(limit) = err.details()
+    {
+        if let Some(rate_limits) = limit.rate_limits.clone() {
+            sess.update_rate_limits(turn_context, *rate_limits).await;
+        }
+        // Approval reviews and internal requests are not user turns that can be paused.
+        if turn_context.session_source.is_internal()
+            || crate::guardian::is_basic_session_source(&turn_context.session_source)
+        {
+            return Err(err);
+        }
+        let retry_at = limit
+            .resets_at
+            .and_then(|reset| {
+                RetryAfter::from_delay((reset - Utc::now()).to_std().unwrap_or_default())
+            })
+            .or_else(|| err.retry_after())
+            .map(RetryAfter::deadline);
+        let message = match retry_at {
+            Some(retry_at) => format!("Usage limit reached. {}", retry_wait_message(retry_at)),
+            None => "Usage limit reached. Paused until new input or interruption.".to_owned(),
+        };
+        sess.notify_stream_error(turn_context, message, err).await;
+        match retry_at {
+            Some(retry_at) => tokio::time::sleep_until(retry_at).await,
+            None => pending().await,
+        }
+        return Ok(());
+    }
+    if matches!(request, ResponsesStreamRequest::Sampling)
         && matches!(err.details(), CodexErrorDetails::ContentFilter)
     {
         let model_info = &step_context.settings.model_info;
@@ -163,7 +195,7 @@ pub(crate) async fn handle_response_stream_error(
         if switched {
             let message = format!("Falling back from WebSockets to HTTPS transport. {err:#}");
             if let Some(retry_at) = capacity_retry_at {
-                sess.notify_stream_error(turn_context, capacity_retry_message(retry_at), err)
+                sess.notify_stream_error(turn_context, retry_wait_message(retry_at), err)
                     .await;
             }
             // Changing transport must not bypass a capacity wait or provider advice.
@@ -191,7 +223,7 @@ pub(crate) async fn handle_response_stream_error(
             let message = match capacity_retry_at {
                 Some(retry_at) => format!(
                     "{} ({retry_count}/{max_retries})",
-                    capacity_retry_message(retry_at)
+                    retry_wait_message(retry_at)
                 ),
                 None => format!("Reconnecting... {retry_count}/{max_retries}"),
             };
@@ -217,7 +249,7 @@ pub(crate) async fn handle_response_stream_error(
     Err(err)
 }
 
-fn capacity_retry_message(retry_at: Instant) -> String {
+fn retry_wait_message(retry_at: Instant) -> String {
     let delay = retry_at.saturating_duration_since(Instant::now());
     let seconds = delay
         .as_secs()
