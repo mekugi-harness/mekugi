@@ -36,6 +36,10 @@ mod framing;
 pub(crate) use framing::contains_envelope as contains_source_envelope;
 pub(crate) use framing::project as project_source_bodies;
 
+#[path = "context_sources_skills.rs"]
+mod skills;
+use skills::SkillSources;
+
 const MAX_REFERENCE_DEPTH: usize = 3;
 // Match retained capture capacity; charge cached reads, output and pending references.
 const MAX_SOURCE_BYTES: usize = 32 << 20;
@@ -53,7 +57,14 @@ struct Source {
 
 struct SourceBody {
     text: String,
+    relative_to: Option<PathUri>,
     expand_references: bool,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq)]
+enum ResolvedSource {
+    File(PathUri),
+    ManagedSkill(String),
 }
 
 /// Read selected sources without changing the recipient's reset selection.
@@ -94,14 +105,14 @@ async fn read_sources(
 ) -> CodexResult<String> {
     let access = step.fs_accessor(environment);
     let skills = HostSkillsSnapshot::for_step(&step.extension_data, &step.turn.extension_data);
+    let skill_sources = SkillSources::new(step, environment, skills.as_deref());
     let mut pending_bytes: usize = sources.iter().map(String::len).sum();
     let mut pending = sources
         .into_iter()
         .map(|source| (source, environment.cwd().clone(), 1))
         .collect::<VecDeque<_>>();
     let mut cached_bytes = 0usize;
-    let mut files: HashMap<(PathUri, bool), Result<SourceBody, String>> = HashMap::new();
-    let mut managed_skills = HashMap::new();
+    let mut files: HashMap<ResolvedSource, Result<SourceBody, String>> = HashMap::new();
     let mut seen = HashSet::new();
     let mut changes_seen = HashSet::new();
     let mut output = String::new();
@@ -144,19 +155,41 @@ async fn read_sources(
             }
             continue;
         }
-        let (path, skill_root) = match source_path(&source.target, &base, skills.as_deref()) {
+        let is_skill = matches!(&source.target, Target::Skill(_));
+        // Reject deep skill references before resolving them.
+        if is_skill && depth > MAX_REFERENCE_DEPTH {
+            append_failure(
+                &mut output,
+                &reference,
+                "nested source depth limit 3 exceeded",
+            )?;
+            continue;
+        }
+        let resolved = match &source.target {
+            Target::File(path) => base
+                .join(path)
+                .map(ResolvedSource::File)
+                .map_err(|error| error.to_string()),
+            Target::Skill(skill) => {
+                if skill
+                    .split_once('/')
+                    .is_some_and(|(_, path)| path.rsplit('/').next() == Some("AGENTS.md"))
+                {
+                    continue;
+                }
+                skill_sources.resolve(&access, skill).await
+            }
+            Target::Changes(_) => unreachable!("changes were handled above"),
+        };
+        let resolved = match resolved {
             Ok(path) => path,
             Err(error) => {
                 append_failure(&mut output, &reference, &error)?;
                 continue;
             }
         };
-        if path.basename().as_deref() == Some("AGENTS.md")
-            || !seen.insert((
-                path.clone(),
-                matches!(&source.target, Target::Skill(_)),
-                source.ranges.clone(),
-            ))
+        if matches!(&resolved, ResolvedSource::File(path) if path.basename().as_deref() == Some("AGENTS.md"))
+            || !seen.insert((resolved.clone(), is_skill, source.ranges.clone()))
         {
             continue;
         }
@@ -168,57 +201,12 @@ async fn read_sources(
             )?;
             continue;
         }
-        let managed = if let Some(root) = skill_root {
-            let managed = match managed_skills.entry(root) {
-                Entry::Occupied(entry) => entry.into_mut(),
-                Entry::Vacant(entry) => {
-                    let result = match entry.key().join_descendant(".skills-mgr-placeholder") {
-                        Ok(marker) => match access
-                            .get_metadata(&marker, GetMetadataOptions::default())
-                            .await
-                        {
-                            Ok(_) => Ok(true),
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                            Err(error) => Err(error.to_string()),
-                        },
-                        Err(error) => Err(error.to_string()),
-                    };
-                    entry.insert(result)
-                }
-            };
-            match managed {
-                Ok(managed) => *managed,
-                Err(error) => {
-                    append_failure(&mut output, &reference, error)?;
-                    continue;
-                }
-            }
-        } else {
-            false
-        };
-        let body = match files.entry((path.clone(), managed)) {
+        let body = match files.entry(resolved.clone()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let result = if managed && let Target::Skill(skill) = &source.target {
-                    read_external(
-                        session,
-                        step,
-                        environment,
-                        vec![
-                            "skills-mgr".to_string(),
-                            "get".to_string(),
-                            "--codex".to_string(),
-                            skill.clone(),
-                        ],
-                        cancellation,
-                    )
-                    .await
-                    .map(|text| SourceBody {
-                        text,
-                        expand_references: true,
-                    })
-                } else {
-                    read_file(&access, &path).await
+                let result = match &resolved {
+                    ResolvedSource::ManagedSkill(skill) => skill_sources.read(&access, skill).await,
+                    ResolvedSource::File(path) => read_file(&access, path).await,
                 };
                 cached_bytes = cached_bytes.saturating_add(match &result {
                     Ok(body) => body.text.len(),
@@ -244,11 +232,7 @@ async fn read_sources(
         };
         append_body(&mut output, &reference, &body)?;
         bodies.push((output.len() - body.len() - 1, output.len() - 1));
-        let nested_base = if managed {
-            environment.cwd().clone()
-        } else {
-            path.parent().unwrap_or_else(|| base.clone())
-        };
+        let nested_base = acquired.relative_to.as_ref().unwrap_or(environment.cwd());
         for nested in if acquired.expand_references {
             references(&body)
         } else {
@@ -282,6 +266,7 @@ async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<Sou
     if metadata.is_directory {
         return directory::read(access, path).await.map(|text| SourceBody {
             text,
+            relative_to: None,
             expand_references: false,
         });
     }
@@ -306,57 +291,10 @@ async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<Sou
     String::from_utf8(bytes)
         .map(|text| SourceBody {
             text,
+            relative_to: path.parent(),
             expand_references: true,
         })
         .map_err(|error| error.to_string())
-}
-
-fn source_path(
-    target: &Target,
-    base: &PathUri,
-    skills: Option<&HostSkillsSnapshot>,
-) -> Result<(PathUri, Option<PathUri>), String> {
-    match target {
-        Target::File(path) => base
-            .join(path)
-            .map(|path| (path, None))
-            .map_err(|error| error.to_string()),
-        Target::Skill(reference) => {
-            let (name, relative) = reference
-                .split_once('/')
-                .map_or((reference.as_str(), None), |(name, path)| {
-                    (name, Some(path))
-                });
-            let Some(skills) = skills else {
-                return Err(format!("native skill {name:?} is unavailable"));
-            };
-            let mut matches = skills
-                .outcome()
-                .skills
-                .iter()
-                .filter(|skill| skill.name == name && skills.outcome().is_skill_enabled(skill))
-                .map(|skill| &skill.path_to_skills_md);
-            let Some(path) = matches.next() else {
-                return Err(format!("native skill {name:?} is unavailable"));
-            };
-            if matches.any(|other| other != path) {
-                return Err(format!(
-                    "ambiguous native skill {name:?}; select its file explicitly"
-                ));
-            }
-            let root = path
-                .parent()
-                .ok_or_else(|| "skill has no parent directory".to_string())?;
-            let path = match relative {
-                None => path.clone(),
-                Some(relative) => root
-                    .join_descendant(relative)
-                    .map_err(|error| error.to_string())?,
-            };
-            Ok((path, Some(root)))
-        }
-        Target::Changes(_) => Err("captured changes are not filesystem paths".to_string()),
-    }
 }
 
 fn selected_lines<'a>(
@@ -694,9 +632,12 @@ pub(crate) fn has_message_sources(message: &str) -> bool {
     !references(message).is_empty()
 }
 
-pub(crate) fn message_supplies_skill(message: &str, name: &str) -> bool {
-    references(message).iter().any(|reference| {
-        matches!(parse_reference(reference), Ok(Source { target: Target::Skill(skill), .. }) if skill == name)
+pub(crate) fn message_skill_sources(message: &str) -> impl Iterator<Item = String> {
+    references(message).into_iter().filter_map(|reference| {
+        match parse_reference(&reference).ok()?.target {
+            Target::Skill(skill) => Some(skill),
+            Target::File(_) | Target::Changes(_) => None,
+        }
     })
 }
 

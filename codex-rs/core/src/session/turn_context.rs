@@ -41,6 +41,7 @@ use codex_sandboxing::policy_transforms::effective_permission_profile;
 use codex_sandboxing::policy_transforms::merge_permission_profiles;
 use codex_skills_extension::HostSkillsSnapshot;
 use codex_skills_extension::SkillLoadOutcome;
+use codex_skills_extension::TrustedManagedSkillsWorkspace;
 use codex_utils_path_uri::PathUri;
 use codex_utils_plugins::PluginIdentity;
 use futures::FutureExt;
@@ -1156,6 +1157,10 @@ impl Session {
             session_configuration.turn_extension_init.clone(),
         ));
         extension_data.insert(skills_snapshot);
+        let original_config = &session_configuration.original_config_do_not_use;
+        if original_config.active_project.is_trusted() {
+            extension_data.insert(TrustedManagedSkillsWorkspace(original_config.cwd.clone()));
+        }
         TurnContext {
             sub_id,
             trace_id: current_span_trace_id(),

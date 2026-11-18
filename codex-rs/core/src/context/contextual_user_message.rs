@@ -43,11 +43,23 @@ pub(crate) fn is_guardian_context_message(item: &ResponseItem) -> bool {
     matches!(item, ResponseItem::Message { role, content, internal_chat_message_metadata_passthrough, .. }
         if role == "user"
             && (content.iter().any(is_contextual_user_fragment)
+                || is_selected_skill_context(item)
                 || internal_chat_message_metadata_passthrough.as_ref()
                     .and_then(|metadata| metadata.content_item_kinds.as_ref())
                     .is_some_and(|kinds| !kinds.is_empty() && kinds.len() == content.len()
                         && kinds.iter().all(|kind| kind.0 == GuardianRetainedInstructions::KIND)))
             && UserGoalUpdate::message_text(item).is_none())
+}
+
+/// Skill identities are contextual because the producer marks them, not because
+/// a user happened to type the same XML.
+pub(crate) fn is_selected_skill_context(item: &ResponseItem) -> bool {
+    matches!(item, ResponseItem::Message { role, content, internal_chat_message_metadata_passthrough, .. }
+        if role == "user"
+            && internal_chat_message_metadata_passthrough.as_ref()
+                .and_then(|metadata| metadata.content_item_kinds.as_ref())
+                .is_some_and(|kinds| !kinds.is_empty() && kinds.len() == content.len()
+                    && kinds.iter().all(|kind| kind.0 == codex_skills_extension::SELECTED_SKILL_PROMPT_KIND)))
 }
 
 /// Uses host annotations rather than text markers to identify user authorization changes.

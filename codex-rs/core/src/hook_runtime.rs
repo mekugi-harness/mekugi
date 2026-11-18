@@ -62,7 +62,7 @@ use tracing::instrument;
 use crate::context::ContextualUserFragment;
 use crate::context::HookAdditionalContext;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use crate::event_mapping::is_contextual_user_message_content;
+use crate::event_mapping::is_contextual_user_message;
 use crate::event_mapping::user_input_parts;
 use crate::guardian::GuardianReviewContext;
 use crate::hook_environment_executor::with_environment_hooks;
@@ -625,7 +625,7 @@ pub(crate) fn legacy_notify_input_messages(input: &[ResponseItem]) -> Vec<String
             let ResponseItem::Message { role, content, .. } = item else {
                 return None;
             };
-            if role != "user" || is_contextual_user_message_content(content) {
+            if role != "user" || is_contextual_user_message(item) {
                 return None;
             }
             Some(

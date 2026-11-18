@@ -30,6 +30,36 @@ fn detects_skill_instructions_fragment_case_insensitively() {
 }
 
 #[test]
+fn selected_skill_identity_is_context_only_when_emitted_by_the_harness() {
+    let selected: ResponseItem =
+        ContextualUserFragment::into(codex_skills_extension::selected_skill_identity("a & \"b\""));
+    let ResponseItem::Message { content, .. } = &selected else {
+        panic!("selected skill must be a message");
+    };
+    assert_eq!(
+        content,
+        &[ContentItem::InputText {
+            text: r#"<skill name="a &amp; &#34;b&#34;"/>"#.to_string(),
+        }]
+    );
+    let typed = ResponseItem::Message {
+        id: None,
+        status: None,
+        encrypted_content: None,
+        role: "user".to_string(),
+        content: content.clone(),
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    assert!(is_guardian_context_message(&selected));
+    assert!(crate::event_mapping::parse_turn_item(&selected).is_none());
+    assert!(!crate::context_manager::is_user_turn_boundary(&selected));
+    assert!(!is_guardian_context_message(&typed));
+    assert!(crate::event_mapping::parse_turn_item(&typed).is_some());
+    assert!(crate::context_manager::is_user_turn_boundary(&typed));
+}
+
+#[test]
 fn detects_agents_instructions_fragment() {
     for text in [
         "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>",

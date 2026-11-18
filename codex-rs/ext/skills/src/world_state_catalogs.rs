@@ -10,6 +10,7 @@ use codex_extension_api::WorldStateSectionContribution;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::TrustedManagedSkillsWorkspace;
 use crate::catalog::SkillCatalog;
 use crate::catalog_delta::CatalogDelta;
 use crate::catalog_delta::CatalogUsage;
@@ -19,6 +20,7 @@ use crate::render::PreparedSkillCatalog;
 use crate::render::RenderedSkillCatalogs;
 use crate::render::SkillCatalogRenderPolicy;
 use crate::render::SkillMetadataBudget;
+use crate::render::metadata_line_cost;
 use crate::render::render_available_skills;
 use crate::render::render_prepared_skill_catalogs;
 use crate::render::skill_metadata_budget;
@@ -145,7 +147,10 @@ impl<'a> CatalogRenderingContext<'a> {
         })
     }
 
-    fn render_world_state_catalogs(&self) -> [RenderedCatalogContribution; 3] {
+    fn render_world_state_catalogs(
+        &self,
+        include_stock_host: bool,
+    ) -> [RenderedCatalogContribution; 3] {
         let catalogs = CatalogContributions {
             executor: CatalogContribution {
                 catalog: self
@@ -161,13 +166,17 @@ impl<'a> CatalogRenderingContext<'a> {
                     .select_from_catalog(SkillToolAuthoritySelector::Cloud),
                 status: self.step_state.cloud_status,
             },
-            host: self.step_state.host_catalog.as_ref().map_or_else(
-                CatalogContribution::unavailable,
-                |catalog| CatalogContribution {
-                    catalog: catalog.clone(),
-                    status: CatalogStatus::Enabled,
-                },
-            ),
+            host: self
+                .step_state
+                .host_catalog
+                .as_ref()
+                .filter(|_| include_stock_host)
+                .map_or_else(CatalogContribution::unavailable, |catalog| {
+                    CatalogContribution {
+                        catalog: catalog.clone(),
+                        status: CatalogStatus::Enabled,
+                    }
+                }),
         };
         let total_limit = self.metadata_budget.limit();
         let default_cloud_limit = total_limit - total_limit / FILESYSTEM_BUDGET_DIVISOR;
@@ -492,13 +501,42 @@ impl<'a> CatalogRenderingContext<'a> {
 }
 
 /// Renders catalog sections, retaining empty delta snapshots for shared budget accounting.
-pub(crate) fn render_world_state_sections(
+pub(crate) async fn render_world_state_sections(
     event_sink: Arc<dyn ExtensionEventSink>,
     input: WorldStateContributionInput<'_>,
 ) -> Vec<WorldStateSectionContribution> {
     let Some(context) = CatalogRenderingContext::new(event_sink, input) else {
         return Vec::new();
     };
+    let manager = context
+        .input
+        .environments
+        .first()
+        .filter(|_| context.step_state.config.include_instructions)
+        .and_then(|environment| {
+            crate::ManagedSkills::for_turn(context.input.turn_store, environment)
+        });
+    let trusted = context
+        .input
+        .turn_store
+        .get::<TrustedManagedSkillsWorkspace>();
+    let managed = match manager.as_ref().zip(trusted.as_deref()) {
+        Some((manager, trusted)) => match manager.catalog(trusted).await {
+            Ok(catalog) => catalog,
+            Err(message) => {
+                (context.warning_emitter)(message);
+                Some("")
+            }
+        },
+        None => None,
+    };
+    let catalogs =
+        context.render_world_state_catalogs(/*include_stock_host*/ managed.is_none());
+    let executor_cost = managed
+        .and(catalogs[0].rendered.as_ref())
+        .map_or(0, |catalog| {
+            catalog.metadata_cost(catalogs[0].budget, context.include_usage)
+        });
     let used = context
         .input
         .previous_world_state
@@ -519,15 +557,48 @@ pub(crate) fn render_world_state_sections(
     let mut remaining = context
         .metadata_budget
         .with_limit(context.metadata_budget.limit().saturating_sub(used));
-    context
-        .render_world_state_catalogs()
+    catalogs
         .into_iter()
         // Keep empty snapshots too: a source that becomes available later must use
         // the same remaining budget instead of publishing another initial catalog.
         .filter(|catalog| {
-            context.step_state.config.catalog_deltas_enabled
+            (catalog.kind == CatalogKind::Host && managed.is_some())
+                || context.step_state.config.catalog_deltas_enabled
                 || catalog.status != CatalogStatus::Unavailable
         })
-        .map(|catalog| context.build_world_state_section(catalog, &mut remaining))
+        .map(|catalog| {
+            if catalog.kind == CatalogKind::Host
+                && let Some(catalog_body) = managed
+            {
+                context
+                    .input
+                    .turn_store
+                    .insert(HostSkillsCatalogInWorldState);
+                let budget = catalog.budget;
+                let limit = budget.limit().saturating_sub(executor_cost);
+                let cost = metadata_line_cost(budget, catalog_body.trim_end_matches('\n'));
+                let body = if catalog_body.is_empty() {
+                    None
+                } else if cost > limit {
+                    let unit = match budget {
+                        SkillMetadataBudget::Tokens(_) => "estimated tokens",
+                        SkillMetadataBudget::Characters(_) => "characters",
+                    };
+                    (context.warning_emitter)(format!(
+                        "skills-mgr catalog exceeds the skills context budget ({cost} {unit}; {limit} available). No managed catalog was included. Enable fewer skills or increase skills.max_context_tokens."
+                    ));
+                    None
+                } else {
+                    Some(catalog_body.to_owned())
+                };
+                return host_skills_world_state_section(
+                    body,
+                    /*include_instructions*/ true,
+                    &Default::default(),
+                    Box::new(|| {}),
+                );
+            }
+            context.build_world_state_section(catalog, &mut remaining)
+        })
         .collect()
 }

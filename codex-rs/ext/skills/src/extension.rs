@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::HostSkillsSnapshot;
 use crate::InjectedHostSkillPrompts;
+use crate::SelectedSkillContext;
 use codex_analytics::InvocationType;
 use codex_exec_server::LOCAL_ENVIRONMENT_ID;
 use codex_extension_api::ConfigContributor;
@@ -259,7 +260,10 @@ where
         &'a self,
         input: WorldStateContributionInput<'a>,
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
-        Box::pin(async move { render_world_state_sections(Arc::clone(&self.event_sink), input) })
+        Box::pin(render_world_state_sections(
+            Arc::clone(&self.event_sink),
+            input,
+        ))
     }
 }
 
@@ -375,7 +379,11 @@ where
                 self.emit_warning(thread_store.level_id(), Some(&input.turn_id), warning);
             }
 
-            let selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
+            let selected_skill_context = turn_store.get::<SelectedSkillContext>();
+            let mut selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
+            if let Some(context) = &selected_skill_context {
+                selected_entries.retain(|entry| !context.references.contains(&entry.name));
+            }
             let shadow_selection_turn = if config.shadow_selection_enabled {
                 let mut shadow_catalog = catalog.clone();
                 if let Some(host_skills) = host_skills {
@@ -443,37 +451,44 @@ where
                     .await
                 {
                     Ok(read_result) => {
-                        let (contents, truncated) =
-                            truncate_main_prompt_contents(read_result.contents.as_str());
-                        if truncated {
-                            let warning = format!(
-                                "Skill `{}` exceeded the main prompt context limit and was truncated.",
-                                entry.name
-                            );
-                            self.emit_warning(
-                                thread_store.level_id(),
-                                Some(&input.turn_id),
-                                warning.clone(),
-                            );
+                        if selected_skill_context
+                            .as_ref()
+                            .is_some_and(|context| context.managed_names.contains(&entry.name))
+                        {
+                            let name = truncate_utf8_to_bytes(&entry.name, MAX_SKILL_NAME_BYTES).0;
+                            fragments.push(Box::new(crate::selected_skill_identity(&name)));
+                        } else {
+                            let (contents, truncated) =
+                                truncate_main_prompt_contents(read_result.contents.as_str());
+                            if truncated {
+                                let warning = format!(
+                                    "Skill `{}` exceeded the main prompt context limit and was truncated.",
+                                    entry.name
+                                );
+                                self.emit_warning(
+                                    thread_store.level_id(),
+                                    Some(&input.turn_id),
+                                    warning.clone(),
+                                );
+                            }
+                            fragments.push(Box::new(SkillInstructions {
+                                name: truncate_utf8_to_bytes(&entry.name, MAX_SKILL_NAME_BYTES).0,
+                                path: truncate_utf8_to_bytes(
+                                    entry.rendered_path(),
+                                    MAX_SKILL_PATH_BYTES,
+                                )
+                                .0,
+                                contents,
+                                resource_access: (!entry.prompt_visible)
+                                    .then_some(&entry.authority)
+                                    .and_then(SkillToolAuthority::from_authority)
+                                    .map(|authority| SkillResourceAccess {
+                                        authority,
+                                        package: entry.id.0.clone(),
+                                        main_resource: entry.main_prompt.as_str().to_string(),
+                                    }),
+                            }));
                         }
-                        let fragment = SkillInstructions {
-                            name: truncate_utf8_to_bytes(&entry.name, MAX_SKILL_NAME_BYTES).0,
-                            path: truncate_utf8_to_bytes(
-                                entry.rendered_path(),
-                                MAX_SKILL_PATH_BYTES,
-                            )
-                            .0,
-                            contents,
-                            resource_access: (!entry.prompt_visible)
-                                .then_some(&entry.authority)
-                                .and_then(SkillToolAuthority::from_authority)
-                                .map(|authority| SkillResourceAccess {
-                                    authority,
-                                    package: entry.id.0.clone(),
-                                    main_resource: entry.main_prompt.as_str().to_string(),
-                                }),
-                        };
-                        fragments.push(Box::new(fragment));
                         if entry.authority.kind == SkillSourceKind::Host {
                             injected_host_skill_prompts.insert_path(entry.main_prompt.as_str());
                         } else if let Some(analytics) = analytics.as_ref()

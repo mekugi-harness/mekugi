@@ -106,11 +106,9 @@ async fn directories_keep_ignored_depth_bounded_name_trees() {
 
 #[test]
 fn explicit_skill_sources_replace_only_the_matching_stock_prompt() {
-    assert!(message_supplies_skill("Use $review", "review"));
-    assert!(!message_supplies_skill(
-        "Use $review/references/a.md",
-        "review"
-    ));
-    assert!(!message_supplies_skill(r"Use \$review", "review"));
-    assert!(!message_supplies_skill("Use $other", "review"));
+    assert_eq!(
+        message_skill_sources(r"Use $review and $review/references/a.md, not \$ignored")
+            .collect::<Vec<_>>(),
+        ["review", "review/references/a.md"]
+    );
 }

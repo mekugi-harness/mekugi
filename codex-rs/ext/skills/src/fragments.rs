@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use codex_extension_api::ContextualUserFragment;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
@@ -9,6 +11,61 @@ use codex_protocol::protocol::SKILLS_INSTRUCTIONS_OPEN_TAG;
 use crate::catalog_prompt::SkillPrompt;
 use crate::catalog_prompt::render_available_skills_body;
 use crate::tools::SkillToolAuthority;
+
+pub const SELECTED_SKILL_PROMPT_KIND: &str = "skills.selected_skill_instructions";
+
+/// Selection facts supplied by the native turn owner before skill contributions.
+pub struct SelectedSkillContext {
+    pub references: HashSet<String>,
+    pub managed_names: HashSet<String>,
+}
+
+pub fn selected_skill_identity(name: &str) -> impl ContextualUserFragment + Send + use<> {
+    let mut text = String::from("<skill name=\"");
+    for character in name.chars() {
+        match character {
+            '&' => text.push_str("&amp;"),
+            '<' => text.push_str("&lt;"),
+            '>' => text.push_str("&gt;"),
+            '"' => text.push_str("&#34;"),
+            '\'' => text.push_str("&#39;"),
+            '\n' => text.push_str("&#10;"),
+            '\r' => text.push_str("&#13;"),
+            '\t' => text.push_str("&#9;"),
+            other => text.push(other),
+        }
+    }
+    text.push_str("\"/>");
+    SelectedSkillIdentity(text)
+}
+
+struct SelectedSkillIdentity(String);
+
+impl ContextualUserFragment for SelectedSkillIdentity {
+    fn content_metadata(&self) -> ContentItemMetadata {
+        ContentItemMetadata::skills()
+    }
+
+    fn role(&self) -> &'static str {
+        "user"
+    }
+
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind(SELECTED_SKILL_PROMPT_KIND.to_string())
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        ("", "")
+    }
+
+    fn body(&self) -> ContentItem {
+        input_text(self.0.clone())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AvailableSkillsInstructions {
@@ -94,7 +151,7 @@ impl ContextualUserFragment for SkillInstructions {
     }
 
     fn content_kind(&self) -> ContentItemKind {
-        ContentItemKind("skills.selected_skill_instructions".to_string())
+        ContentItemKind(SELECTED_SKILL_PROMPT_KIND.to_string())
     }
 
     fn markers(&self) -> (&'static str, &'static str) {

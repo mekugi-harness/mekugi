@@ -27,7 +27,7 @@ use crate::context::world_state::WorldStateUpdate;
 use crate::context_manager::normalize;
 use crate::context_manager::replace_unresolvable_image_files;
 use crate::event_mapping::contextual_dev_fragments;
-use crate::event_mapping::is_contextual_user_message_content;
+use crate::event_mapping::is_contextual_user_message;
 use crate::event_mapping::parse_turn_item;
 use crate::guardian::GUARDIAN_MAX_ROOT_MESSAGE_TOKENS;
 use crate::guardian::guardian_truncate_text;
@@ -1273,9 +1273,7 @@ impl ContextManager {
                     }
                     cut_idx -= 1;
                 }
-                ResponseItem::Message { role, content, .. }
-                    if role == "user" && is_contextual_user_message_content(content) =>
-                {
+                item if is_contextual_user_message(item) => {
                     cut_idx -= 1;
                 }
                 _ => break,
@@ -1658,7 +1656,7 @@ pub(crate) fn is_user_turn_boundary(item: &ResponseItem) -> bool {
     };
 
     (role == "user"
-        && !is_contextual_user_message_content(content)
+        && !is_contextual_user_message(item)
         // Local compaction persists its synthetic summary as a user-role message.
         // It must not consume a rollback turn or become the transcript boundary.
         && !content.iter().any(|part| matches!(part,

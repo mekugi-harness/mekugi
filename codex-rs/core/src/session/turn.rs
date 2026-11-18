@@ -133,6 +133,9 @@ use codex_skills::tool_kind_for_path;
 use codex_skills_extension::HostSkillPrompts;
 use codex_skills_extension::HostSkillsSnapshot;
 use codex_skills_extension::InjectedHostSkillPrompts;
+use codex_skills_extension::ManagedSkills;
+use codex_skills_extension::SelectedSkillContext;
+use codex_skills_extension::selected_skill_identity;
 use codex_skills_extension::validate_required_skills;
 use codex_thread_store::PersistContext;
 use codex_tools::DiscoverableTool;
@@ -1352,6 +1355,41 @@ async fn build_skills_and_plugins(
         HostSkillsSnapshot::for_step(&step_context.extension_data, &turn_context.extension_data)?;
     let skills_outcome = skills_snapshot.outcome();
     let connector_slug_counts = build_connector_slug_counts(&available_connectors);
+    let references: HashSet<String> = user_input
+        .iter()
+        .filter_map(|input| match input {
+            UserInput::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .flat_map(crate::context_sources::message_skill_sources)
+        .collect();
+    let typed_names = user_input
+        .iter()
+        .filter_map(|input| match input {
+            UserInput::Skill { name, .. } if !references.contains(name) => Some(name),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut managed_names = HashSet::new();
+    if !typed_names.is_empty()
+        && let Some(manager) = step_context.environments.primary().and_then(|environment| {
+            ManagedSkills::for_turn(&turn_context.extension_data, &environment.selection)
+        })
+        && manager.is_enabled().await.unwrap_or(false)
+    {
+        for name in typed_names {
+            if matches!(manager.get(name).await, Ok(Some(_))) {
+                managed_names.insert(name.clone());
+            }
+        }
+    }
+    let selection = Arc::new(SelectedSkillContext {
+        references,
+        managed_names,
+    });
+    turn_context
+        .extension_data
+        .insert_arc(Arc::clone(&selection));
     let extension_injection_items =
         build_extension_turn_input_items(sess, step_context, user_input, cancellation_token)
             .await?;
@@ -1378,10 +1416,11 @@ async fn build_skills_and_plugins(
         .collect::<Vec<_>>();
     // Explicit source references were read when this accepted input was recorded.
     // Keep stock skill handling for selections that did not use source syntax.
-    let prompt_skills = mentioned_skills.iter().filter(|skill| {
-        !user_input.iter().any(|input| matches!(input,
-            UserInput::Text { text, .. } if crate::context_sources::message_supplies_skill(text, &skill.name)))
-    }).cloned().collect::<Vec<_>>();
+    let prompt_skills = mentioned_skills
+        .iter()
+        .filter(|skill| !selection.references.contains(&skill.name))
+        .cloned()
+        .collect::<Vec<_>>();
     let HostSkillPrompts {
         fragments,
         injected: injected_host_skills,
@@ -1448,18 +1487,24 @@ async fn build_skills_and_plugins(
         }
     }
 
-    let mut injection_items = match injected_host_skill_prompts {
-        Some(injected_host_skill_prompts) => skill_items
-            .into_iter()
-            .zip(injected_host_skills.iter())
-            .filter_map(|(item, skill)| {
-                (!injected_host_skill_prompts
-                    .contains_path(&skill.path_to_skills_md.inferred_native_path_string()))
-                .then_some(item)
-            })
-            .collect(),
-        None => skill_items,
-    };
+    let mut injection_items = skill_items
+        .into_iter()
+        .zip(&injected_host_skills)
+        .filter(|(_, skill)| {
+            !injected_host_skill_prompts
+                .as_ref()
+                .is_some_and(|injected| {
+                    injected.contains_path(&skill.path_to_skills_md.inferred_native_path_string())
+                })
+        })
+        .map(|(item, skill)| {
+            if selection.managed_names.contains(&skill.name) {
+                ContextualUserFragment::into(selected_skill_identity(&skill.name))
+            } else {
+                item
+            }
+        })
+        .collect::<Vec<_>>();
     injection_items.extend(plugin_items);
     injection_items.extend(extension_injection_items);
     Some((injection_items, explicitly_enabled_connectors))

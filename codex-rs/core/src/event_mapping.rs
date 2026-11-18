@@ -56,8 +56,9 @@ const CONTEXTUAL_DEVELOPER_PREFIXES: &[&str] = &[
     "<rollout_budget>",
 ];
 
-pub(crate) fn is_contextual_user_message_content(message: &[ContentItem]) -> bool {
-    message.iter().any(is_contextual_user_fragment)
+pub(crate) fn is_contextual_user_message(item: &ResponseItem) -> bool {
+    matches!(item, ResponseItem::Message { role, content, .. } if role == "user"
+        && (crate::context::is_selected_skill_context(item) || content.iter().any(is_contextual_user_fragment)))
 }
 
 /// Classifies each fragment for rollback. A catalog heading can change while its
@@ -111,11 +112,7 @@ pub(crate) fn user_input_parts(
         })
 }
 
-fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
-    if is_contextual_user_message_content(message) {
-        return None;
-    }
-
+fn parse_user_message(message: &[ContentItem]) -> UserMessageItem {
     let mut content: Vec<UserInput> = Vec::new();
 
     for (_, content_item) in user_input_parts(message) {
@@ -144,7 +141,7 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
         }
     }
 
-    Some(UserMessageItem::new(&content))
+    UserMessageItem::new(&content)
 }
 
 fn parse_agent_message(
@@ -191,7 +188,10 @@ pub fn parse_turn_item(item: &ResponseItem) -> Option<TurnItem> {
         } => match role.as_str() {
             "user" => parse_visible_hook_prompt_message(id.as_deref(), content)
                 .map(TurnItem::HookPrompt)
-                .or_else(|| parse_user_message(content).map(TurnItem::UserMessage)),
+                .or_else(|| {
+                    (!is_contextual_user_message(item))
+                        .then(|| TurnItem::UserMessage(parse_user_message(content)))
+                }),
             "assistant" => Some(TurnItem::AgentMessage(parse_agent_message(
                 id.as_deref(),
                 content,

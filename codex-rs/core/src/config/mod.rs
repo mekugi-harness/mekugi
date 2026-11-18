@@ -4251,12 +4251,11 @@ impl Config {
         let developer_instructions = developer_instructions.or(cfg.developer_instructions);
         let include_permissions_instructions = cfg.include_permissions_instructions.unwrap_or(true);
         let include_apps_instructions = cfg.include_apps_instructions.unwrap_or(true);
-        let include_skill_instructions = which::which("skills-mgr").is_err()
-            && cfg
-                .skills
-                .as_ref()
-                .and_then(|skills| skills.include_instructions)
-                .unwrap_or(true);
+        let include_skill_instructions = cfg
+            .skills
+            .as_ref()
+            .and_then(|skills| skills.include_instructions)
+            .unwrap_or(true);
         let skill_max_context_tokens = cfg
             .skills
             .as_ref()
