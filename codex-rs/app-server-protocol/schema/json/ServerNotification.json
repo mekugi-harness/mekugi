@@ -4339,6 +4339,124 @@
       "description": "Notification emitted when watched local skill files change.\n\nTreat this as an invalidation signal and re-run `skills/list` with the client's current parameters when refreshed skill metadata is needed.",
       "type": "object"
     },
+    "SourceAcquisition": {
+      "description": "Source outcomes from one native acquisition. Model-visible bytes stay in the response item.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/definitions/SourceAcquisitionResult"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "purpose",
+        "sources"
+      ],
+      "type": "object"
+    },
+    "SourceAcquisitionResult": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "file"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "skill"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "changes"
+              ],
+              "type": "string"
+            },
+            "selection": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "selection"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "selection"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "SelectionSourceAcquisitionResult",
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reference",
+        "success"
+      ],
+      "type": "object"
+    },
     "SpendControlLimitSnapshot": {
       "properties": {
         "limit": {
@@ -5925,6 +6043,16 @@
           "properties": {
             "id": {
               "type": "string"
+            },
+            "sourceAcquisition": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/SourceAcquisition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "enum": [
