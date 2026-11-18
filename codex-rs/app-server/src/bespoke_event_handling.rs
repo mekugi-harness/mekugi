@@ -1038,6 +1038,11 @@ pub(crate) async fn apply_bespoke_event_handling(
             );
             outgoing.send_server_notification(notification).await;
         }
+        EventMsg::ContextReset(receipt) => {
+            outgoing
+                .send_server_notification(ServerNotification::ContextReset(receipt))
+                .await;
+        }
         EventMsg::ContextCompacted(..) => {
             // Core still fans out this deprecated event for raw-event and rollout compatibility
             // consumers;

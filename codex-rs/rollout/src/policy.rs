@@ -159,7 +159,8 @@ fn persisted_event_msg(
             .then_some(Cow::Borrowed(ev)),
 
         // Transient, non-durable events.
-        EventMsg::Error(_)
+        EventMsg::ContextReset(_)
+        | EventMsg::Error(_)
         | EventMsg::ThreadQueueChanged(_)
         | EventMsg::GuardianAssessment(_)
         | EventMsg::ExecCommandEnd(_)

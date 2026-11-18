@@ -67,7 +67,8 @@ pub(crate) use admission::HostTurnStarted;
 use codex_features::Feature;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
-pub(crate) use compact::CompactTask;
+use codex_protocol::protocol::ContextResetStatus;
+pub(crate) use compact::{CompactTask, ManualReset};
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
 pub(crate) use user_shell::UserShellCommandMode;
@@ -763,6 +764,23 @@ impl Session {
                 task.outcome_handoff,
             )
         };
+        if let Some(reset) = turn_context.extension_data.get::<ManualReset>() {
+            let status = if abort_reason.is_some() {
+                ContextResetStatus::Canceled
+            } else if task_error.is_some() {
+                ContextResetStatus::Failed
+            } else {
+                ContextResetStatus::Completed
+            };
+            reset
+                .report(
+                    self,
+                    &turn_context.sub_id,
+                    status,
+                    task_error.as_ref().map(ToString::to_string),
+                )
+                .await;
+        }
         turn_context
             .turn_metadata_state
             .cancel_git_enrichment_task();
@@ -1066,6 +1084,7 @@ impl Session {
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
         task.cancellation_token.cancel();
         if reason == TurnAbortReason::Interrupted
+            && task.turn_context.extension_data.get::<ManualReset>().is_none()
             && task
                 .turn_context
                 .config
@@ -1097,6 +1116,11 @@ impl Session {
         task.handle.abort();
         // Aborting schedules destruction; join before freezing the turn's timing.
         let _ = task.handle.await;
+        if let Some(reset) = task.turn_context.extension_data.get::<ManualReset>() {
+            reset
+                .report(self, &sub_id, ContextResetStatus::Canceled, None)
+                .await;
+        }
 
         if let Err(error) = self
             .record_pending_initial_input(

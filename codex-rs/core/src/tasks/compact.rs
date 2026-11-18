@@ -14,6 +14,32 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::user_input::UserInput;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) struct ManualReset(pub(crate) String);
+
+impl ManualReset {
+    pub(crate) async fn report(
+        &self,
+        session: &Session,
+        turn: &str,
+        status: codex_protocol::protocol::ContextResetStatus,
+        diagnostic: Option<String>,
+    ) {
+        use codex_protocol::protocol::{ContextReset, Event, EventMsg};
+        session
+            .send_event_raw(Event {
+                id: turn.into(),
+                msg: EventMsg::ContextReset(ContextReset {
+                    request_id: self.0.clone(),
+                    thread_id: session.thread_id.to_string(),
+                    turn_id: turn.into(),
+                    status,
+                    diagnostic,
+                }),
+            })
+            .await;
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CompactTask;
 

@@ -23,6 +23,7 @@ use crate::context::GuardianApprovedAction;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
+use crate::tasks::ManualReset;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
@@ -272,7 +273,19 @@ pub async fn compact(
     sess: &Arc<Session>,
     sub_id: String,
     reload: Option<codex_protocol::protocol::ReloadSelection>,
+    request_id: Option<String>,
 ) {
+    let manual = request_id.map(ManualReset);
+    if let Some(manual) = &manual {
+        manual
+            .report(
+                sess,
+                &sub_id,
+                codex_protocol::protocol::ContextResetStatus::Accepted,
+                None,
+            )
+            .await;
+    }
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
     let turn_context = sess
@@ -284,6 +297,9 @@ pub async fn compact(
             selection,
         })
         .await;
+    }
+    if let Some(manual) = manual {
+        turn_context.extension_data.insert(manual);
     }
     sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
 }
@@ -809,7 +825,18 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::Compact { reload } => {
-                    compact(&sess, sub.id.clone(), reload).await;
+                    compact(&sess, sub.id.clone(), reload, None).await;
+                    false
+                }
+                Op::ManualCompact { reload, request_id } => {
+                    compact(&sess, sub.id.clone(), reload, Some(request_id)).await;
+                    false
+                }
+                Op::CancelCompact { request_id } => {
+                    if let Some((ctx, _)) = sess.active_turn_context_and_cancellation_token().await
+                        && ctx.extension_data.get::<ManualReset>().is_some_and(|reset| reset.0 == request_id) {
+                        sess.abort_turn_if_active(&ctx.sub_id, TurnAbortReason::Interrupted, None).await;
+                    }
                     false
                 }
                 Op::SetThreadMemoryMode { mode } => {

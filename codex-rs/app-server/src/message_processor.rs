@@ -1008,6 +1008,7 @@ impl MessageProcessor {
             | ClientRequest::TurnStart { .. }
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }
+            | ClientRequest::ThreadCompactCancel { .. }
             | ClientRequest::ThreadCompactStart { .. }
             | ClientRequest::ThreadShellCommand { .. }
             | ClientRequest::ThreadQueueStart { .. }
@@ -1483,6 +1484,11 @@ impl MessageProcessor {
             )),
             ClientRequest::FeatureUseRead { params, .. } => {
                 self.thread_processor.feature_use_read(params)
+            }
+            ClientRequest::ThreadCompactCancel { params, .. } => {
+                self.thread_processor
+                    .thread_compact_cancel(&request_id, params)
+                    .await
             }
             ClientRequest::ThreadCompactStart { params, .. } => {
                 self.thread_processor

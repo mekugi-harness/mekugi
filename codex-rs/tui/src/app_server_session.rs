@@ -2127,6 +2127,7 @@ impl AppServerSession {
             .request_typed(ClientRequest::ThreadCompactStart {
                 request_id,
                 params: ThreadCompactStartParams {
+                    context_reset_request_id: None,
                     thread_id: thread_id.to_string(),
                 },
             })

@@ -872,7 +872,10 @@ pub enum Op {
 
     /// Cancel the file change approval issued by the named turn.
     #[debug("CancelPatchApproval {{ id: {id:?}, turn_id: {turn_id:?} }}")]
-    CancelPatchApproval { id: String, turn_id: String },
+    CancelPatchApproval {
+        id: String,
+        turn_id: String,
+    },
 
     /// Resolve an MCP elicitation request.
     #[debug("ResolveElicitation {{ request_id: {request_id:?}, decision: {decision:?} }}")]
@@ -927,14 +930,25 @@ pub enum Op {
 
     /// Reset the context window, optionally replacing the retained reload selection.
     #[debug("Compact")]
-    Compact { reload: Option<ReloadSelection> },
+    Compact {
+        reload: Option<ReloadSelection>,
+    },
+    ManualCompact {
+        reload: Option<ReloadSelection>,
+        request_id: String,
+    },
+    CancelCompact {
+        request_id: String,
+    },
 
     /// Set whether the thread remains eligible for memory generation.
     ///
     /// This persists thread-level memory mode metadata without involving the
     /// model.
     #[debug("SetThreadMemoryMode {{ mode: {mode:?} }}")]
-    SetThreadMemoryMode { mode: ThreadMemoryMode },
+    SetThreadMemoryMode {
+        mode: ThreadMemoryMode,
+    },
 
     /// Request a code review from the agent.
     #[debug(
@@ -946,12 +960,16 @@ pub enum Op {
             ReviewTarget::Custom { .. } => "custom",
         },
     )]
-    Review { review_request: ReviewRequest },
+    Review {
+        review_request: ReviewRequest,
+    },
 
     /// Record that the user approved one retry of a concrete Guardian-denied action.
     // Assessment events are transient; retain the review identity when approving a retry.
     #[debug("ApproveGuardianDeniedAction {{ review_id: {:?}, target_item_id: {:?}, turn_id: {:?}, status: {:?} }}", event.id, event.target_item_id, event.turn_id, event.status)]
-    ApproveGuardianDeniedAction { event: GuardianAssessmentEvent },
+    ApproveGuardianDeniedAction {
+        event: GuardianAssessmentEvent,
+    },
 
     /// Request to shut down codex instance.
     Shutdown,
@@ -1167,7 +1185,8 @@ impl Op {
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
-            Self::Compact { .. } => "compact",
+            Self::Compact { .. } | Self::ManualCompact { .. } => "compact",
+            Self::CancelCompact { .. } => "cancel_compact",
             Self::SetThreadMemoryMode { .. } => "set_thread_memory_mode",
             Self::Review { .. } => "review",
             Self::ApproveGuardianDeniedAction { .. } => "approve_guardian_denied_action",
@@ -1569,6 +1588,7 @@ pub struct EnvironmentConnectionEvent {
 #[ts(tag = "type")]
 #[strum(serialize_all = "snake_case")]
 pub enum EventMsg {
+    ContextReset(ContextReset),
     /// Error while executing a submission
     Error(ErrorEvent),
 
@@ -2501,6 +2521,26 @@ pub struct SafetyBufferingEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct ContextCompactedEvent;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ContextResetStatus {
+    Accepted,
+    Completed,
+    Failed,
+    Canceled,
+}
+
+/// Receipt for one correlated manual reset performed by a replacement compact turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextReset {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub request_id: String,
+    pub status: ContextResetStatus,
+    pub diagnostic: Option<String>,
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct TurnCompleteEvent {

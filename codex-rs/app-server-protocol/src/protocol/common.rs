@@ -778,6 +778,11 @@ client_request_definitions! {
         serialization: None,
         response: v2::FeatureUseReadResponse,
     },
+    ThreadCompactCancel => "thread/compact/cancel" {
+        params: v2::ThreadCompactCancelParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadCompactCancelResponse,
+    },
     ThreadCompactStart => "thread/compact/start" {
         params: v2::ThreadCompactStartParams,
         serialization: thread_id(params.thread_id),
@@ -2100,6 +2105,7 @@ pub struct FuzzyFileSearchSessionCompletedNotification {
 }
 
 server_notification_definitions! {
+    ContextReset => "thread/contextReset" (v2::ContextReset),
     /// NEW NOTIFICATIONS
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),

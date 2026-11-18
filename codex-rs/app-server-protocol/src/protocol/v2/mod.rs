@@ -3,6 +3,7 @@ mod shared;
 mod account;
 mod agent_observation;
 pub use codex_protocol::agent_capture::*;
+pub use codex_protocol::protocol::ContextReset;
 mod application;
 mod apps;
 mod attestation;
