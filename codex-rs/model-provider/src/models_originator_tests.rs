@@ -15,6 +15,9 @@ use wiremock::matchers::header;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
+// Use an unbundled slug so catalog normalization retains the fallback model messages.
+const TEST_MODEL_SLUG: &str = "originator-test-model";
+
 /// Runtime discovery updates reach existing and newly created scopes, including cached catalogs.
 #[tokio::test]
 async fn originator_managers_share_api_key_discovery_policy() {
@@ -26,7 +29,7 @@ async fn originator_managers_share_api_key_discovery_policy() {
         codex_model_provider_info::RESIDENCY_HEADER_NAME.to_string(),
         "us".into(),
     )]));
-    let mut model = model_info_from_slug("gpt-5.5");
+    let mut model = model_info_from_slug(TEST_MODEL_SLUG);
     model.visibility = codex_protocol::openai_models::ModelVisibility::List;
 
     let catalog = ModelsResponse {
@@ -116,7 +119,7 @@ async fn originator_catalogs_are_isolated_and_reused_from_disk() {
         "codex_work_mobile",
         "chatgpt_cca",
     ] {
-        let mut model = model_info_from_slug("gpt-5.5");
+        let mut model = model_info_from_slug(TEST_MODEL_SLUG);
         model.visibility = codex_protocol::openai_models::ModelVisibility::List;
 
         model.description = Some(originator.to_string());
