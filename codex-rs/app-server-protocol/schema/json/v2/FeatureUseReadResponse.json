@@ -43,6 +43,16 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "outputDeduplicationBytes": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "outputDeduplicationTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "preloadRejections": {
           "format": "uint64",
           "minimum": 0.0,
@@ -113,6 +123,8 @@
         "finals",
         "messageSources",
         "messages",
+        "outputDeduplicationBytes",
+        "outputDeduplicationTokens",
         "preloadRejections",
         "progressWaits",
         "progressYields",
