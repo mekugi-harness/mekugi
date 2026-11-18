@@ -298,13 +298,15 @@ async fn run_compact_task_inner_impl(
     let mut client_session = sess.services.model_client.new_session();
     let compaction_response = loop {
         // Clone is required because of the loop
-        let mut turn_input = history
+        let projected = history
             .clone()
-            .for_prompt(
+            .for_prompt_annotated(
                 &turn_context.model_info().input_modalities,
                 sess.services.image_store.as_ref(),
             )
             .await;
+        sess.record_output_deduplication(projected.savings);
+        let mut turn_input = projected.into_items();
         sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);

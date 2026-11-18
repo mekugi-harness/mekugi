@@ -16,8 +16,10 @@ use codex_protocol::protocol::GuardianAssessmentStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
@@ -25,6 +27,143 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_deduplication_projects_line_runs_within_one_tool_result() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let block: String = (0..6)
+        .map(|line| format!("entry {line}: {}\n", "a stable literal".repeat(3)))
+        .collect();
+    let body = format!("{block}separator\n{block}");
+    let code = format!("text({});", serde_json::to_string(&body)?);
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_custom_tool_call("repeated", "exec", &code),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.features.enable(Feature::CodeMode).unwrap();
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Print the repeated entries.".to_owned(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let mut raw = Vec::new();
+    wait_for_event(&test.codex, |event| {
+        if let EventMsg::RawResponseItem(event) = event {
+            raw.push(event.item.clone());
+        }
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let raw = serde_json::to_value(raw)?;
+    let raw = raw
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == "repeated")
+        .expect("raw output remains available");
+    let projected = requests[1].custom_tool_call_output("repeated");
+    let original = raw["output"].to_string();
+    let projected = projected["output"].to_string();
+    assert_eq!(original.matches("entry 0:").count(), 2);
+    assert!(!original.contains("[identical to"));
+    assert_eq!(projected.matches("entry 0:").count(), 1);
+    assert!(projected.contains("[identical to call c1#L"), "{projected}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_deduplication_projects_sources_only_in_model_requests() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+            sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
+        ],
+    )
+    .await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+    let body = "original source evidence must stay available in raw history\n".repeat(16);
+    for name in ["first.txt", "second.txt"] {
+        std::fs::write(test.workspace_path(name), &body)?;
+    }
+    let input = "Read @first.txt and @second.txt.";
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: input.to_owned(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let mut raw = Vec::new();
+    wait_for_event(&test.codex, |event| {
+        if let EventMsg::RawResponseItem(event) = event {
+            raw.push(event.item.clone());
+        }
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let raw = serde_json::to_value(raw)?;
+    let originals = raw
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item.pointer("/output").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(originals.matches(&body).count(), 2);
+    assert!(!originals.contains("[identical to"));
+
+    std::fs::write(
+        test.workspace_path("first.txt"),
+        "not reacquired on continuation",
+    )?;
+    test.submit_text_turn("Continue without new references.")
+        .await?;
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let items = request.input();
+        assert!(
+            items
+                .iter()
+                .any(|item| item["content"].as_array().is_some_and(|parts| {
+                    parts
+                        .iter()
+                        .any(|part| part["text"].as_str() == Some(input))
+                }))
+        );
+        let sources = items
+            .iter()
+            .filter_map(|item| item["output"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(sources.matches(&body).count(), 1);
+        assert!(sources.contains("[identical to @first.txt above]"));
+        assert!(!sources.contains("not reacquired"));
+        assert!(!sources.contains("[call"));
+    }
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_request_item_types_roles_and_content_annotations() -> Result<()> {

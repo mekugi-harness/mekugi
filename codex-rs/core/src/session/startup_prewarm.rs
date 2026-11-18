@@ -397,19 +397,22 @@ async fn schedule_startup_prewarm_inner(
         ),
     )?;
     let build_prompt_started_at = Instant::now();
+    let mut savings = crate::context_manager::OutputDeduplicationSavings::default();
     let prompt_input = match input {
         PrewarmInput::Base => Vec::new(),
         PrewarmInput::History => {
             // Use the same history projection and tool metadata as a sampling request.
             // The real turn still checks this prefix before reusing the prepared response.
-            let mut history = session
+            let projected = session
                 .clone_history()
                 .await
-                .for_prompt(
+                .for_prompt_annotated(
                     &step_context.settings.model_info.input_modalities,
                     session.services.image_store.as_ref(),
                 )
                 .await;
+            savings = projected.savings;
+            let mut history = projected.into_items();
             session
                 .services
                 .executed_tool_calls
@@ -438,6 +441,7 @@ async fn schedule_startup_prewarm_inner(
         .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Prewarm)
         .await;
     let websocket_warmup_started_at = Instant::now();
+    session.record_output_deduplication(savings);
     // Prewarm establishes the request baseline before the first turn can change effort.
     client_session
         .prewarm_websocket(

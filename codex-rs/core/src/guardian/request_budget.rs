@@ -65,7 +65,8 @@ pub(crate) async fn prepare_prompt(
     let model = &step.settings.model_info;
     let maximum = effective_input_token_limit(model, step.turn.config.model_context_window)
         .saturating_sub(INPUT_TOKEN_MARGIN);
-    let history = session.clone_history().await;
+    let mut history = session.clone_history().await;
+    history.normalize_history(&model.input_modalities);
     let history_version = history.history_version();
     let retained = step.turn.extension_data.get::<RetainedReviewContext>();
     let mut restored = Vec::new();
@@ -85,12 +86,7 @@ pub(crate) async fn prepare_prompt(
         let context = PreparedReviewContext::prepare(
             retained.context.clone(),
             retained.elastic.as_ref(),
-            &history
-                .for_prompt_annotated(
-                    &model.input_modalities,
-                    session.services.image_store.as_ref(),
-                )
-                .await,
+            history.annotated_items(),
         )
         .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
         let context = context

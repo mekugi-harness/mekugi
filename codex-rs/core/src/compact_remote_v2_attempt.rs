@@ -70,6 +70,7 @@ pub(crate) struct BackgroundCompactionInput {
     base_instructions: BaseInstructions,
     input: Vec<ResponseItem>,
     metadata: Vec<Option<CodexHarnessMetadata>>,
+    savings: crate::context_manager::OutputDeduplicationSavings,
 }
 
 pub(super) async fn run_remote_compact_v2_attempt(
@@ -132,12 +133,15 @@ pub(super) async fn run_remote_compact_v2_attempt(
             let trace_input_history = compaction_trace
                 .is_enabled()
                 .then(|| history.raw_items().cloned().collect());
-            let (mut input, metadata): (Vec<_>, Vec<_>) = history
+            let projected = history
                 .for_prompt_annotated(
                     &model_info.input_modalities,
                     sess.services.image_store.as_ref(),
                 )
-                .await
+                .await;
+            sess.record_output_deduplication(projected.savings);
+            let (mut input, metadata): (Vec<_>, Vec<_>) = projected
+                .items
                 .into_iter()
                 .map(|envelope| (envelope.item, envelope.metadata))
                 .unzip();
@@ -158,16 +162,19 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 None,
             )
         }
-        RemoteCompactV2AttemptInput::Background(input) => (
-            &step_context.settings.model_info,
-            UserGoalUpdate::message_ids(input.input.iter()),
-            None,
-            input.base_instructions,
-            input.input,
-            input.metadata,
-            CompactionRequestTransport::Background(input.turn_state, input.prefix.auth_owner),
-            Some(input.window),
-        ),
+        RemoteCompactV2AttemptInput::Background(input) => {
+            sess.record_output_deduplication(input.savings);
+            (
+                &step_context.settings.model_info,
+                UserGoalUpdate::message_ids(input.input.iter()),
+                None,
+                input.base_instructions,
+                input.input,
+                input.metadata,
+                CompactionRequestTransport::Background(input.turn_state, input.prefix.auth_owner),
+                Some(input.window),
+            )
+        }
     };
     let mut unavailable =
         rejected_audio::unavailable_file_audio(&input, sess.services.image_store.as_ref()).await;
@@ -310,6 +317,7 @@ pub(crate) async fn capture_background_input(
     );
     snapshot.normalize_history(&step_context.settings.model_info.input_modalities);
     snapshot.project_file_audio_for_prompt();
+    let savings = snapshot.project_output_deduplication();
     let (mut input, metadata): (Vec<_>, Vec<_>) = snapshot
         .into_annotated_items()
         .into_iter()
@@ -319,6 +327,7 @@ pub(crate) async fn capture_background_input(
         .executed_tool_calls
         .attach_to_compaction_prompt(&mut input);
     BackgroundCompactionInput {
+        savings,
         prefix,
         turn_state,
         window,

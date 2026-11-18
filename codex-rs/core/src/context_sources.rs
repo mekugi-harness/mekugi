@@ -31,6 +31,11 @@ use crate::unified_exec::UnifiedExecProcessManager;
 #[path = "context_sources_directory.rs"]
 mod directory;
 
+#[path = "context_sources_framing.rs"]
+mod framing;
+pub(crate) use framing::contains_envelope as contains_source_envelope;
+pub(crate) use framing::project as project_source_bodies;
+
 const MAX_REFERENCE_DEPTH: usize = 3;
 // Match retained capture capacity; charge cached reads, output and pending references.
 const MAX_SOURCE_BYTES: usize = 32 << 20;

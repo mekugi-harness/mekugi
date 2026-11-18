@@ -3119,6 +3119,22 @@ impl Session {
         .await;
     }
 
+    pub(crate) fn record_output_deduplication(
+        &self,
+        savings: crate::context_manager::OutputDeduplicationSavings,
+    ) {
+        if savings.bytes > 0 {
+            self.services.local_agent_runtime.record_feature_use(
+                self.thread_id,
+                uuid::Uuid::new_v4().to_string(),
+                codex_protocol::feature_use::FeatureUseEvent::OutputDeduplicated {
+                    bytes: savings.bytes,
+                    tokens: savings.tokens,
+                },
+            );
+        }
+    }
+
     pub(crate) async fn emit_turn_item_completed_with_metadata(
         &self,
         turn_context: &TurnContext,

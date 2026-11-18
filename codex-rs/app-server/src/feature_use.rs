@@ -39,6 +39,10 @@ mod tests {
             },
             FeatureUseEvent::ProgressDelivered,
             FeatureUseEvent::AssignmentDelivered { sources: true },
+            FeatureUseEvent::OutputDeduplicated {
+                bytes: 512,
+                tokens: 128,
+            },
         ];
         for (operation, event) in events.into_iter().enumerate() {
             let fact = FeatureUseFact {
@@ -56,6 +60,8 @@ mod tests {
             event: FeatureUseEvent::SelfResetFailed,
         });
         let expected = FeatureUseCounts {
+            output_deduplication_bytes: 512,
+            output_deduplication_tokens: 128,
             compactions: 1,
             self_compactions: 1,
             compaction_preloads: 1,
@@ -109,6 +115,10 @@ impl FeatureUse {
         }
         let counts = self.counts.entry(fact.thread_id).or_default();
         match fact.event {
+            FeatureUseEvent::OutputDeduplicated { bytes, tokens } => {
+                counts.output_deduplication_bytes += bytes;
+                counts.output_deduplication_tokens += tokens;
+            }
             FeatureUseEvent::ResetCompleted => counts.compactions += 1,
             FeatureUseEvent::SelfResetRequested { preload } => {
                 counts.self_compactions += 1;

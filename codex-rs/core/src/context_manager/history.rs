@@ -94,6 +94,20 @@ use crate::config::ManagedFeatures;
 use crate::context::GuardianContextMode;
 use codex_features::Feature;
 
+pub(crate) struct PromptHistory {
+    pub items: Vec<ResponseItemEnvelope>,
+    pub savings: super::OutputDeduplicationSavings,
+}
+
+impl PromptHistory {
+    pub(crate) fn into_items(self) -> Vec<ResponseItem> {
+        self.items
+            .into_iter()
+            .map(ResponseItemEnvelope::into_item)
+            .collect()
+    }
+}
+
 static GUARDIAN_REVIEW_CONTEXT_REVISION: AtomicU64 = AtomicU64::new(/*v*/ 1);
 
 fn next_guardian_review_context_revision() -> u64 {
@@ -723,9 +737,7 @@ impl ContextManager {
     ) -> Vec<ResponseItem> {
         self.for_prompt_annotated(input_modalities, image_store)
             .await
-            .into_iter()
-            .map(ResponseItemEnvelope::into_item)
-            .collect()
+            .into_items()
     }
 
     /// Returns normalized history envelopes for internal consumers that must retain metadata.
@@ -733,7 +745,7 @@ impl ContextManager {
         mut self,
         input_modalities: &[InputModality],
         image_store: &dyn AttachmentStore,
-    ) -> Vec<ResponseItemEnvelope> {
+    ) -> PromptHistory {
         self.normalize_history(input_modalities);
         replace_unresolvable_image_files(
             Arc::make_mut(&mut self.items)
@@ -743,7 +755,14 @@ impl ContextManager {
         )
         .await;
         self.project_file_audio_for_prompt();
-        Arc::unwrap_or_clone(self.items)
+        let savings = self.project_output_deduplication();
+        let items = Arc::unwrap_or_clone(self.items);
+        PromptHistory { items, savings }
+    }
+
+    /// Shared with the background compaction path, which defers image resolution.
+    pub(crate) fn project_output_deduplication(&mut self) -> super::OutputDeduplicationSavings {
+        super::output_deduplication::project(Arc::make_mut(&mut self.items).as_mut_slice())
     }
 
     /// Applies the file-audio request projection to a normalized snapshot whose

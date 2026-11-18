@@ -125,16 +125,14 @@ pub(crate) async fn check_pending(session: &Session, turn: &TurnContext) -> Code
     let maximum = effective_input_token_limit(turn.model_info(), turn.config.model_context_window)
         .saturating_sub(super::request_budget::INPUT_TOKEN_MARGIN);
     let context = pending.context.clone();
-    let history = session
-        .clone_history()
-        .await
-        .for_prompt_annotated(
-            &turn.model_info().input_modalities,
-            session.services.image_store.as_ref(),
-        )
-        .await;
-    let context = PreparedReviewContext::prepare(context, pending.elastic.as_ref(), &history)
-        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+    let mut history = session.clone_history().await;
+    history.normalize_history(&turn.model_info().input_modalities);
+    let context = PreparedReviewContext::prepare(
+        context,
+        pending.elastic.as_ref(),
+        history.annotated_items(),
+    )
+    .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
     let context_tokens = match &context {
         PreparedReviewContext::Fixed(context) => context.estimated_tokens(),
         PreparedReviewContext::Elastic(context) => context.estimated_tokens(),
@@ -179,7 +177,7 @@ pub(crate) async fn finalize(
     };
     let context = pending.context.clone();
     let model = &step.settings.model_info;
-    let history = session.clone_history().await;
+    let mut history = session.clone_history().await;
     let recovery = session
         .services
         .thread_extension_data
@@ -193,21 +191,23 @@ pub(crate) async fn finalize(
         ));
     }
     let history_version = history.history_version();
+    history.normalize_history(&model.input_modalities);
+    let context = PreparedReviewContext::prepare(
+        context,
+        pending.elastic.as_ref(),
+        history.annotated_items(),
+    )
+    .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
     let history = history
         .for_prompt_annotated(
             &model.input_modalities,
             session.services.image_store.as_ref(),
         )
         .await;
-    // Use the history that will actually reach the model. Recompute after every
-    // compaction retry; evidence removed by compaction must be delivered again.
-    let context = PreparedReviewContext::prepare(context, pending.elastic.as_ref(), &history)
-        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+    // Delivery proof uses originals from this window, before model-only deduplication.
+    // Recompute after compaction; removed evidence must be delivered again.
     let prompt = build_prompt(
-        history
-            .into_iter()
-            .map(codex_history::ResponseItemEnvelope::into_item)
-            .collect(),
+        history.into_items(),
         step,
         session.get_prompt_base_instructions().await,
         session.current_window_uses_incremental_tools(step).await,

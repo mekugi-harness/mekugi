@@ -16,6 +16,10 @@ pub struct FeatureUseFact {
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export_to = "v2/")]
 pub enum FeatureUseEvent {
+    OutputDeduplicated {
+        bytes: u64,
+        tokens: u64,
+    },
     ResetCompleted,
     SelfResetRequested {
         #[serde(default)]
@@ -59,6 +63,8 @@ pub enum FeatureUseEvent {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct FeatureUseCounts {
+    pub output_deduplication_bytes: u64,
+    pub output_deduplication_tokens: u64,
     pub compactions: u64,
     pub self_compactions: u64,
     pub compaction_preloads: u64,

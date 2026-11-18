@@ -2003,12 +2003,14 @@ async fn run_sampling_request(
             sampled_through_sequence: Some(history.input_sequence()),
             ..step_context.as_ref().clone()
         });
-        let mut prompt_input = history
-            .for_prompt(
+        let projected = history
+            .for_prompt_annotated(
                 &step_context.settings.model_info.input_modalities,
                 sess.services.image_store.as_ref(),
             )
             .await;
+        let savings = projected.savings;
+        let mut prompt_input = projected.into_items();
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
@@ -2063,6 +2065,7 @@ async fn run_sampling_request(
             (submitted, pending)
         };
         let mut draining_for_mailbox = false;
+        sess.record_output_deduplication(savings);
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),

@@ -1293,7 +1293,8 @@ async fn for_prompt_annotated_preserves_metadata_while_normalizing_item() {
 
     let normalized = history
         .for_prompt_annotated(&[InputModality::Text], &InlineAttachmentStore)
-        .await;
+        .await
+        .items;
 
     assert_eq!(normalized.len(), 1);
     assert_eq!(normalized[0].metadata, envelope.metadata);
@@ -1429,7 +1430,8 @@ async fn for_prompt_replaces_unavailable_message_images() {
             ],
             &FailingAttachmentStore,
         )
-        .await;
+        .await
+        .items;
     let expected: ResponseItem = from_value(json!({
         "type": "message", "role": "user",
         "content": [
