@@ -25,7 +25,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
-use serde_json::Value;
 use serde_json::json;
 use test_case::test_case;
 use wiremock::Mock;
@@ -96,21 +95,34 @@ async fn vertex_credential_file_is_retained_when_refreshing_after_401() -> Resul
 
 #[test_case("gpt-6.1-sol", false; "sol")]
 #[test_case("gpt-6.1-terra", false; "terra")]
+#[test_case("gpt-6.2-astra", false; "astra_62")]
+#[test_case("gpt-6.2-sol", false; "sol_62")]
 #[test_case("gpt-6.1-sol", true; "sol_incremental")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn vertex_requests_use_command_auth_with_namespaces_and_tool_search(
+async fn vertex_requests_use_command_auth_and_discover_namespaced_tools(
     model: &str,
     incremental_tools: bool,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
-    let response = responses::mount_sse_once(
+    let response = responses::mount_sse_sequence(
         &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-1"),
-            responses::ev_completed("resp-1"),
-        ]),
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-1"),
+                responses::ev_custom_tool_call(
+                    "catalog-call",
+                    "exec",
+                    r#"
+const records = ALL_TOOLS.filter(({ name }) => name.startsWith("records__"));
+text(JSON.stringify(records.map(({ name }) => name).sort()));
+"#,
+                ),
+                responses::ev_completed("resp-1"),
+            ]),
+            responses::sse(vec![responses::ev_completed("resp-2")]),
+        ],
     )
     .await;
     let auth_fixture = ProviderAuthCommandFixture::fixed_token("vertex-access-token")?;
@@ -163,7 +175,7 @@ async fn vertex_requests_use_command_auth_with_namespaces_and_tool_search(
             DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
                 name: "lookup".to_string(),
                 description: "Look up a record.".to_string(),
-                input_schema: input_schema.clone(),
+                input_schema,
                 defer_loading: true,
             }),
         ],
@@ -180,7 +192,10 @@ async fn vertex_requests_use_command_auth_with_namespaces_and_tool_search(
 
     test.submit_turn("Look up a record").await?;
 
-    let request = response.single_request();
+    let requests = response.requests();
+    let [request, continuation] = requests.as_slice() else {
+        anyhow::bail!("expected a Vertex request and JavaScript continuation");
+    };
     assert_eq!(
         request.path(),
         "/v1/projects/example-project/locations/global/publishers/openai/v1/responses"
@@ -201,53 +216,29 @@ async fn vertex_requests_use_command_auth_with_namespaces_and_tool_search(
     let top_level_tools = body["tools"]
         .as_array()
         .context("Vertex request should include model tools")?;
-    let tools = if incremental_tools {
+    let exec = if incremental_tools {
         assert!(top_level_tools.is_empty());
-        additional_tools[0]["tools"]
-            .as_array()
-            .context("Vertex request should include incremental model tools")?
+        responses::namespace_child_tool(&additional_tools[0], "functions", "exec")
     } else {
         top_level_tools
-    };
+            .iter()
+            .find(|tool| tool["type"] == "custom" && tool["name"] == "exec")
+    }
+    .context("Vertex request should expose JavaScript execution")?;
     assert_eq!(
         test.codex.multi_agent_version(),
         Some(MultiAgentVersion::V2)
     );
-    assert!(tools.iter().any(|tool| tool["name"] == "collaboration"));
-    let namespace = tools.iter().find(|tool| tool["name"] == "records");
+    let description = exec["description"].as_str().context("exec description")?;
+    assert!(description.contains("collaboration__spawn_agent"));
+    assert!(description.contains("exec_command"));
+    let output =
+        super::code_mode::custom_tool_output_last_non_empty_text(continuation, "catalog-call")
+            .context("JavaScript should return the discovered tool names")?;
     assert_eq!(
-        namespace,
-        Some(&json!({
-            "type": "namespace",
-            "name": "records",
-            "description": "Record tools.",
-            "tools": [{
-                "type": "function",
-                "name": "status",
-                "description": "Get record service status.",
-                "strict": false,
-                "parameters": input_schema,
-            }],
-        }))
+        serde_json::from_str::<Vec<String>>(&output)?,
+        ["records__lookup", "records__status"],
     );
-    assert!(
-        tools
-            .iter()
-            .any(|tool| tool["type"] == "tool_search" && tool["execution"] == "client"),
-        "Vertex request should expose client-side tool search: {tools:?}"
-    );
-    assert!(
-        if incremental_tools {
-            responses::namespace_child_tool(&additional_tools[0], "functions", "exec_command")
-                .is_some()
-        } else {
-            tools
-                .iter()
-                .any(|tool| tool.get("name").and_then(Value::as_str) == Some("exec_command"))
-        },
-        "Vertex request should preserve the exec_command function tool: {tools:?}"
-    );
-
     Ok(())
 }
 

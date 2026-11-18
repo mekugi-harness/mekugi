@@ -1,6 +1,5 @@
-//! Verifies default Bedrock catalogs select V2 and expose its collaboration tools.
+//! Verifies Bedrock exposes V2 collaboration tools through JavaScript by default.
 
-use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_login::auth::BedrockApiKeyAuth;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
@@ -42,7 +41,6 @@ async fn bedrock_catalog_selects_v2_by_default(
         })
         .build_with_auto_env(&server)
         .await?;
-    assert!(!test.config.features.enabled(Feature::MultiAgentV2));
     assert!(test.config.model_catalog.is_none());
 
     test.submit_text_turn("Hello").await?;
@@ -52,10 +50,16 @@ async fn bedrock_catalog_selects_v2_by_default(
         Some(MultiAgentVersion::V2)
     );
     let request = mock.single_request();
+    let declarations = request.inputs_of_type("additional_tools");
+    let exec = declarations
+        .iter()
+        .find_map(|item| responses::namespace_child_tool(item, "functions", "exec"))
+        .expect("incrementally declared JavaScript execution tool");
+    let description = exec["description"].as_str().expect("exec description");
     for tool in ["spawn_agent", "followup_task"] {
         assert!(
-            request.tool_by_name("collaboration", tool).is_some(),
-            "default Bedrock catalog should expose collaboration.{tool}",
+            description.contains(&format!("collaboration__{tool}")),
+            "default Bedrock catalog should expose collaboration__{tool} through JavaScript",
         );
     }
     Ok(())

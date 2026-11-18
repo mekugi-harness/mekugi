@@ -155,12 +155,12 @@ async fn prediction_fork_keeps_inherited_tools() -> Result<()> {
 #[test_case(true, None, true, OPENAI_PROVIDER_ID, &[]; "responses_lite")]
 #[test_case(true, Some(true), true, OPENAI_PROVIDER_ID, &[]; "announcements_suppressed")]
 #[test_case(false, None, false, OPENAI_PROVIDER_ID, &[]; "responses_api")]
-#[test_case(false, None, false, AMAZON_BEDROCK_PROVIDER_ID, &[]; "mantle_default")]
-#[test_case(false, None, true, AMAZON_BEDROCK_PROVIDER_ID,
-    &[(Feature::IncrementalToolsLegacy, true), (Feature::IncrementalToolsLegacyGcp, false)]; "mantle_enabled")]
-#[test_case(false, None, false, AMAZON_BEDROCK_RUNTIME_PROVIDER_ID, &[]; "runtime_default")]
-#[test_case(false, None, true, AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
-    &[(Feature::IncrementalToolsLegacy, true), (Feature::IncrementalToolsLegacyGcp, false)]; "runtime_enabled")]
+#[test_case(false, None, true, AMAZON_BEDROCK_PROVIDER_ID, &[]; "mantle_default")]
+#[test_case(false, None, false, AMAZON_BEDROCK_PROVIDER_ID,
+    &[(Feature::IncrementalToolsLegacy, false)]; "mantle_opt_out")]
+#[test_case(false, None, true, AMAZON_BEDROCK_RUNTIME_PROVIDER_ID, &[]; "runtime_default")]
+#[test_case(false, None, false, AMAZON_BEDROCK_RUNTIME_PROVIDER_ID,
+    &[(Feature::IncrementalToolsLegacy, false)]; "runtime_opt_out")]
 #[test_case(false, None, true, GCP_PROVIDER_ID, &[]; "gcp_default")]
 #[test_case(false, None, false, GCP_PROVIDER_ID,
     &[(Feature::IncrementalToolsLegacyGcp, false), (Feature::IncrementalToolsLegacy, true)]; "gcp_opt_out")]
@@ -176,21 +176,8 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
     let server = responses::start_mock_server().await;
     let mock = responses::mount_sse_sequence(
         &server,
-        (1..=if incremental_tools { 6 } else { 4 })
-            .map(|index| {
-                let mut events = Vec::new();
-                if index == 5 {
-                    events.push(json!({
-                        "type": "response.output_item.done",
-                        "item": {
-                            "type": "compaction",
-                            "encrypted_content": "INCREMENTAL_TOOLS_CHECKPOINT",
-                        },
-                    }));
-                }
-                events.push(responses::ev_completed(&format!("resp-{index}")));
-                responses::sse(events)
-            })
+        (1..=if incremental_tools { 5 } else { 4 })
+            .map(|index| responses::sse(vec![responses::ev_completed(&format!("resp-{index}"))]))
             .collect(),
     )
     .await;
@@ -292,11 +279,12 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
             matches!(event, EventMsg::TurnComplete(_))
         })
         .await;
-        test.submit_text_turn("Continue after compaction.").await?;
+        test.submit_text_turn("Continue after the context reset.")
+            .await?;
     }
 
     let requests = mock.requests();
-    assert_eq!(requests.len(), if incremental_tools { 6 } else { 4 });
+    assert_eq!(requests.len(), if incremental_tools { 5 } else { 4 });
     if incremental_tools {
         for pair in requests[..4].windows(2) {
             let previous = pair[0].body_json();
@@ -388,7 +376,7 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
             _ => {}
         }
     }
-    // Six exposure samples per sampling request, excluding compaction.
+    // Six exposure samples per sampling request.
     assert_eq!(
         registration_samples,
         6 * if incremental_tools { 5 } else { 4 }
@@ -423,15 +411,15 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
         assert_eq!(bytes, BTreeMap::new());
     }
     if incremental_tools {
-        for request in &requests[..5] {
+        for request in &requests[..4] {
             assert_eq!(
                 request.instructions_text(),
                 "Use the available tools to help the user."
             );
         }
-        assert!(!requests[5].body_contains_text("Use the available tools to help the user."));
+        assert!(!requests[4].body_contains_text("Use the available tools to help the user."));
         assert_eq!(
-            requests[5].instructions_text(),
+            requests[4].instructions_text(),
             "Review results before responding."
         );
     }
@@ -447,9 +435,9 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
         },
         context_snapshot::format_request_history_snapshot(
             if suppress_model_change_announcements == Some(true) {
-                "A model switch suppresses the model ID announcement while appending changed tools and replacement instructions. Repeated turns preserve the prefix; compaction starts a new window with the updated base."
+                "A model switch suppresses the model ID announcement while appending changed tools and replacement instructions. Repeated turns preserve the prefix; resetting context starts a new window with the updated base."
             } else if incremental_tools {
-                "Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; compaction starts a new window with the updated base."
+                "Tool definitions precede the initial base instructions. A model switch appends one developer notice, changed tools, and replacement instructions without rewriting the prefix; resetting context starts a new window with the updated base."
             } else {
                 "Regular Responses requests carry the full current tool catalog without an incremental notice; changed execution instructions replace the catalog on subsequent requests."
             },

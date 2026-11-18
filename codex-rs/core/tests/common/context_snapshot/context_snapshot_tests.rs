@@ -935,6 +935,7 @@ fn live_environment_facts_do_not_change_history_snapshots_or_leak_into_hashes() 
     };
     let expected = detailed(&[frame("worker", "")]);
     for facts in [
+        "Platform: linux\nHome: /private/home/alice\nOS: Debian\nKernel: Linux 6\nGit repository: no\n".to_string(),
         "Observed at: 2026-01-01T00:00:00Z\nPlatform: linux\nHome: /private/home/alice\nOS: Debian\nKernel: Linux 6\nGit repository: yes\nBranch: private-branch\nStatus:\nprivate-file\nRecent commits:\nprivate-subject\n".to_string(),
         "Observed at: 2027-02-02T01:02:03Z\nPlatform: macos\nHome: /Users/bob\nOS (macOS): 26\nKernel: Darwin\nGit repository: no\n".to_string(),
         "Observed at: unavailable\nHome: unavailable\nGit repository: unavailable\n".to_string(),
