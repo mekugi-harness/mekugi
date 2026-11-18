@@ -60,6 +60,7 @@ pub(crate) enum RuntimeEvent {
         name: ToolName,
         kind: CodeModeToolKind,
         input: Option<JsonValue>,
+        pauses_cell_deadline: bool,
     },
     Notify {
         call_id: String,
@@ -97,6 +98,7 @@ pub(crate) fn spawn_runtime(
         .enabled_tools
         .into_iter()
         .map(|definition| EnabledToolMetadata {
+            pauses_cell_deadline: definition.pauses_cell_deadline,
             global_name: normalize_code_mode_identifier(&definition.name),
             tool_name: definition.tool_name,
             description: definition.description,
@@ -156,6 +158,7 @@ struct RuntimeConfig {
 
 // Callback indices refer to this cell's original catalog for its entire lifetime.
 struct ToolCallbackMetadata {
+    pauses_cell_deadline: bool,
     tool_name: ToolName,
     kind: CodeModeToolKind,
 }
@@ -214,6 +217,7 @@ fn run_runtime(
             .enabled_tools
             .into_iter()
             .map(|tool| ToolCallbackMetadata {
+                pauses_cell_deadline: tool.pauses_cell_deadline,
                 tool_name: tool.tool_name,
                 kind: tool.kind,
             })
@@ -306,15 +310,16 @@ fn next_runtime_command(
         }
 
         let _ = event_tx.blocking_send(RuntimeEvent::Pending);
-        match pending_mode {
+        let command = match pending_mode {
             #[cfg(test)]
-            PendingRuntimeMode::Continue => return command_rx.recv().ok(),
+            PendingRuntimeMode::Continue => command_rx.recv().ok(),
             PendingRuntimeMode::PauseUntilResumed => match control_rx.recv().ok()? {
-                RuntimeControlCommand::Continue => return command_rx.recv().ok(),
+                RuntimeControlCommand::Continue => command_rx.recv().ok(),
                 RuntimeControlCommand::Resume => continue,
-                RuntimeControlCommand::Terminate => return Some(RuntimeCommand::Terminate),
+                RuntimeControlCommand::Terminate => Some(RuntimeCommand::Terminate),
             },
-        }
+        };
+        return command;
     }
 }
 

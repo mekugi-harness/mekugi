@@ -66,7 +66,10 @@ async fn interrupt_yields_execute_and_wait_without_stopping_the_cell() {
     let started = service
         .execute(
             ExecuteRequest {
-                enabled_tools: vec![echo_tool()],
+                enabled_tools: vec![ToolDefinition {
+                    pauses_cell_deadline: true,
+                    ..echo_tool()
+                }],
                 source: r#"await tools.echo({}); text("done");"#.to_string(),
                 yield_time_ms: Some(60_000),
                 ..execute_request("")
@@ -106,6 +109,7 @@ async fn interrupt_yields_execute_and_wait_without_stopping_the_cell() {
         }
     });
     tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(121)).await;
     assert!(!response.is_finished());
     wait_signal.cancel();
     assert_eq!(
@@ -145,6 +149,88 @@ async fn interrupt_yields_execute_and_wait_without_stopping_the_cell() {
             error_text: None,
         })
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn initial_observer_stays_paused_during_unrelated_timer_callback() {
+    assert_observer_deadline_stays_paused(/*reobserve*/ false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn subsequent_observer_stays_paused_during_unrelated_timer_callback() {
+    assert_observer_deadline_stays_paused(/*reobserve*/ true).await;
+}
+
+async fn assert_observer_deadline_stays_paused(reobserve: bool) {
+    let _time_guard = hold_virtual_time();
+    let delegate = Arc::new(ReleasableToolDelegate::default());
+    let service = Arc::new(InProcessCodeModeSession::new());
+    let preempt = CancellationToken::new();
+    let started = service
+        .execute(
+            ExecuteRequest {
+                enabled_tools: vec![ToolDefinition {
+                    pauses_cell_deadline: true,
+                    ..echo_tool()
+                }],
+                source: r#"
+const wait = tools.echo({});
+setTimeout(() => {
+    void notify("unrelated timer woke");
+    while (true) {}
+}, 1);
+await wait;
+"#
+                .to_string(),
+                yield_time_ms: Some(60_000),
+                ..execute_request("")
+            },
+            delegate.clone(),
+            Some(preempt.clone()),
+        )
+        .await
+        .unwrap();
+    let initial = tokio::spawn(started.initial_response());
+    wait_until_tool_started(&delegate).await.unwrap();
+    let mut observing = if reobserve {
+        preempt.cancel();
+        assert!(matches!(
+            initial.await.unwrap().unwrap(),
+            RuntimeResponse::Yielded { .. }
+        ));
+        let service = service.clone();
+        tokio::spawn(async move {
+            service
+                .wait(
+                    WaitRequest {
+                        cell_id: cell_id("1"),
+                        yield_time_ms: 60_000,
+                        max_output_tokens: None,
+                    },
+                    /*preempt*/ None,
+                )
+                .await
+                .unwrap()
+        })
+    } else {
+        tokio::spawn(async move { WaitOutcome::LiveCell(initial.await.unwrap().unwrap()) })
+    };
+
+    tokio::time::advance(Duration::from_millis(10)).await;
+    delegate.notified.notified().await;
+    tokio::select! {
+        biased;
+        response = &mut observing => panic!("observer returned before the native wait: {response:?}"),
+        _ = async {
+            tokio::time::advance(Duration::from_secs(121)).await;
+            tokio::task::yield_now().await;
+        } => {}
+    }
+    let _ = service.terminate(cell_id("1").into()).await.unwrap();
+    assert!(matches!(
+        observing.await.unwrap(),
+        WaitOutcome::LiveCell(RuntimeResponse::Terminated { .. })
+    ));
 }
 
 #[tokio::test(start_paused = true)]
@@ -482,6 +568,7 @@ async fn wait_until_tool_started(delegate: &ReleasableToolDelegate) -> Result<()
 struct ReleasableToolDelegate {
     tool_release: Notify,
     tool_started: Notify,
+    notified: Notify,
     cell_closed: CancellationToken,
 }
 
@@ -513,6 +600,7 @@ impl CodeModeSessionDelegate for ReleasableToolDelegate {
         _text: String,
         _cancellation_token: CancellationToken,
     ) -> NotificationFuture<'a> {
+        self.notified.notify_one();
         Box::pin(async { Ok(()) })
     }
 
@@ -542,6 +630,7 @@ fn echo_tool() -> ToolDefinition {
         description: String::new(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     }

@@ -23,6 +23,7 @@ fn rejects_missing_names_unknown_tool_kinds_and_invalid_json_schemas() {
         kind: proto::ToolKind::Function as i32,
         input_schema_json: None,
         output_schema_json: None,
+        pauses_cell_deadline: false,
     };
     let request = |definition| proto::ExecuteRequest {
         session_id: "session".to_string(),

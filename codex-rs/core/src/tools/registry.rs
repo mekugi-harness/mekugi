@@ -62,6 +62,11 @@ pub use codex_tools::ToolExposure;
 /// Implementers provide the shared `ToolExecutor` behavior plus optional
 /// core-owned metadata for hooks, telemetry, tool search, and argument diffs.
 pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+    /// A pending callback supplies its own wake conditions instead of timed cell yields.
+    fn pauses_cell_deadline(&self) -> bool {
+        false
+    }
+
     /// The handler observes its cancellation token and must finish before dispatch is aborted.
     fn finishes_on_cancellation(&self) -> bool {
         false

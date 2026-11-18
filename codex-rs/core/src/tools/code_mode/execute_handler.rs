@@ -20,7 +20,7 @@ use super::prepare_code_mode_tool_definitions;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
 
-type CodeModeNestedTool = (Arc<ToolSpec>, Option<Arc<dyn CoreToolRuntime>>);
+type CodeModeNestedTool = (Arc<ToolSpec>, Option<Arc<dyn CoreToolRuntime>>, bool);
 
 pub struct CodeModeExecuteHandler {
     spec: ToolSpec,
@@ -56,12 +56,17 @@ impl CodeModeExecuteHandler {
             .code_mode
             .tool_input_schema_max_bytes;
         let mut enabled_tools = Vec::with_capacity(self.nested_tool_specs.len());
-        for (spec, cached_runtime) in &self.nested_tool_specs {
-            let definitions = prepare_code_mode_tool_definitions(
+        for (spec, cached_runtime, pauses_cell_deadline) in &self.nested_tool_specs {
+            let mut definitions = prepare_code_mode_tool_definitions(
                 cached_runtime.as_deref(),
                 || Cow::Borrowed(spec.as_ref()),
                 code_mode_input_schema_max_bytes,
             );
+            if *pauses_cell_deadline {
+                for definition in definitions.to_mut() {
+                    definition.pauses_cell_deadline = true;
+                }
+            }
             match definitions {
                 Cow::Borrowed(definitions) => enabled_tools.extend_from_slice(definitions),
                 Cow::Owned(definitions) => enabled_tools.extend(definitions),

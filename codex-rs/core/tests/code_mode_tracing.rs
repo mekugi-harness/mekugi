@@ -130,6 +130,7 @@ async fn stdio_callbacks_preserve_context_across_overlapping_yielded_cells() {
                             description: String::new(),
                             kind: CodeModeToolKind::Function,
                             input_schema: None,
+                            pauses_cell_deadline: false,
                             input_schema_max_bytes: None,
                             output_schema: None,
                         }],

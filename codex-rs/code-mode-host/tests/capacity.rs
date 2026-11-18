@@ -92,6 +92,7 @@ async fn assert_shared_capacity(
                 description: String::new(),
                 kind: CodeModeToolKind::Function,
                 input_schema: None,
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: None,
                 output_schema: None,
             }],

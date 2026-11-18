@@ -1051,7 +1051,11 @@ fn register_code_mode_executors(
         } else {
             exec_prompt_tool_specs.push(spec.as_ref().clone());
         }
-        code_mode_nested_tool_specs.push((spec, cached_runtime));
+        code_mode_nested_tool_specs.push((
+            spec,
+            cached_runtime,
+            tool.runtime.pauses_cell_deadline(),
+        ));
     }
 
     let deferred_tool_discovery = if exec_prompt_tool_specs

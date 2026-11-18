@@ -194,6 +194,7 @@ declare const tools: { apply_patch(input: string): Promise<unknown>; };
                 .to_string(),
             kind: codex_code_mode::CodeModeToolKind::Freeform,
             input_schema: None,
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: None,
         })
@@ -231,6 +232,7 @@ declare const tools: { editor__apply_patch(input: string): Promise<unknown>; };
                 .to_string(),
             kind: codex_code_mode::CodeModeToolKind::Freeform,
             input_schema: None,
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: None,
         })

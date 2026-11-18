@@ -91,6 +91,7 @@ pub(crate) struct CreateCellRequest {
 
 /// Tool metadata exposed to code running inside a cell.
 pub(crate) struct ToolDefinition {
+    pub(crate) pauses_cell_deadline: bool,
     pub(crate) name: String,
     pub(crate) tool_name: ToolName,
     pub(crate) description: String,

@@ -195,7 +195,7 @@ async fn selected_child_interruption_settles_all_slot() {
 
 #[tokio::test]
 async fn omitted_yield_is_indefinite_and_caller_cancellation_preserves_mail() {
-    let (_manager, session, turn, children) = fixture().await;
+    let (_manager, session, turn, children, events) = fixture_with_events().await;
     let handler = WaitAgentHandlerV2::default();
     let call = invocation(
         session.clone(),
@@ -218,6 +218,10 @@ async fn omitted_yield_is_indefinite_and_caller_cancellation_preserves_mail() {
         .unwrap()
         .code_mode_result(&function_payload(json!({})));
     assert_eq!(output["message"], "Wait interrupted by new input.");
+    assert_wait_item_settled(
+        &events,
+        codex_protocol::items::CollabAgentToolCallStatus::Interrupted,
+    );
     assert!(
         pending_wait_activity(&session, &turn.sub_id)
             .await
@@ -463,4 +467,82 @@ async fn wait_notifications_identify_selected_agents() {
         }
     }
     assert_eq!(observations, 2);
+}
+
+#[tokio::test]
+async fn wait_finishes_its_item_on_progress_failure() {
+    let (manager, session, turn, _, events) = fixture_with_events().await;
+    let resources = progress_resources(Arc::new(|_, _| {
+        Box::pin(async {
+            Err(codex_protocol::error::CodexErr::InvalidRequest(
+                "fixture failed to freeze progress".into(),
+            ))
+        })
+    }));
+    assert!(
+        manager
+            .get_thread(session.thread_id)
+            .await
+            .unwrap()
+            .install_agent_host_resources(resources)
+    );
+    let handler = WaitAgentHandlerV2::default();
+    tokio::time::pause();
+    let error = tokio::time::timeout(
+        Duration::from_secs(301),
+        handler.handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({"wait_mode":"all","yield_time_ms":300000})),
+        )),
+    )
+    .await
+    .expect("progress failure should wake the wait")
+    .err()
+    .expect("expect a model-visible progress failure");
+    tokio::time::resume();
+    assert!(
+        error
+            .to_string()
+            .contains("fixture failed to freeze progress")
+    );
+    assert_wait_item_settled(
+        &events,
+        codex_protocol::items::CollabAgentToolCallStatus::Failed,
+    );
+}
+
+fn assert_wait_item_settled(
+    events: &async_channel::Receiver<codex_protocol::protocol::Event>,
+    expected: codex_protocol::items::CollabAgentToolCallStatus,
+) {
+    use codex_protocol::items::CollabAgentTool;
+    use codex_protocol::items::CollabAgentToolCallStatus;
+    use codex_protocol::items::TurnItem;
+
+    let lifecycle = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| {
+            let (starting, item) = match event.msg {
+                EventMsg::ItemStarted(event) => (true, event.item),
+                EventMsg::ItemCompleted(event) => (false, event.item),
+                _ => return None,
+            };
+            match item {
+                TurnItem::CollabAgentToolCall(item) if item.tool == CollabAgentTool::Wait => {
+                    Some((starting, item.id, item.status))
+                }
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let [
+        (true, start, CollabAgentToolCallStatus::InProgress),
+        (false, end, actual),
+    ] = lifecycle.as_slice()
+    else {
+        panic!("expected one native wait start and one terminal item, got {lifecycle:?}");
+    };
+    assert_eq!(start, end);
+    assert_eq!(actual, &expected);
 }

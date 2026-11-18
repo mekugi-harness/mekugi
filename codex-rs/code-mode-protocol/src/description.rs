@@ -143,6 +143,8 @@ pub enum CodeModeToolKind {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ToolDefinition {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pauses_cell_deadline: bool,
     pub name: String,
     pub tool_name: ToolName,
     pub description: String,
@@ -447,6 +449,7 @@ pub fn augment_tool_definition(mut definition: ToolDefinition) -> ToolDefinition
 
 pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata {
     EnabledToolMetadata {
+        pauses_cell_deadline: definition.pauses_cell_deadline,
         tool_name: definition.tool_name.clone(),
         global_name: normalize_code_mode_identifier(&definition.name),
         description: definition.description.clone(),
@@ -456,6 +459,7 @@ pub fn enabled_tool_metadata(definition: &ToolDefinition) -> EnabledToolMetadata
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct EnabledToolMetadata {
+    pub pauses_cell_deadline: bool,
     pub tool_name: ToolName,
     pub global_name: String,
     pub description: String,
@@ -666,6 +670,7 @@ mod tests {
                 "required": ["city"],
                 "additionalProperties": false
             })),
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
@@ -707,6 +712,7 @@ mod tests {
                 },
                 "required": ["weather"]
             })),
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
@@ -744,6 +750,7 @@ mod tests {
                 "properties": {},
                 "additionalProperties": false
             })),
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: Some(mcp_call_tool_result_schema(json!({
                 "type": "object",
@@ -784,6 +791,7 @@ mod tests {
                 description: "bar".to_string(),
                 kind: CodeModeToolKind::Function,
                 input_schema: None,
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: None,
                 output_schema: None,
             }],
@@ -843,6 +851,7 @@ bar"
                     "required": ["city"],
                     "additionalProperties": false
                 })),
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: None,
                 output_schema: Some(mcp_call_tool_result_schema(json!({
                     "type": "object",
@@ -861,6 +870,7 @@ bar"
                     "properties": {},
                     "additionalProperties": false
                 })),
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: None,
                 output_schema: Some(mcp_call_tool_result_schema(json!({
                     "type": "object",
@@ -959,6 +969,7 @@ bar"
                     "properties": {},
                     "additionalProperties": false
                 })),
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: None,
                 output_schema: Some(mcp_call_tool_result_schema(json!({
                     "type": "object",
@@ -992,6 +1003,7 @@ bar"
                 "properties": {},
                 "additionalProperties": false
             })),
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
@@ -1027,6 +1039,7 @@ bar"
                 "properties": {},
                 "additionalProperties": false
             })),
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: Some(json!({
                 "type": "object",
@@ -1061,6 +1074,7 @@ bar"
                     description: "First tool".to_string(),
                     kind: first_tool.kind,
                     input_schema: first_tool.input_schema,
+                    pauses_cell_deadline: false,
                     input_schema_max_bytes: None,
                     output_schema: first_tool.output_schema,
                 },
@@ -1070,6 +1084,7 @@ bar"
                     description: "Second tool".to_string(),
                     kind: second_tool.kind,
                     input_schema: second_tool.input_schema,
+                    pauses_cell_deadline: false,
                     input_schema_max_bytes: None,
                     output_schema: second_tool.output_schema,
                 },
@@ -1105,6 +1120,7 @@ bar"
                 "properties": {},
                 "additionalProperties": false
             })),
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: Some(mcp_call_tool_result_schema(json!({
                 "type": "object",
@@ -1138,6 +1154,7 @@ bar"
             description: "Deferred tool".to_string(),
             kind: CodeModeToolKind::Function,
             input_schema: None,
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: None,
         }];
@@ -1147,6 +1164,7 @@ bar"
             description: super::TOOL_SEARCH_GUIDANCE.to_string(),
             kind: CodeModeToolKind::Function,
             input_schema: None,
+            pauses_cell_deadline: false,
             input_schema_max_bytes: None,
             output_schema: None,
         };

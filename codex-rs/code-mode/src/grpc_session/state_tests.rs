@@ -23,6 +23,7 @@ fn request(execution_id: &str) -> grpc::ExecuteRequest {
             }),
             description: String::new(),
             kind: grpc::ToolKind::Function as i32,
+            pauses_cell_deadline: false,
             input_schema_json: None,
             output_schema_json: None,
         }],

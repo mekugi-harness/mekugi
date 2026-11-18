@@ -110,6 +110,7 @@ clearTimeout(earlyTimer); setTimeout(() => {}, 60000);
         globals::install_globals(
             scope,
             &[EnabledToolMetadata {
+                pauses_cell_deadline: false,
                 global_name: "echo".to_string(),
                 tool_name: tool_name.clone(),
                 description: String::new(),
@@ -124,6 +125,7 @@ clearTimeout(earlyTimer); setTimeout(() => {}, 60000);
             stored_values: HashMap::new(),
             stored_value_writes: HashMap::new(),
             enabled_tools: vec![ToolCallbackMetadata {
+                pauses_cell_deadline: false,
                 tool_name,
                 kind: CodeModeToolKind::Function,
             }],

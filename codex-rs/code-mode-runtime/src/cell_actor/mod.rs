@@ -3,6 +3,7 @@ mod conversions;
 mod types;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -134,6 +135,7 @@ async fn run_cell<H: CellHost>(
     let mut termination = false;
     let mut runtime_closed = false;
     let mut runtime_paused = false;
+    let mut deadline_pausing_tasks = HashSet::new();
     let mut runtime_failure_reported = false;
     let mut yield_timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
     let mut notification_tasks = JoinSet::new();
@@ -212,7 +214,9 @@ async fn run_cell<H: CellHost>(
                 }
                 yield_signal = Some(observation.yield_signal.clone());
                 observer = Some(Observer { observation, response_tx });
-                yield_timer = observer.as_ref().and_then(observer_timer);
+                if deadline_pausing_tasks.is_empty() {
+                    yield_timer = observer.as_ref().and_then(observer_timer);
+                }
                 if runtime_paused && matches!(mode, ObserveMode::YieldAfter(_)) {
                     pending_frontier_ready = false;
                     pending_tool_call_ids.clear();
@@ -246,6 +250,25 @@ async fn run_cell<H: CellHost>(
                 yield_signal = None;
                 if let Some(observer) = observer.take() {
                     send_yield(&mut output, observer.response_tx);
+                }
+            }
+            task_result = tool_tasks.join_next_with_id(), if !tool_tasks.is_empty() => {
+                if let Some(result) = task_result {
+                    let id = match &result {
+                        Ok((id, ())) => *id,
+                        Err(error) => error.id(),
+                    };
+                    if deadline_pausing_tasks.remove(&id)
+                        && deadline_pausing_tasks.is_empty()
+                        && !termination
+                    {
+                        yield_timer = observer.as_ref().and_then(observer_timer);
+                    }
+                    report_task_result(
+                        Some(result.map(|(_, ())| ())),
+                        "tool",
+                        task_failure_handler.as_ref(),
+                    );
                 }
             }
             maybe_event = async {
@@ -365,9 +388,11 @@ async fn run_cell<H: CellHost>(
                             task_failure_handler.clone(),
                         );
                     }
-                    RuntimeEvent::ToolCall { id, name, kind, input } => {
+                    RuntimeEvent::ToolCall { id, name, kind, input, pauses_cell_deadline } => {
                         pending_tool_call_ids.push(id.clone());
-                        spawn_tool(
+                        // The actor admits the callback and disarms the timer in one
+                        // step: no timed observer can leave while that task is active.
+                        let task = spawn_tool(
                             &mut tool_tasks,
                             Arc::clone(&host),
                             CellToolCall {
@@ -383,6 +408,10 @@ async fn run_cell<H: CellHost>(
                             callback_cancellation_token.child_token(),
                             task_failure_handler.clone(),
                         );
+                        if pauses_cell_deadline {
+                            deadline_pausing_tasks.insert(task.id());
+                            yield_timer = None;
+                        }
                     }
                     RuntimeEvent::Result { stored_value_writes, error_text } => {
                         runtime_closed = true;
@@ -448,9 +477,6 @@ async fn run_cell<H: CellHost>(
                     "notification",
                     task_failure_handler.as_ref(),
                 );
-            }
-            task_result = tool_tasks.join_next(), if !tool_tasks.is_empty() => {
-                report_task_result(task_result, "tool", task_failure_handler.as_ref());
             }
         }
     }

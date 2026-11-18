@@ -164,6 +164,8 @@ impl From<WireToolKind> for CodeModeToolKind {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WireToolDefinition {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pauses_cell_deadline: bool,
     pub name: String,
     pub tool_name: WireToolName,
     pub description: String,
@@ -178,6 +180,7 @@ impl From<ToolDefinition> for WireToolDefinition {
             name: value.name,
             tool_name: value.tool_name.into(),
             description: value.description,
+            pauses_cell_deadline: value.pauses_cell_deadline,
             kind: value.kind.into(),
             input_schema: value.input_schema,
             output_schema: value.output_schema,
@@ -191,6 +194,7 @@ impl From<WireToolDefinition> for ToolDefinition {
             name: value.name,
             tool_name: value.tool_name.into(),
             description: value.description,
+            pauses_cell_deadline: value.pauses_cell_deadline,
             kind: value.kind.into(),
             input_schema: value.input_schema,
             input_schema_max_bytes: None,

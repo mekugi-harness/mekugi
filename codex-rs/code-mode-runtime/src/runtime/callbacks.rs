@@ -37,7 +37,7 @@ pub(super) fn tool_callback(
         }
     };
 
-    let (tool_name, tool_kind) = {
+    let (tool_name, tool_kind, pauses_cell_deadline) = {
         let Some(state) = scope.get_slot::<RuntimeState>() else {
             throw_type_error(scope, "runtime state unavailable");
             return;
@@ -50,7 +50,7 @@ pub(super) fn tool_callback(
             throw_type_error(scope, "tool callback data is out of range");
             return;
         };
-        (tool.tool_name.clone(), tool.kind)
+        (tool.tool_name.clone(), tool.kind, tool.pauses_cell_deadline)
     };
 
     let Some(resolver) = v8::PromiseResolver::new(scope) else {
@@ -73,6 +73,7 @@ pub(super) fn tool_callback(
         name: tool_name,
         kind: tool_kind,
         input,
+        pauses_cell_deadline,
     });
     retval.set(promise.into());
 }

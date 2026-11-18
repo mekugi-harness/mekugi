@@ -64,6 +64,7 @@ pub(super) fn tool(name: &str) -> proto::ToolDefinition {
         }),
         description: String::new(),
         kind: proto::ToolKind::Function as i32,
+        pauses_cell_deadline: false,
         input_schema_json: None,
         output_schema_json: None,
     }

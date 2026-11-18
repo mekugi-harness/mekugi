@@ -43,6 +43,7 @@ pub fn augment_tool_spec_for_code_mode(
                             description: tool.description.clone(),
                             kind: CodeModeToolKind::Function,
                             input_schema: serde_json::to_value(&tool.parameters).ok(),
+                            pauses_cell_deadline: false,
                             input_schema_max_bytes: Some(effective_input_schema_max_bytes(
                                 tool.parameters.mcp_input_schema_max_bytes,
                                 code_mode_input_schema_max_bytes,
@@ -64,6 +65,7 @@ pub fn augment_tool_spec_for_code_mode(
                             description: tool.description.clone(),
                             kind: CodeModeToolKind::Freeform,
                             input_schema: None,
+                            pauses_cell_deadline: false,
                             input_schema_max_bytes: None,
                             output_schema: None,
                         };
@@ -171,6 +173,7 @@ fn code_mode_tool_definitions_for_spec(
                 description: tool.description.clone(),
                 kind: CodeModeToolKind::Function,
                 input_schema: serde_json::to_value(&tool.parameters).ok(),
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: Some(effective_input_schema_max_bytes(
                     tool.parameters.mcp_input_schema_max_bytes,
                     code_mode_input_schema_max_bytes,
@@ -186,6 +189,7 @@ fn code_mode_tool_definitions_for_spec(
                 description: tool.description.clone(),
                 kind: CodeModeToolKind::Freeform,
                 input_schema: None,
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: None,
                 output_schema: None,
             }]
@@ -202,6 +206,7 @@ fn code_mode_tool_definitions_for_spec(
                         description: tool.description.clone(),
                         kind: CodeModeToolKind::Function,
                         input_schema: serde_json::to_value(&tool.parameters).ok(),
+                        pauses_cell_deadline: false,
                         input_schema_max_bytes: Some(effective_input_schema_max_bytes(
                             tool.parameters.mcp_input_schema_max_bytes,
                             code_mode_input_schema_max_bytes,
@@ -217,6 +222,7 @@ fn code_mode_tool_definitions_for_spec(
                         description: tool.description.clone(),
                         kind: CodeModeToolKind::Freeform,
                         input_schema: None,
+                        pauses_cell_deadline: false,
                         input_schema_max_bytes: None,
                         output_schema: None,
                     }
@@ -231,6 +237,7 @@ fn code_mode_tool_definitions_for_spec(
                 description: codex_code_mode::TOOL_SEARCH_GUIDANCE.to_string(),
                 kind: CodeModeToolKind::Function,
                 input_schema: serde_json::to_value(parameters).ok(),
+                pauses_cell_deadline: false,
                 input_schema_max_bytes: Some(effective_input_schema_max_bytes(
                     parameters.mcp_input_schema_max_bytes,
                     code_mode_input_schema_max_bytes,

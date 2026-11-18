@@ -19,6 +19,7 @@ fn plain_tools_join_an_existing_functions_group_only_with_a_prefix() {
         description: "Tool guidance.".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     });
@@ -97,6 +98,7 @@ fn flat_tool_descriptions_use_trimmed_namespace_prefixes() {
         description: "Inspect.".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     };
@@ -133,6 +135,7 @@ fn matching_prefixes_cover_each_namespace_once() {
         description: "Search.".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     });

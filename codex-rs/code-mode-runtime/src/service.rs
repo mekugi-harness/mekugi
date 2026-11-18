@@ -386,6 +386,7 @@ fn runtime_request(
             .enabled_tools
             .into_iter()
             .map(|definition| runtime::ToolDefinition {
+                pauses_cell_deadline: definition.pauses_cell_deadline,
                 name: definition.name,
                 tool_name: runtime::ToolName {
                     name: definition.tool_name.name,

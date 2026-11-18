@@ -24,6 +24,7 @@ pub(super) fn runtime_request(request: CellRequest) -> ExecuteRequest {
                     CellToolKind::Freeform => CodeModeToolKind::Freeform,
                 },
                 input_schema: None,
+                pauses_cell_deadline: definition.pauses_cell_deadline,
                 input_schema_max_bytes: None,
                 output_schema: None,
             })

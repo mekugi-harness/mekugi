@@ -276,6 +276,7 @@ message ToolDefinition {
   ToolKind kind = 4;
   optional bytes input_schema_json = 5;
   optional bytes output_schema_json = 6;
+  bool pauses_cell_deadline = 7;
 }
 
 message ToolName {

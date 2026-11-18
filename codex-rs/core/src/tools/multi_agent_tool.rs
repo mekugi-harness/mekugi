@@ -118,6 +118,10 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2ToolOverrides {
 }
 
 impl CoreToolRuntime for MultiAgentV2ToolOverrides {
+    fn pauses_cell_deadline(&self) -> bool {
+        self.handler.pauses_cell_deadline()
+    }
+
     fn wait_until_ready<'a>(&'a self, session: &'a Arc<Session>) -> Option<BoxFuture<'a, ()>> {
         self.handler.wait_until_ready(session)
     }

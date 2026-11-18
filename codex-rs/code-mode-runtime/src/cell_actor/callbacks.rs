@@ -2,6 +2,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use futures::FutureExt;
+use tokio::task::AbortHandle;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -48,7 +49,7 @@ pub(super) fn spawn_tool<H: CellHost>(
     runtime_tx: std::sync::mpsc::Sender<RuntimeCommand>,
     cancellation_token: CancellationToken,
     task_failure_handler: Option<TaskFailureHandler>,
-) {
+) -> AbortHandle {
     tasks.spawn(async move {
         let id = invocation.id.clone();
         let callback =
@@ -73,7 +74,7 @@ pub(super) fn spawn_tool<H: CellHost>(
         if let Some(failure_reason) = failure_reason {
             report_task_failure(task_failure_handler.as_ref(), failure_reason);
         }
-    });
+    })
 }
 
 pub(super) async fn finish_callbacks(

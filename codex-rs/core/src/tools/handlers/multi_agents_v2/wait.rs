@@ -145,22 +145,20 @@ impl Handler {
                 }
             })
             .collect();
+        let mut item = CollabAgentToolCallItem {
+            id: call_id.clone(),
+            tool: CollabAgentTool::Wait,
+            status: CollabAgentToolCallStatus::InProgress,
+            sender_thread_id: session.thread_id,
+            receiver_thread_ids,
+            receiver_agents,
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        };
         session
-            .emit_turn_item_started(
-                &turn,
-                &TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id.clone(),
-                    tool: CollabAgentTool::Wait,
-                    status: CollabAgentToolCallStatus::InProgress,
-                    sender_thread_id: session.thread_id,
-                    receiver_thread_ids: receiver_thread_ids.clone(),
-                    receiver_agents: receiver_agents.clone(),
-                    prompt: None,
-                    model: None,
-                    reasoning_effort: None,
-                    agents_states: Default::default(),
-                }),
-            )
+            .emit_turn_item_started(&turn, &TurnItem::CollabAgentToolCall(item.clone()))
             .await;
 
         session.services.local_agent_runtime.record_feature_use(
@@ -172,7 +170,7 @@ impl Handler {
             },
         );
         let wait_started = Instant::now();
-        let result = {
+        let (result, status) = {
             // The losing collection future is dropped before publishing the native
             // outcome. Its request token cancels callbacks and private BTW tasks.
             let progress = collect_progress(
@@ -187,28 +185,49 @@ impl Handler {
                 let pending = pending_wait_activity(&session, &turn.sub_id).await;
                 completed.extend(pending.results.intersection(&selected).copied());
                 if cancellation_token.is_cancelled() || pending.steered {
-                    break WaitAgentResult::new("Wait interrupted by new input.", &completed);
+                    break (
+                        Ok(WaitAgentResult::new(
+                            "Wait interrupted by new input.",
+                            &completed,
+                        )),
+                        CollabAgentToolCallStatus::Interrupted,
+                    );
                 }
                 if pending.message || outcomes_ready(args.wait_mode, &selected, &completed) {
-                    break WaitAgentResult::new("Wait completed.", &completed);
+                    break (
+                        Ok(WaitAgentResult::new("Wait completed.", &completed)),
+                        CollabAgentToolCallStatus::Completed,
+                    );
                 }
                 tokio::select! {
                     biased;
                     _ = cancellation_token.cancelled() => {
-                        break WaitAgentResult::new("Wait interrupted by new input.", &completed);
+                        break (
+                            Ok(WaitAgentResult::new("Wait interrupted by new input.", &completed)),
+                            CollabAgentToolCallStatus::Interrupted,
+                        );
                     }
                     activity = activity_rx.changed() => {
                         if activity.is_err() {
-                            break WaitAgentResult::new("Wait input source closed.", &completed);
+                            break (
+                                Ok(WaitAgentResult::new("Wait input source closed.", &completed)),
+                                CollabAgentToolCallStatus::Failed,
+                            );
                         }
                         let activity = *activity_rx.borrow_and_update();
                         if activity == InputQueueActivity::Steer {
-                            break WaitAgentResult::new("Wait interrupted by new input.", &completed);
+                            break (
+                            Ok(WaitAgentResult::new("Wait interrupted by new input.", &completed)),
+                            CollabAgentToolCallStatus::Interrupted,
+                        );
                         }
                         // An untyped native notification still has ordinary wake authority.
                         let pending = pending_wait_activity(&session, &turn.sub_id).await;
                         if pending.message || pending.results.is_empty() {
-                            break WaitAgentResult::new("Wait completed.", &completed);
+                            break (
+                            Ok(WaitAgentResult::new("Wait completed.", &completed)),
+                            CollabAgentToolCallStatus::Completed,
+                        );
                         }
                     }
                     Some((id, status)) = statuses.next(), if !statuses.is_empty() => {
@@ -217,13 +236,20 @@ impl Handler {
                         }
                     }
                     output = &mut progress => {
-                        let output = output.map_err(|error| FunctionCallError::RespondToModel(
-                            format!("Progress collection unavailable: {error}"),
-                        ))?;
-                        let mut result = WaitAgentResult::new("Changed-agent progress.", &completed);
-                        result.progress = output.text.clone();
-                        result.progress_output = Some(output);
-                        break result;
+                        break match output {
+                            Ok(output) => {
+                                let mut result = WaitAgentResult::new("Changed-agent progress.", &completed);
+                                result.progress = output.text.clone();
+                                result.progress_output = Some(output);
+                                (Ok(result), CollabAgentToolCallStatus::Completed)
+                            }
+                            Err(error) => (
+                                Err(FunctionCallError::RespondToModel(
+                                    format!("Progress collection unavailable: {error}"),
+                                )),
+                                CollabAgentToolCallStatus::Failed,
+                            ),
+                        };
                     }
                 }
             }
@@ -233,17 +259,22 @@ impl Handler {
             wait_started.elapsed(),
             &[(
                 "outcome",
-                if result.message == "Wait completed." {
-                    "mailbox"
-                } else if result.progress_output.is_some() {
-                    "progress"
-                } else {
-                    "steered"
+                match &status {
+                    CollabAgentToolCallStatus::Failed => "failed",
+                    CollabAgentToolCallStatus::Interrupted => "steered",
+                    _ if result
+                        .as_ref()
+                        .is_ok_and(|result| result.progress_output.is_some()) =>
+                    {
+                        "progress"
+                    }
+                    _ => "mailbox",
                 },
             )],
         );
 
-        if let Some(output) = &result.progress_output
+        if let Ok(result) = &result
+            && let Some(output) = &result.progress_output
             && !output.delivered_intervals.is_empty()
             && let crate::tools::context::ToolCallSource::CodeMode { cell_id, .. } = &source
         {
@@ -263,29 +294,23 @@ impl Handler {
                     },
                 );
         }
+        item.status = status;
         session
-            .emit_turn_item_completed(
-                &turn,
-                TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
-                    id: call_id,
-                    tool: CollabAgentTool::Wait,
-                    status: CollabAgentToolCallStatus::Completed,
-                    sender_thread_id: session.thread_id,
-                    receiver_thread_ids,
-                    receiver_agents,
-                    prompt: None,
-                    model: None,
-                    reasoning_effort: None,
-                    agents_states: HashMap::new(),
-                }),
-            )
+            .emit_turn_item_completed(&turn, TurnItem::CollabAgentToolCall(item))
             .await;
-
-        Ok(boxed_tool_output(result))
+        result.map(boxed_tool_output)
     }
 }
 
 impl CoreToolRuntime for Handler {
+    fn finishes_on_cancellation(&self) -> bool {
+        true
+    }
+
+    fn pauses_cell_deadline(&self) -> bool {
+        true
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

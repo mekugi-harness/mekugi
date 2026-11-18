@@ -103,6 +103,7 @@ fn exec_override_preserves_runtime_sections() {
         description: "First tool".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     }];
@@ -112,6 +113,7 @@ fn exec_override_preserves_runtime_sections() {
         description: "Deferred tool".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: Some(json!({
             "type": "object",
@@ -186,6 +188,7 @@ fn ranked_search_guidance_honors_overrides() {
         description: "Deferred tool".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     }];
@@ -234,6 +237,7 @@ fn mcp_types_stay_stable_when_a_deferred_tool_changes_its_output_schema() {
         description: "Deferred tool".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     };
@@ -279,6 +283,7 @@ fn nested_guidance_survives_catalog_changes_and_respects_overrides() {
         description: "Echo a value.".to_string(),
         kind: CodeModeToolKind::Function,
         input_schema: None,
+        pauses_cell_deadline: false,
         input_schema_max_bytes: None,
         output_schema: None,
     }];

@@ -586,6 +586,7 @@ async fn dropped_pending_observer_preserves_the_frontier_for_the_next_observatio
             },
             kind: codex_code_mode_protocol::CodeModeToolKind::Function,
             input: Some(serde_json::json!({})),
+            pauses_cell_deadline: false,
         })
         .unwrap();
     harness
