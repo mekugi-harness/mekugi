@@ -52,6 +52,7 @@ pub(super) struct GrpcSession {
     pub(super) closed: CancellationToken,
     pub(super) state: Mutex<SessionState>,
     events: EventSender,
+    observation_liveness: bool,
     cells_changed: Notify,
     delegate_permits: Arc<Semaphore>,
     client_delegate_permits: Arc<Semaphore>,
@@ -113,6 +114,7 @@ impl GrpcHostState {
         self: &Arc<Self>,
         options: CodeModeSessionOptions,
         max_pending_delegate_calls: usize,
+        observation_liveness: bool,
     ) -> Result<GrpcStream<proto::SessionEvent>, Status> {
         let id = Uuid::new_v4();
         let (events, receiver) = mpsc::channel(OUTGOING_CHANNEL_CAPACITY);
@@ -125,6 +127,7 @@ impl GrpcHostState {
             Arc::clone(&self.delegate_permits),
             options,
             max_pending_delegate_calls,
+            observation_liveness,
         );
         events
             .try_send(Ok(proto::SessionEvent {
@@ -226,6 +229,7 @@ impl GrpcSession {
         delegate_permits: Arc<Semaphore>,
         options: CodeModeSessionOptions,
         max_pending_delegate_calls: usize,
+        observation_liveness: bool,
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let failure_session = weak.clone();
@@ -244,6 +248,7 @@ impl GrpcSession {
                 closed,
                 state: Mutex::new(SessionState::default()),
                 events,
+                observation_liveness,
                 cells_changed: Notify::new(),
                 delegate_permits,
                 client_delegate_permits: Arc::new(Semaphore::new(max_pending_delegate_calls)),
@@ -433,6 +438,29 @@ impl GrpcSession {
             .try_acquire_owned()
             .map_err(|_| "code-mode host has too many pending delegate calls".to_string())?;
         Ok([client, host])
+    }
+
+    pub(super) fn observation_liveness(
+        &self,
+        id: &str,
+    ) -> Option<codex_code_mode_runtime::ObservationLiveness> {
+        if !self.observation_liveness {
+            return None;
+        }
+        let id = id.to_string();
+        let events = self.events.clone();
+        Some(Box::new(move |paused| {
+            let event =
+                proto::session_event::Event::ObservationLiveness(proto::ObservationLiveness {
+                    observation_id: id.clone(),
+                    paused,
+                });
+            if paused {
+                events.try_send_liveness(event);
+            } else {
+                let _ = events.send_now(event, /*cell_permit*/ None);
+            }
+        }))
     }
 
     pub(super) async fn send_event(

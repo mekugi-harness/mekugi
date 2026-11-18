@@ -176,6 +176,7 @@ impl GrpcCodeModeSessionProvider {
             let mut retries = 0;
             loop {
                 let mut request = tonic::Request::new(grpc::OpenSessionRequest {
+                    observation_liveness: true,
                     max_pending_delegate_calls: Some(
                         codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS as u32,
                     ),
@@ -272,6 +273,7 @@ impl GrpcCodeModeSessionProvider {
             runtime: tokio::runtime::Handle::current(),
             state: Mutex::new(SessionState::with_client(client)),
             wait_slots: Mutex::new(HashMap::new()),
+            observations: deadline::Observations::default(),
             shutdown_requested: AtomicBool::new(false),
             shutdown_result: Mutex::new(None),
             stopped: CancellationToken::new(),
@@ -415,6 +417,7 @@ pub(super) struct SessionInner {
     runtime: tokio::runtime::Handle,
     state: Mutex<SessionState>,
     wait_slots: Mutex<HashMap<CellId, Weak<WaitSlot>>>,
+    observations: deadline::Observations,
     shutdown_requested: AtomicBool,
     shutdown_result: Mutex<Option<ShutdownResultReceiver>>,
     pub(super) stopped: CancellationToken,

@@ -127,15 +127,23 @@ async fn code_mode_spawn_delivers_plaintext() -> Result<()> {
     Ok(())
 }
 
-#[test_case(false; "initial_execute")]
-#[test_case(true; "subsequent_wait")]
+#[test_case(false, false; "initial_execute")]
+#[test_case(true, false; "subsequent_wait")]
+#[test_case(true, true; "interruption")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_wait_holds_timed_observer_until_agent_message(reobserve: bool) -> Result<()> {
+async fn native_wait_survives_grpc_outcome_deadline(
+    reobserve: bool,
+    interrupt: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let yield_first = if reobserve { "yield_control();" } else { "" };
+    let prepare = if reobserve {
+        "yield_control();"
+    } else {
+        r#"await tools.team__spawn_agent({ task_name: "worker", message: "Complete after release.", fork_turns: "none" });"#
+    };
     let source = format!(
-        "// @exec: {{\"yield_time_ms\": 500}}\n{yield_first} text(await tools.team__wait_agent({{}}));"
+        "// @exec: {{\"yield_time_ms\": 500}}\nconst marker = 'original cell'; {prepare} text(await tools.team__wait_agent({{}})); text(marker);"
     );
     let chunk = |events| {
         vec![StreamingSseChunk {
@@ -158,6 +166,22 @@ async fn native_wait_holds_timed_observer_until_agent_message(reobserve: bool) -
             ),
             ev_completed("observe"),
         ]));
+    }
+    let (release_child, child_gate) = tokio::sync::oneshot::channel();
+    if !reobserve {
+        streams.push(vec![
+            StreamingSseChunk {
+                gate: None,
+                body: sse(vec![ev_response_created("child")]),
+            },
+            StreamingSseChunk {
+                gate: Some(child_gate),
+                body: sse(vec![
+                    ev_assistant_message("child-final", "Child released after deadline."),
+                    ev_completed("child"),
+                ]),
+            },
+        ]);
     }
     let pending_requests = streams.len();
     streams.push(chunk(vec![
@@ -191,27 +215,46 @@ async fn native_wait_holds_timed_observer_until_agent_message(reobserve: bool) -
     wait_for_event_with_timeout(&test.codex, |event| matches!(event, EventMsg::ItemStarted(event)
         if matches!(&event.item, TurnItem::CollabAgentToolCall(call) if call.tool == CollabAgentTool::Wait)), Duration::from_secs(15)).await;
     server.wait_for_request_count(pending_requests).await;
+    if interrupt {
+        test.codex.submit(Op::Interrupt).await?;
+        wait_for_event_with_timeout(
+            &test.codex,
+            |event| matches!(event, EventMsg::TurnAborted(_)),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(server.requests().await.len(), pending_requests);
+        server.shutdown().await;
+        return Ok(());
+    }
     assert!(
         tokio::time::timeout(
-            Duration::from_secs(1),
+            // 500 ms requested yield + 1s grace + 60s transport budget.
+            Duration::from_secs(63),
             server.wait_for_request_count(pending_requests + 1)
         )
         .await
         .is_err(),
-        "ordinary deadline started another model request"
+        "observer or gRPC deadline started another model request"
     );
-    test.codex
-        .submit(Op::InterAgentCommunication {
-            communication: InterAgentCommunication::new(
-                AgentPath::root().join("worker").expect("valid worker path"),
-                AgentPath::root(),
-                Vec::new(),
-                "Worker is ready.".into(),
-                false,
-            ),
-            start_options: Default::default(),
-        })
-        .await?;
+    if reobserve {
+        test.codex
+            .submit(Op::InterAgentCommunication {
+                communication: InterAgentCommunication::new(
+                    AgentPath::root().join("worker").expect("valid worker path"),
+                    AgentPath::root(),
+                    Vec::new(),
+                    "Worker is ready.".into(),
+                    false,
+                ),
+                start_options: Default::default(),
+            })
+            .await?;
+    } else {
+        release_child
+            .send(())
+            .expect("child inference is still pending");
+    }
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -236,7 +279,8 @@ async fn native_wait_holds_timed_observer_until_agent_message(reobserve: bool) -
         })
         .unwrap();
     assert!(
-        output["output"].to_string().contains("Wait completed."),
+        output["output"].to_string().contains("Wait completed.")
+            && output["output"].to_string().contains("original cell"),
         "{output}"
     );
     server.shutdown().await;

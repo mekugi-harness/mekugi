@@ -34,6 +34,9 @@ use crate::session_runtime::SessionRuntime;
 const YIELD_GRACE_PERIOD: Duration = Duration::from_secs(1);
 const MIN_YIELD_TIME_FOR_GRACE: Duration = Duration::from_secs(10);
 
+/// Reports a timed observation's pause, its continued liveness, or its resumption.
+pub type ObservationLiveness = Box<dyn Fn(bool) + Send + Sync>;
+
 pub struct InProcessCodeModeSession {
     runtime: SessionRuntime,
     options: CodeModeSessionOptions,
@@ -78,6 +81,17 @@ impl InProcessCodeModeSession {
         delegate: Arc<dyn CodeModeSessionDelegate>,
         preempt: Option<CancellationToken>,
     ) -> Result<StartedCell, String> {
+        self.execute_observed(request, delegate, preempt, None)
+            .await
+    }
+
+    pub async fn execute_observed(
+        &self,
+        request: ExecuteRequest,
+        delegate: Arc<dyn CodeModeSessionDelegate>,
+        preempt: Option<CancellationToken>,
+        liveness: Option<ObservationLiveness>,
+    ) -> Result<StartedCell, String> {
         let yield_time_ms = request.yield_time_ms.unwrap_or(DEFAULT_EXEC_YIELD_TIME_MS);
         let max_output_tokens = request.max_output_tokens;
         let output_truncation = self.options.output_truncation;
@@ -86,7 +100,8 @@ impl InProcessCodeModeSession {
             .execute(
                 runtime_request(request, self.options.output_truncation),
                 runtime::ObserveMode::YieldAfter(self.resolve_yield_timeout(yield_time_ms))
-                    .with_yield_signal(preempt.unwrap_or_default()),
+                    .with_yield_signal(preempt.unwrap_or_default())
+                    .with_liveness(liveness),
                 Arc::new(ProtocolDelegate { delegate }),
             )
             .await
@@ -145,13 +160,23 @@ impl InProcessCodeModeSession {
         request: WaitRequest,
         preempt: Option<CancellationToken>,
     ) -> Result<WaitOutcome, String> {
-        self.begin_wait(request, preempt).await.await
+        self.wait_observed(request, preempt, None).await
+    }
+
+    pub async fn wait_observed(
+        &self,
+        request: WaitRequest,
+        preempt: Option<CancellationToken>,
+        liveness: Option<ObservationLiveness>,
+    ) -> Result<WaitOutcome, String> {
+        self.begin_wait(request, preempt, liveness).await.await
     }
 
     async fn begin_wait(
         &self,
         request: WaitRequest,
         preempt: Option<CancellationToken>,
+        liveness: Option<ObservationLiveness>,
     ) -> CodeModeSessionResultFuture<'static, WaitOutcome> {
         let WaitRequest {
             cell_id,
@@ -165,7 +190,8 @@ impl InProcessCodeModeSession {
             .begin_observe(
                 &runtime_cell_id,
                 runtime::ObserveMode::YieldAfter(self.resolve_yield_timeout(yield_time_ms))
-                    .with_yield_signal(preempt.unwrap_or_default()),
+                    .with_yield_signal(preempt.unwrap_or_default())
+                    .with_liveness(liveness),
             )
             .await
         {

@@ -111,6 +111,16 @@ struct Observer {
     response_tx: oneshot::Sender<Result<CellEvent, CellError>>,
 }
 
+impl Observer {
+    fn report_liveness(&self, paused: bool) {
+        if let Some(report) = &self.observation.liveness
+            && !self.response_tx.is_closed()
+        {
+            report(paused);
+        }
+    }
+}
+
 async fn run_cell<H: CellHost>(
     host: Arc<H>,
     context: CellContext,
@@ -141,6 +151,10 @@ async fn run_cell<H: CellHost>(
     let mut notification_tasks = JoinSet::new();
     let mut tool_tasks = JoinSet::new();
     let mut command_rx = Some(command_rx);
+    // Only an active paused observation schedules pulses. Generating them on
+    // this actor, not on the transport task, also detects a wedged cell.
+    let mut pulse = None;
+    const PULSE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
     loop {
         let yield_deadline_elapsed = yield_timer
             .as_ref()
@@ -149,6 +163,7 @@ async fn run_cell<H: CellHost>(
             biased;
             _ = cancellation_token.cancelled(), if !termination => {
                 termination = true;
+                pulse = None;
                 yield_timer = None;
                 yield_signal = None;
                 drop(command_rx.take());
@@ -200,6 +215,7 @@ async fn run_cell<H: CellHost>(
                     .is_some_and(|observer| observer.response_tx.is_closed())
                 {
                     observer = None;
+                    pulse = None;
                     yield_timer = None;
                     yield_signal = None;
                 }
@@ -216,6 +232,9 @@ async fn run_cell<H: CellHost>(
                 observer = Some(Observer { observation, response_tx });
                 if deadline_pausing_tasks.is_empty() {
                     yield_timer = observer.as_ref().and_then(observer_timer);
+                } else if let Some(observer) = observer.as_ref().filter(|o| o.observation.liveness.is_some()) {
+                    observer.report_liveness(/*paused*/ true);
+                    pulse = Some(tokio::time::Instant::now() + PULSE_INTERVAL);
                 }
                 if runtime_paused && matches!(mode, ObserveMode::YieldAfter(_)) {
                     pending_frontier_ready = false;
@@ -248,6 +267,7 @@ async fn run_cell<H: CellHost>(
             } => {
                 yield_timer = None;
                 yield_signal = None;
+                pulse = None;
                 if let Some(observer) = observer.take() {
                     send_yield(&mut output, observer.response_tx);
                 }
@@ -263,12 +283,30 @@ async fn run_cell<H: CellHost>(
                         && !termination
                     {
                         yield_timer = observer.as_ref().and_then(observer_timer);
+                        if pulse.take().is_some()
+                            && let Some(observer) = &observer
+                        {
+                            observer.report_liveness(/*paused*/ false);
+                        }
                     }
                     report_task_result(
                         Some(result.map(|(_, ())| ())),
                         "tool",
                         task_failure_handler.as_ref(),
                     );
+                }
+            }
+            _ = async {
+                match pulse {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if let Some(observer) = observer.as_ref().filter(|o| !o.response_tx.is_closed()) {
+                    observer.report_liveness(/*paused*/ true);
+                    pulse = Some(tokio::time::Instant::now() + PULSE_INTERVAL);
+                } else {
+                    pulse = None;
                 }
             }
             maybe_event = async {
@@ -375,6 +413,7 @@ async fn run_cell<H: CellHost>(
                         }) {
                             yield_timer = None;
                             yield_signal = None;
+                            pulse = None;
                             send_yield(&mut output, observer.response_tx);
                         }
                     }
@@ -411,6 +450,12 @@ async fn run_cell<H: CellHost>(
                         if pauses_cell_deadline {
                             deadline_pausing_tasks.insert(task.id());
                             yield_timer = None;
+                            if !termination && pulse.is_none()
+                                && let Some(observer) = observer.as_ref().filter(|o| o.observation.liveness.is_some())
+                            {
+                                observer.report_liveness(/*paused*/ true);
+                                pulse = Some(tokio::time::Instant::now() + PULSE_INTERVAL);
+                            }
                         }
                     }
                     RuntimeEvent::Result { stored_value_writes, error_text } => {

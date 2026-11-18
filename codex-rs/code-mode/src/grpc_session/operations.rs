@@ -123,6 +123,7 @@ impl SessionInner {
         let runtime_timeout =
             Duration::from_millis(request.yield_time_ms.unwrap_or(DEFAULT_EXEC_YIELD_TIME_MS))
                 .saturating_add(Duration::from_secs(1));
+        let observation = self.observations.register(ownership.execution_id.clone());
         let opening = async {
             let mut client = self.client()?;
             let mut request = self.request(request);
@@ -208,24 +209,26 @@ impl SessionInner {
         if started_tx.send(Ok(started)).is_err() {
             return;
         }
-        self.drive_execution_outcome(cell_id, stream, response_tx, runtime_timeout)
+        self.drive_execution_outcome(cell_id, stream, response_tx, runtime_timeout, observation)
             .await;
     }
 
     async fn drive_execution_outcome(
-        self: Arc<Self>,
+        &self,
         cell_id: CellId,
         mut stream: tonic::Streaming<grpc::ExecuteEvent>,
         mut response_tx: oneshot::Sender<Result<RuntimeResponse, String>>,
         runtime_timeout: Duration,
+        observation: deadline::Observation<'_>,
     ) {
         let outcome = tokio::select! {
             biased;
             _ = response_tx.closed() => return,
-            outcome = deadline::session_request(
-                &self,
+            outcome = deadline::observation_request(
+                self,
                 "execution outcome",
                 runtime_timeout,
+                observation,
                 stream.message(),
             ) => match outcome {
                 Ok(Some(grpc::ExecuteEvent {
@@ -320,16 +323,18 @@ impl SessionInner {
             )?,
         };
         let mut client = self.client()?;
+        let observation = self.observations.register(wait_id.clone());
         let watcher = preempt.map(|signal| {
             self.watch_yield(
                 signal,
                 grpc::yield_observation_request::Observation::WaitId(wait_id),
             )
         });
-        let response = deadline::session_request(
+        let response = deadline::observation_request(
             self,
             "wait",
             runtime_timeout,
+            observation,
             client.wait(self.request(request)),
         )
         .await;

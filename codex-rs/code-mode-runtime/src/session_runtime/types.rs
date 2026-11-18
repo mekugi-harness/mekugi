@@ -38,6 +38,7 @@ pub(crate) enum ObserveMode {
 pub(crate) struct Observation {
     pub(crate) mode: ObserveMode,
     pub(crate) yield_signal: CancellationToken,
+    pub(crate) liveness: Option<crate::ObservationLiveness>,
 }
 
 impl ObserveMode {
@@ -45,7 +46,15 @@ impl ObserveMode {
         Observation {
             mode: self,
             yield_signal,
+            liveness: None,
         }
+    }
+}
+
+impl Observation {
+    pub(crate) fn with_liveness(mut self, liveness: Option<crate::ObservationLiveness>) -> Self {
+        self.liveness = liveness;
+        self
     }
 }
 

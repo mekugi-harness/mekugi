@@ -6,8 +6,10 @@ use codex_code_mode_protocol::DEFAULT_EXEC_YIELD_TIME_MS;
 use pretty_assertions::assert_eq;
 
 use super::MAX_ERROR_BYTES;
+use super::Observations;
 use super::RequestError;
 use super::enforce;
+use super::enforce_observation;
 use super::startup;
 
 #[tokio::test(start_paused = true)]
@@ -67,6 +69,69 @@ async fn default_execution_yield_and_grace_extend_the_outcome_deadline() {
         Err(RequestError::TimedOut(message))
             if message == "gRPC code-mode host timed out waiting for execution outcome response"
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_live_pulses_for_this_observation_extend_its_deadline() {
+    let observations = Observations::default();
+    let observation = observations.register("paused".to_string());
+    let _sibling = observations.register("sibling".to_string());
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel::<RequestError<()>>();
+    tokio::pin!(result_rx);
+    tokio::join!(
+        async {
+            let result = enforce_observation(
+                "wait",
+                Duration::from_secs(1),
+                observation,
+                pending::<Result<(), ()>>(),
+            )
+            .await;
+            let _ = result_tx.send(result.expect_err("silent host must time out"));
+        },
+        async {
+            for _ in 0..5 {
+                observations.report("paused", /*paused*/ true);
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                assert!(matches!(
+                    result_rx.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ));
+            }
+
+            observations.report("sibling", /*paused*/ true);
+            // At t=120, 60s have elapsed since the last pulse for "paused".
+            let error = tokio::time::timeout(Duration::from_secs(46), result_rx)
+                .await
+                .expect("unrelated pulse must not extend deadline")
+                .expect("request task");
+            assert!(matches!(error, RequestError::TimedOut(_)));
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resuming_restores_the_ordinary_observation_budget() {
+    let observations = Observations::default();
+    let observation = observations.register("resumed".to_string());
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let (result, ()) = tokio::join!(
+        enforce_observation(
+            "execution outcome",
+            Duration::from_secs(120),
+            observation,
+            rx
+        ),
+        async {
+            observations.report("resumed", /*paused*/ true);
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            observations.report("resumed", /*paused*/ false);
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            tx.send("completed")
+                .expect("resumed outcome is still awaited");
+        }
+    );
+    assert!(matches!(result, Ok("completed")));
 }
 
 #[tokio::test]

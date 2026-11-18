@@ -99,6 +99,17 @@ impl EventSender {
         self.enqueue(message, permit, /*cell_permit*/ None)
     }
 
+    // Dropping a pulse under backpressure is safe: pulses are periodic and
+    // must not displace terminal events. Losing all pulses still times out.
+    pub(super) fn try_send_liveness(&self, event: proto::session_event::Event) {
+        if !self.closed.is_cancelled()
+            && let Ok(permit) = Arc::clone(&self.permits).try_acquire_owned()
+            && let Ok(message) = validate_event(event)
+        {
+            let _ = self.enqueue(message, permit, /*cell_permit*/ None);
+        }
+    }
+
     pub(super) fn send_now(
         &self,
         event: proto::session_event::Event,

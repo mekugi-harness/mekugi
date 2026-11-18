@@ -85,6 +85,11 @@ impl SessionInner {
                 self.handle_notification(notification)
             }
             grpc::session_event::Event::NotificationCancelled(_) => Ok(()),
+            grpc::session_event::Event::ObservationLiveness(event) => {
+                self.observations
+                    .report(&event.observation_id, event.paused);
+                Ok(())
+            }
             grpc::session_event::Event::CellClosed(closed) => {
                 let cell = self
                     .state

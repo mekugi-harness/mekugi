@@ -52,6 +52,8 @@ mod image_cancellation_tests;
 mod large_tool_delegate;
 #[path = "grpc/network_policy_tests.rs"]
 mod network_policy_tests;
+#[path = "grpc/observation_liveness_tests.rs"]
+mod observation_liveness_tests;
 #[path = "grpc/process_metrics_tests.rs"]
 mod process_metrics_tests;
 #[path = "support/recording_delegate.rs"]
@@ -1172,6 +1174,7 @@ async fn dropping_a_grpc_lease_retires_its_server_session() -> Result<()> {
         .context("connect raw gRPC client")?;
     let mut lease = client
         .open_session(grpc::OpenSessionRequest {
+            observation_liveness: false,
             max_pending_delegate_calls: None,
             cell_execution_limits: None,
             output_truncation: None,

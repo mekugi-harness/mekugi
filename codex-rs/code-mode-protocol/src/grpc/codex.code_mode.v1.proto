@@ -64,6 +64,8 @@ message OpenSessionRequest {
   // Absent preserves the legacy 1,024 callback budget. Hosts may impose a lower
   // shared limit, and older hosts ignore this field and retain their own limit.
   optional uint32 max_pending_delegate_calls = 3;
+  // Only clients that understand ObservationLiveness opt in to these lease events.
+  bool observation_liveness = 4;
 }
 
 enum OutputTruncation {
@@ -84,7 +86,16 @@ message SessionEvent {
     Notification notification = 3;
     NotificationCancelled notification_cancelled = 4;
     CellClosed cell_closed = 5;
+    ObservationLiveness observation_liveness = 6;
   }
+}
+
+// Emitted by the observed cell while a native callback pauses its yield timer.
+message ObservationLiveness {
+  // The execution_id (Execute) or wait_id (Wait) of this observation.
+  string observation_id = 1;
+  // True for the first pause and periodic pulses, false when the timer resumes.
+  bool paused = 2;
 }
 
 message SessionOpened {

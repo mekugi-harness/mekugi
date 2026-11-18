@@ -57,6 +57,7 @@ fn session(client: GrpcClient) -> Arc<SessionInner> {
         runtime: tokio::runtime::Handle::current(),
         state: Mutex::new(SessionState::with_client(Arc::clone(&client))),
         wait_slots: Mutex::new(HashMap::new()),
+        observations: super::deadline::Observations::default(),
         shutdown_requested: AtomicBool::new(/*v*/ false),
         shutdown_result: Mutex::new(/*t*/ None),
         stopped: CancellationToken::new(),

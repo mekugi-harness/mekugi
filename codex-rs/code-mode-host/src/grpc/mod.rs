@@ -108,6 +108,7 @@ impl GrpcCodeModeHost {
                 output_truncation,
             },
             max_pending_delegate_calls,
+            request.observation_liveness,
         )?))
     }
 
@@ -193,7 +194,12 @@ impl GrpcCodeModeHost {
             _ = session.closed.cancelled() => {
                 return Err(Status::cancelled("code-mode session is closed"));
             }
-            result = session.runtime.execute(request, Arc::new(delegate::GrpcDelegate::new(Arc::downgrade(&session))), Some(yield_signal)) => {
+            result = session.runtime.execute_observed(
+                request,
+                Arc::new(delegate::GrpcDelegate::new(Arc::downgrade(&session))),
+                Some(yield_signal),
+                session.observation_liveness(&execution_id),
+            ) => {
                 result.map_err(Status::failed_precondition)?
             }
         };
@@ -279,6 +285,7 @@ impl GrpcCodeModeHost {
             request.max_output_tokens,
             session.runtime.output_truncation(),
         )?;
+        let liveness = session.observation_liveness(&request.wait_id);
         let registration = WaitRegistration::new(Arc::clone(&session), request.wait_id)?;
         let request = WaitRequest {
             cell_id: CellId::new(request.cell_id),
@@ -293,7 +300,7 @@ impl GrpcCodeModeHost {
             _ = session.closed.cancelled() => {
                 return Err(Status::cancelled("code-mode session is closed"));
             }
-            outcome = session.runtime.wait(request, Some(registration.yield_signal())) => {
+            outcome = session.runtime.wait_observed(request, Some(registration.yield_signal()), liveness) => {
                 outcome.map_err(Status::failed_precondition)?
             }
         };
