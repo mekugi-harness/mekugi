@@ -55,6 +55,21 @@ impl AgentPath {
         validate_agent_name(agent_name)?;
         Self::from_string(format!("{self}/{agent_name}"))
     }
+
+    pub fn resolve(&self, reference: &str) -> Result<Self, String> {
+        if reference.is_empty() {
+            return Err("agent path must not be empty".to_string());
+        }
+        if reference == Self::ROOT {
+            return Ok(Self::root());
+        }
+        if reference.starts_with('/') {
+            return Self::try_from(reference);
+        }
+
+        validate_relative_reference(reference)?;
+        Self::from_string(format!("{self}/{reference}"))
+    }
 }
 
 impl TryFrom<String> for AgentPath {
@@ -155,6 +170,16 @@ fn validate_absolute_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_relative_reference(reference: &str) -> Result<(), String> {
+    if reference.ends_with('/') {
+        return Err("relative agent path must not end with `/`".to_string());
+    }
+    for segment in reference.split('/') {
+        validate_agent_name(segment)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::AgentPath;
@@ -185,6 +210,19 @@ mod tests {
     }
 
     #[test]
+    fn resolve_supports_relative_and_absolute_references() {
+        let current = AgentPath::try_from("/root/researcher").expect("path");
+        assert_eq!(
+            current.resolve("worker").expect("relative path"),
+            AgentPath::try_from("/root/researcher/worker").expect("path")
+        );
+        assert_eq!(
+            current.resolve("/root/other").expect("absolute path"),
+            AgentPath::try_from("/root/other").expect("path")
+        );
+    }
+
+    #[test]
     fn invalid_names_and_paths_are_rejected() {
         assert_eq!(
             AgentPath::root().join("BadName"),
@@ -193,6 +231,10 @@ mod tests {
         assert_eq!(
             AgentPath::try_from("/not-root"),
             Err("absolute agent paths must start with `/root` or be `/morpheus`".to_string())
+        );
+        assert_eq!(
+            AgentPath::root().resolve("../sibling"),
+            Err("agent_name `..` is reserved".to_string())
         );
     }
 }

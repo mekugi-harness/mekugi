@@ -1749,6 +1749,29 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         .expect("worker thread should exist");
     let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
 
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": "worker",
+                "message": "status?"
+            })),
+        ))
+        .await
+        .expect("send_message should accept the relative name");
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == agent_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication, .. }
+                    if communication.recipient == worker_path
+                        && communication.encrypted_content.as_deref() == Some("status?")
+                        && !communication.trigger_turn
+            )
+    }));
+
     let first_turn = thread.session.new_default_turn().await;
     thread
         .session
@@ -1773,7 +1796,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
             turn,
             "followup_task",
             function_payload(json!({
-                "target": agent_id.to_string(),
+                "target": "worker",
                 "message": "continue",
             })),
         ))
@@ -3372,10 +3395,11 @@ async fn multi_agent_v2_interrupt_agent_accepts_task_name_target() {
         .await
         .expect("worker thread should be resident");
     let worker_session = worker_thread.session.clone();
+    let worker_turn = worker_session.new_default_turn().await;
     SpawnAgentHandlerV2::default()
         .handle(invocation(
             worker_session.clone(),
-            worker_session.new_default_turn().await,
+            worker_turn.clone(),
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect a child task",
@@ -3395,12 +3419,27 @@ async fn multi_agent_v2_interrupt_agent_accepts_task_name_target() {
         .await
         .expect("child path should resolve");
 
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            worker_session,
+            worker_turn,
+            "list_agents",
+            function_payload(json!({"path_prefix": "child"})),
+        ))
+        .await
+        .expect("list_agents should accept a prefix relative to the caller");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+    assert_eq!(result.agents.len(), 1);
+    assert_eq!(result.agents[0].agent_name, "/root/worker/child");
+
     let output = InterruptAgentHandler
         .handle(invocation(
             session.clone(),
             turn.clone(),
             "interrupt_agent",
-            function_payload(json!({"target": "/root/worker"})),
+            function_payload(json!({"target": "worker"})),
         ))
         .await
         .expect("interrupt_agent should succeed for v2 task names");

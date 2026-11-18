@@ -206,7 +206,7 @@ pub fn create_send_message_tool() -> ToolSpec {
         (
             "target".to_string(),
             JsonSchema::string(Some(
-                "Agent id or canonical task name to message (from spawn_agent). For another active session, use its exact thread ID.".to_string(),
+                "Relative or canonical task name to message (from spawn_agent). For another active session, use its exact thread ID.".to_string(),
             )),
         ),
         (
@@ -322,7 +322,7 @@ pub fn create_inspect_agent_tool() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
-            BTreeMap::from([("target".to_string(), JsonSchema::string(Some("Canonical task name or exact native thread ID.".to_string())))]),
+            BTreeMap::from([("target".to_string(), JsonSchema::string(Some("Relative or canonical task name, or exact native thread ID.".to_string())))]),
             Some(vec!["target".to_string()]),
             Some(false.into()),
         ),
@@ -334,7 +334,7 @@ pub fn create_list_agents_tool() -> ToolSpec {
     let properties = BTreeMap::from([(
         "path_prefix".to_string(),
         JsonSchema::string(Some(
-            "Task-path prefix filter, or exact foreign agent ID to list its tree. Omit to list local live agents."
+            "Relative or canonical task-path prefix without a trailing slash, or exact foreign agent ID to list its tree. Omit to list local live agents."
                 .to_string(),
         )),
     )]);
@@ -835,6 +835,7 @@ fn spawn_agent_tool_description_v2(
         format!(
             r#"
 {catalog_prefix}        Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name "task_3" the agent will have canonical task name `/root/task1/task_3`.
+You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.
 The spawned agent will have the same tools as you and the ability to spawn its own subagents.
 {inherited_model_guidance}{catalog_suffix}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.

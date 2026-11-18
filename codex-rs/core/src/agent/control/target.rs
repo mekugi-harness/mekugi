@@ -1,4 +1,5 @@
-//! Resolves canonical task paths through the native agent registry.
+//! Resolves controller targets using the caller's registered identity.
+//! Legacy callers can still supply their captured session source for path resolution.
 
 use super::LocalAgentControl;
 use super::LocalAgentRuntime;
@@ -18,8 +19,11 @@ impl LocalAgentControl {
         match target {
             AgentTarget::Id(thread_id) => Ok(*thread_id),
             AgentTarget::Reference(reference) => {
-                self.runtime.ensure_agent_known(caller)?;
-                self.runtime.resolve_path_reference(reference)
+                let caller = self.runtime.ensure_agent_known(caller)?;
+                self.runtime.resolve_path_reference(
+                    &caller.agent_path.unwrap_or_else(AgentPath::root),
+                    reference,
+                )
             }
         }
     }
@@ -29,15 +33,23 @@ impl LocalAgentRuntime {
     pub(crate) async fn resolve_agent_reference(
         &self,
         _current_thread_id: ThreadId,
-        _current_session_source: &SessionSource,
+        current_session_source: &SessionSource,
         agent_reference: &str,
     ) -> CodexResult<ThreadId> {
-        self.resolve_path_reference(agent_reference)
+        let current_agent_path = current_session_source
+            .get_agent_path()
+            .unwrap_or_else(AgentPath::root);
+        self.resolve_path_reference(&current_agent_path, agent_reference)
     }
 
-    pub(super) fn resolve_path_reference(&self, agent_reference: &str) -> CodexResult<ThreadId> {
-        let agent_path =
-            AgentPath::try_from(agent_reference).map_err(CodexErr::UnsupportedOperation)?;
+    pub(super) fn resolve_path_reference(
+        &self,
+        current_agent_path: &AgentPath,
+        agent_reference: &str,
+    ) -> CodexResult<ThreadId> {
+        let agent_path = current_agent_path
+            .resolve(agent_reference)
+            .map_err(CodexErr::UnsupportedOperation)?;
         if let Some(thread_id) = self.registry.agent_id_for_path(&agent_path) {
             return Ok(thread_id);
         }

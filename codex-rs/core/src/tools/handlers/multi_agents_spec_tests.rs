@@ -285,7 +285,7 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
             .get("target")
             .and_then(|schema| schema.description.as_deref()),
         Some(
-            "Agent id or canonical task name to message (from spawn_agent). For another active session, use its exact thread ID."
+            "Relative or canonical task name to message (from spawn_agent). For another active session, use its exact thread ID."
         )
     );
     assert_eq!(
@@ -386,7 +386,7 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
             .get("path_prefix")
             .and_then(|schema| schema.description.as_deref()),
         Some(
-            "Task-path prefix filter, or exact foreign agent ID to list its tree. Omit to list local live agents."
+            "Relative or canonical task-path prefix without a trailing slash, or exact foreign agent ID to list its tree. Omit to list local live agents."
         )
     );
     assert_eq!(

@@ -92,7 +92,7 @@ fn is_handoff(name: &str, args: &serde_json::Value, worker: &AgentPath) -> bool 
         .as_str()
         .and_then(|target| match name {
             "spawn_agent" => AgentPath::root().join(target).ok(),
-            _ => AgentPath::try_from(target).ok(),
+            _ => AgentPath::root().resolve(target).ok(),
         })
         .filter(|path| !path.is_root())
     else {

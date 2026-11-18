@@ -361,12 +361,18 @@ impl LocalAgentControl {
 
     pub(crate) async fn list_agents(
         &self,
-        _current_session_source: &SessionSource,
+        current_session_source: &SessionSource,
         path_prefix: Option<&str>,
     ) -> CodexResult<Vec<LiveAgent>> {
         let state = self.runtime.upgrade()?;
         let resolved_prefix = path_prefix
-            .map(|prefix| AgentPath::try_from(prefix).map_err(CodexErr::UnsupportedOperation))
+            .map(|prefix| {
+                current_session_source
+                    .get_agent_path()
+                    .unwrap_or_else(AgentPath::root)
+                    .resolve(prefix)
+                    .map_err(CodexErr::UnsupportedOperation)
+            })
             .transpose()?;
 
         let mut live_agents = self.runtime.registry.live_agents();
