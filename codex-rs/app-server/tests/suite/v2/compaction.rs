@@ -11,6 +11,7 @@ use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::write_chatgpt_auth;
 use codex_app_server_protocol::CodexErrorInfo;
+use codex_app_server_protocol::ContextReset;
 use codex_app_server_protocol::FeatureUseCounts;
 use codex_app_server_protocol::FeatureUseReadResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
@@ -19,6 +20,7 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::RawResponseCompletedNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ResponseUsageMetadata;
+use codex_app_server_protocol::ThreadCompactCancelResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -37,6 +39,7 @@ use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_features::Feature;
+use codex_protocol::protocol::ContextResetStatus;
 use codex_utils_absolute_path::test_support::PathExt;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
@@ -840,5 +843,210 @@ async fn self_reset_feature_facts_are_native_and_read_only() -> Result<()> {
         let counts: FeatureUseReadResponse = app_server.read_response(read).await?;
         assert_eq!(counts.threads[&thread], expected);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let source = workspace.path().join("selected.txt");
+    std::fs::write(&source, "selected reload marker\nnot selected")?;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        ["seed", "restored", "fresh"]
+            .into_iter()
+            .map(|id| responses::sse(vec![responses::ev_completed(id)]))
+            .collect(),
+    )
+    .await;
+    compaction_config(&server.uri(), 1_000_000)
+        .enable_feature(Feature::TokenBudget)
+        .write(home.path())?;
+    let builder = || {
+        TestAppServer::builder()
+            .with_codex_home(home.path())
+            .without_auto_env()
+    };
+    let mut mcp = builder().build_initialized().await?;
+    let id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            cwd: Some(workspace.path().display().to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let ThreadStartResponse { thread, .. } =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+    let thread_id = thread.id;
+    send_turn_and_wait(&mut mcp, &thread_id, "discarded seed marker").await?;
+    mcp.clear_message_buffer();
+
+    let id = mcp
+        .send_request(
+            "thread/compact/start",
+            Some(json!({
+                "threadId": thread_id,
+                "contextResetRequestId": "reload-request",
+                "reload": {"sources": ["@selected.txt#L1-L1", "@missing.txt#L1-L1"]},
+            })),
+        )
+        .await?;
+    let _: ThreadCompactStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+    let accepted: ContextReset = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/contextReset"),
+    )
+    .await??;
+    let completed = wait_for_context_compaction_completed(&mut mcp).await?;
+    assert_eq!(
+        accepted,
+        ContextReset {
+            thread_id: thread_id.clone(),
+            turn_id: completed.turn_id.clone(),
+            request_id: "reload-request".to_string(),
+            status: ContextResetStatus::Accepted,
+            diagnostic: None,
+        }
+    );
+    let ThreadItemPayload::ContextCompaction {
+        source_acquisition: Some(acquisition),
+        ..
+    } = completed.item.payload
+    else {
+        anyhow::bail!("missing native reload receipt");
+    };
+    assert_eq!(acquisition.purpose, "reload");
+    assert_eq!(
+        acquisition
+            .sources
+            .iter()
+            .map(|source| (source.reference.as_str(), source.success))
+            .collect::<Vec<_>>(),
+        vec![("@selected.txt#L1-L1", true), ("@missing.txt#L1-L1", false)]
+    );
+    let settled: ContextReset = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/contextReset"),
+    )
+    .await??;
+    assert_eq!(
+        settled,
+        ContextReset {
+            status: ContextResetStatus::Completed,
+            ..accepted
+        }
+    );
+    wait_for_turn_completed(&mut mcp, &completed.turn_id).await?;
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "summary-free reset called the provider"
+    );
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+
+    std::fs::write(&source, "fresh reload marker")?;
+    let mut mcp = builder().build_initialized().await?;
+    let id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadResumeResponse = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+    send_turn_and_wait(&mut mcp, &thread_id, "continue after resume").await?;
+
+    let id = mcp
+        .send_thread_compact_start_request(ThreadCompactStartParams {
+            context_reset_request_id: None,
+            reload: None,
+            thread_id: thread_id.clone(),
+        })
+        .await?;
+    let _: ThreadCompactStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+    let later = wait_for_context_compaction_completed(&mut mcp).await?;
+    wait_for_turn_completed(&mut mcp, &later.turn_id).await?;
+    send_turn_and_wait(&mut mcp, &thread_id, "continue after later reset").await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].body_contains_text("selected reload marker"));
+    assert!(!requests[1].body_contains_text("not selected"));
+    assert!(!requests[1].body_contains_text("discarded seed marker"));
+    assert!(!requests[1].body_contains_text("fresh reload marker"));
+    assert!(requests[2].body_contains_text("fresh reload marker"));
+    assert!(!requests[2].body_contains_text("selected reload marker"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn manual_reset_cancel_settles_the_active_request() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let home = TempDir::new()?;
+    // Keep compaction in flight once the item starts. The test advances on the
+    // item notification, not on the provider delay.
+    responses::mount_response_once(
+        &server,
+        responses::sse_response(responses::sse(vec![responses::ev_completed("late")]))
+            .set_delay(DEFAULT_READ_TIMEOUT * 2),
+    )
+    .await;
+    compaction_config(&server.uri(), 1_000_000).write(home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized()
+        .await?;
+    let thread_id = start_thread(&mut mcp).await?;
+    let id = mcp
+        .send_thread_compact_start_request(ThreadCompactStartParams {
+            context_reset_request_id: Some("cancel-request".to_string()),
+            reload: None,
+            thread_id: thread_id.clone(),
+        })
+        .await?;
+    let _: ThreadCompactStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+    let accepted: ContextReset = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/contextReset"),
+    )
+    .await??;
+    let started = wait_for_context_compaction_started(&mut mcp).await?;
+    assert_eq!(accepted.status, ContextResetStatus::Accepted);
+    assert_eq!(accepted.turn_id, started.turn_id);
+    let id = mcp
+        .send_request(
+            "thread/compact/cancel",
+            Some(json!({
+                "threadId": thread_id,
+                "contextResetRequestId": "cancel-request",
+            })),
+        )
+        .await?;
+    let _: ThreadCompactCancelResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+    let settled: ContextReset = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/contextReset"),
+    )
+    .await??;
+    assert_eq!(
+        settled,
+        ContextReset {
+            status: ContextResetStatus::Canceled,
+            ..accepted
+        }
+    );
+    let turn: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(turn.turn.id, settled.turn_id);
+    assert_eq!(turn.turn.status, TurnStatus::Interrupted);
     Ok(())
 }
