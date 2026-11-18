@@ -22,6 +22,34 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const MAX_CAPACITY_RETRY_DELAY: Duration = Duration::from_secs(30);
+
+/// Request-local backoff for capacity failures without provider advice.
+struct CapacityRetryBackoff(Duration);
+
+impl Default for CapacityRetryBackoff {
+    fn default() -> Self {
+        Self(Duration::from_secs(1))
+    }
+}
+
+impl CapacityRetryBackoff {
+    fn retry_at(&mut self, error: &CodexErr) -> Option<Instant> {
+        if !matches!(
+            error.details(),
+            CodexErrorDetails::ServerOverloaded | CodexErrorDetails::PolicyCapacityUnavailable
+        ) {
+            return None;
+        }
+        if let Some(advice) = error.retry_after() {
+            return Some(advice.deadline());
+        }
+        // Source: modules/threadcontrol/control/waits.go:373:382@[71e3c624d] waitForProvider
+        let retry_at = Instant::now() + self.0;
+        self.0 = self.0.saturating_mul(2).min(MAX_CAPACITY_RETRY_DELAY);
+        Some(retry_at)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -31,6 +59,7 @@ pub(crate) enum ResponsesStreamRequest {
 
 pub(crate) struct ResponsesStreamRetryState {
     retries: u64,
+    capacity_backoff: CapacityRetryBackoff,
     connection_retries: u64,
     connection_retry_delay: Duration,
 }
@@ -39,6 +68,7 @@ impl Default for ResponsesStreamRetryState {
     fn default() -> Self {
         Self {
             retries: 0,
+            capacity_backoff: CapacityRetryBackoff::default(),
             connection_retries: 0,
             connection_retry_delay: INITIAL_CONNECTION_RETRY_DELAY,
         }
@@ -86,10 +116,14 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
     let retry_count = retry_state.retries.saturating_add(1);
-    let Some(delay) = err.retry_delay(retry_count) else {
+    let capacity_retry_at = retry_state.capacity_backoff.retry_at(&err);
+    let Some(delay) = capacity_retry_at
+        .map(|retry_at| retry_at.saturating_duration_since(Instant::now()))
+        .or_else(|| err.retry_delay(retry_count))
+    else {
         return Err(err);
     };
-    let retry_after = err.retry_after();
+    let advised_retry_at = err.retry_after().map(RetryAfter::deadline);
 
     if turn_context
         .config
@@ -119,12 +153,6 @@ pub(crate) async fn handle_response_stream_error(
     }
 
     let requires_http_fallback = err.requires_http_fallback();
-    let capacity_advice = retry_after.filter(|_| {
-        matches!(
-            err.details(),
-            CodexErrorDetails::ServerOverloaded | CodexErrorDetails::PolicyCapacityUnavailable
-        )
-    });
     let switched = (requires_http_fallback || retry_state.retries >= max_retries)
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
@@ -134,13 +162,13 @@ pub(crate) async fn handle_response_stream_error(
     if switched || requires_http_fallback {
         if switched {
             let message = format!("Falling back from WebSockets to HTTPS transport. {err:#}");
-            // Changing transport must not bypass the server's retry deadline.
-            if let Some(retry_after) = retry_after {
-                if let Some(advice) = capacity_advice {
-                    sess.notify_stream_error(turn_context, capacity_retry_message(advice), err)
-                        .await;
-                }
-                tokio::time::sleep_until(retry_after.deadline()).await;
+            if let Some(retry_at) = capacity_retry_at {
+                sess.notify_stream_error(turn_context, capacity_retry_message(retry_at), err)
+                    .await;
+            }
+            // Changing transport must not bypass a capacity wait or provider advice.
+            if let Some(retry_at) = capacity_retry_at.or(advised_retry_at) {
+                tokio::time::sleep_until(retry_at).await;
             }
             sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
                 .await;
@@ -154,16 +182,16 @@ pub(crate) async fn handle_response_stream_error(
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
         // Keep the first transient WebSocket reconnect quiet in release builds, but
-        // show server-directed capacity waits from the first attempt.
-        let report_error = capacity_advice.is_some()
+        // show capacity waits from the first attempt.
+        let report_error = capacity_retry_at.is_some()
             || retry_count > 1
             || cfg!(debug_assertions)
             || !sess.services.model_client.responses_websocket_enabled();
         if report_error {
-            let message = match capacity_advice {
-                Some(advice) => format!(
+            let message = match capacity_retry_at {
+                Some(retry_at) => format!(
                     "{} ({retry_count}/{max_retries})",
-                    capacity_retry_message(advice)
+                    capacity_retry_message(retry_at)
                 ),
                 None => format!("Reconnecting... {retry_count}/{max_retries}"),
             };
@@ -171,7 +199,9 @@ pub(crate) async fn handle_response_stream_error(
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
-        let retry_at = retry_after.map(RetryAfter::deadline).unwrap_or(now + delay);
+        let retry_at = capacity_retry_at
+            .or(advised_retry_at)
+            .unwrap_or(now + delay);
         let delay = retry_at.saturating_duration_since(now);
         codex_client::record_retry!(retry_count, delay, operation);
         tokio::time::sleep_until(retry_at).await;
@@ -182,13 +212,13 @@ pub(crate) async fn handle_response_stream_error(
         .thread_extension_data
         .insert(ExhaustedResponseRetry {
             turn_id: turn_context.sub_id.clone(),
-            retry_at: retry_after.map(RetryAfter::deadline),
+            retry_at: advised_retry_at,
         });
     Err(err)
 }
 
-fn capacity_retry_message(advice: RetryAfter) -> String {
-    let delay = advice.remaining_delay();
+fn capacity_retry_message(retry_at: Instant) -> String {
+    let delay = retry_at.saturating_duration_since(Instant::now());
     let seconds = delay
         .as_secs()
         .saturating_add(u64::from(delay.subsec_nanos() != 0));

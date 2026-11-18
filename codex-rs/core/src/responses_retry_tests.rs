@@ -103,8 +103,14 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
     );
 }
 
+#[test_case::test_case(None, 1, "Retrying in 1s"; "without_advice")]
+#[test_case::test_case(Some(311), 311, "Retrying in 5m 11s"; "with_advice")]
 #[tokio::test]
-async fn first_capacity_retry_reports_wait_before_http_fallback() {
+async fn first_capacity_retry_reports_wait_before_http_fallback(
+    advice_seconds: Option<u64>,
+    wait_seconds: u64,
+    message: &str,
+) {
     let (session, turn_context, events) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
         Vec::new(),
@@ -116,11 +122,17 @@ async fn first_capacity_retry_reports_wait_before_http_fallback() {
     let mut retry_state = ResponsesStreamRetryState::default();
 
     tokio::time::pause();
-    let advice = RetryAfter::from_delay(Duration::from_secs(311)).expect("retry deadline");
+    let deadline = Instant::now() + Duration::from_secs(wait_seconds);
+    let mut error = CodexErr::new(CodexErrorDetails::ServerOverloaded);
+    if let Some(seconds) = advice_seconds {
+        error = error.with_retry_after(
+            RetryAfter::from_delay(Duration::from_secs(seconds)).expect("retry deadline"),
+        );
+    }
     let retry = handle_response_stream_error(
         &mut retry_state,
         /*max_retries*/ 0,
-        CodexErr::new(CodexErrorDetails::ServerOverloaded).with_retry_after(advice),
+        error,
         &mut client_session,
         &session,
         &step_context,
@@ -132,16 +144,35 @@ async fn first_capacity_retry_reports_wait_before_http_fallback() {
         EventMsg::StreamError(notice) => Some(notice),
         _ => None,
     });
-    assert_eq!(
-        notice.expect("visible fallback wait").message,
-        "Retrying in 5m 11s"
-    );
-    tokio::time::advance(Duration::from_secs(310)).await;
+    assert_eq!(notice.expect("visible fallback wait").message, message);
+    tokio::time::advance(Duration::from_secs(wait_seconds - 1)).await;
     assert!(futures::poll!(&mut retry).is_pending());
     retry.await.expect("fallback should retry");
-    assert!(
-        (advice.deadline()..=advice.deadline() + Duration::from_millis(1))
-            .contains(&Instant::now())
-    );
+    assert!((deadline..=deadline + Duration::from_millis(1)).contains(&Instant::now()));
     assert!(!session.services.model_client.responses_websocket_enabled());
+}
+
+#[tokio::test]
+async fn unadvised_capacity_backoff_doubles_to_thirty_seconds() {
+    let (session, turn_context) = make_session_and_context().await;
+    let step_context = StepContext::for_test(Arc::new(turn_context));
+    let mut client_session = session.services.model_client.new_session();
+    let mut retry_state = ResponsesStreamRetryState::default();
+
+    tokio::time::pause();
+    for seconds in [1, 2, 4, 8, 16, 30, 30] {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        handle_response_stream_error(
+            &mut retry_state,
+            /*max_retries*/ 7,
+            CodexErr::new(CodexErrorDetails::ServerOverloaded),
+            &mut client_session,
+            &session,
+            &step_context,
+            ResponsesStreamRequest::Sampling,
+        )
+        .await
+        .expect("capacity retry should be allowed");
+        assert!((deadline..=deadline + Duration::from_millis(1)).contains(&Instant::now()));
+    }
 }
