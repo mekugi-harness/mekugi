@@ -75,6 +75,9 @@ pub struct CaptureDeliveryReceipt {
 ///
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub struct CodexHarnessMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_acquisition: Option<codex_protocol::protocol::SourceAcquisition>,
+
     /// Thread-local append sequence. Compaction keeps the identities of retained inputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_sequence: Option<u64>,

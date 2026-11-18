@@ -255,6 +255,7 @@ pub(super) fn completed_item(
         )),
         EventMsg::ContextCompacted(_) => Some((
             TurnItem::ContextCompaction(ContextCompactionItem {
+                source_acquisition: None,
                 id: next_item_id()?,
             }),
             None,

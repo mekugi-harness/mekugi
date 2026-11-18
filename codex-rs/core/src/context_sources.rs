@@ -12,7 +12,7 @@ use codex_file_system::EnvironmentAccess;
 use codex_file_system::GetMetadataOptions;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
-use codex_protocol::protocol::ReloadSelection;
+use codex_protocol::protocol::{AcquiredSource, ReloadSelection, SourceAcquisitionResult};
 use codex_skills_extension::HostSkillsSnapshot;
 use codex_utils_path_uri::PathUri;
 use futures::StreamExt;
@@ -73,6 +73,7 @@ pub(crate) async fn acquire_selection(
     step: &Arc<StepContext>,
     selection: &ReloadSelection,
     cancellation: &CancellationToken,
+    outcomes: Option<&mut Vec<SourceAcquisitionResult>>,
 ) -> CodexResult<Option<String>> {
     if selection.sources.is_empty() {
         return Ok(None);
@@ -84,7 +85,7 @@ pub(crate) async fn acquire_selection(
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(CodexErr::TurnAborted),
-        body = read_sources(session, step, environment, selection.sources.clone(), cancellation) => {
+        body = read_sources(session, step, environment, selection.sources.clone(), cancellation, outcomes) => {
             let body = body?;
             if body.is_empty() { return Ok(None); }
             let body = format!(
@@ -102,6 +103,7 @@ async fn read_sources(
     environment: &TurnEnvironment,
     sources: Vec<String>,
     cancellation: &CancellationToken,
+    mut outcomes: Option<&mut Vec<SourceAcquisitionResult>>,
 ) -> CodexResult<String> {
     let access = step.fs_accessor(environment);
     let skills = HostSkillsSnapshot::for_step(&step.extension_data, &step.turn.extension_data);
@@ -124,10 +126,52 @@ async fn read_sources(
         if cancellation.is_cancelled() {
             return Err(CodexErr::TurnAborted);
         }
-        let source = match parse_reference(&reference) {
+        let parsed = parse_reference(&reference);
+        let target = parsed.as_ref().ok().map(|source| &source.target);
+        let resolved_file = match target {
+            Some(Target::File(path)) => Some(base.join(path)),
+            _ => None,
+        };
+        let mut append = |result: Result<&str, &str>| -> CodexResult<()> {
+            match result {
+                Ok(body) => {
+                    append_body(&mut output, &reference, body)?;
+                    bodies.push((output.len() - body.len() - 1, output.len() - 1));
+                }
+                Err(error) => append_failure(&mut output, &reference, error)?,
+            }
+            if let Some(outcomes) = outcomes.as_deref_mut() {
+                let target = match target {
+                    Some(Target::File(path)) => AcquiredSource::File {
+                        path: resolved_file
+                            .as_ref()
+                            .and_then(|resolved| resolved.as_ref().ok())
+                            .map(|path| {
+                                path.to_abs_path()
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|_| path.to_string())
+                            })
+                            .unwrap_or_else(|| path.clone()),
+                    },
+                    Some(Target::Skill(name)) => AcquiredSource::Skill { name: name.clone() },
+                    Some(Target::Changes(selection)) => AcquiredSource::Changes {
+                        selection: selection.clone(),
+                    },
+                    None => AcquiredSource::Selection,
+                };
+                outcomes.push(SourceAcquisitionResult {
+                    reference: reference.clone(),
+                    target,
+                    success: result.is_ok(),
+                    diagnostic: result.err().map(str::to_string),
+                });
+            }
+            Ok(())
+        };
+        let source = match &parsed {
             Ok(source) => source,
             Err(error) => {
-                append_failure(&mut output, &reference, &error)?;
+                append(Err(error))?;
                 continue;
             }
         };
@@ -136,11 +180,7 @@ async fn read_sources(
                 continue;
             }
             if depth > MAX_REFERENCE_DEPTH {
-                append_failure(
-                    &mut output,
-                    &reference,
-                    "nested source depth limit 3 exceeded",
-                )?;
+                append(Err("nested source depth limit 3 exceeded"))?;
                 continue;
             }
             let command = std::iter::once("mchanges".to_string())
@@ -148,43 +188,40 @@ async fn read_sources(
                 .collect();
             match read_external(session, step, environment, command, cancellation).await {
                 Ok(body) => {
-                    append_body(&mut output, &reference, &body)?;
-                    bodies.push((output.len() - body.len() - 1, output.len() - 1));
+                    append(Ok(&body))?;
                 }
-                Err(error) => append_failure(&mut output, &reference, &error)?,
+                Err(error) => {
+                    append(Err(&error))?;
+                }
             }
             continue;
         }
         let is_skill = matches!(&source.target, Target::Skill(_));
         // Reject deep skill references before resolving them.
         if is_skill && depth > MAX_REFERENCE_DEPTH {
-            append_failure(
-                &mut output,
-                &reference,
-                "nested source depth limit 3 exceeded",
-            )?;
+            append(Err("nested source depth limit 3 exceeded"))?;
             continue;
         }
-        let resolved = match &source.target {
-            Target::File(path) => base
-                .join(path)
-                .map(ResolvedSource::File)
-                .map_err(|error| error.to_string()),
-            Target::Skill(skill) => {
-                if skill
-                    .split_once('/')
-                    .is_some_and(|(_, path)| path.rsplit('/').next() == Some("AGENTS.md"))
-                {
-                    continue;
-                }
-                skill_sources.resolve(&access, skill).await
+        let resolved = if let Some(path) = &resolved_file {
+            path.as_ref()
+                .map(|path| ResolvedSource::File(path.clone()))
+                .map_err(|error| error.to_string())
+        } else {
+            let Target::Skill(skill) = &source.target else {
+                unreachable!("changes were handled above");
+            };
+            if skill
+                .split_once('/')
+                .is_some_and(|(_, path)| path.rsplit('/').next() == Some("AGENTS.md"))
+            {
+                continue;
             }
-            Target::Changes(_) => unreachable!("changes were handled above"),
+            skill_sources.resolve(&access, skill).await
         };
         let resolved = match resolved {
             Ok(path) => path,
             Err(error) => {
-                append_failure(&mut output, &reference, &error)?;
+                append(Err(&error))?;
                 continue;
             }
         };
@@ -194,11 +231,7 @@ async fn read_sources(
             continue;
         }
         if depth > MAX_REFERENCE_DEPTH {
-            append_failure(
-                &mut output,
-                &reference,
-                "nested source depth limit 3 exceeded",
-            )?;
+            append(Err("nested source depth limit 3 exceeded"))?;
             continue;
         }
         let body = match files.entry(resolved.clone()) {
@@ -219,19 +252,18 @@ async fn read_sources(
         let acquired = match body {
             Ok(body) => body,
             Err(error) => {
-                append_failure(&mut output, &reference, error)?;
+                append(Err(error))?;
                 continue;
             }
         };
         let body = match selected_lines(&acquired.text, &source.ranges) {
             Ok(body) => body,
             Err(error) => {
-                append_failure(&mut output, &reference, &error)?;
+                append(Err(&error))?;
                 continue;
             }
         };
-        append_body(&mut output, &reference, &body)?;
-        bodies.push((output.len() - body.len() - 1, output.len() - 1));
+        append(Ok(&body))?;
         let nested_base = acquired.relative_to.as_ref().unwrap_or(environment.cwd());
         for nested in if acquired.expand_references {
             references(&body)
@@ -382,10 +414,9 @@ async fn read_external(
     }
     match output.exit_code {
         Some(0) => Ok(output.raw_output.text),
-        Some(code) => Err(format!(
-            "source reader exited with code {code}:\n{}",
-            output.raw_output.text
-        )),
+        // Native exec combines stdout and stderr. A nonzero capture can
+        // contain valid source bytes from a partial selection, not just errors.
+        Some(code) => Err(format!("source reader exited with code {code}")),
         None => Err("source reader did not complete".to_string()),
     }
 }
@@ -616,7 +647,8 @@ pub(crate) async fn acquire_message(
     let selection = ReloadSelection {
         sources: references(message),
     };
-    let Some(sources) = acquire_selection(session, step, &selection, cancellation).await? else {
+    let Some(sources) = acquire_selection(session, step, &selection, cancellation, None).await?
+    else {
         return Ok(message.to_string());
     };
     check_capacity(
@@ -677,7 +709,7 @@ pub(crate) async fn preload(
     selection: &ReloadSelection,
     cancellation: &CancellationToken,
 ) -> CodexResult<()> {
-    let Some(body) = acquire_selection(session, step, selection, cancellation).await? else {
+    let Some(body) = acquire_selection(session, step, selection, cancellation, None).await? else {
         return Ok(());
     };
     record_source_output(session, step, "preload", body).await;

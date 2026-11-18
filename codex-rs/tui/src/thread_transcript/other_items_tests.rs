@@ -171,6 +171,7 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
             review: "No findings".to_string(),
         },
         ThreadItemPayload::ContextCompaction {
+            source_acquisition: None,
             id: "compact-1".to_string(),
         },
     ];

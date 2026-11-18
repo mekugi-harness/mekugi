@@ -430,10 +430,13 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
     let started = wait_for_context_compaction_started(&mut mcp).await?;
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
 
-    let ThreadItemPayload::ContextCompaction { id: started_id } = started.item.payload else {
+    let ThreadItemPayload::ContextCompaction { id: started_id, .. } = started.item.payload else {
         unreachable!("started item should be context compaction");
     };
-    let ThreadItemPayload::ContextCompaction { id: completed_id } = completed.item.payload else {
+    let ThreadItemPayload::ContextCompaction {
+        id: completed_id, ..
+    } = completed.item.payload
+    else {
         unreachable!("completed item should be context compaction");
     };
 
@@ -552,10 +555,13 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
     wait_for_turn_completed(&mut mcp, &started.turn_id).await?;
 
-    let ThreadItemPayload::ContextCompaction { id: started_id } = started.item.payload else {
+    let ThreadItemPayload::ContextCompaction { id: started_id, .. } = started.item.payload else {
         unreachable!("started item should be context compaction");
     };
-    let ThreadItemPayload::ContextCompaction { id: completed_id } = completed.item.payload else {
+    let ThreadItemPayload::ContextCompaction {
+        id: completed_id, ..
+    } = completed.item.payload
+    else {
         unreachable!("completed item should be context compaction");
     };
 

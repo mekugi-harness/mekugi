@@ -3986,6 +3986,159 @@ async fn record_initial_history_reconstructs_forked_transcript() {
     );
 }
 
+#[tokio::test]
+async fn reset_publishes_and_retains_selected_file_receipt() {
+    assert_reset_publishes_and_retains_source_receipt(/*partial_changes*/ false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn reset_failed_capture_excludes_partial_diff_from_receipt() {
+    assert_reset_publishes_and_retains_source_receipt(/*partial_changes*/ true).await;
+}
+
+async fn assert_reset_publishes_and_retains_source_receipt(partial_changes: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("selected.txt");
+    std::fs::write(&path, "SELECTED_FILE_BODY").unwrap();
+    let sources = if partial_changes {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let reader = directory.path().join("mchanges");
+            std::fs::write(
+                &reader,
+                b"#!/bin/sh\nprintf 'PRIVATE_PARTIAL_DIFF\\n'\nprintf 'unavailable change ID\\n' >&2\nexit 42\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(reader, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        vec!["@selected.txt".into(), "mchanges:fixture1,missing2".into()]
+    } else {
+        vec!["@selected.txt".into()]
+    };
+    let (mut session, turn, events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("test"),
+        Vec::new(),
+        |config| {
+            config.cwd = AbsolutePathBuf::from_absolute_path(directory.path()).unwrap();
+            if partial_changes {
+                // The fixture executable is local and does not need the packaged sandbox.
+                config
+                    .permissions
+                    .set_permission_profile(PermissionProfile::Disabled)
+                    .unwrap();
+                config.permissions.shell_environment_policy.r#set.insert(
+                    "PATH".to_string(),
+                    directory.path().to_string_lossy().into_owned(),
+                );
+            }
+        },
+    )
+    .await;
+    let rollout = attach_thread_persistence(Arc::get_mut(&mut session).unwrap()).await;
+    session
+        .record_retained_context(codex_history::RetainedContextEvent::ReloadSelection {
+            selection: codex_protocol::protocol::ReloadSelection { sources },
+        })
+        .await;
+    let cancellation = CancellationToken::new();
+    let step = session
+        .capture_step_context(turn, &cancellation)
+        .await
+        .unwrap();
+    let world = Arc::new(
+        session
+            .build_world_state_for_step(&step, true)
+            .await
+            .unwrap(),
+    );
+    crate::compact_token_budget::run_manual_compact_task(
+        session.clone(),
+        step,
+        world,
+        &cancellation,
+    )
+    .await
+    .unwrap();
+    let receipts = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event.msg {
+            EventMsg::ItemCompleted(completed) => match completed.item {
+                TurnItem::ContextCompaction(item) => item.source_acquisition,
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [receipt] = receipts.as_slice() else {
+        panic!("expected one live reload receipt, got {receipts:?}")
+    };
+    assert_eq!(receipt.purpose, "reload");
+    assert!(!receipt.id.is_empty());
+    use codex_protocol::protocol::AcquiredSource;
+    use codex_protocol::protocol::SourceAcquisitionResult;
+    let mut expected = vec![SourceAcquisitionResult {
+        reference: "@selected.txt".into(),
+        target: AcquiredSource::File {
+            path: path.to_string_lossy().into_owned(),
+        },
+        success: true,
+        diagnostic: None,
+    }];
+    if partial_changes {
+        expected.push(SourceAcquisitionResult {
+            reference: "mchanges:fixture1,missing2".into(),
+            target: AcquiredSource::Changes {
+                selection: vec!["fixture1".into(), "missing2".into()],
+            },
+            success: false,
+            diagnostic: Some("source reader exited with code 42".into()),
+        });
+    }
+    assert_eq!(receipt.sources, expected);
+    session.flush_rollout().await.unwrap();
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout)
+        .await
+        .unwrap()
+    else {
+        panic!("expected saved rollout");
+    };
+    let retained = resumed
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::Compacted(compacted) => compacted.replacement_history.as_ref(),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|envelope| {
+            let ResponseItem::FunctionCallOutput {
+                name: Some(name),
+                output,
+                ..
+            } = &envelope.item
+            else {
+                return None;
+            };
+            (name == "reload").then(|| {
+                (
+                    output.text_content().unwrap(),
+                    envelope
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.source_acquisition.as_ref()),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let [(body, saved)] = retained.as_slice() else {
+        panic!("expected one retained reload output")
+    };
+    assert!(body.contains("SELECTED_FILE_BODY"));
+    assert!(!body.contains("PRIVATE_PARTIAL_DIFF"));
+    assert_eq!(*saved, Some(receipt));
+}
+
 #[test_case::test_case(false; "replacement")]
 #[test_case::test_case(true; "cleared")]
 #[tokio::test]

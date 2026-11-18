@@ -472,6 +472,7 @@ fn thread_items_list_round_trips() {
                 output_deferred: false,
                 item: ThreadItem {
                     payload: ThreadItemPayload::ContextCompaction {
+                        source_acquisition: None,
                         id: "item_1".to_string(),
                     },
                     started_at_ms,

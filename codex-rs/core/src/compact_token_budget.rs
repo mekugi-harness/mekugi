@@ -71,27 +71,43 @@ async fn run_compact_task_inner(
         PreCompactHookOutcome::Stopped => return Err(CodexErr::TurnAborted),
     }
 
-    let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
-    sess.emit_turn_item_started(turn_context, &compaction_item)
-        .await;
+    let mut compaction = ContextCompactionItem::new();
+    sess.emit_turn_item_started(
+        turn_context,
+        &TurnItem::ContextCompaction(compaction.clone()),
+    )
+    .await;
     let reload = match sess.reload_selection().await {
         Some(selection) => {
+            let mut sources = Vec::new();
             crate::context_sources::acquire_selection(
                 sess,
                 step_context,
                 &selection,
                 cancellation_token,
+                Some(&mut sources),
             )
             .await?
+            .map(|text| {
+                (
+                    text,
+                    codex_protocol::protocol::SourceAcquisition {
+                        id: compaction.id.clone(),
+                        purpose: "reload".to_string(),
+                        sources,
+                    },
+                )
+            })
         }
         None => None,
     };
     if cancellation_token.is_cancelled() {
         return Err(CodexErr::TurnAborted);
     }
+    compaction.source_acquisition = reload.as_ref().map(|(_, receipt)| receipt.clone());
     sess.start_new_context_window(step_context, world_state, reload)
         .await;
-    sess.emit_turn_item_completed(turn_context, compaction_item)
+    sess.emit_turn_item_completed(turn_context, TurnItem::ContextCompaction(compaction))
         .await;
 
     let post_compact_outcome = run_post_compact_hooks(sess, turn_context, trigger).await;

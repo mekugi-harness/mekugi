@@ -12,7 +12,10 @@ fn compaction_started(id: &str) -> ServerNotification {
     ServerNotification::ItemStarted(ItemStartedNotification::new(
         "thread-1".to_string(),
         "turn-1".to_string(),
-        AppServerThreadItemPayload::ContextCompaction { id: id.to_string() },
+        AppServerThreadItemPayload::ContextCompaction {
+            id: id.to_string(),
+            source_acquisition: None,
+        },
         chrono::Utc::now().timestamp_millis(),
     ))
 }
@@ -21,7 +24,10 @@ fn compaction_completed(id: &str) -> ServerNotification {
     ServerNotification::ItemCompleted(ItemCompletedNotification::new(
         "thread-1".to_string(),
         "turn-1".to_string(),
-        AppServerThreadItemPayload::ContextCompaction { id: id.to_string() },
+        AppServerThreadItemPayload::ContextCompaction {
+            id: id.to_string(),
+            source_acquisition: None,
+        },
         /*started_at_ms*/ None,
         /*completed_at_ms*/ 0,
     ))

@@ -514,6 +514,9 @@ pub enum ThreadItemPayload {
     #[ts(rename_all = "camelCase")]
     ContextCompaction {
         id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        source_acquisition: Option<codex_protocol::protocol::SourceAcquisition>,
     },
 }
 
@@ -1148,9 +1151,10 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     duration_ms,
                 }
             }
-            CoreTurnItem::ContextCompaction(compaction) => {
-                Self::ContextCompaction { id: compaction.id }
-            }
+            CoreTurnItem::ContextCompaction(compaction) => Self::ContextCompaction {
+                id: compaction.id,
+                source_acquisition: compaction.source_acquisition,
+            },
         }
     }
 }

@@ -1364,7 +1364,10 @@ impl ThreadHistoryBuilder {
 
     fn handle_context_compacted(&mut self, _payload: &ContextCompactedEvent) {
         let id = self.next_item_id();
-        self.push_item_in_current_turn(ThreadItemPayload::ContextCompaction { id });
+        self.push_item_in_current_turn(ThreadItemPayload::ContextCompaction {
+            id,
+            source_acquisition: None,
+        });
     }
 
     fn handle_entered_review_mode(
@@ -2143,6 +2146,7 @@ mod tests {
                 raw_content: vec!["content".into()],
             }),
             CoreTurnItem::ContextCompaction(ContextCompactionItem {
+                source_acquisition: None,
                 id: "compaction".into(),
             }),
         ] {
