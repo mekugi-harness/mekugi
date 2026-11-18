@@ -7,6 +7,7 @@ use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::plaintext_agent_message_content;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -138,6 +139,13 @@ fn persisted_event_msg(
         | EventMsg::TurnStarted(_)
         | EventMsg::TurnComplete(_)
         | EventMsg::ThreadSettingsApplied(_) => Some(Cow::Borrowed(ev)),
+        // Accepted outbound mail is not a model history item.
+        EventMsg::RawResponseItem(raw)
+            if matches!(&raw.item, ResponseItem::AgentMessage { content, .. }
+                if plaintext_agent_message_content(content).is_some()) =>
+        {
+            Some(Cow::Borrowed(ev))
+        }
 
         // Only persist these legacy events when the thread's history mode is Legacy.
         // New, paginated rollouts persist ItemCompleted events with TurnItems.

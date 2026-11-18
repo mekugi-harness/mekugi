@@ -9,6 +9,7 @@ use codex_core::ThreadEvictionOutcome;
 use codex_core::ThreadRegistration;
 use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::models::plaintext_agent_message_content;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use std::borrow::Cow;
@@ -585,10 +586,17 @@ async fn start_listener(
                             .then(|| thread_state.turn_summary.clone());
                         (thread_state.experimental_raw_events, terminal)
                     };
-                    if matches!(
+                    // Plaintext agent mail is part of the standard transcript,
+                    // not a request for the rest of the raw provider stream.
+                    if !raw_events_enabled && matches!(
                         &event.msg,
                         EventMsg::RawResponseItem(_) | EventMsg::RawResponseCompleted(_) | EventMsg::PrivateSessionEvent(_)
-                    ) && !raw_events_enabled
+                    ) && !matches!(
+                        &event.msg,
+                        EventMsg::RawResponseItem(raw)
+                            if matches!(&raw.item, ResponseItem::AgentMessage { content, .. }
+                                if plaintext_agent_message_content(content).is_some())
+                    )
                     {
                         continue;
                     }
@@ -1338,7 +1346,13 @@ async fn restore_evicted_agent_text<'a>(
         return Ok(());
     }
     for stored in stored.filter(|stored| stored.id == turn.id) {
-        fill_agent_text(&mut missing, std::mem::take(&mut stored.items));
+        let saved = stored
+            .items
+            .iter()
+            .filter(|item| missing.contains_key(&HistoryItemId(Cow::Borrowed(item.id()))))
+            .cloned()
+            .collect::<Vec<_>>();
+        fill_agent_text(&mut missing, saved);
         if missing.is_empty() {
             return Ok(());
         }
@@ -1379,8 +1393,37 @@ fn fill_agent_text(
 }
 
 pub(super) fn merge_turn_history_with_active_turn(turns: &mut Vec<Turn>, active_turn: Turn) {
-    turns.retain(|turn| turn.id != active_turn.id);
-    turns.push(active_turn);
+    let mut active_turn = active_turn;
+    if let Some(stored) = turns.iter_mut().find(|turn| turn.id == active_turn.id) {
+        merge_active_items(stored, &mut active_turn);
+        *stored = active_turn;
+    } else {
+        turns.push(active_turn);
+    }
+}
+
+/// The listener can start after work has already emitted retained items. The
+/// store supplies that prefix, and the listener adds current and pending items.
+fn merge_active_items(stored: &mut Turn, active: &mut Turn) {
+    if stored.items_view != TurnItemsView::Full || active.items_view != TurnItemsView::Full {
+        return;
+    }
+    let mut items = std::mem::take(&mut stored.items);
+    let positions: HashMap<_, _> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id().to_string(), index))
+        .collect();
+    for item in std::mem::take(&mut active.items) {
+        if let Some(&index) = positions.get(item.id()) {
+            if item.completed_at_ms.is_some() || items[index].completed_at_ms.is_none() {
+                items[index] = item;
+            }
+        } else {
+            items.push(item);
+        }
+    }
+    active.items = items;
 }
 
 fn merge_active_turn_into_page(
@@ -1393,7 +1436,11 @@ fn merge_active_turn_into_page(
         params.items_view.unwrap_or(TurnItemsView::Summary),
     );
     let sort_direction = params.sort_direction.unwrap_or(SortDirection::Desc);
-    page.data.retain(|turn| turn.id != active_turn.id);
+    if let Some(stored) = page.data.iter_mut().find(|turn| turn.id == active_turn.id) {
+        merge_active_items(stored, &mut active_turn);
+        *stored = active_turn;
+        return;
+    }
     match sort_direction {
         SortDirection::Asc => page.data.push(active_turn),
         SortDirection::Desc => page.data.insert(0, active_turn),

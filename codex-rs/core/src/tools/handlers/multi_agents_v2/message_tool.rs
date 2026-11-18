@@ -12,6 +12,9 @@ use crate::agent::api::SendRequest;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
+use codex_protocol::AgentPath;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::RawResponseItemEvent;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +63,13 @@ pub(super) async fn handle_message_string_tool(
     analytics.set_receiver(receiver_thread_id);
     let resume_config =
         build_agent_resume_config(&turn).map_err(FunctionCallError::RespondToModel)?;
+    let message = agent_message_from_tool(message, &source);
+    let authored_mail = match &message {
+        AgentMessage::Plaintext(text) if mode == MessageDeliveryMode::QueueOnly => {
+            Some(text.clone())
+        }
+        AgentMessage::Plaintext(_) | AgentMessage::Encrypted(_) => None,
+    };
     let receipt = session
         .services
         .agent_control
@@ -67,10 +77,7 @@ pub(super) async fn handle_message_string_tool(
             caller: session.thread_id,
             target: AgentTarget::Id(receiver_thread_id),
             resume_config,
-            input: AgentInput::Message {
-                message: agent_message_from_tool(message, &source),
-                mode,
-            },
+            input: AgentInput::Message { message, mode },
             start_options: TurnStartOptions {
                 parent_turn_id: (mode == MessageDeliveryMode::TriggerTurn)
                     .then(|| turn.sub_id.clone()),
@@ -85,6 +92,23 @@ pub(super) async fn handle_message_string_tool(
     let receiver_agent_path = receipt.metadata.agent_path.ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    if let Some(text) = authored_mail {
+        let author = turn
+            .session_source
+            .get_agent_path()
+            .unwrap_or_else(AgentPath::root);
+        let mut item = AgentMessage::Plaintext(text)
+            .into_communication(author, receiver_agent_path.clone(), mode)
+            .to_model_input_item();
+        session.assign_missing_response_item_id(&mut item);
+        // An observation of accepted mail, not feedback for the sender's model.
+        session
+            .send_event(
+                &turn,
+                EventMsg::RawResponseItem(RawResponseItemEvent { item }),
+            )
+            .await;
+    }
     emit_sub_agent_activity(
         &session,
         &turn,
