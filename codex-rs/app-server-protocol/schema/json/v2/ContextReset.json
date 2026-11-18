@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ContextResetStatus": {
+      "enum": [
+        "accepted",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "Receipt for one correlated manual reset performed by a replacement compact turn.",
+  "properties": {
+    "diagnostic": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "requestId": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/definitions/ContextResetStatus"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "requestId",
+    "status",
+    "threadId",
+    "turnId"
+  ],
+  "title": "ContextReset",
+  "type": "object"
+}

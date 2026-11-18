@@ -1406,6 +1406,45 @@
       ],
       "type": "object"
     },
+    "ContextReset": {
+      "description": "Receipt for one correlated manual reset performed by a replacement compact turn.",
+      "properties": {
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/ContextResetStatus"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "requestId",
+        "status",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "ContextResetStatus": {
+      "enum": [
+        "accepted",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "type": "string"
+    },
     "CreditsSnapshot": {
       "properties": {
         "balance": {
@@ -7743,6 +7782,26 @@
   },
   "description": "Notification sent from the server to the client.",
   "oneOf": [
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/contextReset"
+          ],
+          "title": "Thread/contextResetNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ContextReset"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/contextResetNotification",
+      "type": "object"
+    },
     {
       "description": "NEW NOTIFICATIONS",
       "properties": {
