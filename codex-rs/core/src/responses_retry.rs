@@ -119,26 +119,32 @@ pub(crate) async fn handle_response_stream_error(
     }
 
     let requires_http_fallback = err.requires_http_fallback();
+    let capacity_advice = retry_after.filter(|_| {
+        matches!(
+            err.details(),
+            CodexErrorDetails::ServerOverloaded | CodexErrorDetails::PolicyCapacityUnavailable
+        )
+    });
     let switched = (requires_http_fallback || retry_state.retries >= max_retries)
         && client_session.try_switch_fallback_transport(
             &turn_context.session_telemetry,
             turn_context.model_info(),
         );
-    if switched {
-        // Changing transport must not bypass the server's retry deadline.
-        if let Some(retry_after) = retry_after {
-            tokio::time::sleep_until(retry_after.deadline()).await;
-        }
-        sess.send_event(
-            turn_context,
-            EventMsg::Warning(WarningEvent {
-                message: format!("Falling back from WebSockets to HTTPS transport. {err:#}"),
-            }),
-        )
-        .await;
-    }
     // Another request can already have switched this session to HTTP.
     if switched || requires_http_fallback {
+        if switched {
+            let message = format!("Falling back from WebSockets to HTTPS transport. {err:#}");
+            // Changing transport must not bypass the server's retry deadline.
+            if let Some(retry_after) = retry_after {
+                if let Some(advice) = capacity_advice {
+                    sess.notify_stream_error(turn_context, capacity_retry_message(advice), err)
+                        .await;
+                }
+                tokio::time::sleep_until(retry_after.deadline()).await;
+            }
+            sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
+                .await;
+        }
         retry_state.retries = 0;
         return Ok(());
     }
@@ -147,20 +153,21 @@ pub(crate) async fn handle_response_stream_error(
         retry_state.retries = retry_count;
         log_retry(request, turn_context, &err, retry_count, max_retries, delay);
 
-        // In release builds, hide the first websocket retry notification to reduce noisy
-        // transient reconnect messages. In debug builds, keep full visibility for diagnosis.
-        let report_error = retry_count > 1
+        // Keep the first transient WebSocket reconnect quiet in release builds, but
+        // show server-directed capacity waits from the first attempt.
+        let report_error = capacity_advice.is_some()
+            || retry_count > 1
             || cfg!(debug_assertions)
             || !sess.services.model_client.responses_websocket_enabled();
         if report_error {
-            // Surface retry information to any UI/front-end so the user understands what is
-            // happening instead of staring at a seemingly frozen screen.
-            sess.notify_stream_error(
-                turn_context,
-                format!("Reconnecting... {retry_count}/{max_retries}"),
-                err,
-            )
-            .await;
+            let message = match capacity_advice {
+                Some(advice) => format!(
+                    "{} ({retry_count}/{max_retries})",
+                    capacity_retry_message(advice)
+                ),
+                None => format!("Reconnecting... {retry_count}/{max_retries}"),
+            };
+            sess.notify_stream_error(turn_context, message, err).await;
         }
         // Use one clock sample so local backoff telemetry retains the selected delay.
         let now = Instant::now();
@@ -178,6 +185,18 @@ pub(crate) async fn handle_response_stream_error(
             retry_at: retry_after.map(RetryAfter::deadline),
         });
     Err(err)
+}
+
+fn capacity_retry_message(advice: RetryAfter) -> String {
+    let delay = advice.remaining_delay();
+    let seconds = delay
+        .as_secs()
+        .saturating_add(u64::from(delay.subsec_nanos() != 0));
+    match seconds {
+        0 => "Retrying now".to_string(),
+        1..60 => format!("Retrying in {seconds}s"),
+        _ => format!("Retrying in {}m {:02}s", seconds / 60, seconds % 60),
+    }
 }
 
 fn log_retry(

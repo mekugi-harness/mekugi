@@ -5,8 +5,12 @@ use super::log_retry;
 use crate::realtime_history::RealtimeHistoryState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
 use codex_http_client::RetryAfter;
+use codex_login::CodexAuth;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
+use codex_protocol::protocol::EventMsg;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -97,4 +101,47 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
         (advice.deadline()..=advice.deadline() + Duration::from_millis(1)).contains(&resumed_at),
         "retry resumed at {resumed_at:?}, expected {advice:?}"
     );
+}
+
+#[tokio::test]
+async fn first_capacity_retry_reports_wait_before_http_fallback() {
+    let (session, turn_context, events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| config.model_provider.supports_websockets = true,
+    )
+    .await;
+    let step_context = StepContext::for_test(turn_context);
+    let mut client_session = session.services.model_client.new_session();
+    let mut retry_state = ResponsesStreamRetryState::default();
+
+    tokio::time::pause();
+    let advice = RetryAfter::from_delay(Duration::from_secs(311)).expect("retry deadline");
+    let retry = handle_response_stream_error(
+        &mut retry_state,
+        /*max_retries*/ 0,
+        CodexErr::new(CodexErrorDetails::ServerOverloaded).with_retry_after(advice),
+        &mut client_session,
+        &session,
+        &step_context,
+        ResponsesStreamRequest::Sampling,
+    );
+    tokio::pin!(retry);
+    assert!(futures::poll!(&mut retry).is_pending());
+    let notice = std::iter::from_fn(|| events.try_recv().ok()).find_map(|event| match event.msg {
+        EventMsg::StreamError(notice) => Some(notice),
+        _ => None,
+    });
+    assert_eq!(
+        notice.expect("visible fallback wait").message,
+        "Retrying in 5m 11s"
+    );
+    tokio::time::advance(Duration::from_secs(310)).await;
+    assert!(futures::poll!(&mut retry).is_pending());
+    retry.await.expect("fallback should retry");
+    assert!(
+        (advice.deadline()..=advice.deadline() + Duration::from_millis(1))
+            .contains(&Instant::now())
+    );
+    assert!(!session.services.model_client.responses_websocket_enabled());
 }

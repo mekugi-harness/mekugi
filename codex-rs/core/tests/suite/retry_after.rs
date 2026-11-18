@@ -565,7 +565,7 @@ async fn responses_http_overload_respects_retry_limits(
     assert_eq!(error_events, 1);
     let expected_messages = if retry_after.is_some() {
         (1..=stream_max_retries)
-            .map(|retry| format!("Reconnecting... {retry}/{stream_max_retries}"))
+            .map(|retry| format!("Retrying now ({retry}/{stream_max_retries})"))
             .collect::<Vec<_>>()
     } else {
         Vec::new()
@@ -1718,7 +1718,22 @@ async fn websocket_connection_limit_retries_with_local_backoff() -> Result<()> {
         }
     );
     wait_for_retry(&mut telemetry, &retry).await;
-    wait_for_turn_completion(&test).await;
+    let event = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_) | EventMsg::TurnComplete(_))
+    })
+    .await;
+    if cfg!(debug_assertions) {
+        let EventMsg::StreamError(error) = event else {
+            panic!("debug builds report the first reconnect");
+        };
+        assert_eq!(error.message, "Reconnecting... 1/1");
+        wait_for_turn_completion(&test).await;
+    } else {
+        let EventMsg::TurnComplete(completed) = event else {
+            panic!("release builds should keep the first brief reconnect quiet");
+        };
+        assert_eq!(completed.error, None);
+    }
 
     let connections = server.connections();
     assert_eq!(connections.len(), 2);
@@ -2093,6 +2108,27 @@ async fn websocket_overload_retries_only_while_it_has_retry_after(
         let retry = telemetry.next_retry().await;
         assert_eq!(retry.attempt, attempt);
         assert!(retry.delay <= Duration::from_secs(1));
+        let EventMsg::StreamError(error) = wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::StreamError(_))
+        })
+        .await
+        else {
+            unreachable!("predicate guarantees a retry event");
+        };
+        assert_eq!(error.message, format!("Retrying in 1s ({attempt}/3)"));
+        let code = if attempt == 1 {
+            first_code
+        } else {
+            "server_is_overloaded"
+        };
+        assert_eq!(
+            error.additional_details.as_deref(),
+            Some(if code == "policy_capacity_unavailable" {
+                "Policy-restricted capacity is unavailable. Please try again later."
+            } else {
+                "Selected model is at capacity. Please try a different model."
+            })
+        );
         assert!(wait_for_retry(&mut telemetry, &retry).await >= Duration::from_secs(1));
     }
 
@@ -2131,7 +2167,7 @@ async fn websocket_overload_retries_only_while_it_has_retry_after(
     }
 
     assert_eq!(error_events, 1);
-    assert_eq!(stream_error_events, 2 + usize::from(cfg!(debug_assertions)));
+    assert_eq!(stream_error_events, 0, "no retry after terminal overload");
     assert_eq!(
         fallback_warning_events, 0,
         "websocket must not fall back to HTTP"
