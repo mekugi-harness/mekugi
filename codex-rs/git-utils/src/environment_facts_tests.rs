@@ -5,6 +5,11 @@ use std::sync::atomic::AtomicBool;
 
 use pretty_assertions::assert_eq;
 
+use super::GitCommitFact;
+use super::GitEnvironmentFacts;
+use super::GitFactList;
+use super::GitRepositoryFacts;
+use super::GitStatusEntry;
 use super::git_environment_facts;
 
 fn git(cwd: &Path, args: &[&str]) -> String {
@@ -38,16 +43,22 @@ fn git(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("UTF-8 fixture output")
 }
 
-fn status(facts: &str) -> &str {
-    let (_, status) = facts.split_once("Status:\n").expect("status section");
-    status
-        .split("HEAD in local remote-tracking branches:\n")
-        .next()
-        .unwrap()
+fn repository(facts: GitEnvironmentFacts) -> Box<GitRepositoryFacts> {
+    let GitEnvironmentFacts::Repository(repository) = facts else {
+        panic!("expected a repository, got {facts:?}");
+    };
+    repository
+}
+
+fn change(code: &str, path: &str) -> GitStatusEntry {
+    GitStatusEntry {
+        code: code.to_string(),
+        path: path.to_string(),
+    }
 }
 
 #[test]
-fn renders_staged_and_unstaged_status_from_one_index() {
+fn collects_staged_and_unstaged_status_from_one_index() {
     let directory = tempfile::tempdir().unwrap();
     let cwd = directory.path();
     git(cwd, &["init", "-b", "main"]);
@@ -79,19 +90,41 @@ fn renders_staged_and_unstaged_status_from_one_index() {
     std::fs::write(cwd.join("directory/file"), "reported as a directory").unwrap();
     let index = std::fs::read(cwd.join(".git/index")).unwrap();
 
-    let facts = git_environment_facts(cwd, &Arc::new(AtomicBool::new(false)));
+    let facts = repository(git_environment_facts(
+        cwd,
+        &Arc::new(AtomicBool::new(false)),
+    ));
     assert_eq!(
-        status(&facts),
-        "MM both\nM  staged\n M unstaged\n?? directory/\n?? untracked\n"
+        facts.status,
+        Some(GitFactList {
+            entries: vec![
+                change("MM", "both"),
+                change("M ", "staged"),
+                change(" M", "unstaged"),
+                change("??", "directory/"),
+                change("??", "untracked"),
+            ],
+            truncated: false,
+        })
     );
-    assert!(facts.contains(&format!(
-        "Branch: main\nHEAD: {}\nDefault branch: main\n",
-        sha.trim()
-    )));
-    assert!(facts.contains(&format!(
-        "HEAD in local remote-tracking branches:\norigin/main\nRecent commits:\n{} baseline\n",
-        sha.trim()
-    )));
+    assert_eq!(facts.branch, "main");
+    assert_eq!(facts.head, sha.trim());
+    assert_eq!(facts.default_branch.as_deref(), Some("main"));
+    let history = facts.history.expect("history for resolved HEAD");
+    assert_eq!(
+        history.remote_branches_containing_head,
+        Some(GitFactList {
+            entries: vec!["origin/main".to_string()],
+            truncated: false,
+        })
+    );
+    assert_eq!(
+        history.recent_commits,
+        Some(vec![GitCommitFact {
+            id: sha.trim().to_string(),
+            subject: "baseline".to_string(),
+        }])
+    );
     assert_eq!(std::fs::read(cwd.join(".git/index")).unwrap(), index);
 }
 
@@ -125,8 +158,11 @@ fn reports_dirty_submodules_without_running_their_filters() {
     std::fs::write(module.join("tracked"), "changed").unwrap();
     let interrupt = Arc::new(AtomicBool::new(false));
     assert_eq!(
-        status(&git_environment_facts(&repository, &interrupt)),
-        " M module\n"
+        self::repository(git_environment_facts(&repository, &interrupt)).status,
+        Some(GitFactList {
+            entries: vec![change(" M", "module")],
+            truncated: false
+        })
     );
 
     git(
@@ -139,8 +175,8 @@ fn reports_dirty_submodules_without_running_their_filters() {
     );
     std::fs::write(module.join(".gitattributes"), "tracked filter=probe\n").unwrap();
     assert_eq!(
-        status(&git_environment_facts(&repository, &interrupt)),
-        "unavailable\n"
+        self::repository(git_environment_facts(&repository, &interrupt)).status,
+        None
     );
     assert!(!repository.join("filter-ran").exists());
 }
@@ -152,24 +188,38 @@ fn reports_unborn_and_non_repository_cwds() {
     let interrupt = Arc::new(AtomicBool::new(false));
     assert_eq!(
         git_environment_facts(cwd, &interrupt),
-        "Git repository: no\n"
+        GitEnvironmentFacts::NotRepository
     );
     gix::init(cwd).unwrap();
     std::fs::write(cwd.join(".git/HEAD"), "ref: refs/heads/test-branch\n").unwrap();
-    let facts = git_environment_facts(cwd, &interrupt);
-    assert!(
-        facts.contains("Branch: test-branch\nHEAD: unborn\n"),
-        "{facts}"
+    let facts = repository(git_environment_facts(cwd, &interrupt));
+    assert_eq!(facts.branch, "test-branch");
+    assert_eq!(facts.head, "unborn");
+    assert_eq!(facts.history, None);
+    assert_eq!(
+        facts.status,
+        Some(GitFactList {
+            entries: Vec::new(),
+            truncated: false
+        })
     );
-    assert_eq!(status(&facts), "clean\n");
 }
 
 #[test]
 fn respects_global_ignore_configuration() {
     const WORKTREE: &str = "CODEX_TEST_FACTS_WORKTREE";
     if let Some(cwd) = std::env::var_os(WORKTREE) {
-        let facts = git_environment_facts(Path::new(&cwd), &Arc::new(AtomicBool::new(false)));
-        assert_eq!(status(&facts), "?? visible\n");
+        let facts = repository(git_environment_facts(
+            Path::new(&cwd),
+            &Arc::new(AtomicBool::new(false)),
+        ));
+        assert_eq!(
+            facts.status,
+            Some(GitFactList {
+                entries: vec![change("??", "visible")],
+                truncated: false
+            })
+        );
         return;
     }
 

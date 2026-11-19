@@ -571,10 +571,20 @@ async fn session_tmp_matches_world_facts_and_survives_exec_calls() -> Result<()>
         "scratch"
     );
     let requests = harness.request_bodies().await;
+    let contents = requests[0]["input"]
+        .as_array()
+        .expect("model request input")
+        .iter()
+        .filter_map(|item| item["content"].as_array())
+        .flatten();
+    let scratch = format!(
+        r#"<session_tmp env_var="SESSION_TMP">{}</session_tmp>"#,
+        path.display()
+    );
     assert!(
-        requests[0]
-            .to_string()
-            .contains(&format!("SESSION_TMP: {}", path.display()))
+        contents
+            .filter_map(|part| part["text"].as_str())
+            .any(|text| text.contains(&scratch))
     );
     std::fs::remove_file(path.join("probe"))?;
     std::fs::remove_dir(path)?;

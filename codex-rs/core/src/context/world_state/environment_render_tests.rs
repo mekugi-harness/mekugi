@@ -1,5 +1,12 @@
+use super::super::environment_facts::CapturedEnvironmentFacts;
 use crate::context::world_state::test_support::FragmentSectionTestExt as _;
 use crate::shell::ShellType;
+use codex_git_utils::GitCommitFact;
+use codex_git_utils::GitEnvironmentFacts;
+use codex_git_utils::GitFactList;
+use codex_git_utils::GitHistoryFacts;
+use codex_git_utils::GitRepositoryFacts;
+use codex_git_utils::GitStatusEntry;
 use codex_protocol_test_support::ContentItemTestExt;
 
 use super::*;
@@ -119,15 +126,128 @@ async fn environment_facts_render_without_a_second_timestamp() {
     let rendered = context.render().expect_text();
     assert!(rendered.contains("<current_date>2026-02-26</current_date>"));
     assert!(rendered.contains("<timezone>America/Los_Angeles</timezone>"));
-    assert!(rendered.contains(&format!("Platform: {}", std::env::consts::OS)));
+    assert!(rendered.contains(&format!(
+        "  <environment_facts>\n    <platform>{}</platform>\n",
+        std::env::consts::OS
+    )));
     #[cfg(unix)]
     assert!(
         rendered
             .lines()
-            .any(|line| { line.starts_with("Kernel: ") && !line.contains("unavailable") })
+            .any(|line| line.starts_with("    <kernel>") && !line.contains("unavailable"))
     );
-    assert!(rendered.contains("Git repository: no"));
+    assert!(
+        rendered.contains("    <git_repository status=\"absent\" />\n  </environment_facts>\n")
+    );
     assert!(!rendered.contains("Observed at:"));
+}
+
+#[tokio::test]
+async fn legacy_prose_snapshot_gets_structured_facts() {
+    let cwd = test_abs_path("/repo");
+    let previous = serde_json::json!({
+        "environments": {},
+        "facts": {
+            "cwd": cwd,
+            "text": "Platform: legacy-platform\n",
+            "restricted_reads": true
+        }
+    });
+    let mut policy = FileSystemSandboxPolicy::read_only();
+    policy.entries.push(FileSystemSandboxEntry::new(
+        cwd.join("private").into(),
+        FileSystemAccessMode::Deny,
+    ));
+    let permissions =
+        PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted);
+    let previous_facts = serde_json::from_value::<EnvironmentsSnapshot>(previous.clone())
+        .expect("read legacy snapshot")
+        .facts
+        .expect("legacy facts existed");
+    assert!(previous_facts.data.is_none());
+    let context = EnvironmentsState::default()
+        .with_facts(&cwd, &permissions, Some(&previous))
+        .await;
+
+    let rendered = context.render().expect_text();
+    assert!(rendered.contains(r#"<git_repository status="restricted_reads" />"#));
+    assert!(!rendered.contains("legacy-platform"));
+}
+
+#[test]
+fn serialize_environment_facts_with_git_status_and_session_tmp() {
+    let context = EnvironmentsState {
+        facts: Some(EnvironmentFacts {
+            cwd: test_abs_path("/repo"),
+            data: Some(CapturedEnvironmentFacts {
+                platform: "linux".to_string(),
+                home: Some("/home/<user>".to_string()),
+                os: Some("Debian".to_string()),
+                kernel: Some("Linux 6".to_string()),
+                git: GitEnvironmentFacts::Repository(Box::new(GitRepositoryFacts {
+                    worktree: Some("/work&tree".to_string()),
+                    linked_worktree: true,
+                    branch: "work".to_string(),
+                    head: "abcdef123".to_string(),
+                    default_branch: Some("main".to_string()),
+                    hooks_path: None,
+                    status: Some(GitFactList {
+                        entries: vec![GitStatusEntry {
+                            code: "??".to_string(),
+                            path: "<file>&".to_string(),
+                        }],
+                        truncated: true,
+                    }),
+                    history: Some(GitHistoryFacts {
+                        remote_branches_containing_head: Some(GitFactList {
+                            entries: vec!["origin/work".to_string()],
+                            truncated: false,
+                        }),
+                        recent_commits: Some(vec![GitCommitFact {
+                            id: "abcdef123".to_string(),
+                            subject: "fix <tag> & text".to_string(),
+                        }]),
+                        more_unpushed_commits: Some(Ok(2)),
+                    }),
+                })),
+            }),
+            restricted_reads: false,
+            session_tmp: None,
+        }),
+        ..Default::default()
+    }
+    .with_session_tmp(PathBuf::from("scratch & work"));
+
+    assert_eq!(
+        context.render().expect_text(),
+        r#"<environment_context>
+  <environment_facts>
+    <platform>linux</platform>
+    <home>/home/&lt;user&gt;</home>
+    <os>Debian</os>
+    <kernel>Linux 6</kernel>
+    <git_repository status="present">
+      <worktree>/work&amp;tree</worktree>
+      <linked_worktree>true</linked_worktree>
+      <branch>work</branch>
+      <head>abcdef123</head>
+      <default_branch>main</default_branch>
+      <hooks_path>unset (Git default)</hooks_path>
+      <status truncated="true">
+        <change code="??">&lt;file&gt;&amp;</change>
+      </status>
+      <remote_branches_containing_head>
+        <branch>origin/work</branch>
+      </remote_branches_containing_head>
+      <recent_commits>
+        <commit id="abcdef123">fix &lt;tag&gt; &amp; text</commit>
+      </recent_commits>
+      <more_unpushed_commits>2</more_unpushed_commits>
+    </git_repository>
+    <session_tmp env_var="SESSION_TMP">scratch &amp; work</session_tmp>
+  </environment_facts>
+</environment_context>"#
+    );
 }
 
 #[test]

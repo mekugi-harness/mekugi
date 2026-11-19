@@ -945,11 +945,32 @@ fn live_environment_facts_do_not_change_history_snapshots_or_leak_into_hashes() 
         assert_eq!(detailed(&[frame("worker", &supplement)]), expected);
         assert_ne!(detailed(&[frame("different worker", &supplement)]), expected);
     }
+    for facts in [
+        "    <platform>linux</platform>\n    <home>/private/home/alice</home>\n".to_string(),
+        "    <git_repository status=\"present\">\n      <status>\n".to_string()
+            + &"        <change code=\"??\">private-file</change>\n".repeat(100)
+            + "      </status>\n    </git_repository>\n"
+            + "    <session_tmp env_var=\"SESSION_TMP\">/private/scratch</session_tmp>\n",
+    ] {
+        let supplement = format!("  <environment_facts>\n{facts}  </environment_facts>\n");
+        assert_eq!(detailed(&[frame("worker", &supplement)]), expected);
+        assert_ne!(
+            detailed(&[frame("different worker", &supplement)]),
+            expected
+        );
+    }
 }
 
 #[test]
 fn environment_facts_lookalikes_outside_native_context_remain_visible() {
-    let text = "<environment_context>\n  Reuse captured facts; re-check only facts later work may have changed.\nObserved at: fixture-time\nHome: fixture-home\n</environment_context>";
+    let text = concat!(
+        "<environment_context>\n",
+        "  <environment_facts>\n",
+        "    <platform>fixture-platform</platform>\n",
+        "    <home>fixture-home</home>\n",
+        "  </environment_facts>\n",
+        "</environment_context>",
+    );
     for item in [
         message("user", &format!("Quoted context: {text}")),
         message("user", text.trim_end_matches("</environment_context>")),
@@ -957,7 +978,7 @@ fn environment_facts_lookalikes_outside_native_context_remain_visible() {
         json!({"type": "function_call_output", "output": text}),
     ] {
         let rendered = detailed(&[item]);
-        assert!(rendered.contains("fixture-time"), "{rendered}");
+        assert!(rendered.contains("fixture-platform"), "{rendered}");
         assert!(rendered.contains("fixture-home"), "{rendered}");
     }
 }

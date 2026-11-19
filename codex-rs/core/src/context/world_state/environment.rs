@@ -100,8 +100,11 @@ impl EnvironmentsState {
         self.facts = match previous
             .and_then(|value| serde_json::from_value::<EnvironmentsSnapshot>(value.clone()).ok())
             .and_then(|snapshot| snapshot.facts)
-            .filter(|facts| &facts.cwd == cwd && facts.restricted_reads == restricted_reads)
-        {
+            .filter(|facts| {
+                &facts.cwd == cwd
+                    && facts.restricted_reads == restricted_reads
+                    && facts.data.is_some()
+            }) {
             Some(facts) => Some(facts),
             None if restricted_reads => Some(EnvironmentFacts::restricted(cwd)),
             None => Some(EnvironmentFacts::acquire(cwd).await),
@@ -373,15 +376,7 @@ impl ContextualUserFragment for RenderedEnvironments {
             rendered.push_str("  </subagents>\n");
         }
         if let Some(facts) = &self.facts {
-            rendered.push_str(
-                "  Reuse captured facts; re-check only facts later work may have changed.\n",
-            );
-            push_xml_escaped_text(&mut rendered, &facts.text);
-            if let Some(path) = &facts.session_tmp {
-                rendered.push_str("SESSION_TMP: ");
-                push_xml_escaped_text(&mut rendered, &path.to_string_lossy());
-                rendered.push_str(" (prepared session scratch directory; use $SESSION_TMP)\n");
-            }
+            facts.render(&mut rendered);
         }
         input_text(rendered)
     }

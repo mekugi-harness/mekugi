@@ -810,9 +810,9 @@ async fn restricted_project_without_instructions_starts_successfully() -> Result
     assert!(
         context
             .iter()
-            .any(|text| text.contains("Git repository: unavailable (restricted reads)"))
+            .any(|text| text.contains(r#"<git_repository status="restricted_reads" />"#))
     );
-    assert!(context.iter().any(|text| text.contains("Home: ")));
+    assert!(context.iter().any(|text| text.contains("<home>")));
 
     Ok(())
 }

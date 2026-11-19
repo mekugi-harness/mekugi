@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -15,6 +14,8 @@ use gix::hash::ObjectId;
 use gix::revision::walk::Sorting;
 use gix::status::Item;
 use gix::status::index_worktree::iter::Summary;
+use serde::Deserialize;
+use serde::Serialize;
 
 const MAX_FIELD_BYTES: usize = 512;
 const MAX_STATUS_ROWS: usize = 32;
@@ -23,12 +24,62 @@ const MAX_REMOTE_REFS: usize = 4096;
 const MAX_SUBMODULE_DEPTH: usize = 16;
 const RECENT_COMMITS: usize = 5;
 
-/// Render local Git facts for the model's environment context without running commands or
+/// The result of discovering and inspecting a local Git worktree.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub enum GitEnvironmentFacts {
+    Unavailable,
+    NotRepository,
+    Repository(Box<GitRepositoryFacts>),
+}
+
+/// Facts available after discovery finds a worktree.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct GitRepositoryFacts {
+    pub worktree: Option<String>,
+    pub linked_worktree: bool,
+    pub branch: String,
+    pub head: String,
+    pub default_branch: Option<String>,
+    pub hooks_path: Option<String>,
+    pub status: Option<GitFactList<GitStatusEntry>>,
+    pub history: Option<GitHistoryFacts>,
+}
+
+/// Bounded results and whether additional entries were omitted.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct GitFactList<T> {
+    pub entries: Vec<T>,
+    pub truncated: bool,
+}
+
+/// Git porcelain status codes for the index and working tree, and their path.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct GitStatusEntry {
+    pub code: String,
+    pub path: String,
+}
+
+/// Local branch reachability and recent commit information for a resolved HEAD.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct GitHistoryFacts {
+    pub remote_branches_containing_head: Option<GitFactList<String>>,
+    pub recent_commits: Option<Vec<GitCommitFact>>,
+    pub more_unpushed_commits: Option<Result<usize, ()>>,
+}
+
+/// Abbreviated commit ID and commit subject.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct GitCommitFact {
+    pub id: String,
+    pub subject: String,
+}
+
+/// Collect local Git facts for the model's environment context without running commands or
 /// modifying the repository. The caller runs this on a bounded blocking worker and signals
 /// interruption on timeout or cancellation.
-pub fn git_environment_facts(cwd: &Path, interrupted: &Arc<AtomicBool>) -> String {
+pub fn git_environment_facts(cwd: &Path, interrupted: &Arc<AtomicBool>) -> GitEnvironmentFacts {
     if interrupted.load(Ordering::Relaxed) {
-        return "Git repository: unavailable\n".to_owned();
+        return GitEnvironmentFacts::Unavailable;
     }
 
     let mut permissions = gix::open::Permissions::default();
@@ -54,25 +105,16 @@ pub fn git_environment_facts(cwd: &Path, interrupted: &Arc<AtomicBool>) -> Strin
                     && cause.class() == gix::error::Class::NotFound
             }) =>
         {
-            return "Git repository: no\n".to_owned();
+            return GitEnvironmentFacts::NotRepository;
         }
-        Err(_) => return "Git repository: unavailable\n".to_owned(),
+        Err(_) => return GitEnvironmentFacts::Unavailable,
     };
     let Some(root) = repo.workdir() else {
-        return "Git repository: no\n".to_owned();
+        return GitEnvironmentFacts::NotRepository;
     };
 
-    let mut out = String::from("Git repository: yes\n");
-    if root != cwd {
-        let _ = writeln!(
-            out,
-            "Git worktree: {}",
-            field(root.to_string_lossy().as_bytes())
-        );
-    }
-    if repo.git_dir() != repo.common_dir() {
-        out.push_str("Linked worktree: true\n");
-    }
+    let worktree = (root != cwd).then(|| field(root.to_string_lossy().as_bytes()));
+    let linked_worktree = repo.git_dir() != repo.common_dir();
     let head = repo.head().ok();
     let branch = head.as_ref().map_or_else(
         || "unavailable".to_owned(),
@@ -92,31 +134,28 @@ pub fn git_environment_facts(cwd: &Path, interrupted: &Arc<AtomicBool>) -> Strin
         },
         |id| id.shorten_or_id().to_string(),
     );
-    let _ = writeln!(out, "Branch: {branch}\nHEAD: {head_display}");
     let head_id = head_id.map(gix::Id::detach);
 
     let remotes = remote_refs(&repo, interrupted);
-    let default_branch = remotes
-        .as_ref()
-        .ok()
-        .and_then(|refs| refs.default_branch.as_deref())
-        .unwrap_or("unavailable");
-    let _ = writeln!(out, "Default branch: {default_branch}");
-    let hooks = repo
+    let hooks_path = repo
         .config_snapshot()
         .string("core.hooksPath")
-        .map_or_else(|| "unset (Git default)".to_owned(), |path| field(&path));
-    let _ = writeln!(out, "Git hooks path: {hooks}");
-    out.push_str("Status:\n");
-    match worktree_status(&mut repo, interrupted, 0) {
-        Ok(status) => status.render(&mut out),
-        Err(_) => out.push_str("unavailable\n"),
-    }
+        .map(|path| field(&path));
+    let status = worktree_status(&mut repo, interrupted, 0)
+        .ok()
+        .map(Status::into_facts);
+    let history = head_id.map(|head| history_facts(&repo, head, &remotes, interrupted));
 
-    if let Some(head_id) = head_id {
-        append_history(&mut out, &repo, head_id, remotes, interrupted);
-    }
-    out
+    GitEnvironmentFacts::Repository(Box::new(GitRepositoryFacts {
+        worktree,
+        linked_worktree,
+        branch,
+        head: head_display,
+        default_branch: remotes.ok().and_then(|refs| refs.default_branch),
+        hooks_path,
+        status,
+        history,
+    }))
 }
 
 struct RemoteRefs {
@@ -155,41 +194,35 @@ fn remote_refs(repo: &Repository, interrupted: &AtomicBool) -> Result<RemoteRefs
     })
 }
 
-fn append_history(
-    out: &mut String,
+fn history_facts(
     repo: &Repository,
     head: ObjectId,
-    remotes: Result<RemoteRefs>,
+    remotes: &Result<RemoteRefs>,
     interrupted: &AtomicBool,
-) {
+) -> GitHistoryFacts {
     // Read the first page separately so that a failed remote walk doesn't hide recent commits.
     let recent = recent_commits(repo, head, interrupted);
     let containing = remotes
         .as_ref()
         .ok()
         .and_then(|refs| containing_branches(repo, head, refs, interrupted).ok());
-    out.push_str("HEAD in local remote-tracking branches:\n");
-    out.push_str(containing.as_deref().unwrap_or("unavailable\n"));
-    out.push_str("Recent commits:\n");
-    match &recent {
-        Ok(recent) => {
-            for (_, line) in recent {
-                let _ = writeln!(out, "{line}");
-            }
-        }
-        Err(_) => out.push_str("unavailable\n"),
-    }
-    if let (Ok(recent), Ok(refs)) = (recent, remotes)
+    let more_unpushed_commits = if let (Ok(recent), Ok(refs)) = (&recent, remotes)
         && !refs.branches.is_empty()
     {
-        let more = more_unpushed(repo, head, &refs, &recent, interrupted);
-        match more {
-            Ok(0) => {}
-            Ok(count) => {
-                let _ = writeln!(out, "(... {count} more unpushed commits)");
-            }
-            Err(_) => out.push_str("Further unpushed commits: unavailable\n"),
+        match more_unpushed(repo, head, refs, recent, interrupted) {
+            Ok(0) => None,
+            Ok(count) => Some(Ok(count)),
+            Err(_) => Some(Err(())),
         }
+    } else {
+        None
+    };
+    GitHistoryFacts {
+        remote_branches_containing_head: containing,
+        recent_commits: recent
+            .ok()
+            .map(|recent| recent.into_iter().map(|(_, commit)| commit).collect()),
+        more_unpushed_commits,
     }
 }
 
@@ -197,7 +230,7 @@ fn recent_commits(
     repo: &Repository,
     head: ObjectId,
     interrupted: &AtomicBool,
-) -> Result<Vec<(ObjectId, String)>> {
+) -> Result<Vec<(ObjectId, GitCommitFact)>> {
     repo.rev_walk([head])
         .sorting(Sorting::ByCommitTime(Default::default()))
         .selected(|_| !interrupted.load(Ordering::Relaxed))?
@@ -205,9 +238,9 @@ fn recent_commits(
         .map(|info| {
             let info = info?;
             let commit = info.object()?;
-            let id = info.id().shorten_or_id();
+            let id = info.id().shorten_or_id().to_string();
             let subject = field(&commit.message()?.summary());
-            Ok((info.id, format!("{id} {subject}")))
+            Ok((info.id, GitCommitFact { id, subject }))
         })
         .collect()
 }
@@ -217,9 +250,8 @@ fn containing_branches(
     head: ObjectId,
     refs: &RemoteRefs,
     interrupted: &AtomicBool,
-) -> Result<String> {
-    let mut out = String::new();
-    let mut matches = 0;
+) -> Result<GitFactList<String>> {
+    let mut entries = Vec::new();
     for (name, tip) in &refs.branches {
         ensure!(!interrupted.load(Ordering::Relaxed));
         for info in repo
@@ -227,28 +259,29 @@ fn containing_branches(
             .selected(|_| !interrupted.load(Ordering::Relaxed))?
         {
             if info?.id == head {
-                matches += 1;
-                if matches > MAX_REMOTE_ROWS {
-                    out.push_str("[truncated]\n");
-                    return Ok(out);
+                if entries.len() == MAX_REMOTE_ROWS {
+                    return Ok(GitFactList {
+                        entries,
+                        truncated: true,
+                    });
                 }
-                let _ = writeln!(out, "{}", field(name));
+                entries.push(field(name));
                 break;
             }
         }
     }
     ensure!(!interrupted.load(Ordering::Relaxed));
-    if out.is_empty() {
-        out.push_str("none\n");
-    }
-    Ok(out)
+    Ok(GitFactList {
+        entries,
+        truncated: false,
+    })
 }
 
 fn more_unpushed(
     repo: &Repository,
     head: ObjectId,
     refs: &RemoteRefs,
-    recent: &[(ObjectId, String)],
+    recent: &[(ObjectId, GitCommitFact)],
     interrupted: &AtomicBool,
 ) -> Result<usize> {
     ensure!(!interrupted.load(Ordering::Relaxed));
@@ -291,15 +324,17 @@ impl Status {
         }
     }
 
-    fn render(self, out: &mut String) {
-        if self.rows.is_empty() {
-            out.push_str("clean\n");
-        }
-        for ((_, path), [index, worktree]) in self.rows {
-            let _ = writeln!(out, "{index}{worktree} {}", field(&path));
-        }
-        if self.truncated {
-            out.push_str("[status truncated]\n");
+    fn into_facts(self) -> GitFactList<GitStatusEntry> {
+        GitFactList {
+            entries: self
+                .rows
+                .into_iter()
+                .map(|((_, path), code)| GitStatusEntry {
+                    code: code.into_iter().collect(),
+                    path: field(&path),
+                })
+                .collect(),
+            truncated: self.truncated,
         }
     }
 }

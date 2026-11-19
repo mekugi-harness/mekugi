@@ -395,8 +395,7 @@ async fn remote_test_env_exposes_target_shell_and_exec_guidance_to_model() -> Re
         .into_iter()
         .find(|text| text.starts_with("<environment_context>"))
         .context("environment context should be model visible")?;
-    assert!(!environment_context.contains("Git repository:"));
-    assert!(!environment_context.contains("SESSION_TMP:"));
+    assert!(!environment_context.contains("<environment_facts>"));
     // TODO(anp): Assert Wine-exec exposes a `C:\\...` cwd after model-visible paths preserve
     // target-native spelling instead of the Linux orchestrator's `/C:/...` representation.
     let expected_shell = match test_target_os() {

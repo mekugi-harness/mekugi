@@ -208,10 +208,16 @@ impl Normalizer {
             .into_owned();
         // OS/Git acquisition has its own tests. Its appended live facts do not belong in
         // history goldens: they contain host paths, timestamps and arbitrary repository data.
-        // Match only the native supplement, leaving the surrounding context and lookalikes intact.
-        const FACTS_START: &str =
+        if let Some((before, _)) = text.rsplit_once("\n  <environment_facts>\n")
+            && text.ends_with("  </environment_facts>\n</environment_context>")
+        {
+            return format!("{before}\n</environment_context>");
+        }
+
+        // Older recorded requests appended the same facts without an XML element.
+        const LEGACY_FACTS_START: &str =
             "  Reuse captured facts; re-check only facts later work may have changed.\n";
-        if let Some((before, facts)) = text.split_once(FACTS_START)
+        if let Some((before, facts)) = text.split_once(LEGACY_FACTS_START)
             && (facts.starts_with("Platform:") || facts.starts_with("Observed at:"))
             && let Some((_, after)) = facts.rsplit_once("</environment_context>")
         {

@@ -190,7 +190,7 @@ fn dedupe_file_system_entries(entries: &mut Vec<FileSystemSandboxEntry>) {
     entries.retain(|entry| seen.insert(entry.clone()));
 }
 
-fn push_text_element(rendered: &mut String, name: &str, value: &str) {
+pub(super) fn push_text_element(rendered: &mut String, name: &str, value: &str) {
     rendered.push_str(&format!("<{name}>"));
     push_xml_escaped_text(rendered, value);
     rendered.push_str(&format!("</{name}>"));
@@ -204,6 +204,9 @@ pub(crate) fn push_xml_escaped_text(rendered: &mut String, value: &str) {
             '>' => rendered.push_str("&gt;"),
             '"' => rendered.push_str("&quot;"),
             '\'' => rendered.push_str("&apos;"),
+            '\0'..='\u{8}' | '\u{b}' | '\u{c}' | '\u{e}'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => {
+                rendered.extend(ch.escape_default());
+            }
             _ => rendered.push(ch),
         }
     }
