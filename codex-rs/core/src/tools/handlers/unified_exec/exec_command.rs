@@ -58,12 +58,14 @@ pub(crate) struct ExecCommandHandlerOptions {
 pub struct ExecCommandHandler {
     options: ExecCommandHandlerOptions,
     lifetime: ExecCommandLifetime,
+    helper_guidance: String,
 }
 
 impl Default for ExecCommandHandler {
     fn default() -> Self {
         Self {
             lifetime: ExecCommandLifetime::Interactive,
+            helper_guidance: String::new(),
             options: ExecCommandHandlerOptions {
                 allow_tty: true,
                 exec_permission_approvals_enabled: false,
@@ -79,6 +81,7 @@ impl ExecCommandHandler {
         Self {
             options,
             lifetime: ExecCommandLifetime::Interactive,
+            helper_guidance: String::new(),
         }
     }
 
@@ -86,7 +89,13 @@ impl ExecCommandHandler {
         Self {
             options,
             lifetime: ExecCommandLifetime::OneShot,
+            helper_guidance: String::new(),
         }
+    }
+
+    pub(crate) fn with_helper_guidance(mut self, guidance: String) -> Self {
+        self.helper_guidance = guidance;
+        self
     }
 }
 
@@ -107,13 +116,14 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
             ExecCommandLifetime::Interactive => spec,
             ExecCommandLifetime::OneShot => one_shot_exec_command_spec(spec),
         };
-        if !self.options.allow_tty
-            && let ToolSpec::Function(spec) = &mut spec
-        {
-            spec.parameters
-                .properties
-                .get_or_insert_default()
-                .remove("tty");
+        if let ToolSpec::Function(spec) = &mut spec {
+            if !self.options.allow_tty {
+                spec.parameters
+                    .properties
+                    .get_or_insert_default()
+                    .remove("tty");
+            }
+            spec.description.push_str(&self.helper_guidance);
         }
         spec
     }

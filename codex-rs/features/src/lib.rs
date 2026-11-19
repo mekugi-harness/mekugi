@@ -318,6 +318,8 @@ pub enum Feature {
     IncrementalToolsLegacyGcp,
     /// Suppress the model ID announcement in incremental context after a model switch.
     SuppressModelChangeAnnouncements,
+    /// Ask native children to structure substantial replies to their parent.
+    ChildReplySummary,
     /// Preserve inherited tool declarations in MCP-disabled prediction forks.
     PredictionPreserveParentTools,
     /// Diff CodeModeOnly exec definitions within the incremental tool catalog.
@@ -1857,6 +1859,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "suppress_model_change_announcements",
         stage: Stage::Stable,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::ChildReplySummary,
+        key: "child_reply_summary",
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::PredictionPreserveParentTools,

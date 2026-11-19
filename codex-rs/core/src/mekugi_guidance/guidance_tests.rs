@@ -1,0 +1,36 @@
+use std::os::unix::fs::PermissionsExt;
+
+use pretty_assertions::assert_eq;
+
+use super::shell_guidance;
+
+#[test]
+fn missing_helpers_leave_native_shell_description_alone() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    assert_eq!(shell_guidance(directory.path().as_os_str()), "");
+    Ok(())
+}
+
+#[test]
+fn available_helpers_use_the_native_command_entry() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let mcat = directory.path().join("mcat");
+    std::fs::write(&mcat, "")?;
+    std::fs::set_permissions(mcat, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::write(directory.path().join("mrun"), "")?;
+    let mut description = "Runs a shell command.".to_string();
+    description.push_str(&shell_guidance(directory.path().as_os_str()));
+    let entry = codex_code_mode::render_code_mode_sample(
+        &description,
+        "exec_command",
+        "args",
+        "{cmd: string}".to_string(),
+        "string".to_string(),
+    );
+
+    assert!(entry.starts_with("Runs a shell command.\n\n### Session shell helpers"));
+    assert!(entry.contains("#### `mcat`\n\nRead UTF-8 files or inclusive line ranges."));
+    assert!(!entry.contains("#### `mrun`"));
+    assert!(entry.contains("exec_command(args: {cmd: string}): Promise<string>"));
+    Ok(())
+}

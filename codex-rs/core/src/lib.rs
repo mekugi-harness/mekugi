@@ -115,6 +115,7 @@ pub(crate) mod mcp;
 mod mcp_skill_dependencies;
 mod mcp_tool_approval_templates;
 mod mcp_tool_exposure;
+mod mekugi_guidance;
 mod model_search;
 mod network_policy_decision;
 pub use mcp::McpManager;

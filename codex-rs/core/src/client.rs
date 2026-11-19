@@ -130,6 +130,7 @@ use crate::context::ContextualUserFragment;
 use crate::cyber_access_program;
 use crate::feedback_tags;
 use crate::responses_metadata::CodexResponsesMetadata;
+use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::subagent_header_value;
 use crate::util::emit_feedback_auth_recovery_tags;
 use codex_login::auth::AgentIdentityAuthPolicy;
@@ -299,6 +300,7 @@ pub struct ModelClient {
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
     restored_history: bool,
+    child_reply_summary: bool,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     executed_tool_calls: Option<ExecutedToolCalls>,
     // Resolved once when the session is created, like other session feature flags.
@@ -629,12 +631,18 @@ impl ModelClient {
             event_sender: None,
             http_client_factory,
             restored_history: false,
+            child_reply_summary: false,
             request_contributors,
             executed_tool_calls: None,
             api_key_cyber_access_programs:
                 cyber_access_program::ApiKeyCyberAccessPrograms::UnsupportedProvider,
             required_cyber_access_programs: None,
         }
+    }
+
+    pub(crate) fn with_child_reply_summary(mut self, enabled: bool) -> Self {
+        self.child_reply_summary = enabled;
+        self
     }
 
     pub(crate) fn with_executed_tool_calls(mut self, recorder: ExecutedToolCalls) -> Self {
@@ -1200,6 +1208,23 @@ impl ModelClient {
             instructions.set_id(Some(ResponseItemId::with_suffix(
                 "msg",
                 Uuid::new_v5(&prefix_namespace, prompt.base_instructions.text.as_bytes()),
+            )));
+            prefix.push(instructions);
+        }
+        if matches!(
+            self.state.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) && matches!(
+            responses_metadata.request_kind,
+            Some(CodexResponsesRequestKind::Turn | CodexResponsesRequestKind::Prewarm)
+        ) && self.child_reply_summary
+        {
+            let guidance = crate::mekugi_guidance::CHILD_REPLY_SUMMARY;
+            let mut instructions =
+                ContextualUserFragment::into(crate::context::DeveloperInstructions::new(guidance));
+            instructions.set_id(Some(ResponseItemId::with_suffix(
+                "msg",
+                Uuid::new_v5(&prefix_namespace, guidance.as_bytes()),
             )));
             prefix.push(instructions);
         }

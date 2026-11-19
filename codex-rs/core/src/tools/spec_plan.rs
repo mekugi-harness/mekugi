@@ -1278,14 +1278,32 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
         include_environment_id,
         include_windows_shell_guidance: should_include_windows_shell_guidance(context.environments),
     };
-    if features.enabled(Feature::UnifiedExec) {
-        registry.add(ExecCommandHandler::new(options));
-        registry.add(WriteStdinHandler);
+    let helper_guidance = context
+        .environments
+        .primary()
+        .filter(|environment| !environment.environment().is_remote())
+        .and_then(|environment| {
+            crate::exec_env::create_env(
+                environment.shell_environment_policy(),
+                /*thread_id*/ None,
+            )
+            .remove("PATH")
+        })
+        .map_or_else(String::new, |path| {
+            crate::mekugi_guidance::shell_guidance(path.as_ref())
+        });
+    let unified_exec = features.enabled(Feature::UnifiedExec);
+    let command = if unified_exec {
+        ExecCommandHandler::new(options)
     } else {
         // Managed requirements are the only configuration path that can keep
         // unified exec disabled. Preserve command execution without exposing a
         // resumable process or write_stdin authority prohibited by policy.
-        registry.add(ExecCommandHandler::one_shot(options));
+        ExecCommandHandler::one_shot(options)
+    };
+    registry.add(command.with_helper_guidance(helper_guidance));
+    if unified_exec {
+        registry.add(WriteStdinHandler);
     }
 }
 
