@@ -75,17 +75,36 @@ pub(crate) async fn acquire_selection(
     cancellation: &CancellationToken,
     outcomes: Option<&mut Vec<SourceAcquisitionResult>>,
 ) -> CodexResult<Option<String>> {
-    if selection.sources.is_empty() {
+    acquire_sources(
+        session,
+        step,
+        selection.sources.clone(),
+        false,
+        cancellation,
+        outcomes,
+    )
+    .await
+}
+
+async fn acquire_sources(
+    session: &Arc<Session>,
+    step: &Arc<StepContext>,
+    sources: Vec<String>,
+    recipient_message: bool,
+    cancellation: &CancellationToken,
+    outcomes: Option<&mut Vec<SourceAcquisitionResult>>,
+) -> CodexResult<Option<String>> {
+    if sources.is_empty() {
         return Ok(None);
     }
-    check_capacity(selection.sources.iter().map(String::len).sum())?;
+    check_capacity(sources.iter().map(String::len).sum())?;
     let environment = resolve_tool_environment(&step.environments, None)
         .map_err(|error| CodexErr::Fatal(format!("Reload acquisition: {error}")))?;
     // Dropping a native read cannot install a partially acquired replacement context.
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(CodexErr::TurnAborted),
-        body = read_sources(session, step, environment, selection.sources.clone(), cancellation, outcomes) => {
+        body = read_sources(session, step, environment, sources, recipient_message, cancellation, outcomes) => {
             let body = body?;
             if body.is_empty() { return Ok(None); }
             let body = format!(
@@ -102,6 +121,7 @@ async fn read_sources(
     step: &Arc<StepContext>,
     environment: &TurnEnvironment,
     sources: Vec<String>,
+    recipient_message: bool,
     cancellation: &CancellationToken,
     mut outcomes: Option<&mut Vec<SourceAcquisitionResult>>,
 ) -> CodexResult<String> {
@@ -117,6 +137,7 @@ async fn read_sources(
     let mut files: HashMap<ResolvedSource, Result<SourceBody, String>> = HashMap::new();
     let mut seen = HashSet::new();
     let mut changes_seen = HashSet::new();
+    let mut omitted_change = false;
     let mut output = String::new();
     let mut bodies = Vec::new();
     // Breadth-first acquisition encounters the shortest reference depth first, so cycles and
@@ -184,9 +205,11 @@ async fn read_sources(
                 continue;
             }
             let command = std::iter::once("mchanges".to_string())
+                .chain(recipient_message.then(|| "--for-recipient".to_string()))
                 .chain(ids.iter().cloned())
                 .collect();
             match read_external(session, step, environment, command, cancellation).await {
+                Ok(body) if recipient_message && body.is_empty() => omitted_change = true,
                 Ok(body) => {
                     append(Ok(&body))?;
                 }
@@ -274,6 +297,9 @@ async fn read_sources(
             check_capacity(pending_bytes)?;
             pending.push_back((nested, nested_base.clone(), depth + 1));
         }
+    }
+    if omitted_change && output.is_empty() {
+        return Ok(output);
     }
     // The source envelope preserves byte boundaries for Mekugi's existing output projection.
     // Framing and failures are not source bytes, even when they contain marker lookalikes.
@@ -668,10 +694,8 @@ pub(crate) async fn acquire_message(
     message: &str,
     cancellation: &CancellationToken,
 ) -> CodexResult<String> {
-    let selection = ReloadSelection {
-        sources: references(message),
-    };
-    let Some(sources) = acquire_selection(session, step, &selection, cancellation, None).await?
+    let Some(sources) =
+        acquire_sources(session, step, references(message), true, cancellation, None).await?
     else {
         return Ok(message.to_string());
     };
@@ -710,9 +734,13 @@ pub(crate) fn record_user_sources<'a>(
         let step = session
             .capture_speculative_step_context(Arc::clone(turn), &cancellation)
             .await?;
-        let acquired = acquire_message(session, &step, message, &cancellation).await?;
-        if let Some(body) = acquired.get(message.len() + 2..) {
-            record_source_output(session, &step, "attachments", body.to_string()).await;
+        let selection = ReloadSelection {
+            sources: references(message),
+        };
+        if let Some(body) =
+            acquire_selection(session, &step, &selection, &cancellation, None).await?
+        {
+            record_source_output(session, &step, "attachments", body).await;
         }
         Ok(())
     })
