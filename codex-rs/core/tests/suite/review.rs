@@ -771,11 +771,8 @@ async fn review_uses_updated_turn_permissions_and_approval_policy() {
         "review should use the updated approval policy"
     );
     assert!(
-        request
-            .message_input_texts("developer")
-            .iter()
-            .any(|text| text.contains("REVIEW MODEL ONLY")),
-        "review should use its own model's token-budget defaults"
+        !request.body_contains_text("REVIEW MODEL ONLY"),
+        "review should use the configured budget rather than model-owned defaults"
     );
     assert!(
         !request

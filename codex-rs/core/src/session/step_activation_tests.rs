@@ -699,23 +699,9 @@ async fn submitted_sparse_updates_preserve_captured_steps_and_ordering() {
             origin: ModelOrigin::ExplicitConfig
         }
     );
-    let initial_budget = turn
-        .config
-        .token_budget
-        .clone()
-        .expect("initial model budget");
-    let destination_budget = crate::config::TokenBudgetConfig {
-        guidance_message: Some(format!("Guidance for {MODEL_B}.")),
-        ..initial_budget.clone()
-    };
-    assert_eq!(
-        [&before, &during, &after].map(|step| step.token_budget.clone()),
-        [
-            Some(initial_budget.clone()),
-            Some(initial_budget),
-            Some(destination_budget),
-        ]
-    );
+    for step in [&before, &during, &after] {
+        assert_eq!(step.token_budget, turn.config.token_budget);
+    }
     assert_eq!(
         [&before, &during, &after].map(|step| {
             (
