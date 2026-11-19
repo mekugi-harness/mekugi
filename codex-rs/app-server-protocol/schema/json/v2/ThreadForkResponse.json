@@ -2703,6 +2703,13 @@
             "agentThreadId": {
               "type": "string"
             },
+            "assignment": {
+              "description": "Accepted plaintext assignment on start, absent for encrypted or older starts.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "id": {
               "type": "string"
             },
@@ -2810,6 +2817,40 @@
             "type"
           ],
           "title": "ImageViewThreadItem",
+          "type": "object"
+        },
+        {
+          "description": "Completed tool-free exchange observed by the caller, never recipient input.",
+          "properties": {
+            "answer": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "question": {
+              "type": "string"
+            },
+            "target": {
+              "description": "Canonical local path, or the exact thread ID for a foreign target.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "agentSideQuestion"
+              ],
+              "title": "AgentSideQuestionThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "answer",
+            "id",
+            "question",
+            "target",
+            "type"
+          ],
+          "title": "AgentSideQuestionThreadItem",
           "type": "object"
         },
         {

@@ -3,6 +3,7 @@
 export type { AbsolutePathBuf } from "./AbsolutePathBuf";
 export type { AgentMessageInputContent } from "./AgentMessageInputContent";
 export type { AgentPath } from "./AgentPath";
+export type { AgentSideQuestionItem } from "./AgentSideQuestionItem";
 export type { AgentStatus } from "./AgentStatus";
 export type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
 export type { ApplyPatchApprovalResponse } from "./ApplyPatchApprovalResponse";
