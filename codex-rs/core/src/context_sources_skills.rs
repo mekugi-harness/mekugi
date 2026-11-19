@@ -128,7 +128,9 @@ impl<'a> SkillSources<'a> {
                 Ok(SourceBody {
                     text: String::from_utf8(bytes).map_err(|error| error.to_string())?,
                     relative_to: None,
-                    expand_references: true,
+                    expand_references: reference.split_once('/').is_none_or(|(_, path)| {
+                        super::expands_references(path.rsplit('/').next().unwrap_or(path))
+                    }),
                 })
             }
             None => match self.native_path(access, reference).await? {

@@ -290,6 +290,14 @@ async fn read_sources(
     Ok(result)
 }
 
+fn expands_references(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        ["md", "txt", "json"]
+            .iter()
+            .any(|kind| ext.eq_ignore_ascii_case(kind))
+    })
+}
+
 async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<SourceBody, String> {
     let metadata = access
         .get_metadata(path, GetMetadataOptions::default())
@@ -324,7 +332,7 @@ async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<Sou
         .map(|text| SourceBody {
             text,
             relative_to: path.parent(),
-            expand_references: true,
+            expand_references: path.basename().as_deref().is_some_and(expands_references),
         })
         .map_err(|error| error.to_string())
 }
@@ -852,9 +860,13 @@ mod tests {
     #[tokio::test]
     async fn explicit_acquisition_freezes_sources_errors_and_keeps_reset_selection() {
         let (directory, session, step) = fixture().await;
-        std::fs::write(directory.path().join("first"), "FIRST @second @AGENTS.md").unwrap();
-        std::fs::write(directory.path().join("second"), "SECOND @third").unwrap();
-        std::fs::write(directory.path().join("third"), "THIRD @fourth").unwrap();
+        std::fs::write(
+            directory.path().join("first.json"),
+            "FIRST @second.md @AGENTS.md",
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("second.md"), "SECOND @third.txt").unwrap();
+        std::fs::write(directory.path().join("third.txt"), "THIRD @fourth").unwrap();
         std::fs::write(directory.path().join("fourth"), "EXCLUDED_DEPTH").unwrap();
         std::fs::write(directory.path().join("AGENTS.md"), "HOST_ONLY").unwrap();
         let retained = ReloadSelection {
@@ -865,11 +877,11 @@ mod tests {
                 selection: retained.clone(),
             })
             .await;
-        let message = "Read @first @missing. Keep \\@literal and bare.rs unchanged.";
+        let message = "Read @first.json @missing. Keep \\@literal and bare.rs unchanged.";
         let frozen = acquire_message(&session, &step, message, &CancellationToken::new())
             .await
             .unwrap();
-        std::fs::write(directory.path().join("first"), "CHANGED").unwrap();
+        std::fs::write(directory.path().join("first.json"), "CHANGED").unwrap();
         std::fs::write(directory.path().join("missing"), "LATER").unwrap();
         assert!(frozen.starts_with(message));
         for expected in [
@@ -892,15 +904,19 @@ mod tests {
         let (directory, session, step) = fixture().await;
         std::fs::create_dir(directory.path().join("sub")).unwrap();
         std::fs::write(
-            directory.path().join("sub/first"),
-            "EXCLUDED @not-selected\nINCLUDED @second\n",
+            directory.path().join("sub/first.md"),
+            "EXCLUDED @not-selected\nINCLUDED @second.rs\n",
         )
         .unwrap();
-        std::fs::write(directory.path().join("sub/second"), "BESIDE_SOURCE").unwrap();
+        std::fs::write(
+            directory.path().join("sub/second.rs"),
+            "BESIDE_SOURCE @ignored",
+        )
+        .unwrap();
         let text = acquire_message(
             &session,
             &step,
-            "Read @sub/first#L2 @sub/first#L9",
+            "Read @sub/first.md#L2 @sub/first.md#L9",
             &CancellationToken::new(),
         )
         .await
@@ -908,6 +924,7 @@ mod tests {
         assert!(text.contains("INCLUDED"));
         assert!(text.contains("BESIDE_SOURCE"));
         assert!(text.contains("requested lines 9-9"));
+        assert!(!text.contains(r#"Source "@ignored""#));
         assert!(!text.contains("EXCLUDED"));
         assert!(!text.contains("not-selected"));
     }
