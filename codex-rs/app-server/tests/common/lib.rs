@@ -11,6 +11,7 @@ mod responses;
 mod rollout;
 mod rpc_delay;
 mod test_app_server;
+pub mod websocket;
 
 pub use analytics_server::start_analytics_events_server;
 pub use auth_fixtures::ChatGptAuthFixture;

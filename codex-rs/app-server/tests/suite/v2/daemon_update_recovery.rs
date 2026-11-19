@@ -1,11 +1,11 @@
 //! Best-effort loaded-thread snapshots during managed app-server shutdown.
 
-use super::connection_handling_websocket::DEFAULT_READ_TIMEOUT;
-use super::connection_handling_websocket::create_config_toml;
 use anyhow::Context;
 use anyhow::Result;
 use app_test_support::DEFAULT_APP_SERVER_TEST_ARGS;
 use app_test_support::create_final_assistant_message_sse_response;
+use app_test_support::websocket::DEFAULT_READ_TIMEOUT;
+use app_test_support::websocket::create_config_toml;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RequestId;

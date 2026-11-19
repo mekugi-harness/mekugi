@@ -1,20 +1,20 @@
 //! Signal-driven shutdown tests for Unix websocket servers.
 
-use super::connection_handling_websocket::DEFAULT_READ_TIMEOUT;
-use super::connection_handling_websocket::WsClient;
-use super::connection_handling_websocket::connect_websocket;
-use super::connection_handling_websocket::create_config_toml;
-use super::connection_handling_websocket::read_error_for_id;
-use super::connection_handling_websocket::read_jsonrpc_message;
-use super::connection_handling_websocket::read_notification_for_method;
-use super::connection_handling_websocket::read_response_for_id;
-use super::connection_handling_websocket::send_request;
-use super::connection_handling_websocket::spawn_websocket_server;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::to_response;
+use app_test_support::websocket::DEFAULT_READ_TIMEOUT;
+use app_test_support::websocket::WsClient;
+use app_test_support::websocket::connect_websocket;
+use app_test_support::websocket::create_config_toml;
+use app_test_support::websocket::read_error_for_id;
+use app_test_support::websocket::read_jsonrpc_message;
+use app_test_support::websocket::read_notification_for_method;
+use app_test_support::websocket::read_response_for_id;
+use app_test_support::websocket::send_request;
+use app_test_support::websocket::spawn_websocket_server;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::InitializeCapabilities;
 use codex_app_server_protocol::InitializeParams;

@@ -668,12 +668,12 @@ async fn read_is_passive_and_canceled_login_can_be_retried_immediately() -> Resu
 
 #[tokio::test]
 async fn disconnect_cancels_only_the_owning_connections_login() -> Result<()> {
-    use super::connection_handling_websocket::connect_websocket;
-    use super::connection_handling_websocket::read_error_for_id;
-    use super::connection_handling_websocket::read_notification_for_method;
-    use super::connection_handling_websocket::read_response_for_id;
-    use super::connection_handling_websocket::send_request;
-    use super::connection_handling_websocket::spawn_websocket_server;
+    use app_test_support::websocket::connect_websocket;
+    use app_test_support::websocket::read_error_for_id;
+    use app_test_support::websocket::read_notification_for_method;
+    use app_test_support::websocket::read_response_for_id;
+    use app_test_support::websocket::send_request;
+    use app_test_support::websocket::spawn_websocket_server;
     let home = TempDir::new()?;
     let oauth = MockServer::start().await;
     std::fs::write(home.path().join("config.toml"), gateway_config(&oauth))?;

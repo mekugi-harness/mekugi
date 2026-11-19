@@ -1,12 +1,12 @@
 //! Verify that startup configuration controls compression on the public RPC listener.
 
-use super::connection_handling_websocket::DEFAULT_READ_TIMEOUT;
-use super::connection_handling_websocket::create_config_toml;
-use super::connection_handling_websocket::spawn_websocket_server_with_args;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
+use app_test_support::websocket::DEFAULT_READ_TIMEOUT;
+use app_test_support::websocket::create_config_toml;
+use app_test_support::websocket::spawn_websocket_server_with_args;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_transport::WEBSOCKET_COMPRESSION_HEADER;

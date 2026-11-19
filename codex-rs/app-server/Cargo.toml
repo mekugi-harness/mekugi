@@ -139,7 +139,6 @@ base64 = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 core_test_support = { workspace = true }
 flate2 = { workspace = true }
-hmac = { workspace = true }
 http = { workspace = true }
 insta = { workspace = true }
 keyring = { workspace = true }

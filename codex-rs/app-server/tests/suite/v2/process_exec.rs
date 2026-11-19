@@ -17,8 +17,8 @@ use tokio::time::sleep;
 use tokio::time::timeout;
 use wiremock::MockServer;
 
-use super::connection_handling_websocket::DEFAULT_READ_TIMEOUT;
-use super::connection_handling_websocket::create_config_toml;
+use app_test_support::websocket::DEFAULT_READ_TIMEOUT;
+use app_test_support::websocket::create_config_toml;
 
 #[tokio::test]
 async fn process_spawn_returns_before_exit_and_emits_exit_notification() -> Result<()> {

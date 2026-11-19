@@ -275,12 +275,14 @@ dependencies = [
  "codex-protocol",
  "codex-utils-cargo-bin",
  "core_test_support",
+ "futures",
  "pretty_assertions",
  "serde",
  "serde_json",
  "shlex",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "url",
  "uuid",
@@ -1931,7 +1933,6 @@ dependencies = [
  "core_test_support",
  "flate2",
  "futures",
- "hmac 0.12.1",
  "http 1.4.0",
  "insta",
  "keyring",
@@ -2035,6 +2036,37 @@ dependencies = [
 [[package]]
 name = "codex-app-server-protocol-noop-macros"
 version = "0.170.0"
+
+[[package]]
+name = "codex-app-server-subprocess-tests"
+version = "0.170.0"
+dependencies = [
+ "anyhow",
+ "app_test_support",
+ "base64 0.22.1",
+ "codex-app-server-protocol",
+ "codex-app-server-transport",
+ "codex-core",
+ "codex-exec-server",
+ "codex-features",
+ "codex-http-client",
+ "codex-protocol",
+ "codex-utils-absolute-path",
+ "codex-utils-cargo-bin",
+ "core_test_support",
+ "futures",
+ "hmac 0.12.1",
+ "http 1.4.0",
+ "pretty_assertions",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "test-case",
+ "time",
+ "tokio",
+ "tokio-tungstenite",
+ "wiremock",
+]
 
 [[package]]
 name = "codex-app-server-transport"

@@ -29,14 +29,14 @@ use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio::time::timeout;
 
-use super::connection_handling_websocket::DEFAULT_READ_TIMEOUT;
-use super::connection_handling_websocket::assert_no_message;
-use super::connection_handling_websocket::connect_websocket;
-use super::connection_handling_websocket::create_config_toml;
-use super::connection_handling_websocket::read_jsonrpc_message;
-use super::connection_handling_websocket::send_initialize_request;
-use super::connection_handling_websocket::send_request;
-use super::connection_handling_websocket::spawn_websocket_server;
+use app_test_support::websocket::DEFAULT_READ_TIMEOUT;
+use app_test_support::websocket::assert_no_message;
+use app_test_support::websocket::connect_websocket;
+use app_test_support::websocket::create_config_toml;
+use app_test_support::websocket::read_jsonrpc_message;
+use app_test_support::websocket::send_initialize_request;
+use app_test_support::websocket::send_request;
+use app_test_support::websocket::spawn_websocket_server;
 
 #[tokio::test]
 async fn command_exec_without_streams_can_be_terminated() -> Result<()> {
@@ -1301,7 +1301,7 @@ async fn wait_for_command_exec_outputs_contains(
 
 enum CommandExecDeltaReader<'a> {
     Mcp(&'a mut TestAppServer),
-    Websocket(&'a mut super::connection_handling_websocket::WsClient),
+    Websocket(&'a mut app_test_support::websocket::WsClient),
 }
 
 #[derive(Default)]
@@ -1355,7 +1355,7 @@ async fn collect_command_exec_output_until(
 }
 
 async fn read_command_exec_delta_ws(
-    stream: &mut super::connection_handling_websocket::WsClient,
+    stream: &mut app_test_support::websocket::WsClient,
 ) -> Result<CommandExecOutputDeltaNotification> {
     loop {
         let message = read_jsonrpc_message(stream).await?;
@@ -1415,7 +1415,7 @@ fn insert_command_exec_config(codex_home: &Path, inserted_config: &str) -> Resul
 }
 
 async fn read_initialize_response(
-    stream: &mut super::connection_handling_websocket::WsClient,
+    stream: &mut app_test_support::websocket::WsClient,
     request_id: i64,
 ) -> Result<()> {
     loop {

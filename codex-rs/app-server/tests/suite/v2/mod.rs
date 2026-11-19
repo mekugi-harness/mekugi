@@ -18,10 +18,7 @@ mod bedrock_gov_cloud;
 mod bedrock_service_tier;
 mod bedrock_setup;
 mod client_metadata;
-mod code_mode_host;
 mod collaboration_mode_list;
-#[cfg(unix)]
-mod command_exec;
 mod compaction;
 #[path = "config_model_provider_requirements_tests.rs"]
 mod config_model_provider_requirements;
@@ -36,14 +33,6 @@ mod config_requirements_login;
 mod config_rpc;
 #[path = "config_server_tests.rs"]
 mod config_server;
-#[cfg(unix)]
-#[path = "connection_handling_stdio_tests.rs"]
-mod connection_handling_stdio;
-mod connection_handling_websocket;
-#[path = "connection_handling_websocket_compression_tests.rs"]
-mod connection_handling_websocket_compression;
-#[cfg(unix)]
-mod connection_handling_websocket_unix;
 #[path = "critical_path_analytics_tests.rs"]
 mod critical_path_analytics;
 #[cfg(unix)]
