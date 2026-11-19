@@ -5022,30 +5022,28 @@
     },
     "TokenBudgetConfigToml": {
       "additionalProperties": false,
+      "description": "Token budgeting is always enabled in Mekugi.",
       "properties": {
         "auto_compact_fallback_buffer_tokens": {
-          "description": "Additional tokens available after the compaction threshold for fallback note-taking.",
+          "description": "Positive fallback buffer in tokens. No buffer is reserved without a fallback prompt.",
           "format": "int64",
           "minimum": 1.0,
           "type": "integer"
         },
         "auto_compact_fallback_prompt": {
-          "description": "Developer message sampled before an automatic context-window rollover.",
-          "maxLength": 2000,
+          "description": "Legacy preference, ignored. No custom prompt is sampled before rollover.",
           "type": "string"
         },
         "enabled": {
+          "description": "Legacy preference, ignored. Token budgeting is always enabled.",
           "type": "boolean"
         },
         "guidance_message": {
-          "description": "Guidance appended to the context-window metadata in a developer message.",
-          "maxLength": 2000,
+          "description": "Legacy preference, ignored. No custom context-window guidance is appended.",
           "type": "string"
         },
         "reminder_message_template": {
-          "description": "Reminder template. `{n_remaining}` is replaced with the tokens remaining before auto-compaction.",
-          "maxLength": 2000,
-          "minLength": 1,
+          "description": "Legacy preference, ignored. Reminders use the bundled template.",
           "type": "string"
         },
         "reminder_threshold_tokens": {
@@ -5055,7 +5053,7 @@
           "type": "integer"
         },
         "use_history_notes_extension": {
-          "description": "Whether to expose the built-in history and notes extension.",
+          "description": "Legacy preference, ignored. The history and notes extension is not enabled by this setting.",
           "type": "boolean"
         }
       },

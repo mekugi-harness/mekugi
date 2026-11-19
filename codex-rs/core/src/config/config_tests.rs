@@ -746,34 +746,37 @@ async fn load_config_resolves_tool_registry_config() -> std::io::Result<()> {
 
 #[tokio::test]
 async fn load_config_resolves_token_budget_config() -> std::io::Result<()> {
+    let legacy_text = "x".repeat(2_001);
+    let legacy = format!(
+        r#"
+[features.token_budget]
+enabled = false
+use_history_notes_extension = true
+reminder_message_template = ""
+guidance_message = "{legacy_text}"
+auto_compact_fallback_prompt = "{legacy_text}"
+"#
+    );
     for (config_toml, expected) in [
+        ("", TokenBudgetConfig::default()),
         (
-            "[features]\ntoken_budget = true\n",
-            Some(TokenBudgetConfig::default()),
+            "features.token_budget = false",
+            TokenBudgetConfig::default(),
         ),
-        (
-            "features.context_management.experimental_mode = true\n",
-            None,
-        ),
+        ("features.token_budget = true", TokenBudgetConfig::default()),
+        (&legacy, TokenBudgetConfig::default()),
         (
             r#"
 [features.token_budget]
-enabled = true
-use_history_notes_extension = true
 reminder_threshold_tokens = 16000
-reminder_message_template = "Custom reminder: {n_remaining} tokens."
-guidance_message = "Preserve important state before compaction."
-auto_compact_fallback_prompt = "  Write notes immediately.  "
 auto_compact_fallback_buffer_tokens = 8000
+reminder_message_template = "ignored"
 "#,
-            Some(TokenBudgetConfig {
-                use_history_notes_extension: true,
+            TokenBudgetConfig {
                 reminder_threshold_tokens: Some(16_000),
-                reminder_message_template: "Custom reminder: {n_remaining} tokens.".to_string(),
-                guidance_message: Some("Preserve important state before compaction.".to_string()),
-                auto_compact_fallback_prompt: Some("Write notes immediately.".to_string()),
                 auto_compact_fallback_buffer_tokens: Some(8_000),
-            }),
+                ..Default::default()
+            },
         ),
     ] {
         let codex_home = tempdir()?;
@@ -785,60 +788,25 @@ auto_compact_fallback_buffer_tokens = 8000
         )
         .await?;
 
-        assert_eq!(
-            config.features.enabled(Feature::TokenBudget),
-            expected.is_some()
-        );
-        if expected.is_none() {
-            assert!(config.features.enabled(Feature::ContextManagement));
-        }
-        assert_eq!(config.token_budget, expected);
+        assert!(config.features.enabled(Feature::TokenBudget));
+        assert_eq!(config.token_budget, Some(expected));
     }
     Ok(())
 }
 
-#[tokio::test]
-async fn load_config_rejects_overlong_auto_compact_fallback_prompt() -> std::io::Result<()> {
-    let codex_home = tempdir()?;
-    let prompt = "x".repeat(AUTO_COMPACT_FALLBACK_PROMPT_MAX_BYTES + 1);
-    let config_toml = toml::from_str(&format!(
-        "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = {prompt:?}\n"
-    ))
-    .expect("TOML should deserialize");
-    let error = Config::load_from_base_config_with_overrides(
-        config_toml,
-        ConfigOverrides::default(),
-        codex_home.abs(),
-    )
-    .await
-    .expect_err("overlong fallback prompt should be rejected");
-
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    Ok(())
-}
-
-#[tokio::test]
-async fn load_config_rejects_invalid_token_budget_reminder_template() -> std::io::Result<()> {
-    for reminder_message_template in [
-        String::new(),
-        "x".repeat(TOKEN_BUDGET_REMINDER_MESSAGE_TEMPLATE_MAX_BYTES + 1),
+#[test]
+fn legacy_token_budget_preferences_remain_typed() {
+    for field in [
+        "enabled = 1",
+        "use_history_notes_extension = 'true'",
+        "reminder_message_template = false",
+        "guidance_message = []",
+        "auto_compact_fallback_prompt = 1",
     ] {
-        let codex_home = tempdir()?;
-        let config_toml = toml::from_str(&format!(
-            "[features.token_budget]\nenabled = true\nreminder_message_template = {reminder_message_template:?}\n"
-        ))
-        .expect("TOML should deserialize");
-        let error = Config::load_from_base_config_with_overrides(
-            config_toml,
-            ConfigOverrides::default(),
-            codex_home.abs(),
-        )
-        .await
-        .expect_err("invalid reminder template should be rejected");
-
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            toml::from_str::<ConfigToml>(&format!("[features.token_budget]\n{field}")).is_err()
+        );
     }
-    Ok(())
 }
 
 #[tokio::test]
@@ -892,30 +860,6 @@ async fn load_config_rejects_non_positive_auto_compact_fallback_buffer() -> std:
 }
 
 #[tokio::test]
-async fn load_config_rejects_missing_auto_compact_fallback_buffer() -> std::io::Result<()> {
-    let codex_home = tempdir()?;
-    let config_toml = toml::from_str(
-        "[features.token_budget]\nenabled = true\nauto_compact_fallback_prompt = \"Write notes.\"\n",
-    )
-    .expect("TOML should deserialize");
-
-    let error = Config::load_from_base_config_with_overrides(
-        config_toml,
-        ConfigOverrides::default(),
-        codex_home.abs(),
-    )
-    .await
-    .expect_err("missing fallback buffer should be rejected");
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert_eq!(
-        error.to_string(),
-        "features.token_budget.auto_compact_fallback_buffer_tokens is required when auto_compact_fallback_prompt is set"
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn load_config_resolves_rollout_budget() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     let config_toml: ConfigToml = toml::from_str(
@@ -937,7 +881,7 @@ prefill_token_weight = 0.1
     .await?;
 
     assert!(config.features.enabled(Feature::RolloutBudget));
-    assert!(!config.features.enabled(Feature::TokenBudget));
+    assert!(config.features.enabled(Feature::TokenBudget));
     assert_eq!(
         config.rollout_budget,
         Some(RolloutBudgetConfig {
