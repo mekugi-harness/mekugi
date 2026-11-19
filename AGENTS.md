@@ -102,7 +102,9 @@ make test-native NATIVE_ARGS='-p codex-core --lib -- <test_filter>'
 
 Select the affected crate and test target. A name filter limits execution, not compilation.
 These recipes prepare pinned V8, clear inherited shell instrumentation and set the test stack;
-do not replace them with unprepared raw Cargo commands. Keep profile and target directory stable.
+do not replace them with unprepared raw Cargo commands. Keep the profile stable. Use the
+configured target directory and incremental setting, including in worktrees. Do not override
+`CARGO_TARGET_DIR`, `build.target-dir`, or `CARGO_INCREMENTAL`, including via Cargo flags.
 
 - `make test-native` without selectors builds the runtime and runs its default offline
   regression selection, not the full Rust workspace. Use it for runtime integration or fork-pin
