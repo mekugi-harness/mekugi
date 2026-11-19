@@ -48,7 +48,7 @@ impl ManagedSkills {
             .get_or_init(|| async {
                 let project = self.project.clone();
                 tokio::task::spawn_blocking(move || {
-                    let manager = SkillsManager::for_project(project)?;
+                    let manager = SkillsManager::for_project(project)?.with_strict_discovery();
                     let enabled = manager.is_enabled()?;
                     Ok((Arc::new(manager), enabled))
                 })
@@ -65,15 +65,31 @@ impl ManagedSkills {
         Ok(self.reader().await?.1)
     }
 
-    pub async fn get(&self, target: &str) -> Result<Option<Vec<u8>>, String> {
+    async fn lookup(&self, target: &str) -> Result<skills_mgr::Result<Vec<u8>>, String> {
         let manager = Arc::clone(&self.reader().await?.0);
         let target = target.to_owned();
-        match tokio::task::spawn_blocking(move || manager.get(&target))
+        tokio::task::spawn_blocking(move || manager.get(&target))
             .await
-            .map_err(|error| format!("skills-mgr get: {error}"))?
-        {
+            .map_err(|error| format!("skills-mgr get: {error}"))
+    }
+
+    pub async fn get(&self, target: &str) -> Result<Option<Vec<u8>>, String> {
+        match self.lookup(target).await? {
             Ok(bytes) => Ok(Some(bytes)),
             Err(Error::NotFound(_)) => Ok(None),
+            Err(error) => Err(format!("skills-mgr get: {error}")),
+        }
+    }
+
+    /// A typed native selection may name an unmanaged or explicitly disabled
+    /// skill. An unreadable manager candidate is not evidence of either.
+    pub async fn resolves_selection(&self, name: &str) -> Result<bool, String> {
+        if !self.is_enabled().await? {
+            return Ok(false);
+        }
+        match self.lookup(name).await? {
+            Ok(_) => Ok(true),
+            Err(Error::NotFound(_) | Error::NotEnabled(_)) => Ok(false),
             Err(error) => Err(format!("skills-mgr get: {error}")),
         }
     }

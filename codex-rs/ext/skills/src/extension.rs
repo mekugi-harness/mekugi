@@ -382,7 +382,7 @@ where
             let selected_skill_context = turn_store.get::<SelectedSkillContext>();
             let mut selected_entries = collect_explicit_skill_mentions(&input.user_input, &catalog);
             if let Some(context) = &selected_skill_context {
-                selected_entries.retain(|entry| !context.references.contains(&entry.name));
+                selected_entries.retain(|entry| !context.omitted_prompts.contains(&entry.name));
             }
             let shadow_selection_turn = if config.shadow_selection_enabled {
                 let mut shadow_catalog = catalog.clone();

@@ -126,6 +126,64 @@ async fn selected_skill_identities_are_native_and_not_duplicated() -> Result<()>
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn denied_managed_skill_is_not_replaced_by_a_native_selection() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let response = mount_sse_once(&server, sse(vec![ev_completed("resp")])).await;
+    let test = test_codex().with_config(|config| {
+        config.active_project.trust_level = Some(TrustLevel::Trusted);
+    }).with_workspace_setup(|cwd, _| async move {
+        for root in [".agents/skills/preferred", ".codex/skills/alternate"] {
+            let path = cwd.join(root);
+            std::fs::create_dir_all(&path)?;
+            std::fs::write(path.join("SKILL.md"),
+                "---\nname: scoped-skill\ndescription: alternate description\n---\nalternate instructions\n")?;
+            std::fs::write(path.join("guide.md"), "alternate reference")?;
+        }
+        std::fs::set_permissions(cwd.join(".agents/skills/preferred/SKILL.md"), std::fs::Permissions::from_mode(0))?;
+        std::fs::write(cwd.join(".skills-mgr.json"), r#"{"schema_revision":1,"skills":{"scoped-skill":true}}"#)?;
+        Ok(())
+    }).build_with_auto_env(&server).await?;
+    if std::fs::File::open(test.cwd_path().join(".agents/skills/preferred/SKILL.md")).is_ok() {
+        return Ok(()); // Privileged hosts can still open a mode-000 file.
+    }
+
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![
+            UserInput::Text {
+                text: "Read $scoped-skill/guide.md".into(),
+                text_elements: Vec::new(),
+            },
+            UserInput::Skill {
+                name: "scoped-skill".into(),
+                path: test.workspace_path(".codex/skills/alternate/SKILL.md"),
+            },
+        ]))
+        .await?;
+    let mut saw_warning = false;
+    wait_for_event(&test.codex, |event| {
+        if let EventMsg::Warning(warning) = event {
+            saw_warning |= warning.message.contains("Could not resolve selected skill")
+                && warning.message.contains("Permission denied");
+        }
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    let request = response.single_request().body_json().to_string();
+    assert!(saw_warning, "no diagnostic for the typed selection");
+    assert!(
+        request.contains("Permission denied"),
+        "missing explicit source failure"
+    );
+    assert!(!request.contains("alternate reference"));
+    assert!(!request.contains("alternate instructions"));
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn managed_skill_catalog_replaces_stock_without_hook() -> Result<()> {
     check_managed_skill_catalog(TrustLevel::Trusted, /*max_context_tokens*/ None).await

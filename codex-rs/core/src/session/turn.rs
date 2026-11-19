@@ -1370,21 +1370,30 @@ async fn build_skills_and_plugins(
             _ => None,
         })
         .collect::<HashSet<_>>();
+    let mut omitted_prompts = references;
     let mut managed_names = HashSet::new();
     if !typed_names.is_empty()
         && let Some(manager) = step_context.environments.primary().and_then(|environment| {
             ManagedSkills::for_turn(&turn_context.extension_data, &environment.selection)
         })
-        && manager.is_enabled().await.unwrap_or(false)
     {
         for name in typed_names {
-            if matches!(manager.get(name).await, Ok(Some(_))) {
-                managed_names.insert(name.clone());
+            match manager.resolves_selection(name).await {
+                Ok(true) => {
+                    managed_names.insert(name.clone());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    omitted_prompts.insert(name.clone());
+                    let message = format!("Could not resolve selected skill {name:?}: {error}");
+                    sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
+                        .await;
+                }
             }
         }
     }
     let selection = Arc::new(SelectedSkillContext {
-        references,
+        omitted_prompts,
         managed_names,
     });
     turn_context
@@ -1418,7 +1427,7 @@ async fn build_skills_and_plugins(
     // Keep stock skill handling for selections that did not use source syntax.
     let prompt_skills = mentioned_skills
         .iter()
-        .filter(|skill| !selection.references.contains(&skill.name))
+        .filter(|skill| !selection.omitted_prompts.contains(&skill.name))
         .cloned()
         .collect::<Vec<_>>();
     let HostSkillPrompts {

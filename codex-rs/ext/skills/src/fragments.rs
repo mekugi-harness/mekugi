@@ -16,7 +16,7 @@ pub const SELECTED_SKILL_PROMPT_KIND: &str = "skills.selected_skill_instructions
 
 /// Selection facts supplied by the native turn owner before skill contributions.
 pub struct SelectedSkillContext {
-    pub references: HashSet<String>,
+    pub omitted_prompts: HashSet<String>,
     pub managed_names: HashSet<String>,
 }
 

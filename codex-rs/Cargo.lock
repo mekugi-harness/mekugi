@@ -12386,7 +12386,7 @@ dependencies = [
 [[package]]
 name = "skills-mgr"
 version = "0.2.1"
-source = "git+https://github.com/yusing/skills-mgr.git?tag=v0.4.0#d31cbff110fb9cbe45d5a2bf74dcf42f7123ee40"
+source = "git+https://github.com/yusing/skills-mgr.git?tag=v0.4.2#d576fa2792227f7761bb0e7003c7cf4eb9caa278"
 dependencies = [
  "brush-parser",
  "cap-std",
@@ -12412,7 +12412,7 @@ dependencies = [
 [[package]]
 name = "skills-mgr-shell"
 version = "0.1.0"
-source = "git+https://github.com/yusing/skills-mgr.git?tag=v0.4.0#d31cbff110fb9cbe45d5a2bf74dcf42f7123ee40"
+source = "git+https://github.com/yusing/skills-mgr.git?tag=v0.4.2#d576fa2792227f7761bb0e7003c7cf4eb9caa278"
 dependencies = [
  "brush-parser",
 ]
