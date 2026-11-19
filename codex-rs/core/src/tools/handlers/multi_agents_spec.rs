@@ -676,7 +676,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                     "sources".to_string(),
                     JsonSchema::array(
                         JsonSchema::string(None),
-                        Some("Explicit source references acquired under child authority before first inference. Requires fork_turns: none.".to_string()),
+                        Some("Use @path for files, $skill for skills, or mchanges:ID for changes. Bare paths are invalid. Requires fork_turns: none.".to_string()),
                     ),
                 )]),
                 Some(vec!["sources".to_string()]),

@@ -147,15 +147,27 @@ pub(crate) async fn prepare(
         cwd,
         preload,
     } = request;
-    if fork_mode.is_some() && preload.is_some() {
-        session.services.local_agent_runtime.record_feature_use(
-            session.thread_id,
-            call_id,
-            codex_protocol::feature_use::FeatureUseEvent::PreloadRejected,
-        );
-        return Err(ThreadSpawnError::Preparation(
-            "Full-history forks cannot preload sources; omit preload or start fresh.".to_string(),
-        ));
+    if let Some(selection) = &preload {
+        let error = if fork_mode.is_some() {
+            Some(
+                "Full-history forks cannot preload sources; omit preload or start fresh."
+                    .to_string(),
+            )
+        } else {
+            crate::context_sources::first_invalid_reference(&selection.sources).map(|index| {
+                format!(
+                    "Invalid preload.sources[{index}]: use @path for files, $skill for skills, or mchanges:ID for changes. No child was started."
+                )
+            })
+        };
+        if let Some(error) = error {
+            session.services.local_agent_runtime.record_feature_use(
+                session.thread_id,
+                call_id,
+                codex_protocol::feature_use::FeatureUseEvent::PreloadRejected,
+            );
+            return Err(ThreadSpawnError::Preparation(error));
+        }
     }
     let role_name = agent_type
         .as_deref()

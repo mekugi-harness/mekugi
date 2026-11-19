@@ -1,5 +1,6 @@
 //! Native collaboration through code mode and model-visible requests.
 
+use super::super::code_mode::custom_tool_output_last_non_empty_text;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -122,6 +123,170 @@ async fn code_mode_spawn_delivers_plaintext() -> Result<()> {
                 "text": "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nSummarize the three stories.",
             }],
         }]),
+    );
+    assert_eq!(test.thread_manager.list_thread_ids().await.len(), 2);
+    Ok(())
+}
+
+#[test_case(true; "partial_read")]
+#[test_case(false; "all_reads_fail")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_spawn_can_retry_malformed_preload(readable: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let test = test_codex()
+        .with_model("gpt-5.6-sol")
+        .with_model_info_override("gpt-5.6-sol", |model| {
+            model.tool_mode = Some(ToolMode::CodeMode);
+            model.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            for feature in [
+                Feature::Collab,
+                Feature::MultiAgentV2,
+                Feature::CodeMode,
+                Feature::CodeModeHost,
+                Feature::CodeModeHostGrpc,
+            ] {
+                config.features.enable(feature).unwrap();
+            }
+            config.multi_agent_v2.non_code_mode_only = false;
+        })
+        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .build_with_auto_env(&server)
+        .await?;
+    let root = test.session_configured.thread_id;
+    let root_header = root.to_string();
+    let child_match_root = root_header.clone();
+    let mut created = test.thread_manager.subscribe_thread_created();
+    let child_dir = test.cwd_path().join("delegate");
+    std::fs::create_dir(&child_dir)?;
+    std::fs::write(test.cwd_path().join("brief.txt"), "PARENT_BRIEF")?;
+    if readable {
+        std::fs::write(child_dir.join("brief.txt"), "CHILD_BRIEF")?;
+    }
+    let child_requests = mount_sse_once_match(
+        &server,
+        move |request: &wiremock::Request| {
+            request
+                .headers
+                .get("thread-id")
+                .is_some_and(|id| id != child_match_root.as_str())
+        },
+        sse(vec![
+            ev_assistant_message("child", "Done."),
+            ev_completed("child"),
+        ]),
+    )
+    .await;
+
+    for (call_id, program, prompt) in [
+        (
+            "malformed",
+            r#"
+const errors = [];
+for (const invalid of ["brief.txt", "/brief.txt", "@brief.txt#L0"]) {
+  try {
+    await tools.collaboration__spawn_agent({
+      task_name: "worker", message: "Read the brief.", fork_turns: "none",
+      cwd: "delegate", preload: {sources: ["@missing.txt", invalid]}
+    });
+  } catch (error) {
+    errors.push(String(error));
+  }
+}
+text(errors.join("\n"));
+"#,
+            "Try a malformed preload.",
+        ),
+        (
+            "corrected",
+            r#"text(await tools.collaboration__spawn_agent({
+  task_name: "worker", message: "Read the brief.", fork_turns: "none",
+  cwd: "delegate", preload: {sources: ["@missing.txt", "@brief.txt"]}
+}));"#,
+            "Retry with valid references.",
+        ),
+    ] {
+        let initial = mount_sse_once_match(
+            &server,
+            header("thread-id", root_header.as_str()),
+            sse(vec![
+                ev_custom_tool_call(call_id, "exec", program),
+                ev_completed(call_id),
+            ]),
+        )
+        .await;
+        let finished_id = format!("{call_id}-done");
+        let finished = mount_sse_once_match(
+            &server,
+            header("thread-id", root_header.as_str()),
+            sse(vec![
+                ev_assistant_message(&finished_id, "Checked."),
+                ev_completed(&finished_id),
+            ]),
+        )
+        .await;
+        test.submit_turn(prompt).await?;
+        let request = finished.single_request();
+        let output =
+            custom_tool_output_last_non_empty_text(&request, call_id).unwrap_or_else(|| {
+                panic!(
+                    "{call_id} has no exec text: {}",
+                    request.custom_tool_call_output(call_id)
+                )
+            });
+        if call_id == "malformed" {
+            assert!(
+                initial
+                    .single_request()
+                    .body_contains_text("Bare paths are invalid.")
+            );
+            assert_eq!(
+                output.matches("Invalid preload.sources[1]").count(),
+                3,
+                "{output}"
+            );
+            assert!(output.contains("use @path for files"), "{output}");
+            assert!(matches!(
+                created.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ));
+            assert!(child_requests.requests().iter().all(|request| {
+                request.header("thread-id").as_deref() == Some(root_header.as_str())
+            }));
+        } else {
+            assert!(output.contains("/root/worker"), "{output}");
+        }
+    }
+
+    let child_id = created.try_recv()?;
+    let child = test.thread_manager.get_thread(child_id).await?;
+    wait_for_event_with_timeout(
+        &child,
+        |event| matches!(event, EventMsg::TurnComplete(_)),
+        Duration::from_secs(15),
+    )
+    .await;
+    let child_header = child_id.to_string();
+    let mut requests = child_requests
+        .requests()
+        .into_iter()
+        .filter(|request| request.header("thread-id").as_deref() == Some(child_header.as_str()));
+    let child_request = requests
+        .next()
+        .expect("child receives the corrected assignment");
+    assert!(
+        requests.next().is_none(),
+        "expected exactly one child inference"
+    );
+    assert_eq!(child_request.body_contains_text("CHILD_BRIEF"), readable);
+    assert!(!child_request.body_contains_text("PARENT_BRIEF"));
+    assert!(child_request.body_contains_text(r#"Source "@missing.txt": CONTENT NOT ATTACHED:"#));
+    assert_eq!(
+        child_request.body_contains_text(r#"Source "@brief.txt": CONTENT NOT ATTACHED:"#),
+        !readable,
     );
     assert_eq!(test.thread_manager.list_thread_ids().await.len(), 2);
     Ok(())

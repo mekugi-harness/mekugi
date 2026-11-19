@@ -484,6 +484,12 @@ fn append_failure(output: &mut String, source: &str, error: &str) -> CodexResult
     Ok(())
 }
 
+pub(crate) fn first_invalid_reference(sources: &[String]) -> Option<usize> {
+    sources
+        .iter()
+        .position(|reference| parse_reference(reference).is_err())
+}
+
 fn parse_reference(reference: &str) -> Result<Source, String> {
     let invalid = || format!("invalid source reference {reference:?}");
     if reference.contains(['\0', '\r', '\n']) {
