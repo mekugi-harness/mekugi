@@ -81,6 +81,15 @@ pub enum AgentMessage {
     Encrypted(String),
 }
 
+impl AgentMessage {
+    pub(crate) fn plaintext(&self) -> Option<&str> {
+        match self {
+            Self::Plaintext(text) => Some(text),
+            Self::Encrypted(_) => None,
+        }
+    }
+}
+
 /// Holds a backend-owned reservation until the turn ends or is cancelled.
 ///
 /// The permit's destructor releases capacity or arranges backend cleanup. Remote backends

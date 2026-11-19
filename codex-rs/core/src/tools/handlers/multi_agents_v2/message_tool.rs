@@ -64,12 +64,7 @@ pub(super) async fn handle_message_string_tool(
     let resume_config =
         build_agent_resume_config(&turn).map_err(FunctionCallError::RespondToModel)?;
     let message = agent_message_from_tool(message, &source);
-    let authored_mail = match &message {
-        AgentMessage::Plaintext(text) if mode == MessageDeliveryMode::QueueOnly => {
-            Some(text.clone())
-        }
-        AgentMessage::Plaintext(_) | AgentMessage::Encrypted(_) => None,
-    };
+    let authored_mail = message.plaintext().map(str::to_owned);
     let receipt = session
         .services
         .agent_control
@@ -113,6 +108,7 @@ pub(super) async fn handle_message_string_tool(
         &session,
         &turn,
         SubAgentActivityItem {
+            assignment: None,
             model: None,
             reasoning_effort: None,
             id: call_id,

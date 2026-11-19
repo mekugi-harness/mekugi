@@ -36,6 +36,9 @@ pub enum ExtensionItem {
     #[serde(rename = "image_gen.generation")]
     #[ts(rename = "image_gen.generation")]
     ImageGeneration(image_generation::ImageGenerationItem),
+    #[serde(rename = "collaboration.side_question")]
+    #[ts(rename = "collaboration.side_question")]
+    AgentSideQuestion(AgentSideQuestionItem),
     #[serde(rename = "clock.sleep")]
     #[ts(rename = "clock.sleep")]
     Sleep(sleep::SleepItem),
@@ -50,10 +53,22 @@ impl ExtensionItem {
     pub fn id(&self) -> &str {
         match self {
             Self::ImageGeneration(item) => &item.id,
+            Self::AgentSideQuestion(item) => &item.id,
             Self::Sleep(item) => &item.id,
             Self::WebSearch(item) => &item.id,
         }
     }
+}
+
+/// Completed tool-free exchange observed by the caller, never recipient input.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSideQuestionItem {
+    pub id: String,
+    /// Canonical local path, or the exact thread ID for a foreign target.
+    pub target: String,
+    pub question: String,
+    pub answer: String,
 }
 
 #[cfg(test)]

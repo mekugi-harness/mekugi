@@ -563,6 +563,7 @@ impl TurnToolCounts {
             | ThreadItemPayload::Plan { .. }
             | ThreadItemPayload::Reasoning { .. }
             | ThreadItemPayload::ImageView { .. }
+            | ThreadItemPayload::AgentSideQuestion(_)
             | ThreadItemPayload::Sleep(_)
             | ThreadItemPayload::EnteredReviewMode { .. }
             | ThreadItemPayload::ExitedReviewMode { .. }
@@ -2940,6 +2941,7 @@ pub(crate) fn tracked_tool_item_id(item: &ThreadItemPayload) -> Option<&str> {
         | ThreadItemPayload::Reasoning { .. }
         | ThreadItemPayload::SubAgentActivity { .. }
         | ThreadItemPayload::ImageView { .. }
+        | ThreadItemPayload::AgentSideQuestion(_)
         | ThreadItemPayload::Sleep(_)
         | ThreadItemPayload::EnteredReviewMode { .. }
         | ThreadItemPayload::ExitedReviewMode { .. }

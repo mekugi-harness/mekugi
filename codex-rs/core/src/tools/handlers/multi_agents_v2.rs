@@ -58,13 +58,17 @@ fn agent_message_from_tool(
     message: String,
     source: &crate::tools::context::ToolCallSource,
 ) -> AgentMessage {
-    if matches!(
-        source,
-        crate::tools::context::ToolCallSource::DirectPlaintextMessage
-            | crate::tools::context::ToolCallSource::CodeMode { .. }
-    ) {
+    if plaintext_message_source(source) {
         AgentMessage::Plaintext(message)
     } else {
         AgentMessage::Encrypted(message)
     }
+}
+
+fn plaintext_message_source(source: &crate::tools::context::ToolCallSource) -> bool {
+    matches!(
+        source,
+        crate::tools::context::ToolCallSource::DirectPlaintextMessage
+            | crate::tools::context::ToolCallSource::CodeMode { .. }
+    )
 }

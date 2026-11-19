@@ -548,6 +548,7 @@ WHERE thread_id = ?
             | ThreadItemPayload::SubAgentActivity { .. }
             | ThreadItemPayload::WebSearch(_)
             | ThreadItemPayload::ImageView { .. }
+            | ThreadItemPayload::AgentSideQuestion(_)
             | ThreadItemPayload::Sleep(_)
             | ThreadItemPayload::ImageGeneration(_)
             | ThreadItemPayload::EnteredReviewMode { .. }

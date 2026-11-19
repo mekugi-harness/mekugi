@@ -4909,6 +4909,10 @@ pub enum SubAgentActivityKind {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct SubAgentActivityEvent {
+    /// Accepted plaintext assignment on start, absent for encrypted or older starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub assignment: Option<String>,
     /// Resolved model at sub-agent creation; absent from older records and other activities.
     pub model: Option<String>,
     /// Resolved reasoning effort at sub-agent creation, when known.
