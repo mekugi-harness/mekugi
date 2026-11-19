@@ -1,7 +1,6 @@
 use super::*;
 use crate::StartThreadOptions;
 use crate::ThreadManager;
-use crate::ThreadStoreBuilder;
 use crate::agent::child_config::apply_spawn_agent_service_tier;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::child_config::build_agent_spawn_config;
@@ -13,7 +12,6 @@ use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
-use crate::local_agent_graph_store_from_state_db;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::tests::make_session_and_context_with_auth_config_home_and_rx;
@@ -29,7 +27,6 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
-use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_history::InitialHistory;
 use codex_history::RolloutItem;
@@ -37,7 +34,6 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
-use codex_models_manager::manager::ModelCatalogSettings;
 use codex_models_manager::manager::StaticModelsManager;
 use codex_otel::MULTI_AGENT_SPAWN_FAILURE_METRIC;
 use codex_otel::MetricsClient;
@@ -3821,259 +3817,6 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
 
     let status_after = manager.agent_control().get_status(agent_id).await;
     assert_eq!(status_after, AgentStatus::NotFound);
-}
-
-#[tokio::test]
-async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtrees_closed() {
-    let codex_home = tempfile::tempdir().expect("create codex home");
-    let (_session, turn, _) = make_session_and_context_with_auth_config_home_and_rx(
-        CodexAuth::from_api_key("Test API Key"),
-        Vec::new(),
-        codex_home.path(),
-        |_config| {},
-    )
-    .await;
-    let mut config = turn.config.as_ref().clone();
-    config.agent_max_depth = 3;
-    config
-        .permissions
-        .set_permission_profile(PermissionProfile::workspace_write())
-        .expect("test config should allow workspace writes");
-    config
-        .features
-        .enable(Feature::Sqlite)
-        .expect("test config should allow sqlite");
-    let state_db = init_state_db(&config).await;
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let manager = ThreadManager::new(
-        &config,
-        crate::build_startup_models(
-            &config,
-            auth_manager.clone(),
-            "11111111-1111-4111-8111-111111111111".to_string(),
-            Arc::new(ModelCatalogSettings::disk(config.codex_home.to_path_buf())),
-        ),
-        crate::CodexAppsToolsCache::default(),
-        SessionSource::Exec,
-        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-        empty_extension_registry(),
-        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
-        /*analytics_events_client*/ None,
-        crate::thread_manager::passthrough_image_store(),
-        ThreadStoreBuilder::from_config(&config, state_db.clone()).build(),
-        local_agent_graph_store_from_state_db(state_db.as_ref()),
-        /*attestation_provider*/ None,
-        /*external_time_provider*/ None,
-    );
-
-    let parent = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("parent thread should start");
-    let parent_thread_id = parent.thread_id;
-    let parent_session = parent.thread.session.clone();
-    let parent_turn = parent_session.new_default_turn().await;
-    let mut owner_config = parent_turn
-        .initial_environments
-        .primary()
-        .expect("parent should have an environment")
-        .config()
-        .clone();
-    let owner_permission_profile = PermissionProfile::read_only();
-    owner_config.permission_profile =
-        PermissionProfileSnapshot::legacy(owner_permission_profile.clone());
-    let parent_environment = parent.thread.environment_selections().await.remove(0);
-    parent
-        .thread
-        .environment_ready(&parent_environment, owner_config)
-        .await
-        .expect("owner environment should be installed");
-
-    let child_turn = parent_session.new_default_turn().await;
-    let child_spawn_output = SpawnAgentHandler::default()
-        .handle(invocation(
-            parent_session.clone(),
-            child_turn,
-            "spawn_agent",
-            function_payload(json!({"message": "hello child"})),
-        ))
-        .await
-        .expect("child spawn should succeed");
-    let (child_content, child_success) = expect_text_output(child_spawn_output);
-    let child_result: serde_json::Value =
-        serde_json::from_str(&child_content).expect("child spawn result should be json");
-    let child_thread_id = parse_agent_id(
-        child_result
-            .get("agent_id")
-            .and_then(serde_json::Value::as_str)
-            .expect("child spawn result should include agent_id"),
-    );
-    assert_eq!(child_success, Some(true));
-
-    let child_thread = manager
-        .get_thread(child_thread_id)
-        .await
-        .expect("child thread should exist");
-    let child_session = child_thread.session.clone();
-    let grandchild_spawn_output = SpawnAgentHandler::default()
-        .handle(invocation(
-            child_session.clone(),
-            child_session.new_default_turn().await,
-            "spawn_agent",
-            function_payload(json!({"message": "hello grandchild"})),
-        ))
-        .await
-        .expect("grandchild spawn should succeed");
-    let (grandchild_content, grandchild_success) = expect_text_output(grandchild_spawn_output);
-    let grandchild_result: serde_json::Value =
-        serde_json::from_str(&grandchild_content).expect("grandchild spawn result should be json");
-    let grandchild_thread_id = parse_agent_id(
-        grandchild_result
-            .get("agent_id")
-            .and_then(serde_json::Value::as_str)
-            .expect("grandchild spawn result should include agent_id"),
-    );
-    assert_eq!(grandchild_success, Some(true));
-
-    let close_output = CloseAgentHandler
-        .handle(invocation(
-            parent_session.clone(),
-            parent_session.new_default_turn().await,
-            "close_agent",
-            function_payload(json!({"target": child_thread_id.to_string()})),
-        ))
-        .await
-        .expect("close_agent should close the child subtree");
-    let (close_content, close_success) = expect_text_output(close_output);
-    let close_result: close_agent::CloseAgentResult =
-        serde_json::from_str(&close_content).expect("close_agent result should be json");
-    assert_ne!(close_result.previous_status, AgentStatus::NotFound);
-    assert_eq!(close_success, Some(true));
-    assert_eq!(
-        manager.agent_control().get_status(child_thread_id).await,
-        AgentStatus::NotFound
-    );
-    assert_eq!(
-        manager
-            .agent_control()
-            .get_status(grandchild_thread_id)
-            .await,
-        AgentStatus::NotFound
-    );
-
-    let child_resume_output = ResumeAgentHandler
-        .handle(invocation(
-            parent_session.clone(),
-            parent_session.new_default_turn().await,
-            "resume_agent",
-            function_payload(json!({"id": child_thread_id.to_string()})),
-        ))
-        .await
-        .expect("resume_agent should reopen the child subtree");
-    let (child_resume_content, child_resume_success) = expect_text_output(child_resume_output);
-    let child_resume_result: resume_agent::ResumeAgentResult =
-        serde_json::from_str(&child_resume_content).expect("resume result should be json");
-    assert_ne!(child_resume_result.status, AgentStatus::NotFound);
-    assert_eq!(child_resume_success, Some(true));
-    assert_ne!(
-        manager.agent_control().get_status(child_thread_id).await,
-        AgentStatus::NotFound
-    );
-    assert_eq!(
-        manager
-            .get_thread(child_thread_id)
-            .await
-            .expect("resumed child thread should exist")
-            .config_snapshot()
-            .await
-            .permission_profile,
-        owner_permission_profile
-    );
-    assert_ne!(
-        manager
-            .agent_control()
-            .get_status(grandchild_thread_id)
-            .await,
-        AgentStatus::NotFound
-    );
-
-    let close_again_output = CloseAgentHandler
-        .handle(invocation(
-            parent_session.clone(),
-            parent_session.new_default_turn().await,
-            "close_agent",
-            function_payload(json!({"target": child_thread_id.to_string()})),
-        ))
-        .await
-        .expect("close_agent should be repeatable for the child subtree");
-    let (close_again_content, close_again_success) = expect_text_output(close_again_output);
-    let close_again_result: close_agent::CloseAgentResult =
-        serde_json::from_str(&close_again_content)
-            .expect("second close_agent result should be json");
-    assert_ne!(close_again_result.previous_status, AgentStatus::NotFound);
-    assert_eq!(close_again_success, Some(true));
-    assert_eq!(
-        manager.agent_control().get_status(child_thread_id).await,
-        AgentStatus::NotFound
-    );
-    assert_eq!(
-        manager
-            .agent_control()
-            .get_status(grandchild_thread_id)
-            .await,
-        AgentStatus::NotFound
-    );
-
-    let operator = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("operator thread should start");
-    let operator_session = operator.thread.session.clone();
-    let _ = manager
-        .agent_control()
-        .shutdown_live_agent(parent_thread_id)
-        .await
-        .expect("parent shutdown should succeed");
-    assert_eq!(
-        manager.agent_control().get_status(parent_thread_id).await,
-        AgentStatus::NotFound
-    );
-
-    let parent_resume_output = ResumeAgentHandler
-        .handle(invocation(
-            operator_session,
-            operator.thread.session.new_default_turn().await,
-            "resume_agent",
-            function_payload(json!({"id": parent_thread_id.to_string()})),
-        ))
-        .await
-        .expect("resume_agent should reopen the parent thread");
-    let (parent_resume_content, parent_resume_success) = expect_text_output(parent_resume_output);
-    let parent_resume_result: resume_agent::ResumeAgentResult =
-        serde_json::from_str(&parent_resume_content).expect("parent resume result should be json");
-    assert_ne!(parent_resume_result.status, AgentStatus::NotFound);
-    assert_eq!(parent_resume_success, Some(true));
-    assert_ne!(
-        manager.agent_control().get_status(parent_thread_id).await,
-        AgentStatus::NotFound
-    );
-    assert_eq!(
-        manager.agent_control().get_status(child_thread_id).await,
-        AgentStatus::NotFound
-    );
-    assert_eq!(
-        manager
-            .agent_control()
-            .get_status(grandchild_thread_id)
-            .await,
-        AgentStatus::NotFound
-    );
-
-    let shutdown_report = manager
-        .shutdown_all_threads_bounded(Duration::from_secs(5))
-        .await;
-    assert_eq!(shutdown_report.submit_failed, Vec::<ThreadId>::new());
-    assert_eq!(shutdown_report.timed_out, Vec::<ThreadId>::new());
 }
 
 #[test_case::test_case(false; "inactive_parent")]

@@ -5341,7 +5341,9 @@ async fn resume_agent_from_paginated_rollout_loads_model_context(disabled_plugin
 
 #[tokio::test]
 async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants() {
-    let harness = AgentControlHarness::new().await;
+    let (home, mut config) = test_config().await;
+    config.multi_agent_v2.max_concurrent_threads_per_session = 6; // Root and five descendants.
+    let harness = AgentControlHarness::new_with_config(home, config).await;
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;
     let worker_path = AgentPath::root().join("worker").expect("worker path");
     let reviewer_path = AgentPath::root().join("reviewer").expect("reviewer path");
