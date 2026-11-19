@@ -542,7 +542,21 @@ fn quoted(text: &str) -> Result<(String, usize), String> {
     Ok((value, stream.byte_offset()))
 }
 
-/// Recognize explicit references, not bare paths, escaped markers, email addresses or shell vars.
+// In scanned text, reserve shell-style uppercase names without changing explicit selections.
+fn is_environment_reference(reference: &str) -> bool {
+    let Some(skill) = reference.strip_prefix('$') else {
+        return false;
+    };
+    let (skill, _) = split_ranges(skill);
+    let name = skill.split('/').next().unwrap_or_default();
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_uppercase() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+/// Recognize source references in text, not bare paths, escaped markers, email addresses or shell vars.
 fn references(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut index = 0;
@@ -568,7 +582,9 @@ fn references(text: &str) -> Vec<String> {
         {
             exact_json = true;
             if parse_reference(&decoded).is_ok() {
-                found.push(decoded);
+                if !is_environment_reference(&decoded) {
+                    found.push(decoded);
+                }
                 index += size - 1;
                 continue;
             }
@@ -620,7 +636,7 @@ fn references(text: &str) -> Vec<String> {
             }
             end -= 1;
         }
-        if end > start + 1 {
+        if end > start + 1 && !is_environment_reference(&text[start..end]) {
             found.push(text[start..end].to_string());
         }
     }
@@ -797,6 +813,24 @@ mod tests {
         );
         assert!(!has_message_sources(
             r"Use bare.rs and \@literal and \$skill"
+        ));
+    }
+
+    #[test]
+    fn message_references_leave_uppercase_environment_variables_literal() {
+        let text = r#"Read $SESSION_TMP/check.rs. $HOME `$_CACHE2/log` $ROOT#L2 and $preview/references/A.md $Mixed_2 ["$SESSION_TMP/check.rs","$PATH","$guide/references/a.md"]"#;
+        assert_eq!(
+            references(text),
+            [
+                "$preview/references/A.md",
+                "$Mixed_2",
+                "$guide/references/a.md"
+            ]
+        );
+        assert!(!has_message_sources(r#"["$SESSION_TMP/check.rs"]"#));
+        assert!(matches!(
+            parse_reference("$SESSION_TMP/check.rs").unwrap().target,
+            Target::Skill(name) if name == "SESSION_TMP/check.rs"
         ));
     }
 

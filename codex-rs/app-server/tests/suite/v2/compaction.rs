@@ -853,7 +853,16 @@ async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
     let home = TempDir::new()?;
     let workspace = TempDir::new()?;
     let source = workspace.path().join("selected.txt");
-    std::fs::write(&source, "selected reload marker\nnot selected")?;
+    std::fs::write(
+        &source,
+        "selected reload marker $SESSION_TMP/skill-authority/check.rs $reload-helper\nnot selected",
+    )?;
+    let skill_dir = home.path().join("skills/reload-helper");
+    std::fs::create_dir_all(&skill_dir)?;
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: reload-helper\ndescription: Reload helper.\n---\n\nnested skill marker",
+    )?;
     let mock = responses::mount_sse_sequence(
         &server,
         ["seed", "restored", "fresh"]
@@ -865,9 +874,14 @@ async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
     compaction_config(&server.uri(), 1_000_000)
         .enable_feature(Feature::TokenBudget)
         .write(home.path())?;
+    let isolated_home = home.path().to_string_lossy();
     let builder = || {
         TestAppServer::builder()
             .with_codex_home(home.path())
+            .with_env_overrides(&[
+                ("HOME", Some(isolated_home.as_ref())),
+                ("USERPROFILE", Some(isolated_home.as_ref())),
+            ])
             .without_auto_env()
     };
     let mut mcp = builder().build_initialized().await?;
@@ -925,7 +939,11 @@ async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
             .iter()
             .map(|source| (source.reference.as_str(), source.success))
             .collect::<Vec<_>>(),
-        vec![("@selected.txt#L1-L1", true), ("@missing.txt#L1-L1", false)]
+        vec![
+            ("@selected.txt#L1-L1", true),
+            ("@missing.txt#L1-L1", false),
+            ("$reload-helper", true)
+        ]
     );
     let settled: ContextReset = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -974,6 +992,7 @@ async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
     let requests = mock.requests();
     assert_eq!(requests.len(), 3);
     assert!(requests[1].body_contains_text("selected reload marker"));
+    assert!(requests[1].body_contains_text("nested skill marker"));
     assert!(!requests[1].body_contains_text("not selected"));
     assert!(!requests[1].body_contains_text("discarded seed marker"));
     assert!(!requests[1].body_contains_text("fresh reload marker"));
