@@ -22,16 +22,38 @@ pub const TOOL_SEARCH_GUIDANCE: &str = r#"Use `await tools.tool_search({query: "
 const LEGACY_IMAGE_HELPER_DESCRIPTION: &str = r#"`image(imageUrlOrItem: string | { image_url: string; detail?: "auto" | "low" | "high" | "original" | null } | ImageContent, detail?: "auto" | "low" | "high" | "original" | null)`: Appends an image item. `image_url` should be a base64-encoded `data:` URL. To forward an MCP tool image, pass an individual `ImageContent` block from `result.content`, for example `image(result.content[0])`. MCP image blocks may request detail with `_meta: { "codex/imageDetail": "original" }`. When provided, the second `detail` argument overrides any detail embedded in the first argument."#;
 const UNIFIED_IMAGE_HELPER_DESCRIPTION: &str = r#"`image(imageUrlOrItem: string | { image_url: string } | ImageContent)`: Appends an image item. `image_url` should be a base64-encoded `data:` URL. To forward an MCP tool image, pass an individual `ImageContent` block from `result.content`, for example `image(result.content[0])`."#;
 const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/compose tool calls
-- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.
-- All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.
-- Nested tool methods take either a string or an object as their input argument.
-- Nested tools return either an object or a string, based on the description.
-- Runs raw JavaScript -- no Node, no file system, no network access, no console.
-- Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.
-- You may optionally start the tool input with a first-line pragma like `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
-- `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to {{ default_exec_yield_time_ms }} ms.
-- `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.
-- When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.
+- Submit raw JavaScript, not JSON, quoted source or Markdown fences. Each call
+  runs as an async module in a fresh V8 isolate without Node, file system,
+  network access or console. Unawaited promises are discarded on completion.
+- Call nested tools by their normalized names on `tools`, e.g.
+  `await tools.exec_command(...)`. Their declarations give argument and result
+  types.
+- Locate relevant symbols before reading bodies; read the ranges needed for
+  the next decision. Batch those reads, not every file a search matched.
+  Once the change is settled, put its related edits in one patch. Run the
+  full check after those edits; repeat it only for changes it can catch.
+- Batch short independent shell commands in one shell call with `;` or newlines.
+  Chain shell prerequisites with `&&` up to the next decision.
+- Use `await Promise.allSettled(...)` for independent short operations needing
+  separate nested tool calls, including non-shell tools or shell calls with
+  different execution settings or lifecycles.
+- Give each test or long-running job its own shell call, cell and continuation
+  waits so it can be cancelled independently.
+- You may optionally start the tool input with a first-line pragma like
+  `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.
+  These limit the cell wait (default {{ default_exec_yield_time_ms }} ms) and
+  direct output (default 10000 tokens), not the nested tools.
+- For tests and builds, prefer a shell `yield_time_ms` covering the known
+  runtime or a safe estimate. For unknown long jobs the initial shell wait
+  supports 30000 ms; an empty `write_stdin` can wait longer. Completion
+  returns early. Shorten waits for other work or input, not for polling.
+  If the default cell wait is too short, headroom over the shell wait can
+  avoid a cell-only yield.
+- Select the fields, lines or diff hunks needed before printing large results.
+  Print each shell result once with its exit code or running session ID. Fit
+  output and handles within each shell budget and the total within the cell
+  budget. Keep short commands inline; edit and run substantial reusable
+  scripts in `SESSION_TMP` in one call.
 
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level).
@@ -47,13 +69,9 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
 const WAIT_DESCRIPTION_TEMPLATE: &str = r#"- Use `wait` only after `exec` returns `Script running with cell ID ...`.
-- `cell_id` identifies the running `exec` cell to resume.
-- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to 10000 ms.
-- `max_tokens` limits how much new output this wait call returns. Defaults to 10000 tokens.
-- `terminate: true` stops the running cell; false or omitted waits for output.
-- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.
-- If the cell is still running, `wait` may yield again with the same `cell_id`.
-- If the cell has already finished, `wait` returns the completed result and closes the cell."#;
+  For a shell session ID, poll `tools.write_stdin` with empty `chars` instead.
+- Each wait returns only new output. Reuse the same `cell_id` after another
+  yield; completion or termination returns the final result and closes the cell."#;
 // Based off of https://modelcontextprotocol.io/specification/draft/schema#calltoolresult
 const MCP_TYPESCRIPT_PREAMBLE: &str = r#"type Role = "user" | "assistant";
 type MetaObject = Record<string, unknown>;
@@ -189,9 +207,7 @@ pub struct ParsedExecSource {
 
 pub fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
     if input.trim().is_empty() {
-        return Err(
-            "exec expects raw JavaScript source text (non-empty). Provide JS only, optionally with first-line `// @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}`.".to_string(),
-        );
+        return Err("exec expects raw JavaScript source text (non-empty).".to_string());
     }
 
     let mut args = ParsedExecSource {
