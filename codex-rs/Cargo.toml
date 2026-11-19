@@ -651,6 +651,14 @@ inherits = "dev"
 opt-level = 0
 debug = "none"
 strip = "symbols"
+incremental = false
+
+# Reuse rustc work on the hot edit path. Leave other crates eligible for sccache.
+[profile.dev-small.package.codex-core]
+incremental = true
+
+[profile.dev-small.package.codex-git-utils]
+incremental = true
 
 [profile.release]
 lto = "thin"
