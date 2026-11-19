@@ -159,6 +159,7 @@ fn tool_and_notice_projection_uses_normal_transcript_presentation() {
             ..image
         }),
         ThreadItemPayload::SubAgentActivity {
+            assignment: None,
             model: None,
             reasoning_effort: None,
             id: "agent-1".to_string(),

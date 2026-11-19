@@ -122,13 +122,15 @@ async fn handle_spawn_agent(
         .map(str::trim)
         .filter(|role| !role.is_empty());
 
+    let message = agent_message_from_tool(message, &source);
+    let assignment = message.plaintext().map(str::to_owned);
     let spawned = crate::thread_spawn::spawn(
         &session,
         &step_context,
         &call_id,
         ThreadSpawnRequest {
             task_name: args.task_name,
-            message: agent_message_from_tool(message, &source),
+            message,
             fork_mode: fork_mode.clone(),
             agent_type: args.agent_type.clone(),
             model: args.model,
@@ -166,6 +168,7 @@ async fn handle_spawn_agent(
         &session,
         turn,
         SubAgentActivityItem {
+            assignment,
             model: Some(agent_snapshot.model.clone()),
             reasoning_effort: agent_snapshot.reasoning_effort.clone(),
             id: call_id,

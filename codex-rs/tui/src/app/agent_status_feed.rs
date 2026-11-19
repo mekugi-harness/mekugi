@@ -206,6 +206,7 @@ fn activity_summary(item: &ThreadItemPayload) -> Option<String> {
         ThreadItemPayload::UserMessage { .. }
         | ThreadItemPayload::HookPrompt { .. }
         | ThreadItemPayload::FunctionCallOutput { .. }
+        | ThreadItemPayload::AgentSideQuestion(_)
         | ThreadItemPayload::Sleep(_) => {
             return None;
         }

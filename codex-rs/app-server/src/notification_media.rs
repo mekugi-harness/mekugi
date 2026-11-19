@@ -217,6 +217,7 @@ fn without_thread_item_media(mut item: ThreadItemPayload) -> ThreadItemPayload {
         | ThreadItemPayload::SubAgentActivity { .. }
         | ThreadItemPayload::WebSearch(_)
         | ThreadItemPayload::ImageView { .. }
+        | ThreadItemPayload::AgentSideQuestion(_)
         | ThreadItemPayload::Sleep(_)
         | ThreadItemPayload::EnteredReviewMode { .. }
         | ThreadItemPayload::ExitedReviewMode { .. }

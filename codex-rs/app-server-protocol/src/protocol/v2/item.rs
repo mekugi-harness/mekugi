@@ -14,6 +14,7 @@ use crate::protocol::item_builders::CommandExecutionPresentation;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::item_builders::review_output_text;
 use codex_experimental_api_macros::ExperimentalApi;
+pub use codex_extension_items::AgentSideQuestionItem;
 use codex_extension_items::ExtensionItem;
 pub use codex_extension_items::image_generation::GeneratedImageRef;
 pub use codex_extension_items::image_generation::ImageGenerationFailure;
@@ -480,6 +481,8 @@ pub enum ThreadItemPayload {
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
     SubAgentActivity {
+        /// Accepted plaintext assignment on start, absent for encrypted or older starts.
+        assignment: Option<String>,
         /// Resolved model at sub-agent creation; absent from older records and other activities.
         model: Option<String>,
         /// Resolved reasoning effort at sub-agent creation, when known.
@@ -496,6 +499,7 @@ pub enum ThreadItemPayload {
         id: String,
         path: LegacyAppPathString,
     },
+    AgentSideQuestion(AgentSideQuestionItem),
     Sleep(SleepItem),
     ImageGeneration(ImageGenerationItem),
     #[serde(rename_all = "camelCase")]
@@ -559,6 +563,7 @@ impl ThreadItemPayload {
             | Self::ExitedReviewMode { id, .. }
             | Self::ContextCompaction { id, .. } => id,
             Self::WebSearch(item) => &item.id,
+            Self::AgentSideQuestion(item) => &item.id,
             Self::Sleep(item) => &item.id,
             Self::ImageGeneration(item) => &item.id,
         }
@@ -1071,6 +1076,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     .collect(),
             },
             CoreTurnItem::SubAgentActivity(activity) => Self::SubAgentActivity {
+                assignment: activity.assignment,
                 model: activity.model,
                 reasoning_effort: activity.reasoning_effort,
                 id: activity.id,
@@ -1090,6 +1096,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
             },
             CoreTurnItem::Extension(extension) => match extension {
                 ExtensionItem::ImageGeneration(item) => Self::ImageGeneration(item),
+                ExtensionItem::AgentSideQuestion(item) => Self::AgentSideQuestion(item),
                 ExtensionItem::Sleep(item) => Self::Sleep(item),
                 ExtensionItem::WebSearch(item) => Self::WebSearch(item),
             },

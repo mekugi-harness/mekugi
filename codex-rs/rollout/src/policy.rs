@@ -251,7 +251,9 @@ fn persisted_item_completed_event<'a>(
                 event.item,
                 TurnItem::FunctionCallOutput(_)
                     | TurnItem::Plan(_)
-                    | TurnItem::Extension(ExtensionItem::Sleep(_))
+                    | TurnItem::Extension(
+                        ExtensionItem::Sleep(_) | ExtensionItem::AgentSideQuestion(_)
+                    )
             ) || matches!(
                 &event.item,
                 TurnItem::SubAgentActivity(item)

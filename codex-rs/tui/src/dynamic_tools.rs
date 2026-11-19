@@ -1034,6 +1034,7 @@ async fn execute_inner(
                                         "id": id, "turnId": turn.id, "type": "collabAgentToolCall",
                                         "name": tool, "status": status
                                     })),
+                                    ThreadItemPayload::AgentSideQuestion(_) => None,
                                     ThreadItemPayload::Sleep(item) => Some(json!({
                                         "id": item.id, "turnId": turn.id, "type": "sleep",
                                         "name": "sleep", "status": null
@@ -1567,6 +1568,7 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
             ThreadItemPayload::ImageView { id, path } => json!({
                 "type": "imageView", "id": id, "path": path
             }),
+            ThreadItemPayload::AgentSideQuestion(item) => json!({ "type": "agentSideQuestion", "id": item.id }),
             ThreadItemPayload::Sleep(item) => json!({
                 "type": "sleep", "id": item.id, "durationMs": item.duration_ms
             }),

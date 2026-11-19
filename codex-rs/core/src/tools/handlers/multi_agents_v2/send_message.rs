@@ -6,6 +6,8 @@ use super::*;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agents_spec::create_send_message_tool;
+use codex_extension_items::AgentSideQuestionItem;
+use codex_extension_items::ExtensionItem;
 use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
@@ -40,6 +42,9 @@ impl Handler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let arguments = function_arguments(invocation.payload.clone())?;
         let args: SendMessageArgs = parse_arguments(&arguments)?;
+        // Keep only the authored question, not sources expanded in the recipient context.
+        let observed_question = (args.btw && plaintext_message_source(&invocation.source))
+            .then(|| args.message.clone());
         if let Some(target) = super::foreign::target(&invocation, &args.target) {
             use codex_app_server_protocol::{
                 AgentForeignOperation as Operation, AgentForeignResponse as Response,
@@ -62,7 +67,13 @@ impl Handler {
                 Response::SideQuestion {
                     target_thread_id,
                     answer,
-                } if args.btw && target_thread_id == target => answer,
+                } if args.btw && target_thread_id == target => {
+                    if let Some(question) = observed_question {
+                        observe_side_answer(&invocation, target.to_string(), question, &answer)
+                            .await;
+                    }
+                    answer
+                }
                 _ => return Err(super::foreign::invalid_response()),
             };
             invocation
@@ -120,7 +131,7 @@ impl Handler {
                     target,
                     question,
                     None,
-                    invocation.cancellation_token,
+                    invocation.cancellation_token.clone(),
                 )
                 .await
                 .map_err(|error| {
@@ -131,6 +142,14 @@ impl Handler {
                     );
                     collab_v2_agent_error(target, error)
                 })?;
+            if let Some(question) = observed_question {
+                let name = runtime
+                    .ensure_agent_known(target)
+                    .ok()
+                    .and_then(|metadata| metadata.agent_path)
+                    .map_or_else(|| target.to_string(), String::from);
+                observe_side_answer(&invocation, name, question, &answer).await;
+            }
             return Ok(boxed_tool_output(FunctionToolOutput::from_text(
                 answer,
                 Some(true),
@@ -146,6 +165,28 @@ impl Handler {
         .await
         .map(boxed_tool_output)
     }
+}
+
+async fn observe_side_answer(
+    invocation: &ToolInvocation,
+    target: String,
+    question: String,
+    answer: &str,
+) {
+    let item = TurnItem::Extension(ExtensionItem::AgentSideQuestion(AgentSideQuestionItem {
+        id: invocation.call_id.clone(),
+        target,
+        question,
+        answer: answer.to_owned(),
+    }));
+    invocation
+        .session
+        .emit_turn_item_started(&invocation.turn, &item)
+        .await;
+    invocation
+        .session
+        .emit_turn_item_completed(&invocation.turn, item)
+        .await;
 }
 
 impl CoreToolRuntime for Handler {
