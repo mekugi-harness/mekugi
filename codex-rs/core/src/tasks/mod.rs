@@ -1084,7 +1084,11 @@ impl Session {
         trace!(task_kind = ?task.kind, sub_id, "aborting running task");
         task.cancellation_token.cancel();
         if reason == TurnAbortReason::Interrupted
-            && task.turn_context.extension_data.get::<ManualReset>().is_none()
+            && task
+                .turn_context
+                .extension_data
+                .get::<ManualReset>()
+                .is_none()
             && task
                 .turn_context
                 .config
