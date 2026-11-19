@@ -4267,6 +4267,8 @@ async fn thread_resume_emits_restored_token_usage_before_next_turn() -> Result<(
     assert_eq!(notification.token_usage.total.reasoning_output_tokens, 10);
     assert_eq!(notification.token_usage.last.total_tokens, 90);
     assert_eq!(notification.token_usage.model_context_window, Some(200_000));
+    assert_eq!(thread.context_tokens, Some(90));
+    assert_eq!(thread.context_window, Some(200_000));
 
     Ok(())
 }
@@ -4543,6 +4545,8 @@ async fn thread_resume_skips_restored_token_usage_when_turns_are_excluded() -> R
         ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(second_resume_id)).await??;
     assert!(resumed_again.turns.is_empty());
+    assert_eq!(resumed_again.context_tokens, Some(90));
+    assert_eq!(resumed_again.context_window, Some(200_000));
 
     let second_note = timeout(
         DEFAULT_READ_TIMEOUT,

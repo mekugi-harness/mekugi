@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
@@ -24,6 +25,17 @@ use codex_rollout::RolloutItem;
 
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
+
+/// Attach the context measurement to the accepted thread itself, including
+/// metadata-only resumes that do not replay turn notifications.
+pub(super) async fn set_context_usage(thread: &mut Thread, conversation: &CodexThread) {
+    if let Some(info) = conversation.token_usage_info().await {
+        thread.context_tokens = info.last_token_usage.total_tokens.try_into().ok();
+        thread.context_window = info
+            .model_context_window
+            .and_then(|window| window.try_into().ok());
+    }
+}
 
 /// Sends a restored token usage update to the connection that attached to a thread.
 ///
