@@ -113,7 +113,7 @@ async fn environment_facts_render_without_a_second_timestamp() {
         /*network*/ None,
         /*subagents*/ None,
     )
-    .with_facts(&cwd, /*previous*/ None)
+    .with_facts(&cwd, &PermissionProfile::Disabled, /*previous*/ None)
     .await;
 
     let rendered = context.render().expect_text();

@@ -334,28 +334,28 @@ impl Session {
             } else {
                 None
             };
-            world_state.add_section(
-                EnvironmentsState::from_turn_context_with_environments(
-                    turn_context,
-                    &step_context.environments,
-                    current_date,
-                )
-                .await
-                .with_facts(
-                    step_context
-                        .environments
-                        .local_environment_cwd()
-                        .as_ref()
-                        .unwrap_or(&turn_context.config.cwd),
-                    previous_world_state
-                        .as_ref()
-                        .filter(|_| !new_window)
-                        .and_then(|value| value.state.get("environments")),
-                )
-                .await
-                .with_session_tmp(crate::exec_env::session_tmp_path(self.session_id()))
-                .with_subagents(environment_subagents),
-            );
+            let mut environments = EnvironmentsState::from_turn_context_with_environments(
+                turn_context,
+                &step_context.environments,
+                current_date,
+            )
+            .await;
+            if let Some(local) = step_context.environments.local()
+                && let Ok(cwd) = local.cwd().to_abs_path()
+            {
+                environments = environments
+                    .with_facts(
+                        &cwd,
+                        local.permission_profile(),
+                        previous_world_state
+                            .as_ref()
+                            .filter(|_| !new_window)
+                            .and_then(|value| value.state.get("environments")),
+                    )
+                    .await
+                    .with_session_tmp(crate::exec_env::session_tmp_path(self.session_id()));
+            }
+            world_state.add_section(environments.with_subagents(environment_subagents));
         }
         world_state.add_section(EnvironmentsInstructionsState::new(
             turn_context.config.include_environment_context

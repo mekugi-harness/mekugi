@@ -15,6 +15,8 @@ static FACT_PROBES: Semaphore = Semaphore::const_new(1);
 pub(super) struct EnvironmentFacts {
     pub(super) cwd: AbsolutePathBuf,
     pub(super) text: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) restricted_reads: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) session_tmp: Option<PathBuf>,
 }
@@ -32,6 +34,17 @@ impl EnvironmentFacts {
         Self {
             cwd: cwd.clone(),
             text,
+            restricted_reads: false,
+            session_tmp: None,
+        }
+    }
+
+    pub(super) fn restricted(cwd: &AbsolutePathBuf) -> Self {
+        Self {
+            cwd: cwd.clone(),
+            text: host_facts(/*os*/ None, kernel_version().as_deref())
+                + "Git repository: unavailable (restricted reads)\n",
+            restricted_reads: true,
             session_tmp: None,
         }
     }

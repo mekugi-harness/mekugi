@@ -2709,6 +2709,7 @@ impl ThreadRequestProcessor {
         );
         let (turns_backwards_cursor, items_backwards_cursor) =
             Self::paginated_resume_backwards_cursors(self.thread_store.as_ref(), thread_id).await?;
+        super::token_usage_replay::set_context_usage(&mut thread, &codex_thread).await;
         Ok(ThreadRevertResponse {
             thread,
             turns_backwards_cursor,
@@ -4712,6 +4713,7 @@ impl ThreadRequestProcessor {
                 }
 
                 let thread_originator = config_snapshot.originator.clone();
+                super::token_usage_replay::set_context_usage(&mut thread, &codex_thread).await;
                 let response = ThreadResumeResponse {
                     thread,
                     disabled_plugin_ids: config_snapshot.disabled_plugin_ids,
@@ -6053,6 +6055,7 @@ impl ThreadRequestProcessor {
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
+        super::token_usage_replay::set_context_usage(&mut thread, &forked_thread).await;
         let response = ThreadForkResponse {
             thread: thread.clone(),
             disabled_plugin_ids: config_snapshot.disabled_plugin_ids,
