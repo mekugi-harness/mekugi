@@ -18,6 +18,46 @@ use test_case::test_case;
 
 const PARAMETERS: &str = r#"{"type":"object","properties":{"cell_id":{"type":"string","description":"Catalog cell identifier."}},"required":["cell_id"],"additionalProperties":false}"#;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_request_guidance_snapshot() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let mock = mount_sse_sequence(&server, vec![sse_completed("first-response")]).await;
+    let test = test_codex()
+        .with_model("gpt-6.2-sol")
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_turn("Inspect the available tools.").await?;
+
+    let request = mock.single_request();
+    let mut snapshot = request.instructions_text();
+    let catalogs = request.inputs_of_type("additional_tools");
+    for name in ["exec", "wait"] {
+        let mut tool = catalogs
+            .iter()
+            .find_map(|item| responses::namespace_child_tool(item, "functions", name))
+            .cloned()
+            .unwrap_or_else(|| panic!("missing functions.{name}"));
+        let description = tool
+            .as_object_mut()
+            .expect("tool definition")
+            .remove("description")
+            .expect("tool description");
+        snapshot.push_str(&format!(
+            "\n\n# functions.{name}\n{}\n\n{}",
+            description.as_str().expect("tool description text"),
+            serde_json::to_string_pretty(&tool)?,
+        ));
+    }
+    let snapshot = snapshot
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("first_request_guidance", snapshot);
+    Ok(())
+}
+
 #[test_case(ToolMode::CodeMode, json!({"description":"  Catalog wait. {{ literal }}\n"}), false; "description_only")]
 #[test_case(ToolMode::CodeMode, json!({"parameters":PARAMETERS}), true; "parameters_only")]
 #[test_case(ToolMode::CodeModeOnly, json!({"description":"Catalog wait.","parameters":PARAMETERS}), true; "both_in_code_mode_only")]
