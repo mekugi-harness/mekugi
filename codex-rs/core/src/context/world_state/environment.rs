@@ -17,6 +17,7 @@ use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::input_text;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -88,14 +89,21 @@ impl EnvironmentsState {
     pub(crate) async fn with_facts(
         mut self,
         cwd: &AbsolutePathBuf,
+        permissions: &PermissionProfile,
         previous: Option<&serde_json::Value>,
     ) -> Self {
+        // Repository discovery, status and Git configuration can read outside cwd.
+        // The in-process probe cannot enforce partial filesystem read grants.
+        let restricted_reads = !permissions
+            .file_system_sandbox_policy()
+            .has_full_disk_read_access();
         self.facts = match previous
             .and_then(|value| serde_json::from_value::<EnvironmentsSnapshot>(value.clone()).ok())
             .and_then(|snapshot| snapshot.facts)
-            .filter(|facts| &facts.cwd == cwd)
+            .filter(|facts| &facts.cwd == cwd && facts.restricted_reads == restricted_reads)
         {
             Some(facts) => Some(facts),
+            None if restricted_reads => Some(EnvironmentFacts::restricted(cwd)),
             None => Some(EnvironmentFacts::acquire(cwd).await),
         };
         self

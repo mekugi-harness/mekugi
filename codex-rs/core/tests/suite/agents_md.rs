@@ -806,7 +806,13 @@ async fn restricted_project_without_instructions_starts_successfully() -> Result
     );
     test.submit_text_turn("continue without project instructions")
         .await?;
-    response_mock.single_request();
+    let context = response_mock.single_request().message_input_texts("user");
+    assert!(
+        context
+            .iter()
+            .any(|text| text.contains("Git repository: unavailable (restricted reads)"))
+    );
+    assert!(context.iter().any(|text| text.contains("Home: ")));
 
     Ok(())
 }
