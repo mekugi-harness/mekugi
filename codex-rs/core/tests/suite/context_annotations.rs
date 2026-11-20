@@ -241,6 +241,7 @@ async fn check_managed_skill_catalog(
         shadow_selection_enabled: false,
     });
     let test = test_codex()
+        .with_model("gpt-6.2-sol")
         .with_config(move |config| {
             config.active_project.trust_level = Some(trust);
             config.features.enable(Feature::TokenBudget).unwrap();
@@ -306,6 +307,11 @@ async fn check_managed_skill_catalog(
         assert!(!test.cwd_path().join("managed-condition-ran").exists());
         let requests = responses.requests();
         assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0]
+                .instructions_text()
+                .contains("## When to use a skill")
+        );
         let developers = requests[0].message_input_texts("developer").join("\n");
         assert!(developers.contains("### Available skills"));
         assert!(!developers.contains("## Host skills (replaces any previous host catalog)"));
@@ -344,7 +350,15 @@ async fn check_managed_skill_catalog(
 
     let requests = responses.requests();
     assert_eq!(requests.len(), 3);
+    let instructions = requests[0].instructions_text();
+    let (_, skills) = instructions
+        .split_once("\n# Using skills\n")
+        .expect("base skill guidance");
+    let (skills, _) = skills.split_once("\n# ").expect("following base section");
+    let managed_skill_guidance = format!("# Using skills\n{}", skills.trim_end());
+    insta::assert_snapshot!("managed_base_skill_guidance", managed_skill_guidance);
     for request in &requests {
+        assert_eq!(request.instructions_text(), instructions);
         let developers = request.message_input_texts("developer").join("\n");
         assert_eq!(developers.matches("exclusive description").count(), 1);
         assert!(developers.contains("<references>references/{other,sample}.md</references>"));

@@ -12,6 +12,19 @@ use tokio::sync::OnceCell;
 /// The original local workspace whose project configuration the host explicitly trusts.
 pub struct TrustedManagedSkillsWorkspace(pub AbsolutePathBuf);
 
+pub(crate) struct ManagedHostCatalog;
+
+const BASE_SKILL_GUIDANCE: &str = "\
+Skill descriptions in the available catalog own applicability. Use enabled
+skills for the operations their descriptions match or the user invokes them
+for. Instructions remain usable without any skills. Explicit reviews retain
+their requested operation and scope. The skill inventory lists each skill's
+references, so a reference whose name matches the current operation needs no
+routing from the skill body: read it in the same shell call as the body. Follow
+selected methods. If a required tool/method is unavailable, stop only dependent
+work; reuse substitution or install approval, or ask. Missing automatic skills
+alone do not block routine work.";
+
 /// The optional local inventory shared by accepted sources and host catalog rendering.
 pub struct ManagedSkills {
     project: PathBuf,
@@ -20,6 +33,21 @@ pub struct ManagedSkills {
 }
 
 impl ManagedSkills {
+    /// Adapt Codex-owned base instructions to the host catalog selected for this step.
+    pub fn apply_base_guidance(step: &ExtensionData, instructions: &mut String) {
+        const HEADING: &str = "\n# Using skills\n\n";
+        if step.get::<ManagedHostCatalog>().is_none() {
+            return;
+        }
+        if let Some(start) = instructions.find(HEADING) {
+            let start = start + HEADING.len();
+            let body = &instructions[start..];
+            let end = body.find("\n# ").unwrap_or(body.len());
+            let body_len = body[..end].trim_end().len();
+            instructions.replace_range(start..start + body_len, BASE_SKILL_GUIDANCE);
+        }
+    }
+
     pub fn for_turn(
         turn: &ExtensionData,
         environment: &TurnEnvironmentSelection,

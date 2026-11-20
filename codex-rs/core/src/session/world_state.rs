@@ -41,6 +41,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItemNamespace;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_skills_extension::ManagedSkills;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 
@@ -96,8 +97,36 @@ impl Session {
                 .map_or(0, |roots| roots.len()),
             "building step world state"
         );
+        let extension_metrics = super::extension_metrics::from_session_telemetry(
+            step_context.session_telemetry.clone(),
+        );
+        let previous_world_state = self.state.lock().await.history.world_state_checkpoint();
+        let environments = step_context.environments.to_selections();
+        let mut extension_sections = Vec::new();
+        for contributor in self.services.extensions.context_contributors() {
+            for section in contributor
+                .contribute_world_state(WorldStateContributionInput {
+                    thread_id: self.thread_id(),
+                    turn_id: turn_context.sub_id.as_str(),
+                    model_info: &step_context.settings.model_info,
+                    environments: &environments,
+                    extension_metrics: Some(Arc::clone(&extension_metrics)),
+                    session_store: &self.services.session_extension_data,
+                    thread_store: &self.services.thread_extension_data,
+                    turn_store: turn_context.extension_data.as_ref(),
+                    step_store: &step_context.extension_data,
+                    previous_world_state: previous_world_state.as_ref().map(|state| &state.state),
+                })
+                .await
+            {
+                extension_sections.push(section);
+            }
+        }
         let render_current_instructions = || {
-            let instructions = render_model_instructions(model_info);
+            let mut instructions = render_model_instructions(model_info);
+            if turn_context.config.model_catalog.is_none() {
+                ManagedSkills::apply_base_guidance(&step_context.extension_data, &mut instructions);
+            }
             if !turn_context.config.update_plan_enabled
                 && turn_context.config.model_catalog.is_none()
                 && (incremental_tools
@@ -128,7 +157,10 @@ impl Session {
             )
         } else {
             let model_instructions = render_current_instructions();
-            let base_instructions = self.get_prompt_base_instructions().await.text;
+            let base_instructions = self
+                .get_step_prompt_base_instructions(step_context)
+                .await
+                .text;
             let previous_model = {
                 let state = self.state.lock().await;
                 state
@@ -197,9 +229,6 @@ impl Session {
             world_state
                 .add_section(crate::context::world_state::DisabledCommandSessionsState::default());
         }
-        let extension_metrics = super::extension_metrics::from_session_telemetry(
-            step_context.session_telemetry.clone(),
-        );
         let preserve_parent_tool_declarations =
             !new_window && self.preserve_parent_tool_declarations();
         if incremental_tools && !preserve_parent_tool_declarations {
@@ -356,7 +385,6 @@ impl Session {
                 send_user_message_async_available,
             ));
         }
-        let previous_world_state = self.state.lock().await.history.world_state_checkpoint();
         if turn_context.config.include_environment_context {
             world_state.host_roster_reader = self.host_roster_reader(turn_context).cloned();
             let current_date = if turn_context.config.include_environment_context_time {
@@ -456,25 +484,8 @@ impl Session {
                 Arc::clone(&extension_metrics),
             ));
         }
-        let environments = step_context.environments.to_selections();
-        for contributor in self.services.extensions.context_contributors() {
-            for section in contributor
-                .contribute_world_state(WorldStateContributionInput {
-                    thread_id: self.thread_id(),
-                    turn_id: turn_context.sub_id.as_str(),
-                    model_info: &step_context.settings.model_info,
-                    environments: &environments,
-                    extension_metrics: Some(Arc::clone(&extension_metrics)),
-                    session_store: &self.services.session_extension_data,
-                    thread_store: &self.services.thread_extension_data,
-                    turn_store: turn_context.extension_data.as_ref(),
-                    step_store: &step_context.extension_data,
-                    previous_world_state: previous_world_state.as_ref().map(|state| &state.state),
-                })
-                .await
-            {
-                world_state.add_extension_section(section);
-            }
+        for section in extension_sections {
+            world_state.add_extension_section(section);
         }
         let v2_namespace = turn_context
             .config

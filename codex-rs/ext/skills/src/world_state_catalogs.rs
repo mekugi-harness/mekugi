@@ -15,6 +15,7 @@ use crate::catalog::SkillCatalog;
 use crate::catalog_delta::CatalogDelta;
 use crate::catalog_delta::CatalogUsage;
 use crate::catalog_delta::skills_delta_section;
+use crate::managed::ManagedHostCatalog;
 use crate::render::AvailableSkillsRender;
 use crate::render::PreparedSkillCatalog;
 use crate::render::RenderedSkillCatalogs;
@@ -532,6 +533,11 @@ pub(crate) async fn render_world_state_sections(
     };
     let catalogs =
         context.render_world_state_catalogs(/*include_stock_host*/ managed.is_none());
+    if managed.is_some() {
+        context.input.step_store.insert(ManagedHostCatalog);
+    } else {
+        context.input.step_store.remove::<ManagedHostCatalog>();
+    }
     let executor_cost = managed
         .and(catalogs[0].rendered.as_ref())
         .map_or(0, |catalog| {

@@ -1744,6 +1744,25 @@ impl Session {
         }
     }
 
+    pub(super) async fn get_step_prompt_base_instructions(
+        &self,
+        step: &StepContext,
+    ) -> BaseInstructions {
+        let mut instructions = self.get_prompt_base_instructions().await;
+        if step.turn.config.model_catalog.is_none()
+            && matches!(
+                instructions.provenance,
+                Some(BaseInstructionsProvenance::Model { .. })
+            )
+        {
+            codex_skills_extension::ManagedSkills::apply_base_guidance(
+                &step.extension_data,
+                &mut instructions.text,
+            );
+        }
+        instructions
+    }
+
     // Merges connector IDs into the session-level explicit connector selection.
     #[tracing::instrument(
         level = "trace",

@@ -1,0 +1,15 @@
+---
+source: core/tests/suite/context_annotations.rs
+expression: managed_skill_guidance
+---
+# Using skills
+
+Skill descriptions in the available catalog own applicability. Use enabled
+skills for the operations their descriptions match or the user invokes them
+for. Instructions remain usable without any skills. Explicit reviews retain
+their requested operation and scope. The skill inventory lists each skill's
+references, so a reference whose name matches the current operation needs no
+routing from the skill body: read it in the same shell call as the body. Follow
+selected methods. If a required tool/method is unavailable, stop only dependent
+work; reuse substitution or install approval, or ask. Missing automatic skills
+alone do not block routine work.

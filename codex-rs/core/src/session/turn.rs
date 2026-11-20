@@ -2074,7 +2074,7 @@ async fn run_sampling_request(
     } else {
         None
     };
-    let base_instructions = sess.get_prompt_base_instructions().await;
+    let base_instructions = sess.get_step_prompt_base_instructions(&step_context).await;
 
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&sess),

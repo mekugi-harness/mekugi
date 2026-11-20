@@ -35,7 +35,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   remote catalog. Personality comes from user instructions. Native guidance
   describes available Mekugi shell helpers and can guide substantial child
   replies through `child_reply_summary`. Plugin discovery is explicit rather
-  than advertised automatically in model context.
+  than advertised automatically in model context. The managed host catalog uses
+  concise base skill guidance. Code-mode batching lives in the exec description.
 - Code-mode waits can hold the observer while a native wait pauses the cell
   deadline. The paired host and runtime exchange observation liveness separately
   from stream heartbeats. Provider retry changes surface the first capacity wait
