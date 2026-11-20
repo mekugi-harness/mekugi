@@ -609,6 +609,11 @@ impl TurnContext {
         )
     }
 
+    /// Country captured when this turn was admitted. Subsequent steps capture their own settings.
+    pub fn request_country(&self) -> &codex_protocol::RequestCountry {
+        self.initial_settings.request_country()
+    }
+
     /// Legacy: returns the frozen initial-turn model metadata.
     /// Step-scoped consumers should use their captured `StepContext::settings`.
     pub(crate) fn model_info(&self) -> &Arc<CatalogModel> {
@@ -800,14 +805,6 @@ impl TurnContext {
 
     pub(crate) fn network_sandbox_policy(&self) -> NetworkSandboxPolicy {
         self.permission_profile().network_sandbox_policy()
-    }
-
-    pub(crate) fn sandbox_policy(&self) -> SandboxPolicy {
-        #[allow(deprecated)]
-        codex_sandboxing::compatibility_sandbox_policy_for_permission_profile(
-            &self.permission_profile(),
-            &self.cwd,
-        )
     }
 
     /// Legacy: returns the frozen initial-turn reasoning effort, including the initial model default.

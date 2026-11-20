@@ -33,6 +33,39 @@ fn migrator_through(version: i64) -> Migrator {
 }
 
 #[tokio::test]
+async fn release_171_upgrades_existing_mekugi_state() -> anyhow::Result<()> {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    migrator_through(/*version*/ 63).run(&pool).await?;
+    sqlx::query(
+        "INSERT INTO threads (
+            id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+            title, sandbox_policy, approval_mode, completed_compactions
+        ) VALUES ('thread', '/tmp/thread.jsonl', 1, 1, 'cli', 'openai', '/tmp',
+            'thread', 'read-only', 'never', 4)",
+    )
+    .execute(&pool)
+    .await?;
+
+    STATE_MIGRATOR.run(&pool).await?;
+
+    let completed_compactions: i64 =
+        sqlx::query_scalar("SELECT completed_compactions FROM threads WHERE id = 'thread'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(completed_compactions, 4);
+    sqlx::query(
+        "INSERT INTO session_model_ids (session_id, kind, external_key, ordinal, initial_state)
+         VALUES ('thread', 'file', '/tmp/file', 0, '{}')",
+    )
+    .execute(&pool)
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn guardian_metadata_cleanup_preserves_custom_names_and_titles() {
     let sqlite_home = crate::runtime::test_support::unique_temp_dir();
     tokio::fs::create_dir_all(&sqlite_home)

@@ -21,6 +21,7 @@ codex-http-client = { workspace = true }
 codex-protocol = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
+codex-utils-path-uri = { workspace = true }
 core_test_support = { workspace = true }
 futures = { workspace = true }
 hmac = { workspace = true }

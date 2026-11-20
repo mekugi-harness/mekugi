@@ -19,7 +19,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::user_input::UserInput;
+use codex_user_input::ResolvedUserInput;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -166,7 +166,7 @@ async fn answer_side_question(
 struct PreparedSideQuestion {
     config: Config,
     history: InitialHistory,
-    input: Vec<UserInput>,
+    input: Vec<ResolvedUserInput>,
 }
 
 async fn prepare_side_question(
@@ -207,12 +207,12 @@ async fn prepare_side_question(
         }
         .into(),
     ));
-    let mut input = vec![UserInput::Text {
+    let mut input = vec![ResolvedUserInput::Text {
         text: question,
         text_elements: Vec::new(),
     }];
     if let Some(text) = frozen_sources {
-        input.push(UserInput::Text {
+        input.push(ResolvedUserInput::Text {
             text,
             text_elements: Vec::new(),
         });

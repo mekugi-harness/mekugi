@@ -2,13 +2,13 @@ use super::*;
 use crate::session::TurnInput;
 use crate::session::UserInputMetadata;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::user_input::UserInput;
 use codex_thread_store::PersistContext;
+use codex_user_input::ResolvedUserInput;
 use pretty_assertions::assert_eq;
 
 async fn record(session: &Arc<Session>, step: &Arc<StepContext>, text: &str) {
     let input = TurnInput::UserInput {
-        content: vec![UserInput::Text {
+        content: vec![ResolvedUserInput::Text {
             text: text.to_string(),
             text_elements: Vec::new(),
         }],

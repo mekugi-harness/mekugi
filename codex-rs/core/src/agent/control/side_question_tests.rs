@@ -86,11 +86,11 @@ async fn preparation_freezes_native_history_and_preserves_original_input() {
     assert_eq!(
         prepared.input,
         vec![
-            UserInput::Text {
+            ResolvedUserInput::Text {
                 text: question.to_owned(),
                 text_elements: Vec::new()
             },
-            UserInput::Text {
+            ResolvedUserInput::Text {
                 text: frozen.to_owned(),
                 text_elements: Vec::new()
             },

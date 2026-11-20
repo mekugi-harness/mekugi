@@ -561,6 +561,7 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
     test.codex
         .call_mcp_tool(
             "echo_service",
+            /*environment_id*/ None,
             "echo",
             Some(json!({"message": "ready after removal"})),
             /*meta*/ None,
@@ -583,6 +584,7 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
         .codex
         .call_mcp_tool(
             "echo_service",
+            /*environment_id*/ None,
             "echo",
             Some(json!({"message": "unavailable"})),
             /*meta*/ None,
@@ -611,7 +613,13 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
         ("cwd", json!({})),
     ] {
         test.codex
-            .call_mcp_tool("echo_service", tool, Some(arguments), /*meta*/ None)
+            .call_mcp_tool(
+                "echo_service",
+                /*environment_id*/ None,
+                tool,
+                Some(arguments),
+                /*meta*/ None,
+            )
             .await?;
     }
     test.submit_text_turn("Continue with the restored echo service.")
@@ -648,6 +656,7 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
             test.codex
                 .call_mcp_tool(
                     "functions",
+                    /*environment_id*/ None,
                     "echo",
                     Some(json!({"message": "ready after instructions refresh"})),
                     /*meta*/ None,

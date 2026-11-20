@@ -105,7 +105,14 @@ async fn run_compact_task_inner(
         return Err(CodexErr::TurnAborted);
     }
     compaction.source_acquisition = reload.as_ref().map(|(_, receipt)| receipt.clone());
-    sess.start_new_context_window(step_context, world_state, reload)
+    // This reset installs history without making a remote compaction request.
+    let trace = sess.services.rollout_thread_trace.compaction_trace_context(
+        &turn_context.sub_id,
+        &compaction.id,
+        &turn_context.model_info().slug,
+        &turn_context.provider.info().name,
+    );
+    sess.start_new_context_window(step_context, world_state, reload, &trace)
         .await;
     sess.emit_turn_item_completed(turn_context, TurnItem::ContextCompaction(compaction))
         .await;

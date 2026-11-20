@@ -7,6 +7,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::WarningNotification;
 use codex_state::LogWriteFailureReporter;
 
+use crate::outgoing_message::NotificationTarget;
 use crate::outgoing_message::OutgoingMessageSender;
 
 const LOG_WRITE_WARNING: &str = "Mekugi couldn't save diagnostic logs to its local database. Check the server logs for details.";
@@ -30,12 +31,13 @@ impl LogWriteWarningReporter {
         if !self.has_failure.swap(true, Ordering::Relaxed)
             && let Some(outgoing) = self.outgoing.upgrade()
         {
-            outgoing.try_send_server_notification(ServerNotification::Warning(
-                WarningNotification {
+            outgoing.try_send_server_notification(
+                NotificationTarget::Broadcast,
+                ServerNotification::Warning(WarningNotification {
                     thread_id: None,
                     message: LOG_WRITE_WARNING.to_string(),
-                },
-            ));
+                }),
+            );
         }
     }
 }

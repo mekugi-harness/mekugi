@@ -4,6 +4,8 @@ use crate::sqlite::SqliteWriteQueryExt;
 use sqlx::migrate::Migrator;
 use sqlx_sqlite::SqlitePool;
 
+// Mekugi already shipped migration 63 for completed compactions. The two
+// upstream 0.171.0 migrations follow it as versions 64 and 65.
 pub(crate) static STATE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
 pub(crate) static LOGS_MIGRATOR: Migrator = sqlx_macros::migrate!("./logs_migrations");
 pub(crate) static GOALS_MIGRATOR: Migrator = sqlx_macros::migrate!("./goals_migrations");

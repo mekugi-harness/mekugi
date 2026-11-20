@@ -28,6 +28,7 @@ async fn client_callback_capacity_is_isolated_and_reusable() {
     let mut lease = host
         .open_session(Request::new(proto::OpenSessionRequest {
             observation_liveness: false,
+            heartbeat_interval_s: 0,
             max_pending_delegate_calls: Some(2),
             ..Default::default()
         }))
@@ -69,6 +70,7 @@ async fn zero_callback_capacity_is_rejected_before_opening_a_session() {
     let result = host
         .open_session(Request::new(proto::OpenSessionRequest {
             observation_liveness: false,
+            heartbeat_interval_s: 0,
             max_pending_delegate_calls: Some(0),
             ..Default::default()
         }))
