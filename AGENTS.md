@@ -34,6 +34,15 @@ Run `rg` from this directory when searching fork sources; Mekugi's `.rgignore` e
 Build prerequisites, profiles, artifacts and host integration are owned by
 [native app-server development](../../docs/contributing/development.md#native-app-server).
 
+## Fork changelog
+
+Update [MEKUGI_CHANGELOG.md](MEKUGI_CHANGELOG.md) in the same change that adds,
+changes, or removes an intentional difference from stock Codex. Record the
+effect and any compatibility consequence, not generated artifacts or
+implementation churn. When importing upstream, compare directly with the new
+release tag, update the baseline and import record, and remove entries for
+differences that upstream now supplies.
+
 ## Rust conventions
 
 - Crates use the `codex-` prefix; the shipped app-server executable is `mekugi-app-server`.
