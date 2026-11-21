@@ -392,7 +392,12 @@ fn prepare_user_shell_exec_command(
             shell_snapshot,
             shell_environment_set,
             exec_env_map,
-            apply_package_path_prepend,
+            |env, runtime_path_prepends| {
+                apply_package_path_prepend(env, runtime_path_prepends);
+                if let Some(session_tmp) = env.get(crate::exec_env::SESSION_TMP_ENV_VAR).cloned() {
+                    runtime_path_prepends.append(env, std::path::Path::new(&session_tmp));
+                }
+            },
         )
     }
 

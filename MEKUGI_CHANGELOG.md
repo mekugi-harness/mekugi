@@ -51,8 +51,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   resets are cancellable and report settlement; reset receipts retain which
   sources were acquired. Accepted user input and agent handoffs can also attach
   sources through the same native acquisition path.
-- The runtime captures structured environment facts and prepares the shared
-  `SESSION_TMP`. The native skills extension uses the local `skills-mgr` catalog
+- The runtime captures structured environment facts, prepares the shared
+  `SESSION_TMP`, and appends it to `PATH` (reported via `<session_tmp_on_path>`).
+  The native skills extension uses the local `skills-mgr` catalog
   where configured and otherwise retains stock skill discovery.
 - Model requests reuse repeated tool output and source text without replacing
   the original retained records. Context usage notices and deduplication savings
