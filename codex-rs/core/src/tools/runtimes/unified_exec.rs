@@ -440,6 +440,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                     &mut env,
                     &mut runtime_path_prepends,
                 );
+                runtime_path_prepends.append(
+                    &mut env,
+                    &crate::exec_env::session_tmp_path(ctx.session.session_id()),
+                );
             }
             runtime_path_prepends
         };
@@ -505,7 +509,9 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             let outcome = if snapshot_used { "used" } else { "fallback" };
             metrics.record(&ctx.step_context.session_telemetry, wait, outcome);
         }
-        if req.shell_snapshot.is_some() {
+        if req.shell_snapshot.is_some()
+            || (!snapshot_used && prepared.resolved.shell.is_posix_login())
+        {
             let exports =
                 runtime_path_prepends.shell_exports_after_snapshot(&explicit_env_overrides);
             if !exports.is_empty()
