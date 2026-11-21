@@ -6,26 +6,24 @@ use std::path::Path;
 
 const HELPERS: &[(&str, &str)] = &[
     (
-        "inspect_file",
-        "Outline source structure as START-END KIND NAME. Use `inspect_file \
-         [--json] [--max-tokens N] PATH ...` before reading specific ranges. \
-         Output and errors are per file; default budget: 4000 tokens.",
+        "mfinspect",
+        "Outline source structure as START-END KIND NAME. Use `mfinspect \
+         [--json] PATH ...` before reading specific ranges. Output and errors \
+         are per file.",
     ),
     (
         "mcat",
         "Read UTF-8 files or inclusive line ranges. Use `mcat [--number] \
-         [--max-tokens N] PATH [START:END ...] ...`, e.g. `mcat src/main.rs \
-         100:150`. Batch up to 16 reads. `-n N` limits rows within each range; \
-         `--tail` selects the last rows and requires a limit. Default budget: \
-         6000 tokens. Omitted rows can produce `mread` handles.",
+         PATH [START:END ...] ...`, e.g. `mcat src/main.rs 100:150`. Batch up \
+         to 16 reads. `-n N` limits rows in a single-file read; `--tail` \
+         selects the last rows and requires `-n`.",
     ),
     (
         "msymbol",
         "Resolve definitions and references with `msymbol [--workspace ROOT] \
          (def|refs) PATH [LINE] SYMBOL [N] ...`. Supply LINE for locals or \
          ambiguous names; N chooses a token occurrence. Batch independent \
-         lookups. Rust analysis is offline and can report incomplete coverage. \
-         Default budget: 4000 tokens.",
+         lookups. Rust analysis is offline and can report incomplete coverage.",
     ),
     (
         "mrun",
@@ -35,28 +33,20 @@ const HELPERS: &[(&str, &str)] = &[
          Use native waits for background or interactive commands.",
     ),
     (
-        "mread",
-        "Continue retained output with `mread REF ... [--stdout|--stderr] \
-         [--max-tokens N]`. REF is a returned handle, not a path. Handles \
-         share one budget and can fail independently. Ordinary native command \
-         truncation has no recovery handle. Default budget: 8000 tokens.",
-    ),
-    (
         "mchanges",
         "Review captured edits, not Git or current workspace state. Use `mchanges \
          --list` to find your IDs or `mchanges ID[..ID] ... [PATH ...]` for a \
          composed diff. Handoffs need explicit IDs or same-agent ranges and scope. \
          `--summary` shows file statuses; `--history` shows individual attempts. \
          `mchanges revert|apply ID ...` preserves unrelated edits and reports \
-         conflicts. Use `--max-tokens` for bounded review, not patch export; \
-         validate a full export before feeding it to a mutating consumer.",
+         conflicts.",
     ),
     (
         "mreload",
         "Capture source references with `mreload SELECTION_JSON`. It returns a \
-         retained snapshot reference after acquisition. The selection has a \
-         `sources` array, e.g. `@path#L2-L4,L8`, `$skill`, `mchanges:ID..ID`. \
-         Quote paths containing spaces inside the reference.",
+         read-only snapshot file path after acquisition (read with `mcat`). The \
+         selection has a `sources` array, e.g. `@path#L2-L4,L8`, `$skill`, \
+         `mchanges:ID..ID`. Quote paths containing spaces inside the reference.",
     ),
 ];
 
