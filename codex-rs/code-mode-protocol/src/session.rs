@@ -37,9 +37,10 @@ pub enum CodeModeOutputTruncation {
     /// Return raw output; the caller applies its own budget and formatting.
     #[default]
     Client,
-    /// The host bounds each cell's retained output prefix to 16 MiB and pages
-    /// it through execute and wait. The host includes any script error in the
-    /// paged content; the separately bounded diagnostic is for status/logging.
+    /// The host bounds each cell's retained unread output to 16 MiB (freed as
+    /// pages are delivered) and pages it through execute and wait. The host
+    /// includes any script error in the paged content; the separately bounded
+    /// diagnostic is for status/logging.
     Server,
 }
 

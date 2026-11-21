@@ -74,8 +74,9 @@ async fn cell_pagination_completed_lines_and_utf8(
     disabled_features: &'static [Feature],
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
-    // The first two lines fill 14 of 16 bytes. The next line fits a fresh
-    // page. The five four-byte code points necessarily cross a page boundary.
+    // The first two lines fill 14 of 16 bytes. The next line ("short\n") fits
+    // a fresh page, while the five four-byte code points (21 bytes with \n)
+    // exceed a full 16-byte page and therefore start on page 2.
     let server = responses::start_mock_server().await;
     let (test, initial) = run_code_mode_turn_with_builder(
         &server,
@@ -103,7 +104,7 @@ text("first!\nsecond\nshort\n🦀🦀🦀🦀🦀\nend\n");
     }
     assert_eq!(
         pages,
-        ["first!\nsecond\n", "short\n", "🦀🦀🦀🦀", "🦀\nend\n"]
+        ["first!\nsecond\n", "short\n🦀🦀", "🦀🦀🦀\n", "end\n"]
     );
     assert_eq!(pages.concat(), "first!\nsecond\nshort\n🦀🦀🦀🦀🦀\nend\n");
     let missing = wait_page(
@@ -367,5 +368,162 @@ text("x".repeat(100));
         body(&missing),
         format!("Script error:\nexec cell {cell_id} not found")
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cell_pagination_interrupt_releases_active_paged_cell() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let mut extensions =
+        codex_extension_api::ExtensionRegistryBuilder::<codex_core::config::Config>::new();
+    extensions.tool_lifecycle_contributor(std::sync::Arc::new(
+        super::InterruptedNestedToolObserver {
+            started: std::sync::Mutex::new(Some(started_tx)),
+            finished: std::sync::Mutex::new(Some(finished_tx)),
+        },
+    ));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_extensions(std::sync::Arc::new(extensions.build()))
+        .with_config(|config| {
+            let _ = config.features.enable(Feature::CodeMode);
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+
+    let setup = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("resp-paged"),
+                responses::ev_custom_tool_call(
+                    "call-paged",
+                    "exec",
+                    r#"// @exec: {"max_output_tokens": 4}
+text("a".repeat(64));
+yield_control();
+await new Promise(() => {});
+"#,
+                ),
+                responses::ev_completed("resp-paged"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("msg-paged", "yielded"),
+                responses::ev_completed("resp-paged-complete"),
+            ]),
+        ],
+    )
+    .await;
+    test.submit_turn("start a paged running cell").await?;
+    let paged_items = custom_tool_output_items(
+        &setup.last_request().expect("paged output request"),
+        "call-paged",
+    );
+    let paged_cell_id = extract_running_cell_id(text_item(&paged_items, /*index*/ 0));
+    assert_eq!(body(&paged_items), "a".repeat(16));
+
+    responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-blocker"),
+            responses::ev_custom_tool_call(
+                "call-blocker",
+                "exec",
+                "await tools.test_sync_tool({ sleep_after_ms: 60_000 });",
+            ),
+            responses::ev_completed("resp-blocker"),
+        ]),
+    )
+    .await;
+    test.codex
+        .start_or_steer_turn(codex_core::TurnInputRequest::user_input(vec![
+            codex_protocol::user_input::UserInput::Text {
+                text: "block until interrupted".to_string(),
+                text_elements: Vec::new(),
+            },
+        ]))
+        .await?;
+    let _active_cell_id = started_rx.await?;
+    test.codex
+        .submit(codex_protocol::protocol::Op::Interrupt)
+        .await?;
+    core_test_support::wait_for_event(&test.codex, |event| {
+        matches!(event, codex_protocol::protocol::EventMsg::TurnAborted(_))
+    })
+    .await;
+    let _nested_outcome = finished_rx.await?;
+
+    let missing = wait_page(
+        &server,
+        &test,
+        &paged_cell_id,
+        1,
+        /*max_tokens*/ 4,
+        /*terminate*/ false,
+    )
+    .await?;
+    assert_eq!(status(&missing), "Script failed");
+    assert_eq!(
+        body(&missing),
+        format!("Script error:\nexec cell {paged_cell_id} not found")
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cell_pagination_deduplicates_identical_pages() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let block: String = (0..8)
+        .map(|line| {
+            format!("Repeated page line {line} with enough distinct content to deduplicate!\n")
+        })
+        .collect();
+    assert_eq!(block.len() % 4, 0);
+    let page_tokens = block.len() / 4;
+    let (test, initial) = run_code_mode_turn(
+        &server,
+        "Emit two identical pages",
+        &format!(
+            r#"// @exec: {{"max_output_tokens": {page_tokens}}}
+const block = {block_json};
+text(block + block);
+"#,
+            block_json = serde_json::to_string(&block)?,
+        ),
+    )
+    .await?;
+    let first = custom_tool_output_items(&initial.single_request(), "call-1");
+    let first_header = text_item(&first, /*index*/ 0);
+    let first_status = first_header
+        .strip_prefix("[call c1]\n")
+        .expect("first page should be labeled for deduplication")
+        .lines()
+        .next()
+        .expect("status");
+    let cell_id = first_status
+        .strip_prefix("Script completed (more output: wait with cell ID ")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .expect("first page should carry continuation cell ID");
+    assert_eq!(body(&first), block);
+
+    let second = wait_page(
+        &server,
+        &test,
+        cell_id,
+        1,
+        /*max_tokens*/ page_tokens,
+        /*terminate*/ false,
+    )
+    .await?;
+    let second_body = body(&second);
+    assert!(
+        second_body.contains("[identical to call c1"),
+        "expected identical second page to be deduplicated against call c1, got: {second_body:?}"
+    );
+    assert!(!second_body.contains("Repeated page line 0"));
     Ok(())
 }

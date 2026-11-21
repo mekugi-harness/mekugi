@@ -7,6 +7,7 @@ use codex_utils_string::truncate_middle_with_marker;
 mod pages;
 mod retention;
 
+pub(crate) use retention::NextPage;
 pub(crate) use retention::OutputRetention;
 pub(crate) use retention::RetainedCell;
 pub(crate) use retention::ServerOutput;
@@ -80,11 +81,13 @@ impl OutputCollector {
     }
 }
 
-fn append_discard_notice(items: &mut Vec<OutputItem>, discarded: u64) {
-    if discarded != 0 {
-        items.push(OutputItem::InputText {
-            text: format!("Code Mode output limit reached: discarded {discarded} bytes"),
-        });
+fn discard_notice_text(discarded: u64) -> String {
+    format!("Code Mode output limit reached: discarded {discarded} bytes")
+}
+
+fn discard_notice_item(discarded: u64) -> OutputItem {
+    OutputItem::InputText {
+        text: discard_notice_text(discarded),
     }
 }
 

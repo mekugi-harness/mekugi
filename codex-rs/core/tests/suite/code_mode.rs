@@ -4352,9 +4352,15 @@ text(JSON.stringify([results[0].output.includes("code-alpha-ready"), results[1].
 const TOKEN_POLICY_TEST_MODEL: &str = "gpt-5.5";
 
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[test_case(Some(20_000), None; "with_nested_limit_default_tool_limit")]
+#[test_case(Some(20_000), Some(50); "with_nested_limit_configured_tool_limit")]
+#[test_case(None, None; "without_nested_limit_default_tool_limit")]
+#[test_case(None, Some(50); "without_nested_limit_configured_tool_limit")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exec_nested_limit_preserves_result_variable_before_default_history_truncation()
--> Result<()> {
+async fn code_mode_nested_exec_command_delivers_complete_output_to_script(
+    nested_max_output_tokens: Option<usize>,
+    tool_output_token_limit: Option<usize>,
+) -> Result<()> {
     // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
     skip_if_wine_exec!(
         Ok(()),
@@ -4362,115 +4368,27 @@ async fn code_mode_exec_nested_limit_preserves_result_variable_before_default_hi
     );
     skip_if_no_network!(Ok(()));
 
-    let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
-        &server,
-        "use exec_command from code mode",
-        r#"const result = await tools.exec_command({
-  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\"",
-  max_output_tokens: 20000
-});
+    let nested_limit = nested_max_output_tokens
+        .map(|limit| format!(",\n  max_output_tokens: {limit}"))
+        .unwrap_or_default();
+    let script = format!(
+        r#"const result = await tools.exec_command({{
+  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""{nested_limit}
+}});
 text(result.output === "x".repeat(50000) ? "complete nested output" : "incomplete nested output");
-"#,
-        TOKEN_POLICY_TEST_MODEL,
-        |_| {},
-    )
-    .await?;
-
-    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
-    assert_eq!(text_item(&items, /*index*/ 1), "complete nested output");
-
-    Ok(())
-}
-
-#[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exec_nested_limit_preserves_result_variable_before_configured_history_truncation()
--> Result<()> {
-    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
-    skip_if_wine_exec!(
-        Ok(()),
-        "only part of nested exec_command stdout reaches the code-mode result"
+"#
     );
-    skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
         &server,
         "use exec_command from code mode",
-        r#"const result = await tools.exec_command({
-  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\"",
-  max_output_tokens: 20000
-});
-text(result.output === "x".repeat(50000) ? "complete nested output" : "incomplete nested output");
-"#,
+        &script,
         TOKEN_POLICY_TEST_MODEL,
-        |config| {
-            config.tool_output_token_limit = Some(50);
-        },
-    )
-    .await?;
-
-    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
-    assert_eq!(text_item(&items, /*index*/ 1), "complete nested output");
-
-    Ok(())
-}
-
-#[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exec_without_nested_limit_preserves_result_variable_before_default_history_truncation()
--> Result<()> {
-    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
-    skip_if_wine_exec!(
-        Ok(()),
-        "only part of nested exec_command stdout reaches the code-mode result"
-    );
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
-        &server,
-        "use exec_command from code mode",
-        r#"const result = await tools.exec_command({
-  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""
-});
-text(result.output === "x".repeat(50000) ? "complete nested output" : "incomplete nested output");
-"#,
-        TOKEN_POLICY_TEST_MODEL,
-        |_| {},
-    )
-    .await?;
-
-    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
-    assert_eq!(text_item(&items, /*index*/ 1), "complete nested output");
-
-    Ok(())
-}
-
-#[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exec_without_nested_limit_preserves_result_variable_before_configured_history_truncation()
--> Result<()> {
-    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
-    skip_if_wine_exec!(
-        Ok(()),
-        "only part of nested exec_command stdout reaches the code-mode result"
-    );
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
-        &server,
-        "use exec_command from code mode",
-        r#"const result = await tools.exec_command({
-  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""
-});
-text(result.output === "x".repeat(50000) ? "complete nested output" : "incomplete nested output");
-"#,
-        TOKEN_POLICY_TEST_MODEL,
-        |config| {
-            config.tool_output_token_limit = Some(50);
+        move |config| {
+            if let Some(limit) = tool_output_token_limit {
+                config.tool_output_token_limit = Some(limit);
+            }
         },
     )
     .await?;

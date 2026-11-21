@@ -30,8 +30,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 - JavaScript cell output continues through stock `wait`, including after the
   script ends. The runtime retains up to 16 MiB of unread output per cell and
-  reports discarded bytes. At 64 MiB per session, it evicts the oldest retained
-  cells first. Unread pages are not restored on resume.
+  reports discarded bytes at their position in the stream. At 64 MiB per
+  session, eviction drops the oldest cells' unread bytes first: finished cells
+  are released, while running cells keep executing with dropped bytes counted
+  as discarded. Cancelling an `exec` before its first response terminates the
+  cell on every transport (in-process and stdio now match gRPC). Unread pages
+  are not restored on resume.
 
 - Native [feature policy](codex-rs/features/src/lib.rs) fixes JavaScript code
   mode as the only model tool interface, with native V2 agents, token budgeting,

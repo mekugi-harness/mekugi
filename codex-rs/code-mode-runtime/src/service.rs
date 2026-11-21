@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::TaskFailureHandler;
 use crate::cell_actor::take_completed_event;
+use crate::output::NextPage;
 use crate::output::OutputCollector;
 use crate::output::RetainedCell;
 use crate::output::ServerOutput;
@@ -171,7 +172,10 @@ impl InProcessCodeModeSession {
                 runtime::ObserveMode::YieldAfter(self.resolve_yield_timeout(yield_time_ms))
                     .with_yield_signal(preempt.unwrap_or_default())
                     .with_liveness(liveness),
-                Arc::new(ProtocolDelegate { delegate }),
+                Arc::new(ProtocolDelegate {
+                    delegate,
+                    pages: Arc::clone(&self.pages),
+                }),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -211,8 +215,11 @@ impl InProcessCodeModeSession {
                             page.map_or_else(|| missing_cell_response(response_cell_id, mode), Ok)
                         })
                 }
-                // A concurrent terminate can still own the event.
-                Err(error @ runtime::Error::ClosedCell(_)) => Err(error.to_string()),
+                // A concurrent terminate can still own the event; release if no producer remains.
+                Err(error @ runtime::Error::ClosedCell(_)) => {
+                    prune_stale_page(&mut pages, &response_cell_id);
+                    Err(error.to_string())
+                }
                 Err(error) => {
                     pages.remove(&response_cell_id);
                     Err(error.to_string())
@@ -231,7 +238,10 @@ impl InProcessCodeModeSession {
             .execute(
                 self.runtime_request(request, /*revision*/ None)?,
                 runtime::ObserveMode::PendingFrontier,
-                Arc::new(ProtocolDelegate { delegate }),
+                Arc::new(ProtocolDelegate {
+                    delegate,
+                    pages: Arc::clone(&self.pages),
+                }),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -292,13 +302,13 @@ impl InProcessCodeModeSession {
             .await
         {
             Ok(pending_event) => Box::pin(async move {
-                finish_wait(
-                    &pages,
-                    cell_id,
-                    max_output_tokens,
-                    output_truncation,
-                    pending_event.event().await,
-                )
+                let mut prune = PrunePagesGuard {
+                    pages: Arc::clone(&pages),
+                    cell_id: Some(cell_id.clone()),
+                };
+                let event = pending_event.event().await;
+                prune.cell_id = None;
+                finish_wait(&pages, cell_id, max_output_tokens, output_truncation, event)
             }),
             Err(error) => Box::pin(async move {
                 finish_wait(
@@ -345,7 +355,12 @@ impl InProcessCodeModeSession {
                 ),
             };
         }
+        let mut prune = PrunePagesGuard {
+            pages: Arc::clone(&self.pages),
+            cell_id: Some(cell_id.clone()),
+        };
         let event = self.runtime.terminate(&runtime_cell_id(&cell_id)).await;
+        prune.cell_id = None;
         if let Some(response) = release_completed_pages(&self.pages, &cell_id) {
             return Ok(WaitOutcome::LiveCell(response));
         }
@@ -455,6 +470,7 @@ impl CodeModeSession for InProcessCodeModeSession {
 
 struct ProtocolDelegate {
     delegate: Arc<dyn CodeModeSessionDelegate>,
+    pages: Arc<Mutex<CellPages>>,
 }
 
 impl runtime::SessionRuntimeDelegate for ProtocolDelegate {
@@ -512,7 +528,12 @@ impl runtime::SessionRuntimeDelegate for ProtocolDelegate {
     }
 
     fn cell_closed(&self, cell_id: &runtime::CellId) {
-        self.delegate.cell_closed(&protocol_cell_id(cell_id));
+        let cell_id = protocol_cell_id(cell_id);
+        prune_stale_page(
+            &mut self.pages.lock().unwrap_or_else(PoisonError::into_inner),
+            &cell_id,
+        );
+        self.delegate.cell_closed(&cell_id);
     }
 }
 
@@ -542,6 +563,31 @@ impl Drop for InitialOutputOwner {
         if let Some(cell_id) = &self.cell_id {
             discard_cell(&self.pages, cell_id);
         }
+    }
+}
+
+struct PrunePagesGuard {
+    pages: Arc<Mutex<CellPages>>,
+    cell_id: Option<CellId>,
+}
+
+impl Drop for PrunePagesGuard {
+    fn drop(&mut self) {
+        if let Some(cell_id) = self.cell_id.take() {
+            prune_stale_page(
+                &mut self.pages.lock().unwrap_or_else(PoisonError::into_inner),
+                &cell_id,
+            );
+        }
+    }
+}
+
+fn prune_stale_page(pages: &mut CellPages, cell_id: &CellId) {
+    if let Some(entry) = pages.get(cell_id)
+        && entry.terminal.is_none()
+        && !entry.cell.has_live_producer()
+    {
+        pages.remove(cell_id);
     }
 }
 
@@ -586,7 +632,11 @@ fn finish_wait(
         Ok(event) => observe_output(&mut pages, &cell_id, event, max_output_tokens)?,
         Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
             // The terminate caller may still be publishing the terminal event.
-            next_retained_page(&mut pages, &cell_id, max_output_tokens)
+            let page = next_retained_page(&mut pages, &cell_id, max_output_tokens);
+            if page.is_none() {
+                prune_stale_page(&mut pages, &cell_id);
+            }
+            page
         }
         Err(error) => return Err(error.to_string()),
     };
@@ -613,9 +663,13 @@ fn observe_output(
         return Ok(None);
     };
     entry.output.append(output);
-    let Some((mut page, more_output)) = entry.output.next(limit, /*require_output*/ false) else {
-        pages.remove(cell_id);
-        return Ok(None);
+    let (mut page, more_output) = match entry.output.next(limit, /*require_output*/ false) {
+        NextPage::Page(page, more_output) => (page, more_output),
+        NextPage::Evicted => {
+            pages.remove(cell_id);
+            return Ok(None);
+        }
+        NextPage::Empty => unreachable!("unconditional page pull must return a page"),
     };
     if more_output {
         page.push(FunctionCallOutputContentItem::PageBoundary {
@@ -634,6 +688,7 @@ fn observe_output(
                 *error = String::new(); // The failure diagnostic is already queued.
             }
             entry.terminal = Some(terminal);
+            entry.cell.mark_finished();
         } else {
             pages.remove(cell_id);
         }
@@ -648,7 +703,14 @@ fn next_retained_page(
     limit: Option<usize>,
 ) -> Option<RuntimeResponse> {
     let entry = pages.get_mut(cell_id)?;
-    let (mut page, more_output) = entry.output.next(limit, /*require_output*/ true)?;
+    let (mut page, more_output) = match entry.output.next(limit, /*require_output*/ true) {
+        NextPage::Page(page, more_output) => (page, more_output),
+        NextPage::Empty => return None,
+        NextPage::Evicted => {
+            pages.remove(cell_id);
+            return None;
+        }
+    };
     let continuation = entry.terminal.is_some();
     if more_output || continuation {
         page.push(FunctionCallOutputContentItem::PageBoundary {

@@ -962,7 +962,7 @@ async fn oversized_initial_response_does_not_close_the_shared_host() {
     assert!(error.starts_with("begin:") && error.ends_with(":end"));
     assert!(error.len() > 20 && error.len() <= 64 * 1024);
     assert!(
-        matches!(content_items.first(), Some(FunctionCallOutputContentItem::InputText { text }) if text == "Script error:\n")
+        matches!(content_items.first(), Some(FunctionCallOutputContentItem::InputText { text }) if text == "Script error:\nbegin:")
     );
     assert!(matches!(
         content_items.last(),
@@ -971,6 +971,79 @@ async fn oversized_initial_response_does_not_close_the_shared_host() {
             continuation: false
         })
     ));
+    session.shutdown().await.expect("shutdown remote session");
+}
+
+#[tokio::test]
+async fn dropping_exec_before_first_response_releases_retention() {
+    #[derive(Default)]
+    struct GateDelegate {
+        ready: tokio::sync::Notify,
+        closed: tokio::sync::Notify,
+    }
+
+    impl CodeModeSessionDelegate for GateDelegate {
+        fn invoke_tool<'a>(
+            &'a self,
+            _invocation: CodeModeNestedToolCall,
+            _cancellation_token: CancellationToken,
+        ) -> ToolInvocationFuture<'a> {
+            Box::pin(async { Err("unexpected tool call".to_string()) })
+        }
+
+        fn notify<'a>(
+            &'a self,
+            _call_id: String,
+            _cell_id: CellId,
+            _text: String,
+            _cancellation_token: CancellationToken,
+        ) -> NotificationFuture<'a> {
+            self.ready.notify_one();
+            Box::pin(async { Ok(()) })
+        }
+
+        fn cell_closed(&self, _cell_id: &CellId) {
+            self.closed.notify_one();
+        }
+    }
+
+    let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
+        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+    );
+    let session = provider
+        .create_session_with_options(CodeModeSessionOptions {
+            output_truncation: CodeModeOutputTruncation::Server,
+            ..Default::default()
+        })
+        .await
+        .expect("open server-truncated stdio session");
+    let delegate = Arc::new(GateDelegate::default());
+    let mut request = execute_request(
+        r#"text("unread".repeat(100)); notify("ready"); await new Promise(() => {});"#,
+    );
+    request.max_output_tokens = Some(4);
+    request.yield_time_ms = Some(60_000);
+    let started = session
+        .execute(request, delegate.clone(), /*preempt*/ None)
+        .await
+        .expect("start execution");
+    let cell_id = started.cell_id.clone();
+    delegate.ready.notified().await;
+    drop(started);
+    delegate.closed.notified().await;
+
+    let outcome = session
+        .wait(
+            WaitRequest {
+                cell_id,
+                yield_time_ms: 60_000,
+                max_output_tokens: Some(4),
+            },
+            /*preempt*/ None,
+        )
+        .await
+        .expect("wait on cancelled cell");
+    assert!(matches!(outcome, WaitOutcome::MissingCell(_)));
     session.shutdown().await.expect("shutdown remote session");
 }
 

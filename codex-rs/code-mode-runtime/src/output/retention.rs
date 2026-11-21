@@ -10,10 +10,18 @@ use tokio_util::sync::CancellationToken;
 use super::MAX_RETAINED_BYTES;
 use super::MAX_USER_BYTES;
 use super::OutputItem;
+use super::pages::BufferEntry;
 use super::pages::MeasuredItem;
 use super::pages::OutputBuffer;
 
 const MAX_SESSION_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum NextPage {
+    Page(Vec<OutputItem>, bool),
+    Empty,
+    Evicted,
+}
 
 /// Cells and their transferred batches share a single byte ledger. Keeping the
 /// buffers here lets eviction reclaim bytes from both running and finished cells.
@@ -31,6 +39,8 @@ struct RetentionState {
 struct CellStorage {
     bytes: usize,
     clipped: bool,
+    finished: bool,
+    live_batches: usize,
     next_batch: u64,
     batches: HashMap<u64, OutputBuffer>,
     cancel: CancellationToken,
@@ -69,12 +79,22 @@ impl RetentionState {
 
     fn enforce_session_limit(&mut self) {
         while self.bytes > MAX_SESSION_BYTES {
-            let Some((&id, _)) = self.cells.iter().find(|(_, cell)| cell.bytes != 0) else {
+            let Some((&id, cell)) = self.cells.iter().find(|(_, cell)| cell.bytes != 0) else {
                 unreachable!("retained bytes belong to a cell");
             };
-            if let Some(cell) = self.remove_cell(id) {
-                self.evicted.push(id);
-                cell.cancel.cancel();
+            if cell.finished {
+                if self.remove_cell(id).is_some() {
+                    self.evicted.push(id);
+                }
+            } else {
+                let cell = self.cells.get_mut(&id).expect("cell was just found");
+                let dropped = cell.bytes;
+                for buffer in cell.batches.values_mut() {
+                    buffer.evict_unread();
+                }
+                cell.bytes = 0;
+                cell.clipped = false;
+                self.bytes -= dropped;
             }
         }
     }
@@ -91,6 +111,20 @@ impl RetainedCell {
         self.retention.lock().cells.contains_key(&self.id)
     }
 
+    pub(crate) fn mark_finished(&self) {
+        if let Some(cell) = self.retention.lock().cells.get_mut(&self.id) {
+            cell.finished = true;
+        }
+    }
+
+    pub(crate) fn has_live_producer(&self) -> bool {
+        self.retention
+            .lock()
+            .cells
+            .get(&self.id)
+            .is_some_and(|cell| cell.live_batches > 1)
+    }
+
     pub(crate) fn discard(&self) {
         let removed = self.retention.lock().remove_cell(self.id);
         if let Some(cell) = removed {
@@ -103,6 +137,7 @@ impl RetainedCell {
         let id = state.cells.get_mut(&self.id).map(|cell| {
             let id = cell.next_batch;
             cell.next_batch += 1;
+            cell.live_batches += 1;
             id
         });
         ServerOutput(Arc::new(Batch {
@@ -140,7 +175,21 @@ impl Batch {
 
 impl Drop for Batch {
     fn drop(&mut self) {
-        self.remove();
+        let mut state = self.cell.retention.lock();
+        let Some(cell) = state.cells.get_mut(&self.cell.id) else {
+            return;
+        };
+        let Some(id) = self.id else {
+            return;
+        };
+        cell.live_batches = cell.live_batches.saturating_sub(1);
+        if let Some(buffer) = cell.batches.remove(&id) {
+            cell.bytes -= buffer.bytes;
+            if buffer.bytes != 0 {
+                cell.clipped = false;
+            }
+            state.bytes -= buffer.bytes;
+        }
     }
 }
 
@@ -187,8 +236,14 @@ impl ServerOutput {
                 let packed = !diagnostic
                     && buffer.items.len() >= 1024
                     && buffer.items.back().is_some_and(|previous| {
-                        matches!(previous.item, OutputItem::InputText { .. })
-                            && previous.bytes + 1 + original_bytes <= 4096
+                        matches!(
+                            previous,
+                            BufferEntry::Item(MeasuredItem {
+                                item: OutputItem::InputText { .. },
+                                bytes,
+                                ..
+                            }) if bytes + 1 + original_bytes <= 4096
+                        )
                     });
                 let available = capacity.saturating_sub(usize::from(packed));
                 let end = text.floor_char_boundary(text.len().min(available));
@@ -197,30 +252,31 @@ impl ServerOutput {
                 if end != 0 {
                     admitted = end;
                     if packed {
-                        let previous = buffer
-                            .items
-                            .back_mut()
-                            .expect("packing requires a text item");
+                        let Some(BufferEntry::Item(previous)) = buffer.items.back_mut() else {
+                            unreachable!("packing requires a text item");
+                        };
                         previous.append_text("\n");
                         previous.append_text(&text[..end]);
                         admitted += 1;
                     } else {
                         text.truncate(end);
                         text.shrink_to_fit();
-                        buffer.items.push_back(MeasuredItem::new(item.item));
+                        buffer
+                            .items
+                            .push_back(BufferEntry::Item(MeasuredItem::new(item.item)));
                     }
                 }
             }
             _ if original_bytes <= capacity && (!cell.clipped || diagnostic) => {
                 admitted = original_bytes;
-                buffer.items.push_back(item);
+                buffer.items.push_back(BufferEntry::Item(item));
             }
             _ => {
                 clipped = true;
                 lost += original_bytes;
             }
         }
-        buffer.discarded = buffer.discarded.saturating_add(lost as u64);
+        buffer.record_discard(lost as u64);
         buffer.bytes += admitted;
         cell.bytes += admitted;
         cell.clipped |= clipped;
@@ -241,27 +297,28 @@ impl ServerOutput {
         }
     }
 
-    pub(crate) fn next(
-        &self,
-        limit: Option<usize>,
-        require_output: bool,
-    ) -> Option<(Vec<OutputItem>, bool)> {
+    pub(crate) fn next(&self, limit: Option<usize>, require_output: bool) -> NextPage {
         let mut state = self.0.cell.retention.lock();
-        let cell = state.cells.get_mut(&self.0.cell.id)?;
-        let buffer = cell.batches.entry(self.0.id?).or_default();
+        let Some(cell) = state.cells.get_mut(&self.0.cell.id) else {
+            return NextPage::Evicted;
+        };
+        let Some(batch) = self.0.id else {
+            return NextPage::Evicted;
+        };
+        let buffer = cell.batches.entry(batch).or_default();
         if require_output && !buffer.has_output() {
-            return None;
+            return NextPage::Empty;
         }
         let before = buffer.bytes;
         let page = buffer.next(limit);
         let drained = before - buffer.bytes;
         let more = buffer.has_output();
-        if drained != 0 || !more {
+        cell.bytes -= drained;
+        if drained != 0 || cell.bytes == 0 {
             cell.clipped = false;
         }
-        cell.bytes -= drained;
         state.bytes -= drained;
-        Some((page, more))
+        NextPage::Page(page, more)
     }
 
     pub(super) fn into_items(self) -> Vec<OutputItem> {

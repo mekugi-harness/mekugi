@@ -541,6 +541,7 @@ async fn run_cell<H: CellHost>(
         task_failure_handler.as_ref(),
     )
     .await;
+    drop(output);
     host.closed().await;
 }
 

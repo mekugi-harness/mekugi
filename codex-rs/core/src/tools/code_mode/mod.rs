@@ -613,4 +613,68 @@ mod tests {
             }]
         );
     }
+
+    #[tokio::test]
+    async fn client_mode_omits_history_output_budget_applied_flag() {
+        let (_session, turn) = make_session_and_context().await;
+        let response = codex_code_mode::RuntimeResponse::Result {
+            cell_id: codex_code_mode::CellId::new("1".to_string()),
+            content_items: vec![codex_code_mode::FunctionCallOutputContentItem::InputText {
+                text: "hello".to_string(),
+            }],
+            error_text: None,
+            result_buffered_for: std::time::Duration::ZERO,
+            code_mode_host_duration: None,
+        };
+
+        let client_output = super::handle_runtime_response(
+            &turn.model_info(),
+            response.clone(),
+            /*max_output_tokens*/ None,
+            codex_code_mode::CodeModeOutputTruncation::Client,
+            std::time::Duration::ZERO,
+            /*experimental_show_cell_overhead*/ false,
+        );
+        let client_envelope = crate::tools::registry::AnyToolResult {
+            call_id: "call-client".to_string(),
+            payload: ToolPayload::Custom {
+                input: "text('hello')".to_string(),
+            },
+            result: Box::new(client_output),
+            post_tool_use_payload: None,
+        }
+        .into_response(/*file_backed_tool_audio*/ false);
+        assert!(
+            client_envelope
+                .metadata
+                .as_ref()
+                .is_none_or(|metadata| !metadata.tool_output_budget_applied),
+            "client mode must not set tool_output_budget_applied in history metadata"
+        );
+
+        let server_output = super::handle_runtime_response(
+            &turn.model_info(),
+            response,
+            /*max_output_tokens*/ None,
+            codex_code_mode::CodeModeOutputTruncation::Server,
+            std::time::Duration::ZERO,
+            /*experimental_show_cell_overhead*/ false,
+        );
+        let server_envelope = crate::tools::registry::AnyToolResult {
+            call_id: "call-server".to_string(),
+            payload: ToolPayload::Custom {
+                input: "text('hello')".to_string(),
+            },
+            result: Box::new(server_output),
+            post_tool_use_payload: None,
+        }
+        .into_response(/*file_backed_tool_audio*/ false);
+        assert!(
+            server_envelope
+                .metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.tool_output_budget_applied),
+            "server mode must set tool_output_budget_applied in history metadata"
+        );
+    }
 }

@@ -196,11 +196,26 @@ async fn code_mode_pages_need_the_server_budget_in_history() {
     let header = json!({"type":"input_text","text":"Script completed (more output: wait with cell ID 1)\nWall time 0.0 seconds\nOutput:\n"});
     let text = json!({"type":"input_text","text":"x".repeat(codex_utils_output_truncation::approx_bytes_for_tokens(clamp))});
     let clip = json!({"type":"input_audio","audio_url":"data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQIAAAAAAA=="});
-    for (parts, expected) in [
-        (json!([header, text]), json!([header, text])),
+    let truncated_header = json!({
+        "type": "input_text",
+        "text": "Script com…16 tokens truncated…s\nOutput:\n",
+    });
+    for (parts, expected, expected_unbudgeted) in [
+        (
+            json!([header, text]),
+            json!([header, text]),
+            json!([
+                truncated_header,
+                {"type": "input_text", "text": "[omitted 1 text items ...]"},
+            ]),
+        ),
         (
             json!([header, clip]),
             json!([header, {"type":"input_audio","file_id":"page-audio"}]),
+            json!([
+                truncated_header,
+                {"type": "input_text", "text": "[omitted 1 audio items ...]"},
+            ]),
         ),
     ] {
         for server_budgeted in [false, true] {
@@ -230,10 +245,7 @@ async fn code_mode_pages_need_the_server_budget_in_history() {
             if server_budgeted {
                 assert_eq!(recorded, &expected);
             } else {
-                assert_ne!(
-                    recorded, &expected,
-                    "history silently removed the producer's page bound"
-                );
+                assert_eq!(recorded, &expected_unbudgeted);
             }
         }
     }
