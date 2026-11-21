@@ -20,6 +20,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   SDKs remain in the source tree but are not shipped or maintained as part of
   Mekugi. The [Cargo workspace](codex-rs/Cargo.toml) and lockfile cover the
   native build; the fork uses Mekugi's release process, not upstream release CI.
+- `codex-arg0` pins the running executable image into the per-session alias
+  directory (`.codex-self`, via verified hard link with a `0o500` copy
+  fallback) so replacing the installed binary on disk does not affect running
+  sessions, and dispatches the native Rust `mcat`, `mfinspect`, `msymbol`, and
+  `mrun` CLIs (`codex-mekugi-tools`) through PATH symlinks.
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
   runtime, including the exec-server fixture's Linux sandbox helper so it can

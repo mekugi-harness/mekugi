@@ -20,6 +20,12 @@ use tempfile::TempDir;
 
 const APPLY_PATCH_ARG0: &str = "apply_patch";
 const MISSPELLED_APPLY_PATCH_ARG0: &str = "applypatch";
+const MCAT_ARG0: &str = "mcat";
+const MFINSPECT_ARG0: &str = "mfinspect";
+const MSYMBOL_ARG0: &str = "msymbol";
+const MRUN_ARG0: &str = "mrun";
+#[cfg(unix)]
+const PINNED_EXE_FILENAME: &str = ".codex-self";
 const LOCK_FILENAME: &str = ".lock";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -74,6 +80,14 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         codex_linux_sandbox::run_main();
     } else if exe_name == APPLY_PATCH_ARG0 || exe_name == MISSPELLED_APPLY_PATCH_ARG0 {
         codex_apply_patch::main();
+    } else if exe_name == MCAT_ARG0 {
+        std::process::exit(codex_mekugi_tools::run_mcat_main());
+    } else if exe_name == MFINSPECT_ARG0 {
+        std::process::exit(codex_mekugi_tools::run_mfinspect_main());
+    } else if exe_name == MSYMBOL_ARG0 {
+        std::process::exit(codex_mekugi_tools::run_msymbol_main());
+    } else if exe_name == MRUN_ARG0 {
+        std::process::exit(codex_mekugi_tools::run_mrun_main());
     }
 
     let argv1 = args.next().unwrap_or_default();
@@ -231,9 +245,13 @@ where
     F: FnOnce(Arg0DispatchPaths) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
+    let codex_self_exe = path_entry_guard
+        .as_ref()
+        .and_then(|path_entry| path_entry.paths().codex_self_exe.clone())
+        .or_else(|| current_exe.clone());
     let paths = Arg0DispatchPaths {
         main_execve_wrapper_exe: None,
-        codex_self_exe: current_exe.clone(),
+        codex_self_exe,
         codex_linux_sandbox_exe: if cfg!(target_os = "linux") {
             linux_sandbox_exe_path(path_entry_guard.as_ref(), current_exe)
         } else {
@@ -377,22 +395,30 @@ fn prepare_aliases_in_home(
         .open(&lock_path)?;
     lock_file.try_lock()?;
 
-    for filename in &[
-        APPLY_PATCH_ARG0,
-        MISSPELLED_APPLY_PATCH_ARG0,
-        #[cfg(target_os = "linux")]
-        CODEX_LINUX_SANDBOX_ARG0,
-    ] {
-        let exe = std::env::current_exe()?;
-
-        #[cfg(unix)]
-        {
+    #[cfg(unix)]
+    let codex_self_exe = {
+        let pinned_exe = path.join(PINNED_EXE_FILENAME);
+        pin_running_executable(&pinned_exe)?;
+        for filename in &[
+            APPLY_PATCH_ARG0,
+            MISSPELLED_APPLY_PATCH_ARG0,
+            MCAT_ARG0,
+            MFINSPECT_ARG0,
+            MSYMBOL_ARG0,
+            MRUN_ARG0,
+            #[cfg(target_os = "linux")]
+            CODEX_LINUX_SANDBOX_ARG0,
+        ] {
             let link = path.join(filename);
-            symlink(&exe, &link)?;
+            symlink(PINNED_EXE_FILENAME, &link)?;
         }
+        Some(pinned_exe)
+    };
 
-        #[cfg(windows)]
-        {
+    #[cfg(windows)]
+    let codex_self_exe = {
+        for filename in &[APPLY_PATCH_ARG0, MISSPELLED_APPLY_PATCH_ARG0] {
+            let exe = std::env::current_exe()?;
             let batch_script = path.join(format!("{filename}.bat"));
             let exe = windows_batch_executable_path(&exe, path);
             std::fs::write(
@@ -404,13 +430,14 @@ fn prepare_aliases_in_home(
                 ),
             )?;
         }
-    }
+        std::env::current_exe().ok()
+    };
 
     let updated_path_env_var = path_env_with_entry(path, existing_path);
 
     let paths = Arg0DispatchPaths {
         main_execve_wrapper_exe: None,
-        codex_self_exe: std::env::current_exe().ok(),
+        codex_self_exe,
         codex_linux_sandbox_exe: {
             #[cfg(target_os = "linux")]
             {
@@ -427,6 +454,61 @@ fn prepare_aliases_in_home(
         Arg0PathEntryGuard::new(temp_dir, lock_file, paths),
         updated_path_env_var,
     ))
+}
+
+#[cfg(unix)]
+fn open_running_executable() -> std::io::Result<(File, Option<PathBuf>)> {
+    let exe_path = std::env::current_exe().ok();
+    #[cfg(target_os = "linux")]
+    if let Ok(file) = File::open("/proc/self/exe") {
+        return Ok((file, exe_path));
+    }
+    let path = std::env::current_exe()?;
+    let file = File::open(&path)?;
+    Ok((file, Some(path)))
+}
+
+/// Pin the running executable inode into `target` so replacing the installed binary
+/// on disk does not affect running sessions. Prefers a hard link verified by `(dev, ino)`
+/// and falls back to a private `0o500` copy on cross-filesystem or replacement races.
+#[cfg(unix)]
+fn pin_running_executable(target: &Path) -> std::io::Result<()> {
+    let (mut source, source_path) = open_running_executable()?;
+    pin_executable_from_source(&mut source, source_path.as_deref(), target)
+}
+
+#[cfg(unix)]
+fn pin_executable_from_source(
+    source: &mut File,
+    source_path: Option<&Path>,
+    target: &Path,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let source_meta = source.metadata()?;
+    let expected_id = (source_meta.dev(), source_meta.ino());
+
+    if let Some(path) = source_path
+        && std::fs::hard_link(path, target).is_ok()
+    {
+        let matches = std::fs::symlink_metadata(target).is_ok_and(|linked| {
+            linked.file_type().is_file() && (linked.dev(), linked.ino()) == expected_id
+        });
+        if matches {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(target);
+    }
+
+    let mut pinned = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o500)
+        .open(target)?;
+    std::io::copy(source, &mut pinned)?;
+    drop(pinned);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -842,6 +924,80 @@ mod tests {
         janitor_cleanup(root.path())?;
 
         assert_eq!(fs::read_dir(root.path())?.count(), 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_aliases_creates_pinned_mekugi_tool_aliases() -> std::io::Result<()> {
+        let home = tempfile::tempdir()?;
+        let (guard, updated_path) = super::prepare_aliases_in_home(home.path(), None)?;
+        let alias_dir = guard._temp_dir.path();
+        let pinned = alias_dir.join(super::PINNED_EXE_FILENAME);
+
+        assert!(pinned.is_file());
+        assert_eq!(
+            guard.paths().codex_self_exe.as_deref(),
+            Some(pinned.as_path())
+        );
+        assert_eq!(
+            std::env::split_paths(&updated_path).next().as_deref(),
+            Some(alias_dir)
+        );
+
+        for name in [
+            super::APPLY_PATCH_ARG0,
+            super::MISSPELLED_APPLY_PATCH_ARG0,
+            super::MCAT_ARG0,
+            super::MFINSPECT_ARG0,
+            super::MSYMBOL_ARG0,
+            super::MRUN_ARG0,
+        ] {
+            let link = alias_dir.join(name);
+            assert_eq!(fs::read_link(&link)?, Path::new(super::PINNED_EXE_FILENAME));
+            assert!(link.is_file());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_alias_survives_replacing_original_executable_on_disk() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let installed = dir.path().join("mekugi-app-server");
+        let alias_dir = dir.path().join("aliases");
+        fs::create_dir(&alias_dir)?;
+
+        fs::write(&installed, "#!/bin/sh\necho version-one\n")?;
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
+
+        // Pin while version-one is open, then atomically replace installed path with version-two.
+        let mut open_v1 = File::open(&installed)?;
+        let pinned_hl = alias_dir.join(".codex-self-hl");
+        super::pin_executable_from_source(&mut open_v1, Some(&installed), &pinned_hl)?;
+        let mcat_hl = alias_dir.join("mcat");
+        std::os::unix::fs::symlink(&pinned_hl, &mcat_hl)?;
+
+        let replacement = dir.path().join("mekugi-app-server.new");
+        fs::write(&replacement, "#!/bin/sh\necho version-two\n")?;
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755))?;
+        fs::rename(&replacement, &installed)?;
+
+        let out_hl = std::process::Command::new(&mcat_hl).output()?;
+        assert!(out_hl.status.success());
+        assert_eq!(String::from_utf8_lossy(&out_hl.stdout), "version-one\n");
+
+        // Also exercise the copy fallback when `installed` already points to a different inode
+        // than the open running executable (simulating a replacement race during startup).
+        let pinned_copy = alias_dir.join(".codex-self-copy");
+        super::pin_executable_from_source(&mut open_v1, Some(&installed), &pinned_copy)?;
+        let mode = fs::symlink_metadata(&pinned_copy)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o500);
+        let out_copy = std::process::Command::new(&pinned_copy).output()?;
+        assert!(out_copy.status.success());
+        assert_eq!(String::from_utf8_lossy(&out_copy.stdout), "version-one\n");
         Ok(())
     }
 }

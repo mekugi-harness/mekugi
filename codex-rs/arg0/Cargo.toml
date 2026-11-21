@@ -19,6 +19,7 @@ codex-async-utils = { workspace = true }
 codex-exec-server = { workspace = true }
 codex-install-context = { workspace = true }
 codex-linux-sandbox = { workspace = true }
+codex-mekugi-tools = { workspace = true }
 codex-sandboxing = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-home-dir = { workspace = true }
