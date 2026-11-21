@@ -390,12 +390,7 @@ async fn output_selection_is_per_session() {
             "0123456789012345678901234567890123456789",
             "01234567890123456789012345678901234567890123456789012345678901234567890123456789",
         ),
-        (
-            4,
-            "server",
-            "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789",
-            "Warning: truncated output (original token count: 20)\nTotal output lines: 1\n\n01234567890123…13 tokens truncated…67890123456789",
-        ),
+        (4, "server", "01234567890123456789", "01234567890123456789"),
     ] {
         let mut request = execute_request(
             "text('0123456789'.repeat(4)); yield_control(); text('0123456789'.repeat(8));",
@@ -435,12 +430,23 @@ async fn output_selection_is_per_session() {
             panic!("expected initial yield");
         };
         assert_eq!(actual_id, request_id(id));
-        assert_eq!(
-            content_items,
-            vec![WireContentItem::InputText {
-                text: expected_text.to_string()
-            }]
-        );
+        let expected_head = WireContentItem::InputText {
+            text: expected_text.to_string(),
+        };
+        if name == "server" {
+            assert_eq!(
+                content_items,
+                [
+                    expected_head,
+                    WireContentItem::PageBoundary {
+                        more_output: true,
+                        continuation: false,
+                    }
+                ]
+            );
+        } else {
+            assert_eq!(content_items, [expected_head]);
+        }
         writer
             .write(&ClientToHost::Request {
                 id: request_id(id + 2),
@@ -450,8 +456,7 @@ async fn output_selection_is_per_session() {
                         cell_id,
                         yield_time_ms: 60_000,
                     },
-                    // A supplied budget only affects Server mode and belongs
-                    // to this observation, not the preceding exec.
+                    // The wait applies its own limit to unread output.
                     max_output_tokens: Some(7),
                 },
             })
@@ -463,12 +468,7 @@ async fn output_selection_is_per_session() {
                 WireResult::Ok {
                     value:
                         HostResponse::WaitCompleted {
-                            outcome:
-                                WireWaitOutcome::LiveCell(WireRuntimeResponse::Result {
-                                    content_items,
-                                    error_text,
-                                    ..
-                                }),
+                            outcome: WireWaitOutcome::LiveCell(response),
                         },
                 },
         } = next_response(&mut reader).await
@@ -476,12 +476,29 @@ async fn output_selection_is_per_session() {
             panic!("expected final wait");
         };
         assert_eq!(actual_id, request_id(id + 2));
-        assert_eq!(error_text, None);
+        let content_items = match (name, response) {
+            ("server", WireRuntimeResponse::Yielded { content_items, .. }) => {
+                assert_eq!(content_items.len(), 1);
+                content_items
+            }
+            (
+                "client",
+                WireRuntimeResponse::Result {
+                    content_items,
+                    error_text: None,
+                    ..
+                },
+            ) => {
+                assert_eq!(content_items.len(), 1);
+                content_items
+            }
+            (_, response) => panic!("unexpected wait response: {response:?}"),
+        };
         assert_eq!(
-            content_items,
-            vec![WireContentItem::InputText {
-                text: expected_wait.to_string()
-            }]
+            content_items.first(),
+            Some(&WireContentItem::InputText {
+                text: expected_wait.to_string(),
+            })
         );
     }
     drop(writer);
@@ -745,6 +762,7 @@ async fn execute_request_id_remains_active_until_initial_response() {
         .expect("session")
         .terminate(TerminateRequest {
             cell_id: cell_id.into(),
+            discard_output: false,
             max_output_tokens: None,
         })
         .await

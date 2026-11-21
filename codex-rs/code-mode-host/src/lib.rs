@@ -538,12 +538,14 @@ impl HostState {
                 session_id,
                 cell_id,
                 max_output_tokens,
+                discard_output,
             } => {
                 let result = match self.session(&session_id) {
                     Ok(session) => session
                         .terminate(TerminateRequest {
                             cell_id: cell_id.into(),
                             max_output_tokens,
+                            discard_output,
                         })
                         .await
                         .and_then(|outcome| {

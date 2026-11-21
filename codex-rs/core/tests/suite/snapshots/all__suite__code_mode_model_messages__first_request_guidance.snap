@@ -633,11 +633,10 @@ declare const tools: { collaboration__wait_agent(args: {
 }
 
 # functions.wait
-Waits on a yielded `exec` cell and returns new output or completion.
-- Use `wait` only after `exec` returns `Script running with cell ID ...`.
+Waits on an `exec` cell or reads its next output page.
+- Use `wait` with the cell ID when a response says the script is running or has more output.
   For a shell session ID, poll `tools.write_stdin` with empty `chars` instead.
-- Each wait returns only new output. Reuse the same `cell_id` after another
-  yield; completion or termination returns the final result and closes the cell.
+- Reuse the same `cell_id` until the terminal response no longer says there is more output.
 
 {
   "name": "wait",
@@ -645,7 +644,7 @@ Waits on a yielded `exec` cell and returns new output or completion.
     "additionalProperties": false,
     "properties": {
       "cell_id": {
-        "description": "Identifier of the running exec cell.",
+        "description": "Identifier of the exec cell.",
         "type": "string"
       },
       "max_tokens": {

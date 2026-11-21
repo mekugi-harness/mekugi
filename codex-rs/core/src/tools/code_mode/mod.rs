@@ -180,7 +180,11 @@ impl CodeModeService {
                 .active_cell_ids()
                 .into_iter()
                 .map(|cell_id| async move {
-                    if let Err(error) = session.terminate(cell_id.clone().into()).await {
+                    if let Err(error) = session.terminate(codex_code_mode::TerminateRequest {
+                        cell_id: cell_id.clone(),
+                        max_output_tokens: None,
+                        discard_output: true,
+                    }).await {
                         tracing::warn!(%cell_id, %error, "failed to terminate interrupted code-mode cell");
                     }
                 }),
@@ -320,22 +324,27 @@ fn handle_runtime_response(
         script_status,
         wall_time,
         host_duration,
+        output_truncation == CodeModeOutputTruncation::Server,
     )
 }
 
 fn format_script_status(response: &RuntimeResponse) -> String {
-    match response {
+    let status = match response {
         RuntimeResponse::Yielded { cell_id, .. } => {
-            format!("Script running with cell ID {cell_id}")
+            return format!("Script running with cell ID {cell_id}");
         }
-        RuntimeResponse::Terminated { .. } => "Script terminated".to_string(),
-        RuntimeResponse::Result { error_text, .. } => {
-            if error_text.is_none() {
-                "Script completed".to_string()
-            } else {
-                "Script failed".to_string()
-            }
-        }
+        RuntimeResponse::Terminated { .. } => "Script terminated",
+        RuntimeResponse::Result {
+            error_text: None, ..
+        } => "Script completed",
+        RuntimeResponse::Result {
+            error_text: Some(_),
+            ..
+        } => "Script failed",
+    };
+    match response.more_output_cell_id() {
+        Some(cell_id) => format!("{status} (more output: wait with cell ID {cell_id})"),
+        None => status.to_string(),
     }
 }
 
@@ -350,6 +359,16 @@ fn truncate_code_mode_result(
         policy,
         estimate_tool_audio_tokens_without_cache,
     )
+}
+
+fn page_token_limit(
+    model: &codex_protocol::openai_models::ModelInfo,
+    requested: Option<usize>,
+) -> usize {
+    let policy = TruncationPolicy::from(model.truncation_policy);
+    requested
+        .unwrap_or(codex_code_mode::DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL)
+        .min(policy.byte_budget() / codex_utils_output_truncation::approx_bytes_for_tokens(1))
 }
 
 // Submit synchronously so the recorder sees the call before the cell's dispatch gate closes.
@@ -561,7 +580,6 @@ mod tests {
             other => panic!("expected freeform payload, got {other:?}"),
         }
     }
-
     #[test]
     fn truncated_text_output_starts_with_warning() {
         let items = vec![FunctionCallOutputContentItem::InputText {

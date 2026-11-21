@@ -363,11 +363,18 @@ async fn grpc_session_pins_output_mode_across_recovery_and_shutdown() -> Result<
                     assert_eq!(cell_id.as_str(), "g2:1");
                     assert_eq!(diagnostic.len(), 64 * 1024);
                     assert!(diagnostic.starts_with("begin:") && diagnostic.ends_with(":end"));
-                    assert_eq!(content_items, [
-                        "Warning: truncated output (original token count: 262144)\nTotal output lines: 2\n\nScript err…262139 tokens truncated…",
-                        "[Code Mode session output limit reached: omitted 67108888 text bytes; discarded 0 text segments, 0 images, 0 audio items]",
-                        "XXXXXX:end",
-                    ].map(|text| FunctionCallOutputContentItem::InputText { text: text.into() }));
+                    assert_eq!(
+                        content_items,
+                        [
+                            FunctionCallOutputContentItem::InputText {
+                                text: "Script error:\n".to_string()
+                            },
+                            FunctionCallOutputContentItem::PageBoundary {
+                                more_output: true,
+                                continuation: false,
+                            },
+                        ],
+                    );
                 }
             }
         }

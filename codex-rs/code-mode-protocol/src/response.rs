@@ -17,4 +17,10 @@ pub enum FunctionCallOutputContentItem {
     InputAudio {
         audio_url: String,
     },
+    /// Host-only metadata at the end of a paged observation. JavaScript
+    /// emitters cannot produce this item and Core does not pass it to the model.
+    PageBoundary {
+        more_output: bool,
+        continuation: bool,
+    },
 }

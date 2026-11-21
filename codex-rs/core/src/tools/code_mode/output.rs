@@ -1,5 +1,5 @@
 //! Code-mode response headers use the host measurement and completed handler timing.
-//! Content is already truncated; only the bounded header changes at completion.
+//! Content is already budgeted; only the bounded header changes at completion.
 
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ pub(super) struct CodeModeToolOutput {
     output: FunctionToolOutput,
     status: String,
     host_duration: Option<Duration>,
+    server_budgeted: bool,
 }
 
 impl CodeModeToolOutput {
@@ -22,6 +23,7 @@ impl CodeModeToolOutput {
         status: String,
         wall_time: Duration,
         host_duration: Option<Duration>,
+        server_budgeted: bool,
     ) -> Self {
         // Use the host-only header when overhead is hidden or host timing is unavailable.
         let wall_time_seconds = (wall_time.as_secs_f32() * 10.0).round() / 10.0;
@@ -35,6 +37,7 @@ impl CodeModeToolOutput {
             output,
             status,
             host_duration,
+            server_budgeted,
         }
     }
 }
@@ -42,6 +45,10 @@ impl CodeModeToolOutput {
 impl ToolOutput for CodeModeToolOutput {
     fn output_budget_applied(&self) -> bool {
         true
+    }
+
+    fn history_output_budget_applied(&self) -> bool {
+        self.server_budgeted
     }
 
     fn log_output(&self) -> String {

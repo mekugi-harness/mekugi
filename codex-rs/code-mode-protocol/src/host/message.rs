@@ -210,6 +210,8 @@ pub enum HostRequest {
         cell_id: WireCellId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<usize>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        discard_output: bool,
     },
     #[serde(rename = "session/shutdown")]
     ShutdownSession { session_id: SessionId },

@@ -284,6 +284,7 @@ impl ConnectionDriver {
             HostRequest::Terminate {
                 session_id: session.id.clone(),
                 cell_id,
+                discard_output: request.discard_output,
                 max_output_tokens: request.max_output_tokens,
             },
             PendingRequest::Terminate {

@@ -68,10 +68,9 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - `clearTimeout(timeoutId?: number)`: cancels a timeout created by `setTimeout`.
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
-const WAIT_DESCRIPTION_TEMPLATE: &str = r#"- Use `wait` only after `exec` returns `Script running with cell ID ...`.
+const WAIT_DESCRIPTION_TEMPLATE: &str = r#"- Use `wait` with the cell ID when a response says the script is running or has more output.
   For a shell session ID, poll `tools.write_stdin` with empty `chars` instead.
-- Each wait returns only new output. Reuse the same `cell_id` after another
-  yield; completion or termination returns the final result and closes the cell."#;
+- Reuse the same `cell_id` until the terminal response no longer says there is more output."#;
 // Based off of https://modelcontextprotocol.io/specification/draft/schema#calltoolresult
 const MCP_TYPESCRIPT_PREAMBLE: &str = r#"type Role = "user" | "assistant";
 type MetaObject = Record<string, unknown>;

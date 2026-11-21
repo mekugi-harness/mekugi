@@ -321,6 +321,10 @@ pub enum WireContentItem {
     InputAudio {
         audio_url: String,
     },
+    PageBoundary {
+        more_output: bool,
+        continuation: bool,
+    },
 }
 
 impl From<FunctionCallOutputContentItem> for WireContentItem {
@@ -334,6 +338,13 @@ impl From<FunctionCallOutputContentItem> for WireContentItem {
             FunctionCallOutputContentItem::InputAudio { audio_url } => {
                 Self::InputAudio { audio_url }
             }
+            FunctionCallOutputContentItem::PageBoundary {
+                more_output,
+                continuation,
+            } => Self::PageBoundary {
+                more_output,
+                continuation,
+            },
         }
     }
 }
@@ -347,6 +358,13 @@ impl From<WireContentItem> for FunctionCallOutputContentItem {
                 detail: detail.map(Into::into),
             },
             WireContentItem::InputAudio { audio_url } => Self::InputAudio { audio_url },
+            WireContentItem::PageBoundary {
+                more_output,
+                continuation,
+            } => Self::PageBoundary {
+                more_output,
+                continuation,
+            },
         }
     }
 }

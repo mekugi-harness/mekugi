@@ -268,6 +268,7 @@ message TerminateRequest {
   string cell_id = 2;
   // The terminating observation has its own output budget.
   optional uint64 max_output_tokens = 3;
+  bool discard_output = 4;
 }
 
 message ExecutionOutcome {
@@ -321,7 +322,14 @@ message ContentItem {
     TextContent text = 1;
     ImageContent image = 2;
     AudioContent audio = 3;
+    PageBoundary page_boundary = 4;
   }
+}
+
+// Private output-page metadata; it is not a JavaScript output item.
+message PageBoundary {
+  bool more_output = 1;
+  bool continuation = 2;
 }
 
 message TextContent {

@@ -399,6 +399,7 @@ async fn stdio_logical_session_pins_output_mode_across_reconnect() {
                 };
                 let terminate = TerminateRequest {
                     cell_id,
+                    discard_output: false,
                     max_output_tokens: Some(5),
                 };
                 let legacy_host = async {

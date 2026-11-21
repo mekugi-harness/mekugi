@@ -343,6 +343,7 @@ impl AnyToolResult {
             ..
         } = self;
         let history_truncation_token_limit = result.fallback_token_limit_override();
+        let tool_output_budget_applied = result.history_output_budget_applied();
         let item = result.to_response_item(&call_id, &payload).into();
         let producer_bounded_tool_audio = file_backed_tool_audio
             && result.output_budget_applied()
@@ -350,10 +351,13 @@ impl AnyToolResult {
                  | ResponseItem::CustomToolCallOutput { output, .. } if output.contains_audio());
         ResponseItemEnvelope {
             item,
-            metadata: (producer_bounded_tool_audio || history_truncation_token_limit.is_some())
+            metadata: (producer_bounded_tool_audio
+                || history_truncation_token_limit.is_some()
+                || tool_output_budget_applied)
                 .then_some(CodexHarnessMetadata {
                     producer_bounded_tool_audio,
                     history_truncation_token_limit,
+                    tool_output_budget_applied,
                     ..Default::default()
                 }),
         }

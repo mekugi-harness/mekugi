@@ -35,6 +35,7 @@ pub(super) struct WaitSlot {
 struct ExecutionOwnership {
     session: Arc<SessionInner>,
     execution_id: String,
+    cell_id: Option<CellId>,
     armed: bool,
 }
 
@@ -49,17 +50,22 @@ impl Drop for ExecutionOwnership {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove_execution(&self.execution_id);
-        let Some((cell_id, delegate)) = cell else {
+        self.session.report_closed_cell(cell);
+        let Some(cell_id) = self.cell_id.take() else {
             return;
         };
-        self.session
-            .report_closed_cell(Some((cell_id.clone(), delegate)));
         if self.session.stopped.is_cancelled() {
             return;
         }
         let session = Arc::clone(&self.session);
         self.session.runtime.spawn(async move {
-            if let Err(error) = session.terminate(cell_id.into()).await
+            if let Err(error) = session
+                .terminate(TerminateRequest {
+                    cell_id,
+                    max_output_tokens: None,
+                    discard_output: true,
+                })
+                .await
                 && !session.stopped.is_cancelled()
             {
                 debug!("abandoned code-mode execution termination raced closure: {error}");
@@ -101,6 +107,7 @@ impl SessionInner {
         let ownership = ExecutionOwnership {
             session: Arc::clone(self),
             execution_id: execution_id.clone(),
+            cell_id: None,
             armed: true,
         };
         let (started_tx, started_rx) = oneshot::channel();
@@ -198,6 +205,7 @@ impl SessionInner {
         };
         let (response_tx, response_rx) = oneshot::channel();
         let mut claim = ownership;
+        claim.cell_id = Some(cell_id.clone());
         let started = StartedCell::from_future(cell_id.clone(), async move {
             let closure = claim
                 .session
@@ -394,6 +402,7 @@ impl SessionInner {
             client.terminate(self.request(grpc::TerminateRequest {
                 session_id: self.id.clone(),
                 cell_id: request.cell_id.as_str().to_string(),
+                discard_output: request.discard_output,
                 max_output_tokens: conversion::output_budget(
                     self.output_truncation,
                     request.max_output_tokens,

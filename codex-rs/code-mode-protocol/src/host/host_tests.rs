@@ -385,6 +385,7 @@ fn client_to_host_v1_variants_are_pinned() {
             HostRequest::Terminate {
                 session_id: session_id(),
                 cell_id: cell_id("cell-1"),
+                discard_output: false,
                 max_output_tokens: None,
             },
             json!({

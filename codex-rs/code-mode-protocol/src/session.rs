@@ -37,18 +37,9 @@ pub enum CodeModeOutputTruncation {
     /// Return raw output; the caller applies its own budget and formatting.
     #[default]
     Client,
-    /// The host applies the exec, wait, or terminate observation's budget before
-    /// transmitting output (10,000 tokens by default). Clients must not truncate
-    /// it again or append the script error: status and error metadata remain separate.
-    ///
-    /// A complete observation keeps up to [`crate::host::BOUNDED_OUTPUT_MAX_BYTES`]
-    /// of text, [`crate::host::BOUNDED_OUTPUT_MAX_IMAGE_BYTES`] of inline image URLs,
-    /// and [`crate::host::BOUNDED_OUTPUT_MAX_AUDIO_BYTES`] of audio URLs, subject
-    /// to a separate item limit. While these limits hold, formatting matches
-    /// Core's client policy. On text overflow the collector keeps a prefix and a
-    /// rolling tail. Each image or audio clip is admitted if it fits its remaining
-    /// byte allowance. Eviction at the item limit can free space for later media.
-    /// Media are indivisible. Bounded loss notices survive even a zero-token budget.
+    /// The host bounds each cell's retained output prefix to 16 MiB and pages
+    /// it through execute and wait. The host includes any script error in the
+    /// paged content; the separately bounded diagnostic is for status/logging.
     Server,
 }
 

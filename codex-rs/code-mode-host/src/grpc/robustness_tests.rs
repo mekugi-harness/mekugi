@@ -134,6 +134,7 @@ async fn dropping_execution_before_admission_releases_its_reservation() {
     drop(ExecutionAdmission {
         session: Arc::clone(&session),
         execution_id: Some(execution_id.clone()),
+        cell_id: None,
     });
 
     let error = session
@@ -257,6 +258,7 @@ async fn session_closure_cancels_pending_termination() {
     let termination = host.terminate(Request::new(proto::TerminateRequest {
         session_id,
         cell_id,
+        discard_output: false,
         max_output_tokens: None,
     }));
     tokio::pin!(termination);

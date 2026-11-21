@@ -5,7 +5,7 @@ use tokio::sync::oneshot;
 
 use super::*;
 use crate::session_runtime::OutputItem;
-use codex_code_mode_protocol::host::BOUNDED_OUTPUT_MAX_BYTES as MAX_OUTPUT_BYTES;
+const LARGE_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[tokio::test]
 async fn a_blocked_send_uses_the_released_slot_before_the_receiver_takes_the_item() {
@@ -15,7 +15,7 @@ async fn a_blocked_send_uses_the_released_slot_before_the_receiver_takes_the_ite
     };
     let mut permits = raw.reserve_many(EVENT_CAPACITY).await.unwrap();
     let (done_tx, mut done_rx) = oneshot::channel();
-    let text = "😀".repeat(MAX_OUTPUT_BYTES);
+    let text = "😀".repeat(LARGE_OUTPUT_BYTES);
     let producer_text = text.clone();
     let producer = std::thread::spawn(move || {
         let result = tx.blocking_send(RuntimeEvent::ContentItem(OutputItem::InputText {
@@ -123,7 +123,7 @@ async fn sending_after_receiver_drop_rejects_content() {
     assert_eq!(
         std::thread::spawn(move || tx.blocking_send(RuntimeEvent::ContentItem(
             OutputItem::InputAudio {
-                audio_url: "large audio".repeat(MAX_OUTPUT_BYTES)
+                audio_url: "large audio".repeat(LARGE_OUTPUT_BYTES)
             }
         )))
         .join()

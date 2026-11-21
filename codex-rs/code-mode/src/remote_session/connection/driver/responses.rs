@@ -433,6 +433,7 @@ impl ConnectionDriver {
             HostRequest::Terminate {
                 session_id: session.id.clone(),
                 cell_id: cell_id.clone(),
+                discard_output: true,
                 max_output_tokens: None,
             },
             PendingRequest::Terminate {

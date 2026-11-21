@@ -166,3 +166,75 @@ async fn known_producer_limit_keeps_the_replacement_and_following_caption() {
         json!([{"type":"input_text","text":error.placeholder()},caption])
     );
 }
+
+#[tokio::test]
+async fn code_mode_pages_need_the_server_budget_in_history() {
+    use codex_history::CodexHarnessMetadata;
+    use serde_json::json;
+
+    struct FileStore;
+    impl AttachmentStore for FileStore {
+        fn upload(&self, _request: UploadRequest) -> codex_attachment_store::UploadFuture<'_> {
+            Box::pin(async {
+                Ok(UploadResult::File {
+                    file_id: "page-audio".to_string(),
+                })
+            })
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            request: ResolveRequest<'a>,
+        ) -> codex_attachment_store::ResolveFuture<'a> {
+            codex_attachment_store::InlineAttachmentStore.resolve(request)
+        }
+    }
+
+    // A request above this policy is clamped to the four-token body budget.
+    let policy = TruncationPolicy::Tokens(4);
+    let clamp = policy.token_budget();
+    let header = json!({"type":"input_text","text":"Script completed (more output: wait with cell ID 1)\nWall time 0.0 seconds\nOutput:\n"});
+    let text = json!({"type":"input_text","text":"x".repeat(codex_utils_output_truncation::approx_bytes_for_tokens(clamp))});
+    let clip = json!({"type":"input_audio","audio_url":"data:audio/wav;base64,UklGRiYAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQIAAAAAAA=="});
+    for (parts, expected) in [
+        (json!([header, text]), json!([header, text])),
+        (
+            json!([header, clip]),
+            json!([header, {"type":"input_audio","file_id":"page-audio"}]),
+        ),
+    ] {
+        for server_budgeted in [false, true] {
+            let mut envelope = ResponseItemEnvelope {
+                item: serde_json::from_value(
+                    json!({"type":"function_call_output","call_id":"page","output":parts}),
+                )
+                .unwrap(),
+                metadata: Some(CodexHarnessMetadata {
+                    producer_bounded_tool_audio: true,
+                    tool_output_budget_applied: server_budgeted,
+                    ..Default::default()
+                }),
+            };
+            prepare_new_items(
+                std::slice::from_mut(&mut envelope),
+                &FileStore,
+                "thread",
+                /*ephemeral*/ false,
+                codex_utils_output_truncation::with_serialization_allowance(policy).token_budget(),
+            )
+            .await;
+            let mut history = ContextManager::new(uuid_v7_item_id_generator_for_test());
+            history.record_annotated_items(std::slice::from_mut(&mut envelope), policy);
+            let recorded =
+                &serde_json::to_value(history.raw_items().last().unwrap()).unwrap()["output"];
+            if server_budgeted {
+                assert_eq!(recorded, &expected);
+            } else {
+                assert_ne!(
+                    recorded, &expected,
+                    "history silently removed the producer's page bound"
+                );
+            }
+        }
+    }
+}

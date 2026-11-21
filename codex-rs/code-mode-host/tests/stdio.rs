@@ -962,8 +962,15 @@ async fn oversized_initial_response_does_not_close_the_shared_host() {
     assert!(error.starts_with("begin:") && error.ends_with(":end"));
     assert!(error.len() > 20 && error.len() <= 64 * 1024);
     assert!(
-        matches!(content_items.last(), Some(FunctionCallOutputContentItem::InputText { text }) if text.ends_with(":end"))
+        matches!(content_items.first(), Some(FunctionCallOutputContentItem::InputText { text }) if text == "Script error:\n")
     );
+    assert!(matches!(
+        content_items.last(),
+        Some(FunctionCallOutputContentItem::PageBoundary {
+            more_output: true,
+            continuation: false
+        })
+    ));
     session.shutdown().await.expect("shutdown remote session");
 }
 

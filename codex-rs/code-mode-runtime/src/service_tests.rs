@@ -312,6 +312,7 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
                 max_output_tokens: None,
             },
             /*preempt*/ None,
+            /*liveness*/ None,
         )
         .await;
     let wait_response = tokio::spawn(wait_response);
@@ -335,6 +336,7 @@ async fn execute_and_wait_clamp_yield_grace_without_stopping_the_cell() {
                 max_output_tokens: None,
             },
             /*preempt*/ None,
+            /*liveness*/ None,
         )
         .await;
     let completion = tokio::spawn(completion);
@@ -384,6 +386,7 @@ async fn wait_waits_for_nested_tool_during_yield_grace() {
                 max_output_tokens: None,
             },
             /*preempt*/ None,
+            /*liveness*/ None,
         )
         .await;
     let response = tokio::spawn(response);
@@ -460,6 +463,7 @@ async fn zero_yield_limit_is_immediate_and_scoped_to_its_session() {
                 max_output_tokens: None,
             },
             /*preempt*/ None,
+            /*liveness*/ None,
         )
         .await;
     let zero_wait = tokio::spawn(zero_wait);

@@ -28,6 +28,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 ## Execution and model guidance
 
+- JavaScript cell output continues through stock `wait`, including after the
+  script ends. The runtime retains up to 16 MiB of unread output per cell and
+  reports discarded bytes. At 64 MiB per session, it evicts the oldest retained
+  cells first. Unread pages are not restored on resume.
+
 - Native [feature policy](codex-rs/features/src/lib.rs) fixes JavaScript code
   mode as the only model tool interface, with native V2 agents, token budgeting,
   step model switching, and reasoning-effort overrides. Stock direct tool mode

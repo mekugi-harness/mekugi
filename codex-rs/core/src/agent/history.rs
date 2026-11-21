@@ -75,6 +75,7 @@ impl LocalAgentRuntime {
                 retain_across_windows: parent_metadata.retain_across_windows,
                 retained_source: parent_metadata.retained_source,
                 history_truncation_token_limit: parent_metadata.history_truncation_token_limit,
+                tool_output_budget_applied: parent_metadata.tool_output_budget_applied,
                 image_replay_sources: parent_metadata.image_replay_sources,
                 inherited_user_message: true,
                 ..Default::default()

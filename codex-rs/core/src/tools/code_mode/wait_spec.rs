@@ -10,7 +10,7 @@ pub(crate) fn create_wait_tool(
     let properties = BTreeMap::from([
         (
             "cell_id".to_string(),
-            JsonSchema::string(Some("Identifier of the running exec cell.".to_string())),
+            JsonSchema::string(Some("Identifier of the exec cell.".to_string())),
         ),
         (
             "yield_time_ms".to_string(),
@@ -36,7 +36,7 @@ pub(crate) fn create_wait_tool(
         name: codex_code_mode::WAIT_TOOL_NAME.to_string(),
         description: description_override.map(str::to_owned).unwrap_or_else(|| {
             format!(
-                "Waits on a yielded `{}` cell and returns new output or completion.\n{}",
+                "Waits on an `{}` cell or reads its next output page.\n{}",
                 codex_code_mode::PUBLIC_TOOL_NAME,
                 codex_code_mode::build_wait_tool_description().trim()
             )
@@ -80,7 +80,7 @@ mod tests {
             ToolSpec::Function(ResponsesApiTool {
                 name: codex_code_mode::WAIT_TOOL_NAME.to_string(),
                 description: format!(
-                    "Waits on a yielded `{}` cell and returns new output or completion.\n{}",
+                    "Waits on an `{}` cell or reads its next output page.\n{}",
                     codex_code_mode::PUBLIC_TOOL_NAME,
                     codex_code_mode::build_wait_tool_description().trim()
                 ),
@@ -91,7 +91,7 @@ mod tests {
                         (
                             "cell_id".to_string(),
                             JsonSchema::string(Some(
-                                "Identifier of the running exec cell.".to_string()
+                                "Identifier of the exec cell.".to_string()
                             )),
                         ),
                         (

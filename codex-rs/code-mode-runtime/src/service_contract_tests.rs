@@ -600,6 +600,7 @@ async fn second_observer_is_rejected_without_displacing_the_first() {
                 max_output_tokens: None,
             },
             /*preempt*/ None,
+            /*liveness*/ None,
         )
         .await;
     assert_eq!(

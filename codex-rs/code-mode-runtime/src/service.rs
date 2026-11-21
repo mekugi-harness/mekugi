@@ -1,5 +1,6 @@
 use codex_code_mode_protocol::EnabledToolMetadata;
 use codex_code_mode_protocol::normalize_code_mode_identifier;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::PoisonError;
@@ -26,12 +27,13 @@ use codex_code_mode_protocol::WaitRequest;
 use codex_code_mode_protocol::WaitToPendingOutcome;
 use codex_code_mode_protocol::WaitToPendingRequest;
 use serde_json::Value as JsonValue;
-use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use crate::TaskFailureHandler;
 use crate::cell_actor::take_completed_event;
 use crate::output::OutputCollector;
+use crate::output::RetainedCell;
+use crate::output::ServerOutput;
 use crate::session_runtime as runtime;
 use crate::session_runtime::SessionRuntime;
 
@@ -44,6 +46,7 @@ pub type ObservationLiveness = Box<dyn Fn(bool) + Send + Sync>;
 pub struct InProcessCodeModeSession {
     runtime: SessionRuntime,
     catalog: Mutex<(u64, runtime::ToolCatalog)>,
+    pages: Arc<Mutex<CellPages>>,
     options: CodeModeSessionOptions,
 }
 
@@ -71,6 +74,7 @@ impl InProcessCodeModeSession {
         Self {
             runtime: SessionRuntime::new_with_task_failure_handler(task_failure_handler),
             catalog: Default::default(),
+            pages: Default::default(),
             options: CodeModeSessionOptions {
                 cell_execution_limits: CodeModeSessionCellExecutionLimits {
                     max_heap_size_bytes: None,
@@ -160,7 +164,6 @@ impl InProcessCodeModeSession {
     ) -> Result<StartedCell, String> {
         let yield_time_ms = request.yield_time_ms.unwrap_or(DEFAULT_EXEC_YIELD_TIME_MS);
         let max_output_tokens = request.max_output_tokens;
-        let output_truncation = self.options.output_truncation;
         let started = self
             .runtime
             .execute(
@@ -173,24 +176,49 @@ impl InProcessCodeModeSession {
             .await
             .map_err(|error| error.to_string())?;
         let cell_id = protocol_cell_id(&started.cell_id);
+        let mode = self.options.output_truncation;
+        if let Some(cell) = started.retained.as_ref() {
+            let mut pages = self.pages.lock().unwrap_or_else(PoisonError::into_inner);
+            for evicted in self.runtime.take_evicted_outputs() {
+                pages.remove(&CellId::new(evicted.to_string()));
+            }
+            if cell.is_retained() {
+                pages.insert(
+                    cell_id.clone(),
+                    CellPagesEntry {
+                        cell: Arc::clone(cell),
+                        output: cell.batch(),
+                        terminal: None,
+                    },
+                );
+            }
+        }
+        let owner = InitialOutputOwner {
+            pages: Arc::clone(&self.pages),
+            cell_id: Some(cell_id.clone()),
+        };
         let response_cell_id = cell_id.clone();
-        let (response_tx, response_rx) = oneshot::channel();
-        tokio::spawn(async move {
-            let response = started
-                .initial_event()
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|event| {
-                    runtime_response(
-                        &response_cell_id,
-                        event,
-                        output_truncation,
-                        max_output_tokens,
-                    )
-                });
-            let _ = response_tx.send(response);
-        });
-        Ok(StartedCell::from_result_receiver(cell_id, response_rx))
+        Ok(StartedCell::from_future(cell_id, async move {
+            let mut owner = owner;
+            let event = started.initial_event().await;
+            // Once polled to delivery, only the cell/page lifecycle owns the output.
+            owner.cell_id = None;
+            let mut pages = owner.pages.lock().unwrap_or_else(PoisonError::into_inner);
+            match event {
+                Ok(event) => {
+                    observe_output(&mut pages, &response_cell_id, event, max_output_tokens)
+                        .and_then(|page| {
+                            page.map_or_else(|| missing_cell_response(response_cell_id, mode), Ok)
+                        })
+                }
+                // A concurrent terminate can still own the event.
+                Err(error @ runtime::Error::ClosedCell(_)) => Err(error.to_string()),
+                Err(error) => {
+                    pages.remove(&response_cell_id);
+                    Err(error.to_string())
+                }
+            }
+        }))
     }
 
     pub async fn execute_to_pending(
@@ -198,7 +226,6 @@ impl InProcessCodeModeSession {
         request: ExecuteRequest,
         delegate: Arc<dyn CodeModeSessionDelegate>,
     ) -> Result<ExecuteToPendingOutcome, String> {
-        let max_output_tokens = request.max_output_tokens;
         let started = self
             .runtime
             .execute(
@@ -213,12 +240,7 @@ impl InProcessCodeModeSession {
             .initial_event()
             .await
             .map_err(|error| error.to_string())?;
-        pending_outcome(
-            &cell_id,
-            event,
-            self.options.output_truncation,
-            max_output_tokens,
-        )
+        pending_outcome(&cell_id, event)
     }
 
     pub async fn wait(
@@ -249,6 +271,14 @@ impl InProcessCodeModeSession {
             yield_time_ms,
             max_output_tokens,
         } = request;
+        if let Some(response) = next_retained_page(
+            &mut self.pages.lock().unwrap_or_else(PoisonError::into_inner),
+            &cell_id,
+            max_output_tokens,
+        ) {
+            return Box::pin(async move { Ok(WaitOutcome::LiveCell(response)) });
+        }
+        let pages = Arc::clone(&self.pages);
         let output_truncation = self.options.output_truncation;
         let runtime_cell_id = runtime_cell_id(&cell_id);
         match self
@@ -262,27 +292,23 @@ impl InProcessCodeModeSession {
             .await
         {
             Ok(pending_event) => Box::pin(async move {
-                match pending_event.event().await {
-                    Ok(event) => Ok(WaitOutcome::LiveCell(runtime_response(
-                        &cell_id,
-                        event,
-                        output_truncation,
-                        max_output_tokens,
-                    )?)),
-                    Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
-                        Ok(WaitOutcome::MissingCell(missing_cell_response(
-                            cell_id,
-                            output_truncation,
-                            max_output_tokens,
-                        )?))
-                    }
-                    Err(error) => Err(error.to_string()),
-                }
+                finish_wait(
+                    &pages,
+                    cell_id,
+                    max_output_tokens,
+                    output_truncation,
+                    pending_event.event().await,
+                )
             }),
-            Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
-                missing_wait(cell_id, output_truncation, max_output_tokens)
-            }
-            Err(error) => Box::pin(async move { Err(error.to_string()) }),
+            Err(error) => Box::pin(async move {
+                finish_wait(
+                    &pages,
+                    cell_id,
+                    max_output_tokens,
+                    output_truncation,
+                    Err(error),
+                )
+            }),
         }
     }
 
@@ -290,23 +316,46 @@ impl InProcessCodeModeSession {
         let TerminateRequest {
             cell_id,
             max_output_tokens,
+            discard_output,
         } = request;
-        match self.runtime.terminate(&runtime_cell_id(&cell_id)).await {
-            Ok(event) => Ok(WaitOutcome::LiveCell(runtime_response(
-                &cell_id,
-                event,
-                self.options.output_truncation,
-                max_output_tokens,
-            )?)),
-            Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
-                Ok(WaitOutcome::MissingCell(missing_cell_response(
-                    cell_id,
-                    self.options.output_truncation,
-                    max_output_tokens,
-                )?))
-            }
-            Err(error) => Err(error.to_string()),
+        if let Some(response) = release_completed_pages(&self.pages, &cell_id) {
+            return Ok(WaitOutcome::LiveCell(response));
         }
+        if discard_output {
+            let discarded = discard_cell(&self.pages, &cell_id);
+            // Cancel through the runtime as well for unpaged Client sessions.
+            let event = self.runtime.terminate(&runtime_cell_id(&cell_id)).await;
+            return match event {
+                Ok(event) => Ok(WaitOutcome::LiveCell(runtime_response(&cell_id, event)?.0)),
+                Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_))
+                    if discarded =>
+                {
+                    Ok(WaitOutcome::LiveCell(RuntimeResponse::Terminated {
+                        cell_id,
+                        content_items: Vec::new(),
+                        code_mode_host_duration: None,
+                    }))
+                }
+                Err(error) => finish_wait(
+                    &self.pages,
+                    cell_id,
+                    max_output_tokens,
+                    self.options.output_truncation,
+                    Err(error),
+                ),
+            };
+        }
+        let event = self.runtime.terminate(&runtime_cell_id(&cell_id)).await;
+        if let Some(response) = release_completed_pages(&self.pages, &cell_id) {
+            return Ok(WaitOutcome::LiveCell(response));
+        }
+        finish_wait(
+            &self.pages,
+            cell_id,
+            max_output_tokens,
+            self.options.output_truncation,
+            event,
+        )
     }
 
     pub async fn wait_to_pending(
@@ -323,16 +372,12 @@ impl InProcessCodeModeSession {
             .await
         {
             Ok(event) => Ok(WaitToPendingOutcome::LiveCell(pending_outcome(
-                &cell_id,
-                event,
-                self.options.output_truncation,
-                /*max_output_tokens*/ None,
+                &cell_id, event,
             )?)),
             Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
                 Ok(WaitToPendingOutcome::MissingCell(missing_cell_response(
                     cell_id,
                     self.options.output_truncation,
-                    /*max_output_tokens*/ None,
                 )?))
             }
             Err(error) => Err(error.to_string()),
@@ -340,6 +385,10 @@ impl InProcessCodeModeSession {
     }
 
     pub async fn shutdown(&self) -> Result<(), String> {
+        self.pages
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         self.runtime
             .shutdown()
             .await
@@ -475,11 +524,157 @@ fn protocol_cell_id(cell_id: &runtime::CellId) -> CellId {
     CellId::new(cell_id.as_str().to_string())
 }
 
+type CellPages = HashMap<CellId, CellPagesEntry>;
+
+struct CellPagesEntry {
+    cell: Arc<RetainedCell>,
+    output: ServerOutput,
+    terminal: Option<RuntimeResponse>,
+}
+
+struct InitialOutputOwner {
+    pages: Arc<Mutex<CellPages>>,
+    cell_id: Option<CellId>,
+}
+
+impl Drop for InitialOutputOwner {
+    fn drop(&mut self) {
+        if let Some(cell_id) = &self.cell_id {
+            discard_cell(&self.pages, cell_id);
+        }
+    }
+}
+
+fn discard_cell(pages: &Mutex<CellPages>, cell_id: &CellId) -> bool {
+    let entry = pages
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(cell_id);
+    if let Some(entry) = entry {
+        entry.cell.discard();
+        true
+    } else {
+        false
+    }
+}
+
+fn release_completed_pages(pages: &Mutex<CellPages>, cell_id: &CellId) -> Option<RuntimeResponse> {
+    let mut pages = pages.lock().unwrap_or_else(PoisonError::into_inner);
+    let entry = pages.get_mut(cell_id)?;
+    if !entry.cell.is_retained() {
+        pages.remove(cell_id);
+        return None;
+    }
+    let mut terminal = entry.terminal.take()?;
+    pages.remove(cell_id);
+    terminal.set_content_items(vec![FunctionCallOutputContentItem::PageBoundary {
+        more_output: false,
+        continuation: true,
+    }]);
+    Some(terminal)
+}
+
+fn finish_wait(
+    pages: &Mutex<CellPages>,
+    cell_id: CellId,
+    max_output_tokens: Option<usize>,
+    mode: CodeModeOutputTruncation,
+    event: Result<runtime::CellEvent, runtime::Error>,
+) -> Result<WaitOutcome, String> {
+    let mut pages = pages.lock().unwrap_or_else(PoisonError::into_inner);
+    let response = match event {
+        Ok(event) => observe_output(&mut pages, &cell_id, event, max_output_tokens)?,
+        Err(runtime::Error::MissingCell(_) | runtime::Error::ClosedCell(_)) => {
+            // The terminate caller may still be publishing the terminal event.
+            next_retained_page(&mut pages, &cell_id, max_output_tokens)
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    match response {
+        Some(response) => Ok(WaitOutcome::LiveCell(response)),
+        None => Ok(WaitOutcome::MissingCell(missing_cell_response(
+            cell_id, mode,
+        )?)),
+    }
+}
+
+fn observe_output(
+    pages: &mut CellPages,
+    cell_id: &CellId,
+    event: runtime::CellEvent,
+    limit: Option<usize>,
+) -> Result<Option<RuntimeResponse>, String> {
+    let (mut response, output) = runtime_response(cell_id, event)?;
+    let OutputCollector::Server(output) = output else {
+        response.set_content_items(output.into_items());
+        return Ok(Some(response));
+    };
+    let Some(entry) = pages.get_mut(cell_id) else {
+        return Ok(None);
+    };
+    entry.output.append(output);
+    let Some((mut page, more_output)) = entry.output.next(limit, /*require_output*/ false) else {
+        pages.remove(cell_id);
+        return Ok(None);
+    };
+    if more_output {
+        page.push(FunctionCallOutputContentItem::PageBoundary {
+            more_output,
+            continuation: false,
+        });
+    }
+    if !matches!(response, RuntimeResponse::Yielded { .. }) {
+        if more_output {
+            let mut terminal = response.clone();
+            if let RuntimeResponse::Result {
+                error_text: Some(error),
+                ..
+            } = &mut terminal
+            {
+                *error = String::new(); // The failure diagnostic is already queued.
+            }
+            entry.terminal = Some(terminal);
+        } else {
+            pages.remove(cell_id);
+        }
+    }
+    response.set_content_items(page);
+    Ok(Some(response))
+}
+
+fn next_retained_page(
+    pages: &mut CellPages,
+    cell_id: &CellId,
+    limit: Option<usize>,
+) -> Option<RuntimeResponse> {
+    let entry = pages.get_mut(cell_id)?;
+    let (mut page, more_output) = entry.output.next(limit, /*require_output*/ true)?;
+    let continuation = entry.terminal.is_some();
+    if more_output || continuation {
+        page.push(FunctionCallOutputContentItem::PageBoundary {
+            more_output,
+            continuation,
+        });
+    }
+    let response = if let Some(mut terminal) = entry.terminal.clone() {
+        if !more_output {
+            pages.remove(cell_id);
+        }
+        terminal.set_content_items(page);
+        terminal
+    } else {
+        RuntimeResponse::Yielded {
+            cell_id: cell_id.clone(),
+            content_items: page,
+            code_mode_host_duration: None,
+        }
+    };
+    Some(response)
+}
+
 fn pending_outcome(
     cell_id: &CellId,
     event: runtime::CellEvent,
-    output_truncation: CodeModeOutputTruncation,
-    max_output_tokens: Option<usize>,
 ) -> Result<ExecuteToPendingOutcome, String> {
     match event {
         runtime::CellEvent::Pending {
@@ -487,87 +682,68 @@ fn pending_outcome(
             pending_tool_call_ids,
         } => Ok(ExecuteToPendingOutcome::Pending {
             cell_id: cell_id.clone(),
-            content_items: rendered_items(content_items, output_truncation, max_output_tokens),
+            content_items: content_items.into_items(),
             pending_tool_call_ids,
         }),
-        event => Ok(ExecuteToPendingOutcome::Completed(runtime_response(
-            cell_id,
-            event,
-            output_truncation,
-            max_output_tokens,
-        )?)),
+        event => {
+            let (mut response, output) = runtime_response(cell_id, event)?;
+            response.set_content_items(output.into_items());
+            Ok(ExecuteToPendingOutcome::Completed(response))
+        }
     }
 }
 
 fn runtime_response(
     cell_id: &CellId,
     event: runtime::CellEvent,
-    output_truncation: CodeModeOutputTruncation,
-    max_output_tokens: Option<usize>,
-) -> Result<RuntimeResponse, String> {
+) -> Result<(RuntimeResponse, OutputCollector), String> {
     match event {
-        runtime::CellEvent::Yielded { content_items } => Ok(RuntimeResponse::Yielded {
-            cell_id: cell_id.clone(),
-            content_items: rendered_items(content_items, output_truncation, max_output_tokens),
-            code_mode_host_duration: None,
-        }),
+        runtime::CellEvent::Yielded { content_items } => Ok((
+            RuntimeResponse::Yielded {
+                cell_id: cell_id.clone(),
+                content_items: Vec::new(),
+                code_mode_host_duration: None,
+            },
+            content_items,
+        )),
         runtime::CellEvent::Completed {
             content_items,
             error_text,
             result_buffered_for,
-        } => Ok(RuntimeResponse::Result {
-            cell_id: cell_id.clone(),
-            content_items: rendered_items(content_items, output_truncation, max_output_tokens),
-            error_text,
-            result_buffered_for,
-            code_mode_host_duration: None,
-        }),
-        runtime::CellEvent::Terminated { content_items } => Ok(RuntimeResponse::Terminated {
-            cell_id: cell_id.clone(),
-            content_items: rendered_items(content_items, output_truncation, max_output_tokens),
-            code_mode_host_duration: None,
-        }),
+        } => Ok((
+            RuntimeResponse::Result {
+                cell_id: cell_id.clone(),
+                content_items: Vec::new(),
+                error_text,
+                result_buffered_for,
+                code_mode_host_duration: None,
+            },
+            content_items,
+        )),
+        runtime::CellEvent::Terminated { content_items } => Ok((
+            RuntimeResponse::Terminated {
+                cell_id: cell_id.clone(),
+                content_items: Vec::new(),
+                code_mode_host_duration: None,
+            },
+            content_items,
+        )),
         runtime::CellEvent::Pending { .. } => {
             Err("cell returned a pending frontier unexpectedly".to_string())
         }
     }
 }
 
-fn rendered_items(
-    items: OutputCollector,
-    mode: CodeModeOutputTruncation,
-    max_output_tokens: Option<usize>,
-) -> Vec<FunctionCallOutputContentItem> {
-    let items = items.into_collected_output();
-    match mode {
-        CodeModeOutputTruncation::Client => items.into_untruncated_items(),
-        CodeModeOutputTruncation::Server => crate::output::render_output(items, max_output_tokens),
-    }
-}
-
 fn missing_cell_response(
     cell_id: CellId,
     mode: CodeModeOutputTruncation,
-    max_output_tokens: Option<usize>,
 ) -> Result<RuntimeResponse, String> {
     let error_text = format!("exec cell {cell_id} not found");
     let mut output = OutputCollector::new(mode);
     let event = take_completed_event(&mut output, Some(error_text));
-    runtime_response(&cell_id, event, mode, max_output_tokens)
-}
-
-fn missing_wait(
-    cell_id: CellId,
-    mode: CodeModeOutputTruncation,
-    max_output_tokens: Option<usize>,
-) -> CodeModeSessionResultFuture<'static, WaitOutcome> {
-    Box::pin(async move {
-        Ok(WaitOutcome::MissingCell(missing_cell_response(
-            cell_id,
-            mode,
-            max_output_tokens,
-        )?))
-    })
+    let (mut response, output) = runtime_response(&cell_id, event)?;
+    response.set_content_items(output.into_items());
+    Ok(response)
 }
 
 #[cfg(test)]
