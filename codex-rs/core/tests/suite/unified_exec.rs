@@ -578,7 +578,7 @@ async fn session_tmp_matches_world_facts_and_survives_exec_calls() -> Result<()>
         .filter_map(|item| item["content"].as_array())
         .flatten();
     let scratch = format!(
-        r#"<session_tmp env_var="SESSION_TMP">{}</session_tmp>"#,
+        r#"<session_tmp env_var="SESSION_TMP" on_path="true">{}</session_tmp>"#,
         path.display()
     );
     assert!(
