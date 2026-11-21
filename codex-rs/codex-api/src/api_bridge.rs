@@ -383,7 +383,19 @@ pub(crate) fn parse_usage_limit(
     let limit_id = extract_header(headers, ACTIVE_LIMIT_HEADER);
     let rate_limit_reached_type = headers.and_then(parse_rate_limit_reached_type);
     let rate_limits = headers
-        .and_then(|map| parse_rate_limit_for_limit(map, limit_id.as_deref()))
+        .and_then(|map| {
+            let mut snapshot = parse_rate_limit_for_limit(map, limit_id.as_deref())?;
+            if snapshot.primary.is_none()
+                && snapshot.secondary.is_none()
+                && limit_id.is_some()
+                && let Some(default) = parse_rate_limit_for_limit(map, /*limit_id*/ None)
+                && (default.primary.is_some() || default.secondary.is_some())
+            {
+                snapshot.primary = default.primary;
+                snapshot.secondary = default.secondary;
+            }
+            Some(snapshot)
+        })
         .map(|mut snapshot| {
             snapshot.rate_limit_reached_type = rate_limit_reached_type;
             Box::new(snapshot)

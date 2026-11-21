@@ -2,6 +2,7 @@ use super::ResponsesStreamRequest;
 use super::ResponsesStreamRetryState;
 use super::handle_response_stream_error;
 use super::log_retry;
+use super::retry_wait_message;
 use crate::realtime_history::RealtimeHistoryState;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
@@ -175,4 +176,17 @@ async fn unadvised_capacity_backoff_doubles_to_thirty_seconds() {
         .expect("capacity retry should be allowed");
         assert!((deadline..=deadline + Duration::from_millis(1)).contains(&Instant::now()));
     }
+}
+
+#[test_case::test_case(0, "Retrying now"; "zero")]
+#[test_case::test_case(45, "Retrying in 45s"; "seconds")]
+#[test_case::test_case(311, "Retrying in 5m 11s"; "minutes")]
+#[test_case::test_case(3600, "Retrying in 1h 00m"; "one_hour")]
+#[test_case::test_case(7500, "Retrying in 2h 05m"; "hours_and_minutes")]
+#[test_case::test_case(259_745, "Retrying in 3d 0h 09m"; "multi_day_weekly_reset")]
+#[tokio::test]
+async fn retry_wait_message_formats_multi_hour_and_multi_day_waits(seconds: u64, expected: &str) {
+    tokio::time::pause();
+    let retry_at = Instant::now() + Duration::from_secs(seconds);
+    assert_eq!(retry_wait_message(retry_at), expected);
 }

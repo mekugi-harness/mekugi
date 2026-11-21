@@ -270,7 +270,18 @@ fn retry_wait_message(retry_at: Instant) -> String {
     match seconds {
         0 => "Retrying now".to_string(),
         1..60 => format!("Retrying in {seconds}s"),
-        _ => format!("Retrying in {}m {:02}s", seconds / 60, seconds % 60),
+        60..3600 => format!("Retrying in {}m {:02}s", seconds / 60, seconds % 60),
+        3600..86_400 => format!(
+            "Retrying in {}h {:02}m",
+            seconds / 3600,
+            (seconds % 3600) / 60
+        ),
+        _ => format!(
+            "Retrying in {}d {}h {:02}m",
+            seconds / 86_400,
+            (seconds % 86_400) / 3600,
+            (seconds % 3600) / 60
+        ),
     }
 }
 

@@ -825,6 +825,52 @@ fn map_api_error_ignores_unparseable_rate_limit_reached_type_headers() {
 }
 
 #[test]
+fn map_api_error_usage_limit_falls_back_to_codex_window_headers_for_active_limit() {
+    let mut headers = HeaderMap::new();
+    for (name, value) in [
+        (ACTIVE_LIMIT_HEADER, "premium"),
+        ("x-codex-primary-used-percent", "100"),
+        ("x-codex-primary-window-minutes", "10080"),
+        ("x-codex-primary-reset-at", "1795425815"),
+        ("x-codex-credits-has-credits", "False"),
+        ("x-codex-credits-balance", "0"),
+        ("x-codex-credits-unlimited", "False"),
+    ] {
+        headers.insert(name, http::HeaderValue::from_static(value));
+    }
+    let body = serde_json::json!({
+        "error": {
+            "type": "usage_limit_reached",
+            "plan_type": "prolite",
+            "resets_at": 1795425815,
+            "limit_window_minutes": 10080,
+        }
+    })
+    .to_string();
+
+    let err = map_api_error(ApiError::Transport(TransportError::Http {
+        retry_after: None,
+        status: http::StatusCode::TOO_MANY_REQUESTS,
+        url: None,
+        headers: Some(headers),
+        body: Some(body),
+    }));
+
+    let CodexErrorDetails::UsageLimitReached(usage_limit) = err.details() else {
+        panic!("expected CodexErrorDetails::UsageLimitReached, got {err:?}");
+    };
+    let snapshot = usage_limit
+        .rate_limits
+        .as_ref()
+        .expect("usage limit snapshot");
+    assert_eq!(snapshot.limit_id.as_deref(), Some("premium"));
+    let primary = snapshot.primary.as_ref().expect("primary window");
+    assert_eq!(primary.used_percent, 100.0);
+    assert_eq!(primary.window_minutes, Some(10080));
+    assert_eq!(primary.resets_at, Some(1795425815));
+}
+
+#[test]
 fn only_an_explicit_workspace_403_stops_retries() {
     use http::StatusCode;
     let provider = r#"{"error":{"code":"invalid_workspace_selected"}}"#;

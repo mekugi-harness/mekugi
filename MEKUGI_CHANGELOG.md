@@ -39,8 +39,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   concise base skill guidance. Code-mode batching lives in the exec description.
 - Code-mode waits can hold the observer while a native wait pauses the cell
   deadline. The paired host and runtime exchange observation liveness separately
-  from stream heartbeats. Provider retry changes surface the first capacity wait
-  and can resume a usage-limited turn after reset or retry advice.
+  from stream heartbeats. Provider retry changes surface the first capacity wait,
+  can resume a usage-limited turn after reset or retry advice, format multi-hour
+  and multi-day waits in hours/days, and fall back to default `x-codex-*` window
+  headers when `x-codex-active-limit` has no dedicated window prefix.
 
 ## Context and retained sessions
 
