@@ -97,10 +97,9 @@ impl EnvironmentFacts {
         );
         data.render_git(out, self.restricted_reads);
         if let Some(path) = &self.session_tmp {
-            out.push_str("    <session_tmp env_var=\"SESSION_TMP\">");
+            out.push_str("    <session_tmp env_var=\"SESSION_TMP\" on_path=\"true\">");
             push_xml_escaped_text(out, &path.to_string_lossy());
             out.push_str("</session_tmp>\n");
-            push_fact(out, "    ", "session_tmp_on_path", "true");
         }
         out.push_str("  </environment_facts>\n");
     }

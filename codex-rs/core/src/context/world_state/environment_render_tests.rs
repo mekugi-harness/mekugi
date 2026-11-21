@@ -248,8 +248,7 @@ fn serialize_environment_facts_with_git_status_and_session_tmp() {
       </recent_commits>
       <more_unpushed_commits>2</more_unpushed_commits>
     </git_repository>
-    <session_tmp env_var="SESSION_TMP">scratch &amp; work</session_tmp>
-    <session_tmp_on_path>true</session_tmp_on_path>
+    <session_tmp env_var="SESSION_TMP" on_path="true">scratch &amp; work</session_tmp>
   </environment_facts>
 </environment_context>"#
     );

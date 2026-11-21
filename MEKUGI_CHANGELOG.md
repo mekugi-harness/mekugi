@@ -52,9 +52,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   sources were acquired. Accepted user input and agent handoffs can also attach
   sources through the same native acquisition path.
 - The runtime captures structured environment facts, prepares the shared
-  `SESSION_TMP`, and appends it to `PATH` (reported via `<session_tmp_on_path>`).
-  The native skills extension uses the local `skills-mgr` catalog
-  where configured and otherwise retains stock skill discovery.
+  `SESSION_TMP`, and appends it to `PATH` (reported via `on_path="true"` on
+  `<session_tmp>`). The native skills extension uses the local `skills-mgr`
+  catalog where configured and otherwise retains stock skill discovery.
 - Model requests reuse repeated tool output and source text without replacing
   the original retained records. Context usage notices and deduplication savings
   come from native observations instead of host prompt rewriting. Mekugi only
