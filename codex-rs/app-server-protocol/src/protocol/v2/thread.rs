@@ -1359,6 +1359,11 @@ pub struct ThreadRevertParams {
     pub thread_id: String,
     /// Turn excluded from the replacement history, together with every later turn.
     pub before_turn_id: String,
+    /// Optional user-message item inside `before_turn_id` to cut before instead of reverting the
+    /// entire turn. When omitted, reverts immediately before `before_turn_id`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub before_item_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

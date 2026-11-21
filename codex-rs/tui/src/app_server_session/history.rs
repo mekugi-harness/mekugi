@@ -180,6 +180,7 @@ impl AppServerSession {
                 params: ThreadRevertParams {
                     thread_id: thread_id.to_string(),
                     before_turn_id,
+                    before_item_id: None,
                 },
             })
             .await?;

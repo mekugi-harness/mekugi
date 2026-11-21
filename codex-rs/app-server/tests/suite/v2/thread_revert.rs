@@ -17,6 +17,7 @@ use codex_app_server_protocol::SortDirection;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadItemsListCursor;
 use codex_app_server_protocol::ThreadItemsListParams;
 use codex_app_server_protocol::ThreadItemsListResponse;
@@ -30,9 +31,12 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
+use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
 use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
@@ -91,6 +95,7 @@ async fn thread_revert_rejects_ephemeral_without_losing_context(
             Some(serde_json::to_value(ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: completed.turn.id,
+                before_item_id: None,
             })?),
         )
         .await?;
@@ -179,6 +184,7 @@ async fn thread_revert_preserves_model_selected_multi_agent_version(restart: boo
             params: ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: completed.turn.id,
+                before_item_id: None,
             },
         })
         .await?;
@@ -346,6 +352,7 @@ async fn thread_revert_preserves_fork_cutoff_after_cold_resume() -> Result<()> {
                 params: ThreadRevertParams {
                     thread_id: child.id.clone(),
                     before_turn_id,
+                    before_item_id: None,
                 },
             })
             .await?;
@@ -470,6 +477,7 @@ async fn thread_revert_replaces_paginated_history_before_turn() -> Result<()> {
             params: ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: turn_ids[1].clone(),
+                before_item_id: None,
             },
         })
         .await?;
@@ -557,6 +565,7 @@ async fn thread_revert_replaces_paginated_history_before_turn() -> Result<()> {
             Some(serde_json::to_value(ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: "missing-turn".to_string(),
+                before_item_id: None,
             })?),
         )
         .await?;
@@ -680,6 +689,7 @@ async fn thread_revert_interrupts_active_turn_and_keeps_thread_loaded() -> Resul
             params: ThreadRevertParams {
                 thread_id: thread.id.clone(),
                 before_turn_id: active_turn.id.clone(),
+                before_item_id: None,
             },
         })
         .await?;
@@ -723,6 +733,238 @@ async fn thread_revert_interrupts_active_turn_and_keeps_thread_loaded() -> Resul
         ..Default::default()
     })
     .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_revert_before_steered_user_message_preserves_prefix_and_model_context() -> Result<()>
+{
+    let home = TempDir::new()?;
+    let server = create_mock_responses_server_sequence(vec![
+        create_request_user_input_sse_response("call_pause")?,
+        create_final_assistant_message_sse_response("Steered reply")?,
+        create_final_assistant_message_sse_response("Post-revert reply")?,
+    ])
+    .await;
+    MockResponsesConfig::new(&server.uri()).write(home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build()
+        .await?;
+    initialize_experimental(&mut mcp).await?;
+
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            history_mode: Some(ThreadHistoryMode::Paginated),
+            ..Default::default()
+        })
+        .await?;
+
+    let TurnStartResponse { turn: active_turn } = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![UserInput::Text {
+                    text: "Manage your own work".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                collaboration_mode: Some(CollaborationMode {
+                    mode: ModeKind::Plan,
+                    settings: Settings {
+                        model: "mock-model".to_string(),
+                        reasoning_effort: Some(ReasoningEffort::Medium),
+                        developer_instructions: None,
+                    },
+                }),
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let request = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_request_message(),
+    )
+    .await??;
+
+    let steer: TurnSteerResponse = mcp
+        .request(|request_id| ClientRequest::TurnSteer {
+            request_id,
+            params: TurnSteerParams {
+                thread_id: thread.id.clone(),
+                client_user_message_id: None,
+                input: vec![UserInput::Text {
+                    text: "Eliminate it then".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                responsesapi_client_metadata: None,
+                responsesapi_client_metadata_patch: None,
+                additional_context: None,
+                expected_turn_id: active_turn.id.clone(),
+            },
+        })
+        .await?;
+    assert_eq!(steer.turn_id, active_turn.id);
+
+    mcp.send_response(
+        request.id().clone(),
+        serde_json::json!({
+            "answers": {
+                "confirm_path": { "answers": ["Yes (Recommended)"] }
+            }
+        }),
+    )
+    .await?;
+    let completed: TurnCompletedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(completed.turn.id, active_turn.id);
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+
+    let ThreadTurnsListResponse { data: turns, .. } = mcp
+        .request(|request_id| ClientRequest::ThreadTurnsList {
+            request_id,
+            params: ThreadTurnsListParams {
+                thread_id: thread.id.clone(),
+                cursor: None,
+                limit: None,
+                sort_direction: Some(SortDirection::Asc),
+                items_view: Some(TurnItemsView::Full),
+            },
+        })
+        .await?;
+    assert_eq!(turns.len(), 1);
+    let user_messages: Vec<(String, String)> = turns[0]
+        .items
+        .iter()
+        .filter_map(|item| match &item.payload {
+            ThreadItemPayload::UserMessage { content, .. } => {
+                let text = content.iter().find_map(|part| match part {
+                    UserInput::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })?;
+                Some((item.id().to_string(), text))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        user_messages
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Manage your own work", "Eliminate it then"]
+    );
+    let steer_item_id = user_messages[1].0.clone();
+
+    // Empty beforeItemId is rejected without changing thread history.
+    let bad_req = mcp
+        .send_raw_request(
+            "thread/revert",
+            Some(serde_json::to_value(ThreadRevertParams {
+                thread_id: thread.id.clone(),
+                before_turn_id: active_turn.id.clone(),
+                before_item_id: Some(String::new()),
+            })?),
+        )
+        .await?;
+    let bad_err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(bad_req)),
+    )
+    .await??;
+    assert_eq!(bad_err.error.message, "beforeItemId must not be empty");
+
+    // Mid-turn revert before the steered user message keeps the earlier portion of the turn.
+    let ThreadRevertResponse {
+        thread: reverted_thread,
+        ..
+    } = mcp
+        .request(|request_id| ClientRequest::ThreadRevert {
+            request_id,
+            params: ThreadRevertParams {
+                thread_id: thread.id.clone(),
+                before_turn_id: active_turn.id.clone(),
+                before_item_id: Some(steer_item_id),
+            },
+        })
+        .await?;
+    let reverted: ThreadRevertedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/reverted"),
+    )
+    .await??;
+    assert_eq!(reverted.thread_id, thread.id);
+    assert_eq!(reverted_thread.id, thread.id);
+
+    let ThreadTurnsListResponse {
+        data: after_turns, ..
+    } = mcp
+        .request(|request_id| ClientRequest::ThreadTurnsList {
+            request_id,
+            params: ThreadTurnsListParams {
+                thread_id: thread.id.clone(),
+                cursor: None,
+                limit: None,
+                sort_direction: Some(SortDirection::Asc),
+                items_view: Some(TurnItemsView::Full),
+            },
+        })
+        .await?;
+    assert_eq!(after_turns.len(), 1);
+    assert_eq!(after_turns[0].id, active_turn.id);
+    assert_eq!(after_turns[0].status, TurnStatus::Interrupted);
+    let remaining_users: Vec<String> = after_turns[0]
+        .items
+        .iter()
+        .filter_map(|item| match &item.payload {
+            ThreadItemPayload::UserMessage { content, .. } => {
+                content.iter().find_map(|part| match part {
+                    UserInput::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(remaining_users, vec!["Manage your own work".to_string()]);
+
+    // A subsequent turn must not send the reverted steer or its reply to the model.
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: thread.id.clone(),
+        input: vec![UserInput::Text {
+            text: "Continue without steer".to_string(),
+            text_elements: Vec::new(),
+        }],
+        ..Default::default()
+    })
+    .await?;
+
+    let recorded = server
+        .received_requests()
+        .await
+        .expect("mock server records requests");
+    assert_eq!(recorded.len(), 3);
+    let final_body = String::from_utf8_lossy(&recorded[2].body);
+    assert!(
+        final_body.contains("Manage your own work"),
+        "expected retained initial prompt in model context: {final_body}"
+    );
+    assert!(
+        final_body.contains("Continue without steer"),
+        "expected new prompt in model context: {final_body}"
+    );
+    assert!(
+        !final_body.contains("Eliminate it then"),
+        "reverted steer leaked into model context: {final_body}"
+    );
+    assert!(
+        !final_body.contains("Steered reply"),
+        "reverted reply leaked into model context: {final_body}"
+    );
     Ok(())
 }
 

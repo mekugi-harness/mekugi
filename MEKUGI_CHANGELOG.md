@@ -75,10 +75,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   distinguish what was rendered and sampled in the recipient's context.
 - The [JSON-RPC protocol](codex-rs/app-server-protocol/src/protocol/common.rs)
   adds thread inspection and subtree listing, agent end and foreign routing,
-  context-reset cancellation and events, and feature-use reads. Host callbacks
-  cover child admission and retained capture. Native observation also supplies
-  assignment, usage, and progress facts to Mekugi without a second agent
-  registry.
+  context-reset cancellation and events, mid-turn `beforeItemId` revert targets
+  on `thread/revert`, and feature-use reads. Host callbacks cover child
+  admission and retained capture. Native observation also supplies assignment,
+  usage, and progress facts to Mekugi without a second agent registry.
 
 ## Upstream imports
 

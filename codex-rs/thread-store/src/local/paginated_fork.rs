@@ -184,6 +184,13 @@ pub(super) async fn history_base_at_boundary(
             }
         }
     };
+    normalize_history_base(lineage, position)
+}
+
+pub(super) fn normalize_history_base(
+    lineage: &RolloutLineage,
+    position: HistoryPosition,
+) -> ThreadStoreResult<Option<HistoryPosition>> {
     let segment_index = lineage
         .segments()
         .iter()

@@ -229,8 +229,10 @@ pub struct PrepareForkParams {
 pub struct RevertThreadParams {
     /// Stable logical thread to revert.
     pub thread_id: ThreadId,
-    /// First turn excluded from the retained history.
+    /// First turn excluded from the retained history, or the turn containing `before_item_id`.
     pub before_turn_id: String,
+    /// Optional user-message item inside `before_turn_id` to revert before.
+    pub before_item_id: Option<String>,
     /// Resolved runtime version to preserve when its turn context is removed.
     /// When absent, keep the version in the existing session metadata.
     pub multi_agent_version: Option<MultiAgentVersion>,

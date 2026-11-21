@@ -2424,7 +2424,11 @@ impl ThreadRequestProcessor {
         let ThreadRevertParams {
             thread_id,
             before_turn_id,
+            before_item_id,
         } = params;
+        if before_item_id.as_deref() == Some("") {
+            return Err(invalid_request("beforeItemId must not be empty"));
+        }
         let (thread_id, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
         let config_snapshot = thread.config_snapshot().await;
@@ -2577,6 +2581,7 @@ impl ThreadRequestProcessor {
             .revert_thread(codex_thread_store::RevertThreadParams {
                 thread_id,
                 before_turn_id,
+                before_item_id,
                 multi_agent_version: thread.multi_agent_version(),
             })
             .await

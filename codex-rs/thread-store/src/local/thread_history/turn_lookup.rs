@@ -21,8 +21,16 @@ pub(in crate::local) struct TurnRow {
     pub rollout_end_ordinal: Option<i64>,
     pub rollout_end_byte_offset: Option<i64>,
     pub status: String,
+    pub root_turn_id: Option<String>,
+    pub started_at: Option<i64>,
     pub first_user_item_id: Option<String>,
     pub final_agent_item_id: Option<String>,
+}
+
+pub(in crate::local) struct ItemRow {
+    pub rollout_id: ThreadId,
+    pub rollout_ordinal: u64,
+    pub is_user_message: bool,
 }
 
 pub(in crate::local) async fn first_user_preview(
@@ -117,6 +125,8 @@ SELECT
     rollout_end_ordinal,
     rollout_end_byte_offset,
     status,
+    root_turn_id,
+    started_at,
     first_user_item_id,
     final_agent_item_id
 FROM thread_turns
@@ -144,8 +154,109 @@ WHERE thread_id = ?
             rollout_end_ordinal: row.get("rollout_end_ordinal"),
             rollout_end_byte_offset: row.get("rollout_end_byte_offset"),
             status: row.get("status"),
+            root_turn_id: row.get("root_turn_id"),
+            started_at: row.get("started_at"),
             first_user_item_id: row.get("first_user_item_id"),
             final_agent_item_id: row.get("final_agent_item_id"),
         })
     })
+}
+
+pub(in crate::local) async fn find_visible_item(
+    pool: &sqlx::SqlitePool,
+    lineage: &RolloutLineage,
+    turn_id: &str,
+    item_id: &str,
+) -> ThreadStoreResult<ItemRow> {
+    for segment in lineage.segments().iter().rev() {
+        let end_ordinal = segment
+            .end_ordinal()
+            .map(|ordinal| sqlite_integer(ordinal, "rollout ordinal"))
+            .transpose()?;
+        let row = sqlx::query(
+            r#"
+SELECT
+    rollout_ordinal,
+    (item_type = 'userMessage'
+        OR (item_type = '' AND json_extract(item_json, '$.type') = 'userMessage')) AS is_user_message
+FROM thread_items
+WHERE thread_id = ?
+  AND turn_id = ?
+  AND item_id = ?
+  AND rollout_ordinal >= ?
+  AND (? IS NULL OR rollout_ordinal < ?)
+ORDER BY rollout_ordinal DESC
+LIMIT 1
+            "#,
+        )
+        .bind(segment.rollout_id().to_string())
+        .bind(turn_id)
+        .bind(item_id)
+        .bind(sqlite_integer(segment.start_ordinal(), "rollout ordinal")?)
+        .bind(end_ordinal)
+        .bind(end_ordinal)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to resolve turn item: {err}"),
+        })?;
+        if let Some(row) = row {
+            let rollout_ordinal: i64 = row.get("rollout_ordinal");
+            let rollout_ordinal =
+                u64::try_from(rollout_ordinal).map_err(|_| ThreadStoreError::Internal {
+                    message: format!("invalid rollout ordinal for item {item_id}"),
+                })?;
+            let is_user_message: i64 = row.get("is_user_message");
+            return Ok(ItemRow {
+                rollout_id: segment.rollout_id(),
+                rollout_ordinal,
+                is_user_message: is_user_message != 0,
+            });
+        }
+    }
+    Err(ThreadStoreError::InvalidRequest {
+        message: format!("item not found: {item_id}"),
+    })
+}
+
+pub(in crate::local) async fn has_earlier_user_message(
+    pool: &sqlx::SqlitePool,
+    lineage: &RolloutLineage,
+    turn_id: &str,
+    before_ordinal: u64,
+) -> ThreadStoreResult<bool> {
+    for segment in lineage.segments() {
+        let upper = segment
+            .end_ordinal()
+            .map_or(before_ordinal, |end| end.min(before_ordinal));
+        if upper <= segment.start_ordinal() {
+            continue;
+        }
+        let found = sqlx::query_scalar::<_, i64>(
+            r#"
+SELECT 1
+FROM thread_items
+WHERE thread_id = ?
+  AND turn_id = ?
+  AND rollout_ordinal >= ?
+  AND rollout_ordinal < ?
+  AND (item_type = 'userMessage'
+       OR (item_type = '' AND json_extract(item_json, '$.type') = 'userMessage'))
+LIMIT 1
+            "#,
+        )
+        .bind(segment.rollout_id().to_string())
+        .bind(turn_id)
+        .bind(sqlite_integer(segment.start_ordinal(), "rollout ordinal")?)
+        .bind(sqlite_integer(upper, "rollout ordinal")?)
+        .fetch_optional(pool)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to check earlier user messages: {err}"),
+        })?;
+        if found.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
