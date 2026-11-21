@@ -1916,13 +1916,24 @@ impl Session {
                 });
                 ThreadTraceContext::disabled()
             });
+            let retained_fork_source = matches!(&initial_history, InitialHistory::Forked(_))
+                .then(|| {
+                    session_configuration
+                        .forked_from_thread_id
+                        .or(session_configuration.parent_thread_id)
+                })
+                .flatten();
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
                 mcp_runtime,
                 mcp_handler_cache: Default::default(),
-                unified_exec_manager: UnifiedExecProcessManager::new(
+                unified_exec_manager: UnifiedExecProcessManager::for_thread(
                     config.background_terminal_max_timeout,
+                    config.codex_home.to_path_buf(),
+                    thread_id,
+                    config.ephemeral,
+                    retained_fork_source,
                 ),
                 elicitations: crate::elicitation::ElicitationService::new(),
                 analytics_events_client,

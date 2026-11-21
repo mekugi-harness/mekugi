@@ -4372,10 +4372,18 @@ async fn code_mode_nested_exec_command_delivers_complete_output_to_script(
         .map(|limit| format!(",\n  max_output_tokens: {limit}"))
         .unwrap_or_default();
     let script = format!(
-        r#"const result = await tools.exec_command({{
+        r#"let result = await tools.exec_command({{
   cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""{nested_limit}
 }});
-text(result.output === "x".repeat(50000) ? "complete nested output" : "incomplete nested output");
+let assembled = result.output;
+while (result.session_id != null) {{
+  result = await tools.write_stdin({{
+    session_id: result.session_id,
+    chars: ""{nested_limit}
+  }});
+  assembled += result.output;
+}}
+text(assembled === "x".repeat(50000) ? "complete nested output" : `incomplete nested output: ${{assembled.length}}`);
 "#
     );
 
@@ -4396,71 +4404,6 @@ text(result.output === "x".repeat(50000) ? "complete nested output" : "incomplet
     let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
     assert_eq!(text_item(&items, /*index*/ 1), "complete nested output");
 
-    Ok(())
-}
-
-// A nested `exec_command` limit applies to `result.output` inside JavaScript.
-// The outer code-mode and history budgets apply after the script calls `text`.
-#[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exec_nested_limit_formats_truncated_result_with_warning() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn(
-        &server,
-        "use exec_command from code mode",
-        r#"
-const result = await tools.exec_command({
-  cmd: "printf '0123456789012345678901234567890123456789'",
-  max_output_tokens: 5
-});
-text(result.output);
-"#,
-    )
-    .await?;
-
-    assert_eq!(
-        text_item(
-            &custom_tool_output_items(&second_mock.single_request(), "call-1"),
-            /*index*/ 1
-        ),
-        "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789"
-    );
-
-    Ok(())
-}
-
-#[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_exec_nested_limit_truncates_result_variable_when_exceeded() -> Result<()> {
-    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
-    skip_if_wine_exec!(
-        Ok(()),
-        "only part of nested exec_command stdout reaches the code-mode result"
-    );
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
-        &server,
-        "use exec_command from code mode",
-        r#"// @exec: {"max_output_tokens": 25000}
-const result = await tools.exec_command({
-  cmd: "python3 -c \"import sys; sys.stdout.write('A' * 90000)\"",
-  max_output_tokens: 20000
-});
-const resultVariableWasTruncated = result.output.includes("…2500 tokens truncated…");
-text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Variable: ${result.output}`);
-"#,
-        TOKEN_POLICY_TEST_MODEL,
-        |_| {},
-    )
-    .await?;
-
-    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
-    let output = text_item(&items, /*index*/ 1);
-    assert!(output.starts_with("Variable truncated: True. Variable: "));
     Ok(())
 }
 

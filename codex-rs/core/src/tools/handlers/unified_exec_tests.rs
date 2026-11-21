@@ -616,6 +616,7 @@ async fn exec_command_post_tool_use_payload_uses_output_for_noninteractive_one_s
         original_token_count: None,
         hook_command: Some("echo three".to_string()),
         tool_cwd: Some(PathUri::parse("file:///C:/workspace").expect("valid Windows cwd")),
+        emit_post_tool_use: true,
     };
     let invocation = invocation_for_payload("exec_command", "call-43", payload).await;
     let handler = ExecCommandHandler::default();
@@ -648,6 +649,7 @@ async fn exec_command_post_tool_use_payload_uses_output_for_interactive_completi
         original_token_count: None,
         hook_command: Some("echo three".to_string()),
         tool_cwd: None,
+        emit_post_tool_use: true,
     };
     let invocation = invocation_for_payload("exec_command", "call-44", payload).await;
     let handler = ExecCommandHandler::default();
@@ -681,6 +683,7 @@ async fn exec_command_post_tool_use_payload_skips_running_sessions() {
         original_token_count: None,
         hook_command: Some("echo three".to_string()),
         tool_cwd: None,
+        emit_post_tool_use: false,
     };
     let invocation = invocation_for_payload("exec_command", "call-45", payload).await;
     let handler = ExecCommandHandler::default();
@@ -708,6 +711,7 @@ async fn write_stdin_post_tool_use_payload_uses_original_exec_call_id_and_comman
         original_token_count: None,
         hook_command: Some("sleep 1; echo finished".to_string()),
         tool_cwd: None,
+        emit_post_tool_use: true,
     };
     let invocation = invocation_for_payload("write_stdin", "write-stdin-call", payload).await;
     let handler = WriteStdinHandler;
@@ -741,6 +745,7 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
         original_token_count: None,
         hook_command: Some("sleep 2; echo alpha".to_string()),
         tool_cwd: Some(PathUri::parse("file:///C:/workspace/alpha").expect("valid Windows cwd")),
+        emit_post_tool_use: true,
     };
     let output_b = ExecCommandToolOutput {
         event_call_id: "exec-call-b".to_string(),
@@ -754,6 +759,7 @@ async fn write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separ
         original_token_count: None,
         hook_command: Some("sleep 1; echo beta".to_string()),
         tool_cwd: Some(PathUri::parse("file:///C:/workspace/beta").expect("valid Windows cwd")),
+        emit_post_tool_use: true,
     };
     let invocation_b = invocation_for_payload("write_stdin", "write-call-b", payload.clone()).await;
     let invocation_a = invocation_for_payload("write_stdin", "write-call-a", payload).await;

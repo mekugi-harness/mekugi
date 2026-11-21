@@ -159,6 +159,8 @@ async fn exec_command_with_tty(
             network_approval: None,
             session: Arc::downgrade(session),
             last_used: started_at,
+            persisted_bytes: 0,
+            persisted: false,
         };
         manager
             .process_store
@@ -169,20 +171,34 @@ async fn exec_command_with_tty(
     }
 
     let deadline = started_at + Duration::from_millis(yield_time_ms);
-    let collected_output = UnifiedExecProcessManager::collect_output_until_deadline(
+    UnifiedExecProcessManager::wait_for_output_until_deadline(
         process.output_handles(),
         Some(session.subscribe_elicitation_pause_state()),
         deadline,
     )
     .await;
     let wall_time = Instant::now().saturating_duration_since(started_at);
-    let original_token_count = usize::try_from(approx_tokens_from_byte_count(
-        collected_output.total_bytes(),
-    ))
-    .unwrap_or(usize::MAX);
-    let collected = CapturedStream::from(&collected_output);
     let has_exited = process.has_exited();
     let exit_code = process.exit_code();
+    let stream_complete = has_exited
+        && process
+            .output_handles()
+            .output_closed
+            .load(std::sync::atomic::Ordering::Acquire);
+    let (original_token_count, collected) = {
+        let mut guard = process.output_handles().output_buffer.lock().await;
+        let unread_total = usize::try_from(guard.unread_total_bytes()).unwrap_or(usize::MAX);
+        let original_token_count =
+            usize::try_from(approx_tokens_from_byte_count(unread_total)).unwrap_or(usize::MAX);
+        let page = guard.take_next_page(
+            crate::unified_exec::output::unified_exec_page_byte_budget(
+                None,
+                turn.model_info().truncation_policy.into(),
+            ),
+            stream_complete,
+        );
+        (original_token_count, CapturedStream::from(page.text))
+    };
     let response_process_id = if process_started_alive && !has_exited {
         Some(process_id)
     } else {
@@ -214,6 +230,7 @@ async fn exec_command_with_tty(
         original_token_count: Some(original_token_count),
         hook_command: Some(cmd.to_string()),
         tool_cwd: None,
+        emit_post_tool_use: has_exited,
     })
 }
 
@@ -378,9 +395,7 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        out_2
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains("codex"),
+        out_2.raw_output.text.contains("codex"),
         "expected environment variable output"
     );
 
@@ -426,9 +441,7 @@ async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
         "short command should not report a process id if it exits quickly"
     );
     assert!(
-        !out_2
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains("codex"),
+        !out_2.raw_output.text.contains("codex"),
         "short command should run in a fresh shell"
     );
 
@@ -441,9 +454,7 @@ async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        out_3
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains("codex"),
+        out_3.raw_output.text.contains("codex"),
         "session should preserve state"
     );
 
@@ -482,9 +493,7 @@ async fn unified_exec_timeouts() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        !out_2
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains(TEST_VAR_VALUE),
+        !out_2.raw_output.text.contains(TEST_VAR_VALUE),
         "timeout too short should yield incomplete output"
     );
 
@@ -493,9 +502,7 @@ async fn unified_exec_timeouts() -> anyhow::Result<()> {
     let out_3 = write_stdin(&session, &turn, process_id, "", /*yield_time_ms*/ 100).await?;
 
     assert!(
-        out_3
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains(TEST_VAR_VALUE),
+        out_3.raw_output.text.contains(TEST_VAR_VALUE),
         "subsequent poll should retrieve output"
     );
 
@@ -529,9 +536,7 @@ async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
         "pause should block the unified exec yield timeout"
     );
     assert!(
-        response
-            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
-            .contains("unified-exec-done"),
+        response.raw_output.text.contains("unified-exec-done"),
         "exec_command should wait for output after the pause lifts"
     );
     assert!(
@@ -631,6 +636,8 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
             network_approval: None,
             session: Arc::downgrade(&session),
             last_used: Instant::now(),
+            persisted_bytes: 0,
+            persisted: false,
         },
     );
 
@@ -721,6 +728,8 @@ async fn terminating_during_stdin_poll_returns_exited_response(
             network_approval: None,
             session: Arc::downgrade(&session),
             last_used,
+            persisted_bytes: 0,
+            persisted: false,
         },
     );
 
@@ -906,7 +915,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
         Instant::now() + Duration::from_millis(2_500),
     )
     .await
-    .to_bytes_with_omission_marker();
+    .to_bytes();
 
     assert!(String::from_utf8_lossy(&collected).contains("remote-unified-exec"));
     Ok(())
@@ -1017,9 +1026,11 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
                     ),
                     ("call", Some("write"), cwd.clone().into())
                 );
+                let TerminalTarget::Live(original_process) = &original.target else {
+                    panic!("expected live terminal target");
+                };
                 assert!(
-                    original
-                        .process
+                    original_process
                         .interaction_lock()
                         .try_lock_owned()
                         .is_err()
@@ -1051,7 +1062,7 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         match input {
             "rejected\n" => assert!(matches!(result, Err(UnifiedExecError::StdinApproval(_)))),
             "accepted\n" => {
-                let output = result?.truncated_output(DEFAULT_MAX_OUTPUT_TOKENS);
+                let output = result?.raw_output.text;
                 assert!(output.contains("received:accepted"), "{output}");
                 assert!(!output.contains("received:rejected"), "{output}");
             }
@@ -1059,7 +1070,10 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
                 matches!(result, Err(UnifiedExecError::UnknownProcessId { process_id: id }) if id == process_id)
             ),
         }
-        assert!(original.process.interaction_lock().try_lock_owned().is_ok());
+        let TerminalTarget::Live(original_process) = &original.target else {
+            panic!("expected live terminal target");
+        };
+        assert!(original_process.interaction_lock().try_lock_owned().is_ok());
     }
     // Reusing the numeric ID must also reject a subsequent write to the original terminal.
     let context = UnifiedExecContext::new(
@@ -1084,7 +1098,10 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
     assert!(
         matches!(stale, Err(UnifiedExecError::UnknownProcessId { process_id: id }) if id == process_id)
     );
-    original.process.terminate();
+    let TerminalTarget::Live(original_process) = &original.target else {
+        panic!("expected live terminal target");
+    };
+    original_process.terminate();
     assert!(session.terminate_background_terminal(process_id).await);
     Ok(())
 }
@@ -1120,7 +1137,10 @@ async fn stdin_approval_observes_strict_review_enabled_while_queued() -> anyhow:
         tokio_util::sync::CancellationToken::new(),
         "write".to_string(),
     );
-    let interaction = terminal.process.interaction_lock().lock_owned().await;
+    let TerminalTarget::Live(live_process) = &terminal.target else {
+        panic!("expected live terminal target");
+    };
+    let interaction = live_process.interaction_lock().lock_owned().await;
     let mut queued = Box::pin(manager.write_stdin(
         &context,
         WriteStdinRequest {

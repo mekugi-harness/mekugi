@@ -5,7 +5,6 @@ use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::output::CapturedStream;
-use crate::unified_exec::resolve_max_tokens;
 use codex_extension_api::ToolCallOutcome;
 use codex_protocol::ResponseItemId;
 use codex_protocol::mcp::CallToolResult;
@@ -484,7 +483,7 @@ pub struct ExecCommandToolOutput {
     pub event_call_id: String,
     pub chunk_id: String,
     pub wall_time: Duration,
-    /// Output retained by collection, before model-facing truncation.
+    /// Single-page output already sliced for model delivery (or full output for internal callers).
     pub(crate) raw_output: CapturedStream,
     pub truncation_policy: TruncationPolicy,
     pub max_output_tokens: Option<usize>,
@@ -495,15 +494,23 @@ pub struct ExecCommandToolOutput {
     /// Local execution cwd retained for PostToolUse, independent of the collecting
     /// turn. Remote commands leave this unset to retain the host hook cwd.
     pub tool_cwd: Option<PathUri>,
+    /// Whether this response represents the command's exit transition and should
+    /// trigger `PostToolUse` (true once on exit, false while running or on later
+    /// retained-page reads after exit).
+    pub emit_post_tool_use: bool,
 }
 
 impl ToolOutput for ExecCommandToolOutput {
+    fn output_budget_applied(&self) -> bool {
+        true
+    }
+
+    fn history_output_budget_applied(&self) -> bool {
+        true
+    }
+
     fn log_output(&self) -> String {
-        // The telemetry budget must not inherit the model's output-token limit.
-        let output = self
-            .raw_output
-            .render(/*policy*/ None, self.original_token_count);
-        format!("{}\n{output}", self.response_header())
+        format!("{}\n{}", self.response_header(), self.raw_output.text)
     }
 
     fn success_for_logging(&self) -> bool {
@@ -540,13 +547,11 @@ impl ToolOutput for ExecCommandToolOutput {
     }
 
     fn post_tool_use_response(&self, _call_id: &str, _payload: &ToolPayload) -> Option<JsonValue> {
-        if self.process_id.is_some() || self.hook_command.is_none() {
+        if !self.emit_post_tool_use || self.hook_command.is_none() {
             return None;
         }
 
-        Some(JsonValue::String(
-            self.truncated_output_with_policy(self.model_output_policy()),
-        ))
+        Some(JsonValue::String(self.raw_output.text.clone()))
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
@@ -570,10 +575,7 @@ impl ToolOutput for ExecCommandToolOutput {
             exit_code: self.exit_code,
             session_id: self.process_id,
             original_token_count: self.original_token_count,
-            output: match self.max_output_tokens {
-                Some(max_tokens) => self.truncated_output(max_tokens),
-                None => self.raw_output.text.clone(),
-            },
+            output: self.raw_output.text.clone(),
         };
 
         serde_json::to_value(result).unwrap_or_else(|err| {
@@ -583,24 +585,6 @@ impl ToolOutput for ExecCommandToolOutput {
 }
 
 impl ExecCommandToolOutput {
-    fn model_output_policy(&self) -> TruncationPolicy {
-        let requested_policy = TruncationPolicy::Tokens(resolve_max_tokens(self.max_output_tokens));
-        if requested_policy.byte_budget() < self.truncation_policy.byte_budget() {
-            requested_policy
-        } else {
-            self.truncation_policy
-        }
-    }
-
-    pub(crate) fn truncated_output(&self, max_tokens: usize) -> String {
-        self.truncated_output_with_policy(TruncationPolicy::Tokens(max_tokens))
-    }
-
-    fn truncated_output_with_policy(&self, policy: TruncationPolicy) -> String {
-        self.raw_output
-            .render(Some(policy), self.original_token_count)
-    }
-
     fn response_header(&self) -> String {
         let mut sections = Vec::new();
 
@@ -616,7 +600,13 @@ impl ExecCommandToolOutput {
         }
 
         if let Some(process_id) = &self.process_id {
-            sections.push(format!("Process running with session ID {process_id}"));
+            if self.exit_code.is_some() {
+                sections.push(format!(
+                    "More output available with session ID {process_id}"
+                ));
+            } else {
+                sections.push(format!("Process running with session ID {process_id}"));
+            }
         }
 
         if let Some(original_token_count) = self.original_token_count {
@@ -628,30 +618,7 @@ impl ExecCommandToolOutput {
     }
 
     fn response_text(&self) -> String {
-        let header = self.response_header();
-        let output_budget = with_serialization_allowance(self.truncation_policy)
-            .byte_budget()
-            .saturating_sub(header.len().saturating_add(/*rhs*/ 1));
-        let mut policy = self.model_output_policy();
-        let mut output = self.truncated_output_with_policy(policy);
-
-        // History applies this same serialization budget to the complete response.
-        // Reserve room for metadata, warning headers, and the truncation marker so
-        // it does not truncate an already-truncated output a second time.
-        while output.len() > output_budget && policy.byte_budget() > 0 {
-            let excess_bytes = output.len() - output_budget;
-            policy = match policy {
-                TruncationPolicy::Bytes(bytes) => {
-                    TruncationPolicy::Bytes(bytes.saturating_sub(excess_bytes))
-                }
-                TruncationPolicy::Tokens(tokens) => TruncationPolicy::Tokens(
-                    tokens.saturating_sub(TruncationPolicy::Bytes(excess_bytes).token_budget()),
-                ),
-            };
-            output = self.truncated_output_with_policy(policy);
-        }
-
-        format!("{header}\n{output}")
+        format!("{}\n{}", self.response_header(), self.raw_output.text)
     }
 }
 

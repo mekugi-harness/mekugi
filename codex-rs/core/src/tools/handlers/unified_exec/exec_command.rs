@@ -26,6 +26,8 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::generate_chunk_id;
 use crate::unified_exec::output::CapturedStream;
+use crate::unified_exec::output::slice_next_page;
+use crate::unified_exec::output::unified_exec_page_byte_budget;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_otel::TOOL_CALL_UNIFIED_EXEC_METRIC;
@@ -211,6 +213,7 @@ impl ExecCommandHandler {
                 original_token_count: None,
                 hook_command: None,
                 tool_cwd: None,
+                emit_post_tool_use: false,
             }));
         }
 
@@ -252,15 +255,27 @@ impl ExecCommandHandler {
                 let output_text = output.aggregated_output.text;
                 let original_token_count =
                     original_token_count.unwrap_or_else(|| approx_token_count(&output_text));
+                let truncation_policy = step_context.settings.model_info.truncation_policy.into();
+                let page_budget =
+                    unified_exec_page_byte_budget(max_output_tokens, truncation_policy);
+                let omitted = output_omitted_bytes.map_or(0, std::num::NonZeroUsize::get);
+                let page = slice_next_page(
+                    output_text.as_bytes(),
+                    output_text.len(),
+                    omitted as u64,
+                    /*reported_discarded_bytes*/ 0,
+                    page_budget,
+                    /*stream_complete*/ true,
+                );
                 Ok(boxed_tool_output(ExecCommandToolOutput {
                     event_call_id: context.call_id.clone(),
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: CapturedStream {
-                        text: output_text,
-                        omitted_bytes: output_omitted_bytes.map_or(0, std::num::NonZeroUsize::get),
+                        text: page.text,
+                        omitted_bytes: omitted,
                     },
-                    truncation_policy: step_context.settings.model_info.truncation_policy.into(),
+                    truncation_policy,
                     max_output_tokens,
                     // Sandbox denial is terminal, so there is no live
                     // process for write_stdin to resume.
@@ -269,6 +284,7 @@ impl ExecCommandHandler {
                     original_token_count: Some(original_token_count),
                     hook_command: Some(hook_command),
                     tool_cwd,
+                    emit_post_tool_use: true,
                 }))
             }
             Err(err) => {

@@ -28,6 +28,15 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 ## Execution and model guidance
 
+- Unified exec (`exec_command` / `write_stdin`) paginates oversized output
+  head-first instead of middle-truncating, using a 16 MiB head-retained buffer
+  per command with tail-discard notices once paging reaches the cap. Empty
+  `write_stdin` polls return buffered or retained pages immediately for both
+  running and exited commands; non-empty input to an exited session is
+  rejected. Retained outputs and cursors persist per thread under
+  `<codex_home>/retained_exec/<thread_id>/` across resume, inherit read-only
+  on thread forks with independent cursors, stay isolated from child
+  subagents, and are removed on permanent thread deletion.
 - JavaScript cell output continues through stock `wait`, including after the
   script ends. The runtime retains up to 16 MiB of unread output per cell and
   reports discarded bytes at their position in the stream. At 64 MiB per

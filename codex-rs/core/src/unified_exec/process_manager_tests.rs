@@ -368,7 +368,7 @@ fn initial_exec_yield_time_has_no_platform_floor() {
 }
 
 #[tokio::test]
-async fn output_collection_stays_bounded_across_repeated_drains() {
+async fn output_collection_stays_head_bounded_across_repeated_chunks() {
     let chunks: [&[u8]; 4] = [b"01234567", b"89ABCDEF", b"ghijklmnopq", b"rs"];
     let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::<10>::default()));
     let output_notify = Arc::new(Notify::new());
@@ -397,16 +397,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
                 .await
                 .push_chunk(ExecOutputStream::Stdout, chunk);
             output_notify.notify_one();
-            tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    if output_buffer.lock().await.pending.retained_bytes() == 0 {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("collector should drain each chunk");
+            tokio::task::yield_now().await;
         }
 
         output_closed.store(true, Ordering::Release);
@@ -416,20 +407,20 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
     };
 
     let (collected, ()) = tokio::join!(collect, produce);
-    let mut expected = HeadTailBuffer::<10>::default();
+    let mut expected = crate::unified_exec::output::HeadRetainedBuffer::<10>::default();
     for chunk in chunks {
         expected.push_chunk(chunk);
     }
     assert_eq!(collected, expected);
-    assert_eq!(output_buffer.lock().await.transcript, expected);
+    assert_eq!(output_buffer.lock().await.retained, expected);
 }
 
 #[tokio::test]
-async fn output_collection_preserves_omissions_from_drained_buffer() {
+async fn output_collection_preserves_discard_count_from_head_buffer() {
     let mut buffered_output = OutputBuffers::<10>::default();
     buffered_output.push_chunk(ExecOutputStream::Stdout, &[b'a'; 10]);
     buffered_output.push_chunk(ExecOutputStream::Stdout, b"overflow");
-    let mut expected = HeadTailBuffer::<10>::default();
+    let mut expected = crate::unified_exec::output::HeadRetainedBuffer::<10>::default();
     expected.push_chunk(&[b'a'; 10]);
     expected.push_chunk(b"overflow");
     let output_buffer = Arc::new(tokio::sync::Mutex::new(buffered_output));
@@ -790,6 +781,8 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 } else {
                     now
                 },
+                persisted_bytes: 0,
+                persisted: false,
             },
         );
     }

@@ -527,3 +527,62 @@ text(block + block);
     assert!(!second_body.contains("Repeated page line 0"));
     Ok(())
 }
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_nested_exec_command_pages_exact_output_via_write_stdin() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "page oversized nested exec_command output via write_stdin",
+        r#"
+const expected =
+  Array.from({ length: 24 }, (_, i) => `line-${String(i).padStart(2, "0")}-🦀\n`).join("") +
+  "Z".repeat(400) + "\n";
+const py = `import sys; sys.stdout.write(${JSON.stringify(expected)})`;
+let res = await tools.exec_command({
+  cmd: `python3 -c ${JSON.stringify(py)}`,
+  max_output_tokens: 20,
+});
+const initialHasSession = typeof res.session_id === "number";
+const initialExitCode = res.exit_code;
+const pages = [res.output];
+while (res.session_id != null) {
+  res = await tools.write_stdin({
+    session_id: res.session_id,
+    chars: "",
+    max_output_tokens: 20,
+  });
+  pages.push(res.output);
+}
+const assembled = pages.join("");
+const hasMiddleCut = pages.some(
+  (p) => p.includes("tokens truncated") || p.includes("bytes omitted") || p.includes("Warning: truncated")
+);
+text(JSON.stringify({
+  initialHasSession,
+  initialExitCode,
+  finalExitCode: res.exit_code,
+  finalSessionId: res.session_id ?? null,
+  pageCount: pages.length,
+  exactMatch: assembled === expected,
+  hasMiddleCut,
+}));
+"#,
+    )
+    .await?;
+
+    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+    let summary: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
+    assert_eq!(summary["initialHasSession"], serde_json::json!(true));
+    assert_eq!(summary["initialExitCode"], serde_json::json!(0));
+    assert_eq!(summary["finalExitCode"], serde_json::json!(0));
+    assert_eq!(summary["finalSessionId"], serde_json::json!(null));
+    assert!(summary["pageCount"].as_u64().unwrap_or(0) > 2);
+    assert_eq!(summary["exactMatch"], serde_json::json!(true));
+    assert_eq!(summary["hasMiddleCut"], serde_json::json!(false));
+
+    Ok(())
+}
