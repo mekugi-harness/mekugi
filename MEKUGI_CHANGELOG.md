@@ -23,8 +23,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - `codex-arg0` pins the running executable image into the per-session alias
   directory (`.codex-self`, via verified hard link with a `0o500` copy
   fallback) so replacing the installed binary on disk does not affect running
-  sessions, and dispatches the native Rust `mcat`, `mfinspect`, `msymbol`, and
-  `mrun` CLIs (`codex-mekugi-tools`) through PATH symlinks.
+  sessions, pins sibling Linux `bwrap` under `codex-resources/bwrap` (and sets
+  `CODEX_BUNDLED_RESOURCE_DIR` only for executables with bundled `bwrap`) so
+  relocated `codex-linux-sandbox` helpers find their matching bundled `bwrap`
+  even under filtered environments or nested launches, and dispatches the
+  native Rust `mcat`, `mfinspect`, `msymbol`, and `mrun` CLIs
+  (`codex-mekugi-tools`) through PATH symlinks.
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
   runtime, including the exec-server fixture's Linux sandbox helper so it can

@@ -26,6 +26,10 @@ const MSYMBOL_ARG0: &str = "msymbol";
 const MRUN_ARG0: &str = "mrun";
 #[cfg(unix)]
 const PINNED_EXE_FILENAME: &str = ".codex-self";
+#[cfg(target_os = "linux")]
+const BUNDLED_RESOURCES_DIRNAME: &str = "codex-resources";
+#[cfg(target_os = "linux")]
+const BUNDLED_BWRAP_FILENAME: &str = "bwrap";
 const LOCK_FILENAME: &str = ".lock";
 /// Parent directory of the original packaged executable before arg0 pins `.codex-self`
 /// into `~/.codex/tmp/arg0-<os>/...`. Used by `codex-linux-sandbox` to discover sibling
@@ -158,9 +162,10 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     // before creating any threads/the Tokio runtime.
     load_dotenv();
 
+    #[cfg(target_os = "linux")]
     if let Some(resource_dir) = bundled_resource_dir_from_exe(
+        InstallContext::current(),
         std::env::current_exe().ok().as_deref(),
-        std::env::var_os(CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR).as_deref(),
     ) {
         // It is safe to call set_var() because our process is single-threaded at
         // this point in its execution.
@@ -191,15 +196,61 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     path_entry_guard
 }
 
-fn bundled_resource_dir_from_exe(
+#[cfg(target_os = "linux")]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(target_os = "linux")]
+fn bundled_bwrap_for_dir(dir: &Path) -> Option<PathBuf> {
+    let mut candidates = Vec::with_capacity(3);
+    candidates.push(
+        dir.join(BUNDLED_RESOURCES_DIRNAME)
+            .join(BUNDLED_BWRAP_FILENAME),
+    );
+    if let Some(parent) = dir.parent() {
+        candidates.push(
+            parent
+                .join(BUNDLED_RESOURCES_DIRNAME)
+                .join(BUNDLED_BWRAP_FILENAME),
+        );
+    }
+    candidates.push(dir.join(BUNDLED_BWRAP_FILENAME));
+    candidates
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
+}
+
+#[cfg(target_os = "linux")]
+fn bundled_bwrap_for_exe(
+    install_context: &InstallContext,
     current_exe: Option<&Path>,
-    existing_override: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
-    if existing_override.is_some_and(|value| !value.is_empty()) {
-        return None;
+    if let Some(path) = install_context
+        .bundled_resource(BUNDLED_BWRAP_FILENAME)
+        .filter(|path| is_executable_file(path))
+    {
+        return Some(path.into_path_buf());
     }
     current_exe
         .and_then(Path::parent)
+        .filter(|dir| dir.is_absolute())
+        .and_then(bundled_bwrap_for_dir)
+}
+
+#[cfg(target_os = "linux")]
+fn bundled_resource_dir_from_exe(
+    install_context: &InstallContext,
+    current_exe: Option<&Path>,
+) -> Option<PathBuf> {
+    let bwrap = bundled_bwrap_for_exe(install_context, current_exe)?;
+    bwrap
+        .parent()
         .filter(|dir| dir.is_absolute())
         .map(Path::to_path_buf)
 }
@@ -441,6 +492,14 @@ fn prepare_aliases_in_home(
     let codex_self_exe = {
         let pinned_exe = path.join(PINNED_EXE_FILENAME);
         pin_running_executable(&pinned_exe)?;
+        #[cfg(target_os = "linux")]
+        if let Some(source_bwrap) = bundled_bwrap_for_exe(
+            InstallContext::current(),
+            std::env::current_exe().ok().as_deref(),
+        ) && let Err(err) = pin_bundled_bwrap(&source_bwrap, path)
+        {
+            eprintln!("WARNING: failed to pin bundled bwrap: {err}");
+        }
         for filename in &[
             APPLY_PATCH_ARG0,
             MISSPELLED_APPLY_PATCH_ARG0,
@@ -517,6 +576,15 @@ fn open_running_executable() -> std::io::Result<(File, Option<PathBuf>)> {
 fn pin_running_executable(target: &Path) -> std::io::Result<()> {
     let (mut source, source_path) = open_running_executable()?;
     pin_executable_from_source(&mut source, source_path.as_deref(), target)
+}
+
+#[cfg(target_os = "linux")]
+fn pin_bundled_bwrap(source_bwrap: &Path, alias_dir: &Path) -> std::io::Result<()> {
+    let mut source = File::open(source_bwrap)?;
+    let resources_dir = alias_dir.join(BUNDLED_RESOURCES_DIRNAME);
+    std::fs::create_dir_all(&resources_dir)?;
+    let target = resources_dir.join(BUNDLED_BWRAP_FILENAME);
+    pin_executable_from_source(&mut source, Some(source_bwrap), &target)
 }
 
 #[cfg(unix)]
@@ -1040,6 +1108,56 @@ mod tests {
         let out_copy = std::process::Command::new(&pinned_copy).output()?;
         assert!(out_copy.status.success());
         assert_eq!(String::from_utf8_lossy(&out_copy.stdout), "version-one\n");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_resource_dir_requires_bundled_bwrap_and_pins_under_codex_resources()
+    -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir()?;
+        let empty_context = InstallContext {
+            method: InstallMethod::Other,
+            package_layout: None,
+        };
+
+        let harness_dir = dir.path().join("deps");
+        fs::create_dir(&harness_dir)?;
+        let harness_exe = harness_dir.join("subprocess-test");
+        fs::write(&harness_exe, "#!/bin/sh\n")?;
+        assert_eq!(
+            super::bundled_resource_dir_from_exe(&empty_context, Some(&harness_exe)),
+            None
+        );
+
+        let staged_dir = dir.path().join("native");
+        fs::create_dir(&staged_dir)?;
+        let staged_exe = staged_dir.join("mekugi-app-server");
+        let staged_bwrap = staged_dir.join("bwrap");
+        fs::write(&staged_exe, "#!/bin/sh\n")?;
+        fs::write(&staged_bwrap, "#!/bin/sh\necho bwrap-v1\n")?;
+        fs::set_permissions(&staged_bwrap, fs::Permissions::from_mode(0o755))?;
+        assert_eq!(
+            super::bundled_resource_dir_from_exe(&empty_context, Some(&staged_exe)),
+            Some(staged_dir.clone())
+        );
+
+        let alias_dir = dir.path().join("aliases");
+        fs::create_dir(&alias_dir)?;
+        super::pin_bundled_bwrap(&staged_bwrap, &alias_dir)?;
+        let pinned_bwrap = alias_dir.join("codex-resources").join("bwrap");
+        assert!(super::is_executable_file(&pinned_bwrap));
+
+        let replacement = staged_dir.join("bwrap.new");
+        fs::write(&replacement, "#!/bin/sh\necho bwrap-v2\n")?;
+        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755))?;
+        fs::rename(&replacement, &staged_bwrap)?;
+
+        let out = std::process::Command::new(&pinned_bwrap).output()?;
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "bwrap-v1\n");
         Ok(())
     }
 }
