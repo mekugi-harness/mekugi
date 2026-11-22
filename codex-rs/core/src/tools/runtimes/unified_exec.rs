@@ -433,12 +433,26 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             sidecar.install_output_env(&mut env);
         }
         #[cfg(unix)]
+        let arg0_path_dir = (!environment_is_remote)
+            .then(crate::tools::runtimes::arg0_path_dir_from_env)
+            .flatten();
+        #[cfg(unix)]
+        let bundled_resource_dir = (!environment_is_remote)
+            .then(|| {
+                std::env::var_os(crate::tools::runtimes::CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR)
+                    .filter(|value| !value.is_empty())
+                    .map(std::path::PathBuf::from)
+            })
+            .flatten();
+        #[cfg(unix)]
         let runtime_path_prepends = {
             let mut runtime_path_prepends = RuntimePathPrepends::default();
             if !environment_is_remote {
-                crate::tools::runtimes::apply_package_path_prepend(
+                crate::tools::runtimes::apply_runtime_path_prepends(
                     &mut env,
                     &mut runtime_path_prepends,
+                    arg0_path_dir.as_deref(),
+                    bundled_resource_dir.as_deref(),
                 );
                 runtime_path_prepends.append(
                     &mut env,
@@ -454,17 +468,36 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
         // `base_command` already carries the requested login mode; keep it if setup is unavailable.
         // `hook_command` is the raw script the helper needs to prepend setup inside that same shell.
         let mut command = base_command.to_vec();
-        if ctx.session.enabled(Feature::LoginShellPackagePath)
-            && prepared.resolved.shell.is_posix_login()
-            && !explicit_env_overrides.contains_key("PATH")
-            && let Ok(info) = prepared.turn_environment.environment().info().await
-            && let Some(command_with_path_prepends) =
-                prepared.resolved.shell.derive_exec_args_with_path_prepends(
-                    &prepared.hook_command,
-                    &info.prepend_path_dirs,
-                )
+        if prepared.resolved.shell.is_posix_login() && !explicit_env_overrides.contains_key("PATH")
         {
-            command = command_with_path_prepends;
+            let package_path_enabled = ctx.session.enabled(Feature::LoginShellPackagePath);
+            let package_dirs = if package_path_enabled {
+                prepared
+                    .turn_environment
+                    .environment()
+                    .info()
+                    .await
+                    .map(|info| info.prepend_path_dirs)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            #[cfg(unix)]
+            let prepend_dirs = crate::tools::runtimes::login_shell_prepend_path_dirs(
+                package_path_enabled,
+                &package_dirs,
+                arg0_path_dir.as_deref(),
+            );
+            #[cfg(not(unix))]
+            let prepend_dirs = package_dirs;
+            if !prepend_dirs.is_empty()
+                && let Some(command_with_path_prepends) = prepared
+                    .resolved
+                    .shell
+                    .derive_exec_args_with_path_prepends(&prepared.hook_command, &prepend_dirs)
+            {
+                command = command_with_path_prepends;
+            }
         }
         let mut snapshot_used = false;
         if !environment_is_remote {

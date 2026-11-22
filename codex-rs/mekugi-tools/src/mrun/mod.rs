@@ -458,13 +458,13 @@ pub fn execute(args: &[String]) -> ToolOutput {
         }
     };
 
-    let mut child = match Command::new(&resolved)
-        .args(&argv[1..])
+    let mut cmd = Command::new(&resolved);
+    cmd.args(&argv[1..])
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    crate::common::configure_new_process_group(&mut cmd);
+    let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {
             let code = if err.kind() == std::io::ErrorKind::NotFound {
@@ -486,11 +486,11 @@ pub fn execute(args: &[String]) -> ToolOutput {
     let out_cap = StreamCapture::new(&options);
     let err_cap = StreamCapture::new(&options);
 
-    let out_handle = std::thread::spawn(move || match stdout_pipe {
+    let (out_rx, out_handle) = crate::common::spawn_bounded_reader(move || match stdout_pipe {
         Some(pipe) => out_cap.drain_from(pipe),
         None => (String::new(), false),
     });
-    let err_handle = std::thread::spawn(move || match stderr_pipe {
+    let (err_rx, err_handle) = crate::common::spawn_bounded_reader(move || match stderr_pipe {
         Some(pipe) => err_cap.drain_from(pipe),
         None => (String::new(), false),
     });
@@ -498,6 +498,7 @@ pub fn execute(args: &[String]) -> ToolOutput {
     let status = match child.wait() {
         Ok(status) => status,
         Err(err) => {
+            crate::common::retire_child_process_group(&mut child);
             return ToolOutput {
                 stdout: String::new(),
                 stderr: format!("mrun: wait child: {err}\n"),
@@ -506,8 +507,16 @@ pub fn execute(args: &[String]) -> ToolOutput {
         }
     };
 
-    let (out_text, out_omitted) = out_handle.join().unwrap_or_default();
-    let (err_text, err_omitted) = err_handle.join().unwrap_or_default();
+    // Terminate any descendants still holding inherited stdout/stderr pipes so draining cannot hang.
+    crate::common::kill_process_group(child.id() as i32);
+
+    let drain_timeout = std::time::Duration::from_secs(2);
+    let (out_text, out_omitted) =
+        crate::common::recv_reader_with_timeout(out_rx, out_handle, drain_timeout)
+            .unwrap_or_default();
+    let (err_text, err_omitted) =
+        crate::common::recv_reader_with_timeout(err_rx, err_handle, drain_timeout)
+            .unwrap_or_default();
 
     let (selected_out, selected_err) = if let Some(budget) = options.tokens {
         // Reserve at most half the token budget for stderr when stdout is non-empty.

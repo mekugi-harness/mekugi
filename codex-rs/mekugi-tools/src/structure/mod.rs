@@ -115,8 +115,10 @@ impl Lines {
 pub struct Entry {
     pub kind: String,
     pub name: String,
+    pub name_raw_json: Option<String>,
     pub receiver: String,
     pub pointer: String,
+    pub pointer_raw_json: Option<String>,
     pub value_type: String,
     pub line: usize,
     pub end_line: usize,
@@ -212,8 +214,10 @@ impl Source {
         self.entries.push(Entry {
             kind: kind.to_string(),
             name,
+            name_raw_json: None,
             receiver: String::new(),
             pointer: String::new(),
+            pointer_raw_json: None,
             value_type: String::new(),
             line,
             end_line,
@@ -605,17 +609,20 @@ impl Source {
                     }
                     if names.is_empty()
                         && let Some(src) = node.child_by_field_name("source")
-                        && let Some(decoded) = document::decode_js_string(self.text(src))
+                        && let Some(decoded) = document::decode_js_string_parts(self.text(src))
                     {
                         self.add(
                             "import",
-                            decoded,
+                            decoded.display,
                             span.start_byte(),
                             span.end_byte(),
                             None,
                             None,
                             !node.has_error(),
                         );
+                        if let Some(last) = self.entries.last_mut() {
+                            last.name_raw_json = decoded.raw_json;
+                        }
                     }
                 }
             }

@@ -27,6 +27,13 @@ const MRUN_ARG0: &str = "mrun";
 #[cfg(unix)]
 const PINNED_EXE_FILENAME: &str = ".codex-self";
 const LOCK_FILENAME: &str = ".lock";
+/// Parent directory of the original packaged executable before arg0 pins `.codex-self`
+/// into `~/.codex/tmp/arg0-<os>/...`. Used by `codex-linux-sandbox` to discover sibling
+/// bundled resources such as `bwrap`.
+pub const CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR: &str = "CODEX_BUNDLED_RESOURCE_DIR";
+/// Active per-session arg0 alias directory prepended onto `PATH` so login shells can
+/// restore `mcat`, `mfinspect`, `msymbol`, `mrun`, and `apply_patch` if startup resets `PATH`.
+pub const CODEX_ARG0_PATH_DIR_ENV_VAR: &str = "CODEX_ARG0_PATH_DIR";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Arg0DispatchPaths {
@@ -61,6 +68,10 @@ impl Arg0PathEntryGuard {
 
     pub fn paths(&self) -> &Arg0DispatchPaths {
         &self.paths
+    }
+
+    pub fn path_dir(&self) -> &Path {
+        self._temp_dir.path()
     }
 }
 
@@ -147,6 +158,17 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     // before creating any threads/the Tokio runtime.
     load_dotenv();
 
+    if let Some(resource_dir) = bundled_resource_dir_from_exe(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var_os(CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR).as_deref(),
+    ) {
+        // It is safe to call set_var() because our process is single-threaded at
+        // this point in its execution.
+        unsafe {
+            std::env::set_var(CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR, resource_dir);
+        }
+    }
+
     let (path_entry_guard, updated_path_env_var) = prepare_path_env_var_with_aliases(
         InstallContext::current(),
         std::env::var_os("PATH"),
@@ -159,7 +181,27 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
             std::env::set_var("PATH", updated_path_env_var);
         }
     }
+    if let Some(ref guard) = path_entry_guard {
+        // Record the active arg0 alias directory so login shells spawned later can
+        // re-prepend it if profile scripts reset PATH.
+        unsafe {
+            std::env::set_var(CODEX_ARG0_PATH_DIR_ENV_VAR, guard.path_dir());
+        }
+    }
     path_entry_guard
+}
+
+fn bundled_resource_dir_from_exe(
+    current_exe: Option<&Path>,
+    existing_override: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if existing_override.is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
+    current_exe
+        .and_then(Path::parent)
+        .filter(|dir| dir.is_absolute())
+        .map(Path::to_path_buf)
 }
 
 fn prepare_path_env_var_with_aliases(

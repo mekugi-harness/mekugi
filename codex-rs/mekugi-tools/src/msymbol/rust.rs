@@ -126,8 +126,10 @@ fn run_prereq(
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    let out_handle = std::thread::spawn(move || read_bounded(stdout_pipe, RETAINED_BYTES + 1));
-    let err_handle = std::thread::spawn(move || read_bounded(stderr_pipe, 8192));
+    let (out_rx, out_handle) =
+        crate::common::spawn_bounded_reader(move || read_bounded(stdout_pipe, RETAINED_BYTES + 1));
+    let (err_rx, err_handle) =
+        crate::common::spawn_bounded_reader(move || read_bounded(stderr_pipe, 8192));
 
     let status = loop {
         match child.try_wait() {
@@ -143,8 +145,11 @@ fn run_prereq(
     };
     retire_child(&mut child, dedicated_process);
 
-    let out_bytes = out_handle.join().unwrap_or_default();
-    let err_bytes = err_handle.join().unwrap_or_default();
+    let drain_timeout = Duration::from_secs(2);
+    let out_bytes = crate::common::recv_reader_with_timeout(out_rx, out_handle, drain_timeout)
+        .unwrap_or_default();
+    let err_bytes = crate::common::recv_reader_with_timeout(err_rx, err_handle, drain_timeout)
+        .unwrap_or_default();
 
     let Some(status) = status else {
         return Err("deadline_exceeded".to_string());

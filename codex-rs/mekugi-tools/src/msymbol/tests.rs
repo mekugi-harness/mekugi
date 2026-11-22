@@ -599,3 +599,78 @@ while True:
     assert!(log.contains("offline=true"));
     assert!(log.contains("auto=0"));
 }
+
+#[cfg(unix)]
+#[test]
+fn dedicated_resolver_retires_descendants_holding_inherited_stderr() {
+    let ws = TempDir::new().unwrap();
+    let bin = TempDir::new().unwrap();
+    let canonical_ws = fs::canonicalize(ws.path()).unwrap();
+    let sample = canonical_ws.join("sample.go");
+    fs::write(&sample, "package sample\n\nfunc Hello() {}\n").unwrap();
+    let sample_uri = format!("file://{}", sample.to_string_lossy());
+
+    let fake_gopls = format!(
+        r#"#!/usr/bin/env python3
+import json, subprocess, sys
+
+# Spawn a long-lived grandchild inheriting stderr to simulate a leaked helper process.
+subprocess.Popen(["sleep", "60"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+
+def read_msg():
+    cl = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line in (b"\r\n", b"\n"):
+            break
+        if line.lower().startswith(b"content-length:"):
+            cl = int(line.split(b":", 1)[1].strip())
+    return json.loads(sys.stdin.buffer.read(cl).decode("utf-8"))
+
+def send_msg(obj):
+    data = json.dumps(obj).encode("utf-8")
+    sys.stdout.buffer.write(f"Content-Length: {{len(data)}}\r\n\r\n".encode("ascii") + data)
+    sys.stdout.buffer.flush()
+
+while True:
+    msg = read_msg()
+    if msg is None:
+        break
+    m = msg.get("method")
+    if m == "initialize":
+        send_msg({{"jsonrpc": "2.0", "id": msg["id"], "result": {{"capabilities": {{"positionEncoding": "utf-16"}}}}}})
+    elif m == "textDocument/definition":
+        send_msg({{"jsonrpc": "2.0", "id": msg["id"], "result": [{{"uri": "{sample_uri}", "range": {{"start": {{"line": 2, "character": 5}}, "end": {{"line": 2, "character": 10}}}}}}]}})
+    elif m == "textDocument/hover":
+        send_msg({{"jsonrpc": "2.0", "id": msg["id"], "result": {{"contents": "func Hello()"}}}})
+    elif m == "shutdown":
+        send_msg({{"jsonrpc": "2.0", "id": msg["id"], "result": None}})
+    elif m == "exit":
+        break
+"#
+    );
+    write_executable(&bin.path().join("gopls"), &fake_gopls);
+    let path_env = test_path_with(bin.path());
+
+    let start = std::time::Instant::now();
+    let out = execute_with_path(
+        &s(&[
+            "--workspace",
+            &canonical_ws.to_string_lossy(),
+            "def",
+            "sample.go",
+            "Hello",
+        ]),
+        false,
+        Some(&path_env),
+    );
+    assert_eq!(out.exit_code, 0, "stderr={}", out.stderr);
+    assert!(out.stdout.contains("func Hello()"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "msymbol hung on inherited stderr grandchild: {:?}",
+        start.elapsed()
+    );
+}

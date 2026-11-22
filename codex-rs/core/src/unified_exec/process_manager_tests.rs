@@ -47,9 +47,9 @@ fn unified_exec_env_overrides_existing_values() {
 #[tokio::test]
 async fn deterministic_process_ids_are_not_reused_after_release() {
     let manager = UnifiedExecProcessManager::default();
-    let first = manager.allocate_process_id().await;
+    let first = manager.allocate_process_id().await.expect("allocate");
     manager.release_process_id(first).await;
-    let second = manager.allocate_process_id().await;
+    let second = manager.allocate_process_id().await.expect("allocate");
 
     assert_eq!((first, second), (1000, 1001));
 }
@@ -57,9 +57,9 @@ async fn deterministic_process_ids_are_not_reused_after_release() {
 #[tokio::test]
 async fn deterministic_process_ids_are_not_reused_after_removal() {
     let manager = UnifiedExecProcessManager::default();
-    let first = manager.allocate_process_id().await;
+    let first = manager.allocate_process_id().await.expect("allocate");
     let _removed = manager.process_store.lock().await.remove(first);
-    let second = manager.allocate_process_id().await;
+    let second = manager.allocate_process_id().await.expect("allocate");
 
     assert_eq!((first, second), (1000, 1001));
 }

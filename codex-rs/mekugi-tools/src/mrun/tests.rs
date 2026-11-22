@@ -137,3 +137,17 @@ fn preserves_nonzero_exit_and_unix_signal() {
         assert_eq!(out.exit_code, 128 + 9);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn retires_descendants_holding_inherited_pipes() {
+    let start = std::time::Instant::now();
+    let out = execute(&s(&["-n", "2", "sh", "-c", "sleep 60 & echo ready"]));
+    assert_eq!(out.exit_code, 0);
+    assert_eq!(out.stdout, "ready\n");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "mrun hung waiting for grandchild pipe: {:?}",
+        start.elapsed()
+    );
+}

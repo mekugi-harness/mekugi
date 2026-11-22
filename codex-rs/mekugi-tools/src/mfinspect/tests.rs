@@ -208,3 +208,69 @@ fn unsupported_multipath_partial_failure_and_rejected_flags() {
     assert_eq!(out.exit_code, 1);
     assert!(out.stderr.contains("path does not exist"));
 }
+
+#[test]
+fn preserves_lone_surrogates_flow_yaml_and_go_string_escapes() {
+    let dir = TempDir::new().unwrap();
+
+    // Lone surrogates in TS imports
+    for source in [r#"import "\uD800";"#, r#"import '\u{D800}';"#] {
+        let ts_file = dir.path().join("module.ts");
+        fs::write(&ts_file, source).unwrap();
+        let out = execute(&s(&["--json", &ts_file.to_string_lossy()]));
+        assert_eq!(out.exit_code, 0, "stderr={}", out.stderr);
+        assert!(
+            out.stdout.contains(r#""name":"\ud800""#),
+            "stdout={}",
+            out.stdout
+        );
+        assert!(!out.stdout.contains('\u{fffd}'));
+    }
+
+    // Lone surrogates in JSON keys
+    let json_file = dir.path().join("keys.json");
+    fs::write(&json_file, r#"{"\uD800":1,"a\uDFFF":2}"#).unwrap();
+    let out = execute(&s(&["--json", &json_file.to_string_lossy()]));
+    assert_eq!(out.exit_code, 0);
+    assert!(
+        out.stdout.contains(r#""pointer":"/\ud800""#),
+        "stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(r#""pointer":"/a\udfff""#),
+        "stdout={}",
+        out.stdout
+    );
+    let compact = execute(&s(&[&json_file.to_string_lossy()]));
+    assert_eq!(compact.exit_code, 0);
+    assert!(compact.stdout.contains(r"\ud800"));
+
+    // Flow-style YAML frontmatter with multibyte Unicode keys
+    for fields in [r#"{"é": a,"next": b}"#, r#"{'🧪': a,'next': b}"#] {
+        let md_file = dir.path().join("unicode.md");
+        fs::write(&md_file, format!("---\n{fields}\n---\n# After\n")).unwrap();
+        let out = execute(&s(&[&md_file.to_string_lossy()]));
+        assert_eq!(out.exit_code, 0);
+        assert!(
+            out.stdout.contains("2-2 frontmatter next\n"),
+            "fields={fields} stdout={}",
+            out.stdout
+        );
+        let json_out = execute(&s(&["--json", &md_file.to_string_lossy()]));
+        assert_eq!(json_out.exit_code, 0);
+        let parsed: Value = serde_json::from_str(&json_out.stdout).unwrap();
+        assert_eq!(parsed["data"]["parse_complete"], true);
+        assert_eq!(parsed["data"]["outline"].as_array().unwrap().len(), 3);
+    }
+
+    // Go string escapes in imports (\x66 -> 'f', raw backtick string)
+    let go_file = dir.path().join("escapes.go");
+    fs::write(&go_file, "package p\nimport (\n\t\"\\x66mt\"\n\t`os`\n)\n").unwrap();
+    let json_out = execute(&s(&["--json", &go_file.to_string_lossy()]));
+    assert_eq!(json_out.exit_code, 0);
+    let parsed: Value = serde_json::from_str(&json_out.stdout).unwrap();
+    let outline = parsed["data"]["outline"].as_array().unwrap();
+    assert_eq!(outline[0]["name"], "fmt");
+    assert_eq!(outline[1]["name"], "os");
+}

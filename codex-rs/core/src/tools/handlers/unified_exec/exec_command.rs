@@ -36,7 +36,6 @@ use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_path_uri::PathUri;
-use codex_utils_string::truncate_middle_chars;
 
 use super::super::shell_spec::create_exec_command_tool;
 use super::ExecCommandArgs;
@@ -228,7 +227,9 @@ impl ExecCommandHandler {
         )
         .await;
         // Preparation can be cancelled. Reserve a process only once it is done.
-        let process_id = manager.allocate_process_id().await;
+        let process_id = manager.allocate_process_id().await.map_err(|err| {
+            FunctionCallError::RespondToModel(format!("exec_command failed: {err}"))
+        })?;
         let hook_command = prepared.hook_command.clone();
         let tool_cwd =
             (!prepared.turn_environment.environment().is_remote()).then(|| prepared.cwd.clone());
@@ -267,12 +268,27 @@ impl ExecCommandHandler {
                     page_budget,
                     /*stream_complete*/ true,
                 );
+                let mut text = page.text;
+                let unreturned_bytes = output_text
+                    .len()
+                    .saturating_sub(page.consumed_bytes)
+                    .saturating_add(
+                        (omitted as u64).saturating_sub(page.reported_discarded_bytes) as usize,
+                    );
+                if unreturned_bytes > 0 {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!(
+                        "[output truncated: {unreturned_bytes} bytes omitted]"
+                    ));
+                }
                 Ok(boxed_tool_output(ExecCommandToolOutput {
                     event_call_id: context.call_id.clone(),
                     chunk_id: generate_chunk_id(),
                     wall_time: output.duration,
                     raw_output: CapturedStream {
-                        text: page.text,
+                        text,
                         omitted_bytes: omitted,
                     },
                     truncation_policy,
@@ -289,12 +305,31 @@ impl ExecCommandHandler {
             }
             Err(err) => {
                 let message = format!("exec_command failed: {err:?}");
-                Err(FunctionCallError::RespondToModel(truncate_middle_chars(
-                    &message,
-                    EXEC_COMMAND_REJECTION_MAX_BYTES,
-                )))
+                Err(FunctionCallError::RespondToModel(
+                    truncate_head_bytes_for_rejection(&message, EXEC_COMMAND_REJECTION_MAX_BYTES),
+                ))
             }
         }
+    }
+}
+
+fn truncate_head_bytes_for_rejection(message: &str, max_bytes: usize) -> String {
+    if message.len() <= max_bytes {
+        return message.to_string();
+    }
+    let initial_prefix_len = message.floor_char_boundary(max_bytes);
+    let initial_omitted = message.len() - initial_prefix_len;
+    let notice_probe = format!("\n[output truncated: {initial_omitted} bytes omitted]");
+    let head_budget = max_bytes.saturating_sub(notice_probe.len());
+    let head_len = message.floor_char_boundary(head_budget);
+    let omitted = message.len() - head_len;
+    if head_len == 0 {
+        format!("[output truncated: {omitted} bytes omitted]")
+    } else {
+        format!(
+            "{}\n[output truncated: {omitted} bytes omitted]",
+            &message[..head_len]
+        )
     }
 }
 

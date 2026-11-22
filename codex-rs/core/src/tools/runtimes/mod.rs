@@ -33,8 +33,12 @@ use codex_shell_command::shell_snapshot::SNAPSHOT_BROKERED_VALUE_ENV_PREFIX;
 use codex_shell_command::shell_snapshot::build_brokered_credential_exports;
 use codex_shell_command::shell_snapshot::posix_env_path_expansion_function;
 use codex_utils_absolute_path::AbsolutePathBuf;
+#[cfg(unix)]
+use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 pub(crate) mod apply_patch;
 pub(crate) mod unified_exec;
@@ -172,6 +176,21 @@ impl RuntimePathPrepends {
 }
 
 #[cfg(unix)]
+pub(crate) const CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR: &str = "CODEX_BUNDLED_RESOURCE_DIR";
+#[cfg(unix)]
+pub(crate) const CODEX_ARG0_PATH_DIR_ENV_VAR: &str = "CODEX_ARG0_PATH_DIR";
+
+#[cfg(unix)]
+pub(crate) fn arg0_path_dir_from_env() -> Option<PathBuf> {
+    let raw = std::env::var_os(CODEX_ARG0_PATH_DIR_ENV_VAR)?;
+    if raw.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw);
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(unix)]
 pub(crate) fn apply_package_path_prepend(
     env: &mut HashMap<String, String>,
     runtime_path_prepends: &mut RuntimePathPrepends,
@@ -185,6 +204,51 @@ pub(crate) fn apply_package_path_prepend(
     };
 
     runtime_path_prepends.prepend(env, path_dir.as_path());
+}
+
+#[cfg(unix)]
+pub(crate) fn apply_runtime_path_prepends(
+    env: &mut HashMap<String, String>,
+    runtime_path_prepends: &mut RuntimePathPrepends,
+    arg0_path_dir: Option<&Path>,
+    bundled_resource_dir: Option<&Path>,
+) {
+    apply_package_path_prepend(env, runtime_path_prepends);
+    if let Some(resource_dir) = bundled_resource_dir
+        && resource_dir.is_absolute()
+    {
+        env.entry(CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR.to_string())
+            .or_insert_with(|| resource_dir.to_string_lossy().into_owned());
+    }
+    if let Some(arg0_dir) = arg0_path_dir
+        && arg0_dir.is_absolute()
+    {
+        env.insert(
+            CODEX_ARG0_PATH_DIR_ENV_VAR.to_string(),
+            arg0_dir.to_string_lossy().into_owned(),
+        );
+        runtime_path_prepends.prepend(env, arg0_dir);
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn login_shell_prepend_path_dirs(
+    include_package_path: bool,
+    package_dirs: &[PathUri],
+    arg0_path_dir: Option<&Path>,
+) -> Vec<PathUri> {
+    let mut dirs = Vec::new();
+    if include_package_path {
+        dirs.extend(package_dirs.iter().cloned());
+    }
+    if let Some(arg0_dir) = arg0_path_dir
+        && arg0_dir.is_absolute()
+        && let Ok(arg0_uri) = PathUri::from_host_native_path(arg0_dir)
+    {
+        dirs.retain(|existing| existing != &arg0_uri);
+        dirs.insert(0, arg0_uri);
+    }
+    dirs
 }
 
 pub(crate) fn prepare_powershell_command_for_windows_sandbox(

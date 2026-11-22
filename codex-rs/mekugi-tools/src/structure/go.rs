@@ -148,16 +148,94 @@ fn collect_go_imports(doc: &mut Source, node: Node<'_>) {
     }
 }
 
+/// Decode a Go raw or interpreted string literal matching `strconv.Unquote`.
 fn unquote_go_string(raw: &str) -> Option<String> {
-    if raw.len() >= 2 && raw.starts_with('`') && raw.ends_with('`') {
-        return Some(raw[1..raw.len() - 1].to_string());
+    if raw.len() < 2 {
+        return None;
     }
-    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
-        return serde_json::from_str::<String>(raw)
-            .ok()
-            .or_else(|| Some(raw[1..raw.len() - 1].to_string()));
+    if raw.starts_with('`') && raw.ends_with('`') {
+        let inner = &raw[1..raw.len() - 1];
+        if inner.contains('`') {
+            return None;
+        }
+        return Some(inner.replace('\r', ""));
     }
-    None
+    if !(raw.starts_with('"') && raw.ends_with('"')) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(raw.len() - 2);
+    let mut body = &raw[1..raw.len() - 1];
+    while let Some(ch) = body.chars().next() {
+        body = &body[ch.len_utf8()..];
+        if ch == '"' || ch == '\n' {
+            return None;
+        }
+        if ch != '\\' {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        let esc = body.chars().next()?;
+        body = &body[esc.len_utf8()..];
+        match esc {
+            'a' => bytes.push(0x07),
+            'b' => bytes.push(0x08),
+            'f' => bytes.push(0x0c),
+            'n' => bytes.push(b'\n'),
+            'r' => bytes.push(b'\r'),
+            't' => bytes.push(b'\t'),
+            'v' => bytes.push(0x0b),
+            '\\' => bytes.push(b'\\'),
+            '"' => bytes.push(b'"'),
+            '0'..='7' => {
+                if body.len() < 2 {
+                    return None;
+                }
+                let d1 = body.as_bytes()[0];
+                let d2 = body.as_bytes()[1];
+                if !(b'0'..=b'7').contains(&d1) || !(b'0'..=b'7').contains(&d2) {
+                    return None;
+                }
+                let val = u32::from(esc as u8 - b'0') * 64
+                    + u32::from(d1 - b'0') * 8
+                    + u32::from(d2 - b'0');
+                if val > 0xff {
+                    return None;
+                }
+                bytes.push(val as u8);
+                body = &body[2..];
+            }
+            'x' => {
+                if body.len() < 2 {
+                    return None;
+                }
+                let hex = &body[..2];
+                if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return None;
+                }
+                let val = u8::from_str_radix(hex, 16).ok()?;
+                bytes.push(val);
+                body = &body[2..];
+            }
+            'u' | 'U' => {
+                let width = if esc == 'u' { 4 } else { 8 };
+                if body.len() < width {
+                    return None;
+                }
+                let hex = &body[..width];
+                if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return None;
+                }
+                let val = u32::from_str_radix(hex, 16).ok()?;
+                let decoded = char::from_u32(val)?;
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(decoded.encode_utf8(&mut buf).as_bytes());
+                body = &body[width..];
+            }
+            _ => return None,
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn extract_go_receiver_type(doc: &Source, param_list: Node<'_>) -> Option<String> {

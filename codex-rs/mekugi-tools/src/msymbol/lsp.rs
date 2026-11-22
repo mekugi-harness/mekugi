@@ -244,23 +244,44 @@ impl<W: Write> LspClient<W> {
     }
 }
 
-fn read_rpc_loop<R: Read>(reader: R, tx: &mpsc::Sender<RpcEvent>) {
+const MAX_LSP_HEADER_LINE_BYTES: usize = 8192;
+const RPC_EVENT_CHANNEL_CAPACITY: usize = 256;
+
+fn read_bounded_header_line<R: BufRead>(
+    reader: &mut R,
+    limit: usize,
+) -> std::io::Result<Option<String>> {
+    let mut buf = Vec::new();
+    let mut limited = reader.take((limit + 1) as u64);
+    let read = limited.read_until(b'\n', &mut buf)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if buf.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "oversized LSP header",
+        ));
+    }
+    String::from_utf8(buf).map(Some).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid UTF-8 in LSP header",
+        )
+    })
+}
+
+fn read_rpc_loop<R: Read>(reader: R, tx: &mpsc::SyncSender<RpcEvent>) {
     let mut br = BufReader::with_capacity(8192, reader);
     loop {
         let mut content_length: Option<usize> = None;
-        let mut line = String::new();
         loop {
-            line.clear();
-            match br.read_line(&mut line) {
-                Ok(0) => {
+            match read_bounded_header_line(&mut br, MAX_LSP_HEADER_LINE_BYTES) {
+                Ok(None) => {
                     let _ = tx.send(RpcEvent::Eof);
                     return;
                 }
-                Ok(_) => {
-                    if line.len() > 8192 {
-                        let _ = tx.send(RpcEvent::Error("oversized LSP header".to_string()));
-                        return;
-                    }
+                Ok(Some(line)) => {
                     let trimmed = line.trim_end_matches(['\r', '\n']);
                     if trimmed.is_empty() {
                         break;
@@ -302,40 +323,12 @@ fn read_rpc_loop<R: Read>(reader: R, tx: &mpsc::Sender<RpcEvent>) {
     }
 }
 
-pub(crate) fn configure_process_group(cmd: &mut Command, dedicated_process: bool) {
-    #[cfg(unix)]
-    if !dedicated_process {
-        use std::os::unix::process::CommandExt;
-        // Isolate the child in its own process group so teardown kills descendants cleanly.
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setpgid(0, 0);
-                Ok(())
-            });
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = (cmd, dedicated_process);
+pub(crate) fn configure_process_group(cmd: &mut Command, _dedicated_process: bool) {
+    crate::common::configure_new_process_group(cmd);
 }
 
-pub(crate) fn retire_child(child: &mut Child, dedicated_process: bool) {
-    #[cfg(unix)]
-    {
-        let pid = child.id() as i32;
-        if !dedicated_process && pid > 0 {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        } else {
-            let _ = child.kill();
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = dedicated_process;
-        let _ = child.kill();
-    }
-    let _ = child.wait();
+pub(crate) fn retire_child(child: &mut Child, _dedicated_process: bool) {
+    crate::common::retire_child_process_group(child);
 }
 
 pub(crate) fn prepare_frontend_cleanup() -> Result<(), String> {
@@ -564,12 +557,24 @@ pub(crate) fn run_lsp(
     };
     let stderr_pipe = child.stderr.take();
 
-    let (tx, rx) = mpsc::channel::<RpcEvent>();
+    let child_pid = child.id() as i32;
+    let (watchdog_tx, watchdog_rx) = mpsc::sync_channel::<()>(1);
+    let watchdog_handle = std::thread::spawn(move || {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if matches!(
+            watchdog_rx.recv_timeout(remaining),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ) {
+            crate::common::kill_process_group(child_pid);
+        }
+    });
+
+    let (tx, rx) = mpsc::sync_channel::<RpcEvent>(RPC_EVENT_CHANNEL_CAPACITY);
     let _reader_thread = std::thread::spawn(move || {
         read_rpc_loop(stdout, &tx);
     });
 
-    let stderr_thread = std::thread::spawn(move || {
+    let (stderr_rx, stderr_thread) = crate::common::spawn_bounded_reader(move || {
         let mut buf = Vec::new();
         if let Some(mut pipe) = stderr_pipe {
             let mut chunk = [0u8; 8192];
@@ -705,8 +710,12 @@ pub(crate) fn run_lsp(
         }
     }
     retire_child(&mut child, dedicated_process);
+    let _ = watchdog_tx.send(());
+    let _ = watchdog_handle.join();
 
-    if let Ok(stderr_bytes) = stderr_thread.join() {
+    if let Some(stderr_bytes) =
+        crate::common::recv_reader_with_timeout(stderr_rx, stderr_thread, Duration::from_secs(2))
+    {
         if stderr_bytes.len() > RETAINED_BYTES {
             for q in queries.iter_mut() {
                 if q.err.is_none() {

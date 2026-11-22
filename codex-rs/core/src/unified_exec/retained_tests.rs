@@ -112,7 +112,7 @@ async fn run_exec(
     yield_time_ms: u64,
     max_output_tokens: Option<usize>,
 ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-    let process_id = manager.allocate_process_id().await;
+    let process_id = manager.allocate_process_id().await?;
     let prepared = prepared_bash_command(turn, cmd, yield_time_ms, max_output_tokens, None);
     let context = make_context(session, turn, call_id);
     manager
@@ -504,7 +504,7 @@ async fn resume_thread_scope_and_fork_read_only_isolation() -> anyhow::Result<()
 
     // Resumed manager must not reallocate retained session_id.
     for _ in 0..32 {
-        let allocated = resumed_parent.allocate_process_id().await;
+        let allocated = resumed_parent.allocate_process_id().await?;
         assert_ne!(allocated, session_id);
         resumed_parent.release_process_id(allocated).await;
     }
@@ -556,7 +556,7 @@ async fn oneshot_exec_command_to_completion_retains_and_pages_oversized_output()
 
     let (session, turn) = test_session_and_turn().await;
     let manager = &session.services.unified_exec_manager;
-    let process_id = manager.allocate_process_id().await;
+    let process_id = manager.allocate_process_id().await?;
 
     let expected: String = (0..25)
         .map(|i| format!("oneshot-{i:03} payload\n"))

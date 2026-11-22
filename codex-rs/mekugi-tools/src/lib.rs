@@ -9,6 +9,7 @@ mod msymbol;
 mod sourcekind;
 mod structure;
 
+use std::ffi::OsString;
 use std::io::Write;
 
 /// Structured command output returned by the testable entry points.
@@ -19,11 +20,27 @@ pub struct ToolOutput {
     pub exit_code: i32,
 }
 
-fn cli_args() -> Vec<String> {
-    std::env::args_os()
-        .skip(1)
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect()
+fn parse_os_args<I>(args: I) -> Result<Vec<String>, String>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut out = Vec::new();
+    for arg in args {
+        match arg.into_string() {
+            Ok(valid) => out.push(valid),
+            Err(invalid) => {
+                return Err(format!(
+                    "argument is not valid UTF-8: {}",
+                    invalid.to_string_lossy()
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn cli_args() -> Result<Vec<String>, String> {
+    parse_os_args(std::env::args_os().skip(1))
 }
 
 fn emit_output(output: ToolOutput) -> i32 {
@@ -40,24 +57,52 @@ fn emit_output(output: ToolOutput) -> i32 {
     output.exit_code
 }
 
-/// Execute `mcat` with process arguments, writing stdout/stderr and returning its exit code.
+fn emit_arg_error(tool: &str, err: &str, exit_code: i32) -> i32 {
+    let mut stderr = std::io::stderr().lock();
+    let _ = writeln!(stderr, "{tool}: {err}");
+    let _ = stderr.flush();
+    exit_code
+}
+
+/// Execute `mcat` with process arguments, streaming stdout directly and returning its exit code.
 pub fn run_mcat_main() -> i32 {
-    emit_output(mcat::execute(&cli_args()))
+    let args = match cli_args() {
+        Ok(args) => args,
+        Err(err) => return emit_arg_error("mcat", &err, 1),
+    };
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
+    let code = mcat::execute_to_writers(&args, &mut stdout, &mut stderr);
+    let _ = stdout.flush();
+    let _ = stderr.flush();
+    code
 }
 
 /// Execute `mfinspect` with process arguments, writing stdout/stderr and returning its exit code.
 pub fn run_mfinspect_main() -> i32 {
-    emit_output(mfinspect::execute(&cli_args()))
+    let args = match cli_args() {
+        Ok(args) => args,
+        Err(err) => return emit_arg_error("mfinspect", &err, 1),
+    };
+    emit_output(mfinspect::execute(&args))
 }
 
 /// Execute `msymbol` with process arguments, writing stdout/stderr and returning its exit code.
 pub fn run_msymbol_main() -> i32 {
-    emit_output(msymbol::execute_standalone(&cli_args()))
+    let args = match cli_args() {
+        Ok(args) => args,
+        Err(err) => return emit_arg_error("msymbol", &err, 1),
+    };
+    emit_output(msymbol::execute_standalone(&args))
 }
 
 /// Execute `mrun` with process arguments, writing stdout/stderr and returning its exit code.
 pub fn run_mrun_main() -> i32 {
-    emit_output(mrun::execute(&cli_args()))
+    let args = match cli_args() {
+        Ok(args) => args,
+        Err(err) => return emit_arg_error("mrun", &err, 2),
+    };
+    emit_output(mrun::execute(&args))
 }
 
 /// Run `mcat` in-process and capture stdout, stderr, and exit code.
@@ -78,4 +123,19 @@ pub fn run_msymbol(args: &[String]) -> ToolOutput {
 /// Run `mrun` in-process and capture stdout, stderr, and exit code.
 pub fn run_mrun(args: &[String]) -> ToolOutput {
     mrun::execute(args)
+}
+
+#[cfg(all(test, unix))]
+mod cli_arg_tests {
+    use super::parse_os_args;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn rejects_non_utf8_arguments_without_lossy_substitution() {
+        let bad = OsString::from_vec(vec![b'f', b'o', b'o', 0xff, b'.', b't', b'x', b't']);
+        let err = parse_os_args([OsString::from("valid.txt"), bad])
+            .expect_err("non-UTF-8 argument must be rejected");
+        assert!(err.contains("not valid UTF-8"));
+    }
 }

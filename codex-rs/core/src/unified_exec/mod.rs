@@ -156,6 +156,9 @@ struct RetainedEntry {
     bin_path: PathBuf,
     bytes: Option<Arc<Vec<u8>>>,
     interaction_lock: Arc<Mutex<()>>,
+    /// True when the process exited asynchronously and the caller has not yet
+    /// observed the exit (so the next `write_stdin` emits `PostToolUse` once).
+    post_tool_use_pending: bool,
 }
 
 #[derive(Default)]
@@ -175,10 +178,33 @@ impl ProcessStore {
         }
         removed
     }
+
+    fn transition_live_to_retained(
+        &mut self,
+        process_id: i32,
+        expected_process: Option<&Arc<UnifiedExecProcess>>,
+        retained: RetainedEntry,
+    ) -> Option<ProcessEntry> {
+        let removed = match expected_process {
+            Some(expected)
+                if self
+                    .processes
+                    .get(&process_id)
+                    .is_some_and(|entry| Arc::ptr_eq(&entry.process, expected)) =>
+            {
+                self.processes.remove(&process_id)
+            }
+            Some(_) => None,
+            None => self.processes.remove(&process_id),
+        };
+        self.reserved_process_ids.insert(process_id);
+        self.retained.insert(process_id, retained);
+        removed
+    }
 }
 
 pub(crate) struct UnifiedExecProcessManager {
-    process_store: Mutex<ProcessStore>,
+    process_store: Arc<Mutex<ProcessStore>>,
     max_write_stdin_yield_time_ms: u64,
     storage: Option<retained::RetainedExecStorage>,
 }
@@ -186,7 +212,7 @@ pub(crate) struct UnifiedExecProcessManager {
 impl UnifiedExecProcessManager {
     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
         Self {
-            process_store: Mutex::new(ProcessStore::default()),
+            process_store: Arc::new(Mutex::new(ProcessStore::default())),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
             storage: None,
@@ -212,6 +238,7 @@ impl UnifiedExecProcessManager {
                     bin_path: loaded.bin_path,
                     bytes: None,
                     interaction_lock: Arc::new(Mutex::new(())),
+                    post_tool_use_pending: false,
                 },
             );
         }
@@ -227,12 +254,13 @@ impl UnifiedExecProcessManager {
                         bin_path: loaded.bin_path,
                         bytes: None,
                         interaction_lock: Arc::new(Mutex::new(())),
+                        post_tool_use_pending: false,
                     },
                 );
             }
         }
         Self {
-            process_store: Mutex::new(store),
+            process_store: Arc::new(Mutex::new(store)),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
             storage: Some(storage),

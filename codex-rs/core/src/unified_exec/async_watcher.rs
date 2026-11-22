@@ -8,11 +8,13 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::Sleep;
 
+use super::ProcessStore;
 use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
 use super::process::OutputBuffers;
 use super::process::OutputHandles;
 use super::process::UnifiedExecProcess;
+use super::retained::RetainedExecStorage;
 use super::take_plugin_metrics_sidecar;
 use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
 use crate::plugins::metrics::finish_and_track_measurements;
@@ -166,6 +168,8 @@ pub(crate) fn spawn_exit_watcher(
     started_at: Instant,
     network_denial_monitor: Option<tokio::task::JoinHandle<()>>,
     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
+    process_store: Arc<Mutex<ProcessStore>>,
+    storage: Option<RetainedExecStorage>,
 ) {
     let session_ref = Arc::clone(&context.session);
     let turn_ref = Arc::clone(&context.step_context.turn);
@@ -175,6 +179,7 @@ pub(crate) fn spawn_exit_watcher(
     let exit_token = process.cancellation_token();
     let output_drained = process.output_drained_notify();
     let interaction_lock = process.interaction_lock();
+    let collection_finished = process.output_handles().collection_finished.clone();
 
     tokio::spawn(async move {
         exit_token.cancelled().await;
@@ -185,60 +190,73 @@ pub(crate) fn spawn_exit_watcher(
         if let Some(network_denial_monitor) = network_denial_monitor {
             let _ = network_denial_monitor.await;
         }
-        let _interaction_guard = interaction_lock.lock_owned().await;
+        {
+            let _interaction_guard = interaction_lock.lock_owned().await;
 
-        let duration = Instant::now().saturating_duration_since(started_at);
-        let plugin_metrics_sidecar = plugin_metrics_sidecar
-            .as_ref()
-            .and_then(take_plugin_metrics_sidecar);
-        if let Some(message) = process.failure_message() {
-            drop(plugin_metrics_sidecar);
-            emit_failed_exec_end_for_unified_exec(
-                process.sandbox_type(),
-                session_ref,
-                turn_ref,
-                model_info,
-                call_id,
-                command,
-                cwd,
-                Some(process_id.to_string()),
-                plugin_attribution,
-                output_buffer,
-                String::new(),
-                message,
-                duration,
-            )
-            .await;
-        } else {
-            let exit_code = process.exit_code().unwrap_or(-1);
-            let timed_out = process.timed_out();
-            finish_and_track_measurements(
-                plugin_metrics_sidecar,
-                exit_code,
-                &session_ref,
-                &turn_ref,
-                &model_context,
-                &call_id,
-            )
-            .await;
-            emit_exec_end_for_unified_exec(
-                process.sandbox_type(),
-                session_ref,
-                turn_ref,
-                model_info,
-                call_id,
-                command,
-                cwd,
-                Some(process_id.to_string()),
-                plugin_attribution,
-                output_buffer,
-                String::new(),
-                exit_code,
-                duration,
-                timed_out,
-            )
-            .await;
+            let duration = Instant::now().saturating_duration_since(started_at);
+            let plugin_metrics_sidecar = plugin_metrics_sidecar
+                .as_ref()
+                .and_then(take_plugin_metrics_sidecar);
+            if let Some(message) = process.failure_message() {
+                drop(plugin_metrics_sidecar);
+                emit_failed_exec_end_for_unified_exec(
+                    process.sandbox_type(),
+                    session_ref,
+                    turn_ref,
+                    model_info,
+                    call_id,
+                    command,
+                    cwd,
+                    Some(process_id.to_string()),
+                    plugin_attribution,
+                    output_buffer,
+                    String::new(),
+                    message,
+                    duration,
+                )
+                .await;
+            } else {
+                let exit_code = process.exit_code().unwrap_or(-1);
+                let timed_out = process.timed_out();
+                finish_and_track_measurements(
+                    plugin_metrics_sidecar,
+                    exit_code,
+                    &session_ref,
+                    &turn_ref,
+                    &model_context,
+                    &call_id,
+                )
+                .await;
+                emit_exec_end_for_unified_exec(
+                    process.sandbox_type(),
+                    session_ref,
+                    turn_ref,
+                    model_info,
+                    call_id,
+                    command,
+                    cwd,
+                    Some(process_id.to_string()),
+                    plugin_attribution,
+                    output_buffer,
+                    String::new(),
+                    exit_code,
+                    duration,
+                    timed_out,
+                )
+                .await;
+            }
         }
+
+        // Wait until the initial exec_command call finishes before transitioning
+        // an unpolled exited background process into the retained store on disk.
+        collection_finished.cancelled().await;
+        super::process_manager::persist_and_retain_on_exit(
+            &process_store,
+            storage.as_ref(),
+            &process,
+            process_id,
+        )
+        .await;
     });
 }
 

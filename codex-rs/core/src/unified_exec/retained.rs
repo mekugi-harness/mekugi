@@ -28,6 +28,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 pub(crate) const RETAINED_EXEC_SUBDIR: &str = "retained_exec";
+const MAX_RETAINED_META_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct RetainedExecMeta {
@@ -153,37 +154,49 @@ impl RetainedExecStorage {
         (reserved, loaded)
     }
 
-    /// Persist output bytes (appending only the newly arrived delta when possible)
+    /// Persist only the newly arrived suffix bytes starting at `expected_offset`
     /// and atomically update `<process_id>.json`.
-    pub(crate) fn persist_delta(
+    pub(crate) fn persist_suffix(
         &self,
         process_id: i32,
-        previously_persisted_bytes: usize,
-        all_bytes: &[u8],
+        expected_offset: usize,
+        suffix_bytes: &[u8],
         meta: &RetainedExecMeta,
     ) -> std::io::Result<usize> {
+        let new_len = expected_offset.saturating_add(suffix_bytes.len());
         if self.ephemeral {
-            return Ok(all_bytes.len());
+            return Ok(new_len);
         }
         self.ensure_dir()?;
         let bin_path = self.bin_path_for(process_id, /*source_thread_id*/ None);
-        let existing_len = fs::metadata(&bin_path)
-            .ok()
-            .and_then(|m| usize::try_from(m.len()).ok());
-        if previously_persisted_bytes > 0
-            && existing_len == Some(previously_persisted_bytes)
-            && previously_persisted_bytes <= all_bytes.len()
-        {
-            if previously_persisted_bytes < all_bytes.len() {
-                let mut file = open_private_append(&bin_path)?;
-                file.write_all(&all_bytes[previously_persisted_bytes..])?;
+        if expected_offset == 0 {
+            let mut file = open_private_regular_truncate(&bin_path)?;
+            if !suffix_bytes.is_empty() {
+                file.write_all(suffix_bytes)?;
             }
         } else {
-            let mut file = open_private_truncate(&bin_path)?;
-            file.write_all(all_bytes)?;
+            let (mut file, existing_len) = open_private_regular_existing_write(&bin_path)?;
+            if existing_len < expected_offset as u64 {
+                return Err(std::io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    format!(
+                        "retained output file {} is truncated ({existing_len} bytes on disk, expected at least {expected_offset} bytes)",
+                        bin_path.display()
+                    ),
+                ));
+            }
+            if !suffix_bytes.is_empty() || existing_len > expected_offset as u64 {
+                file.seek(SeekFrom::Start(expected_offset as u64))?;
+                if !suffix_bytes.is_empty() {
+                    file.write_all(suffix_bytes)?;
+                }
+                if existing_len != new_len as u64 {
+                    file.set_len(new_len as u64)?;
+                }
+            }
         }
         self.write_meta_atomic(meta)?;
-        Ok(all_bytes.len())
+        Ok(new_len)
     }
 
     /// Atomically persist metadata to `<codex_home>/retained_exec/<thread_id>/<process_id>.json`.
@@ -211,7 +224,7 @@ impl RetainedExecStorage {
         let serialized = serde_json::to_vec(meta)
             .map_err(|err| std::io::Error::new(ErrorKind::InvalidData, err))?;
         {
-            let mut file = open_private_truncate(&tmp_path)?;
+            let mut file = open_private_create_new(&tmp_path)?;
             file.write_all(&serialized)?;
         }
         if let Err(err) = fs::rename(&tmp_path, &final_path) {
@@ -223,6 +236,8 @@ impl RetainedExecStorage {
 }
 
 /// Read up to `max_len` bytes starting at `read_offset` without reading past `retained_bytes`.
+/// Returns an error if the backing `.bin` file is not a regular file, exceeds the retention
+/// cap, or is shorter than `retained_bytes` promises.
 pub(crate) fn read_retained_window(
     bin_path: &Path,
     read_offset: usize,
@@ -234,17 +249,35 @@ pub(crate) fn read_retained_window(
     if to_read == 0 {
         return Ok(Vec::new());
     }
-    let mut file = File::open(bin_path)?;
+    let (mut file, file_len) =
+        open_regular_readonly(bin_path, super::MAX_RETAINED_OUTPUT_BYTES as u64)?;
+    if file_len < retained_bytes as u64 {
+        return Err(std::io::Error::new(
+            ErrorKind::UnexpectedEof,
+            format!(
+                "retained output file {} is truncated ({file_len} bytes on disk, metadata expects {retained_bytes} bytes)",
+                bin_path.display()
+            ),
+        ));
+    }
     file.seek(SeekFrom::Start(read_offset as u64))?;
     let mut buf = vec![0u8; to_read];
     let mut filled = 0usize;
     while filled < to_read {
         match file.read(&mut buf[filled..])? {
-            0 => break,
+            0 => {
+                return Err(std::io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    format!(
+                        "retained output file {} ended early at offset {} (expected {retained_bytes} bytes)",
+                        bin_path.display(),
+                        read_offset.saturating_add(filled)
+                    ),
+                ));
+            }
             n => filled += n,
         }
     }
-    buf.truncate(filled);
     Ok(buf)
 }
 
@@ -266,9 +299,18 @@ fn scan_meta_dir(dir: &Path) -> Vec<RetainedExecMeta> {
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        let Ok(raw) = fs::read(&path) else {
+        let Ok((file, _)) = open_regular_readonly(&path, MAX_RETAINED_META_BYTES) else {
             continue;
         };
+        let mut raw = Vec::new();
+        if file
+            .take(MAX_RETAINED_META_BYTES.saturating_add(1))
+            .read_to_end(&mut raw)
+            .is_err()
+            || (raw.len() as u64) > MAX_RETAINED_META_BYTES
+        {
+            continue;
+        }
         match serde_json::from_slice::<RetainedExecMeta>(&raw) {
             Ok(meta) => metas.push(meta),
             Err(err) => {
@@ -289,24 +331,81 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn open_private_truncate(path: &Path) -> std::io::Result<File> {
+fn open_regular_readonly(path: &Path, max_bytes: u64) -> std::io::Result<(File, u64)> {
     let mut opts = OpenOptions::new();
-    opts.create(true).write(true).truncate(true);
+    opts.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    opts.open(path)
+    let file = opts.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("retained file {} is not a regular file", path.display()),
+        ));
+    }
+    let len = meta.len();
+    if len > max_bytes {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "retained file {} exceeds maximum size ({len} > {max_bytes} bytes)",
+                path.display()
+            ),
+        ));
+    }
+    Ok((file, len))
 }
 
-fn open_private_append(path: &Path) -> std::io::Result<File> {
+fn open_private_regular_truncate(path: &Path) -> std::io::Result<File> {
     let mut opts = OpenOptions::new();
-    opts.create(true).append(true);
+    opts.create(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = opts.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("retained file {} is not a regular file", path.display()),
+        ));
+    }
+    file.set_len(0)?;
+    Ok(file)
+}
+
+fn open_private_regular_existing_write(path: &Path) -> std::io::Result<(File, u64)> {
+    let mut opts = OpenOptions::new();
+    opts.write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = opts.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("retained file {} is not a regular file", path.display()),
+        ));
+    }
+    Ok((file, meta.len()))
+}
+
+fn open_private_create_new(path: &Path) -> std::io::Result<File> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     opts.open(path)
 }

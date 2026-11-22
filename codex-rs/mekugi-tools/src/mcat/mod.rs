@@ -2,7 +2,12 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::Write;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -40,6 +45,7 @@ struct ReadSelection {
 struct ScanResult {
     stdout: String,
     stderr: String,
+    row_count: u64,
     failed: bool,
 }
 
@@ -349,6 +355,7 @@ fn source_failure(path: &str, message: &str) -> ScanResult {
     ScanResult {
         stdout: String::new(),
         stderr: format!("mcat: {}: {message}\n", quote_json_string(path)),
+        row_count: 0,
         failed: true,
     }
 }
@@ -363,6 +370,7 @@ fn source_failures(selections: &[ReadSelection], message: &str) -> Vec<ScanResul
 struct SelectionAccumulator<'a> {
     selection: &'a ReadSelection,
     head_out: String,
+    head_rows: u64,
     tail_rows: VecDeque<String>,
     selected_count: u64,
 }
@@ -372,6 +380,7 @@ impl<'a> SelectionAccumulator<'a> {
         Self {
             selection,
             head_out: String::new(),
+            head_rows: 0,
             tail_rows: VecDeque::new(),
             selected_count: 0,
         }
@@ -397,6 +406,7 @@ impl<'a> SelectionAccumulator<'a> {
             .is_none_or(|limit| self.selected_count <= limit)
         {
             self.head_out.push_str(formatted_row);
+            self.head_rows += 1;
         }
     }
 
@@ -410,94 +420,233 @@ impl<'a> SelectionAccumulator<'a> {
                 ),
             );
         }
-        let stdout = if options.tail {
+        let (stdout, row_count) = if options.tail {
+            let count = self.tail_rows.len() as u64;
             let mut out = String::new();
             for row in self.tail_rows {
                 out.push_str(&row);
             }
-            out
+            (out, count)
         } else {
-            self.head_out
+            (self.head_out, self.head_rows)
         };
         ScanResult {
             stdout,
             stderr: String::new(),
+            row_count,
             failed: false,
         }
     }
 }
 
-/// Split UTF-8 text into logical rows separated by `\r\n`, `\r`, or `\n`.
-/// Empty text yields 0 rows; a trailing unterminated segment yields a final row.
-fn split_logical_lines(text: &str) -> Vec<&str> {
-    let bytes = text.as_bytes();
-    let mut rows = Vec::new();
-    let mut start = 0usize;
-    while start < bytes.len() {
-        let mut end = start;
-        while end < bytes.len() && bytes[end] != b'\r' && bytes[end] != b'\n' {
-            end += 1;
+fn open_verified_regular_file(path: &str) -> Result<fs::File, String> {
+    let path_ref = Path::new(path);
+    let meta = fs::metadata(path_ref).map_err(|err| format_io_error(&err))?;
+    if !meta.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    let file = open_nonblocking(path_ref).map_err(|err| format_io_error(&err))?;
+    let opened_meta = file.metadata().map_err(|err| format_io_error(&err))?;
+    if !opened_meta.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    Ok(file)
+}
+
+/// Read one logical line (delimited by `\r\n`, `\r`, or `\n`) while preserving the
+/// exact original line-ending bytes. Returns `Ok(None)` at EOF.
+fn read_logical_line_raw<R: BufRead>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<Option<usize>> {
+    buf.clear();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(buf.len()))
+            };
         }
-        rows.push(&text[start..end]);
-        let mut next = end;
-        if next < bytes.len() {
-            next += 1;
-            if bytes[end] == b'\r' && next < bytes.len() && bytes[next] == b'\n' {
-                next += 1;
+        if let Some(pos) = available.iter().position(|&b| b == b'\n' || b == b'\r') {
+            let delim = available[pos];
+            buf.extend_from_slice(&available[..=pos]);
+            let content_len = buf.len() - 1;
+            reader.consume(pos + 1);
+            if delim == b'\r' {
+                let next = reader.fill_buf()?;
+                if next.first() == Some(&b'\n') {
+                    buf.push(b'\n');
+                    reader.consume(1);
+                }
+            }
+            return Ok(Some(content_len));
+        }
+        buf.extend_from_slice(available);
+        let consumed = available.len();
+        reader.consume(consumed);
+    }
+}
+
+/// Stream a single plain file directly to `stdout` without buffering the whole file
+/// into memory or altering `\r\n`, `\r`, `\n`, or missing trailing newlines.
+fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Write) -> i32 {
+    const CHUNK_SIZE: usize = 64 * 1024;
+
+    let mut file = match open_verified_regular_file(path) {
+        Ok(file) => file,
+        Err(message) => {
+            let _ = write!(stderr, "mcat: {}: {message}\n", quote_json_string(path));
+            return 1;
+        }
+    };
+
+    // Pass 1: streaming UTF-8 validation in O(1) memory.
+    let mut carry = [0u8; 4];
+    let mut carry_len = 0usize;
+    let mut chunk = vec![0u8; CHUNK_SIZE];
+    let mut work = Vec::with_capacity(CHUNK_SIZE + 4);
+
+    loop {
+        let read = match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) => {
+                let _ = write!(
+                    stderr,
+                    "mcat: {}: {}\n",
+                    quote_json_string(path),
+                    format_io_error(&err)
+                );
+                return 1;
+            }
+        };
+
+        work.clear();
+        work.extend_from_slice(&carry[..carry_len]);
+        work.extend_from_slice(&chunk[..read]);
+        carry_len = 0;
+
+        if let Err(err) = std::str::from_utf8(&work) {
+            if err.error_len().is_some() {
+                let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
+                return 1;
+            }
+            let valid_up_to = err.valid_up_to();
+            let rem = &work[valid_up_to..];
+            carry[..rem.len()].copy_from_slice(rem);
+            carry_len = rem.len();
+            if std::str::from_utf8(&work[..valid_up_to]).is_err() {
+                let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
+                return 1;
             }
         }
-        start = next;
     }
-    rows
+
+    if carry_len > 0 {
+        let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
+        return 1;
+    }
+
+    // Pass 2: stream raw validated UTF-8 bytes directly to stdout.
+    if let Err(err) = file.seek(SeekFrom::Start(0)) {
+        let _ = write!(
+            stderr,
+            "mcat: {}: {}\n",
+            quote_json_string(path),
+            format_io_error(&err)
+        );
+        return 1;
+    }
+    loop {
+        let read = match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) => {
+                let _ = write!(
+                    stderr,
+                    "mcat: {}: {}\n",
+                    quote_json_string(path),
+                    format_io_error(&err)
+                );
+                return 1;
+            }
+        };
+        if let Err(err) = stdout.write_all(&chunk[..read]) {
+            let _ = write!(
+                stderr,
+                "mcat: {}: {}\n",
+                quote_json_string(path),
+                format_io_error(&err)
+            );
+            return 1;
+        }
+    }
+
+    0
+}
+
+fn compute_stop_after_line(selections: &[ReadSelection], options: &McatOptions) -> Option<u64> {
+    if options.tail {
+        return None;
+    }
+    if selections.len() == 1 {
+        let sel = &selections[0];
+        return match (sel.has_range, options.lines) {
+            (true, Some(limit)) => Some(
+                sel.start
+                    .saturating_add(limit)
+                    .saturating_sub(1)
+                    .min(sel.end),
+            ),
+            (true, None) => Some(sel.end),
+            (false, Some(limit)) => Some(limit),
+            (false, None) => None,
+        };
+    }
+    if selections.iter().all(|sel| sel.has_range) {
+        selections.iter().map(|sel| sel.end).max()
+    } else {
+        None
+    }
 }
 
 fn scan_selections(selections: &[ReadSelection], options: &McatOptions) -> (Vec<ScanResult>, bool) {
     let path = &selections[0].path;
-    let path_ref = Path::new(path);
-
-    let meta = match fs::metadata(path_ref) {
-        Ok(meta) => meta,
-        Err(err) => return (source_failures(selections, &format_io_error(&err)), false),
-    };
-    if !meta.is_file() {
-        return (source_failures(selections, "not a regular file"), false);
-    }
-
-    let mut file = match open_nonblocking(path_ref) {
+    let file = match open_verified_regular_file(path) {
         Ok(file) => file,
-        Err(err) => return (source_failures(selections, &format_io_error(&err)), false),
-    };
-    let opened_meta = match file.metadata() {
-        Ok(meta) => meta,
-        Err(err) => return (source_failures(selections, &format_io_error(&err)), false),
-    };
-    if !opened_meta.is_file() {
-        return (source_failures(selections, "not a regular file"), false);
-    }
-
-    let mut bytes = Vec::new();
-    if let Err(err) = file.read_to_end(&mut bytes) {
-        return (source_failures(selections, &format_io_error(&err)), false);
-    }
-
-    let Ok(text) = std::str::from_utf8(&bytes) else {
-        return (source_failures(selections, "not UTF-8"), false);
+        Err(message) => return (source_failures(selections, &message), false),
     };
 
-    let rows = split_logical_lines(text);
+    let stop_after_line = compute_stop_after_line(selections, options);
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut raw_buf = Vec::new();
     let mut header = GeneratedHeader::default();
     let mut states: Vec<SelectionAccumulator<'_>> =
         selections.iter().map(SelectionAccumulator::new).collect();
+    let mut total_lines = 0u64;
 
-    for (idx, row) in rows.iter().enumerate() {
-        let line = (idx as u64) + 1;
-        header.accept(row, line == 1);
+    loop {
+        let content_len = match read_logical_line_raw(&mut reader, &mut raw_buf) {
+            Ok(Some(content_len)) => content_len,
+            Ok(None) => break,
+            Err(err) => return (source_failures(selections, &format_io_error(&err)), false),
+        };
+        let Ok(raw_line) = std::str::from_utf8(&raw_buf) else {
+            return (source_failures(selections, "not UTF-8"), false);
+        };
+        total_lines += 1;
+        let line = total_lines;
+        if !header.done {
+            header.accept(&raw_line[..content_len], line == 1);
+        }
         let any_wants = states.iter().any(|state| state.wants(line));
         if any_wants {
             let formatted = if options.number {
-                format!("{line:6}\t{row}\n")
+                format!("{line:6}\t{}\n", &raw_line[..content_len])
             } else {
-                format!("{row}\n")
+                raw_line.to_string()
             };
             for state in &mut states {
                 if state.wants(line) {
@@ -505,9 +654,11 @@ fn scan_selections(selections: &[ReadSelection], options: &McatOptions) -> (Vec<
                 }
             }
         }
+        if stop_after_line.is_some_and(|max_line| line >= max_line) {
+            break;
+        }
     }
 
-    let total_lines = rows.len() as u64;
     let results: Vec<ScanResult> = states
         .into_iter()
         .map(|state| state.finish(total_lines, options))
@@ -516,12 +667,7 @@ fn scan_selections(selections: &[ReadSelection], options: &McatOptions) -> (Vec<
     (results, generated)
 }
 
-fn bundle_row_count(text: &str) -> u64 {
-    text.bytes().filter(|&b| b == b'\n').count() as u64
-}
-
-fn bundle_row_span(start: u64, text: &str) -> String {
-    let count = bundle_row_count(text);
+fn bundle_row_span(start: u64, count: u64) -> String {
     if count == 0 {
         return "none".to_string();
     }
@@ -548,17 +694,27 @@ fn prefix_bundle_diagnostic(path: &str, stderr: &str) -> String {
     out
 }
 
-pub fn execute(args: &[String]) -> ToolOutput {
+pub fn execute_to_writers(
+    args: &[String],
+    stdout_writer: &mut impl Write,
+    stderr_writer: &mut impl Write,
+) -> i32 {
     let (specs, options) = match parse_args(args) {
         Ok(parsed) => parsed,
         Err(err) => {
-            return ToolOutput {
-                stdout: String::new(),
-                stderr: format!("mcat: {err}\n"),
-                exit_code: 1,
-            };
+            let _ = write!(stderr_writer, "mcat: {err}\n");
+            return 1;
         }
     };
+
+    if specs.len() == 1
+        && !specs[0].has_range
+        && !options.number
+        && options.lines.is_none()
+        && !options.tail
+    {
+        return stream_plain_file(&specs[0].path, stdout_writer, stderr_writer);
+    }
 
     if specs.len() == 1 {
         let (mut results, generated) = scan_selections(&specs, &options);
@@ -567,11 +723,9 @@ pub fn execute(args: &[String]) -> ToolOutput {
             res.stderr
                 .push_str(&generated_advisory(&[specs[0].path.clone()]));
         }
-        return ToolOutput {
-            stdout: res.stdout,
-            stderr: res.stderr,
-            exit_code: i32::from(res.failed),
-        };
+        let _ = stdout_writer.write_all(res.stdout.as_bytes());
+        let _ = stderr_writer.write_all(res.stderr.as_bytes());
+        return i32::from(res.failed);
     }
 
     // Group reads by exact path so each file is scanned once.
@@ -605,6 +759,7 @@ pub fn execute(args: &[String]) -> ToolOutput {
         let exec = executions[idx].take().unwrap_or(ScanResult {
             stdout: String::new(),
             stderr: String::new(),
+            row_count: 0,
             failed: true,
         });
         let state = if exec.failed {
@@ -617,7 +772,7 @@ pub fn execute(args: &[String]) -> ToolOutput {
 
         let start = if spec.has_range { spec.start.max(1) } else { 1 };
         let path_quoted = quote_bundle_path(&spec.path);
-        let span = bundle_row_span(start, &exec.stdout);
+        let span = bundle_row_span(start, exec.row_count);
         if state != "complete" || exec.stdout.is_empty() {
             let _ = writeln!(
                 manifest,
@@ -632,6 +787,9 @@ pub fn execute(args: &[String]) -> ToolOutput {
                 idx + 1,
                 exec.stdout
             );
+            if !exec.stdout.ends_with('\n') {
+                bodies.push('\n');
+            }
         }
     }
 
@@ -642,10 +800,19 @@ pub fn execute(args: &[String]) -> ToolOutput {
     };
     diagnostics.push_str(&generated_advisory(&generated_paths));
 
+    let _ = stdout_writer.write_all(stdout.as_bytes());
+    let _ = stderr_writer.write_all(diagnostics.as_bytes());
+    i32::from(any_failed)
+}
+
+pub fn execute(args: &[String]) -> ToolOutput {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let exit_code = execute_to_writers(args, &mut stdout, &mut stderr);
     ToolOutput {
-        stdout,
-        stderr: diagnostics,
-        exit_code: i32::from(any_failed),
+        stdout: String::from_utf8(stdout).unwrap_or_default(),
+        stderr: String::from_utf8(stderr).unwrap_or_default(),
+        exit_code,
     }
 }
 

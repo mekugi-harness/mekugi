@@ -14,7 +14,30 @@ use super::named_children;
 use super::parse_tree;
 
 /// Decode a JavaScript single- or double-quoted string literal (matching `decodeJSString`).
-pub(crate) fn decode_js_string(literal: &str) -> Option<String> {
+pub(crate) struct DecodedJsString {
+    pub display: String,
+    /// Pre-encoded JSON string literal (including surrounding quotes) preserving lone
+    /// UTF-16 surrogates as `\ud800`..`\udfff` without double-escaping when present.
+    pub raw_json: Option<String>,
+}
+
+fn push_json_escaped_char(out: &mut String, ch: char) {
+    match ch {
+        '"' => out.push_str(r#"\""#),
+        '\\' => out.push_str(r"\\"),
+        '\u{08}' => out.push_str(r"\b"),
+        '\u{0c}' => out.push_str(r"\f"),
+        '\n' => out.push_str(r"\n"),
+        '\r' => out.push_str(r"\r"),
+        '\t' => out.push_str(r"\t"),
+        c if (c as u32) < 0x20 => {
+            out.push_str(&format!(r"\u{:04x}", c as u32));
+        }
+        c => out.push(c),
+    }
+}
+
+pub(crate) fn decode_js_string_parts(literal: &str) -> Option<DecodedJsString> {
     let bytes = literal.as_bytes();
     if bytes.len() < 2 {
         return None;
@@ -103,6 +126,8 @@ pub(crate) fn decode_js_string(literal: &str) -> Option<String> {
     }
 
     let mut out = String::new();
+    let mut raw_inner = String::new();
+    let mut has_lone_surrogate = false;
     let mut i = 0;
     while i < units.len() {
         let u = units[i];
@@ -114,22 +139,39 @@ pub(crate) fn decode_js_string(literal: &str) -> Option<String> {
             let low = u32::from(units[i + 1] - 0xdc00);
             if let Some(ch) = char::from_u32(0x10000 + (high << 10) + low) {
                 out.push(ch);
+                push_json_escaped_char(&mut raw_inner, ch);
             }
             i += 2;
             continue;
         }
         if (0xd800..=0xdfff).contains(&u) {
-            out.push_str(&format!(r"\u{u:04x}"));
+            has_lone_surrogate = true;
+            let esc = format!(r"\u{u:04x}");
+            out.push_str(&esc);
+            raw_inner.push_str(&esc);
         } else if let Some(ch) = char::from_u32(u32::from(u)) {
             out.push(ch);
+            push_json_escaped_char(&mut raw_inner, ch);
         }
         i += 1;
     }
-    Some(out)
+    let raw_json = has_lone_surrogate.then(|| format!("\"{raw_inner}\""));
+    Some(DecodedJsString {
+        display: out,
+        raw_json,
+    })
 }
 
 fn escape_json_pointer(segment: &str) -> String {
     segment.replace('~', "~0").replace('/', "~1")
+}
+
+fn json_string_inner_escaped(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        push_json_escaped_char(&mut out, ch);
+    }
+    out
 }
 
 /// Strict RFC 8259 JSON parser tracking byte offsets and allowing duplicate keys.
@@ -138,7 +180,7 @@ struct StrictJsonParser<'a> {
     bytes: &'a [u8],
     pos: usize,
     collect_tokens: bool,
-    entries: Vec<(String, &'static str, usize, usize)>,
+    entries: Vec<(String, Option<String>, &'static str, usize, usize)>,
     tokens: Vec<Token>,
 }
 
@@ -165,9 +207,15 @@ impl<'a> StrictJsonParser<'a> {
 
     fn parse_root(
         mut self,
-    ) -> Result<(Vec<(String, &'static str, usize, usize)>, Vec<Token>), usize> {
+    ) -> Result<
+        (
+            Vec<(String, Option<String>, &'static str, usize, usize)>,
+            Vec<Token>,
+        ),
+        usize,
+    > {
         self.skip_ws();
-        self.parse_value("")?;
+        self.parse_value("", None)?;
         self.skip_ws();
         if self.pos < self.bytes.len() {
             return Err(self.pos);
@@ -175,34 +223,51 @@ impl<'a> StrictJsonParser<'a> {
         Ok((self.entries, self.tokens))
     }
 
-    fn parse_value(&mut self, pointer: &str) -> Result<(), usize> {
+    fn parse_value(&mut self, pointer: &str, raw_pointer_inner: Option<&str>) -> Result<(), usize> {
         self.skip_ws();
         let from = self.pos;
         if from >= self.bytes.len() {
             return Err(from);
         }
+        let raw_ptr_json = raw_pointer_inner.map(|inner| format!("\"{inner}\""));
         match self.bytes[from] {
             b'{' => {
                 let idx = self.entries.len();
                 self.entries
-                    .push((pointer.to_string(), "object", from, from));
+                    .push((pointer.to_string(), raw_ptr_json, "object", from, from));
                 self.pos += 1;
                 self.skip_ws();
                 if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
                     self.pos += 1;
-                    self.entries[idx].3 = self.pos;
+                    self.entries[idx].4 = self.pos;
                     return Ok(());
                 }
                 loop {
                     self.skip_ws();
-                    let key = self.parse_string()?;
+                    let key = self.parse_string_parts()?;
                     self.skip_ws();
                     if self.pos >= self.bytes.len() || self.bytes[self.pos] != b':' {
                         return Err(self.pos);
                     }
                     self.pos += 1;
-                    let child_ptr = format!("{pointer}/{}", escape_json_pointer(&key));
-                    self.parse_value(&child_ptr)?;
+                    let child_ptr = format!("{pointer}/{}", escape_json_pointer(&key.display));
+                    let child_raw_inner = if raw_pointer_inner.is_some() || key.raw_json.is_some() {
+                        let parent_inner = raw_pointer_inner
+                            .map(str::to_string)
+                            .unwrap_or_else(|| json_string_inner_escaped(pointer));
+                        let key_inner = key
+                            .raw_json
+                            .as_deref()
+                            .map(|raw| &raw[1..raw.len() - 1])
+                            .map(escape_json_pointer)
+                            .unwrap_or_else(|| {
+                                json_string_inner_escaped(&escape_json_pointer(&key.display))
+                            });
+                        Some(format!("{parent_inner}/{key_inner}"))
+                    } else {
+                        None
+                    };
+                    self.parse_value(&child_ptr, child_raw_inner.as_deref())?;
                     self.skip_ws();
                     if self.pos >= self.bytes.len() {
                         return Err(self.pos);
@@ -211,7 +276,7 @@ impl<'a> StrictJsonParser<'a> {
                         b',' => self.pos += 1,
                         b'}' => {
                             self.pos += 1;
-                            self.entries[idx].3 = self.pos;
+                            self.entries[idx].4 = self.pos;
                             return Ok(());
                         }
                         _ => return Err(self.pos),
@@ -221,18 +286,20 @@ impl<'a> StrictJsonParser<'a> {
             b'[' => {
                 let idx = self.entries.len();
                 self.entries
-                    .push((pointer.to_string(), "array", from, from));
+                    .push((pointer.to_string(), raw_ptr_json, "array", from, from));
                 self.pos += 1;
                 self.skip_ws();
                 if self.pos < self.bytes.len() && self.bytes[self.pos] == b']' {
                     self.pos += 1;
-                    self.entries[idx].3 = self.pos;
+                    self.entries[idx].4 = self.pos;
                     return Ok(());
                 }
                 let mut elem_index = 0usize;
                 loop {
                     let child_ptr = format!("{pointer}/{elem_index}");
-                    self.parse_value(&child_ptr)?;
+                    let child_raw_inner = raw_pointer_inner
+                        .map(|parent_inner| format!("{parent_inner}/{elem_index}"));
+                    self.parse_value(&child_ptr, child_raw_inner.as_deref())?;
                     elem_index += 1;
                     self.skip_ws();
                     if self.pos >= self.bytes.len() {
@@ -242,7 +309,7 @@ impl<'a> StrictJsonParser<'a> {
                         b',' => self.pos += 1,
                         b']' => {
                             self.pos += 1;
-                            self.entries[idx].3 = self.pos;
+                            self.entries[idx].4 = self.pos;
                             return Ok(());
                         }
                         _ => return Err(self.pos),
@@ -250,33 +317,33 @@ impl<'a> StrictJsonParser<'a> {
                 }
             }
             b'"' => {
-                let _ = self.parse_string()?;
+                let _ = self.parse_string_parts()?;
                 self.entries
-                    .push((pointer.to_string(), "string", from, self.pos));
+                    .push((pointer.to_string(), raw_ptr_json, "string", from, self.pos));
                 Ok(())
             }
             b't' => {
                 self.expect_literal(b"true")?;
                 self.entries
-                    .push((pointer.to_string(), "boolean", from, self.pos));
+                    .push((pointer.to_string(), raw_ptr_json, "boolean", from, self.pos));
                 Ok(())
             }
             b'f' => {
                 self.expect_literal(b"false")?;
                 self.entries
-                    .push((pointer.to_string(), "boolean", from, self.pos));
+                    .push((pointer.to_string(), raw_ptr_json, "boolean", from, self.pos));
                 Ok(())
             }
             b'n' => {
                 self.expect_literal(b"null")?;
                 self.entries
-                    .push((pointer.to_string(), "null", from, self.pos));
+                    .push((pointer.to_string(), raw_ptr_json, "null", from, self.pos));
                 Ok(())
             }
             b'-' | b'0'..=b'9' => {
                 self.parse_number()?;
                 self.entries
-                    .push((pointer.to_string(), "number", from, self.pos));
+                    .push((pointer.to_string(), raw_ptr_json, "number", from, self.pos));
                 Ok(())
             }
             _ => Err(from),
@@ -292,7 +359,7 @@ impl<'a> StrictJsonParser<'a> {
         }
     }
 
-    fn parse_string(&mut self) -> Result<String, usize> {
+    fn parse_string_parts(&mut self) -> Result<DecodedJsString, usize> {
         let from = self.pos;
         if self.pos >= self.bytes.len() || self.bytes[self.pos] != b'"' {
             return Err(from);
@@ -303,13 +370,13 @@ impl<'a> StrictJsonParser<'a> {
                 b'"' => {
                     self.pos += 1;
                     let raw = &self.src[from..self.pos];
-                    let Some(decoded) = decode_js_string(raw) else {
+                    let Some(decoded) = decode_js_string_parts(raw) else {
                         return Err(from);
                     };
                     if self.collect_tokens {
                         self.tokens.push(Token {
                             from: from + 1,
-                            text: decoded.clone(),
+                            text: decoded.display.clone(),
                         });
                     }
                     return Ok(decoded);
@@ -385,9 +452,9 @@ impl<'a> StrictJsonParser<'a> {
 
 fn decode_strict_json_string(raw: &str) -> Option<String> {
     let mut parser = StrictJsonParser::new(raw, /*collect_tokens*/ false);
-    let val = parser.parse_string().ok()?;
+    let val = parser.parse_string_parts().ok()?;
     if parser.pos == raw.len() {
-        Some(val)
+        Some(val.display)
     } else {
         None
     }
@@ -396,10 +463,11 @@ fn decode_strict_json_string(raw: &str) -> Option<String> {
 pub(crate) fn parse_json(doc: &mut Source, collect_tokens: bool) -> Result<(), String> {
     match StrictJsonParser::new(&doc.source, collect_tokens).parse_root() {
         Ok((entries, tokens)) => {
-            for (pointer, value_type, from, to) in entries {
+            for (pointer, pointer_raw_json, value_type, from, to) in entries {
                 doc.add("json", String::new(), from, to, None, None, true);
                 if let Some(last) = doc.entries.last_mut() {
                     last.pointer = pointer;
+                    last.pointer_raw_json = pointer_raw_json;
                     last.value_type = value_type.to_string();
                 }
             }
@@ -644,6 +712,14 @@ fn trim_atx_closing_hashes(s: &str) -> &str {
 
 /// Extract top-level mapping keys from validated YAML frontmatter lines `start_line..closing_line`.
 fn extract_yaml_top_level_keys(doc: &mut Source, start_line: usize, closing_line: usize) {
+    if let (Some(start), Some(end)) = (
+        doc.lines.start_of(start_line),
+        doc.lines.start_of(closing_line),
+    ) && extract_yaml_flow_mapping_keys(doc, start, end)
+    {
+        return;
+    }
+
     let mut seen: HashSet<String> = HashSet::new();
     let mut in_block_scalar = false;
     for line_num in start_line..closing_line {
@@ -676,6 +752,140 @@ fn extract_yaml_top_level_keys(doc: &mut Source, start_line: usize, closing_line
         }
         if starts_block {
             in_block_scalar = true;
+        }
+    }
+}
+
+/// Parse top-level keys of a flow-style YAML mapping (`{k1: v1, k2: v2}`) inside `start..end`.
+/// Returns `true` if the frontmatter begins with a flow mapping.
+fn extract_yaml_flow_mapping_keys(doc: &mut Source, start: usize, end: usize) -> bool {
+    let slice = &doc.source[start..end];
+    let bytes = slice.as_bytes();
+    let mut pos = 0usize;
+    skip_yaml_flow_ws_and_comments(bytes, &mut pos);
+    if pos >= bytes.len() || bytes[pos] != b'{' {
+        return false;
+    }
+    pos += 1;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut keys: Vec<(String, usize, usize)> = Vec::new();
+    loop {
+        skip_yaml_flow_ws_and_comments(bytes, &mut pos);
+        if pos >= bytes.len() || bytes[pos] == b'}' {
+            break;
+        }
+        let key_start = pos;
+        let (key, key_end) = match bytes[pos] {
+            b'"' | b'\'' => {
+                let quote = bytes[pos];
+                pos += 1;
+                while pos < bytes.len() {
+                    if quote == b'"' && bytes[pos] == b'\\' {
+                        pos = (pos + 2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[pos] == quote {
+                        pos += 1;
+                        if quote == b'\'' && pos < bytes.len() && bytes[pos] == b'\'' {
+                            pos += 1;
+                            continue;
+                        }
+                        break;
+                    }
+                    pos += 1;
+                }
+                let raw_key = &slice[key_start..pos];
+                let decoded = if quote == b'"' {
+                    serde_yaml::from_str::<String>(raw_key)
+                        .unwrap_or_else(|_| raw_key[1..raw_key.len().saturating_sub(1)].to_string())
+                } else {
+                    raw_key[1..raw_key.len().saturating_sub(1)].replace("''", "'")
+                };
+                (decoded, pos)
+            }
+            _ => {
+                while pos < bytes.len() && !matches!(bytes[pos], b':' | b',' | b'}' | b'\r' | b'\n')
+                {
+                    pos += 1;
+                }
+                let raw_key = slice[key_start..pos].trim_end_matches([' ', '\t']);
+                (raw_key.to_string(), key_start + raw_key.len())
+            }
+        };
+        skip_yaml_flow_ws_and_comments(bytes, &mut pos);
+        if pos < bytes.len() && bytes[pos] == b':' {
+            pos += 1;
+        }
+        if !key.is_empty() && key != "null" && key != "~" {
+            keys.push((key, start + key_start, start + key_end));
+        }
+        // Skip the value at flow depth 0 until `,` or `}`.
+        let mut depth = 0usize;
+        while pos < bytes.len() {
+            match bytes[pos] {
+                b'"' | b'\'' => {
+                    let quote = bytes[pos];
+                    pos += 1;
+                    while pos < bytes.len() {
+                        if quote == b'"' && bytes[pos] == b'\\' {
+                            pos = (pos + 2).min(bytes.len());
+                            continue;
+                        }
+                        if bytes[pos] == quote {
+                            pos += 1;
+                            if quote == b'\'' && pos < bytes.len() && bytes[pos] == b'\'' {
+                                pos += 1;
+                                continue;
+                            }
+                            break;
+                        }
+                        pos += 1;
+                    }
+                }
+                b'{' | b'[' => {
+                    depth += 1;
+                    pos += 1;
+                }
+                b'}' | b']' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    pos += 1;
+                }
+                b',' if depth == 0 => {
+                    pos += 1;
+                    break;
+                }
+                b'#' if pos == 0 || matches!(bytes[pos - 1], b' ' | b'\t' | b'\r' | b'\n') => {
+                    while pos < bytes.len() && bytes[pos] != b'\n' {
+                        pos += 1;
+                    }
+                }
+                _ => pos += 1,
+            }
+        }
+    }
+    for (key, from, to) in keys {
+        doc.add("frontmatter", key.clone(), from, to, None, None, true);
+        if !seen.insert(key) {
+            doc.parse_error(from);
+        }
+    }
+    true
+}
+
+fn skip_yaml_flow_ws_and_comments(bytes: &[u8], pos: &mut usize) {
+    loop {
+        while *pos < bytes.len() && matches!(bytes[*pos], b' ' | b'\t' | b'\r' | b'\n') {
+            *pos += 1;
+        }
+        if *pos < bytes.len() && bytes[*pos] == b'#' {
+            while *pos < bytes.len() && bytes[*pos] != b'\n' {
+                *pos += 1;
+            }
+        } else {
+            break;
         }
     }
 }

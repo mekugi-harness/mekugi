@@ -1916,13 +1916,12 @@ impl Session {
                 });
                 ThreadTraceContext::disabled()
             });
-            let retained_fork_source = matches!(&initial_history, InitialHistory::Forked(_))
-                .then(|| {
-                    session_configuration
-                        .forked_from_thread_id
-                        .or(session_configuration.parent_thread_id)
-                })
-                .flatten();
+            let retained_fork_source = retained_exec_fork_source(
+                &initial_history,
+                &session_configuration.session_source,
+                session_configuration.forked_from_thread_id,
+                session_configuration.parent_thread_id,
+            );
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
@@ -2211,4 +2210,21 @@ impl Session {
             }
         }
     }
+}
+
+/// Only non-subagent forks inherit the parent thread's retained unified-exec outputs
+/// read-only. Spawned subagents (`SessionSource::SubAgent(_)`) run in an isolated
+/// thread scope even when spawned with forked conversation history.
+pub(crate) fn retained_exec_fork_source(
+    initial_history: &InitialHistory,
+    session_source: &SessionSource,
+    forked_from_thread_id: Option<ThreadId>,
+    parent_thread_id: Option<ThreadId>,
+) -> Option<ThreadId> {
+    if !matches!(initial_history, InitialHistory::Forked(_))
+        || matches!(session_source, SessionSource::SubAgent(_))
+    {
+        return None;
+    }
+    forked_from_thread_id.or(parent_thread_id)
 }

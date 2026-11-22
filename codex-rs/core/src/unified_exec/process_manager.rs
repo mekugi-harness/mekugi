@@ -1,8 +1,11 @@
+use crate::unified_exec::SharedPluginMetricsSidecar;
 use crate::unified_exec::output::CapturedStream;
 use crate::unified_exec::output::slice_next_page;
 use crate::unified_exec::output::unified_exec_page_byte_budget;
 use crate::unified_exec::retained::RetainedExecMeta;
+use crate::unified_exec::retained::RetainedExecStorage;
 use crate::unified_exec::retained::read_retained_window;
+use codex_features::Feature;
 use rand::Rng;
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -289,12 +292,13 @@ struct PreparedProcessHandles {
     tool_cwd: Option<PathUri>,
     process_id: i32,
     tty: bool,
-    persisted_bytes: usize,
     persisted: bool,
 }
 
-struct RetainedSnapshot {
-    bytes: Vec<u8>,
+struct RetainedSuffixSnapshot {
+    previously_persisted_bytes: usize,
+    suffix_bytes: Vec<u8>,
+    mem_bytes: Option<Arc<Vec<u8>>>,
     retained_bytes: usize,
     discarded_bytes: u64,
     read_offset: usize,
@@ -341,17 +345,6 @@ async fn unregister_network_approval_for_entry(entry: &ProcessEntry) {
             .unregister_call(network_approval.registration_id())
             .await;
     }
-}
-
-async fn finish_network_approval_after_process_exit_for_entry(
-    entry: &ProcessEntry,
-) -> Result<(), String> {
-    let session = entry.session.upgrade();
-    finish_deferred_network_approval_after_process_exit_for_session(
-        session.as_ref(),
-        entry.network_approval.clone(),
-    )
-    .await
 }
 
 async fn finish_deferred_network_approval_for_session(
@@ -481,31 +474,45 @@ fn terminate_process_on_network_denial(
 }
 
 impl UnifiedExecProcessManager {
-    pub(crate) async fn allocate_process_id(&self) -> i32 {
-        loop {
-            let mut store = self.process_store.lock().await;
+    pub(crate) async fn allocate_process_id(&self) -> Result<i32, UnifiedExecError> {
+        const MAX_RANDOM_PROBES: usize = 64;
+        let mut store = self.process_store.lock().await;
 
-            let process_id = if should_use_deterministic_process_ids() {
-                // test or deterministic mode
-                store
+        let process_id = if should_use_deterministic_process_ids() {
+            // Test / deterministic mode: monotonic above the highest reserved ID.
+            match store.reserved_process_ids.iter().copied().max() {
+                Some(max_id) => std::cmp::max(max_id, 999).checked_add(1),
+                None => Some(1000),
+            }
+        } else {
+            // Production mode: bounded random probes, then monotonic fallback above the random range.
+            let mut candidate = None;
+            let mut rng = rand::rng();
+            for _ in 0..MAX_RANDOM_PROBES {
+                let id = rng.random_range(1_000..100_000);
+                if !store.reserved_process_ids.contains(&id) {
+                    candidate = Some(id);
+                    break;
+                }
+            }
+            candidate.or_else(|| {
+                let floor = store
                     .reserved_process_ids
                     .iter()
                     .copied()
                     .max()
-                    .map(|m| std::cmp::max(m, 999) + 1)
-                    .unwrap_or(1000)
-            } else {
-                // production mode → random
-                rand::rng().random_range(1_000..100_000)
-            };
+                    .map_or(99_999, |max_id| std::cmp::max(max_id, 99_999));
+                floor.checked_add(1)
+            })
+        };
 
-            if store.reserved_process_ids.contains(&process_id) {
-                continue;
-            }
-
-            store.reserved_process_ids.insert(process_id);
-            return process_id;
-        }
+        let Some(process_id) = process_id else {
+            return Err(UnifiedExecError::create_process(
+                "unified exec process ID space exhausted".to_string(),
+            ));
+        };
+        store.reserved_process_ids.insert(process_id);
+        Ok(process_id)
     }
 
     pub(crate) async fn release_process_id(&self, process_id: i32) {
@@ -821,8 +828,12 @@ impl UnifiedExecProcessManager {
                 .await
             {
                 ProcessStatus::Alive { exit_code, .. } => (false, exit_code),
-                ProcessStatus::Exited { exit_code, entry } => {
-                    entry.process.cancellation_token().cancel();
+                ProcessStatus::Exited {
+                    exit_code,
+                    plugin_metrics_sidecar,
+                    ..
+                } => {
+                    process.cancellation_token().cancel();
                     if let Err(message) =
                         finish_deferred_network_approval_after_process_exit_for_session(
                             Some(&context.session),
@@ -830,7 +841,8 @@ impl UnifiedExecProcessManager {
                         )
                         .await
                     {
-                        return Err(fail_process_with_message(entry.process.as_ref(), message));
+                        self.release_process(process_id, Some(&process)).await;
+                        return Err(fail_process_with_message(process.as_ref(), message));
                     }
                     if !timed_out_oneshot {
                         let (full_text, total_bytes, discarded_bytes) = {
@@ -845,15 +857,16 @@ impl UnifiedExecProcessManager {
                         let omitted = usize::try_from(discarded_bytes)
                             .ok()
                             .and_then(NonZeroUsize::new);
-                        process
-                            .check_for_sandbox_denial_with_text(&full_text)
-                            .await
-                            .map_err(|err| {
+                        if let Err(err) =
+                            process.check_for_sandbox_denial_with_text(&full_text).await
+                        {
+                            self.release_process(process_id, Some(&process)).await;
+                            return Err(
                                 err.with_output_collection_metadata(original_tokens, omitted)
-                            })?;
+                            );
+                        }
                     }
-                    let metrics_sidecar = entry
-                        .plugin_metrics_sidecar
+                    let metrics_sidecar = plugin_metrics_sidecar
                         .as_ref()
                         .and_then(take_plugin_metrics_sidecar);
                     finish_and_track_measurements(
@@ -941,7 +954,9 @@ impl UnifiedExecProcessManager {
         };
 
         if is_internal_unpaged {
-            if !process_stored {
+            if process_stored {
+                self.release_process(process_id, Some(&process)).await;
+            } else {
                 self.release_process_id(process_id).await;
             }
             let (raw_output, original_token_count) = {
@@ -968,27 +983,55 @@ impl UnifiedExecProcessManager {
             });
         }
 
+        // Only expose a resumable retained session_id when write_stdin paging is
+        // available for this session (Feature::UnifiedExec) and the command did
+        // not time out in one-shot mode.
+        let allow_retained_paging =
+            !timed_out_oneshot && context.session.enabled(Feature::UnifiedExec);
+        let has_persistent_storage = self
+            .storage
+            .as_ref()
+            .is_some_and(|storage| !storage.is_ephemeral());
         let stream_complete = process_exited
             && process
                 .output_handles()
                 .output_closed
                 .load(Ordering::Acquire);
-        let (original_token_count, page, retained_snapshot) = {
-            let mut guard = output_buffer.lock().await;
+        let (original_token_count, mut page, retained_snapshot, unreturned_bytes_after_page) = {
+            let guard = output_buffer.lock().await;
             let unread_total = guard.unread_total_bytes();
             let original_token_count = approx_tokens_from_u64(unread_total);
-            let page = guard.take_next_page(page_budget, stream_complete);
+            let page = guard.peek_next_page(page_budget, stream_complete);
+            let next_read_offset = guard.read_offset.saturating_add(page.consumed_bytes);
+            let next_reported_discarded = page.reported_discarded_bytes;
+            let unreturned = (guard
+                .retained
+                .retained_bytes()
+                .saturating_sub(next_read_offset) as u64)
+                .saturating_add(
+                    guard
+                        .retained
+                        .discarded_bytes()
+                        .saturating_sub(next_reported_discarded),
+                );
             let should_retain_snapshot = (!process_exited
                 && (guard.retained.retained_bytes() > 0 || guard.retained.discarded_bytes() > 0))
-                || (process_exited && page.has_more_output && !timed_out_oneshot);
-            let snapshot = should_retain_snapshot.then(|| RetainedSnapshot {
-                bytes: guard.retained.to_bytes(),
+                || (process_exited && page.has_more_output && allow_retained_paging);
+            let snapshot = should_retain_snapshot.then(|| RetainedSuffixSnapshot {
+                previously_persisted_bytes: guard.persisted_bytes,
+                suffix_bytes: if has_persistent_storage {
+                    guard.suffix_from(guard.persisted_bytes)
+                } else {
+                    Vec::new()
+                },
+                mem_bytes: (!has_persistent_storage && process_exited)
+                    .then(|| Arc::new(guard.retained.to_bytes())),
                 retained_bytes: guard.retained.retained_bytes(),
                 discarded_bytes: guard.retained.discarded_bytes(),
-                read_offset: guard.read_offset,
-                reported_discarded_bytes: guard.reported_discarded_bytes,
+                read_offset: next_read_offset,
+                reported_discarded_bytes: next_reported_discarded,
             });
-            (original_token_count, page, snapshot)
+            (original_token_count, page, snapshot, unreturned)
         };
 
         let (response_process_id, emit_post_tool_use) = if !process_exited {
@@ -1008,17 +1051,25 @@ impl UnifiedExecProcessManager {
                     hook_command: Some(prepared.hook_command.clone()),
                     tool_cwd: tool_cwd.clone(),
                 };
-                self.persist_running_delta(
-                    process_id,
-                    &process,
-                    /*prev*/ 0,
-                    snapshot.bytes,
-                    meta,
-                )
-                .await;
+                if let Err(err) = self
+                    .persist_running_suffix(
+                        process_id,
+                        &process,
+                        &output_buffer,
+                        snapshot.previously_persisted_bytes,
+                        snapshot.suffix_bytes,
+                        meta,
+                    )
+                    .await
+                {
+                    process.terminate();
+                    self.release_process(process_id, Some(&process)).await;
+                    return Err(err);
+                }
             }
+            output_buffer.lock().await.commit_page(&page);
             (Some(process_id), false)
-        } else if page.has_more_output && !timed_out_oneshot {
+        } else if page.has_more_output && allow_retained_paging {
             if let Some(snapshot) = retained_snapshot {
                 let meta = RetainedExecMeta {
                     process_id,
@@ -1035,12 +1086,42 @@ impl UnifiedExecProcessManager {
                     hook_command: Some(prepared.hook_command.clone()),
                     tool_cwd: tool_cwd.clone(),
                 };
-                self.store_retained_exited(process_id, /*prev*/ 0, snapshot.bytes, meta)
-                    .await;
+                if let Err(err) = self
+                    .store_retained_exited(
+                        process_id,
+                        process_stored.then_some(&process),
+                        &output_buffer,
+                        snapshot.previously_persisted_bytes,
+                        snapshot.suffix_bytes,
+                        snapshot.mem_bytes,
+                        meta,
+                        /*post_tool_use_pending*/ false,
+                    )
+                    .await
+                {
+                    if process_stored {
+                        self.release_process(process_id, Some(&process)).await;
+                    } else {
+                        self.release_process_id(process_id).await;
+                    }
+                    return Err(err);
+                }
             }
+            output_buffer.lock().await.commit_page(&page);
             (Some(process_id), true)
         } else {
-            if !process_stored {
+            if page.has_more_output && unreturned_bytes_after_page > 0 {
+                if !page.text.is_empty() {
+                    page.text.push('\n');
+                }
+                page.text.push_str(&format!(
+                    "[output truncated: {unreturned_bytes_after_page} bytes omitted]"
+                ));
+            }
+            output_buffer.lock().await.commit_page(&page);
+            if process_stored {
+                self.release_process(process_id, Some(&process)).await;
+            } else {
                 self.release_process_id(process_id).await;
             }
             (None, true)
@@ -1216,7 +1297,6 @@ impl UnifiedExecProcessManager {
             tool_cwd,
             process_id,
             tty,
-            mut persisted_bytes,
             mut persisted,
         } = self
             .prepare_process_handles(process_id, locked_process)
@@ -1330,15 +1410,25 @@ impl UnifiedExecProcessManager {
             ProcessStatus::Alive {
                 exit_code, call_id, ..
             } => (false, exit_code, call_id),
-            ProcessStatus::Exited { exit_code, entry } => {
-                entry.process.cancellation_token().cancel();
-                let call_id = entry.call_id.clone();
-                persisted_bytes = entry.persisted_bytes;
-                persisted = entry.persisted;
+            ProcessStatus::Exited {
+                exit_code,
+                call_id,
+                persisted: entry_persisted,
+                network_approval: entry_network_approval,
+                session: entry_session,
+                ..
+            } => {
+                process.cancellation_token().cancel();
+                persisted = entry_persisted;
                 if let Err(message) =
-                    finish_network_approval_after_process_exit_for_entry(&entry).await
+                    finish_deferred_network_approval_after_process_exit_for_session(
+                        entry_session.as_ref(),
+                        entry_network_approval,
+                    )
+                    .await
                 {
-                    return Err(fail_process_with_message(entry.process.as_ref(), message));
+                    self.release_process(process_id, Some(locked_process)).await;
+                    return Err(fail_process_with_message(process.as_ref(), message));
                 }
                 (true, exit_code, call_id)
             }
@@ -1351,21 +1441,34 @@ impl UnifiedExecProcessManager {
             }
         };
 
+        let has_persistent_storage = self
+            .storage
+            .as_ref()
+            .is_some_and(|storage| !storage.is_ephemeral());
         let stream_complete = process_exited && output.output_closed.load(Ordering::Acquire);
         let (original_token_count, page, retained_snapshot) = {
-            let mut guard = output.output_buffer.lock().await;
+            let guard = output.output_buffer.lock().await;
             let unread_total = guard.unread_total_bytes();
             let original_token_count = approx_tokens_from_u64(unread_total);
-            let page = guard.take_next_page(page_budget, stream_complete);
+            let page = guard.peek_next_page(page_budget, stream_complete);
+            let next_read_offset = guard.read_offset.saturating_add(page.consumed_bytes);
+            let next_reported_discarded = page.reported_discarded_bytes;
             let should_retain_snapshot = (!process_exited
                 && (guard.retained.retained_bytes() > 0 || guard.retained.discarded_bytes() > 0))
                 || (process_exited && (page.has_more_output || persisted));
-            let snapshot = should_retain_snapshot.then(|| RetainedSnapshot {
-                bytes: guard.retained.to_bytes(),
+            let snapshot = should_retain_snapshot.then(|| RetainedSuffixSnapshot {
+                previously_persisted_bytes: guard.persisted_bytes,
+                suffix_bytes: if has_persistent_storage {
+                    guard.suffix_from(guard.persisted_bytes)
+                } else {
+                    Vec::new()
+                },
+                mem_bytes: (!has_persistent_storage && process_exited && page.has_more_output)
+                    .then(|| Arc::new(guard.retained.to_bytes())),
                 retained_bytes: guard.retained.retained_bytes(),
                 discarded_bytes: guard.retained.discarded_bytes(),
-                read_offset: guard.read_offset,
-                reported_discarded_bytes: guard.reported_discarded_bytes,
+                read_offset: next_read_offset,
+                reported_discarded_bytes: next_reported_discarded,
             });
             (original_token_count, page, snapshot)
         };
@@ -1387,15 +1490,17 @@ impl UnifiedExecProcessManager {
                     hook_command: Some(hook_command.clone()),
                     tool_cwd: tool_cwd.clone(),
                 };
-                self.persist_running_delta(
+                self.persist_running_suffix(
                     process_id,
                     locked_process,
-                    persisted_bytes,
-                    snapshot.bytes,
+                    &output.output_buffer,
+                    snapshot.previously_persisted_bytes,
+                    snapshot.suffix_bytes,
                     meta,
                 )
-                .await;
+                .await?;
             }
+            output.output_buffer.lock().await.commit_page(&page);
             (Some(process_id), false)
         } else if page.has_more_output {
             if let Some(snapshot) = retained_snapshot {
@@ -1414,9 +1519,19 @@ impl UnifiedExecProcessManager {
                     hook_command: Some(hook_command.clone()),
                     tool_cwd: tool_cwd.clone(),
                 };
-                self.store_retained_exited(process_id, persisted_bytes, snapshot.bytes, meta)
-                    .await;
+                self.store_retained_exited(
+                    process_id,
+                    Some(locked_process),
+                    &output.output_buffer,
+                    snapshot.previously_persisted_bytes,
+                    snapshot.suffix_bytes,
+                    snapshot.mem_bytes,
+                    meta,
+                    /*post_tool_use_pending*/ false,
+                )
+                .await?;
             }
+            output.output_buffer.lock().await.commit_page(&page);
             (Some(process_id), true)
         } else {
             if persisted && let Some(snapshot) = retained_snapshot {
@@ -1435,9 +1550,17 @@ impl UnifiedExecProcessManager {
                     hook_command: Some(hook_command.clone()),
                     tool_cwd: tool_cwd.clone(),
                 };
-                self.persist_exhausted(process_id, persisted_bytes, snapshot.bytes, meta)
-                    .await;
+                self.persist_exhausted(
+                    process_id,
+                    &output.output_buffer,
+                    snapshot.previously_persisted_bytes,
+                    snapshot.suffix_bytes,
+                    meta,
+                )
+                .await?;
             }
+            output.output_buffer.lock().await.commit_page(&page);
+            self.release_process(process_id, Some(locked_process)).await;
             (None, true)
         };
 
@@ -1489,17 +1612,18 @@ impl UnifiedExecProcessManager {
             return Err(UnifiedExecError::ProcessExited { process_id });
         }
 
-        let (mut meta, bin_path, mem_bytes) = {
+        let (mut meta, bin_path, mem_bytes, post_tool_use_pending) = {
             let store = self.process_store.lock().await;
             let entry = store
                 .retained
                 .get(&process_id)
-                .filter(|entry| !entry.meta.exhausted)
+                .filter(|entry| !entry.meta.exhausted || entry.post_tool_use_pending)
                 .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
             (
                 entry.meta.clone(),
                 entry.bin_path.clone(),
                 entry.bytes.clone(),
+                entry.post_tool_use_pending,
             )
         };
 
@@ -1518,14 +1642,18 @@ impl UnifiedExecProcessManager {
             unified_exec_page_byte_budget(request.max_output_tokens, request.truncation_policy);
         let total_unread = meta.retained_bytes.saturating_sub(meta.read_offset);
         let window_cap = page_budget.saturating_mul(2).saturating_add(16);
+        let expected_window_len = total_unread.min(window_cap);
 
         let window = if let Some(bytes) = mem_bytes {
-            let end = meta
-                .read_offset
-                .saturating_add(total_unread.min(window_cap))
-                .min(bytes.len());
-            let start_off = meta.read_offset.min(end);
-            bytes[start_off..end].to_vec()
+            if bytes.len() < meta.retained_bytes {
+                return Err(UnifiedExecError::process_failed(format!(
+                    "retained output buffer for process {process_id} is truncated ({} bytes available, expected {})",
+                    bytes.len(),
+                    meta.retained_bytes
+                )));
+            }
+            let end = meta.read_offset.saturating_add(expected_window_len);
+            bytes[meta.read_offset..end].to_vec()
         } else {
             let read_offset = meta.read_offset;
             let retained_bytes = meta.retained_bytes;
@@ -1541,21 +1669,21 @@ impl UnifiedExecProcessManager {
             })?
         };
 
-        let effective_unread = if window.len() < total_unread.min(window_cap) {
-            // File was shorter than recorded metadata; clamp so paging terminates cleanly.
-            meta.retained_bytes = meta.read_offset.saturating_add(window.len());
-            window.len()
-        } else {
-            total_unread
-        };
-        let unread_total_bytes = (effective_unread as u64).saturating_add(
+        if window.len() < expected_window_len {
+            return Err(UnifiedExecError::process_failed(format!(
+                "retained output for process {process_id} is truncated (read {} bytes, expected {expected_window_len})",
+                window.len()
+            )));
+        }
+
+        let unread_total_bytes = (total_unread as u64).saturating_add(
             meta.discarded_bytes
                 .saturating_sub(meta.reported_discarded_bytes),
         );
         let original_token_count = approx_tokens_from_u64(unread_total_bytes);
         let page = slice_next_page(
             &window,
-            effective_unread,
+            total_unread,
             meta.discarded_bytes,
             meta.reported_discarded_bytes,
             page_budget,
@@ -1571,18 +1699,18 @@ impl UnifiedExecProcessManager {
             && !storage.is_ephemeral()
         {
             let meta_for_disk = meta.clone();
-            match tokio::task::spawn_blocking(move || storage.persist_meta(&meta_for_disk)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    warn!(process_id, "failed to update retained exec metadata: {err}");
-                }
-                Err(err) => {
-                    warn!(
-                        process_id,
-                        "retained exec metadata persistence task failed: {err}"
-                    );
-                }
-            }
+            tokio::task::spawn_blocking(move || storage.persist_meta(&meta_for_disk))
+                .await
+                .map_err(|err| {
+                    UnifiedExecError::process_failed(format!(
+                        "retained exec metadata persistence task failed for process {process_id}: {err}"
+                    ))
+                })?
+                .map_err(|err| {
+                    UnifiedExecError::process_failed(format!(
+                        "failed to update retained exec metadata for process {process_id}: {err}"
+                    ))
+                })?;
         }
 
         {
@@ -1591,6 +1719,7 @@ impl UnifiedExecProcessManager {
                 store.retained.remove(&process_id);
             } else if let Some(entry) = store.retained.get_mut(&process_id) {
                 entry.meta = meta.clone();
+                entry.post_tool_use_pending = false;
             }
         }
 
@@ -1606,42 +1735,40 @@ impl UnifiedExecProcessManager {
             original_token_count: Some(original_token_count),
             hook_command: meta.hook_command,
             tool_cwd: meta.tool_cwd,
-            emit_post_tool_use: false,
+            emit_post_tool_use: post_tool_use_pending,
         })
     }
 
-    async fn persist_running_delta(
+    async fn persist_running_suffix(
         &self,
         process_id: i32,
         expected_process: &Arc<UnifiedExecProcess>,
+        output_buffer: &Arc<Mutex<OutputBuffers>>,
         previously_persisted_bytes: usize,
-        bytes: Vec<u8>,
+        suffix_bytes: Vec<u8>,
         meta: RetainedExecMeta,
-    ) {
+    ) -> Result<(), UnifiedExecError> {
         let Some(storage) = self.storage.clone() else {
-            return;
+            return Ok(());
         };
         if storage.is_ephemeral() {
-            return;
+            return Ok(());
         }
-        let persisted_len = match tokio::task::spawn_blocking(move || {
-            storage.persist_delta(process_id, previously_persisted_bytes, &bytes, &meta)
+        let persisted_len = tokio::task::spawn_blocking(move || {
+            storage.persist_suffix(process_id, previously_persisted_bytes, &suffix_bytes, &meta)
         })
         .await
-        {
-            Ok(Ok(written)) => written,
-            Ok(Err(err)) => {
-                warn!(process_id, "failed to persist running exec output: {err}");
-                return;
-            }
-            Err(err) => {
-                warn!(
-                    process_id,
-                    "running exec output persistence task failed: {err}"
-                );
-                return;
-            }
-        };
+        .map_err(|err| {
+            UnifiedExecError::process_failed(format!(
+                "running exec output persistence task failed for process {process_id}: {err}"
+            ))
+        })?
+        .map_err(|err| {
+            UnifiedExecError::process_failed(format!(
+                "failed to persist running exec output for process {process_id}: {err}"
+            ))
+        })?;
+        output_buffer.lock().await.persisted_bytes = persisted_len;
         let mut store = self.process_store.lock().await;
         if let Some(entry) = store
             .processes
@@ -1651,96 +1778,101 @@ impl UnifiedExecProcessManager {
             entry.persisted_bytes = persisted_len;
             entry.persisted = true;
         }
+        Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn store_retained_exited(
         &self,
         process_id: i32,
+        expected_process: Option<&Arc<UnifiedExecProcess>>,
+        output_buffer: &Arc<Mutex<OutputBuffers>>,
         previously_persisted_bytes: usize,
-        bytes: Vec<u8>,
+        suffix_bytes: Vec<u8>,
+        mem_bytes: Option<Arc<Vec<u8>>>,
         meta: RetainedExecMeta,
-    ) {
+        post_tool_use_pending: bool,
+    ) -> Result<(), UnifiedExecError> {
         let (bin_path, mem_bytes) = if let Some(storage) = self.storage.clone()
             && !storage.is_ephemeral()
         {
             let bin_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
             let meta_for_disk = meta.clone();
-            let bytes_for_disk = bytes;
-            let persisted = tokio::task::spawn_blocking(move || {
-                match storage.persist_delta(
+            let persisted_len = tokio::task::spawn_blocking(move || {
+                storage.persist_suffix(
                     process_id,
                     previously_persisted_bytes,
-                    &bytes_for_disk,
+                    &suffix_bytes,
                     &meta_for_disk,
-                ) {
-                    Ok(_) => Ok(()),
-                    Err(err) => Err((err, bytes_for_disk)),
-                }
+                )
             })
-            .await;
-            match persisted {
-                Ok(Ok(())) => (bin_path, None),
-                Ok(Err((err, fallback_bytes))) => {
-                    warn!(process_id, "failed to persist exited exec output: {err}");
-                    (bin_path, Some(Arc::new(fallback_bytes)))
-                }
-                Err(err) => {
-                    warn!(
-                        process_id,
-                        "exited exec output persistence task failed: {err}"
-                    );
-                    (bin_path, None)
-                }
-            }
+            .await
+            .map_err(|err| {
+                UnifiedExecError::process_failed(format!(
+                    "exited exec output persistence task failed for process {process_id}: {err}"
+                ))
+            })?
+            .map_err(|err| {
+                UnifiedExecError::process_failed(format!(
+                    "failed to persist exited exec output for process {process_id}: {err}"
+                ))
+            })?;
+            output_buffer.lock().await.persisted_bytes = persisted_len;
+            (bin_path, None)
         } else {
-            (PathBuf::new(), Some(Arc::new(bytes)))
+            (PathBuf::new(), mem_bytes)
         };
 
-        let mut store = self.process_store.lock().await;
-        store.reserved_process_ids.insert(process_id);
-        store.retained.insert(
-            process_id,
-            RetainedEntry {
-                meta,
-                bin_path,
-                bytes: mem_bytes,
-                interaction_lock: Arc::new(Mutex::new(())),
-            },
-        );
+        let removed = {
+            let mut store = self.process_store.lock().await;
+            store.transition_live_to_retained(
+                process_id,
+                expected_process,
+                RetainedEntry {
+                    meta,
+                    bin_path,
+                    bytes: mem_bytes,
+                    interaction_lock: Arc::new(Mutex::new(())),
+                    post_tool_use_pending,
+                },
+            )
+        };
+        if let Some(entry) = removed {
+            unregister_network_approval_for_entry(&entry).await;
+        }
+        Ok(())
     }
 
     async fn persist_exhausted(
         &self,
         process_id: i32,
+        output_buffer: &Arc<Mutex<OutputBuffers>>,
         previously_persisted_bytes: usize,
-        bytes: Vec<u8>,
+        suffix_bytes: Vec<u8>,
         meta: RetainedExecMeta,
-    ) {
+    ) -> Result<(), UnifiedExecError> {
         let Some(storage) = self.storage.clone() else {
-            return;
+            return Ok(());
         };
         if storage.is_ephemeral() {
-            return;
+            return Ok(());
         }
-        match tokio::task::spawn_blocking(move || {
-            storage.persist_delta(process_id, previously_persisted_bytes, &bytes, &meta)
+        let persisted_len = tokio::task::spawn_blocking(move || {
+            storage.persist_suffix(process_id, previously_persisted_bytes, &suffix_bytes, &meta)
         })
         .await
-        {
-            Ok(Ok(_)) => {}
-            Ok(Err(err)) => {
-                warn!(
-                    process_id,
-                    "failed to persist exhausted exec metadata: {err}"
-                );
-            }
-            Err(err) => {
-                warn!(
-                    process_id,
-                    "exhausted exec metadata persistence task failed: {err}"
-                );
-            }
-        }
+        .map_err(|err| {
+            UnifiedExecError::process_failed(format!(
+                "exhausted exec metadata persistence task failed for process {process_id}: {err}"
+            ))
+        })?
+        .map_err(|err| {
+            UnifiedExecError::process_failed(format!(
+                "failed to persist exhausted exec metadata for process {process_id}: {err}"
+            ))
+        })?;
+        output_buffer.lock().await.persisted_bytes = persisted_len;
+        Ok(())
     }
 
     async fn refresh_process_state(
@@ -1749,17 +1881,16 @@ impl UnifiedExecProcessManager {
         expected_process: &Arc<UnifiedExecProcess>,
         retention: OutputRetention,
     ) -> ProcessStatus {
-        let mut store = self.process_store.lock().await;
+        let store = self.process_store.lock().await;
         let Some(entry) = store
             .processes
-            .get_mut(&process_id)
+            .get(&process_id)
             .filter(|entry| Arc::ptr_eq(&entry.process, expected_process))
         else {
             return ProcessStatus::Unknown;
         };
 
         let exit_code = entry.process.exit_code();
-        let process_id = entry.process_id;
 
         if entry.process.has_exited() {
             let output = entry.process.output_handles();
@@ -1776,12 +1907,13 @@ impl UnifiedExecProcessManager {
                     call_id: entry.call_id.clone(),
                 };
             }
-            let Some(entry) = store.remove(process_id) else {
-                return ProcessStatus::Unknown;
-            };
             ProcessStatus::Exited {
                 exit_code,
-                entry: Box::new(entry),
+                call_id: entry.call_id.clone(),
+                persisted: entry.persisted,
+                network_approval: entry.network_approval.clone(),
+                session: entry.session.upgrade(),
+                plugin_metrics_sidecar: entry.plugin_metrics_sidecar.clone(),
             }
         } else {
             ProcessStatus::Alive {
@@ -1827,7 +1959,6 @@ impl UnifiedExecProcessManager {
                 .then(|| entry.cwd.clone()),
             process_id: entry.process_id,
             tty: entry.tty,
-            persisted_bytes: entry.persisted_bytes,
             persisted: entry.persisted,
         })
     }
@@ -1888,6 +2019,8 @@ impl UnifiedExecProcessManager {
             started_at,
             network_denial_monitor,
             plugin_metrics_sidecar,
+            Arc::clone(&self.process_store),
+            self.storage.clone(),
         );
         // Install the watcher before cancellable cleanup, and outside the process-store lock.
         if let Some(pruned_entry) = pruned_entry {
@@ -2372,22 +2505,158 @@ impl UnifiedExecProcessManager {
             .map(|(process_id, _, _)| process_id)
     }
 
+    /// Terminate all live background processes for `CleanBackgroundTerminals`
+    /// while preserving already-retained outputs, any unread output collected
+    /// from the terminated processes, and process-ID reservations.
+    pub(crate) async fn clean_background_terminals(&self) {
+        let entries: Vec<ProcessEntry> = {
+            let mut store = self.process_store.lock().await;
+            store.processes.drain().map(|(_, entry)| entry).collect()
+        };
+
+        for entry in entries {
+            unregister_network_approval_for_entry(&entry).await;
+            self.persist_entry_before_termination(&entry, /*retain_in_memory*/ true)
+                .await;
+            entry.process.terminate();
+        }
+    }
+
+    /// Orderly session shutdown: persist any unread collected output from live
+    /// processes before terminating them, then clear in-memory tables.
     pub(crate) async fn terminate_all_processes(&self) {
         let entries: Vec<ProcessEntry> = {
-            let mut processes = self.process_store.lock().await;
-            let entries: Vec<ProcessEntry> = processes
-                .processes
-                .drain()
-                .map(|(_, entry)| entry)
-                .collect();
-            processes.retained.clear();
-            processes.reserved_process_ids.clear();
+            let mut store = self.process_store.lock().await;
+            let entries: Vec<ProcessEntry> =
+                store.processes.drain().map(|(_, entry)| entry).collect();
+            store.retained.clear();
+            store.reserved_process_ids.clear();
             entries
         };
 
         for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
+            self.persist_entry_before_termination(&entry, /*retain_in_memory*/ false)
+                .await;
             entry.process.terminate();
+        }
+    }
+
+    async fn persist_entry_before_termination(&self, entry: &ProcessEntry, retain_in_memory: bool) {
+        let process_id = entry.process_id;
+        let output_buffer = Arc::clone(&entry.process.output_handles().output_buffer);
+        let has_persistent_storage = self
+            .storage
+            .as_ref()
+            .is_some_and(|storage| !storage.is_ephemeral());
+        let snapshot = {
+            let guard = output_buffer.lock().await;
+            let has_unread = guard.unread_total_bytes() > 0;
+            if !has_unread && !entry.persisted {
+                None
+            } else {
+                Some((
+                    has_unread,
+                    RetainedSuffixSnapshot {
+                        previously_persisted_bytes: guard.persisted_bytes,
+                        suffix_bytes: if has_persistent_storage {
+                            guard.suffix_from(guard.persisted_bytes)
+                        } else {
+                            Vec::new()
+                        },
+                        mem_bytes: (retain_in_memory && !has_persistent_storage && has_unread)
+                            .then(|| Arc::new(guard.retained.to_bytes())),
+                        retained_bytes: guard.retained.retained_bytes(),
+                        discarded_bytes: guard.retained.discarded_bytes(),
+                        read_offset: guard.read_offset,
+                        reported_discarded_bytes: guard.reported_discarded_bytes,
+                    },
+                ))
+            }
+        };
+
+        let Some((has_unread, snapshot)) = snapshot else {
+            if retain_in_memory && !should_use_deterministic_process_ids() {
+                let mut store = self.process_store.lock().await;
+                if !store.retained.contains_key(&process_id) {
+                    store.reserved_process_ids.remove(&process_id);
+                }
+            }
+            return;
+        };
+
+        let tool_cwd = (entry.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID)
+            .then(|| entry.cwd.clone());
+        let meta = RetainedExecMeta {
+            process_id,
+            call_id: entry.call_id.clone(),
+            environment_id: entry.environment_id.clone(),
+            exit_code: entry.process.exit_code(),
+            completed: true,
+            retained_bytes: snapshot.retained_bytes,
+            discarded_bytes: snapshot.discarded_bytes,
+            read_offset: snapshot.read_offset,
+            reported_discarded_bytes: snapshot.reported_discarded_bytes,
+            exhausted: !has_unread,
+            source_thread_id: None,
+            hook_command: Some(entry.hook_command.clone()),
+            tool_cwd,
+        };
+
+        let bin_path = if let Some(storage) = self.storage.clone()
+            && !storage.is_ephemeral()
+        {
+            let bin_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
+            let meta_for_disk = meta.clone();
+            match tokio::task::spawn_blocking(move || {
+                storage.persist_suffix(
+                    process_id,
+                    snapshot.previously_persisted_bytes,
+                    &snapshot.suffix_bytes,
+                    &meta_for_disk,
+                )
+            })
+            .await
+            {
+                Ok(Ok(new_len)) => {
+                    output_buffer.lock().await.persisted_bytes = new_len;
+                    Some(bin_path)
+                }
+                Ok(Err(err)) => {
+                    warn!(
+                        process_id,
+                        "failed to persist exec output before termination: {err}"
+                    );
+                    None
+                }
+                Err(err) => {
+                    warn!(
+                        process_id,
+                        "exec output persistence task failed before termination: {err}"
+                    );
+                    None
+                }
+            }
+        } else {
+            Some(PathBuf::new())
+        };
+
+        if retain_in_memory
+            && has_unread
+            && let Some(bin_path) = bin_path
+        {
+            let mut store = self.process_store.lock().await;
+            store.reserved_process_ids.insert(process_id);
+            store.retained.insert(
+                process_id,
+                RetainedEntry {
+                    meta,
+                    bin_path,
+                    bytes: snapshot.mem_bytes,
+                    interaction_lock: Arc::new(Mutex::new(())),
+                    post_tool_use_pending: false,
+                },
+            );
         }
     }
 
@@ -2407,7 +2676,7 @@ impl UnifiedExecProcessManager {
         if let Some(entry) = store
             .retained
             .get(&process_id)
-            .filter(|entry| !entry.meta.exhausted)
+            .filter(|entry| !entry.meta.exhausted || entry.post_tool_use_pending)
         {
             return Ok(TerminalSession {
                 process_id,
@@ -2478,6 +2747,185 @@ impl UnifiedExecProcessManager {
     }
 }
 
+/// Persist any newly collected output of an exited background process and
+/// atomically transition it from `store.processes` into `store.retained`
+/// without waiting for another `write_stdin` poll.
+pub(super) async fn persist_and_retain_on_exit(
+    process_store: &Arc<Mutex<ProcessStore>>,
+    storage: Option<&RetainedExecStorage>,
+    process: &Arc<UnifiedExecProcess>,
+    process_id: i32,
+) {
+    let _interaction_guard = process.interaction_lock().lock_owned().await;
+    if process.failure_message().is_some() {
+        return;
+    }
+
+    let (
+        call_id,
+        environment_id,
+        hook_command,
+        tool_cwd,
+        entry_persisted,
+        network_approval,
+        session,
+    ) = {
+        let store = process_store.lock().await;
+        let Some(entry) = store
+            .processes
+            .get(&process_id)
+            .filter(|entry| Arc::ptr_eq(&entry.process, process))
+        else {
+            return;
+        };
+        if entry.initial_exec_command_active.load(Ordering::Acquire) {
+            return;
+        }
+        if entry
+            .network_approval
+            .as_ref()
+            .is_some_and(DeferredNetworkApproval::is_cancelled)
+        {
+            return;
+        }
+        let output = entry.process.output_handles();
+        if output.drain_policy == OutputDrainPolicy::WaitForOutputClosure
+            && !entry.process.termination_requested.load(Ordering::Acquire)
+            && !output.output_closed.load(Ordering::Acquire)
+        {
+            return;
+        }
+        let tool_cwd = (entry.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID)
+            .then(|| entry.cwd.clone());
+        (
+            entry.call_id.clone(),
+            entry.environment_id.clone(),
+            entry.hook_command.clone(),
+            tool_cwd,
+            entry.persisted,
+            entry.network_approval.clone(),
+            entry.session.upgrade(),
+        )
+    };
+
+    if let Err(message) = finish_deferred_network_approval_after_process_exit_for_session(
+        session.as_ref(),
+        network_approval,
+    )
+    .await
+    {
+        process.fail_and_terminate(message);
+        return;
+    }
+
+    let output_buffer = Arc::clone(&process.output_handles().output_buffer);
+    let has_persistent_storage = storage.is_some_and(|s| !s.is_ephemeral());
+    let snapshot = {
+        let guard = output_buffer.lock().await;
+        let has_unread = guard.unread_total_bytes() > 0;
+        if !has_unread && !entry_persisted {
+            return;
+        }
+        (
+            has_unread,
+            RetainedSuffixSnapshot {
+                previously_persisted_bytes: guard.persisted_bytes,
+                suffix_bytes: if has_persistent_storage {
+                    guard.suffix_from(guard.persisted_bytes)
+                } else {
+                    Vec::new()
+                },
+                mem_bytes: (!has_persistent_storage && has_unread)
+                    .then(|| Arc::new(guard.retained.to_bytes())),
+                retained_bytes: guard.retained.retained_bytes(),
+                discarded_bytes: guard.retained.discarded_bytes(),
+                read_offset: guard.read_offset,
+                reported_discarded_bytes: guard.reported_discarded_bytes,
+            },
+        )
+    };
+
+    let (has_unread, snapshot) = snapshot;
+    let meta = RetainedExecMeta {
+        process_id,
+        call_id,
+        environment_id,
+        exit_code: process.exit_code(),
+        completed: true,
+        retained_bytes: snapshot.retained_bytes,
+        discarded_bytes: snapshot.discarded_bytes,
+        read_offset: snapshot.read_offset,
+        reported_discarded_bytes: snapshot.reported_discarded_bytes,
+        exhausted: !has_unread,
+        source_thread_id: None,
+        hook_command: Some(hook_command),
+        tool_cwd,
+    };
+
+    let bin_path = if let Some(storage) = storage.cloned()
+        && !storage.is_ephemeral()
+    {
+        let bin_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
+        let meta_for_disk = meta.clone();
+        match tokio::task::spawn_blocking(move || {
+            storage.persist_suffix(
+                process_id,
+                snapshot.previously_persisted_bytes,
+                &snapshot.suffix_bytes,
+                &meta_for_disk,
+            )
+        })
+        .await
+        {
+            Ok(Ok(new_len)) => {
+                output_buffer.lock().await.persisted_bytes = new_len;
+                bin_path
+            }
+            Ok(Err(err)) => {
+                warn!(
+                    process_id,
+                    "failed to persist exited background exec output: {err}"
+                );
+                return;
+            }
+            Err(err) => {
+                warn!(
+                    process_id,
+                    "exited background exec output persistence task failed: {err}"
+                );
+                return;
+            }
+        }
+    } else {
+        PathBuf::new()
+    };
+
+    let removed = {
+        let mut store = process_store.lock().await;
+        if !store
+            .processes
+            .get(&process_id)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.process, process))
+        {
+            return;
+        }
+        store.transition_live_to_retained(
+            process_id,
+            Some(process),
+            RetainedEntry {
+                meta,
+                bin_path,
+                bytes: snapshot.mem_bytes,
+                interaction_lock: Arc::new(Mutex::new(())),
+                post_tool_use_pending: true,
+            },
+        )
+    };
+    if let Some(entry) = removed {
+        unregister_network_approval_for_entry(&entry).await;
+    }
+}
+
 #[derive(PartialEq, Eq)]
 enum OutputRetention {
     UntilExit,
@@ -2491,7 +2939,11 @@ enum ProcessStatus {
     },
     Exited {
         exit_code: Option<i32>,
-        entry: Box<ProcessEntry>,
+        call_id: String,
+        persisted: bool,
+        network_approval: Option<DeferredNetworkApproval>,
+        session: Option<Arc<crate::session::session::Session>>,
+        plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
     },
     Unknown,
 }

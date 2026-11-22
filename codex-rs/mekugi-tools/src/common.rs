@@ -3,6 +3,10 @@ use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
+use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Maximum safe JavaScript integer (`2^53 - 1`), matching Go `commandargs`.
 pub const MAX_SAFE_INT: u64 = (1u64 << 53) - 1;
@@ -147,4 +151,77 @@ pub fn to_valid_utf8_collapsed(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Place a child command into its own Unix process group (`setpgid(0, 0)`) so teardown
+/// can terminate the entire descendant tree cleanly on both Linux and macOS.
+pub fn configure_new_process_group(cmd: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setpgid(0, 0);
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
+/// Send `SIGKILL` to the child's entire Unix process group (`kill(-pid, SIGKILL)`).
+pub fn kill_process_group(pid: i32) {
+    #[cfg(unix)]
+    if pid > 0 {
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
+/// Kill the child's entire process group and reap the child process.
+pub fn retire_child_process_group(child: &mut Child) {
+    let pid = child.id() as i32;
+    kill_process_group(pid);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Spawn a reader thread whose result is delivered over a bounded `sync_channel(1)` so
+/// callers can enforce a bounded drain timeout without hanging on inherited-pipe descendants.
+pub fn spawn_bounded_reader<T, F>(f: F) -> (mpsc::Receiver<T>, std::thread::JoinHandle<()>)
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let (tx, rx) = mpsc::sync_channel(1);
+    let handle = std::thread::spawn(move || {
+        let value = f();
+        let _ = tx.send(value);
+    });
+    (rx, handle)
+}
+
+/// Wait up to `timeout` for a reader thread spawned via [`spawn_bounded_reader`].
+/// If the result arrives in time, join the thread immediately; otherwise return `None`
+/// without blocking forever on a leaked pipe descriptor.
+pub fn recv_reader_with_timeout<T>(
+    rx: mpsc::Receiver<T>,
+    handle: std::thread::JoinHandle<()>,
+    timeout: Duration,
+) -> Option<T> {
+    match rx.recv_timeout(timeout) {
+        Ok(value) => {
+            let _ = handle.join();
+            Some(value)
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = handle.join();
+            None
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => None,
+    }
 }

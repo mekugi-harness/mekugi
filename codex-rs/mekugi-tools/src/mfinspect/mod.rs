@@ -11,7 +11,7 @@ use crate::common::quote_json_string;
 use crate::sourcekind;
 use crate::structure;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 struct InspectionData {
     path: String,
     kind: String,
@@ -20,14 +20,6 @@ struct InspectionData {
     line_count: Option<usize>,
     parse_complete: bool,
     outline: Vec<structure::Entry>,
-}
-
-#[derive(Debug, Serialize)]
-struct SuccessEnvelope {
-    ok: bool,
-    data: InspectionData,
-    truncated: bool,
-    truncation: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,15 +187,100 @@ fn compact_outline(data: &InspectionData) -> Vec<String> {
     rows
 }
 
+fn write_json_str(out: &mut String, s: &str) {
+    out.push_str(&serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string()));
+}
+
+fn write_json_entry(out: &mut String, entry: &structure::Entry) {
+    out.push_str("{\"kind\":");
+    write_json_str(out, &entry.kind);
+    match entry.kind.as_str() {
+        "method" => {
+            out.push_str(",\"name\":");
+            match entry.name_raw_json.as_deref() {
+                Some(raw) => out.push_str(raw),
+                None => write_json_str(out, &entry.name),
+            }
+            out.push_str(",\"receiver\":");
+            write_json_str(out, &entry.receiver);
+            let _ = write!(
+                out,
+                ",\"line\":{},\"line_end\":{}",
+                entry.line, entry.end_line
+            );
+        }
+        "json" => {
+            out.push_str(",\"pointer\":");
+            match entry.pointer_raw_json.as_deref() {
+                Some(raw) => out.push_str(raw),
+                None => write_json_str(out, &entry.pointer),
+            }
+            out.push_str(",\"value_type\":");
+            write_json_str(out, &entry.value_type);
+            let _ = write!(
+                out,
+                ",\"line\":{},\"line_end\":{}",
+                entry.line, entry.end_line
+            );
+        }
+        "heading" => {
+            out.push_str(",\"name\":");
+            match entry.name_raw_json.as_deref() {
+                Some(raw) => out.push_str(raw),
+                None => write_json_str(out, &entry.name),
+            }
+            let _ = write!(
+                out,
+                ",\"level\":{},\"line\":{},\"line_end\":{}",
+                entry.level, entry.line, entry.end_line
+            );
+        }
+        _ => {
+            out.push_str(",\"name\":");
+            match entry.name_raw_json.as_deref() {
+                Some(raw) => out.push_str(raw),
+                None => write_json_str(out, &entry.name),
+            }
+            let _ = write!(
+                out,
+                ",\"line\":{},\"line_end\":{}",
+                entry.line, entry.end_line
+            );
+        }
+    }
+    out.push('}');
+}
+
 fn json_envelope(data: InspectionData) -> String {
-    let envelope = SuccessEnvelope {
-        ok: true,
-        data,
-        truncated: false,
-        truncation: None,
-    };
-    let encoded = serde_json::to_string(&envelope).unwrap_or_default();
-    format!("{encoded}\n")
+    let mut out = String::from("{\"ok\":true,\"data\":{\"path\":");
+    write_json_str(&mut out, &data.path);
+    out.push_str(",\"kind\":");
+    write_json_str(&mut out, &data.kind);
+    out.push_str(",\"language\":");
+    match data.language.as_deref() {
+        Some(lang) => write_json_str(&mut out, lang),
+        None => out.push_str("null"),
+    }
+    let _ = write!(out, ",\"size_bytes\":{},\"line_count\":", data.size_bytes);
+    match data.line_count {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
+        None => out.push_str("null"),
+    }
+    let _ = write!(
+        out,
+        ",\"parse_complete\":{},\"outline\":[",
+        data.parse_complete
+    );
+    for (idx, entry) in data.outline.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        write_json_entry(&mut out, entry);
+    }
+    out.push_str("]},\"truncated\":false,\"truncation\":null}\n");
+    out
 }
 
 pub fn execute(args: &[String]) -> ToolOutput {

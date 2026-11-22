@@ -47,6 +47,7 @@ pub(crate) struct OutputBuffers<const MAX_BYTES: usize = MAX_RETAINED_OUTPUT_BYT
     pub(super) retained: HeadRetainedBuffer<MAX_BYTES>,
     pub(super) read_offset: usize,
     pub(super) reported_discarded_bytes: u64,
+    pub(super) persisted_bytes: usize,
 }
 
 impl<const MAX_BYTES: usize> OutputBuffers<MAX_BYTES> {
@@ -76,22 +77,41 @@ impl<const MAX_BYTES: usize> OutputBuffers<MAX_BYTES> {
         unread_retained.saturating_add(unreported_discarded)
     }
 
-    pub(super) fn take_next_page(
-        &mut self,
+    pub(super) fn peek_next_page(
+        &self,
         page_budget_bytes: usize,
         stream_complete: bool,
     ) -> PageSlice {
         let unread = &self.retained.as_bytes()[self.read_offset..];
-        let page = slice_next_page(
+        slice_next_page(
             unread,
             unread.len(),
             self.retained.discarded_bytes(),
             self.reported_discarded_bytes,
             page_budget_bytes,
             stream_complete,
-        );
+        )
+    }
+
+    pub(super) fn commit_page(&mut self, page: &PageSlice) {
         self.read_offset += page.consumed_bytes;
         self.reported_discarded_bytes = page.reported_discarded_bytes;
+    }
+
+    pub(super) fn suffix_from(&self, offset: usize) -> Vec<u8> {
+        let bytes = self.retained.as_bytes();
+        let start = offset.min(bytes.len());
+        bytes[start..].to_vec()
+    }
+
+    #[cfg(test)]
+    pub(super) fn take_next_page(
+        &mut self,
+        page_budget_bytes: usize,
+        stream_complete: bool,
+    ) -> PageSlice {
+        let page = self.peek_next_page(page_budget_bytes, stream_complete);
+        self.commit_page(&page);
         page
     }
 }
