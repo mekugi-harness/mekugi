@@ -20,7 +20,6 @@ use sha2::Sha256;
 
 const SHA256_HEX_LEN: usize = 64;
 const NULL_SHA256_DIGEST: [u8; 32] = [0; 32];
-pub const CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR: &str = "CODEX_BUNDLED_RESOURCE_DIR";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BundledBwrapLauncher {
@@ -60,13 +59,7 @@ fn find_program(
     env: impl Fn(&str) -> Option<OsString>,
 ) -> Option<AbsolutePathBuf> {
     find_for_install_context(context)
-        .or_else(|| find_legacy_for_exe(exe, /*bazel_candidate*/ None))
-        .or_else(|| find_for_bundled_resource_dir(&env))
-        .or_else(|| {
-            bazel_bwrap::candidate(cwd, &env)
-                .filter(|path| is_executable_file(path))
-                .and_then(|path| AbsolutePathBuf::from_absolute_path(&path).ok())
-        })
+        .or_else(|| find_legacy_for_exe(exe, bazel_bwrap::candidate(cwd, env)))
 }
 
 impl BundledBwrapLauncher {
@@ -112,31 +105,6 @@ fn find_for_install_context(context: &InstallContext) -> Option<AbsolutePathBuf>
     context
         .bundled_resource("bwrap")
         .filter(|path| is_executable_file(path))
-}
-
-fn find_for_bundled_resource_dir(
-    env: &impl Fn(&str) -> Option<OsString>,
-) -> Option<AbsolutePathBuf> {
-    let raw = env(CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR)?;
-    if raw.is_empty() {
-        return None;
-    }
-    let resource_dir = PathBuf::from(raw);
-    if !resource_dir.is_absolute()
-        || !std::fs::metadata(&resource_dir).is_ok_and(|meta| meta.is_dir())
-    {
-        return None;
-    }
-    let mut candidates = Vec::with_capacity(3);
-    candidates.push(resource_dir.join("codex-resources").join("bwrap"));
-    if let Some(parent) = resource_dir.parent() {
-        candidates.push(parent.join("codex-resources").join("bwrap"));
-    }
-    candidates.push(resource_dir.join("bwrap"));
-    candidates
-        .into_iter()
-        .find(|candidate| is_executable_file(candidate))
-        .and_then(|path| AbsolutePathBuf::from_absolute_path(&path).ok())
 }
 
 fn find_legacy_for_exe(exe: &Path, bazel_candidate: Option<PathBuf>) -> Option<AbsolutePathBuf> {

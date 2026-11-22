@@ -176,8 +176,6 @@ impl RuntimePathPrepends {
 }
 
 #[cfg(unix)]
-pub(crate) const CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR: &str = "CODEX_BUNDLED_RESOURCE_DIR";
-#[cfg(unix)]
 pub(crate) const CODEX_ARG0_PATH_DIR_ENV_VAR: &str = "CODEX_ARG0_PATH_DIR";
 
 #[cfg(unix)]
@@ -211,15 +209,8 @@ pub(crate) fn apply_runtime_path_prepends(
     env: &mut HashMap<String, String>,
     runtime_path_prepends: &mut RuntimePathPrepends,
     arg0_path_dir: Option<&Path>,
-    bundled_resource_dir: Option<&Path>,
 ) {
     apply_package_path_prepend(env, runtime_path_prepends);
-    if let Some(resource_dir) = bundled_resource_dir
-        && resource_dir.is_absolute()
-    {
-        env.entry(CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR.to_string())
-            .or_insert_with(|| resource_dir.to_string_lossy().into_owned());
-    }
     if let Some(arg0_dir) = arg0_path_dir
         && arg0_dir.is_absolute()
     {
