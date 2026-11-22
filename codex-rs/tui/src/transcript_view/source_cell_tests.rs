@@ -62,7 +62,7 @@ fn question_copy_retains_answer_labels_masks_secrets_and_keeps_unanswered_suffix
     let answer = "Preserve all of the existing selection and navigation controls across resize.";
     let secret_question = ToolRequestUserInputQuestion {
         id: "secret".to_owned(),
-        header: "Token".to_owned(),
+        header: Some("Token".to_owned()),
         question: "Which token?".to_owned(),
         is_other: false,
         is_secret: true,
@@ -72,7 +72,7 @@ fn question_copy_retains_answer_labels_masks_secrets_and_keeps_unanswered_suffix
         questions: vec![
             ToolRequestUserInputQuestion {
                 id: "behavior".to_owned(),
-                header: "Behavior".to_owned(),
+                header: Some("Behavior".to_owned()),
                 question: question.to_owned(),
                 is_other: false,
                 is_secret: false,
@@ -90,13 +90,17 @@ fn question_copy_retains_answer_labels_masks_secrets_and_keeps_unanswered_suffix
             (
                 "behavior".to_owned(),
                 ToolRequestUserInputAnswer {
-                    answers: vec![answer.to_owned()],
+                    id: "behavior".to_owned(),
+                    other: Some(answer.to_owned()),
+                    ..Default::default()
                 },
             ),
             (
                 "secret".to_owned(),
                 ToolRequestUserInputAnswer {
-                    answers: vec!["never expose this credential".to_owned()],
+                    id: "secret".to_owned(),
+                    other: Some("never expose this credential".to_owned()),
+                    ..Default::default()
                 },
             ),
         ]),

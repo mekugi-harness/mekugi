@@ -1986,7 +1986,7 @@ mod tests {
                         item_id: "call-1".to_string(),
                         questions: vec![ToolRequestUserInputQuestion {
                             id: "question-1".to_string(),
-                            header: "Mode".to_string(),
+                            header: Some("Mode".to_string()),
                             question: "Pick one".to_string(),
                             is_other: false,
                             is_secret: false,
@@ -2049,7 +2049,7 @@ mod tests {
                             item_id: "call-1".to_string(),
                             questions: vec![ToolRequestUserInputQuestion {
                                 id: "question-1".to_string(),
-                                header: "Mode".to_string(),
+                                header: Some("Mode".to_string()),
                                 question: "Pick one".to_string(),
                                 is_other: false,
                                 is_secret: false,

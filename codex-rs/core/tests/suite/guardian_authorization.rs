@@ -37,7 +37,6 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use std::collections::HashMap;
 use std::time::Duration;
 use test_case::test_case;
 use tokio::sync::oneshot;
@@ -76,7 +75,7 @@ async fn guardian_revalidates_owning_session_before_allow(
                 "confirm-command",
                 "request_user_input",
                 &json!({"questions": [{
-                    "id": "execute", "header": "Execute", "question": "May I run the command?",
+                     "header": "Execute", "question": "May I run the command?",
                     "options": [
                         {"label": "Yes", "description": "Run the command."},
                         {"label": "No", "description": "Do not run the command."}
@@ -250,12 +249,11 @@ async fn guardian_revalidates_owning_session_before_allow(
             .submit(Op::UserInputAnswer {
                 id: request.turn_id,
                 response: RequestUserInputResponse {
-                    answers: HashMap::from([(
-                        "execute".to_owned(),
-                        RequestUserInputAnswer {
-                            answers: vec!["No. Do not run the command.".to_owned()],
-                        },
-                    )]),
+                    answers: vec![RequestUserInputAnswer {
+                        id: request.questions[0].id.clone(),
+                        other: Some("No. Do not run the command.".to_owned()),
+                        ..Default::default()
+                    }],
                 },
             })
             .await?;

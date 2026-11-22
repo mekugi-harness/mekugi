@@ -187,7 +187,75 @@ fn finalize_active_segment<'a>(
     active_segment.turn_attribution
 }
 
+pub(super) fn question_id_high_water_mark(items: &[RolloutItem]) -> u64 {
+    let checkpoint_high_water_mark = items
+        .iter()
+        .filter_map(|item| {
+            if let RolloutItem::Compacted(compacted) = item {
+                compacted
+                    .resume_metadata
+                    .as_ref()?
+                    .question_id_high_water_mark
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    let question_high_water_mark = items
+        .iter()
+        .flat_map(|item| {
+            let questions = match item {
+                RolloutItem::EventMsg(EventMsg::RequestUserInput(event)) => {
+                    return event
+                        .questions
+                        .iter()
+                        .map(|question| question.id.as_str())
+                        .collect::<Vec<_>>();
+                }
+                RolloutItem::EventMsg(EventMsg::ItemStarted(event)) => match &event.item {
+                    codex_protocol::items::TurnItem::AgentMessage(message) => {
+                        message.questions.as_ref()
+                    }
+                    _ => None,
+                },
+                RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => match &event.item {
+                    codex_protocol::items::TurnItem::AgentMessage(message) => {
+                        message.questions.as_ref()
+                    }
+                    _ => None,
+                },
+                RolloutItem::EventMsg(EventMsg::AgentMessage(message)) => {
+                    message.questions.as_ref()
+                }
+                _ => None,
+            };
+            questions
+                .into_iter()
+                .flatten()
+                .map(|question| question.id.as_str())
+                .collect()
+        })
+        .filter_map(|id| id.strip_prefix('q')?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0);
+    checkpoint_high_water_mark.max(question_high_water_mark)
+}
+
 impl Session {
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn allocate_question_ids(&self, count: usize) -> Vec<String> {
+        let mut state = self.state.lock().await;
+        (0..count)
+            .map(|_| {
+                state.question_id_high_water_mark = state
+                    .question_id_high_water_mark
+                    .checked_add(1)
+                    .expect("question ID space exhausted");
+                format!("q{}", state.question_id_high_water_mark)
+            })
+            .collect()
+    }
     pub(super) async fn reconstruct_history_from_rollout(
         &self,
         turn_context: &TurnContext,

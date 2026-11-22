@@ -772,21 +772,31 @@
     "AsyncUserInputQuestion": {
       "additionalProperties": false,
       "properties": {
+        "header": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
         "options": {
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/ToolRequestUserInputOption"
           },
           "type": [
             "array",
             "null"
           ]
         },
-        "title": {
+        "question": {
           "type": "string"
         }
       },
       "required": [
-        "title"
+        "id",
+        "question"
       ],
       "type": "object"
     },
@@ -7348,6 +7358,33 @@
         "outputTokens",
         "reasoningOutputTokens",
         "totalTokens"
+      ],
+      "type": "object"
+    },
+    "ToolRequestUserInputOption": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "preview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recommended": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "label"
       ],
       "type": "object"
     },

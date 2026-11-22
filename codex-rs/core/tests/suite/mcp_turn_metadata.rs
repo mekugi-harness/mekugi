@@ -67,7 +67,6 @@ use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use test_case::test_case;
@@ -503,12 +502,11 @@ async fn apply_turn_attribution_update(
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "confirm_path".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -1722,7 +1720,7 @@ async fn mcp_tool_call_metadata_uses_captured_step_after_request_user_input() ->
     let calendar_call_id = "calendar-call-after-user-input";
     let request_user_input_args = json!({
         "questions": [{
-            "id": "confirm_path",
+
             "header": "Confirm",
             "question": "Proceed with the plan?",
             "options": [{

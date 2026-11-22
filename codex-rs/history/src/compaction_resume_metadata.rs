@@ -18,6 +18,9 @@ use std::sync::Arc;
 /// compactions that did not.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct CompactionResumeMetadata {
+    /// Highest question ordinal when bounded replay omits earlier question events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_id_high_water_mark: Option<u64>,
     /// Next ordinal in the producing thread's seeded item ID sequence at this checkpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_item_ordinal: Option<u64>,

@@ -62,7 +62,6 @@ use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -1248,7 +1247,7 @@ async fn thread_provider_refreshes_at_the_next_step_of_an_active_turn() -> Resul
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue after updating thread instructions?",
                             "options": [{
@@ -1296,12 +1295,11 @@ async fn thread_provider_refreshes_at_the_next_step_of_an_active_turn() -> Resul
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

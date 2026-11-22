@@ -2237,17 +2237,28 @@
       "type": "string"
     },
     "ToolRequestUserInputOption": {
-      "description": "EXPERIMENTAL. Defines a single selectable option for request_user_input.",
+      "additionalProperties": false,
       "properties": {
         "description": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "label": {
           "type": "string"
+        },
+        "preview": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recommended": {
+          "type": "boolean"
         }
       },
       "required": [
-        "description",
         "label"
       ],
       "type": "object"
@@ -2297,7 +2308,10 @@
       "description": "EXPERIMENTAL. Represents one request_user_input question and its required options.",
       "properties": {
         "header": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "id": {
           "type": "string"
@@ -2324,7 +2338,6 @@
         }
       },
       "required": [
-        "header",
         "id",
         "question"
       ],

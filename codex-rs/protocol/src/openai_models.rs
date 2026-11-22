@@ -712,8 +712,8 @@ pub struct ToolMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Complete JSON Schema encoded as a string. Consumed by Multi-Agent V2 tools, Code Mode wait,
-    /// request_user_input_async (the send_user_message_async catalog key), MCP resource helpers,
-    /// and Memento V2 tools.
+    /// MCP resource helpers, and Memento V2 tools. Question tools always use their shared
+    /// harness schema, ignoring catalog parameter overrides.
     /// Uses the harness's supported schema subset; unrecognized keywords are ignored.
     /// Missing, null, invalid or unsupported structures, or a root without `type: "object"`
     /// retains the harness parameters. Schema semantics must remain API-compatible.

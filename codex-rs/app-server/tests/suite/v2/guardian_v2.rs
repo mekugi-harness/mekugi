@@ -347,7 +347,7 @@ async fn wait_for_luna_request(state: &MockResponsesState, index: usize) -> Resu
 fn user_input_request_events() -> Vec<Value> {
     let arguments = json!({
         "questions": [{
-            "id": "browser_authorization",
+
             "header": "Browser",
             "question": "Can I keep using the browser?",
             "options": [{

@@ -31,6 +31,13 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 ## Execution and model guidance
 
+- Both question tools share rich options (preview and explicit recommendation) and
+  optional headings/free-text-only questions. Runtime-assigned qN IDs continue
+  across context resets, forks and resume. Answers are compact indexed objects;
+  async replies use `<question_answers>`, without expansion after context reset.
+  The v2 response now carries an ordered answer vector, not a string-answer map;
+  clients must migrate. Catalog parameter overrides cannot replace this schema.
+
 - Unified exec (`exec_command` / `write_stdin`) paginates oversized output
   head-first instead of middle-truncating, using a 16 MiB head-retained buffer
   per command with tail-discard notices once paging reaches the cap. Empty

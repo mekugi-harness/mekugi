@@ -1628,7 +1628,7 @@ async fn apps_guidance_and_deferred_namespace_appear_after_recovery_within_a_tur
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue after Apps recovers?",
                             "options": [{
@@ -1719,12 +1719,11 @@ async fn apps_guidance_and_deferred_namespace_appear_after_recovery_within_a_tur
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -1838,7 +1837,7 @@ async fn code_mode_discovered_apps_tool_survives_startup_failure_and_recovers() 
     let test = builder().restart_with_auto_env(&server, &warm).await?;
     let question = json!({
         "questions": [{
-            "id": "continue",
+
             "header": "Continue",
             "question": "Continue the tool call?",
             "options": [
@@ -1925,12 +1924,11 @@ async fn code_mode_discovered_apps_tool_survives_startup_failure_and_recovers() 
         .submit(Op::UserInputAnswer {
             id: discovered.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: discovered.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -1975,12 +1973,11 @@ async fn code_mode_discovered_apps_tool_survives_startup_failure_and_recovers() 
         .submit(Op::UserInputAnswer {
             id: invoked.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: invoked.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

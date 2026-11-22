@@ -2002,22 +2002,39 @@ pub(crate) async fn request_mcp_tool_user_approval(
             };
         }
         let args = RequestUserInputArgs {
-            questions: vec![question],
+            questions: vec![question.clone()],
             is_blocking: true,
             auto_resolution_ms: None,
         };
-        let response = sess
+        let mut response = sess
             .request_user_input(turn_context, call_id.to_string(), args)
             .await;
+        if let Some(accepted) = &mut response {
+            for answer in &mut accepted.response.answers {
+                let readable = answer
+                    .is_valid_for(&question)
+                    .then(|| {
+                        answer
+                            .selected_option(&question)
+                            .map(|option| option.label.clone())
+                            .or_else(|| answer.other.clone())
+                    })
+                    .flatten();
+                answer.choice = None;
+                answer.note = None;
+                answer.other = readable;
+            }
+        }
         let cancellation_reason = response
             .as_ref()
-            .and_then(|accepted| accepted.response.answers.get(&question_id))
-            .filter(|answer| {
-                answer
+            .and_then(|accepted| {
+                accepted
+                    .response
                     .answers
                     .iter()
-                    .any(|answer| answer == MCP_TOOL_APPROVAL_CANCEL)
+                    .find(|answer| answer.id == question_id)
             })
+            .filter(|answer| answer.other.as_deref() == Some(MCP_TOOL_APPROVAL_CANCEL))
             .map(|_| McpApprovalCancellationReason::User)
             .or_else(|| {
                 response
@@ -2301,28 +2318,40 @@ fn build_mcp_tool_approval_question(
 
     let mut options = vec![RequestUserInputQuestionOption {
         label: MCP_TOOL_APPROVAL_ACCEPT.to_string(),
-        description: "Run the tool and continue.".to_string(),
+        description: Some("Run the tool and continue.".to_string()),
+        preview: None,
+        recommended: false,
     }];
     if prompt_options.allow_session_remember {
         options.push(RequestUserInputQuestionOption {
             label: MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION.to_string(),
-            description: "Run the tool and remember this choice for this session.".to_string(),
+            description: Some(
+                "Run the tool and remember this choice for this session.".to_string(),
+            ),
+            preview: None,
+            recommended: false,
         });
     }
     if prompt_options.allow_persistent_approval {
         options.push(RequestUserInputQuestionOption {
             label: MCP_TOOL_APPROVAL_ACCEPT_AND_REMEMBER.to_string(),
-            description: "Run the tool and remember this choice for future tool calls.".to_string(),
+            description: Some(
+                "Run the tool and remember this choice for future tool calls.".to_string(),
+            ),
+            preview: None,
+            recommended: false,
         });
     }
     options.push(RequestUserInputQuestionOption {
         label: MCP_TOOL_APPROVAL_CANCEL.to_string(),
-        description: "Cancel this tool call.".to_string(),
+        description: Some("Cancel this tool call.".to_string()),
+        preview: None,
+        recommended: false,
     });
 
     RequestUserInputQuestion {
         id: question_id,
-        header: "Approve app tool call?".to_string(),
+        header: Some("Approve app tool call?".to_string()),
         question,
         is_other: false,
         is_secret: false,
@@ -2563,7 +2592,7 @@ fn request_user_input_response_from_elicitation_content(
 ) -> Option<RequestUserInputResponse> {
     let Some(content) = content else {
         return Some(RequestUserInputResponse {
-            answers: std::collections::HashMap::new(),
+            answers: Vec::new(),
         });
     };
     let content = content.as_object()?;
@@ -2578,11 +2607,15 @@ fn request_user_input_response_from_elicitation_content(
                     .collect(),
                 _ => return None,
             };
-            Some((question_id.clone(), RequestUserInputAnswer { answers }))
+            Some(RequestUserInputAnswer {
+                id: question_id.clone(),
+                other: Some(answers.join("\n")),
+                ..Default::default()
+            })
         })
         .collect();
 
-    Some(RequestUserInputResponse { answers })
+    Some(RequestUserInputResponse { answers: answers })
 }
 
 fn parse_mcp_tool_approval_response(
@@ -2594,25 +2627,17 @@ fn parse_mcp_tool_approval_response(
     };
     let answers = response
         .answers
-        .get(question_id)
-        .map(|answer| answer.answers.as_slice());
+        .iter()
+        .find(|answer| answer.id == question_id)
+        .and_then(|answer| answer.other.as_deref());
     let Some(answers) = answers else {
         return ReviewDecision::Abort;
     };
-    if answers
-        .iter()
-        .any(|answer| answer == MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION)
-    {
+    if answers == MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION {
         ReviewDecision::ApprovedForSession
-    } else if answers
-        .iter()
-        .any(|answer| answer == MCP_TOOL_APPROVAL_ACCEPT_AND_REMEMBER)
-    {
+    } else if answers == MCP_TOOL_APPROVAL_ACCEPT_AND_REMEMBER {
         ReviewDecision::ApprovedMcpPolicyAmendment
-    } else if answers
-        .iter()
-        .any(|answer| answer == MCP_TOOL_APPROVAL_ACCEPT)
-    {
+    } else if answers == MCP_TOOL_APPROVAL_ACCEPT {
         ReviewDecision::Approved
     } else {
         ReviewDecision::Abort

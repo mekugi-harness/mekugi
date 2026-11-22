@@ -5333,7 +5333,7 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
                     DUMMY_CALL_ID,
                     "request_user_input",
                     &json!({"questions": [{
-                        "id": "next", "header": "Next", "question": "Continue?",
+                         "header": "Next", "question": "Continue?",
                         "options": [
                             {"label": "Yes", "description": "Continue."},
                             {"label": "No", "description": "Stop."}
@@ -5424,13 +5424,11 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
         .submit(Op::UserInputAnswer {
             id: turn_id.clone(),
             response: RequestUserInputResponse {
-                answers: [(
-                    "next".into(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes".into()],
-                    },
-                )]
-                .into(),
+                answers: vec![RequestUserInputAnswer {
+                    id: "q1".into(),
+                    other: Some("Yes".into()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

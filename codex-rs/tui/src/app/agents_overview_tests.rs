@@ -1373,7 +1373,7 @@ async fn agents_overview_details_show_available_attention_without_expanding_rows
                 item_id: "question".into(),
                 questions: vec![ToolRequestUserInputQuestion {
                     id: "version".into(),
-                    header: "Version".into(),
+                    header: Some("Version".into()),
                     question: "Which dependency version should I use?".into(),
                     is_other: false,
                     is_secret: false,

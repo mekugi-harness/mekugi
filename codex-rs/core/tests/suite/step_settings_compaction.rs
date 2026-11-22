@@ -71,7 +71,7 @@ async fn compaction_preserves_updated_summary(mode: CompactionMode) -> Result<()
         .await?,
         TurnSettingsUpdateOutcome::Applied
     );
-    answer_paused_turn(&test.codex, &pause.turn_id).await?;
+    answer_paused_turn(&test.codex, &pause).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

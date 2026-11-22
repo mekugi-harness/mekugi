@@ -28,15 +28,17 @@ impl AsyncQuestions {
             }
             // Bound work before cloning or wrapping model-authored suggestions.
             let question = AsyncUserInputQuestion {
-                title: question.title.clone(),
                 options: question.options.as_ref().map(|options| {
                     options
                         .iter()
                         .take(32)
-                        .filter(|label| label.len() <= 512)
+                        .filter(|option| option.label.len() <= 512)
                         .cloned()
                         .collect()
                 }),
+                question: question.question.clone(),
+                id: question.id.clone(),
+                header: question.header.clone(),
             };
             let has_options = question
                 .options
@@ -116,7 +118,7 @@ impl AsyncQuestions {
             .options_state
             .selected_idx
             .and_then(|index| answer.question.options.as_ref()?.get(index))
-            .map(String::as_str)
+            .map(|option| option.label.as_str())
             .unwrap_or_default();
         // Only a fully displayed model-authored option may become user authorization.
         let (first, count) = self.visible_options.get();
@@ -137,7 +139,7 @@ impl AsyncQuestions {
         if text.is_empty() {
             return;
         }
-        let reply = AnsweredQuestion::new(&answer.question_id, &answer.question.title, text)
+        let reply = AnsweredQuestion::new(&answer.question_id, &answer.question.question, text)
             .render()
             .into_text()
             .unwrap_or_default();
@@ -265,7 +267,7 @@ impl PendingQuestion {
             return None;
         }
 
-        let title = &self.question.title;
+        let title = &self.question.question;
         let prefix = take_bytes_at_char_boundary(title, MAX_RECOVERED_QUESTION_TITLE_BYTES);
         let sanitized = sanitize_user_text(prefix.into());
         let mut quoted = textwrap::indent(&sanitized, "> ");

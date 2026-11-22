@@ -48,7 +48,6 @@ use rand::RngCore;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use serde_json::json;
-use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
 use test_case::test_case;
@@ -601,7 +600,7 @@ async fn guardian_answers_survive_compaction_and_eviction() -> Result<()> {
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "publish", "header": "Publish", "question": "May I publish?",
+                             "header": "Publish", "question": "May I publish?",
                             "options": [
                                 {"label": "Yes", "description": "Publish the change."},
                                 {"label": "No", "description": "Keep the change local."}
@@ -634,12 +633,11 @@ async fn guardian_answers_survive_compaction_and_eviction() -> Result<()> {
         .submit(Op::UserInputAnswer {
             id: question.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "publish".to_owned(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Do not publish anything.".to_owned()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: question.questions[0].id.clone(),
+                    other: Some("Do not publish anything.".to_owned()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

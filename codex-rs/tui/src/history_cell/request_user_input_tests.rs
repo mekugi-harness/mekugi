@@ -9,13 +9,15 @@ use ratatui::layout::Rect;
 fn completed_and_interrupted_results() {
     let question = ToolRequestUserInputQuestion {
         id: "choice".into(),
-        header: "Approach".into(),
+        header: Some("Approach".into()),
         question: "Which approach should we use for the next step?".into(),
         is_other: true,
         is_secret: false,
         options: Some(vec![ToolRequestUserInputOption {
             label: "Keep it small".into(),
-            description: "Use the existing helper".into(),
+            description: Some("Use the existing helper".into()),
+            preview: None,
+            recommended: false,
         }]),
     };
     let mut cell = RequestUserInputResultCell {
@@ -23,10 +25,10 @@ fn completed_and_interrupted_results() {
         answers: HashMap::from([(
             "choice".into(),
             ToolRequestUserInputAnswer {
-                answers: vec![
-                    "Keep it small".into(),
-                    "user_note: Preserve the behavior".into(),
-                ],
+                id: "choice".into(),
+                choice: Some(1),
+                note: Some("Preserve the behavior".into()),
+                ..Default::default()
             },
         )]),
         interrupted: false,

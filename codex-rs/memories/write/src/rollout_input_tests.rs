@@ -2,6 +2,26 @@ use super::*;
 use pretty_assertions::assert_eq;
 use std::io::Write;
 
+#[test]
+fn compact_and_legacy_question_answers_retain_human_provenance() {
+    for reply in [
+        r#"[{"id":"q1","choice":2,"note":"keep it"}]"#,
+        r#"[{"id":"q1","other":"free text"}]"#,
+        r#"{"answers":{"legacy":{"answers":["old reply"]}}}"#,
+    ] {
+        assert!(has_user_input_answer(reply), "{reply}");
+    }
+    for reply in [
+        "[]",
+        "invalid json",
+        r#"[{"id":"q1","skipped":true}]"#,
+        r#"[{"id":"q1","other":" "}]"#,
+        r#"[{"id":"q1","choice":0}]"#,
+        r#"{"answers":{}}"#,
+    ] {
+        assert!(!has_user_input_answer(reply), "{reply}");
+    }
+}
 #[tokio::test]
 async fn recent_rollout_items_bound_history_and_preserve_newest_records() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;

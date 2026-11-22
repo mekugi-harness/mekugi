@@ -30,7 +30,7 @@ fn editor() -> AsyncQuestions {
 #[test]
 fn taking_pending_drafts_preserves_order_expands_pastes_and_skips_blank_drafts() {
     let mut editor = editor();
-    editor.state.pending[0].question.title = "First\n\n".into();
+    editor.state.pending[0].question.question = "First\n\n".into();
     editor.set_expanded(/*expanded*/ true);
     let large_answer = "typed answer ".repeat(/*n*/ 200);
     editor.handle_paste(large_answer.clone());
@@ -54,7 +54,7 @@ fn taking_pending_drafts_preserves_order_expands_pastes_and_skips_blank_drafts()
 fn taking_pending_drafts_bounds_question_titles_without_truncating_answers() {
     for (character, retained_count) in [("a", 512), ("界", 170), ("\x07", 0)] {
         let mut editor = editor();
-        editor.state.pending[0].question.title =
+        editor.state.pending[0].question.question =
             character.repeat(codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS + 1);
         let answer = "typed answer ".repeat(/*n*/ 200);
         editor.handle_paste(answer.clone());
@@ -122,7 +122,7 @@ fn arrival_preserves_vim_undo_and_navigation_flushes_buffered_input() {
     editor.composer.flush_pending_input();
     assert_eq!(
         (
-            editor.current_question().unwrap().title.as_str(),
+            editor.current_question().unwrap().question.as_str(),
             editor.composer.current_text()
         ),
         ("Second", String::new())
@@ -132,7 +132,7 @@ fn arrival_preserves_vim_undo_and_navigation_flushes_buffered_input() {
 #[test]
 fn long_prompt_keeps_the_active_input_visible() {
     let mut editor = editor();
-    editor.state.pending[0].question.title = "A lengthy prompt. ".repeat(30);
+    editor.state.pending[0].question.question = "A lengthy prompt. ".repeat(30);
     editor.handle_paste("visible answer".into());
     let buffer = render_editor(&editor, /*width*/ 40, /*height*/ 8);
     let text = buffer_text(&buffer);
@@ -145,7 +145,7 @@ fn wrapped_question_url_keeps_its_complete_destination() {
     let url = "https://github.com/openai/codex/pull/12345?diff=split";
     let mut editor = editor();
     editor.navigate(/*forward*/ true);
-    editor.state.pending[1].question.title = format!("Review this change ({url})?");
+    editor.state.pending[1].question.question = format!("Review this change ({url})?");
 
     let width = 40;
     let full_height = editor.desired_height(width);
@@ -189,7 +189,7 @@ fn markdown_question_preserves_formatting_and_link_destinations() {
     let mut rendered = Vec::new();
     for line_ending in ["\n", "\r\n"] {
         let mut editor = editor();
-        editor.state.pending[0].question.title = title.replace('\n', line_ending);
+        editor.state.pending[0].question.question = title.replace('\n', line_ending);
 
         for width in [20, 60] {
             let height = editor.desired_height(width);
@@ -246,7 +246,7 @@ fn selected_other_renders_as_a_dim_placeholder() {
     editor.handle_key_event(repeat);
     assert_eq!(editor.composer.current_text(), "saved22");
     editor.on_ctrl_c();
-    editor.state.pending[1].question.title = "Long question ".repeat(40);
+    editor.state.pending[1].question.question = "Long question ".repeat(40);
     let buffer = render_editor(&editor, /*width*/ 50, /*height*/ 10);
     let area = buffer.area;
     assert!(editor.cursor_pos(area).is_some());
@@ -259,7 +259,7 @@ fn selected_other_renders_as_a_dim_placeholder() {
         assert_eq!(buffer[(input.x + offset, input.y)].modifier, Modifier::DIM);
     }
     insta::assert_snapshot!("selected_other_placeholder", buffer_text(&buffer));
-    editor.state.pending[1].question.title = "Second".into();
+    editor.state.pending[1].question.question = "Second".into();
     render_editor(&editor, /*width*/ 50, /*height*/ 10);
     editor.set_vim_enabled(/*enabled*/ true);
     editor.handle_key_event(KeyEvent::from(KeyCode::Char('i')));
@@ -483,13 +483,13 @@ fn question_wrapped_options_and_other_share_the_text_indent() {
     assert_eq!(editor.visible_options.get(), (0, editor.options_len()));
     editor.state.pending[editor.state.current_idx]
         .question
-        .title = "Long question ".repeat(3 * 65_536);
+        .question = "Long question ".repeat(3 * 65_536);
     assert_eq!(editor.desired_height(/*width*/ 50), u16::MAX);
     let clipped = render_editor(&editor, /*width*/ 50, /*height*/ 3);
     editor.go_next_or_submit();
     assert!(editor.submission.is_none());
     insta::assert_snapshot!("question_clipped_prompt", buffer_text(&clipped));
-    editor.state.pending.last_mut().unwrap().question.title = "Question".into();
+    editor.state.pending.last_mut().unwrap().question.question = "Question".into();
     for action in ["move_left", "move_right", "cancel"] {
         let config = toml::from_str(&format!("[list]\n{action} = '1'")).unwrap();
         editor.set_keymap(&RuntimeKeymap::from_config(&config).unwrap());
@@ -536,8 +536,20 @@ fn question_wrapped_other_shares_the_text_indent() {
 
 fn question(title: &str, options: Option<Vec<String>>) -> AsyncUserInputQuestion {
     AsyncUserInputQuestion {
-        title: title.into(),
-        options,
+        options: options.map(|options| {
+            options
+                .into_iter()
+                .map(
+                    |label| codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                        label,
+                        ..Default::default()
+                    },
+                )
+                .collect()
+        }),
+        question: title.into(),
+        id: "q1".to_string(),
+        header: None,
     }
 }
 

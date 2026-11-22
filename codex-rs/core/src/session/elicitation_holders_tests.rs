@@ -254,7 +254,7 @@ async fn request_user_input_holds_an_elicitation_until_response(
         return;
     }
     let response = RequestUserInputResponse {
-        answers: HashMap::new(),
+        answers: Vec::new(),
     };
     session
         .notify_user_input_response(&turn_context.sub_id, response)

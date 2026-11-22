@@ -20,7 +20,6 @@ use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::HashMap;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ordinary_settings_updates_keep_the_running_turn_snapshot() -> Result<()> {
@@ -35,7 +34,7 @@ async fn ordinary_settings_updates_keep_the_running_turn_snapshot() -> Result<()
                     "pause",
                     "request_user_input",
                     &json!({ "questions": [{
-                        "id": "continue",
+
                         "header": "Continue",
                         "question": "Continue after the settings update?",
                         "options": [
@@ -123,12 +122,11 @@ async fn ordinary_settings_updates_keep_the_running_turn_snapshot() -> Result<()
         .submit(Op::UserInputAnswer {
             id: paused.turn_id.clone(),
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: paused.questions[0].id.clone(),
+                    other: Some("Yes".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

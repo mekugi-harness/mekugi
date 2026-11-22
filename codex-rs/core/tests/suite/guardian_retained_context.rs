@@ -1,7 +1,6 @@
 //! Retained-instruction and answer lifecycles through real sessions and durable checkpoints.
 //! Real user input covers steering and compaction. Resume and child forks use production paths.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -140,7 +139,7 @@ async fn record_answer(
                     call_id,
                     "request_user_input",
                     &json!({"questions": [{
-                        "id": "publish", "header": "Publish", "question": question,
+                         "header": "Publish", "question": question,
                         "options": [
                             {"label": "Yes", "description": "Publish privately."},
                             {"label": "No", "description": "Keep local."}
@@ -169,12 +168,11 @@ async fn record_answer(
         .submit(Op::UserInputAnswer {
             id: request.turn_id.clone(),
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "publish".to_owned(),
-                    RequestUserInputAnswer {
-                        answers: vec![answer.to_owned()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some(answer.to_owned()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -472,7 +470,7 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
                     call_id,
                     "request_user_input",
                     &json!({"questions": [{
-                        "id": "publish", "header": "Publish", "question": question,
+                         "header": "Publish", "question": question,
                         "options": [
                             {"label": "Yes", "description": "Publish privately."},
                             {"label": "No", "description": "Keep local."}
@@ -522,12 +520,11 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
             .submit(Op::UserInputAnswer {
                 id: request.turn_id.clone(),
                 response: RequestUserInputResponse {
-                    answers: HashMap::from([(
-                        "publish".to_owned(),
-                        RequestUserInputAnswer {
-                            answers: vec![answer.to_owned()],
-                        },
-                    )]),
+                    answers: vec![RequestUserInputAnswer {
+                        id: request.questions[0].id.clone(),
+                        other: Some(answer.to_owned()),
+                        ..Default::default()
+                    }],
                 },
             })
             .await?;
@@ -553,14 +550,14 @@ async fn retained_instructions_keep_identity_across_compaction_and_resume(
     assert!(requests[0].has_message_with_input_texts("user", |texts| texts == [initial.as_str()]));
     for (index, request) in requests.iter().skip(1).enumerate() {
         assert!(request.has_message_with_input_texts("user", |texts| texts == [STEER]));
-        for answer in &answers[..=index] {
+        for (question_index, answer) in answers[..=index].iter().enumerate() {
             let (output, _) = request
                 .function_call_output_content_and_success(&answer.call_id)
                 .context("answer tool output")?;
             let output: serde_json::Value = serde_json::from_str(&output.context("answer text")?)?;
             assert_eq!(
                 output,
-                json!({"answers": {"publish": {"answers": [answer.questions[0].answer]}}})
+                json!([{"id":format!("q{}",question_index+1),"other":answer.questions[0].answer}])
             );
         }
     }

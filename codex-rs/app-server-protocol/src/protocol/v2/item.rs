@@ -55,6 +55,8 @@ use codex_protocol::protocol::GuardianUserAuthorization as CoreGuardianUserAutho
 use codex_protocol::protocol::PatchApplyStatus as CorePatchApplyStatus;
 use codex_protocol::protocol::ReviewDecision as CoreReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind as CoreSubAgentActivityKind;
+pub use codex_protocol::request_user_input::RequestUserInputAnswer as ToolRequestUserInputAnswer;
+pub use codex_protocol::request_user_input::RequestUserInputQuestionOption as ToolRequestUserInputOption;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use serde::Deserialize;
@@ -1874,19 +1876,10 @@ impl From<DynamicToolCallOutputContentItem>
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-/// EXPERIMENTAL. Defines a single selectable option for request_user_input.
-pub struct ToolRequestUserInputOption {
-    pub label: String,
-    pub description: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 /// EXPERIMENTAL. Represents one request_user_input question and its required options.
 pub struct ToolRequestUserInputQuestion {
     pub id: String,
-    pub header: String,
+    pub header: Option<String>,
     pub question: String,
     #[serde(default)]
     pub is_other: bool,
@@ -1942,15 +1935,7 @@ impl<'de> Deserialize<'de> for ToolRequestUserInputParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-/// EXPERIMENTAL. Captures a user's answer to a request_user_input question.
-pub struct ToolRequestUserInputAnswer {
-    pub answers: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-/// EXPERIMENTAL. Response payload mapping question ids to answers.
+/// EXPERIMENTAL. Compact answers identified by runtime question IDs.
 pub struct ToolRequestUserInputResponse {
-    pub answers: HashMap<String, ToolRequestUserInputAnswer>,
+    pub answers: Vec<ToolRequestUserInputAnswer>,
 }

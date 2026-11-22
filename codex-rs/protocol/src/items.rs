@@ -157,8 +157,10 @@ pub enum AgentMessageDelivery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export_to = "v2/")]
 pub struct AsyncUserInputQuestion {
-    pub title: String,
-    pub options: Option<Vec<String>>,
+    pub id: String,
+    pub header: Option<String>,
+    pub question: String,
+    pub options: Option<Vec<crate::request_user_input::RequestUserInputQuestionOption>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS, JsonSchema)]

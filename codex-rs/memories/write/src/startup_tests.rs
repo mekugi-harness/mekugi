@@ -918,7 +918,7 @@ async fn run_memory_phase_one_model_request_test(
             items.extend([
                 json!({"type":"function_call", "name":"request_user_input", "namespace":namespace,
                     "call_id":call_id, "arguments":json!({"questions":[{
-                        "id":"choice", "header":"Choice", "question":format!("Confirm {call_id}"),
+                         "header":"Choice", "question":format!("Confirm {call_id}"),
                     }]}).to_string()}),
                 json!({"type":"function_call_output", "call_id":call_id,
                     "output":json!({"answers":{"choice":{"answers":[answer]}}}).to_string()}),

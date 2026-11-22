@@ -160,8 +160,18 @@ pub(super) fn item_summary(item: cloud::ItemSummary) -> Option<protocol::ThreadI
                 questions
                     .into_iter()
                     .map(|question| protocol::AsyncUserInputQuestion {
-                        title: question.title,
-                        options: question.options,
+                        options: question.options.map(|options| {
+                            options
+                                .into_iter()
+                                .map(|label| protocol::ToolRequestUserInputOption {
+                                    label,
+                                    ..Default::default()
+                                })
+                                .collect()
+                        }),
+                        question: question.title,
+                        id: String::new(),
+                        header: None,
                     })
                     .collect()
             }),

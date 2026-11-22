@@ -9,8 +9,10 @@ fn questions(chat: &mut ChatWidget, message_id: &str, title: &str) {
     chat.add_async_questions(
         message_id,
         &[AsyncUserInputQuestion {
-            title: title.into(),
             options: None,
+            question: title.into(),
+            id: "q1".to_string(),
+            header: None,
         }],
     );
 }

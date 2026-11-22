@@ -15,8 +15,10 @@ async fn live_async_question_notifies_once_and_takes_priority_over_turn_completi
         memory_citation: None,
         delivery: None,
         questions: Some(vec![AsyncUserInputQuestion {
-            title: "Which environment?".into(),
             options: None,
+            question: "Which environment?".into(),
+            id: "q1".to_string(),
+            header: None,
         }]),
     };
     for kind in [
@@ -68,8 +70,10 @@ async fn async_question_notifications_respect_settings_and_ignore_empty_batches(
         chat.add_async_questions(
             "question",
             &[AsyncUserInputQuestion {
-                title: "Which way?".into(),
                 options: None,
+                question: "Which way?".into(),
+                id: "q1".to_string(),
+                header: None,
             }],
         );
         assert_eq!(chat.pending_notification.is_some(), expected);
@@ -81,12 +85,16 @@ async fn async_question_notification_summarizes_batches_and_bounds_long_titles()
     let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let questions = vec![
         AsyncUserInputQuestion {
-            title: "Which environment should we deploy this change to?".into(),
             options: None,
+            question: "Which environment should we deploy this change to?".into(),
+            id: "q1".to_string(),
+            header: None,
         },
         AsyncUserInputQuestion {
-            title: "Any details?".into(),
             options: None,
+            question: "Any details?".into(),
+            id: "q1".to_string(),
+            header: None,
         },
     ];
     chat.add_async_questions("batch", &questions);
@@ -114,8 +122,10 @@ async fn async_question_notification_expires_when_turn_ends() {
         chat.add_async_questions(
             "question",
             &[AsyncUserInputQuestion {
-                title: "Which way?".into(),
                 options: None,
+                question: "Which way?".into(),
+                id: "q1".to_string(),
+                header: None,
             }],
         );
         chat.handle_server_notification(

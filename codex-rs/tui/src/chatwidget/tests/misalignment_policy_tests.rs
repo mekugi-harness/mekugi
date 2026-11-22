@@ -74,8 +74,10 @@ async fn misalignment_policy_failure_stops_the_thread_and_renders_once() {
     chat.add_async_questions(
         "question",
         &[codex_protocol::items::AsyncUserInputQuestion {
-            title: "Which way?".into(),
             options: None,
+            question: "Which way?".into(),
+            id: "q1".to_string(),
+            header: None,
         }],
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
@@ -183,8 +185,10 @@ async fn misalignment_turn_end_discards_history_search_and_question_drafts() {
     chat.add_async_questions(
         "question",
         &[codex_protocol::items::AsyncUserInputQuestion {
-            title: "Which way?".into(),
             options: None,
+            question: "Which way?".into(),
+            id: "q1".to_string(),
+            header: None,
         }],
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));

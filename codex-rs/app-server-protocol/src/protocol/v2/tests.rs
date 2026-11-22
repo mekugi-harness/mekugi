@@ -3424,8 +3424,10 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         memory_citation: None,
         delivery: Some(AgentMessageDelivery::Async),
         questions: Some(vec![AsyncUserInputQuestion {
-            title: "Which?".to_string(),
             options: None,
+            question: "Which?".to_string(),
+            id: "q1".to_string(),
+            header: None,
         }]),
     }));
     assert_eq!(
@@ -3433,7 +3435,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         json!({
             "type": "agentMessage", "id": "async-1", "text": "Which?", "phase": "final_answer",
             "moderation": null,
-            "memoryCitation": null, "delivery": "async", "questions": [{"title": "Which?", "options": null}]
+            "memoryCitation": null, "delivery": "async", "questions": [{"id":"q1", "header":null, "question": "Which?", "options": null}]
         })
     );
     let old_item: ThreadItemPayload = serde_json::from_value(json!({
@@ -5625,13 +5627,15 @@ fn tool_request_user_input_params_default_legacy_missing_is_blocking_to_true() {
             item_id: "call-1".to_string(),
             questions: vec![ToolRequestUserInputQuestion {
                 id: "q1".to_string(),
-                header: "Confirm".to_string(),
+                header: Some("Confirm".to_string()),
                 question: "Continue?".to_string(),
                 is_other: false,
                 is_secret: false,
                 options: Some(vec![ToolRequestUserInputOption {
                     label: "Yes".to_string(),
-                    description: "Continue.".to_string(),
+                    description: Some("Continue.".to_string()),
+                    preview: None,
+                    recommended: false,
                 }]),
             }],
             is_blocking: true,

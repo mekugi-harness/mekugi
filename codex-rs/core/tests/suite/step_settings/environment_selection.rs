@@ -168,7 +168,7 @@ async fn check_connection_events_for_active_selection(scheduler_idle: Arc<Notify
         .thread;
     assert_no_connection_events(&started, "startup replayed").await?;
 
-    answer_paused_turn(&thread, &turn.turn_id).await?;
+    answer_paused_turn(&thread, &turn).await?;
     let end_of_turn =
         |event: &EventMsg| connection_event(event) || matches!(event, EventMsg::TurnComplete(_));
     let event = wait_for_event(&thread, end_of_turn).await;
@@ -199,7 +199,7 @@ async fn check_connection_events_for_active_selection(scheduler_idle: Arc<Notify
     wait_for_connection(&control).await;
     wait_for_connection(&thread).await;
     assert_no_connection_events(&thread, "duplicate connection event").await?;
-    answer_paused_turn(&thread, &turn.turn_id).await?;
+    answer_paused_turn(&thread, &turn).await?;
     wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     Ok(())
 }
@@ -242,7 +242,8 @@ async fn current_turn_environment_selections_follow_active_updates(with_roots: b
         .await?
         .thread;
     let thread = &thread;
-    let turn_id = start_paused_turn(thread).await?.turn_id;
+    let request = start_paused_turn(thread).await?;
+    let turn_id = request.turn_id.clone();
     let initial = thread
         .active_turn_environment_selections()
         .await
@@ -292,7 +293,7 @@ async fn current_turn_environment_selections_follow_active_updates(with_roots: b
         );
     }
 
-    answer_paused_turn(thread, &turn_id).await?;
+    answer_paused_turn(thread, &request).await?;
     wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     assert_eq!(
         thread.current_turn_environment_selections(&turn_id).await,
@@ -376,7 +377,7 @@ async fn model_update_preserves_active_environment_and_next_turn_uses_new_select
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -496,7 +497,7 @@ async fn combined_active_model_and_environment_updates_apply_or_reject_together(
         reason.contains("owner-provided environment configuration"),
         "{reason}"
     );
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     let paused = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,
@@ -512,7 +513,7 @@ async fn combined_active_model_and_environment_updates_apply_or_reject_together(
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -637,7 +638,7 @@ async fn active_updates_check_known_permissions_from_the_running_turn() -> Resul
         without_selection,
         TurnSettingsUpdateOutcome::Rejected { reason }
     );
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -690,7 +691,7 @@ async fn inherited_permission_update_applies_to_the_next_turn_not_the_next_step(
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

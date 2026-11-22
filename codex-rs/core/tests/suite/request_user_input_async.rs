@@ -472,12 +472,28 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
         "Which environment should I use?\n- Staging\n- Production\n\nWhat deadline should I use?";
     let questions = vec![
         AsyncUserInputQuestion {
-            title: TITLE.to_string(),
-            options: Some(vec!["Staging".to_string(), "Production".to_string()]),
+            options: Some(
+                (vec!["Staging".to_string(), "Production".to_string()])
+                    .into_iter()
+                    .map(|label: String| {
+                        codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                            label,
+                            preview: None,
+                            recommended: false,
+                            ..Default::default()
+                        }
+                    })
+                    .collect(),
+            ),
+            question: TITLE.to_string(),
+            id: "q1".to_string(),
+            header: None,
         },
         AsyncUserInputQuestion {
-            title: "What deadline should I use?".to_string(),
             options: None,
+            question: "What deadline should I use?".to_string(),
+            id: "q2".to_string(),
+            header: None,
         },
     ];
 
@@ -492,8 +508,8 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
                     "functions",
                     "request_user_input_async",
                     &json!({ "questions": [
-                        {"title": TITLE, "options": ["Staging", "Production"]},
-                        {"title": "What deadline should I use?"}
+                        {"question": TITLE, "options": [{"label": "Staging"}, {"label": "Production"}]},
+                        {"question": "What deadline should I use?"}
                     ] })
                     .to_string(),
                 ),
@@ -512,7 +528,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
         .and_then(|tools| tools.send_user_message_async.as_ref())
         .and_then(|tool| tool.description.as_deref())
         .unwrap_or(
-            "Ask the user one or more questions during ongoing work. Use this tool only to request missing information, preferences, constraints, clarification, or approval. The tool returns immediately without ending the turn or waiting for a reply; any reply arrives asynchronously as a new user message. Keep questions concise, self-contained, and easy to understand, using a level of detail appropriate to the user and task. The UI always allows a free-text answer, including when suggested options are provided. A preselected option is not submitted automatically.",
+            "Ask the user questions without waiting or ending the turn. Returns runtime IDs. Replies arrive as user messages <question_answers>[answers]</question_answers> containing only newly answered objects: {id,choice,note?} (1-based choice), {id,other}, or {id,skipped:true}. Mark at most one option recommended: true; preserve option order. Omit options for free text only. A preselected option is not submitted automatically.",
         )
         .to_string();
     let test = test_codex()
@@ -602,22 +618,23 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
             .expect("the async message tool should be directly visible to the model");
         assert_eq!(tool["description"], expected_description);
         assert_eq!(tool["strict"], false);
-        if let Some(expected_parameters) = expected_parameters {
-            assert_eq!(
+        if let Some(legacy_parameters) = expected_parameters {
+            assert_ne!(
                 tool["parameters"],
-                serde_json::from_str::<serde_json::Value>(expected_parameters)?
+                serde_json::from_str::<serde_json::Value>(legacy_parameters)?
             );
-        } else {
+        }
+        {
             assert_eq!(tool["parameters"]["required"], json!(["questions"]));
             assert_eq!(tool["parameters"]["additionalProperties"], false);
             let schema = &tool["parameters"]["properties"]["questions"];
             assert_eq!(schema["minItems"], 1);
-            assert_eq!(schema["items"]["required"], json!(["title"]));
+            assert_eq!(schema["items"]["required"], json!(["question"]));
             assert_eq!(schema["items"]["additionalProperties"], false);
             assert_eq!(schema["items"]["properties"]["options"]["minItems"], 1);
             assert_eq!(
                 schema["items"]["properties"]["options"]["items"]["type"],
-                "string"
+                "object"
             );
         }
         assert!(
@@ -628,7 +645,7 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
     }
     assert_eq!(
         requests[1].function_call_output_text(CALL_ID),
-        Some(r#"{"accepted":true}"#.to_string())
+        Some(r#"{"ids":["q1","q2"]}"#.to_string())
     );
     let has_synthetic_assistant_message = requests[1].input().into_iter().any(|item| {
         item["type"] == "message" && item["role"] == "assistant" && item.to_string().contains(TITLE)
@@ -642,8 +659,8 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
 }
 
 #[test_case(json!({"questions": []}), "questions must not be empty"; "no_questions")]
-#[test_case(json!({"questions": [{"title": " "}]}), "question titles must not be empty"; "blank_title")]
-#[test_case(json!({"questions": [{"title": "Which?", "options": []}]}), "options must contain at least one non-empty answer"; "empty_options")]
+#[test_case(json!({"questions": [{"question": " "}]}), "questions must contain non-empty question text"; "blank_question")]
+#[test_case(json!({"questions": [{"question": "Which?", "options": []}]}), "options must contain at least one non-empty label"; "empty_options")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalid_async_questions_do_not_emit_an_item(
     arguments: serde_json::Value,

@@ -1033,7 +1033,7 @@ async fn executor_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result
                 ev_function_call(
                     "pause",
                     "request_user_input",
-                    r#"{"questions":[{"id":"continue","header":"Continue","question":"Continue?","options":[{"label":"Yes","description":"Finish."},{"label":"No","description":"Stop."}]}]}"#,
+                    r#"{"questions":[{"header":"Continue","question":"Continue?","options":[{"label":"Yes","description":"Finish."},{"label":"No","description":"Stop."}]}]}"#,
                 ),
                 ev_completed("paused-step"),
             ])),
@@ -1073,12 +1073,11 @@ async fn executor_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

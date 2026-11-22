@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io;
 use std::io::BufRead;
 use std::io::IsTerminal;
@@ -37,9 +36,14 @@ fn prompt_for_answers_with(
         writeln!(output, "This request is non-blocking.")?;
     }
 
-    let mut answers = HashMap::new();
+    let mut answers = Vec::new();
     for question in &params.questions {
-        writeln!(output, "\n{}: {}", question.header, question.question)?;
+        writeln!(
+            output,
+            "\n{}: {}",
+            question.header.as_deref().unwrap_or_default(),
+            question.question
+        )?;
         let options = question
             .options
             .as_deref()
@@ -51,7 +55,7 @@ fn prompt_for_answers_with(
                     "  {}. {} - {}",
                     index + 1,
                     option.label,
-                    option.description
+                    option.description.as_deref().unwrap_or_default()
                 )?;
             }
             if question.is_other {
@@ -129,12 +133,21 @@ fn prompt_for_answers_with(
             }
         };
 
-        answers.insert(
-            question.id.clone(),
-            ToolRequestUserInputAnswer {
-                answers: answer_values,
-            },
-        );
+        let value = answer_values.join("\n");
+        let choice = options
+            .and_then(|options| options.iter().position(|option| option.label == value))
+            .map(|index| index + 1);
+        answers.push(ToolRequestUserInputAnswer {
+            id: question.id.clone(),
+            choice,
+            other: choice.is_none().then(|| {
+                value
+                    .strip_prefix("user_note: ")
+                    .unwrap_or(&value)
+                    .to_owned()
+            }),
+            ..Default::default()
+        });
     }
 
     Ok(ToolRequestUserInputResponse { answers })

@@ -255,7 +255,7 @@ pub(super) async fn migration_scenario() -> Result<Vec<responses::ResponsesReque
                     "request_user_input",
                     // Keep the transcript independent of serde_json's preserve_order feature.
                     concat!(
-                        r#"{"questions":[{"header":"Publish","id":"publish","options":["#,
+                        r#"{"questions":[{"header":"Publish","options":["#,
                         r#"{"description":"Private repository only.","label":"Private"},"#,
                         r#"{"description":"Keep local.","label":"Nowhere"}],"#,
                         r#""question":"Where may I publish?"}]}"#,

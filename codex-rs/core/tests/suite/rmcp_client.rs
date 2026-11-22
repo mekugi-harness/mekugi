@@ -1029,7 +1029,7 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue?",
                             "options": [
@@ -1129,12 +1129,11 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

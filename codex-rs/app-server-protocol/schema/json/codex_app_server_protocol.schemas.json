@@ -7873,33 +7873,37 @@
       ]
     },
     "ToolRequestUserInputAnswer": {
-      "description": "EXPERIMENTAL. Captures a user's answer to a request_user_input question.",
+      "additionalProperties": false,
       "properties": {
-        "answers": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "answers"
-      ],
-      "type": "object"
-    },
-    "ToolRequestUserInputOption": {
-      "description": "EXPERIMENTAL. Defines a single selectable option for request_user_input.",
-      "properties": {
-        "description": {
+        "choice": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
           "type": "string"
         },
-        "label": {
-          "type": "string"
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "other": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skipped": {
+          "type": "boolean"
         }
       },
       "required": [
-        "description",
-        "label"
+        "id"
       ],
       "type": "object"
     },
@@ -7950,7 +7954,10 @@
       "description": "EXPERIMENTAL. Represents one request_user_input question and its required options.",
       "properties": {
         "header": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "id": {
           "type": "string"
@@ -7965,7 +7972,7 @@
         },
         "options": {
           "items": {
-            "$ref": "#/definitions/ToolRequestUserInputOption"
+            "$ref": "#/definitions/v2/ToolRequestUserInputOption"
           },
           "type": [
             "array",
@@ -7977,7 +7984,6 @@
         }
       },
       "required": [
-        "header",
         "id",
         "question"
       ],
@@ -7985,13 +7991,13 @@
     },
     "ToolRequestUserInputResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "EXPERIMENTAL. Response payload mapping question ids to answers.",
+      "description": "EXPERIMENTAL. Compact answers identified by runtime question IDs.",
       "properties": {
         "answers": {
-          "additionalProperties": {
+          "items": {
             "$ref": "#/definitions/ToolRequestUserInputAnswer"
           },
-          "type": "object"
+          "type": "array"
         }
       },
       "required": [
@@ -10024,21 +10030,31 @@
       "AsyncUserInputQuestion": {
         "additionalProperties": false,
         "properties": {
+          "header": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
           "options": {
             "items": {
-              "type": "string"
+              "$ref": "#/definitions/v2/ToolRequestUserInputOption"
             },
             "type": [
               "array",
               "null"
             ]
           },
-          "title": {
+          "question": {
             "type": "string"
           }
         },
         "required": [
-          "title"
+          "id",
+          "question"
         ],
         "type": "object"
       },
@@ -29830,6 +29846,33 @@
             "type": "string"
           }
         ]
+      },
+      "ToolRequestUserInputOption": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recommended": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
       },
       "ToolsV2": {
         "properties": {

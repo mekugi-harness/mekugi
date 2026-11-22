@@ -18,7 +18,7 @@ pub(super) fn title_ranges(
     let mut rest = source;
     for question in questions {
         rest = rest.trim_start_matches('\n');
-        let title = question.title.replace("\r\n", "\n");
+        let title = question.question.replace("\r\n", "\n");
         let title = title.trim_matches('\n');
         let Some(after_title) = rest.strip_prefix(title) else {
             break;
@@ -27,7 +27,7 @@ pub(super) fn title_ranges(
         titles.push(start..start + title.len());
         rest = after_title;
         for option in question.options.iter().flatten() {
-            let option = option.replace("\r\n", "\n");
+            let option = option.label.replace("\r\n", "\n");
             let Some(after_option) = rest
                 .trim_start_matches('\n')
                 .strip_prefix("- ")

@@ -70,7 +70,6 @@ use codex_app_server_protocol::ThreadRealtimeTranscriptDoneNotification;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
-use codex_app_server_protocol::ToolRequestUserInputOption;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::ToolRequestUserInputQuestion;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
@@ -117,12 +116,10 @@ use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionGrantScope;
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse as CoreRequestPermissionsResponse;
-use codex_protocol::request_user_input::RequestUserInputAnswer as CoreRequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse as CoreRequestUserInputResponse;
 use codex_shell_command::parse_command::shlex_join;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -885,15 +882,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     question: question.question,
                     is_other: question.is_other,
                     is_secret: question.is_secret,
-                    options: question.options.map(|options| {
-                        options
-                            .into_iter()
-                            .map(|option| ToolRequestUserInputOption {
-                                label: option.label,
-                                description: option.description,
-                            })
-                            .collect()
-                    }),
+                    options: question.options,
                 })
                 .collect();
             let params = ToolRequestUserInputParams {
@@ -1731,7 +1720,7 @@ async fn on_request_user_input_response(
         Ok(Err(err)) => {
             error!("request failed with client error: {err:?}");
             let empty = CoreRequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             };
             if let Err(err) = conversation
                 .submit(Op::UserInputAnswer {
@@ -1747,7 +1736,7 @@ async fn on_request_user_input_response(
         Err(err) => {
             error!("request failed: {err:?}");
             let empty = CoreRequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             };
             if let Err(err) = conversation
                 .submit(Op::UserInputAnswer {
@@ -1766,22 +1755,11 @@ async fn on_request_user_input_response(
         serde_json::from_value::<ToolRequestUserInputResponse>(value).unwrap_or_else(|err| {
             error!("failed to deserialize ToolRequestUserInputResponse: {err}");
             ToolRequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             }
         });
     let response = CoreRequestUserInputResponse {
-        answers: response
-            .answers
-            .into_iter()
-            .map(|(id, answer)| {
-                (
-                    id,
-                    CoreRequestUserInputAnswer {
-                        answers: answer.answers,
-                    },
-                )
-            })
-            .collect(),
+        answers: response.answers,
     };
 
     if let Err(err) = conversation

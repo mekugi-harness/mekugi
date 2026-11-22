@@ -11,7 +11,6 @@ use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_tools::ToolCall;
 use codex_tools::ToolExecutor;
 use pretty_assertions::assert_eq;
-use std::collections::HashMap;
 use tokio::sync::Notify;
 use tokio::sync::oneshot;
 
@@ -282,14 +281,19 @@ async fn global_instructions_refresh_after_a_tool_in_the_same_turn() -> Result<(
         &server,
         vec![
             sse(vec![
-            ev_response_created("waiting"),
-            responses::ev_function_call("pause", "request_user_input", &json!({
-                "questions": [{"id": "continue", "header": "Continue", "question": "Continue?",
-                    "options": [{"label": "Yes", "description": "Continue the turn."},
-                        {"label": "No", "description": "Stop the turn."}]}]
-            }).to_string()),
-            ev_completed("waiting"),
-        ]),
+                ev_response_created("waiting"),
+                responses::ev_function_call(
+                    "pause",
+                    "request_user_input",
+                    &json!({
+                        "questions": [{ "header": "Continue", "question": "Continue?",
+                            "options": [{"label": "Yes", "description": "Continue the turn."},
+                                {"label": "No", "description": "Stop the turn."}]}]
+                    })
+                    .to_string(),
+                ),
+                ev_completed("waiting"),
+            ]),
             responses::sse_completed("continued"),
         ],
     )
@@ -323,12 +327,11 @@ async fn global_instructions_refresh_after_a_tool_in_the_same_turn() -> Result<(
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

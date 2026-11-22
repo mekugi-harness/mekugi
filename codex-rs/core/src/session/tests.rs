@@ -6376,7 +6376,9 @@ async fn compaction_persists_resume_metadata_and_companion_records() {
         .await;
 
     session.multi_agent_version = std::sync::OnceLock::from(MultiAgentVersion::V2);
+    session.allocate_question_ids(3).await;
     let expected = CompactionResumeMetadata {
+        question_id_high_water_mark: Some(3),
         next_item_ordinal: None,
         rejected_audio_file_ids: Default::default(),
         dynamic_tools: Some(Box::new(DynamicToolsSnapshot {
