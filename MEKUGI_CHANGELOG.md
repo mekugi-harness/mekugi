@@ -79,9 +79,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `<session_tmp>`). The native skills extension uses the local `skills-mgr`
   catalog where configured and otherwise retains stock skill discovery.
 - Model requests reuse repeated tool output and source text without replacing
-  the original retained records. Context usage notices and deduplication savings
-  come from native observations instead of host prompt rewriting. Mekugi only
-  promises resume for Mekugi sessions.
+  the original retained records, preferring a single-base unified diff over
+  fragmented multi-segment references when savings stay within a bounded
+  clarity budget. Context usage notices and deduplication savings come from
+  native observations instead of host prompt rewriting. Mekugi only promises
+  resume for Mekugi sessions.
 - Migration 63 records completed compactions in Mekugi state. The upstream
   0.171.0 state migrations were moved to 64 and 65 to preserve the recorded
   checksum in existing Mekugi databases.
