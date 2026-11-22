@@ -210,7 +210,7 @@ fn in_output_runs_do_not_search_past_the_literal_window() {
 }
 
 #[test]
-fn compact_diffs_win_only_when_smaller_than_partial_references() {
+fn compact_diffs_win_when_smaller_than_partial_references() {
     let mut before = String::new();
     let mut after = String::new();
     for line in 0..30 {
@@ -220,14 +220,96 @@ fn compact_diffs_win_only_when_smaller_than_partial_references() {
     }
     let mut window = Window::default();
     window.project(&before, call(1), 0);
-    let (partial, _) = window.partial(&after, None);
+    let partial = window.partial(&after, None);
     let actual = window.project(&after, call(2), 0);
     assert!(actual.contains("```diff\n"), "{actual}");
     assert!(actual.contains("-old 00\n+new 00\n"));
-    assert!(actual.len() < partial.len());
+    assert!(actual.len() < partial.text.len());
     assert!(actual.contains("call c1#L1-L60"));
     // A rewritten body is never a whole-body base for a later reference chain.
     assert!(!window.bodies.values().any(|base| base.text == after));
+}
+
+#[test]
+fn fragmented_partial_references_prefer_compact_diff_within_clarity_budget() {
+    let block_a = distinct_lines("section A unchanged line with enough content for a run", 8);
+    let block_b = distinct_lines("section B unchanged line with enough content for a run", 8);
+    let block_c = distinct_lines("section C unchanged line with enough content for a run", 8);
+    let old_1 = format!("old paragraph one: {}\n", "a".repeat(100));
+    let new_1 = format!("new paragraph one: {}\n", "b".repeat(100));
+    let old_2 = format!("old paragraph two: {}\n", "c".repeat(100));
+    let new_2 = format!("new paragraph two: {}\n", "d".repeat(100));
+    let before = format!("{block_a}{old_1}{block_b}{old_2}{block_c}");
+    let after = format!("{block_a}{new_1}{block_b}{new_2}{block_c}");
+
+    let mut window = Window::default();
+    window.project(&before, call(1), 0);
+    let partial = window.partial(&after, None);
+    assert_eq!(partial.references, 3);
+    let actual = window.project(&after, call(2), 0);
+    assert!(actual.contains("```diff\n"), "{actual}");
+    assert!(actual.len() > partial.text.len());
+    assert!(actual.contains(&format!("-{old_1}+{new_1}")), "{actual}");
+    assert!(actual.contains(&format!("-{old_2}+{new_2}")), "{actual}");
+    assert!(!window.bodies.values().any(|base| base.text == after));
+}
+
+#[test]
+fn single_partial_reference_does_not_yield_to_larger_diff() {
+    let before = distinct_lines("unchanged log prefix line with stable output text", 16);
+    let appended = distinct_lines("appended log tail line emitted later in the run", 3);
+    let after = format!("{before}{appended}");
+
+    let mut window = Window::default();
+    window.project(&before, call(1), 0);
+    let partial = window.partial(&after, None);
+    assert_eq!(partial.references, 1);
+    let actual = window.project(&after, call(2), 0);
+    assert_eq!(actual, partial.text);
+    assert!(!actual.contains("```diff\n"));
+}
+
+#[test]
+fn fragmented_partial_references_keep_partial_when_diff_exceeds_clarity_budget() {
+    // Ratio cap: diff overhead stays below MAX_DIFF_CLARITY_OVERHEAD, but drops >25% of savings.
+    let small_a = distinct_lines("small section A unchanged line with stable content", 10);
+    let small_b = distinct_lines("small section B unchanged line with stable content", 10);
+    let old_mid = distinct_lines("deleted middle section line with old prose content", 10);
+    let new_mid = distinct_lines("short replacement line in the middle", 2);
+    let before_ratio = format!("{small_a}{old_mid}{small_b}");
+    let after_ratio = format!("{small_a}{new_mid}{small_b}");
+
+    let mut window = Window::default();
+    window.project(&before_ratio, call(1), 0);
+    let partial = window.partial(&after_ratio, None);
+    assert_eq!(partial.references, 2);
+    let actual = window.project(&after_ratio, call(2), 0);
+    assert_eq!(actual, partial.text);
+    assert!(!actual.contains("```diff\n"));
+
+    // Absolute cap: diff retains >=75% of savings, but adds more than MAX_DIFF_CLARITY_OVERHEAD.
+    let large_a = distinct_lines(
+        "large section A unchanged line with enough text for a big output body",
+        100,
+    );
+    let large_b = distinct_lines(
+        "large section B unchanged line with enough text for a big output body",
+        100,
+    );
+    let large_deleted = distinct_lines(
+        "deleted block line that inflates unified diff beyond absolute cap",
+        40,
+    );
+    let before_cap = format!("{large_a}{large_deleted}{large_b}");
+    let after_cap = format!("{large_a}replacement\n{large_b}");
+
+    let mut window = Window::default();
+    window.project(&before_cap, call(1), 0);
+    let partial = window.partial(&after_cap, None);
+    assert_eq!(partial.references, 2);
+    let actual = window.project(&after_cap, call(2), 0);
+    assert_eq!(actual, partial.text);
+    assert!(!actual.contains("```diff\n"));
 }
 
 #[tokio::test]

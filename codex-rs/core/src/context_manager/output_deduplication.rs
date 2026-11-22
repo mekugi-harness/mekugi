@@ -20,6 +20,8 @@ const MIN_RUN: usize = 192;
 const MIN_SAVING: usize = 128;
 const WINDOW_BYTES: usize = 256 << 10;
 const DIFF_BASES: usize = 4;
+const FRAGMENTED_PARTIAL_REFERENCES: usize = 2;
+const MAX_DIFF_CLARITY_OVERHEAD: usize = 2048;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Savings {
@@ -331,6 +333,12 @@ impl LocalRuns {
     }
 }
 
+struct Partial {
+    text: String,
+    literals: Vec<Range<usize>>,
+    references: usize,
+}
+
 impl Window {
     fn project(&mut self, text: &str, anchor: Option<Anchor>, overhead: usize) -> String {
         let mut projected = text.to_owned();
@@ -348,12 +356,15 @@ impl Window {
             }
         }
 
-        let (partial, spans) =
-            self.partial(text, anchor.as_ref().filter(|anchor| anchor.within_output));
-        if saves(text, &partial, overhead) {
-            projected = partial;
-            literals = spans;
-        }
+        let partial = self.partial(text, anchor.as_ref().filter(|anchor| anchor.within_output));
+        let partial_references = if saves(text, &partial.text, overhead) {
+            projected = partial.text;
+            literals = partial.literals;
+            partial.references
+        } else {
+            0
+        };
+        let mut best_diff: Option<String> = None;
         for base in self
             .bodies
             .values()
@@ -391,10 +402,19 @@ impl Window {
             let candidate = format!(
                 "[identical to {reference} above]\nApply this diff to the referenced lines:\n```diff\n{changes}```"
             );
-            if candidate.len() < projected.len() && saves(text, &candidate, overhead) {
-                projected = candidate;
-                literals.clear();
+            if saves(text, &candidate, overhead)
+                && best_diff
+                    .as_ref()
+                    .is_none_or(|best| candidate.len() < best.len())
+            {
+                best_diff = Some(candidate);
             }
+        }
+        if let Some(diff) = best_diff
+            && prefer_diff(text.len(), projected.len(), partial_references, diff.len())
+        {
+            projected = diff;
+            literals.clear();
         }
         let Some(anchor) = anchor else {
             return projected;
@@ -419,9 +439,10 @@ impl Window {
         projected
     }
 
-    fn partial(&self, text: &str, local_anchor: Option<&Anchor>) -> (String, Vec<Range<usize>>) {
+    fn partial(&self, text: &str, local_anchor: Option<&Anchor>) -> Partial {
         let mut result = String::new();
         let mut literals: Vec<Range<usize>> = Vec::new();
+        let mut references = 0;
         let mut cursor = 0;
         let mut literal_start = 0;
         let mut literal_bytes = 0;
@@ -466,6 +487,7 @@ impl Window {
                     literals.push(literal_start..cursor);
                 }
                 result.push_str(&replacement);
+                references += 1;
                 cursor += bytes;
                 literal_start = cursor;
                 line_number += lines;
@@ -493,7 +515,11 @@ impl Window {
         if literal_start < text.len() {
             literals.push(literal_start..text.len());
         }
-        (result, literals)
+        Partial {
+            text: result,
+            literals,
+            references,
+        }
     }
 
     fn insert(&mut self, text: &str, mut anchor: Anchor, mut complete: bool) {
@@ -622,6 +648,23 @@ fn seed(text: &str) -> Option<Key> {
 
 fn saves(original: &str, replacement: &str, overhead: usize) -> bool {
     original.len().saturating_sub(replacement.len() + overhead) >= MIN_SAVING
+}
+
+fn prefer_diff(
+    original_len: usize,
+    partial_len: usize,
+    partial_references: usize,
+    diff_len: usize,
+) -> bool {
+    if diff_len < partial_len {
+        return true;
+    }
+    if partial_references < FRAGMENTED_PARTIAL_REFERENCES {
+        return false;
+    }
+    let partial_savings = original_len.saturating_sub(partial_len);
+    let diff_savings = original_len.saturating_sub(diff_len);
+    diff_len - partial_len <= MAX_DIFF_CLARITY_OVERHEAD && diff_savings * 4 >= partial_savings * 3
 }
 
 #[cfg(test)]
