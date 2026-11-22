@@ -43,18 +43,26 @@ fn cli_args() -> Result<Vec<String>, String> {
     parse_os_args(std::env::args_os().skip(1))
 }
 
-fn emit_output(output: ToolOutput) -> i32 {
+fn emit_output(tool: &str, output: ToolOutput) -> i32 {
+    let mut exit_code = output.exit_code;
     if !output.stdout.is_empty() {
         let mut stdout = std::io::stdout().lock();
-        let _ = stdout.write_all(output.stdout.as_bytes());
-        let _ = stdout.flush();
+        if let Err(err) = stdout
+            .write_all(output.stdout.as_bytes())
+            .and_then(|()| stdout.flush())
+        {
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr, "{tool}: write stdout: {err}");
+            let _ = stderr.flush();
+            exit_code = 1;
+        }
     }
     if !output.stderr.is_empty() {
         let mut stderr = std::io::stderr().lock();
         let _ = stderr.write_all(output.stderr.as_bytes());
         let _ = stderr.flush();
     }
-    output.exit_code
+    exit_code
 }
 
 fn emit_arg_error(tool: &str, err: &str, exit_code: i32) -> i32 {
@@ -72,8 +80,11 @@ pub fn run_mcat_main() -> i32 {
     };
     let mut stdout = std::io::stdout().lock();
     let mut stderr = std::io::stderr().lock();
-    let code = mcat::execute_to_writers(&args, &mut stdout, &mut stderr);
-    let _ = stdout.flush();
+    let mut code = mcat::execute_to_writers(&args, &mut stdout, &mut stderr);
+    if let Err(err) = stdout.flush() {
+        let _ = writeln!(stderr, "mcat: write stdout: {err}");
+        code = 1;
+    }
     let _ = stderr.flush();
     code
 }
@@ -84,7 +95,7 @@ pub fn run_mfinspect_main() -> i32 {
         Ok(args) => args,
         Err(err) => return emit_arg_error("mfinspect", &err, 1),
     };
-    emit_output(mfinspect::execute(&args))
+    emit_output("mfinspect", mfinspect::execute(&args))
 }
 
 /// Execute `msymbol` with process arguments, writing stdout/stderr and returning its exit code.
@@ -93,7 +104,7 @@ pub fn run_msymbol_main() -> i32 {
         Ok(args) => args,
         Err(err) => return emit_arg_error("msymbol", &err, 1),
     };
-    emit_output(msymbol::execute_standalone(&args))
+    emit_output("msymbol", msymbol::execute_standalone(&args))
 }
 
 /// Execute `mrun` with process arguments, writing stdout/stderr and returning its exit code.
@@ -102,7 +113,7 @@ pub fn run_mrun_main() -> i32 {
         Ok(args) => args,
         Err(err) => return emit_arg_error("mrun", &err, 2),
     };
-    emit_output(mrun::execute(&args))
+    emit_output("mrun", mrun::execute(&args))
 }
 
 /// Run `mcat` in-process and capture stdout, stderr, and exit code.

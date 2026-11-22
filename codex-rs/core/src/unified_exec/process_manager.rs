@@ -2024,8 +2024,12 @@ impl UnifiedExecProcessManager {
         );
         // Install the watcher before cancellable cleanup, and outside the process-store lock.
         if let Some(pruned_entry) = pruned_entry {
+            self.persist_removed_entry_before_termination(
+                &pruned_entry,
+                /*retain_in_memory*/ true,
+            )
+            .await;
             unregister_network_approval_for_entry(&pruned_entry).await;
-            pruned_entry.process.terminate();
         }
     }
 
@@ -2509,89 +2513,200 @@ impl UnifiedExecProcessManager {
     /// while preserving already-retained outputs, any unread output collected
     /// from the terminated processes, and process-ID reservations.
     pub(crate) async fn clean_background_terminals(&self) {
-        let entries: Vec<ProcessEntry> = {
-            let mut store = self.process_store.lock().await;
-            store.processes.drain().map(|(_, entry)| entry).collect()
+        let live: Vec<(i32, Arc<UnifiedExecProcess>)> = {
+            let store = self.process_store.lock().await;
+            store
+                .processes
+                .iter()
+                .map(|(id, entry)| (*id, Arc::clone(&entry.process)))
+                .collect()
         };
 
-        for entry in entries {
-            unregister_network_approval_for_entry(&entry).await;
-            self.persist_entry_before_termination(&entry, /*retain_in_memory*/ true)
+        for (process_id, process) in live {
+            self.retire_live_process(process_id, &process, /*retain_in_memory*/ true)
                 .await;
-            entry.process.terminate();
         }
     }
 
-    /// Orderly session shutdown: persist any unread collected output from live
-    /// processes before terminating them, then clear in-memory tables.
+    /// Orderly session shutdown: terminate live processes, drain and persist
+    /// any unread collected output, then clear in-memory tables.
     pub(crate) async fn terminate_all_processes(&self) {
-        let entries: Vec<ProcessEntry> = {
-            let mut store = self.process_store.lock().await;
-            let entries: Vec<ProcessEntry> =
-                store.processes.drain().map(|(_, entry)| entry).collect();
-            store.retained.clear();
-            store.reserved_process_ids.clear();
-            entries
+        let live: Vec<(i32, Arc<UnifiedExecProcess>)> = {
+            let store = self.process_store.lock().await;
+            store
+                .processes
+                .iter()
+                .map(|(id, entry)| (*id, Arc::clone(&entry.process)))
+                .collect()
         };
 
-        for entry in entries {
-            unregister_network_approval_for_entry(&entry).await;
-            self.persist_entry_before_termination(&entry, /*retain_in_memory*/ false)
+        for (process_id, process) in live {
+            self.retire_live_process(process_id, &process, /*retain_in_memory*/ false)
                 .await;
-            entry.process.terminate();
+        }
+
+        let mut store = self.process_store.lock().await;
+        store.processes.clear();
+        store.retained.clear();
+        store.reserved_process_ids.clear();
+    }
+
+    async fn retire_live_process(
+        &self,
+        process_id: i32,
+        process: &Arc<UnifiedExecProcess>,
+        retain_in_memory: bool,
+    ) {
+        let _interaction_guard = process.interaction_lock().lock_owned().await;
+        // Stop the producer first so no further output can arrive after the snapshot.
+        process.terminate();
+        let output_handles = process.output_handles();
+        if !output_handles.output_closed.load(Ordering::Acquire) {
+            let _ = tokio::time::timeout(
+                Duration::from_millis(100),
+                output_handles.output_notify.notified(),
+            )
+            .await;
+        }
+
+        let entry_snapshot = {
+            let store = self.process_store.lock().await;
+            store
+                .processes
+                .get(&process_id)
+                .filter(|entry| Arc::ptr_eq(&entry.process, process))
+                .map(|entry| {
+                    (
+                        entry.call_id.clone(),
+                        entry.environment_id.clone(),
+                        entry.hook_command.clone(),
+                        entry.cwd.clone(),
+                        entry.persisted,
+                    )
+                })
+        };
+        let Some((call_id, environment_id, hook_command, cwd, entry_persisted)) = entry_snapshot
+        else {
+            return;
+        };
+
+        let retained_entry = self
+            .persist_process_output_for_retirement(
+                process_id,
+                process,
+                call_id,
+                environment_id,
+                hook_command,
+                cwd,
+                entry_persisted,
+                retain_in_memory,
+            )
+            .await;
+
+        let removed = {
+            let mut store = self.process_store.lock().await;
+            let matches = store
+                .processes
+                .get(&process_id)
+                .is_some_and(|entry| Arc::ptr_eq(&entry.process, process));
+            if !matches {
+                None
+            } else {
+                let removed = store.processes.remove(&process_id);
+                // Keep process_id reserved so future allocations never reuse a cleaned ID.
+                store.reserved_process_ids.insert(process_id);
+                if let Some(retained_entry) = retained_entry {
+                    store.retained.insert(process_id, retained_entry);
+                }
+                removed
+            }
+        };
+        if let Some(entry) = removed {
+            unregister_network_approval_for_entry(&entry).await;
         }
     }
 
-    async fn persist_entry_before_termination(&self, entry: &ProcessEntry, retain_in_memory: bool) {
-        let process_id = entry.process_id;
-        let output_buffer = Arc::clone(&entry.process.output_handles().output_buffer);
+    async fn persist_removed_entry_before_termination(
+        &self,
+        entry: &ProcessEntry,
+        retain_in_memory: bool,
+    ) {
+        entry.process.terminate();
+        let output_handles = entry.process.output_handles();
+        if !output_handles.output_closed.load(Ordering::Acquire) {
+            let _ = tokio::time::timeout(
+                Duration::from_millis(100),
+                output_handles.output_notify.notified(),
+            )
+            .await;
+        }
+        let retained_entry = self
+            .persist_process_output_for_retirement(
+                entry.process_id,
+                &entry.process,
+                entry.call_id.clone(),
+                entry.environment_id.clone(),
+                entry.hook_command.clone(),
+                entry.cwd.clone(),
+                entry.persisted,
+                retain_in_memory,
+            )
+            .await;
+        let mut store = self.process_store.lock().await;
+        store.reserved_process_ids.insert(entry.process_id);
+        if let Some(retained_entry) = retained_entry {
+            store.retained.insert(entry.process_id, retained_entry);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_process_output_for_retirement(
+        &self,
+        process_id: i32,
+        process: &Arc<UnifiedExecProcess>,
+        call_id: String,
+        environment_id: String,
+        hook_command: String,
+        cwd: PathUri,
+        entry_persisted: bool,
+        retain_in_memory: bool,
+    ) -> Option<RetainedEntry> {
+        let output_buffer = Arc::clone(&process.output_handles().output_buffer);
         let has_persistent_storage = self
             .storage
             .as_ref()
             .is_some_and(|storage| !storage.is_ephemeral());
-        let snapshot = {
+        let (has_unread, snapshot) = {
             let guard = output_buffer.lock().await;
             let has_unread = guard.unread_total_bytes() > 0;
-            if !has_unread && !entry.persisted {
-                None
-            } else {
-                Some((
-                    has_unread,
-                    RetainedSuffixSnapshot {
-                        previously_persisted_bytes: guard.persisted_bytes,
-                        suffix_bytes: if has_persistent_storage {
-                            guard.suffix_from(guard.persisted_bytes)
-                        } else {
-                            Vec::new()
-                        },
-                        mem_bytes: (retain_in_memory && !has_persistent_storage && has_unread)
-                            .then(|| Arc::new(guard.retained.to_bytes())),
-                        retained_bytes: guard.retained.retained_bytes(),
-                        discarded_bytes: guard.retained.discarded_bytes(),
-                        read_offset: guard.read_offset,
-                        reported_discarded_bytes: guard.reported_discarded_bytes,
+            if !has_unread && !entry_persisted {
+                return None;
+            }
+            (
+                has_unread,
+                RetainedSuffixSnapshot {
+                    previously_persisted_bytes: guard.persisted_bytes,
+                    suffix_bytes: if has_persistent_storage {
+                        guard.suffix_from(guard.persisted_bytes)
+                    } else {
+                        Vec::new()
                     },
-                ))
-            }
+                    mem_bytes: (retain_in_memory && has_unread)
+                        .then(|| Arc::new(guard.retained.to_bytes())),
+                    retained_bytes: guard.retained.retained_bytes(),
+                    discarded_bytes: guard.retained.discarded_bytes(),
+                    read_offset: guard.read_offset,
+                    reported_discarded_bytes: guard.reported_discarded_bytes,
+                },
+            )
         };
 
-        let Some((has_unread, snapshot)) = snapshot else {
-            if retain_in_memory && !should_use_deterministic_process_ids() {
-                let mut store = self.process_store.lock().await;
-                if !store.retained.contains_key(&process_id) {
-                    store.reserved_process_ids.remove(&process_id);
-                }
-            }
-            return;
-        };
-
-        let tool_cwd = (entry.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID)
-            .then(|| entry.cwd.clone());
+        let tool_cwd = (environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID).then_some(cwd);
         let meta = RetainedExecMeta {
             process_id,
-            call_id: entry.call_id.clone(),
-            environment_id: entry.environment_id.clone(),
-            exit_code: entry.process.exit_code(),
+            call_id,
+            environment_id,
+            exit_code: process.exit_code(),
             completed: true,
             retained_bytes: snapshot.retained_bytes,
             discarded_bytes: snapshot.discarded_bytes,
@@ -2599,14 +2714,16 @@ impl UnifiedExecProcessManager {
             reported_discarded_bytes: snapshot.reported_discarded_bytes,
             exhausted: !has_unread,
             source_thread_id: None,
-            hook_command: Some(entry.hook_command.clone()),
+            hook_command: Some(hook_command),
             tool_cwd,
         };
 
-        let bin_path = if let Some(storage) = self.storage.clone()
+        let mut disk_ok = false;
+        let mut bin_path = PathBuf::new();
+        if let Some(storage) = self.storage.clone()
             && !storage.is_ephemeral()
         {
-            let bin_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
+            let target_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
             let meta_for_disk = meta.clone();
             match tokio::task::spawn_blocking(move || {
                 storage.persist_suffix(
@@ -2620,43 +2737,34 @@ impl UnifiedExecProcessManager {
             {
                 Ok(Ok(new_len)) => {
                     output_buffer.lock().await.persisted_bytes = new_len;
-                    Some(bin_path)
+                    bin_path = target_path;
+                    disk_ok = true;
                 }
                 Ok(Err(err)) => {
                     warn!(
                         process_id,
-                        "failed to persist exec output before termination: {err}"
+                        "failed to persist exec output before termination; keeping in-memory fallback: {err}"
                     );
-                    None
                 }
                 Err(err) => {
                     warn!(
                         process_id,
-                        "exec output persistence task failed before termination: {err}"
+                        "exec output persistence task failed before termination; keeping in-memory fallback: {err}"
                     );
-                    None
                 }
             }
-        } else {
-            Some(PathBuf::new())
-        };
+        }
 
-        if retain_in_memory
-            && has_unread
-            && let Some(bin_path) = bin_path
-        {
-            let mut store = self.process_store.lock().await;
-            store.reserved_process_ids.insert(process_id);
-            store.retained.insert(
-                process_id,
-                RetainedEntry {
-                    meta,
-                    bin_path,
-                    bytes: snapshot.mem_bytes,
-                    interaction_lock: Arc::new(Mutex::new(())),
-                    post_tool_use_pending: false,
-                },
-            );
+        if retain_in_memory && has_unread {
+            Some(RetainedEntry {
+                meta,
+                bin_path,
+                bytes: if disk_ok { None } else { snapshot.mem_bytes },
+                interaction_lock: Arc::new(Mutex::new(())),
+                post_tool_use_pending: false,
+            })
+        } else {
+            None
         }
     }
 
@@ -2742,6 +2850,8 @@ impl UnifiedExecProcessManager {
             entry
         };
 
+        self.persist_removed_entry_before_termination(&entry, /*retain_in_memory*/ true)
+            .await;
         unregister_network_approval_for_entry(&entry).await;
         true
     }

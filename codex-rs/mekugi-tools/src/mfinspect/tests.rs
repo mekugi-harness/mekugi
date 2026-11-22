@@ -273,4 +273,37 @@ fn preserves_lone_surrogates_flow_yaml_and_go_string_escapes() {
     let outline = parsed["data"]["outline"].as_array().unwrap();
     assert_eq!(outline[0]["name"], "fmt");
     assert_eq!(outline[1]["name"], "os");
+
+    // Flow YAML with an apostrophe inside a plain scalar must not swallow following keys.
+    let apo_file = dir.path().join("apostrophe.md");
+    fs::write(&apo_file, "---\n{abc: it's nice, next: ok}\n---\n# Title\n").unwrap();
+    let apo_out = execute(&s(&[&apo_file.to_string_lossy()]));
+    assert_eq!(apo_out.exit_code, 0, "stderr={}", apo_out.stderr);
+    assert!(
+        apo_out.stdout.contains("frontmatter abc") && apo_out.stdout.contains("frontmatter next"),
+        "expected both flow keys after apostrophe: {}",
+        apo_out.stdout
+    );
+
+    // Malformed Go escape followed by multibyte UTF-8 must not panic.
+    let bad_go = dir.path().join("bad_escape.go");
+    fs::write(&bad_go, "package p\nimport \"\\x💖\"\nfunc Ok() {}\n").unwrap();
+    let bad_go_out = execute(&s(&[&bad_go.to_string_lossy()]));
+    assert_eq!(bad_go_out.exit_code, 0, "stderr={}", bad_go_out.stderr);
+    assert!(
+        bad_go_out.stdout.contains("function Ok"),
+        "expected outline recovery after malformed escape: {}",
+        bad_go_out.stdout
+    );
+
+    // JSON recovery with a valid lone-surrogate key alongside a malformed sibling preserves raw surrogate escape.
+    let bad_surr = dir.path().join("bad_surrogate.json");
+    fs::write(&bad_surr, "{\"\\ud800\": 1, \"broken\": }").unwrap();
+    let bad_surr_out = execute(&s(&["--json", &bad_surr.to_string_lossy()]));
+    assert_eq!(bad_surr_out.exit_code, 0, "stderr={}", bad_surr_out.stderr);
+    assert!(
+        bad_surr_out.stdout.contains("\"pointer\":\"/\\ud800\""),
+        "expected preserved lone surrogate in recovery JSON: {}",
+        bad_surr_out.stdout
+    );
 }

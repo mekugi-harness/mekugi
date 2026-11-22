@@ -206,26 +206,21 @@ fn unquote_go_string(raw: &str) -> Option<String> {
                 body = &body[2..];
             }
             'x' => {
-                if body.len() < 2 {
+                if body.len() < 2 || !body.as_bytes()[..2].iter().all(u8::is_ascii_hexdigit) {
                     return None;
                 }
                 let hex = &body[..2];
-                if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return None;
-                }
                 let val = u8::from_str_radix(hex, 16).ok()?;
                 bytes.push(val);
                 body = &body[2..];
             }
             'u' | 'U' => {
                 let width = if esc == 'u' { 4 } else { 8 };
-                if body.len() < width {
+                if body.len() < width || !body.as_bytes()[..width].iter().all(u8::is_ascii_hexdigit)
+                {
                     return None;
                 }
                 let hex = &body[..width];
-                if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return None;
-                }
                 let val = u32::from_str_radix(hex, 16).ok()?;
                 let decoded = char::from_u32(val)?;
                 let mut buf = [0u8; 4];

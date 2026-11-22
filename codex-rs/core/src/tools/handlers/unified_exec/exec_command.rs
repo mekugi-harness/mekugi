@@ -317,19 +317,28 @@ fn truncate_head_bytes_for_rejection(message: &str, max_bytes: usize) -> String 
     if message.len() <= max_bytes {
         return message.to_string();
     }
-    let initial_prefix_len = message.floor_char_boundary(max_bytes);
-    let initial_omitted = message.len() - initial_prefix_len;
-    let notice_probe = format!("\n[output truncated: {initial_omitted} bytes omitted]");
-    let head_budget = max_bytes.saturating_sub(notice_probe.len());
-    let head_len = message.floor_char_boundary(head_budget);
-    let omitted = message.len() - head_len;
-    if head_len == 0 {
-        format!("[output truncated: {omitted} bytes omitted]")
-    } else {
-        format!(
-            "{}\n[output truncated: {omitted} bytes omitted]",
-            &message[..head_len]
-        )
+    let mut head_len = message.floor_char_boundary(max_bytes);
+    loop {
+        let omitted = message.len() - head_len;
+        let notice = if head_len == 0 {
+            format!("[output truncated: {omitted} bytes omitted]")
+        } else {
+            format!("\n[output truncated: {omitted} bytes omitted]")
+        };
+        if head_len == 0 || head_len + notice.len() <= max_bytes {
+            return if head_len == 0 {
+                notice
+            } else {
+                format!("{}{notice}", &message[..head_len])
+            };
+        }
+        let target = max_bytes.saturating_sub(notice.len());
+        let next_head = message.floor_char_boundary(target);
+        head_len = if next_head < head_len {
+            next_head
+        } else {
+            message.floor_char_boundary(head_len.saturating_sub(1))
+        };
     }
 }
 

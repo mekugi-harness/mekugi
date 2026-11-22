@@ -146,8 +146,9 @@ impl RetainedExecStorage {
                 warn!(
                     thread_id = %self.thread_id,
                     process_id = meta.process_id,
-                    "failed to persist fork retained exec snapshot: {err}"
+                    "failed to persist fork retained exec snapshot; skipping unpersisted entry: {err}"
                 );
+                continue;
             }
             loaded.push(LoadedRetainedEntry { meta, bin_path });
         }
@@ -249,6 +250,12 @@ pub(crate) fn read_retained_window(
     if to_read == 0 {
         return Ok(Vec::new());
     }
+    if let Some(parent) = bin_path.parent() {
+        verify_no_symlink_dir(parent)?;
+        if let Some(root) = parent.parent() {
+            verify_no_symlink_dir(root)?;
+        }
+    }
     let (mut file, file_len) =
         open_regular_readonly(bin_path, super::MAX_RETAINED_OUTPUT_BYTES as u64)?;
     if file_len < retained_bytes as u64 {
@@ -282,6 +289,20 @@ pub(crate) fn read_retained_window(
 }
 
 fn scan_meta_dir(dir: &Path) -> Vec<RetainedExecMeta> {
+    if let Err(err) = verify_no_symlink_dir(dir) {
+        if err.kind() != ErrorKind::NotFound {
+            warn!(dir = %dir.display(), "refusing to read retained exec directory: {err}");
+        }
+        return Vec::new();
+    }
+    if let Some(root) = dir.parent()
+        && let Err(err) = verify_no_symlink_dir(root)
+    {
+        if err.kind() != ErrorKind::NotFound {
+            warn!(dir = %root.display(), "refusing to read retained exec root: {err}");
+        }
+        return Vec::new();
+    }
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == ErrorKind::NotFound => return Vec::new(),
@@ -321,12 +342,68 @@ fn scan_meta_dir(dir: &Path) -> Vec<RetainedExecMeta> {
     metas
 }
 
-fn create_private_dir(path: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(path)?;
+fn verify_no_symlink_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        if !file.metadata()?.is_dir() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("retained path {} is not a directory", path.display()),
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let meta = fs::symlink_metadata(path)?;
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("retained path {} is not a real directory", path.display()),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        if !dir.metadata()?.is_dir() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("retained path {} is not a directory", path.display()),
+            ));
+        }
+        // Apply 0700 directly to the verified directory descriptor so a symlink
+        // at `path` can never be followed or chmod'd.
+        let rc = unsafe { libc::fchmod(dir.as_raw_fd(), 0o700) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        verify_no_symlink_dir(path)?;
     }
     Ok(())
 }

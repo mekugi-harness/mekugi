@@ -971,7 +971,7 @@ fn check_goflags_allows_tag_inference(
         .env("TMP", scratch)
         .env("TEMP", scratch)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::null());
     if let Some(p) = path_override {
         cmd.env("PATH", p);
     }
@@ -979,13 +979,15 @@ fn check_goflags_allows_tag_inference(
     let Ok(mut child) = cmd.spawn() else {
         return false;
     };
-    let Some(mut stdout) = child.stdout.take() else {
+    let Some(stdout) = child.stdout.take() else {
         retire_child(&mut child, dedicated_process);
         return false;
     };
-    let read_handle = std::thread::spawn(move || {
+    let (read_rx, read_handle) = crate::common::spawn_bounded_reader(move || {
         let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
+        let _ = stdout
+            .take((RETAINED_BYTES + 1) as u64)
+            .read_to_end(&mut out);
         out
     });
     let ok = loop {
@@ -1000,10 +1002,15 @@ fn check_goflags_allows_tag_inference(
             }
         }
     };
+    crate::common::kill_process_group(child.id() as i32);
     if !ok {
         return false;
     }
-    let Ok(bytes) = read_handle.join() else {
+    let drain_budget = deadline
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_secs(2));
+    let Some(bytes) = crate::common::recv_reader_with_timeout(read_rx, read_handle, drain_budget)
+    else {
         return false;
     };
     if bytes.len() > RETAINED_BYTES {

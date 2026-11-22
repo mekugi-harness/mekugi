@@ -450,14 +450,18 @@ impl<'a> StrictJsonParser<'a> {
     }
 }
 
-fn decode_strict_json_string(raw: &str) -> Option<String> {
+fn decode_strict_json_string_parts(raw: &str) -> Option<DecodedJsString> {
     let mut parser = StrictJsonParser::new(raw, /*collect_tokens*/ false);
     let val = parser.parse_string_parts().ok()?;
     if parser.pos == raw.len() {
-        Some(val.display)
+        Some(val)
     } else {
         None
     }
+}
+
+fn decode_strict_json_string(raw: &str) -> Option<String> {
+    decode_strict_json_string_parts(raw).map(|v| v.display)
 }
 
 pub(crate) fn parse_json(doc: &mut Source, collect_tokens: bool) -> Result<(), String> {
@@ -487,7 +491,7 @@ pub(crate) fn parse_json(doc: &mut Source, collect_tokens: bool) -> Result<(), S
                     node.kind(),
                     "object" | "array" | "string" | "number" | "true" | "false" | "null"
                 ) {
-                    collect_json_recovery(doc, node, "");
+                    collect_json_recovery(doc, node, "", None);
                 }
                 if !doc.entries.is_empty() {
                     break;
@@ -502,7 +506,12 @@ pub(crate) fn parse_json(doc: &mut Source, collect_tokens: bool) -> Result<(), S
     }
 }
 
-fn collect_json_recovery(doc: &mut Source, node: Node<'_>, pointer: &str) {
+fn collect_json_recovery(
+    doc: &mut Source,
+    node: Node<'_>,
+    pointer: &str,
+    raw_pointer_inner: Option<&str>,
+) {
     let kind = node.kind();
     let value_type = match kind {
         "object" | "array" | "string" | "number" | "null" => kind,
@@ -520,6 +529,7 @@ fn collect_json_recovery(doc: &mut Source, node: Node<'_>, pointer: &str) {
     );
     if let Some(last) = doc.entries.last_mut() {
         last.pointer = pointer.to_string();
+        last.pointer_raw_json = raw_pointer_inner.map(|inner| format!("\"{inner}\""));
         last.value_type = value_type.to_string();
     }
 
@@ -537,15 +547,33 @@ fn collect_json_recovery(doc: &mut Source, node: Node<'_>, pointer: &str) {
             if key.has_error() {
                 continue;
             }
-            let Some(name) = decode_strict_json_string(doc.text(key)) else {
+            let Some(decoded_key) = decode_strict_json_string_parts(doc.text(key)) else {
                 continue;
             };
             let valid = named_children(pair)
                 .into_iter()
                 .all(|part| !(part.start_byte() < val.start_byte() && part.is_error()));
             if valid {
-                let child_ptr = format!("{pointer}/{}", escape_json_pointer(&name));
-                collect_json_recovery(doc, val, &child_ptr);
+                let child_ptr = format!("{pointer}/{}", escape_json_pointer(&decoded_key.display));
+                let child_raw_inner = if raw_pointer_inner.is_some()
+                    || decoded_key.raw_json.is_some()
+                {
+                    let parent_inner = raw_pointer_inner
+                        .map(str::to_string)
+                        .unwrap_or_else(|| json_string_inner_escaped(pointer));
+                    let key_inner = decoded_key
+                        .raw_json
+                        .as_deref()
+                        .map(|raw| &raw[1..raw.len() - 1])
+                        .map(escape_json_pointer)
+                        .unwrap_or_else(|| {
+                            json_string_inner_escaped(&escape_json_pointer(&decoded_key.display))
+                        });
+                    Some(format!("{parent_inner}/{key_inner}"))
+                } else {
+                    None
+                };
+                collect_json_recovery(doc, val, &child_ptr, child_raw_inner.as_deref());
             }
         }
     } else if kind == "array" {
@@ -556,7 +584,9 @@ fn collect_json_recovery(doc: &mut Source, node: Node<'_>, pointer: &str) {
                 index += 1;
             } else {
                 let child_ptr = format!("{pointer}/{index}");
-                collect_json_recovery(doc, child, &child_ptr);
+                let child_raw_inner =
+                    raw_pointer_inner.map(|parent_inner| format!("{parent_inner}/{index}"));
+                collect_json_recovery(doc, child, &child_ptr, child_raw_inner.as_deref());
             }
         }
     }
@@ -820,10 +850,15 @@ fn extract_yaml_flow_mapping_keys(doc: &mut Source, start: usize, end: usize) ->
             keys.push((key, start + key_start, start + key_end));
         }
         // Skip the value at flow depth 0 until `,` or `}`.
+        // Quotes only start a quoted scalar at token start, never mid-word (e.g. `it's nice`).
         let mut depth = 0usize;
+        let mut at_token_start = true;
         while pos < bytes.len() {
             match bytes[pos] {
-                b'"' | b'\'' => {
+                b' ' | b'\t' | b'\r' | b'\n' => {
+                    pos += 1;
+                }
+                b'"' | b'\'' if at_token_start => {
                     let quote = bytes[pos];
                     pos += 1;
                     while pos < bytes.len() {
@@ -841,10 +876,12 @@ fn extract_yaml_flow_mapping_keys(doc: &mut Source, start: usize, end: usize) ->
                         }
                         pos += 1;
                     }
+                    at_token_start = false;
                 }
                 b'{' | b'[' => {
                     depth += 1;
                     pos += 1;
+                    at_token_start = true;
                 }
                 b'}' | b']' => {
                     if depth == 0 {
@@ -852,17 +889,25 @@ fn extract_yaml_flow_mapping_keys(doc: &mut Source, start: usize, end: usize) ->
                     }
                     depth -= 1;
                     pos += 1;
+                    at_token_start = false;
                 }
                 b',' if depth == 0 => {
                     pos += 1;
                     break;
+                }
+                b',' | b':' => {
+                    pos += 1;
+                    at_token_start = true;
                 }
                 b'#' if pos == 0 || matches!(bytes[pos - 1], b' ' | b'\t' | b'\r' | b'\n') => {
                     while pos < bytes.len() && bytes[pos] != b'\n' {
                         pos += 1;
                     }
                 }
-                _ => pos += 1,
+                _ => {
+                    pos += 1;
+                    at_token_start = false;
+                }
             }
         }
     }

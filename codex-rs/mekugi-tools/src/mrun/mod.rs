@@ -382,17 +382,14 @@ impl StreamCapture {
         }
     }
 
-    fn drain_from<R: Read>(mut self, mut reader: R) -> (String, bool) {
-        let mut buf = [0u8; 32 * 1024];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => match &mut self {
-                    Self::Bytes(w) => w.write(&buf[..n]),
-                    Self::Lines(w) => w.write(&buf[..n]),
-                },
-            }
+    fn push_bytes(&mut self, data: &[u8]) {
+        match self {
+            Self::Bytes(w) => w.write(data),
+            Self::Lines(w) => w.write(data),
         }
+    }
+
+    fn finish(self) -> (String, bool) {
         match self {
             Self::Bytes(mut w) => w.finish_text(),
             Self::Lines(w) => w.finish_text(),
@@ -483,16 +480,40 @@ pub fn execute(args: &[String]) -> ToolOutput {
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    let out_cap = StreamCapture::new(&options);
-    let err_cap = StreamCapture::new(&options);
+    let out_cap = std::sync::Arc::new(std::sync::Mutex::new(Some(StreamCapture::new(&options))));
+    let err_cap = std::sync::Arc::new(std::sync::Mutex::new(Some(StreamCapture::new(&options))));
 
-    let (out_rx, out_handle) = crate::common::spawn_bounded_reader(move || match stdout_pipe {
-        Some(pipe) => out_cap.drain_from(pipe),
-        None => (String::new(), false),
+    let out_cap_thread = std::sync::Arc::clone(&out_cap);
+    let (out_rx, out_handle) = crate::common::spawn_bounded_reader(move || {
+        if let Some(mut pipe) = stdout_pipe {
+            let mut buf = [0u8; 32 * 1024];
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut guard) = out_cap_thread.lock()
+                    && let Some(cap) = guard.as_mut()
+                {
+                    cap.push_bytes(&buf[..n]);
+                }
+            }
+        }
     });
-    let (err_rx, err_handle) = crate::common::spawn_bounded_reader(move || match stderr_pipe {
-        Some(pipe) => err_cap.drain_from(pipe),
-        None => (String::new(), false),
+    let err_cap_thread = std::sync::Arc::clone(&err_cap);
+    let (err_rx, err_handle) = crate::common::spawn_bounded_reader(move || {
+        if let Some(mut pipe) = stderr_pipe {
+            let mut buf = [0u8; 32 * 1024];
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut guard) = err_cap_thread.lock()
+                    && let Some(cap) = guard.as_mut()
+                {
+                    cap.push_bytes(&buf[..n]);
+                }
+            }
+        }
     });
 
     let status = match child.wait() {
@@ -511,12 +532,20 @@ pub fn execute(args: &[String]) -> ToolOutput {
     crate::common::kill_process_group(child.id() as i32);
 
     let drain_timeout = std::time::Duration::from_secs(2);
-    let (out_text, out_omitted) =
-        crate::common::recv_reader_with_timeout(out_rx, out_handle, drain_timeout)
-            .unwrap_or_default();
-    let (err_text, err_omitted) =
-        crate::common::recv_reader_with_timeout(err_rx, err_handle, drain_timeout)
-            .unwrap_or_default();
+    let _ = crate::common::recv_reader_with_timeout(out_rx, out_handle, drain_timeout);
+    let _ = crate::common::recv_reader_with_timeout(err_rx, err_handle, drain_timeout);
+    let (out_text, out_omitted) = out_cap
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+        .map(StreamCapture::finish)
+        .unwrap_or_default();
+    let (err_text, err_omitted) = err_cap
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+        .map(StreamCapture::finish)
+        .unwrap_or_default();
 
     let (selected_out, selected_err) = if let Some(budget) = options.tokens {
         // Reserve at most half the token budget for stderr when stdout is non-empty.

@@ -549,7 +549,7 @@ fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Writ
         return 1;
     }
 
-    // Pass 2: stream raw validated UTF-8 bytes directly to stdout.
+    // Pass 2: stream raw bytes while re-validating UTF-8 so concurrent appends cannot emit invalid bytes.
     if let Err(err) = file.seek(SeekFrom::Start(0)) {
         let _ = write!(
             stderr,
@@ -559,6 +559,7 @@ fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Writ
         );
         return 1;
     }
+    carry_len = 0;
     loop {
         let read = match file.read(&mut chunk) {
             Ok(0) => break,
@@ -573,7 +574,27 @@ fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Writ
                 return 1;
             }
         };
-        if let Err(err) = stdout.write_all(&chunk[..read]) {
+        work.clear();
+        work.extend_from_slice(&carry[..carry_len]);
+        work.extend_from_slice(&chunk[..read]);
+        carry_len = 0;
+        let emit_len = match std::str::from_utf8(&work) {
+            Ok(_) => work.len(),
+            Err(err) => {
+                if err.error_len().is_some() {
+                    let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
+                    return 1;
+                }
+                let valid_up_to = err.valid_up_to();
+                let rem = &work[valid_up_to..];
+                carry[..rem.len()].copy_from_slice(rem);
+                carry_len = rem.len();
+                valid_up_to
+            }
+        };
+        if emit_len > 0
+            && let Err(err) = stdout.write_all(&work[..emit_len])
+        {
             let _ = write!(
                 stderr,
                 "mcat: {}: {}\n",
@@ -582,6 +603,10 @@ fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Writ
             );
             return 1;
         }
+    }
+    if carry_len > 0 {
+        let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
+        return 1;
     }
 
     0
@@ -723,9 +748,18 @@ pub fn execute_to_writers(
             res.stderr
                 .push_str(&generated_advisory(&[specs[0].path.clone()]));
         }
-        let _ = stdout_writer.write_all(res.stdout.as_bytes());
+        let mut exit_code = i32::from(res.failed);
+        if let Err(err) = stdout_writer.write_all(res.stdout.as_bytes()) {
+            let _ = write!(
+                stderr_writer,
+                "mcat: {}: {}\n",
+                quote_json_string(&specs[0].path),
+                format_io_error(&err)
+            );
+            exit_code = 1;
+        }
         let _ = stderr_writer.write_all(res.stderr.as_bytes());
-        return i32::from(res.failed);
+        return exit_code;
     }
 
     // Group reads by exact path so each file is scanned once.
@@ -800,9 +834,17 @@ pub fn execute_to_writers(
     };
     diagnostics.push_str(&generated_advisory(&generated_paths));
 
-    let _ = stdout_writer.write_all(stdout.as_bytes());
+    let mut exit_code = i32::from(any_failed);
+    if let Err(err) = stdout_writer.write_all(stdout.as_bytes()) {
+        let _ = write!(
+            stderr_writer,
+            "mcat: write stdout: {}\n",
+            format_io_error(&err)
+        );
+        exit_code = 1;
+    }
     let _ = stderr_writer.write_all(diagnostics.as_bytes());
-    i32::from(any_failed)
+    exit_code
 }
 
 pub fn execute(args: &[String]) -> ToolOutput {
