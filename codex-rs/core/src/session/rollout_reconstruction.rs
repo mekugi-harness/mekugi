@@ -236,7 +236,13 @@ pub(super) fn question_id_high_water_mark(items: &[RolloutItem]) -> u64 {
                 .map(|question| question.id.as_str())
                 .collect()
         })
-        .filter_map(|id| id.strip_prefix('q')?.parse::<u64>().ok())
+        .filter_map(|id| {
+            id.strip_prefix('q')?
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+                .then(|| id[1..].parse::<u64>().ok())
+                .flatten()
+        })
         .max()
         .unwrap_or(0);
     checkpoint_high_water_mark.max(question_high_water_mark)

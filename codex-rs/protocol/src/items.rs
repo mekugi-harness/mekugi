@@ -153,7 +153,7 @@ pub enum AgentMessageDelivery {
     Async,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, TS, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export_to = "v2/")]
 pub struct AsyncUserInputQuestion {
@@ -161,6 +161,49 @@ pub struct AsyncUserInputQuestion {
     pub header: Option<String>,
     pub question: String,
     pub options: Option<Vec<crate::request_user_input::RequestUserInputQuestionOption>>,
+}
+
+impl<'de> Deserialize<'de> for AsyncUserInputQuestion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use crate::request_user_input::RequestUserInputQuestionOption;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OptionValue {
+            Label(String),
+            Rich(RequestUserInputQuestionOption),
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct StoredQuestion {
+            #[serde(default)]
+            id: String,
+            header: Option<String>,
+            #[serde(alias = "title")]
+            question: String,
+            options: Option<Vec<OptionValue>>,
+        }
+
+        let stored = StoredQuestion::deserialize(deserializer)?;
+        Ok(Self {
+            id: stored.id,
+            header: stored.header,
+            question: stored.question,
+            options: stored.options.map(|options| {
+                options
+                    .into_iter()
+                    .map(|option| match option {
+                        OptionValue::Label(label) => RequestUserInputQuestionOption {
+                            label,
+                            ..Default::default()
+                        },
+                        OptionValue::Rich(option) => option,
+                    })
+                    .collect()
+            }),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS, JsonSchema)]
@@ -873,6 +916,35 @@ mod tests {
     use codex_extension_items::sleep::SleepItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+
+    #[test]
+    fn async_questions_read_legacy_but_write_only_rich_options() {
+        for id in [None, Some("authored-id")] {
+            let mut value = json!({"title":"Continue?", "options":["Yes", "No"]});
+            if let Some(id) = id {
+                value["id"] = json!(id);
+            }
+            let question: AsyncUserInputQuestion = serde_json::from_value(value).unwrap();
+            assert_eq!(question.id, id.unwrap_or_default());
+            assert_eq!(question.question, "Continue?");
+            let encoded = serde_json::to_value(&question).unwrap();
+            assert!(encoded.get("title").is_none());
+            assert_eq!(encoded["options"][0]["label"], "Yes");
+            assert_eq!(
+                serde_json::from_value::<AsyncUserInputQuestion>(encoded).unwrap(),
+                question
+            );
+        }
+        let question: AsyncUserInputQuestion =
+            serde_json::from_value(json!({"title":"Write an answer"})).unwrap();
+        assert!(question.options.is_none());
+        assert!(
+            serde_json::from_value::<AsyncUserInputQuestion>(
+                json!({"title":"Invalid", "options":[3]})
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn sleep_extension_item_preserves_type_and_kind() {

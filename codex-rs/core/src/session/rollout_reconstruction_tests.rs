@@ -33,6 +33,27 @@ use std::path::PathBuf;
 use test_case::test_case;
 
 #[tokio::test]
+async fn rollout_reconstruction_preserves_legacy_async_questions() {
+    let line = codex_rollout::parse_rollout_line(r#"{"timestamp":"2025-01-03T12:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Please choose.","delivery":"async","questions":[{"title":"Continue?","options":["Yes","No"]},{"id":"authored-id","title":"Why?"},{"id":"q8","question":"New?"},{"id":"q+99","title":"Legacy authored ID?"}]}}"#).unwrap();
+    let RolloutItem::EventMsg(EventMsg::AgentMessage(message)) = &line.item else {
+        panic!("expected saved agent message")
+    };
+    let questions = message.questions.as_ref().unwrap();
+    assert_eq!(questions[0].question, "Continue?");
+    assert_eq!(questions[0].options.as_ref().unwrap()[0].label, "Yes");
+    assert_eq!(questions[1].id, "authored-id");
+    assert_eq!(
+        rollout_reconstruction::question_id_high_water_mark(&[line.item.clone()]),
+        8
+    );
+    let (session, turn) = make_session_and_context().await;
+    session
+        .apply_rollout_reconstruction(&Arc::new(turn), &[line.item])
+        .await;
+    assert_eq!(session.allocate_question_ids(1).await, ["q9"]);
+}
+
+#[tokio::test]
 async fn rollout_reconstruction_restores_question_ids_from_persisted_carriers() {
     let (session, turn) = make_session_and_context().await;
     assert_eq!(session.allocate_question_ids(2).await, ["q1", "q2"]);
