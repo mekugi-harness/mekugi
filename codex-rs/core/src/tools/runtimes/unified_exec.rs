@@ -437,14 +437,6 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             .then(crate::tools::runtimes::arg0_path_dir_from_env)
             .flatten();
         #[cfg(unix)]
-        let bundled_resource_dir = (!environment_is_remote)
-            .then(|| {
-                std::env::var_os(crate::tools::runtimes::CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR)
-                    .filter(|value| !value.is_empty())
-                    .map(std::path::PathBuf::from)
-            })
-            .flatten();
-        #[cfg(unix)]
         let runtime_path_prepends = {
             let mut runtime_path_prepends = RuntimePathPrepends::default();
             if !environment_is_remote {
@@ -452,7 +444,6 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                     &mut env,
                     &mut runtime_path_prepends,
                     arg0_path_dir.as_deref(),
-                    bundled_resource_dir.as_deref(),
                 );
                 runtime_path_prepends.append(
                     &mut env,

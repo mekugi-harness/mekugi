@@ -24,17 +24,7 @@ const MCAT_ARG0: &str = "mcat";
 const MFINSPECT_ARG0: &str = "mfinspect";
 const MSYMBOL_ARG0: &str = "msymbol";
 const MRUN_ARG0: &str = "mrun";
-#[cfg(unix)]
-const PINNED_EXE_FILENAME: &str = ".codex-self";
-#[cfg(target_os = "linux")]
-const BUNDLED_RESOURCES_DIRNAME: &str = "codex-resources";
-#[cfg(target_os = "linux")]
-const BUNDLED_BWRAP_FILENAME: &str = "bwrap";
 const LOCK_FILENAME: &str = ".lock";
-/// Parent directory of the original packaged executable before arg0 pins `.codex-self`
-/// into `~/.codex/tmp/arg0-<os>/...`. Used by `codex-linux-sandbox` to discover sibling
-/// bundled resources such as `bwrap`.
-pub const CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR: &str = "CODEX_BUNDLED_RESOURCE_DIR";
 /// Active per-session arg0 alias directory prepended onto `PATH` so login shells can
 /// restore `mcat`, `mfinspect`, `msymbol`, `mrun`, and `apply_patch` if startup resets `PATH`.
 pub const CODEX_ARG0_PATH_DIR_ENV_VAR: &str = "CODEX_ARG0_PATH_DIR";
@@ -162,18 +152,6 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     // before creating any threads/the Tokio runtime.
     load_dotenv();
 
-    #[cfg(target_os = "linux")]
-    if let Some(resource_dir) = bundled_resource_dir_from_exe(
-        InstallContext::current(),
-        std::env::current_exe().ok().as_deref(),
-    ) {
-        // It is safe to call set_var() because our process is single-threaded at
-        // this point in its execution.
-        unsafe {
-            std::env::set_var(CODEX_BUNDLED_RESOURCE_DIR_ENV_VAR, resource_dir);
-        }
-    }
-
     let (path_entry_guard, updated_path_env_var) = prepare_path_env_var_with_aliases(
         InstallContext::current(),
         std::env::var_os("PATH"),
@@ -194,65 +172,6 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         }
     }
     path_entry_guard
-}
-
-#[cfg(target_os = "linux")]
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    let Ok(metadata) = path.metadata() else {
-        return false;
-    };
-    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(target_os = "linux")]
-fn bundled_bwrap_for_dir(dir: &Path) -> Option<PathBuf> {
-    let mut candidates = Vec::with_capacity(3);
-    candidates.push(
-        dir.join(BUNDLED_RESOURCES_DIRNAME)
-            .join(BUNDLED_BWRAP_FILENAME),
-    );
-    if let Some(parent) = dir.parent() {
-        candidates.push(
-            parent
-                .join(BUNDLED_RESOURCES_DIRNAME)
-                .join(BUNDLED_BWRAP_FILENAME),
-        );
-    }
-    candidates.push(dir.join(BUNDLED_BWRAP_FILENAME));
-    candidates
-        .into_iter()
-        .find(|candidate| is_executable_file(candidate))
-}
-
-#[cfg(target_os = "linux")]
-fn bundled_bwrap_for_exe(
-    install_context: &InstallContext,
-    current_exe: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(path) = install_context
-        .bundled_resource(BUNDLED_BWRAP_FILENAME)
-        .filter(|path| is_executable_file(path))
-    {
-        return Some(path.into_path_buf());
-    }
-    current_exe
-        .and_then(Path::parent)
-        .filter(|dir| dir.is_absolute())
-        .and_then(bundled_bwrap_for_dir)
-}
-
-#[cfg(target_os = "linux")]
-fn bundled_resource_dir_from_exe(
-    install_context: &InstallContext,
-    current_exe: Option<&Path>,
-) -> Option<PathBuf> {
-    let bwrap = bundled_bwrap_for_exe(install_context, current_exe)?;
-    bwrap
-        .parent()
-        .filter(|dir| dir.is_absolute())
-        .map(Path::to_path_buf)
 }
 
 fn prepare_path_env_var_with_aliases(
@@ -338,13 +257,9 @@ where
     F: FnOnce(Arg0DispatchPaths) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
-    let codex_self_exe = path_entry_guard
-        .as_ref()
-        .and_then(|path_entry| path_entry.paths().codex_self_exe.clone())
-        .or_else(|| current_exe.clone());
     let paths = Arg0DispatchPaths {
         main_execve_wrapper_exe: None,
-        codex_self_exe,
+        codex_self_exe: current_exe.clone(),
         codex_linux_sandbox_exe: if cfg!(target_os = "linux") {
             linux_sandbox_exe_path(path_entry_guard.as_ref(), current_exe)
         } else {
@@ -488,38 +403,29 @@ fn prepare_aliases_in_home(
         .open(&lock_path)?;
     lock_file.try_lock()?;
 
-    #[cfg(unix)]
-    let codex_self_exe = {
-        let pinned_exe = path.join(PINNED_EXE_FILENAME);
-        pin_running_executable(&pinned_exe)?;
+    let exe = std::env::current_exe()?;
+    for filename in &[
+        APPLY_PATCH_ARG0,
+        MISSPELLED_APPLY_PATCH_ARG0,
+        #[cfg(unix)]
+        MCAT_ARG0,
+        #[cfg(unix)]
+        MFINSPECT_ARG0,
+        #[cfg(unix)]
+        MSYMBOL_ARG0,
+        #[cfg(unix)]
+        MRUN_ARG0,
         #[cfg(target_os = "linux")]
-        if let Some(source_bwrap) = bundled_bwrap_for_exe(
-            InstallContext::current(),
-            std::env::current_exe().ok().as_deref(),
-        ) && let Err(err) = pin_bundled_bwrap(&source_bwrap, path)
+        CODEX_LINUX_SANDBOX_ARG0,
+    ] {
+        #[cfg(unix)]
         {
-            eprintln!("WARNING: failed to pin bundled bwrap: {err}");
-        }
-        for filename in &[
-            APPLY_PATCH_ARG0,
-            MISSPELLED_APPLY_PATCH_ARG0,
-            MCAT_ARG0,
-            MFINSPECT_ARG0,
-            MSYMBOL_ARG0,
-            MRUN_ARG0,
-            #[cfg(target_os = "linux")]
-            CODEX_LINUX_SANDBOX_ARG0,
-        ] {
             let link = path.join(filename);
-            symlink(PINNED_EXE_FILENAME, &link)?;
+            symlink(&exe, &link)?;
         }
-        Some(pinned_exe)
-    };
 
-    #[cfg(windows)]
-    let codex_self_exe = {
-        for filename in &[APPLY_PATCH_ARG0, MISSPELLED_APPLY_PATCH_ARG0] {
-            let exe = std::env::current_exe()?;
+        #[cfg(windows)]
+        {
             let batch_script = path.join(format!("{filename}.bat"));
             let exe = windows_batch_executable_path(&exe, path);
             std::fs::write(
@@ -531,14 +437,13 @@ fn prepare_aliases_in_home(
                 ),
             )?;
         }
-        std::env::current_exe().ok()
-    };
+    }
 
     let updated_path_env_var = path_env_with_entry(path, existing_path);
 
     let paths = Arg0DispatchPaths {
         main_execve_wrapper_exe: None,
-        codex_self_exe,
+        codex_self_exe: Some(exe),
         codex_linux_sandbox_exe: {
             #[cfg(target_os = "linux")]
             {
@@ -555,70 +460,6 @@ fn prepare_aliases_in_home(
         Arg0PathEntryGuard::new(temp_dir, lock_file, paths),
         updated_path_env_var,
     ))
-}
-
-#[cfg(unix)]
-fn open_running_executable() -> std::io::Result<(File, Option<PathBuf>)> {
-    let exe_path = std::env::current_exe().ok();
-    #[cfg(target_os = "linux")]
-    if let Ok(file) = File::open("/proc/self/exe") {
-        return Ok((file, exe_path));
-    }
-    let path = std::env::current_exe()?;
-    let file = File::open(&path)?;
-    Ok((file, Some(path)))
-}
-
-/// Pin the running executable inode into `target` so replacing the installed binary
-/// on disk does not affect running sessions. Prefers a hard link verified by `(dev, ino)`
-/// and falls back to a private `0o500` copy on cross-filesystem or replacement races.
-#[cfg(unix)]
-fn pin_running_executable(target: &Path) -> std::io::Result<()> {
-    let (mut source, source_path) = open_running_executable()?;
-    pin_executable_from_source(&mut source, source_path.as_deref(), target)
-}
-
-#[cfg(target_os = "linux")]
-fn pin_bundled_bwrap(source_bwrap: &Path, alias_dir: &Path) -> std::io::Result<()> {
-    let mut source = File::open(source_bwrap)?;
-    let resources_dir = alias_dir.join(BUNDLED_RESOURCES_DIRNAME);
-    std::fs::create_dir_all(&resources_dir)?;
-    let target = resources_dir.join(BUNDLED_BWRAP_FILENAME);
-    pin_executable_from_source(&mut source, Some(source_bwrap), &target)
-}
-
-#[cfg(unix)]
-fn pin_executable_from_source(
-    source: &mut File,
-    source_path: Option<&Path>,
-    target: &Path,
-) -> std::io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let source_meta = source.metadata()?;
-    let expected_id = (source_meta.dev(), source_meta.ino());
-
-    if let Some(path) = source_path
-        && std::fs::hard_link(path, target).is_ok()
-    {
-        let matches = std::fs::symlink_metadata(target).is_ok_and(|linked| {
-            linked.file_type().is_file() && (linked.dev(), linked.ino()) == expected_id
-        });
-        if matches {
-            return Ok(());
-        }
-        let _ = std::fs::remove_file(target);
-    }
-
-    let mut pinned = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o500)
-        .open(target)?;
-    std::io::copy(source, &mut pinned)?;
-    drop(pinned);
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -1039,16 +880,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn prepare_aliases_creates_pinned_mekugi_tool_aliases() -> std::io::Result<()> {
+    fn prepare_aliases_creates_mekugi_tool_aliases() -> std::io::Result<()> {
         let home = tempfile::tempdir()?;
         let (guard, updated_path) = super::prepare_aliases_in_home(home.path(), None)?;
         let alias_dir = guard._temp_dir.path();
-        let pinned = alias_dir.join(super::PINNED_EXE_FILENAME);
+        let current_exe = std::env::current_exe()?;
 
-        assert!(pinned.is_file());
         assert_eq!(
             guard.paths().codex_self_exe.as_deref(),
-            Some(pinned.as_path())
+            Some(current_exe.as_path())
         );
         assert_eq!(
             std::env::split_paths(&updated_path).next().as_deref(),
@@ -1064,100 +904,9 @@ mod tests {
             super::MRUN_ARG0,
         ] {
             let link = alias_dir.join(name);
-            assert_eq!(fs::read_link(&link)?, Path::new(super::PINNED_EXE_FILENAME));
+            assert_eq!(fs::read_link(&link)?, current_exe);
             assert!(link.is_file());
         }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pinned_alias_survives_replacing_original_executable_on_disk() -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir()?;
-        let installed = dir.path().join("mekugi-app-server");
-        let alias_dir = dir.path().join("aliases");
-        fs::create_dir(&alias_dir)?;
-
-        fs::write(&installed, "#!/bin/sh\necho version-one\n")?;
-        fs::set_permissions(&installed, fs::Permissions::from_mode(0o755))?;
-
-        // Pin while version-one is open, then atomically replace installed path with version-two.
-        let mut open_v1 = File::open(&installed)?;
-        let pinned_hl = alias_dir.join(".codex-self-hl");
-        super::pin_executable_from_source(&mut open_v1, Some(&installed), &pinned_hl)?;
-        let mcat_hl = alias_dir.join("mcat");
-        std::os::unix::fs::symlink(&pinned_hl, &mcat_hl)?;
-
-        let replacement = dir.path().join("mekugi-app-server.new");
-        fs::write(&replacement, "#!/bin/sh\necho version-two\n")?;
-        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755))?;
-        fs::rename(&replacement, &installed)?;
-
-        let out_hl = std::process::Command::new(&mcat_hl).output()?;
-        assert!(out_hl.status.success());
-        assert_eq!(String::from_utf8_lossy(&out_hl.stdout), "version-one\n");
-
-        // Also exercise the copy fallback when `installed` already points to a different inode
-        // than the open running executable (simulating a replacement race during startup).
-        let pinned_copy = alias_dir.join(".codex-self-copy");
-        super::pin_executable_from_source(&mut open_v1, Some(&installed), &pinned_copy)?;
-        let mode = fs::symlink_metadata(&pinned_copy)?.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o500);
-        let out_copy = std::process::Command::new(&pinned_copy).output()?;
-        assert!(out_copy.status.success());
-        assert_eq!(String::from_utf8_lossy(&out_copy.stdout), "version-one\n");
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn bundled_resource_dir_requires_bundled_bwrap_and_pins_under_codex_resources()
-    -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir()?;
-        let empty_context = InstallContext {
-            method: InstallMethod::Other,
-            package_layout: None,
-        };
-
-        let harness_dir = dir.path().join("deps");
-        fs::create_dir(&harness_dir)?;
-        let harness_exe = harness_dir.join("subprocess-test");
-        fs::write(&harness_exe, "#!/bin/sh\n")?;
-        assert_eq!(
-            super::bundled_resource_dir_from_exe(&empty_context, Some(&harness_exe)),
-            None
-        );
-
-        let staged_dir = dir.path().join("native");
-        fs::create_dir(&staged_dir)?;
-        let staged_exe = staged_dir.join("mekugi-app-server");
-        let staged_bwrap = staged_dir.join("bwrap");
-        fs::write(&staged_exe, "#!/bin/sh\n")?;
-        fs::write(&staged_bwrap, "#!/bin/sh\necho bwrap-v1\n")?;
-        fs::set_permissions(&staged_bwrap, fs::Permissions::from_mode(0o755))?;
-        assert_eq!(
-            super::bundled_resource_dir_from_exe(&empty_context, Some(&staged_exe)),
-            Some(staged_dir.clone())
-        );
-
-        let alias_dir = dir.path().join("aliases");
-        fs::create_dir(&alias_dir)?;
-        super::pin_bundled_bwrap(&staged_bwrap, &alias_dir)?;
-        let pinned_bwrap = alias_dir.join("codex-resources").join("bwrap");
-        assert!(super::is_executable_file(&pinned_bwrap));
-
-        let replacement = staged_dir.join("bwrap.new");
-        fs::write(&replacement, "#!/bin/sh\necho bwrap-v2\n")?;
-        fs::set_permissions(&replacement, fs::Permissions::from_mode(0o755))?;
-        fs::rename(&replacement, &staged_bwrap)?;
-
-        let out = std::process::Command::new(&pinned_bwrap).output()?;
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "bwrap-v1\n");
         Ok(())
     }
 }
