@@ -91,9 +91,14 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - Model requests reuse repeated tool output and source text without replacing
   the original retained records, preferring a single-base unified diff over
   fragmented multi-segment references when savings stay within a bounded
-  clarity budget. Context usage notices and deduplication savings come from
-  native observations instead of host prompt rewriting. Mekugi only promises
-  resume for Mekugi sessions.
+  clarity budget. Detected `AGENTS.md` instruction updates are delivered as a
+  compact unified diff against the previously delivered snapshot when doing so
+  saves at least 128 bytes compared to repeating the full instructions (and emit
+  a concise unchanged notice on directory-only changes), falling back to full
+  replacement for complete rewrites or legacy sessions without a baseline.
+  Context usage notices and deduplication savings come from native observations
+  instead of host prompt rewriting. Mekugi only promises resume for Mekugi
+  sessions.
 - Migration 63 records completed compactions in Mekugi state. The upstream
   0.171.0 state migrations were moved to 64 and 65 to preserve the recorded
   checksum in existing Mekugi databases.

@@ -10,7 +10,10 @@ use serde::Serialize;
 
 const REPLACEMENT_NOTICE: &str =
     "These AGENTS.md instructions replace all previously provided AGENTS.md instructions.";
+const DIFF_NOTICE: &str = "Apply this diff to the previously provided AGENTS.md instructions:";
+const UNCHANGED_NOTICE: &str = "The previously provided AGENTS.md instructions are unchanged.";
 const REMOVAL_NOTICE: &str = "The previously provided AGENTS.md instructions no longer apply.";
+const MIN_DIFF_SAVING_BYTES: usize = 128;
 
 /// The AGENTS.md instructions currently visible to the model.
 #[derive(Clone, Debug, Default)]
@@ -56,15 +59,17 @@ impl WorldStateSection for AgentsMdState {
             return (None, Vec::new());
         }
 
-        let previous_may_contain_instructions = match previous {
-            PreviousSectionState::Known(previous) => previous.text.is_some(),
-            PreviousSectionState::Unknown => true,
-            PreviousSectionState::Absent => false,
+        let (previous_may_contain_instructions, previous_text) = match previous {
+            PreviousSectionState::Known(previous) => {
+                (previous.text.is_some(), previous.text.as_deref())
+            }
+            PreviousSectionState::Unknown => (true, None),
+            PreviousSectionState::Absent => (false, None),
         };
         let instructions = match (&self.instructions, previous_may_contain_instructions) {
             (Some(instructions), true) => UserInstructions {
                 directory: instructions.directory.clone(),
-                text: format!("{REPLACEMENT_NOTICE}\n\n{}", instructions.text),
+                text: render_updated_instructions(previous_text, &instructions.text),
             },
             (Some(instructions), false) => instructions.clone(),
             (None, true) => UserInstructions {
@@ -77,6 +82,30 @@ impl WorldStateSection for AgentsMdState {
             Some(current),
             vec![WorldStateUpdate::fragment(instructions)],
         )
+    }
+}
+
+fn render_updated_instructions(previous_text: Option<&str>, current_text: &str) -> String {
+    if previous_text == Some(current_text) {
+        return UNCHANGED_NOTICE.to_string();
+    }
+    let replacement = format!("{REPLACEMENT_NOTICE}\n\n{current_text}");
+    let Some(previous_text) = previous_text else {
+        return replacement;
+    };
+    let diff = similar::TextDiff::configure()
+        .algorithm(similar::Algorithm::Patience)
+        .diff_lines(previous_text, current_text);
+    let changes = diff.unified_diff().context_radius(1).to_string();
+    let changes = changes.trim_end_matches('\n');
+    if changes.is_empty() {
+        return replacement;
+    }
+    let diff_body = format!("{DIFF_NOTICE}\n\n```diff\n{changes}\n```");
+    if diff_body.len().saturating_add(MIN_DIFF_SAVING_BYTES) <= replacement.len() {
+        diff_body
+    } else {
+        replacement
     }
 }
 

@@ -27,3 +27,85 @@ fn snapshots() {
         (Unknown, Known(&empty)),
     ]));
 }
+
+#[test]
+fn delivers_unified_diff_for_incremental_edits() {
+    use pretty_assertions::assert_eq;
+
+    let initial_text = [
+        "# Project Rules",
+        "",
+        "## Formatting",
+        "Use cargo fmt before committing and keep imports grouped consistently across crates.",
+        "",
+        "## Architecture",
+        "Keep runtime behavior in its native owner rather than duplicating logic across layers.",
+        "",
+        "## Testing",
+        "Run unit tests for every touched crate before opening a pull request.",
+        "",
+        "## Style",
+        "Prefer small cohesive modules with explicit visibility and clear documentation.",
+    ]
+    .join("\n");
+    let edited_text = initial_text.replace(
+        "Run unit tests for every touched crate before opening a pull request.",
+        "Run unit and integration tests for every touched crate before opening a pull request.",
+    );
+
+    let initial_loaded = LoadedAgentsMd::from_text_for_testing(&initial_text);
+    let initial_state = AgentsMdState::new(Some(&initial_loaded));
+    let (initial_snapshot, _) = initial_state.render_diff(PreviousSectionState::Absent);
+    let initial_snapshot = initial_snapshot.expect("initial snapshot");
+
+    let edited_loaded = LoadedAgentsMd::from_text_for_testing(&edited_text);
+    let edited_state = AgentsMdState::new(Some(&edited_loaded));
+    let (edited_snapshot, updates) =
+        edited_state.render_diff(PreviousSectionState::Known(&initial_snapshot));
+    let edited_snapshot = edited_snapshot.expect("edited snapshot");
+    assert_eq!(edited_snapshot.text.as_deref(), Some(edited_text.as_str()));
+    assert_eq!(updates.len(), 1);
+
+    let rendered = render_section_cases(&[(
+        PreviousSectionState::Known(&initial_state),
+        PreviousSectionState::Known(&edited_state),
+    )]);
+    let (_, message) = rendered
+        .split_once("(role - user)\n")
+        .expect("rendered user message");
+    assert_eq!(
+        message,
+        "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nApply this diff to the previously provided AGENTS.md instructions:\n\n```diff\n@@ -9,3 +9,3 @@\n ## Testing\n-Run unit tests for every touched crate before opening a pull request.\n+Run unit and integration tests for every touched crate before opening a pull request.\n \n```\n</INSTRUCTIONS>"
+    );
+}
+
+#[test]
+fn directory_only_change_does_not_repeat_unchanged_text() {
+    use pretty_assertions::assert_eq;
+
+    let text = "Keep responses concise.\nAlways run tests.";
+    let before = AgentsMdState {
+        instructions: Some(UserInstructions {
+            directory: Some("/repo/a".to_string()),
+            text: text.to_string(),
+        }),
+    };
+    let after = AgentsMdState {
+        instructions: Some(UserInstructions {
+            directory: Some("/repo/b".to_string()),
+            text: text.to_string(),
+        }),
+    };
+
+    let rendered = render_section_cases(&[(
+        PreviousSectionState::Known(&before),
+        PreviousSectionState::Known(&after),
+    )]);
+    let (_, message) = rendered
+        .split_once("(role - user)\n")
+        .expect("rendered user message");
+    assert_eq!(
+        message,
+        "# AGENTS.md instructions for /repo/b\n\n<INSTRUCTIONS>\nThe previously provided AGENTS.md instructions are unchanged.\n</INSTRUCTIONS>"
+    );
+}
