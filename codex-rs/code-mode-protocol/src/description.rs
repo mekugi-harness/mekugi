@@ -50,7 +50,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
   If the default cell wait is too short, headroom over the shell wait can
   avoid a cell-only yield.
 - Select the fields, lines or diff hunks needed before printing large results.
-  Print each shell result once with its exit code or running session ID. Fit
+  Print each shell result once, keeping `exit_code` and `session_id` when present. Fit
   output and handles within each shell budget and the total within the cell
   budget. Keep short commands inline; edit and run substantial reusable
   scripts in `SESSION_TMP` in one call.

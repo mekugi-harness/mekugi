@@ -62,7 +62,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   per command with tail-discard notices once paging reaches the cap. Empty
   `write_stdin` polls return buffered or retained pages immediately for both
   running and exited commands; non-empty input to an exited session is
-  rejected. Retained outputs and cursors persist per thread under
+  rejected. Exec guidance preserves both the exit code and the paging handle.
+  Retained outputs and cursors persist per thread under
   `<codex_home>/retained_exec/<thread_id>/` across resume, inherit read-only
   on thread forks with independent cursors, stay isolated from child
   subagents, and are removed on permanent thread deletion.
