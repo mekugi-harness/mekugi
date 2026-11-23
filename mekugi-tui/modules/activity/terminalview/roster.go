@@ -91,22 +91,30 @@ func (v *View) AgentUsage(caller string) (tokens, cost string) {
 	return "", ""
 }
 
-// ParentCaller names the nearest roster ancestor of caller, or Main.
-func (v *View) ParentCaller(caller string) string {
+// ParentCaller names the displayed caller's nearest roster ancestor, or Main.
+// A non-attachable ancestor has no available destination.
+func (v *View) ParentCaller() string {
+	caller := v.displayedCaller()
 	parent := "/root"
+	blocked := false
 	for _, row := range v.roster {
 		name := row.Agent.Name
 		if len(name) > len(parent) && strings.HasPrefix(caller, name+"/") {
-			parent = name
+			parent, blocked = name, row.Agent.NonAttachable
 		}
+	}
+	if blocked {
+		return ""
 	}
 	return parent
 }
 
 // ShowParent displays the displayed child's roster parent.
-func (v *View) ShowParent() {
+func (v *View) ShowParent(parent string) {
 	if v.displayingChild() {
-		v.requestDisplay(v.ParentCaller(v.displayedCaller()))
+		if parent != "" {
+			v.requestDisplay(parent)
+		}
 		v.Follow()
 	}
 }

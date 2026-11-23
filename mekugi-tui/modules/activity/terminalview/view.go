@@ -1653,7 +1653,7 @@ func (v *View) ShowAgent(step int) {
 // HandleRosterKey interprets a complete key from the attached terminal decoder.
 func (v *View) HandleRosterKey(key string) bool {
 	switch key {
-	case "\x03", "q":
+	case "\r", "\x03", "q":
 		return true
 	case "j", "n", "\t", "\x1b[B", "\x1bOB":
 		v.ShowAgent(1)

@@ -367,17 +367,16 @@ func (in FrameInput) send(state *Interaction, key string, yield func(InputEffect
 	}
 }
 
-// Stat-line actions taken by arrows on an empty composer, matching the hints
-// the second stat line shows.
-const statParent byte = 'p'
+const keyUp = "\x1b[A"
 
+// arrowAction matches the navigation hints shown on the second stat line.
 func (in FrameInput) arrowAction(key string) byte {
 	shell := in.Shell
 	if in.Main == nil || in.Playback || !in.EmptyComposer() {
 		return 0
 	}
 	switch key {
-	case "\x1b[A", "\x1bOA":
+	case keyUp, "\x1bOA":
 		v := in.Main.session
 		if shell.Focus == 0 && (v.Displayed.ID != v.Main.ID || in.FamilyRoot != "" && v.Main.ID != in.FamilyRoot) {
 			return statParent
@@ -396,6 +395,14 @@ func (in FrameInput) arrowAction(key string) byte {
 		}
 	}
 	return 0
+}
+
+func (in FrameInput) parentCaller() string {
+	v := in.Main.session
+	if v.Displayed == v.SideThread {
+		return "/root"
+	}
+	return in.Agents.ParentCaller()
 }
 
 // statAction performs a stat-line action for its key or pointer target.
@@ -434,12 +441,13 @@ func (in FrameInput) statAction(state *Interaction, action byte, yield func(Inpu
 		}
 	case statParent:
 		v := in.Main.session
-		if v.Displayed == v.SideThread || in.Agents.ParentCaller(in.Agents.Display.Caller) == "/root" {
+		parent := in.parentCaller()
+		if parent == "/root" {
 			in.selectPane(state, 0, yield)
 			return
 		}
 		child, selected := v.Displayed.ID != v.Main.ID, in.Agents.Selected
-		in.Agents.ShowParent()
+		in.Agents.ShowParent(parent)
 		in.rosterPick(state, child, selected, yield)
 	}
 }

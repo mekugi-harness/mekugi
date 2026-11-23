@@ -164,6 +164,9 @@ func (c *nativeClientRenderer) render(ctx context.Context, out io.Writer, now ti
 	u := c.terminal
 	u.Live.Tick(now)
 	in := u.FrameInput(now, version)
+	if family := c.frame.Family; family != nil {
+		in.FamilyRoot = family.Root
+	}
 	in.FileLinks = c.frame.FileLinks
 	in.NoticeEntries = c.frame.NoticeEntries
 	frame, err := u.Frame.Render(ctx, in)

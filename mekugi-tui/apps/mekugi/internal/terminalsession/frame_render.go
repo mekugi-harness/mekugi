@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -97,6 +98,17 @@ func (in FrameInput) Status() ShellStatus {
 		Agent: in.rosterThreadLabel(), MainTab: v.Displayed.ID != v.Main.ID, Scroll: scrollLabel(in.displayedTranscript()), Summary: in.Agents.RosterSummary(),
 		DiffUnseen: in.DiffUnseen, Prefix: in.Prefix, LiveCount: in.Live.Live(), Locked: in.Main.InterruptLocked, Empty: in.EmptyComposer(),
 		Workspace: v.SourceWorkspace(),
+	}
+	// A scrollable selection owns the normal Up key.
+	if v.Displayed != v.SideThread && !in.Prefix && in.Dialog == nil &&
+		(in.Selection == nil || in.Selection.screenRows == 0) && in.arrowAction(keyUp) == statParent {
+		switch parent := in.parentCaller(); parent {
+		case "/root":
+			status.Parent = "Main"
+		case "":
+		default:
+			status.Parent = pathdisplay.AgentDisplayName(parent)
+		}
 	}
 	if in.Shell.DiffOpen && in.Shell.Focus == 1 && in.Shell.Auxiliary != nil {
 		summary, state := in.Shell.Auxiliary.Title()

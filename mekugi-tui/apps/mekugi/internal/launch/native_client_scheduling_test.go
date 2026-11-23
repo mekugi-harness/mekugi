@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -119,37 +120,63 @@ func TestNativeClientRosterArrowNavigation(t *testing.T) {
 	r := nativeSchedulingRuntime(t, u, connection)
 	now := time.Now()
 	for _, step := range []struct {
-		key, thread string
-		open        bool
+		key, thread, parent string
+		open                bool
 	}{
-		{"\x1b[B", "main", true},
-		{"\x1b[A", "main", true},
-		{"\x1b[B", "parent", true},
-		{"\x1bOB", "peer", true},
-		{"\x1bOA", "parent", true},
-		{"\x1b[A", "main", true},
-		{"\x1b[B", "parent", true},
-		{"\x1b[B", "peer", true},
-		{"\x1b[B", "nested", true},
-		{"\x1b[B", "nested", true},
-		{"\x1b", "nested", false},
-		{"\x1b[A", "parent", false},
-		{"\x1bOA", "main", false},
+		{"\x1b[B", "main", "", true},
+		{"\x1b[A", "main", "", true},
+		{"\x1b[B", "parent", "", true},
+		{"\x1bOB", "peer", "", true},
+		{"\x1bOA", "parent", "", true},
+		{"\x1b[A", "main", "", true},
+		{"\x1b[B", "parent", "", true},
+		{"\x1b[B", "peer", "", true},
+		{"\x1b[B", "nested", "", true},
+		{"\x1b[B", "nested", "", true},
+		{"\r", "nested", "parent", false},
+		{"\x1b[A", "parent", "Main", false},
+		{"\x1bOA", "main", "", false},
+		{"\x1b[B", "main", "", true},
+		{"\x1b[B", "parent", "", true},
+		{"\x1b", "parent", "Main", false},
+		{"keep this draft", "parent", "", false},
+		{"\x1b[A", "parent", "", false},
+		{"\x023", "parent", "", true},
+		{"\r", "parent", "", false},
 	} {
+		pending := len(r.active.calls)
 		for i := range len(step.key) {
 			r.decode(step.key[i], now)
 		}
 		r.drainKeys(nil, now.Add(time.Second)) // Flush a lone Escape.
 		r.active.drainInput()
+		if step.key == "\r" && (len(r.active.calls) != pending || r.active.reattach != "") {
+			t.Fatal("confirming the roster should not submit input or select the thread again")
+		}
 		for r.active.event.Frame.View.Displayed.ID != step.thread {
 			nativeSchedulingStep(t, r)
 		}
-		_, err := r.active.renderer.render(t.Context(), io.Discard, now, mekugiVersion())
+		frame, err := r.active.renderer.render(t.Context(), io.Discard, now, mekugiVersion())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if open := r.active.renderer.terminal.Layout.Roster.H > 0; open != step.open {
 			t.Fatalf("key %q on %s: roster open = %t, want %t", step.key, step.thread, open, step.open)
+		}
+		if step.key == "\r" && r.active.renderer.terminal.Focus != 0 {
+			t.Fatal("confirming the roster should return focus to the displayed thread")
+		}
+		stat := ansi.Strip(frame.Rows[len(frame.Rows)-1])
+		_, parent, _ := strings.Cut(stat, "↑ back to parent ")
+		parent, _, _ = strings.Cut(parent, " • ")
+		if parent != step.parent {
+			t.Fatalf("key %q on %s: parent hint = %q, want %q (stat: %q)", step.key, step.thread, parent, step.parent, stat)
+		}
+		if step.parent != "" {
+			t.Log(stat)
+		}
+		if step.key == "\r" && step.thread == "parent" && !strings.Contains(ansi.Strip(strings.Join(frame.Rows, "\n")), "keep this draft") {
+			t.Fatal("confirming the roster should return to the unsent draft")
 		}
 	}
 }
