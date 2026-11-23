@@ -32,7 +32,11 @@ pub use protocol::VCS_DIR_ENV_VAR;
 pub use protocol::VCS_DIR_NAME;
 pub use protocol::VCS_TOOLS;
 pub use rewriter::RewriteConfig;
+pub use rewriter::command_word_nodes;
+pub use rewriter::parse_bash;
 pub use rewriter::rewrite_script;
+pub use rewriter::rewrite_script_tree;
+pub use rewriter::static_word_value;
 pub use secret::SecretString;
 
 /// Stage guard-only aliases when an interactive session first uses its shell.
