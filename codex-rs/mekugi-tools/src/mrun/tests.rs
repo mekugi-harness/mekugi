@@ -100,7 +100,7 @@ fn token_mode_head_tail_and_stderr_half_cap() {
     assert_eq!(out.exit_code, 0);
     assert!(out.stdout.ends_with("XYZ"), "got {:?}", out.stdout);
     let stderr_content = out.stderr.lines().next().unwrap();
-    assert!(stderr_content.ends_with("XYZ"), "got {:?}", stderr_content);
+    assert!(stderr_content.ends_with("XYZ"), "got {stderr_content:?}");
     assert!(
         out.stderr
             .ends_with("mrun: output incomplete: 10-token limit reached\n")
@@ -150,4 +150,37 @@ fn retires_descendants_holding_inherited_pipes() {
         "mrun hung waiting for grandchild pipe: {:?}",
         start.elapsed()
     );
+}
+
+#[test]
+fn token_mode_preserves_utf8_boundaries() {
+    // 4-byte emoji repeated so byte boundaries cut mid-character in both head and tail modes.
+    let script = "printf '%s' 'a🎉🎉🎉b'";
+
+    let head = execute(&s(&["--max-tokens", "1", "--head", "sh", "-c", script]));
+    assert_eq!(head.exit_code, 0);
+    assert_eq!(head.stdout, "a");
+    assert!(
+        head.stderr
+            .ends_with("mrun: output incomplete: 1-token limit reached\n")
+    );
+
+    let tail = execute(&s(&["--max-tokens", "1", "--tail", "sh", "-c", script]));
+    assert_eq!(tail.exit_code, 0);
+    assert_eq!(tail.stdout, "b");
+    assert!(
+        tail.stderr
+            .ends_with("mrun: output incomplete: 1-token limit reached\n")
+    );
+
+    let exact_emoji = execute(&s(&[
+        "--max-tokens",
+        "1",
+        "--tail",
+        "sh",
+        "-c",
+        "printf '%s' '🎉🎉🎉'",
+    ]));
+    assert_eq!(exact_emoji.exit_code, 0);
+    assert_eq!(exact_emoji.stdout, "🎉");
 }
