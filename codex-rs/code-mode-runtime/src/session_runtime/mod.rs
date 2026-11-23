@@ -35,10 +35,6 @@ use crate::cell_actor::CellState;
 use crate::cell_actor::CellToolCall;
 use crate::cell_actor::CompletionCommit;
 
-use crate::output::OutputCollector;
-use crate::output::OutputRetention;
-use crate::output::RetainedCell;
-
 type RuntimeEventFuture = Pin<Box<dyn Future<Output = Result<CellEvent, Error>> + Send + 'static>>;
 
 /// Owns all cells and shared state for one transport-neutral code-mode session.
@@ -55,7 +51,6 @@ struct Inner {
     shutdown_token: CancellationToken,
     task_failure_handler: Option<TaskFailureHandler>,
     next_cell_id: AtomicU64,
-    output_retention: OutputRetention,
 }
 
 impl SessionRuntime {
@@ -75,7 +70,6 @@ impl SessionRuntime {
                 shutdown_token: CancellationToken::new(),
                 task_failure_handler,
                 next_cell_id: AtomicU64::new(1),
-                output_retention: OutputRetention::default(),
             }),
         }
     }
@@ -89,12 +83,10 @@ impl SessionRuntime {
         if self.inner.shutdown_token.is_cancelled() {
             return Err(Error::ShuttingDown);
         }
-        let id = self.allocate_cell_id()?;
-        let cell_id = CellId::new(id.to_string());
-        let (initial_event, retained) = self
+        let cell_id = self.allocate_cell_id()?;
+        let initial_event = self
             .start_cell(
                 cell_id.clone(),
-                id,
                 request,
                 initial_observation.into(),
                 delegate,
@@ -103,12 +95,7 @@ impl SessionRuntime {
         Ok(StartedCell {
             cell_id,
             initial_event,
-            retained,
         })
-    }
-
-    pub(crate) fn take_evicted_outputs(&self) -> Vec<u64> {
-        self.inner.output_retention.take_evicted()
     }
 
     pub(crate) async fn observe(
@@ -163,23 +150,23 @@ impl SessionRuntime {
         Ok(())
     }
 
-    fn allocate_cell_id(&self) -> Result<u64, Error> {
+    fn allocate_cell_id(&self) -> Result<CellId, Error> {
         self.inner
             .next_cell_id
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |next_cell_id| {
                 next_cell_id.checked_add(1)
             })
+            .map(|cell_id| CellId::new(cell_id.to_string()))
             .map_err(|_| Error::CellIdSpaceExhausted)
     }
 
     async fn start_cell<D: SessionRuntimeDelegate>(
         &self,
         cell_id: CellId,
-        id: u64,
         request: CreateCellRequest,
         initial_observation: Observation,
         delegate: Arc<D>,
-    ) -> Result<(RuntimeEventFuture, Option<Arc<RetainedCell>>), Error> {
+    ) -> Result<RuntimeEventFuture, Error> {
         let stored_values = self.inner.stored_values.lock().await.clone();
         let host = Arc::new(RuntimeCellHost {
             delegate,
@@ -194,22 +181,13 @@ impl SessionRuntime {
         if cells.contains_key(&cell_id) {
             return Err(Error::DuplicateCell(cell_id));
         }
-        let cancel = self.inner.shutdown_token.child_token();
-        let retained = (request.output_truncation
-            == codex_code_mode_protocol::CodeModeOutputTruncation::Server)
-            .then(|| self.inner.output_retention.register(id, cancel.clone()));
-        let output = retained.as_ref().map_or_else(
-            || OutputCollector::Client(Vec::new()),
-            |cell| OutputCollector::Server(cell.batch()),
-        );
-        let cell_state = Arc::new(CellState::new(cancel));
+        let cell_state = Arc::new(CellState::new(self.inner.shutdown_token.child_token()));
         let (handle, initial_event, task) = CellActor::prepare(
             request,
             stored_values,
             host,
             initial_observation,
             cell_state,
-            output,
             self.inner.task_failure_handler.clone(),
         )
         .map_err(Error::Runtime)?;
@@ -226,7 +204,7 @@ impl SessionRuntime {
             });
         }
         drop(cells);
-        Ok((map_actor_event(cell_id, initial_event), retained))
+        Ok(map_actor_event(cell_id, initial_event))
     }
 
     fn begin_shutdown(&self) {
@@ -245,7 +223,6 @@ impl Drop for SessionRuntime {
 pub(crate) struct StartedCell {
     pub(crate) cell_id: CellId,
     initial_event: RuntimeEventFuture,
-    pub(crate) retained: Option<Arc<RetainedCell>>,
 }
 
 impl StartedCell {

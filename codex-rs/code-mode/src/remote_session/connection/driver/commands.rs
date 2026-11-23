@@ -116,6 +116,10 @@ impl ConnectionDriver {
                     .then_some(limits),
                 output_truncation: (options.output_truncation == CodeModeOutputTruncation::Server)
                     .then_some(WireOutputTruncation::Server),
+                truncated_output_dir: options
+                    .truncated_output_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
             },
         };
         let frame = match EncodedFrame::encode(&message) {
@@ -284,7 +288,6 @@ impl ConnectionDriver {
             HostRequest::Terminate {
                 session_id: session.id.clone(),
                 cell_id,
-                discard_output: request.discard_output,
                 max_output_tokens: request.max_output_tokens,
             },
             PendingRequest::Terminate {

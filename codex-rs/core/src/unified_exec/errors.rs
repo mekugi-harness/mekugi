@@ -20,10 +20,6 @@ pub(crate) enum UnifiedExecError {
         "stdin is closed for this session; rerun exec_command with tty=true to keep stdin open"
     )]
     StdinClosed,
-    #[error(
-        "process {process_id} has already exited; cannot write to stdin (pass empty chars to read remaining output)"
-    )]
-    ProcessExited { process_id: i32 },
     #[error("missing command line for unified exec request")]
     MissingCommandLine,
     #[error("Command denied by sandbox: {message}")]

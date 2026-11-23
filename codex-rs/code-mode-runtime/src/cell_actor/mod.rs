@@ -53,7 +53,6 @@ impl CellActor {
         host: Arc<H>,
         initial_observation: Observation,
         cell_state: Arc<CellState>,
-        output: OutputCollector,
         task_failure_handler: Option<TaskFailureHandler>,
     ) -> Result<
         (
@@ -64,6 +63,7 @@ impl CellActor {
         String,
     > {
         let (event_tx, event_rx) = runtime_event_channel(request.output_truncation);
+        let output = OutputCollector::new(request.output_truncation);
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (initial_response_tx, initial_response_rx) = oneshot::channel();
         let (runtime_tx, runtime_control_tx, runtime_terminate_handle) = spawn_runtime(
@@ -541,7 +541,6 @@ async fn run_cell<H: CellHost>(
         task_failure_handler.as_ref(),
     )
     .await;
-    drop(output);
     host.closed().await;
 }
 
@@ -612,9 +611,10 @@ fn finish_termination(
     observer_tx: Option<oneshot::Sender<Result<CellEvent, CellError>>>,
     event: CellEvent,
 ) {
-    let observer_event = cell_state.finish_termination(event);
-    if let Some(observer_tx) = observer_tx {
-        let _ = observer_tx.send(observer_event.ok_or(CellError::Closed));
+    if let Some(event) = cell_state.finish_termination(event)
+        && let Some(observer_tx) = observer_tx
+    {
+        let _ = observer_tx.send(Ok(event));
     }
 }
 

@@ -91,11 +91,11 @@ fn parse_unified_exec_output(raw: &str) -> Result<ParsedUnifiedExecOutput> {
     static OUTPUT_REGEX: OnceLock<Regex> = OnceLock::new();
     let regex = OUTPUT_REGEX.get_or_init(|| {
         Regex::new(concat!(
-            r#"(?s)^(?:\[call c\d+\]\n)?(?:Warning: truncated output \(original token count: \d+\)\n)?(?:Total output lines: \d+\n\n)?"#,
+            r#"(?s)^(?:Warning: truncated output \(original token count: \d+\)\n)?(?:Total output lines: \d+\n\n)?"#,
             r#"(?:Chunk ID: (?P<chunk_id>[^\n]+)\n)?"#,
             r#"Wall time: (?P<wall_time>-?\d+(?:\.\d+)?) seconds\n"#,
             r#"(?:Process exited with code (?P<exit_code>-?\d+)\n)?"#,
-            r#"(?:(?:Process running|More output available) with session ID (?P<process_id>-?\d+)\n)?"#,
+            r#"(?:Process running with session ID (?P<process_id>-?\d+)\n)?"#,
             r#"(?:Original token count: (?P<original_token_count>\d+)\n)?"#,
             r#"Output:\n?(?P<output>.*)$"#,
         ))
@@ -2077,16 +2077,18 @@ async fn exec_command_reports_chunk_and_exit_metadata() -> Result<()> {
     );
 
     assert!(
-        metadata.process_id.is_some(),
-        "oversized exited exec_command should return session_id for remaining pages"
+        metadata.process_id.is_none(),
+        "exec_command for a completed process should not include process_id"
     );
 
     let exit_code = metadata.exit_code.expect("expected exit_code");
     assert_eq!(exit_code, 0, "expected successful exit");
 
     let output_text = &metadata.output;
-    assert_eq!(output_text, "token one token two toke");
-    assert!(!output_text.contains("tokens truncated"));
+    assert!(
+        output_text.contains("tokens truncated"),
+        "expected truncation notice in output: {output_text:?}"
+    );
 
     let original_tokens = metadata
         .original_token_count
@@ -2143,19 +2145,12 @@ async fn exec_command_clamps_model_requested_max_output_tokens_to_policy() -> Re
 
     let output = wait_for_raw_unified_exec_output(&test, call_id).await?;
     assert_eq!(output.original_token_count, Some(8_991));
-    assert_eq!(output.exit_code, Some(0));
-    assert!(
-        output.process_id.is_some(),
-        "clamped oversized output should return a session_id for paging"
-    );
     let output_text = output.output.replace("\r\n", "\n");
-    assert!(
-        output_text.starts_with("EXEC-LINE-0001 xxxxxxxxxxxxxxxxxxxx\n"),
-        "expected first page to start at line 1, got {output_text:?}"
+    assert_regex_match(
+        r"(?s)^Warning: truncated output \(original token count: 8991\)\nTotal output lines: 999\n\nEXEC-LINE-.*…\d+ tokens truncated…x+\n$",
+        &output_text,
     );
-    assert!(output_text.len() <= 200);
-    assert!(!output_text.contains("tokens truncated"));
-    assert!(!output_text.contains("Warning: truncated output"));
+    assert_eq!(output_text.matches("tokens truncated").count(), 1);
 
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -2236,19 +2231,12 @@ async fn write_stdin_clamps_model_requested_max_output_tokens_to_policy() -> Res
 
     let stdin_output = wait_for_raw_unified_exec_output(&test, stdin_call_id).await?;
     assert_eq!(stdin_output.original_token_count, Some(9_492));
-    assert_eq!(stdin_output.exit_code, Some(0));
-    assert!(
-        stdin_output.process_id.is_some(),
-        "clamped oversized write_stdin output should return a session_id for paging"
-    );
     let stdin_output_text = stdin_output.output.replace("\r\n", "\n");
-    assert!(
-        stdin_output_text.starts_with("go\nSTDIN-LINE-0001 yyyyyyyyyyyyyyyyyyyy\n"),
-        "expected first page to start at line 1, got {stdin_output_text:?}"
+    assert_regex_match(
+        r"(?s)^Warning: truncated output \(original token count: 9492\)\nTotal output lines: 1000\n\ngo\nSTDIN.*…\d+ tokens truncated…y+\n$",
+        &stdin_output_text,
     );
-    assert!(stdin_output_text.len() <= 200);
-    assert!(!stdin_output_text.contains("tokens truncated"));
-    assert!(!stdin_output_text.contains("Warning: truncated output"));
+    assert_eq!(stdin_output_text.matches("tokens truncated").count(), 1);
 
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -3315,38 +3303,42 @@ PY
         "tty": true,
     });
 
-    let poll_call_ids = ["uexec-lag-poll-1", "uexec-lag-poll-2", "uexec-lag-poll-3"];
-    let poll_args = serde_json::json!({
+    let second_call_id = "uexec-lag-poll";
+    let second_args = serde_json::json!({
         "chars": "",
         "session_id": 1000,
         "yield_time_ms": 2_000,
-        "max_output_tokens": 20_000,
     });
 
-    let mut responses = vec![sse(vec![
-        ev_response_created("resp-1"),
-        ev_function_call(
-            first_call_id,
-            "exec_command",
-            &serde_json::to_string(&first_args)?,
-        ),
-        ev_completed("resp-1"),
-    ])];
-    for (idx, call_id) in poll_call_ids.iter().enumerate() {
-        let resp_id = format!("resp-poll-{idx}");
-        responses.push(sse(vec![
-            ev_response_created(&resp_id),
-            ev_function_call(call_id, "write_stdin", &serde_json::to_string(&poll_args)?),
-            ev_completed(&resp_id),
-        ]));
-    }
-    responses.push(sse(vec![
-        ev_assistant_message("msg-1", "lag handled"),
-        ev_completed("resp-final"),
-    ]));
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(
+                first_call_id,
+                "exec_command",
+                &serde_json::to_string(&first_args)?,
+            ),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_response_created("resp-2"),
+            ev_function_call(
+                second_call_id,
+                "write_stdin",
+                &serde_json::to_string(&second_args)?,
+            ),
+            ev_completed("resp-2"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-1", "lag handled"),
+            ev_completed("resp-3"),
+        ]),
+    ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
     submit_unified_exec_turn(&test, "exercise lag handling", PermissionProfile::Disabled).await?;
+    // This is a worst case scenario for the truncate logic, and CI can spend a
+    // while draining the lagged tail before the follow-up tool call completes.
     wait_for_event_with_timeout(
         &test.codex,
         |event| matches!(event, EventMsg::TurnComplete(_)),
@@ -3372,16 +3364,13 @@ PY
         "expected session id from initial unified_exec response"
     );
 
-    let mut combined = start_output.output.clone();
-    for call_id in poll_call_ids {
-        if let Some(poll_output) = outputs.get(call_id) {
-            combined.push_str(&poll_output.output);
-        }
-    }
+    let poll_output = outputs
+        .get(second_call_id)
+        .expect("missing poll unified_exec output");
+    let poll_text = poll_output.output.as_str();
     assert!(
-        combined.contains("TAIL-MARKER"),
-        "expected paged outputs to contain tail marker, got len={}",
-        combined.len()
+        poll_text.contains("TAIL-MARKER"),
+        "expected poll output to contain tail marker, got {poll_text:?}"
     );
 
     Ok(())
@@ -3658,7 +3647,10 @@ PY
     .await;
     assert!(end_event.aggregated_output.contains("HEAD\n"));
     assert!(end_event.aggregated_output.contains("TAIL\n"));
-    assert!(!end_event.aggregated_output.contains("bytes omitted"));
+    assert_regex_match(
+        r"\.\.\. \d+ bytes omitted \.\.\.",
+        &end_event.aggregated_output,
+    );
 
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
@@ -3676,12 +3668,12 @@ PY
     let large_output = outputs.get(call_id).expect("missing large output summary");
 
     let output_text = large_output.output.replace("\r\n", "\n");
-    assert!(output_text.starts_with("HEAD\n"));
-    assert!(output_text.len() <= 400);
-    assert!(!output_text.contains("Warning: truncated output"));
-    assert!(!output_text.contains("bytes omitted"));
-    assert_eq!(large_output.exit_code, Some(0));
-    assert!(large_output.process_id.is_some());
+    assert!(output_text.starts_with(&format!(
+        "Warning: truncated output (original token count: {expected_original_token_count})\n"
+    )));
+    assert_regex_match(r"\.\.\. \d+ bytes omitted \.\.\.", &output_text);
+    assert!(output_text.contains("HEAD\n"));
+    assert!(output_text.contains("TAIL\n"));
     assert_eq!(
         large_output.original_token_count,
         Some(expected_original_token_count)

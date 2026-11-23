@@ -50,7 +50,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
   If the default cell wait is too short, headroom over the shell wait can
   avoid a cell-only yield.
 - Select the fields, lines or diff hunks needed before printing large results.
-  Print each shell result once, keeping `exit_code` and `session_id` when present. Fit
+  Print each shell result once with its exit code or running session ID. Fit
   output and handles within each shell budget and the total within the cell
   budget. Keep short commands inline; edit and run substantial reusable
   scripts in `SESSION_TMP` in one call.
@@ -68,9 +68,10 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - `clearTimeout(timeoutId?: number)`: cancels a timeout created by `setTimeout`.
 - `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.
 - `yield_control()`: yields the accumulated output to the model immediately while the script keeps running."#;
-const WAIT_DESCRIPTION_TEMPLATE: &str = r#"- Use `wait` with the cell ID when a response says the script is running or has more output.
+const WAIT_DESCRIPTION_TEMPLATE: &str = r#"- Use `wait` only after `exec` returns `Script running with cell ID ...`.
   For a shell session ID, poll `tools.write_stdin` with empty `chars` instead.
-- Reuse the same `cell_id` until the terminal response no longer says there is more output."#;
+- Each wait returns only new output. Reuse the same `cell_id` after another
+  yield; completion or termination returns the final result and closes the cell."#;
 // Based off of https://modelcontextprotocol.io/specification/draft/schema#calltoolresult
 const MCP_TYPESCRIPT_PREAMBLE: &str = r#"type Role = "user" | "assistant";
 type MetaObject = Record<string, unknown>;

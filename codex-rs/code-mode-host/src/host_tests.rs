@@ -154,6 +154,7 @@ async fn handshake_and_multiple_session_lifecycles_are_ordered() {
                     session_id: session_id(id),
                     cell_execution_limits: None,
                     output_truncation: None,
+                truncated_output_dir: None,
                 },
             })
             .await
@@ -226,6 +227,7 @@ async fn disconnect_cancels_a_backpressured_host_writer() {
                 session_id: session_id("backpressured-session"),
                 cell_execution_limits: None,
                 output_truncation: None,
+                truncated_output_dir: None,
             },
         })
         .await
@@ -390,7 +392,12 @@ async fn output_selection_is_per_session() {
             "0123456789012345678901234567890123456789",
             "01234567890123456789012345678901234567890123456789012345678901234567890123456789",
         ),
-        (4, "server", "01234567890123456789", "01234567890123456789"),
+        (
+            4,
+            "server",
+            "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789",
+            "Warning: truncated output (original token count: 20)\nTotal output lines: 1\n\n01234567890123…13 tokens truncated…67890123456789",
+        ),
     ] {
         let mut request = execute_request(
             "text('0123456789'.repeat(4)); yield_control(); text('0123456789'.repeat(8));",
@@ -430,23 +437,12 @@ async fn output_selection_is_per_session() {
             panic!("expected initial yield");
         };
         assert_eq!(actual_id, request_id(id));
-        let expected_head = WireContentItem::InputText {
-            text: expected_text.to_string(),
-        };
-        if name == "server" {
-            assert_eq!(
-                content_items,
-                [
-                    expected_head,
-                    WireContentItem::PageBoundary {
-                        more_output: true,
-                        continuation: false,
-                    }
-                ]
-            );
-        } else {
-            assert_eq!(content_items, [expected_head]);
-        }
+        assert_eq!(
+            content_items,
+            vec![WireContentItem::InputText {
+                text: expected_text.to_string()
+            }]
+        );
         writer
             .write(&ClientToHost::Request {
                 id: request_id(id + 2),
@@ -456,7 +452,8 @@ async fn output_selection_is_per_session() {
                         cell_id,
                         yield_time_ms: 60_000,
                     },
-                    // The wait applies its own limit to unread output.
+                    // A supplied budget only affects Server mode and belongs
+                    // to this observation, not the preceding exec.
                     max_output_tokens: Some(7),
                 },
             })
@@ -468,7 +465,12 @@ async fn output_selection_is_per_session() {
                 WireResult::Ok {
                     value:
                         HostResponse::WaitCompleted {
-                            outcome: WireWaitOutcome::LiveCell(response),
+                            outcome:
+                                WireWaitOutcome::LiveCell(WireRuntimeResponse::Result {
+                                    content_items,
+                                    error_text,
+                                    ..
+                                }),
                         },
                 },
         } = next_response(&mut reader).await
@@ -476,29 +478,12 @@ async fn output_selection_is_per_session() {
             panic!("expected final wait");
         };
         assert_eq!(actual_id, request_id(id + 2));
-        let content_items = match (name, response) {
-            ("server", WireRuntimeResponse::Yielded { content_items, .. }) => {
-                assert_eq!(content_items.len(), 1);
-                content_items
-            }
-            (
-                "client",
-                WireRuntimeResponse::Result {
-                    content_items,
-                    error_text: None,
-                    ..
-                },
-            ) => {
-                assert_eq!(content_items.len(), 1);
-                content_items
-            }
-            (_, response) => panic!("unexpected wait response: {response:?}"),
-        };
+        assert_eq!(error_text, None);
         assert_eq!(
-            content_items.first(),
-            Some(&WireContentItem::InputText {
-                text: expected_wait.to_string(),
-            })
+            content_items,
+            vec![WireContentItem::InputText {
+                text: expected_wait.to_string()
+            }]
         );
     }
     drop(writer);
@@ -544,6 +529,7 @@ async fn incompatible_or_invalid_handshake_is_rejected() {
                 session_id: session_id("session-1"),
                 cell_execution_limits: None,
                 output_truncation: None,
+                truncated_output_dir: None,
             },
         })
         .await
@@ -611,6 +597,7 @@ async fn session_id_cannot_be_reused_after_shutdown() {
                 session_id: id.clone(),
                 cell_execution_limits: None,
                 output_truncation: None,
+                truncated_output_dir: None,
             },
         ),
         (
@@ -640,6 +627,7 @@ async fn session_id_cannot_be_reused_after_shutdown() {
                 session_id: id,
                 cell_execution_limits: None,
                 output_truncation: None,
+                truncated_output_dir: None,
             },
         })
         .await
@@ -762,7 +750,6 @@ async fn execute_request_id_remains_active_until_initial_response() {
         .expect("session")
         .terminate(TerminateRequest {
             cell_id: cell_id.into(),
-            discard_output: false,
             max_output_tokens: None,
         })
         .await

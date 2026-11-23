@@ -57,24 +57,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   serialization uses only the new shape and retained authored IDs do not reset
   the runtime question counter.
 
-- Unified exec (`exec_command` / `write_stdin`) paginates oversized output
-  head-first instead of middle-truncating, using a 16 MiB head-retained buffer
-  per command with tail-discard notices once paging reaches the cap. Empty
-  `write_stdin` polls return buffered or retained pages immediately for both
-  running and exited commands; non-empty input to an exited session is
-  rejected. Exec guidance preserves both the exit code and the paging handle.
-  Retained outputs and cursors persist per thread under
-  `<codex_home>/retained_exec/<thread_id>/` across resume, inherit read-only
-  on thread forks with independent cursors, stay isolated from child
-  subagents, and are removed on permanent thread deletion.
-- JavaScript cell output continues through stock `wait`, including after the
-  script ends. The runtime retains up to 16 MiB of unread output per cell and
-  reports discarded bytes at their position in the stream. At 64 MiB per
-  session, eviction drops the oldest cells' unread bytes first: finished cells
-  are released, while running cells keep executing with dropped bytes counted
-  as discarded. Cancelling an `exec` before its first response terminates the
-  cell on every transport (in-process and stdio now match gRPC). Unread pages
-  are not restored on resume.
+- Tool, unified-exec, and code-mode output uses stock upstream middle
+  truncation and spills the omitted portion to
+  `$SESSION_TMP/truncated_output/{id}` (created on demand), adding only a short
+  `(id: {id})` marker inline and stating the directory once in session shell
+  helper guidance.
 
 - Native [feature policy](codex-rs/features/src/lib.rs) fixes JavaScript code
   mode as the only model tool interface, with native V2 agents, token budgeting,

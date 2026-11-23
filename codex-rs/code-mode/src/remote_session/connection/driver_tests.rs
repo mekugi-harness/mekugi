@@ -342,6 +342,7 @@ async fn open_session_includes_nondefault_cell_execution_limits() {
                     max_heap_size_bytes: Some(16 * 1024 * 1024),
                 }),
                 output_truncation: None,
+                truncated_output_dir: None,
             },
         }
     );
@@ -399,7 +400,6 @@ async fn stdio_logical_session_pins_output_mode_across_reconnect() {
                 };
                 let terminate = TerminateRequest {
                     cell_id,
-                    discard_output: false,
                     max_output_tokens: Some(5),
                 };
                 let legacy_host = async {

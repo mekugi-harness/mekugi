@@ -3,24 +3,21 @@ use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageReference;
 
 trait IntoProtocol<T> {
-    fn into_protocol(self) -> Option<T>;
+    fn into_protocol(self) -> T;
 }
 
 pub(super) fn into_function_call_output_content_items(
     items: Vec<codex_code_mode::FunctionCallOutputContentItem>,
 ) -> Vec<FunctionCallOutputContentItem> {
-    items
-        .into_iter()
-        .filter_map(IntoProtocol::into_protocol)
-        .collect()
+    items.into_iter().map(IntoProtocol::into_protocol).collect()
 }
 
 impl IntoProtocol<FunctionCallOutputContentItem>
     for codex_code_mode::FunctionCallOutputContentItem
 {
-    fn into_protocol(self) -> Option<FunctionCallOutputContentItem> {
+    fn into_protocol(self) -> FunctionCallOutputContentItem {
         let value = self;
-        Some(match value {
+        match value {
             codex_code_mode::FunctionCallOutputContentItem::InputText { text } => {
                 FunctionCallOutputContentItem::InputText { text }
             }
@@ -33,7 +30,6 @@ impl IntoProtocol<FunctionCallOutputContentItem>
             codex_code_mode::FunctionCallOutputContentItem::InputAudio { audio_url } => {
                 FunctionCallOutputContentItem::inline_audio(audio_url)
             }
-            codex_code_mode::FunctionCallOutputContentItem::PageBoundary { .. } => return None,
-        })
+        }
     }
 }

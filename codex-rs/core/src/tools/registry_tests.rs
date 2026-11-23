@@ -630,6 +630,7 @@ fn post_tool_use_feedback_output_preserves_fallback_token_limit_override(
                 wall_time: Duration::ZERO,
                 original_image_detail_supported: false,
                 truncation_policy,
+                truncated_output_dir: None,
             }),
             model_visible: crate::tools::context::FunctionToolOutput::from_text(
                 "hook feedback".to_string(),
@@ -678,6 +679,7 @@ fn mcp_audio_producer_limit_is_transient_until_history_admission(file_backed_too
             wall_time: Duration::ZERO,
             original_image_detail_supported: false,
             truncation_policy: TruncationPolicy::Tokens(100),
+            truncated_output_dir: None,
         }),
         post_tool_use_payload: None,
     };
@@ -771,6 +773,7 @@ fn post_tool_use_feedback_output_preserves_mcp_result_metadata(tool_error: bool)
             wall_time: std::time::Duration::ZERO,
             original_image_detail_supported: false,
             truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(64),
+            truncated_output_dir: None,
         }),
         model_visible: FunctionToolOutput::from_text(
             "unrelated hook feedback".to_string(),

@@ -99,15 +99,13 @@ pub fn create_write_stdin_tool() -> ToolSpec {
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
-                "Identifier of the unified exec session (running or with unread output pages)."
-                    .to_string(),
+                "Identifier of the running unified exec session.".to_string(),
             )),
         ),
         (
             "chars".to_string(),
             JsonSchema::string(Some(
-                "Bytes to write to stdin. Defaults to empty, which polls or fetches the next output page without writing."
-                    .to_string(),
+                "Bytes to write to stdin. Defaults to empty, which polls without writing.".to_string(),
             )),
         ),
         (
@@ -127,7 +125,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),
         description:
-            "Writes characters to an existing unified exec session, or polls with empty chars for remaining output pages."
+            "Writes characters to an existing unified exec session and returns recent output."
                 .to_string(),
         strict: false,
         defer_loading: None,
@@ -195,7 +193,7 @@ fn unified_exec_output_schema() -> Value {
             },
             "session_id": {
                 "type": "number",
-                "description": "Session identifier to pass to write_stdin while running or while more output pages remain."
+                "description": "Session identifier to pass to write_stdin when the process is still running."
             },
             "original_token_count": {
                 "type": "number",
@@ -203,7 +201,7 @@ fn unified_exec_output_schema() -> Value {
             },
             "output": {
                 "type": "string",
-                "description": "Command output text for this page."
+                "description": "Command output text, possibly truncated."
             }
         },
         "required": ["wall_time_seconds", "output"],

@@ -191,7 +191,7 @@ fn estimate_audio_token_count(audio_url: &str) -> usize {
 
 /// The same duration-based estimate without accessing the Tokio-dependent cache.
 /// Suitable for bounded output rendered on a current-thread runtime.
-pub fn estimate_audio_token_count_without_cache(audio_url: &str) -> usize {
+fn estimate_audio_token_count_without_cache(audio_url: &str) -> usize {
     let Ok((mime, bytes)) = decode_audio(audio_url) else {
         return approx_token_count(audio_url);
     };

@@ -1916,23 +1916,13 @@ impl Session {
                 });
                 ThreadTraceContext::disabled()
             });
-            let retained_fork_source = retained_exec_fork_source(
-                &initial_history,
-                &session_configuration.session_source,
-                session_configuration.forked_from_thread_id,
-                session_configuration.parent_thread_id,
-            );
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
                 mcp_runtime,
                 mcp_handler_cache: Default::default(),
-                unified_exec_manager: UnifiedExecProcessManager::for_thread(
+                unified_exec_manager: UnifiedExecProcessManager::new(
                     config.background_terminal_max_timeout,
-                    config.codex_home.to_path_buf(),
-                    thread_id,
-                    config.ephemeral,
-                    retained_fork_source,
                 ),
                 elicitations: crate::elicitation::ElicitationService::new(),
                 analytics_events_client,
@@ -1999,6 +1989,11 @@ impl Session {
                     Arc::clone(&code_mode_session_provider),
                     &config.code_mode,
                     executed_tool_calls,
+                )
+                .with_truncated_output_dir(
+                    codex_utils_output_truncation::truncated_output_dir(
+                        &crate::exec_env::session_tmp_path(session_id),
+                    ),
                 ),
                 tool_search_handler_cache: Default::default(),
                 turn_environments: Arc::clone(&turn_environments),
@@ -2211,21 +2206,4 @@ impl Session {
             }
         }
     }
-}
-
-/// Only non-subagent forks inherit the parent thread's retained unified-exec outputs
-/// read-only. Spawned subagents (`SessionSource::SubAgent(_)`) run in an isolated
-/// thread scope even when spawned with forked conversation history.
-pub(crate) fn retained_exec_fork_source(
-    initial_history: &InitialHistory,
-    session_source: &SessionSource,
-    forked_from_thread_id: Option<ThreadId>,
-    parent_thread_id: Option<ThreadId>,
-) -> Option<ThreadId> {
-    if !matches!(initial_history, InitialHistory::Forked(_))
-        || matches!(session_source, SessionSource::SubAgent(_))
-    {
-        return None;
-    }
-    forked_from_thread_id.or(parent_thread_id)
 }

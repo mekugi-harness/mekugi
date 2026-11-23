@@ -8,6 +8,8 @@ mod tool_definitions;
 mod wait_handler;
 pub(crate) mod wait_spec;
 
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -48,7 +50,7 @@ use codex_protocol::openai_models::ToolMode;
 use codex_tools::ToolName;
 use codex_utils_audio::estimate_tool_audio_tokens_without_cache;
 use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::formatted_truncate_function_output_items_with_policy;
+use codex_utils_output_truncation::formatted_truncate_function_output_items_with_spill;
 
 use delegate::CodeModeCellDelegate;
 use delegate::CodeModeDispatchBroker;
@@ -81,6 +83,7 @@ pub(crate) struct CodeModeService {
     dispatch_broker: Arc<CodeModeDispatchBroker>,
     default_exec_yield_time_ms: u64,
     heartbeat_interval_s: u32,
+    truncated_output_dir: Option<PathBuf>,
     shutdown_token: CancellationToken,
     unavailable_warning_emitted: AtomicBool,
 }
@@ -101,9 +104,15 @@ impl CodeModeService {
             dispatch_broker,
             default_exec_yield_time_ms: config.default_exec_yield_time_ms,
             heartbeat_interval_s: config.heartbeat_interval_s,
+            truncated_output_dir: None,
             shutdown_token: CancellationToken::new(),
             unavailable_warning_emitted: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn with_truncated_output_dir(mut self, dir: PathBuf) -> Self {
+        self.truncated_output_dir = Some(dir);
+        self
     }
 
     pub(crate) fn is_available(&self) -> bool {
@@ -180,11 +189,7 @@ impl CodeModeService {
                 .active_cell_ids()
                 .into_iter()
                 .map(|cell_id| async move {
-                    if let Err(error) = session.terminate(codex_code_mode::TerminateRequest {
-                        cell_id: cell_id.clone(),
-                        max_output_tokens: None,
-                        discard_output: true,
-                    }).await {
+                    if let Err(error) = session.terminate(cell_id.clone().into()).await {
                         tracing::warn!(%cell_id, %error, "failed to terminate interrupted code-mode cell");
                     }
                 }),
@@ -264,11 +269,12 @@ impl CodeModeService {
                         return Err("code mode session is shutting down".to_string());
                     }
                     session = async {
-                        if self.heartbeat_interval_s == 0 {
+                        if self.heartbeat_interval_s == 0 && self.truncated_output_dir.is_none() {
                             self.session_provider.create_session().await
                         } else {
                             self.session_provider.create_session_with_options(CodeModeSessionOptions {
                                 heartbeat_interval_s: self.heartbeat_interval_s,
+                                truncated_output_dir: self.truncated_output_dir.clone(),
                                 ..self.session_provider.default_session_options()
                             }).await
                         }
@@ -292,6 +298,7 @@ fn handle_runtime_response(
     output_truncation: CodeModeOutputTruncation,
     wall_time: Duration,
     experimental_show_cell_overhead: bool,
+    truncated_output_dir: Option<&Path>,
 ) -> CodeModeToolOutput {
     let script_status = format_script_status(&response);
     let supports_original = can_request_original_image_detail(model_info);
@@ -317,58 +324,46 @@ fn handle_runtime_response(
                 text: format!("Script error:\n{error_text}"),
             });
         }
-        content_items = truncate_code_mode_result(content_items, max_output_tokens);
+        content_items =
+            truncate_code_mode_result(content_items, max_output_tokens, truncated_output_dir);
     }
     CodeModeToolOutput::new(
         FunctionToolOutput::from_content(content_items, Some(success)),
         script_status,
         wall_time,
         host_duration,
-        output_truncation == CodeModeOutputTruncation::Server,
     )
 }
 
 fn format_script_status(response: &RuntimeResponse) -> String {
-    let status = match response {
+    match response {
         RuntimeResponse::Yielded { cell_id, .. } => {
-            return format!("Script running with cell ID {cell_id}");
+            format!("Script running with cell ID {cell_id}")
         }
-        RuntimeResponse::Terminated { .. } => "Script terminated",
-        RuntimeResponse::Result {
-            error_text: None, ..
-        } => "Script completed",
-        RuntimeResponse::Result {
-            error_text: Some(_),
-            ..
-        } => "Script failed",
-    };
-    match response.more_output_cell_id() {
-        Some(cell_id) => format!("{status} (more output: wait with cell ID {cell_id})"),
-        None => status.to_string(),
+        RuntimeResponse::Terminated { .. } => "Script terminated".to_string(),
+        RuntimeResponse::Result { error_text, .. } => {
+            if error_text.is_none() {
+                "Script completed".to_string()
+            } else {
+                "Script failed".to_string()
+            }
+        }
     }
 }
 
 fn truncate_code_mode_result(
     items: Vec<FunctionCallOutputContentItem>,
     max_output_tokens: Option<usize>,
+    truncated_output_dir: Option<&Path>,
 ) -> Vec<FunctionCallOutputContentItem> {
     let max_output_tokens = resolve_max_tokens(max_output_tokens);
     let policy = TruncationPolicy::Tokens(max_output_tokens);
-    formatted_truncate_function_output_items_with_policy(
+    formatted_truncate_function_output_items_with_spill(
         items,
         policy,
         estimate_tool_audio_tokens_without_cache,
+        truncated_output_dir,
     )
-}
-
-fn page_token_limit(
-    model: &codex_protocol::openai_models::ModelInfo,
-    requested: Option<usize>,
-) -> usize {
-    let policy = TruncationPolicy::from(model.truncation_policy);
-    requested
-        .unwrap_or(codex_code_mode::DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL)
-        .min(policy.byte_budget() / codex_utils_output_truncation::approx_bytes_for_tokens(1))
 }
 
 // Submit synchronously so the recorder sees the call before the cell's dispatch gate closes.
@@ -580,6 +575,7 @@ mod tests {
             other => panic!("expected freeform payload, got {other:?}"),
         }
     }
+
     #[test]
     fn truncated_text_output_starts_with_warning() {
         let items = vec![FunctionCallOutputContentItem::InputText {
@@ -587,7 +583,7 @@ mod tests {
         }];
 
         assert_eq!(
-            truncate_code_mode_result(items, Some(5)),
+            truncate_code_mode_result(items, Some(5), /*truncated_output_dir*/ None),
             vec![FunctionCallOutputContentItem::InputText {
                 text: concat!(
                     "Warning: truncated output (original token count: 10)\n",
@@ -607,74 +603,10 @@ mod tests {
         ))];
 
         assert_eq!(
-            truncate_code_mode_result(items, Some(5)),
+            truncate_code_mode_result(items, Some(5), /*truncated_output_dir*/ None),
             vec![FunctionCallOutputContentItem::InputText {
                 text: "[omitted 1 audio items ...]".to_string(),
             }]
-        );
-    }
-
-    #[tokio::test]
-    async fn client_mode_omits_history_output_budget_applied_flag() {
-        let (_session, turn) = make_session_and_context().await;
-        let response = codex_code_mode::RuntimeResponse::Result {
-            cell_id: codex_code_mode::CellId::new("1".to_string()),
-            content_items: vec![codex_code_mode::FunctionCallOutputContentItem::InputText {
-                text: "hello".to_string(),
-            }],
-            error_text: None,
-            result_buffered_for: std::time::Duration::ZERO,
-            code_mode_host_duration: None,
-        };
-
-        let client_output = super::handle_runtime_response(
-            &turn.model_info(),
-            response.clone(),
-            /*max_output_tokens*/ None,
-            codex_code_mode::CodeModeOutputTruncation::Client,
-            std::time::Duration::ZERO,
-            /*experimental_show_cell_overhead*/ false,
-        );
-        let client_envelope = crate::tools::registry::AnyToolResult {
-            call_id: "call-client".to_string(),
-            payload: ToolPayload::Custom {
-                input: "text('hello')".to_string(),
-            },
-            result: Box::new(client_output),
-            post_tool_use_payload: None,
-        }
-        .into_response(/*file_backed_tool_audio*/ false);
-        assert!(
-            client_envelope
-                .metadata
-                .as_ref()
-                .is_none_or(|metadata| !metadata.tool_output_budget_applied),
-            "client mode must not set tool_output_budget_applied in history metadata"
-        );
-
-        let server_output = super::handle_runtime_response(
-            &turn.model_info(),
-            response,
-            /*max_output_tokens*/ None,
-            codex_code_mode::CodeModeOutputTruncation::Server,
-            std::time::Duration::ZERO,
-            /*experimental_show_cell_overhead*/ false,
-        );
-        let server_envelope = crate::tools::registry::AnyToolResult {
-            call_id: "call-server".to_string(),
-            payload: ToolPayload::Custom {
-                input: "text('hello')".to_string(),
-            },
-            result: Box::new(server_output),
-            post_tool_use_payload: None,
-        }
-        .into_response(/*file_backed_tool_audio*/ false);
-        assert!(
-            server_envelope
-                .metadata
-                .as_ref()
-                .is_some_and(|metadata| metadata.tool_output_budget_applied),
-            "server mode must set tool_output_budget_applied in history metadata"
         );
     }
 }

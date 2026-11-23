@@ -16,7 +16,6 @@ use super::PUBLIC_TOOL_NAME;
 use super::handle_runtime_response;
 use super::is_exec_tool_name;
 use super::output::CodeModeToolOutput;
-use super::page_token_limit;
 use super::prepare_code_mode_tool_definitions;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
@@ -93,10 +92,7 @@ impl CodeModeExecuteHandler {
                     enabled_tools,
                     source: args.code.clone(),
                     yield_time_ms: args.yield_time_ms,
-                    max_output_tokens: Some(page_token_limit(
-                        &step_context.settings.model_info,
-                        args.max_output_tokens,
-                    )),
+                    max_output_tokens: args.max_output_tokens,
                 },
                 Arc::clone(&step_context),
             )
@@ -181,6 +177,9 @@ impl CodeModeExecuteHandler {
             exec.session.services.code_mode_service.output_truncation(),
             wall_time,
             exec.turn.config.code_mode.experimental_show_cell_overhead,
+            Some(&codex_utils_output_truncation::truncated_output_dir(
+                &crate::exec_env::session_tmp_path(exec.session.session_id()),
+            )),
         ))
     }
 }

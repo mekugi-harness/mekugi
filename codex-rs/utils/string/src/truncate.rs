@@ -39,18 +39,31 @@ pub fn plan_token_truncation(s: &str, max_tokens: usize) -> Option<TextTruncatio
     })
 }
 
+/// Plans head/tail byte truncation. The marker is outside the retained-text
+/// budget, matching [`truncate_middle_chars`].
+pub fn plan_byte_truncation(s: &str, max_bytes: usize) -> Option<TextTruncation> {
+    if s.len() <= max_bytes {
+        return None;
+    }
+    let (left_budget, right_budget) = split_budget(max_bytes);
+    let (removed_chars, left, right) = split_string(s, left_budget, right_budget);
+    let removed = left.len()..s.len().saturating_sub(right.len());
+    Some(TextTruncation {
+        removed,
+        marker: format!("…{removed_chars} chars truncated…"),
+    })
+}
+
 /// Retain at most `max_bytes` from a string's ends and add a character-count
 /// marker outside that budget.
 ///
 /// Use [`truncate_middle_with_marker`] when the complete result must fit a hard
 /// byte limit.
 pub fn truncate_middle_chars(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
+    match plan_byte_truncation(s, max_bytes) {
+        Some(edit) => edit.apply(s),
+        None => s.to_string(),
     }
-    let (left_budget, right_budget) = split_budget(max_bytes);
-    let (removed_chars, left, right) = split_string(s, left_budget, right_budget);
-    assemble_truncated_output(left, right, &format!("…{removed_chars} chars truncated…"))
 }
 
 /// Truncate the middle of a UTF-8 string so the result, including `marker`, is

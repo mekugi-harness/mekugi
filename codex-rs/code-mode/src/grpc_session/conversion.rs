@@ -186,12 +186,6 @@ fn content_item(item: grpc::ContentItem) -> Result<FunctionCallOutputContentItem
         grpc::content_item::Item::Audio(audio) => Ok(FunctionCallOutputContentItem::InputAudio {
             audio_url: audio.audio_url,
         }),
-        grpc::content_item::Item::PageBoundary(page) => {
-            Ok(FunctionCallOutputContentItem::PageBoundary {
-                more_output: page.more_output,
-                continuation: page.continuation,
-            })
-        }
     }
 }
 

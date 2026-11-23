@@ -159,10 +159,6 @@ pub struct CodexHarnessMetadata {
     #[serde(skip)]
     pub producer_bounded_tool_audio: bool,
 
-    /// Model-facing output was already budgeted by its producer.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub tool_output_budget_applied: bool,
-
     /// Core applied the history limit while tool audio still had its inline cost.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_audio_budget_applied: bool,

@@ -434,8 +434,7 @@ async fn read_external(
             .services
             .unified_exec_manager
             .allocate_process_id()
-            .await
-            .map_err(|error| error.to_string())?,
+            .await,
         network: step.turn.network.clone(),
     };
     let output =

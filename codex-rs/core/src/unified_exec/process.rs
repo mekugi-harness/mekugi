@@ -21,104 +21,43 @@ use codex_exec_server::StartedExecProcess;
 use codex_exec_server::WriteStatus;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
+use codex_protocol::protocol::TruncationPolicy;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::is_likely_sandbox_denied;
 use codex_sandboxing::record_filesystem_sandbox_violation;
+use codex_utils_head_tail_buffer::HeadTailBuffer;
+use codex_utils_output_truncation::formatted_truncate_text;
 use codex_utils_pty::ExecCommandSession;
 use codex_utils_pty::ProcessSignal as PtyProcessSignal;
 use codex_utils_pty::SpawnedPty;
 
-use super::MAX_RETAINED_OUTPUT_BYTES;
+use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
-use super::output::HeadRetainedBuffer;
-use super::output::PageSlice;
-use super::output::slice_next_page;
-use super::output::utf8_complete_prefix_len;
 use super::process_state::ProcessState;
 use crate::shell_snapshot::ShellSnapshotFile;
 
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
 const REMOTE_OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
-const SANDBOX_DENIAL_MESSAGE_MAX_BYTES: usize = 64 * 1024;
 
-/// Retained head-bounded output and read cursor for a single unified exec process.
+/// Output pending model polling and the retained completion transcript.
+/// Append both under the same lock so cancellation cannot split an update.
 #[derive(Default)]
-pub(crate) struct OutputBuffers<const MAX_BYTES: usize = MAX_RETAINED_OUTPUT_BYTES> {
-    pub(super) retained: HeadRetainedBuffer<MAX_BYTES>,
-    pub(super) read_offset: usize,
-    pub(super) reported_discarded_bytes: u64,
-    pub(super) persisted_bytes: usize,
+pub(crate) struct OutputBuffers<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
+    pub(super) pending: HeadTailBuffer<MAX_BYTES>,
+    pub(super) transcript: HeadTailBuffer<MAX_BYTES>,
 }
 
 impl<const MAX_BYTES: usize> OutputBuffers<MAX_BYTES> {
     pub(super) fn push_chunk(&mut self, _stream: ExecOutputStream, chunk: &[u8]) {
-        self.retained.push_chunk(chunk);
-    }
-
-    pub(super) fn has_deliverable_unread(&self, stream_complete: bool) -> bool {
-        let unread = &self.retained.as_bytes()[self.read_offset..];
-        let complete_len = if stream_complete {
-            unread.len()
-        } else {
-            utf8_complete_prefix_len(unread)
-        };
-        complete_len > 0 || self.reported_discarded_bytes < self.retained.discarded_bytes()
-    }
-
-    pub(super) fn unread_total_bytes(&self) -> u64 {
-        let unread_retained = self
-            .retained
-            .retained_bytes()
-            .saturating_sub(self.read_offset) as u64;
-        let unreported_discarded = self
-            .retained
-            .discarded_bytes()
-            .saturating_sub(self.reported_discarded_bytes);
-        unread_retained.saturating_add(unreported_discarded)
-    }
-
-    pub(super) fn peek_next_page(
-        &self,
-        page_budget_bytes: usize,
-        stream_complete: bool,
-    ) -> PageSlice {
-        let unread = &self.retained.as_bytes()[self.read_offset..];
-        slice_next_page(
-            unread,
-            unread.len(),
-            self.retained.discarded_bytes(),
-            self.reported_discarded_bytes,
-            page_budget_bytes,
-            stream_complete,
-        )
-    }
-
-    pub(super) fn commit_page(&mut self, page: &PageSlice) {
-        self.read_offset += page.consumed_bytes;
-        self.reported_discarded_bytes = page.reported_discarded_bytes;
-    }
-
-    pub(super) fn suffix_from(&self, offset: usize) -> Vec<u8> {
-        let bytes = self.retained.as_bytes();
-        let start = offset.min(bytes.len());
-        bytes[start..].to_vec()
-    }
-
-    #[cfg(test)]
-    pub(super) fn take_next_page(
-        &mut self,
-        page_budget_bytes: usize,
-        stream_complete: bool,
-    ) -> PageSlice {
-        let page = self.peek_next_page(page_budget_bytes, stream_complete);
-        self.commit_page(&page);
-        page
+        self.pending.push_chunk(chunk);
+        self.transcript.push_chunk(chunk);
     }
 }
 
 /// Shared output state exposed to polling and streaming consumers.
 #[derive(Clone)]
-pub(crate) struct OutputHandles<const MAX_BYTES: usize = MAX_RETAINED_OUTPUT_BYTES> {
+pub(crate) struct OutputHandles<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
     pub(crate) output_buffer: Arc<Mutex<OutputBuffers<MAX_BYTES>>>,
     pub(crate) output_notify: Arc<Notify>,
     pub(crate) output_closed: Arc<AtomicBool>,
@@ -357,7 +296,7 @@ impl UnifiedExecProcess {
 
     async fn snapshot_output(&self) -> Vec<u8> {
         let guard = self.output.output_buffer.lock().await;
-        guard.retained.to_bytes()
+        guard.pending.to_bytes()
     }
 
     pub(crate) fn sandbox_type(&self) -> Option<SandboxType> {
@@ -405,15 +344,10 @@ impl UnifiedExecProcess {
             record_filesystem_sandbox_violation(sandbox_type, &exec_output);
         }
         if executor_reported_denial || likely_sandbox_denial {
-            let snippet = slice_next_page(
-                text.as_bytes(),
-                text.len(),
-                /*discarded_bytes*/ 0,
-                /*reported_discarded_bytes*/ 0,
-                SANDBOX_DENIAL_MESSAGE_MAX_BYTES,
-                /*stream_complete*/ true,
-            )
-            .text;
+            let snippet = formatted_truncate_text(
+                text,
+                TruncationPolicy::Tokens(UNIFIED_EXEC_OUTPUT_MAX_TOKENS),
+            );
             let message = if snippet.is_empty() {
                 format!("Process exited with code {exit_code}")
             } else {

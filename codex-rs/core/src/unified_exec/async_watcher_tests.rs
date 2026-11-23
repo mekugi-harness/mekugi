@@ -110,8 +110,6 @@ async fn completed_output_preserves_bytes_before_subscription(
         Instant::now(),
         /*network_denial_monitor*/ None,
         /*plugin_metrics_sidecar*/ None,
-        Arc::new(tokio::sync::Mutex::new(super::ProcessStore::default())),
-        /*storage*/ None,
     );
     stdout_tx.send(late_output.to_vec())?;
     drop(stdout_tx);
@@ -175,7 +173,11 @@ async fn streaming_output_preserves_multibyte_characters_across_chunks() -> anyh
         }
     );
     assert_eq!(
-        output_buffer.lock().await.retained.to_bytes(),
+        output_buffer
+            .lock()
+            .await
+            .transcript
+            .to_bytes_with_omission_marker(),
         "é".as_bytes()
     );
     assert!(rx_event.try_recv().is_err());
@@ -217,7 +219,11 @@ async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyho
         "output close should finish before the grace fallback: {elapsed:?}"
     );
     assert_eq!(
-        output_buffer.lock().await.retained.to_bytes(),
+        output_buffer
+            .lock()
+            .await
+            .transcript
+            .to_bytes_with_omission_marker(),
         b"LATE-OUTPUT-MARKER\xc3"
     );
 
@@ -252,7 +258,14 @@ async fn streaming_output_keeps_grace_as_fallback_without_close() -> anyhow::Res
             && elapsed <= TRAILING_OUTPUT_GRACE + Duration::from_millis(10),
         "missing output close should use the grace fallback: {elapsed:?}"
     );
-    assert_eq!(output_buffer.lock().await.retained.to_bytes(), vec![0xc3]);
+    assert_eq!(
+        output_buffer
+            .lock()
+            .await
+            .transcript
+            .to_bytes_with_omission_marker(),
+        vec![0xc3]
+    );
     let event = rx_event.try_recv().expect("receive final output delta");
     let EventMsg::ExecCommandOutputDelta(delta) = event.msg else {
         panic!("expected ExecCommandOutputDelta");
@@ -313,8 +326,6 @@ async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> 
         Instant::now(),
         Some(network_denial_monitor),
         /*plugin_metrics_sidecar*/ None,
-        Arc::new(tokio::sync::Mutex::new(super::ProcessStore::default())),
-        /*storage*/ None,
     );
 
     let exited_at = Instant::now();

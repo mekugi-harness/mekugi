@@ -178,6 +178,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HistoryTool {
                     wall_time: started.elapsed(),
                     original_image_detail_supported: false,
                     truncation_policy,
+                    truncated_output_dir: None,
                 }) as Box<dyn ToolOutput>)
             }
             .await;

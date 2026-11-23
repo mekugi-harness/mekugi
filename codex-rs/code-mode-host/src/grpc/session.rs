@@ -352,22 +352,21 @@ impl GrpcSession {
         Ok(())
     }
 
-    pub(super) fn abandon_execution(self: &Arc<Self>, execution_id: &str, cell_id: Option<CellId>) {
-        {
+    pub(super) fn abandon_execution(self: &Arc<Self>, execution_id: &str) {
+        let cell_id = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.pending_executions.remove(execution_id);
             state.execution_yields.remove(execution_id);
-        }
+            state
+                .cells
+                .iter()
+                .find(|(_, execution)| execution.execution_id == execution_id)
+                .map(|(cell_id, _)| cell_id.clone())
+        };
         if let Some(cell_id) = cell_id {
             let session = Arc::clone(self);
             tokio::spawn(async move {
-                let _ = session
-                    .terminate(TerminateRequest {
-                        cell_id,
-                        max_output_tokens: None,
-                        discard_output: true,
-                    })
-                    .await;
+                let _ = session.terminate(CellId::new(cell_id).into()).await;
             });
         }
     }

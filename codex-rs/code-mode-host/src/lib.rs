@@ -425,6 +425,7 @@ impl HostState {
                 session_id,
                 cell_execution_limits,
                 output_truncation,
+                truncated_output_dir,
             } => {
                 let result = CodeModeSessionCellExecutionLimits::try_from(
                     cell_execution_limits.unwrap_or_default(),
@@ -438,6 +439,9 @@ impl HostState {
                             output_truncation: output_truncation
                                 .map(CodeModeOutputTruncation::from)
                                 .unwrap_or_default(),
+                            truncated_output_dir: truncated_output_dir
+                                .filter(|value| !value.is_empty())
+                                .map(std::path::PathBuf::from),
                             ..Default::default()
                         },
                     )
@@ -538,14 +542,12 @@ impl HostState {
                 session_id,
                 cell_id,
                 max_output_tokens,
-                discard_output,
             } => {
                 let result = match self.session(&session_id) {
                     Ok(session) => session
                         .terminate(TerminateRequest {
                             cell_id: cell_id.into(),
                             max_output_tokens,
-                            discard_output,
                         })
                         .await
                         .and_then(|outcome| {

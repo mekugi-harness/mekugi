@@ -332,6 +332,9 @@ impl McpHandler {
                 &step_context.settings.model_info,
             ),
             truncation_policy,
+            truncated_output_dir: Some(codex_utils_output_truncation::truncated_output_dir(
+                &crate::exec_env::session_tmp_path(session.session_id()),
+            )),
         }))
     }
 }
@@ -836,6 +839,7 @@ mod tests {
             wall_time: Duration::from_millis(42),
             original_image_detail_supported: true,
             truncation_policy: codex_utils_output_truncation::TruncationPolicy::Bytes(1024),
+            truncated_output_dir: None,
         };
         let (session, turn) = make_session_and_context().await;
         let mut session = session;
