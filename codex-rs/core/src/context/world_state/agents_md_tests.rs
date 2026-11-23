@@ -70,24 +70,19 @@ fn delivers_unified_diff_for_incremental_edits() {
         PreviousSectionState::Known(&initial_state),
         PreviousSectionState::Known(&edited_state),
     )]);
-    assert!(
-        rendered.contains(DIFF_NOTICE),
-        "expected diff notice:\n{rendered}"
-    );
-    assert!(
-        rendered.contains(
-            "-Run unit tests for every touched crate before opening a pull request.\n+Run unit and integration tests for every touched crate before opening a pull request."
-        ),
-        "expected unified diff hunk:\n{rendered}"
-    );
-    assert!(
-        !rendered.contains("Use cargo fmt before committing"),
-        "unchanged distant sections should not be repeated:\n{rendered}"
+    let (_, message) = rendered
+        .split_once("(role - user)\n")
+        .expect("rendered user message");
+    assert_eq!(
+        message,
+        "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nApply this diff to the previously provided AGENTS.md instructions:\n\n```diff\n@@ -9,3 +9,3 @@\n ## Testing\n-Run unit tests for every touched crate before opening a pull request.\n+Run unit and integration tests for every touched crate before opening a pull request.\n \n```\n</INSTRUCTIONS>"
     );
 }
 
 #[test]
 fn directory_only_change_does_not_repeat_unchanged_text() {
+    use pretty_assertions::assert_eq;
+
     let text = "Keep responses concise.\nAlways run tests.";
     let before = AgentsMdState {
         instructions: Some(UserInstructions {
@@ -106,7 +101,11 @@ fn directory_only_change_does_not_repeat_unchanged_text() {
         PreviousSectionState::Known(&before),
         PreviousSectionState::Known(&after),
     )]);
-    assert!(rendered.contains("# AGENTS.md instructions for /repo/b"));
-    assert!(rendered.contains(UNCHANGED_NOTICE));
-    assert!(!rendered.contains("Keep responses concise."));
+    let (_, message) = rendered
+        .split_once("(role - user)\n")
+        .expect("rendered user message");
+    assert_eq!(
+        message,
+        "# AGENTS.md instructions for /repo/b\n\n<INSTRUCTIONS>\nThe previously provided AGENTS.md instructions are unchanged.\n</INSTRUCTIONS>"
+    );
 }
