@@ -23,9 +23,25 @@ async fn first_request_guidance_snapshot() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(&server, vec![sse_completed("first-response")]).await;
+    let helpers = tempfile::tempdir()?;
+    for name in ["mfinspect", "mcat", "msymbol", "mrun"] {
+        let path = helpers.path().join(name);
+        #[cfg(unix)]
+        codex_utils_cargo_bin::write_executable(&path, "")?;
+        #[cfg(not(unix))]
+        std::fs::write(path, "")?;
+    }
+    let helper_path = helpers.path().display().to_string();
     let test = test_codex()
         .with_model("gpt-6.2-sol")
-        .build_with_auto_env(&server)
+        .with_config(move |config| {
+            config
+                .permissions
+                .shell_environment_policy
+                .r#set
+                .insert("PATH".to_string(), helper_path);
+        })
+        .build(&server)
         .await?;
     test.submit_turn("Inspect the available tools.").await?;
 
@@ -49,8 +65,14 @@ async fn first_request_guidance_snapshot() -> Result<()> {
             serde_json::to_string_pretty(&tool)?,
         ));
     }
+    let macos_hint = "- On macOS, set `shell` to `bash` unless the task requires another shell.";
+    assert_eq!(
+        snapshot.lines().any(|line| line == macos_hint),
+        cfg!(target_os = "macos")
+    );
     let snapshot = snapshot
         .lines()
+        .filter(|line| *line != macos_hint)
         .map(str::trim_end)
         .collect::<Vec<_>>()
         .join("\n");
