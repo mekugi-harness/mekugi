@@ -1,0 +1,484 @@
+package launch
+
+import (
+	"encoding/base64"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
+
+	"github.com/charmbracelet/x/ansi"
+	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
+)
+
+func awaitMarkdownFile(t *testing.T, u *terminalUI) {
+	t.Helper()
+	for u.main.fileReads != nil {
+		select {
+		case result := <-u.main.fileReads:
+			changed, path := u.main.detailFiles.loadedTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, u.Attachment, result)
+			if !changed {
+				t.Fatal("file result was not admitted")
+			}
+			if path != "" {
+				u.Frame.CopyText(path)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for file result")
+		}
+	}
+}
+
+func awaitMarkdownFileLoading(t *testing.T, u *terminalUI) {
+	t.Helper()
+	select {
+	case result := <-u.main.fileReads:
+		if !result.classified {
+			t.Fatalf("regular file was not classified: %+v", result)
+		}
+		u.main.detailFiles.loadedTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, u.Attachment, result)
+	case <-time.After(5 * time.Second):
+		t.Fatal("file classification did not finish")
+	}
+}
+
+func TestMarkdownFileLinkClickAndDrag(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, "src"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(workspace, "src", "source #1?%.go")
+	content := strings.Repeat("// previous line\n", 25) + "package target\n\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fileURL := (&url.URL{Scheme: "file", Path: path}).String()
+	main, _ := newAppServerTestUI()
+	main.attached.cwd = workspace
+	settleTestPresentation(&main.attached, main.shell, &main.Client, &main.picker, &main.Editor, main.settings, main.serviceTiers, main.title, main.backendVersion, main.restoring != nil, main.side, main.clock, &main.questions, &main.approvals, main.statusPanel != nil || main.resumePicker != nil)
+	painter := activityui.Painter{FileLink: markdownFileLinks(main.attached.cwd)}
+	for _, target := range []string{"src/source #1?%.go", "@src/source #1?%.go", path + ":26", "@" + path + ":26", fileURL + ":26", "src/source #1?%.go:26-27", "@src/source #1?%.go:26-27", fileURL + ":26-27", "`" + path + ":26`", "`@" + path + ":26`"} {
+		t.Run(target, func(t *testing.T) {
+			row := painter.Inline("[source](<" + target + ">)")
+			if strings.HasPrefix(target, "`") {
+				row = painter.Inline(target)
+				target = strings.Trim(target, "`")
+			}
+			u := selectionTestUI(row)
+			u.main.attached.cwd = workspace
+			publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.serviceTiers, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
+			u.Frame.Source = selectionTestSource(u.main)
+			u.selectionMouse(0, 1, 0, false)
+			u.selectionMouse(0, 1, 0, true)
+			if !u.main.pendingFile || u.Frame.Clipboard != "" || u.Selection != nil {
+				t.Fatal("file click did not open a clean dialog")
+			}
+			awaitMarkdownFile(t, u)
+			u.Width, u.Height = 80, 18
+			frame := drawOutputDialog(u)
+			if u.Dialog.File.Path != "src/source #1?%.go" || u.Dialog.File.First > 0 && !strings.Contains(frame, "package target") {
+				t.Fatalf("path or line destination lost: %q", frame)
+			}
+			if u.Dialog.File.First > 0 {
+				if !strings.Contains(ansi.Strip(u.Dialog.Document.Title), target[strings.LastIndexByte(target, ':'):]) {
+					t.Fatal("title lost the original location")
+				}
+				return // Copy and drag share one path after destination resolution.
+			}
+			u.outputKey("y")
+			if u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(content))+"\x07" {
+				t.Fatal("whole-file copy changed source or trailing newlines")
+			}
+			u = selectionTestUI(row)
+			u.main.attached.cwd = workspace
+			publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.serviceTiers, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
+			u.Frame.Source = selectionTestSource(u.main)
+			selectionTestDrag(t, u, 0, 0, 5, 0)
+			if u.Dialog != nil || u.Frame.Clipboard != "" || u.Selection.Text() != "source" {
+				t.Fatal("drag activated the file link")
+			}
+		})
+	}
+}
+
+func TestMarkdownPrefixedFileTargets(t *testing.T) {
+	for _, workspace := range []string{"/workspace", ""} {
+		for _, target := range []string{"sample.go", "./src/sample.go:2-3", "../sample.go:2", "/workspace/sample.go:2", "file:///workspace/a%20b.go:2-3", "file://remote/sample.go", "https://example.com", "javascript:alert", "#heading", "?query", "", "bad\x00.go", "bad\n.go"} {
+			t.Run(workspace+"/"+target, func(t *testing.T) {
+				path, ok := markdownFileTarget(workspace, target)
+				prefixed, admitted := markdownFileTarget(workspace, "@"+target)
+				if admitted != ok || ok && prefixed != path {
+					t.Fatalf("prefix changed resolution: (%q, %t) != (%q, %t)", prefixed, admitted, path, ok)
+				}
+			})
+		}
+	}
+}
+
+func TestMarkdownPrefixedRawFileClick(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "sample.go")
+	if err := os.WriteFile(path, []byte("package sample\n// selected line\n// last line\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"sample.go:2-3", "./sample.go:2-3", path + ":2-3"} {
+		for _, prefix := range []string{"", "@"} {
+			t.Run(prefix+target, func(t *testing.T) {
+				p := activityui.Painter{FileLink: markdownFileLinks(workspace), DeferFileLinks: true}
+				row := p.Inline(prefix + target)
+				row, _ = terminalui.ResolveFileLinks(row, map[string]bool{target: true}, p.Theme.Accent())
+				u := selectionTestUI(row)
+				u.main.attached.cwd = workspace
+				publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.serviceTiers, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
+				u.Frame.Source = selectionTestSource(u.main)
+				u.selectionMouse(0, 1, 0, false)
+				u.selectionMouse(0, 1, 0, true)
+				if !u.main.pendingFile {
+					t.Fatal("raw deferred link did not start file opening")
+				}
+				awaitMarkdownFile(t, u)
+				if u.Dialog.File.Path != "sample.go" || u.Dialog.File.First != 2 || u.Dialog.File.Last != 3 {
+					t.Fatalf("raw click lost the underlying file or location: %+v", u.Dialog.File)
+				}
+			})
+		}
+	}
+}
+
+func TestMarkdownSelectionClickRetainsWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "source.go"), []byte("original\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []string{"status", "workspace", "workspace before press"} {
+		t.Run(change, func(t *testing.T) {
+			painter := activityui.Painter{FileLink: markdownFileLinks(workspace)}
+			u := selectionTestUI(painter.Inline("[source](source.go)"))
+			u.main.attached.cwd = workspace
+			publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.serviceTiers, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
+			u.Frame.Source = selectionTestSource(u.main)
+			if change == "workspace before press" {
+				u.main.attached.cwd = t.TempDir()
+				publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.serviceTiers, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
+			}
+			u.selectionMouse(0, 1, 0, false)
+			if change == "workspace" {
+				u.main.attached.cwd = t.TempDir()
+			} else {
+				setNotice(&u.main.attached.feedback, presentationTime(u.main.clock), "unrelated status", false)
+			}
+			publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.serviceTiers, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
+			u.selectionMouse(0, 1, 0, true)
+			if change != "status" {
+				if u.Dialog != nil || u.main.fileReads != nil || !u.main.attached.feedback.Alert {
+					t.Fatal("old click acquired from a replacement workspace")
+				}
+			} else {
+				if !u.main.pendingFile {
+					t.Fatal("status publication discarded the original click")
+				}
+				awaitMarkdownFile(t, u)
+				if u.Dialog.File.Path != "source.go" {
+					t.Fatal("click lost its original file")
+				}
+			}
+		})
+	}
+}
+
+func TestUISnapshotMarkdownFileLinks(t *testing.T) {
+	u, _ := newAppServerTestUI()
+
+	u.attached.cwd = t.TempDir()
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	if err := os.WriteFile(filepath.Join(u.attached.cwd, "sample.go"), []byte("package sample\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	text := "Historical replacement count or resulting speed/cost savings.\n" +
+		"Missing: missing.go, `missing.go`, [missing](missing.go).\n" +
+		"Existing: sample.go:1, `sample.go`, [source](sample.go:1-2).\n" +
+		"Web: [remote](https://example.com)."
+	for _, view := range []*activityAdapter{u.testActivity(u.shell.Transcript), u.testActivity(u.shell.Agents)} {
+		view.Painter.Theme = diffrender.TerminalTheme
+		rows := view.Painter.Markdown(text, 72, false)
+		for i, row := range rows {
+			rows[i], _ = terminalui.ResolveFileLinks(row, map[string]bool{"sample.go": true, "sample.go:1": true, "sample.go:1-2": true, "missing.go": false, "speed/cost": false}, view.Painter.Theme.Accent())
+		}
+		uisnapshot.AssertTerminal(t, "testdata/snapshots/markdown-file-links.txt", append(rows, "plain after links"), 72)
+	}
+	u.attached.cwd = ""
+	if !strings.Contains(u.shell.Transcript.Painter.Inline("sample.go"), "\x1b]8;") {
+		t.Fatal("painting consulted unpublished workspace metadata")
+	}
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	if strings.Contains(u.shell.Transcript.Painter.Inline("sample.go"), "\x1b]8;") {
+		t.Fatal("relative path became clickable without workspace metadata")
+	}
+}
+
+func TestMarkdownFileDialogSanitizesDisplayKeepsSourceCopy(t *testing.T) {
+	for _, size := range []int{0, 256 << 10} {
+		path := filepath.Join(t.TempDir(), "data.txt")
+		control := "\x1b]52;c;ZXZpbA==\x07"
+		content := control + "visible\n" + strings.Repeat("a", size)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		main, _ := newAppServerTestUI()
+		u := terminalTest(main)
+		u.Width, u.Height = 80, 18
+		if !u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, path) {
+			t.Fatal("existing file did not open")
+		}
+		awaitMarkdownFile(t, u)
+		rows := make([]string, u.Height)
+		u.main.detailFiles.prepareOutput(&u.main.attached.session, u.Attachment)
+		u.Dialog.Paint(rows, terminalsession.Rect{W: u.Width, H: u.Height})
+		if strings.Contains(strings.Join(rows, "\n"), control) {
+			t.Fatal("file emitted a clipboard control in the rendered frame")
+		}
+		u.outputKey("y")
+		if u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(content))+"\x07" {
+			t.Fatal("explicit source copy changed original bytes")
+		}
+	}
+}
+
+func TestMarkdownFileDialogViews(t *testing.T) {
+	workspace := t.TempDir()
+	content := "# Heading\n\n**bold** and [source](sample.go:1)\n\n" + strings.Repeat("more content\n", 25) + "source target\n" + strings.Repeat("more content\n", 14)
+	path := filepath.Join(workspace, "sample.md")
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "sample.go"), []byte("package sample\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	main, _ := newAppServerTestUI()
+	main.attached.cwd = workspace
+	settleTestPresentation(&main.attached, main.shell, &main.Client, &main.picker, &main.Editor, main.settings, main.serviceTiers, main.title, main.backendVersion, main.restoring != nil, main.side, main.clock, &main.questions, &main.approvals, main.statusPanel != nil || main.resumePicker != nil)
+	u := terminalTest(main)
+	// Tall enough that the native frame's docked sheet shows the linked row,
+	// so its link is checked.
+	u.Width, u.Height = 80, 30
+	u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, path+":30-31")
+	awaitMarkdownFile(t, u)
+	drawOutputDialog(u)
+	x, y := outputSelectionPoint(t, u, "bold")
+	outputSelectionDrag(u, x, y, x+3, y)
+	if u.Dialog.Selection == nil || u.Dialog.Selection.Text() != "**bold**" {
+		t.Fatal("rendered selection lost Markdown source formatting")
+	}
+	u.outputKey("\x1b") // Clear the selection.
+	u.outputKey("/")
+	u.outputKey("bold")
+	u.outputKey("\r")
+	markdownFrame := drawOutputDialog(u)
+	tabX, tabY := dialogFramePoint(t, outputDialogScreen(u), " File")
+	u.outputMouse(0, tabX, tabY, false)
+	fileFrame := drawOutputDialog(u)
+	if u.Dialog.Page != 1 || !strings.Contains(fileFrame, "source target") || strings.Contains(fileFrame, "**bold**") || strings.Contains(fileFrame, "/ n N find") {
+		t.Fatal("File tab did not reveal the source location with separate search state")
+	}
+	for _, key := range []string{"y", "\x1b[D", "y"} {
+		u.outputKey(key)
+		drawOutputDialog(u)
+		if key == "y" && u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(content))+"\x07" {
+			t.Fatal("view copy changed source bytes")
+		}
+	}
+	if drawOutputDialog(u) != markdownFrame {
+		t.Fatal("view switching lost navigation")
+	}
+	awaitMarkdownLinks(t, u)
+	x, y = outputSelectionPoint(t, u, "source")
+	u.outputMouse(0, x, y, false)
+	u.outputMouse(0, x, y, true)
+	awaitMarkdownFile(t, u)
+	if u.Dialog.File.Path != "sample.go" || len(u.Dialog.Pages) != 1 {
+		t.Fatal("rendered local link did not open the source file")
+	}
+}
+
+func TestUISnapshotMarkdownFileViews(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "sample.md")
+	content := "# Heading\n\n**Bold** and `code`.\n\n- A list item\n\n| Name | Value |\n| --- | --- |\n| one | two |\n\n```go\npackage sample\n```\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	main, _ := newAppServerTestUI()
+	main.attached.cwd = workspace
+	settleTestPresentation(&main.attached, main.shell, &main.Client, &main.picker, &main.Editor, main.settings, main.serviceTiers, main.title, main.backendVersion, main.restoring != nil, main.side, main.clock, &main.questions, &main.approvals, main.statusPanel != nil || main.resumePicker != nil)
+	main.shell.Transcript.Painter.Theme = diffrender.TerminalTheme
+	u := terminalTest(main)
+	u.Width, u.Height = 80, 24
+	u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, path)
+	awaitMarkdownFile(t, u)
+	for _, view := range []string{"markdown", "file"} {
+		rows := make([]string, u.Height)
+		u.main.detailFiles.prepareOutput(&u.main.attached.session, u.Attachment)
+		u.Dialog.Paint(rows, terminalsession.Rect{W: u.Width, H: u.Height})
+		uisnapshot.AssertTerminal(t, "testdata/snapshots/native-markdown-file-"+view+"-view.txt", append(rows, "plain after file view"), u.Width)
+		u.outputKey("\x1b[C")
+	}
+}
+
+func TestMarkdownLinksFromDialog(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "sample.go"), []byte("package sample\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	main, _ := newAppServerTestUI()
+	main.attached.cwd = workspace
+	settleTestPresentation(&main.attached, main.shell, &main.Client, &main.picker, &main.Editor, main.settings, main.serviceTiers, main.title, main.backendVersion, main.restoring != nil, main.side, main.clock, &main.questions, &main.approvals, main.statusPanel != nil || main.resumePicker != nil)
+	u := terminalTest(main)
+	u.Width, u.Height = 80, 18
+	u.openBlocks(main.shell.Transcript, []activityui.Block{
+		{Body: "Open sample.go:1, [secure](https://example.com/a?q=1#part), or [remote](http://example.com)."},
+	})
+	awaitMarkdownLinks(t, u)
+	drawOutputDialog(u)
+	before := u.Dialog
+	for _, link := range []struct{ label, destination string }{
+		{"secure", "https://example.com/a?q=1#part"},
+		{"remote", "http://example.com"},
+	} {
+		x, y := outputSelectionPoint(t, u, link.label)
+		u.outputMouse(0, x, y, false)
+		if strings.Contains(strings.Join(outputDialogScreen(u), "\n"), "r reference") {
+			t.Fatalf("pressing %q displayed selection hints before release", link.label)
+		}
+		u.outputMouse(0, x, y, true)
+		want := "\x1b]52;c;" + base64.StdEncoding.EncodeToString([]byte(link.destination)) + "\x07"
+		if u.Frame.Clipboard != want || u.Dialog != before || u.Dialog.Selection != nil {
+			t.Fatalf("clicking %q did not copy its destination and keep the dialog open", link.label)
+		}
+	}
+	u.Frame.Clipboard = ""
+	x, y := outputSelectionPoint(t, u, "remote")
+	outputSelectionDrag(u, x, y, x+5, y)
+	if u.Dialog != before || u.Dialog.Selection == nil || u.Frame.Clipboard != "" {
+		t.Fatal("dragging from a dialog link did not retain a selection without copying")
+	}
+	if got := u.Dialog.Selection.Text(); !strings.Contains(got, "remote") {
+		t.Fatalf("drag selected %q, want the link label", got)
+	}
+	if !strings.Contains(strings.Join(outputDialogScreen(u), "\n"), "r reference") {
+		t.Fatal("released drag did not display selection hints")
+	}
+	x, y = outputSelectionPoint(t, u, "sample.go:1")
+	u.outputMouse(0, x, y, false)
+	u.outputMouse(0, x, y, true)
+	awaitMarkdownFile(t, u)
+	if u.Dialog == before || u.Dialog.File.Path != "sample.go" {
+		t.Fatal("dialog link did not open the file")
+	}
+	drawOutputDialog(u)
+	x, y = outputSelectionPoint(t, u, "sample.go")
+	outputSelectionDrag(u, x, y, x+8, y)
+	if u.Dialog.Selection == nil || u.Dialog.Selection.Text() != "sample.go" {
+		t.Fatal("displayed path is not selectable")
+	}
+	for _, target := range []string{"sample.go:0", "sample.go:2-1", "sample.go:1-", "file://remote" + workspace + "/sample.go", "https://example.com", "#section"} {
+		if target != "https://example.com" && strings.Contains(main.shell.Transcript.Painter.Inline("[file](<"+target+">)"), "\x1b]8;") {
+			t.Fatalf("linked non-file destination %q", target)
+		}
+		if u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, target) {
+			t.Fatalf("opened non-file destination %q", target)
+		}
+	}
+	for _, target := range []string{"missing.go"} {
+		if !strings.Contains(main.shell.Transcript.Painter.Inline("[file](<"+target+">)"), "\x1b]8;") {
+			t.Fatalf("local destination was not linked: %q", target)
+		}
+		if !u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, target) {
+			t.Fatalf("local destination was not admitted: %q", target)
+		}
+		awaitMarkdownFile(t, u)
+		drawOutputDialog(u)
+		errorText := ansi.Strip(u.Dialog.Document.Lines[2].Text)
+		if errorText == "" || u.Dialog.File.Source != "" {
+			t.Fatalf("local read failure did not settle to an error: %q", target)
+		}
+		u.outputKey("y")
+		if u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(errorText))+"\x07" {
+			t.Fatalf("local read error is not copyable: %q", target)
+		}
+	}
+	main.attached.cwd = ""
+	if u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, "sample.go") {
+		t.Fatal("relative file resolved without workspace metadata")
+	}
+	path := filepath.Join(workspace, "sample.go")
+	if !u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, path) {
+		t.Fatal("absolute path was not admitted")
+	}
+	awaitMarkdownFile(t, u)
+	if u.Dialog.File.Path != path {
+		t.Fatal("external absolute path was shortened")
+	}
+	path += ":1-2"
+	if err := os.WriteFile(path, []byte("literal file name\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, path) {
+		t.Fatal("literal file name was not admitted")
+	}
+	awaitMarkdownFile(t, u)
+	if u.Dialog.File.Path != path || u.Dialog.File.First != 0 {
+		t.Fatal("location parsing took precedence over an exact file name")
+	}
+}
+
+func TestUISnapshotMarkdownFileDialog(t *testing.T) {
+	for _, test := range []struct {
+		name, content, location string
+		theme                   diffrender.Theme
+	}{
+		{"native-markdown-file-dialog", "package sample\n\n// Copy this source. " + strings.Repeat("more source ", 8) + "\n", ":1-3", diffrender.TerminalTheme},
+		{"native-markdown-file-error", "\xff", ":1-3", diffrender.TerminalTheme},
+		{"native-markdown-file-line-52-dark", strings.Repeat("// previous line\n", 50) + "// before\nvar text = \"green\" // " + strings.Repeat("wrapped source ", 8) + "\n// selected too\n// after\n", ":52-53", diffrender.DarkTheme},
+		{"native-markdown-file-line-52-light", strings.Repeat("// previous line\n", 50) + "// before\nvar text = \"green\" // " + strings.Repeat("wrapped source ", 8) + "\n// selected too\n// after\n", ":52-53", diffrender.LightTheme},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			path := filepath.Join(workspace, "sample.go")
+			failure := test.content == "\xff"
+			if err := os.WriteFile(path, []byte(test.content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			main, _ := newAppServerTestUI()
+			main.attached.cwd = workspace
+			settleTestPresentation(&main.attached, main.shell, &main.Client, &main.picker, &main.Editor, main.settings, main.serviceTiers, main.title, main.backendVersion, main.restoring != nil, main.side, main.clock, &main.questions, &main.approvals, main.statusPanel != nil || main.resumePicker != nil)
+			main.shell.Transcript.Painter.Theme = test.theme
+			u := terminalTest(main)
+			u.Width, u.Height = 80, 18
+			if !u.main.detailFiles.openTerminalMarkdownFile(&u.main.attached.session, u.main.attached.presentation, u.main.attached.cwd, activitySource(&u.main.attached, u.main.shell, main.shell.Transcript), u.Attachment, main.shell.Transcript, path+test.location) {
+				t.Fatal("existing file did not open")
+			}
+			awaitMarkdownFile(t, u)
+			rows := make([]string, u.Height)
+			u.main.detailFiles.prepareOutput(&u.main.attached.session, u.Attachment)
+			u.Dialog.Paint(rows, terminalsession.Rect{W: u.Width, H: u.Height})
+			uisnapshot.AssertTerminal(t, "testdata/snapshots/"+test.name+".txt", append(rows, "plain after file dialog"), u.Width)
+			if failure {
+				if ansi.Strip(u.Dialog.Document.Lines[2].Text) != "file is not UTF-8 text" {
+					t.Fatal("read error literal content changed")
+				}
+				u.outputKey("y")
+				if u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte("file is not UTF-8 text"))+"\x07" {
+					t.Fatal("read error is not copyable")
+				}
+			}
+		})
+	}
+}

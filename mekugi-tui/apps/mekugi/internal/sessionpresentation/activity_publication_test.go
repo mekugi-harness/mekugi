@@ -1,0 +1,165 @@
+package sessionpresentation
+
+import (
+	"fmt"
+	"slices"
+	"testing"
+
+	presentationcontract "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+)
+
+func TestActivityPublicationKeepsMainSkillsImmutable(t *testing.T) {
+	source := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+	main := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+	session := new(Model)
+	source.Apply(ActivityEvent{Agents: []ActivityAgent{{Name: "/root", Thread: "child"}}})
+	main.RestoreSkills("Main", activitypresentation.SkillSet{"commit"})
+	first := source.Publication(session, main)
+	if !slices.Equal(first.Roster[0].Agent.Skills, activitypresentation.SkillSet{"commit"}) {
+		t.Fatalf("root roster lost Main skills: %v", first.Roster[0].Agent.Skills)
+	}
+	if source.Publication(session, main) != first {
+		t.Fatal("unchanged Main skills replaced the publication")
+	}
+	main.Apply(ActivityEvent{Entries: []ActivityEntry{{Seq: 1, Agent: "Main", Kind: "compaction", Text: "retained summary"}}})
+	next := source.Publication(session, main)
+	if next == first || len(next.Roster[0].Agent.Skills) != 0 || !slices.Equal(first.Roster[0].Agent.Skills, activitypresentation.SkillSet{"commit"}) {
+		t.Fatal("skill reset mutated or reused the old publication")
+	}
+}
+
+func TestActivityPublicationSelectedNativeChildOwnsLocalSummary(t *testing.T) {
+	source := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+	main := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+	session := new(Model)
+	session.Attach(Thread{ID: "child", Caller: "/root/worker"}, false)
+	source.Apply(ActivityEvent{Agents: []ActivityAgent{{Name: "/root/worker", Thread: "child"}, {Name: "/root", Thread: "parent"}}})
+	main.Apply(ActivityEvent{Entries: []ActivityEntry{{Seq: 1, Agent: "Main", Kind: "text", Text: "child answer"}}})
+	main.RestoreSkills("Main", activitypresentation.SkillSet{"commit"})
+	publication := source.Publication(session, main)
+	for _, row := range publication.Roster {
+		agent := row.Agent
+		if agent.Thread == "child" {
+			if len(agent.Summary) != 1 || agent.Summary[0].Text != "child answer" || !slices.Equal(agent.Skills, activitypresentation.SkillSet{"commit"}) {
+				t.Fatalf("selected child lost its local summary or skills: %+v", agent)
+			}
+		} else if len(agent.Summary) != 0 || len(agent.Skills) != 0 {
+			t.Fatalf("parent borrowed child summary or skills: %+v", agent)
+		}
+	}
+	if source.Publication(session, main) != publication {
+		t.Fatal("unchanged child publication was not reused")
+	}
+}
+
+func TestActivityPublicationReusesUnchangedInputs(t *testing.T) {
+	source := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+	main := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+	status := "initial"
+	session := &Model{status: []presentationcontract.Status{{ID: "metric", Placements: []presentationcontract.Placement{presentationcontract.AgentMetric}, Text: func(presentationcontract.Thread) string { return status }}}}
+	var retention feed.Retention
+	output, segment := retention.New(), retention.New()
+	source.Apply(ActivityEvent{Entries: []ActivityEntry{
+		{Seq: 1, Agent: "/root/worker", Kind: "tool", Text: "command", Native: &NativeItem{Output: output, Segments: []ActivitySegment{{Output: segment}}}},
+		{Seq: 2, Agent: "/root/worker", Kind: "text", Text: "summary"},
+	}, Agents: []ActivityAgent{{Name: "/root/worker", Thread: "worker"}}})
+	main.Apply(ActivityEvent{Entries: []ActivityEntry{{Seq: 1, Agent: "Main", Kind: "text", Text: "main"}}})
+	previous := source.Publication(session, main)
+	for _, step := range []struct {
+		name   string
+		change func()
+	}{
+		{"output", func() { output.Write("new output") }},
+		{"segment", func() { segment.Write("segment output") }},
+		{"completion", func() { output.Finish(nil, new(1)) }},
+		{"release", func() { segment.Release() }},
+		{"roster", func() { source.Agents[0].Role = "reviewer" }},
+		{"capability", func() { source.Agents[0].NonAttachable = true }},
+		{"metrics", func() { source.Agents[0].OutputTokens++ }},
+		{"contribution", func() { status = "updated" }},
+		{"skills", func() {
+			source.MarkSkillHistoryUnknown("/root/worker")
+			source.RestoreSkills("/root/worker", activitypresentation.SkillSet{"skill"})
+		}},
+		{"review", func() {
+			source.LineCounts = map[string]diffmodel.Counts{"/root/worker": {Added: 1}}
+			source.NetCounts = new(diffmodel.Counts{Added: 1})
+		}},
+		{"review replacement", func() {
+			source.LineCounts["/root/worker"] = diffmodel.Counts{Removed: 2}
+			*source.NetCounts = diffmodel.Counts{Removed: 2}
+		}},
+		{"main summary", func() {
+			main.Mutate(0, func(record *ActivityRecord) {
+				record.Source.Text = "changed main"
+				record.Values = ActivityContent(record.Source).Values()
+			})
+		}},
+		{"remove", func() { source.Remove(0, 1) }},
+		{"replacement", func() { source.Model = new(activitypresentation.Model[ActivityEntry, ActivityAgent]) }},
+	} {
+		t.Run(step.name, func(t *testing.T) {
+			if got := source.Publication(session, main); got != previous {
+				t.Fatal("idle publication replaced immutable snapshot")
+			}
+			step.change()
+			next := source.Publication(session, main)
+			if next == previous {
+				t.Fatal("changed input retained stale publication")
+			}
+			previous = next
+		})
+	}
+}
+
+func TestActivityIdlePublicationDoesNotProjectFeed(t *testing.T) {
+	source := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+	session := new(Model)
+	for i := range 50 {
+		source.Agents = append(source.Agents, ActivityAgent{Name: fmt.Sprintf("/root/worker%d", i)})
+	}
+	output := new(feed.Retention).New()
+	for i := range activitypresentation.FeedLimit {
+		entry := ActivityEntry{Seq: uint64(i + 1), Agent: source.Agents[i%50].Name, Kind: "text", Text: "retained"}
+		if i == activitypresentation.FeedLimit-1 {
+			entry.Native = &NativeItem{Output: output}
+		}
+		source.Apply(ActivityEvent{Entries: []ActivityEntry{entry}})
+	}
+	first := source.Publication(session, nil)
+	if allocations := testing.AllocsPerRun(10, func() { source.Publication(session, nil) }); allocations != 0 {
+		t.Fatalf("idle publication projected retained feed: %g allocations", allocations)
+	}
+	output.Write("streamed")
+	next := source.Publication(session, nil)
+	last := activitypresentation.FeedLimit - 1
+	if next == first || next.Entries[last].Outputs[1] != output.Version() || first.Entries[last].Outputs[1] == output.Version() || &first.Entries[0].Values[0] != &next.Entries[0].Values[0] {
+		t.Fatal("streaming update failed to reuse immutable retained entries")
+	}
+}
+
+func TestActivityOutputFailureSurvivesUnrelatedRevisions(t *testing.T) {
+	for _, unrelated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("concurrent-observation-%v", unrelated), func(t *testing.T) {
+			source := &ActivitySource{Model: new(activitypresentation.Model[ActivityEntry, ActivityAgent])}
+			output := new(feed.Retention).New()
+			source.Apply(ActivityEvent{Entries: []ActivityEntry{{Seq: 1, Agent: "Main", Kind: "tool", Text: "Run `false`", Native: &NativeItem{Output: output}}}})
+			first := source.Publication(new(Model), nil)
+			output.Finish(nil, new(1))
+			if unrelated {
+				source.Apply(ActivityEvent{Entries: []ActivityEntry{{Seq: 2, Agent: "Main", Kind: "text", Text: "another observation"}}})
+			}
+			next := source.Publication(new(Model), nil)
+			if first.Entries[0].OutputFailed || !next.Entries[0].OutputFailed || next.Entries[0].Outputs[1] != output.Version() {
+				t.Fatal("output completion lost its failure or mutated the previous publication")
+			}
+			source.Apply(ActivityEvent{Entries: []ActivityEntry{{Seq: 3, Agent: "Main", Kind: "text", Text: "later observation"}}})
+			if !source.Publication(new(Model), nil).Entries[0].OutputFailed {
+				t.Fatal("later semantic publication discarded previously enriched output facts")
+			}
+		})
+	}
+}

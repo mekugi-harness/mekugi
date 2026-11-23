@@ -1,0 +1,66 @@
+package module
+
+import (
+	"context"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/diagnosticsection"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
+)
+
+type ID string
+type Lifetime string
+
+// NoBindings declares a backend-neutral module.
+type NoBindings struct{}
+
+// NoViews declares a module without renderer contributions.
+type NoViews struct{}
+
+const (
+	Stateless       Lifetime = "stateless"
+	Invocation      Lifetime = "invocation"
+	AttachedSession Lifetime = "attached-session"
+	HostOperation   Lifetime = "host-operation"
+)
+
+// Slots contains the contribution families implemented by the current binder.
+// Shared extension families use slots; single-provider relationships use typed dependencies.
+type Slots struct {
+	DiagnosticSections []diagnosticsection.Contribution
+	Inspection         []inspection.Contribution
+	RecordKinds        []recordkind.Spec
+}
+
+// Contributions declares typed contributions before construction. Slots holds
+// values for module hosts; composition supplies presentation to its application host.
+type Contributions[S any] struct {
+	Presentation       []presentation.Status
+	DiagnosticSections []diagnosticsection.Definition[S]
+	Inspection         []inspection.Definition[S]
+	Commands           []command.Definition[S]
+	RecordKinds        []recordkind.Spec
+}
+
+// Descriptor keeps typed construction separate from backend-specific bindings.
+// B is the backend binding value, so contracts never imports a backend package.
+// New assembles state; Start acquires declared invocation resources.
+type Descriptor[D, S, B, V any] struct {
+	ID                      ID
+	Summary                 string
+	Requires                []ID
+	Lifetime                Lifetime
+	Resources               []string
+	Contributes             Contributions[S]
+	HostsRecords            bool
+	HostsInspection         bool
+	HostsDiagnosticSections bool
+	New                     func(D, Slots) (S, error)
+	Views                   V
+	Bindings                B
+	Start                   func(context.Context, S) error
+	Stop                    func(context.Context, S) error
+}

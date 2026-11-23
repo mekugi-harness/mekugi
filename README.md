@@ -1,81 +1,189 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# mekugi
 
----
+A *mekugi* is the small peg that pins a Japanese sword's handle to the blade.
+Take it out and the handle comes off. Leave it in and the blade is still the
+blade.
 
-## Quickstart
+**Mekugi is a fast, source-grounded workspace for Codex.** It keeps long
+sessions and multi-agent workflows lean, observable, and surgically reversible,
+while leaving Codex's editing, execution, sandbox, permissions, and config
+untouched.
 
-### Installing and running Codex CLI
+[Why Mekugi](#why-mekugi) · [Install](#install) · [Quick start](#quick-start) ·
+[Guides](#guides) · [Documentation](#documentation)
 
-Run the following on Mac or Linux to install Codex CLI:
+## Why Mekugi
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+### Zero-summary compaction & compact context
+
+- **Compaction that rereads real sources.** Reset context without lossy LLM
+  handover summaries. Agents select the exact files, skills, and captured
+  changes needed for unfinished work, and Mekugi reloads them fresh before the
+  next turn.
+- **Agent-chosen checkpoints & usage notices.** Measured context-usage notices
+  start at 50% and tell the agent to compact at 90%, so agents reset cleanly at
+  safe checkpoints instead of drifting inside a bloated window.
+- **Built-in token-saving helpers.** Wrapped sessions put `mcat` (batched UTF-8
+  reads), `mrun` (head/tail-bounded commands that discard out-of-window output),
+  `msymbol` (Go, TypeScript, Python, and Rust semantic definitions/references),
+  and `mfinspect` (structural outlines) on `PATH`. Automatic output deduplication
+  replaces repeated outputs with compact references while keeping full results in
+  history and the UI.
+- **Workspace facts up front.** Sessions start with an observed OS and Git
+  snapshot and mark attached files and skills as reusable, cutting warm-up turns.
+
+### Multi-agent workflows without the warm-up tax
+
+- **Preloaded delegates.** Fresh subagents start with selected files, skills,
+  and captured changes already loaded under their own permissions, with no wasted
+  first turns rediscovering parent context.
+- **Non-polling waits with progress check-ins.** Parents wait for any or all
+  descendants without polling loops. Optional progress yields pair brief
+  developer status summaries with exact captured changes so coordinators catch
+  wrong turns early.
+- **Side questions & isolated one-offs.** Ask quick read-only questions with
+  `/btw` or spin up an isolated work-capable `/oneoff` branch without polluting
+  Main's transcript, and coordinate across active sessions.
+
+### Exact change tracking & surgical undo
+
+- **Every edit gets a short ID.** Observed patches and shell writes are
+  captured as durable change IDs (`mchanges`). Hand exact ranges (like
+  `amber1..amber3`) to reviewers or across compaction instead of dumping a noisy
+  worktree diff mixed with your own edits.
+- **Revert only what you reject.** Undo specific captured edits (optionally
+  scoped to individual paths) with three-way merging that preserves your
+  uncommitted edits and other agents' work. Every revert is captured too and
+  can be reapplied anytime. `/rewind` can roll back conversation turns and
+  their captured edits together.
+
+### Live visibility, control & safety guards
+
+- **Watch edits stream live.** Code changes stream into the
+  [Live Diff pane](docs/guide/terminal-ui.md#live-diff-pane) as the agent
+  writes them. Operations appear under the reasoning that led to them, and the
+  [Agents sheet](docs/guide/terminal-ui.md#agents) lets you inspect subagent
+  transcripts, metrics, and steer them live.
+- **Intervene before mistakes land.** Steer the running turn (`Enter`), queue
+  the next (`Tab`), interrupt (`Esc`), or inspect and stop one running command
+  without killing the turn (`/ps`).
+- **Remote-write & `sudo` guards, even with `--yolo`.** Interactive sessions
+  prompt before supported Git, GitHub, Mercurial, SVN, and Jujutsu remote
+  writes and `sudo` commands (requires unsandboxed execution; see
+  [Approvals and guards](docs/guide/approvals.md)).
+- **Private secrets, never in model context.** Enter `sudo` passwords and GPG
+  passphrases (including Git signing) in a dedicated masked dialog that stays
+  completely out of model input and session history. New or modified Codex
+  hooks ask for trust before work starts.
+
+### Terminal & browser UI, server-owned sessions
+
+- **Detach without killing work.** Sessions are owned by a local background
+  server: close your terminal or browser and agents keep running. Reattach
+  anytime from the terminal or control multiple machines from desktop or phone
+  through the [Web UI and authenticated connector](docs/guide/remote.md).
+- **Full session lifecycle.** [Resume, fork, or rewind](docs/guide/sessions.md)
+  sessions, inspect per-agent usage, throughput, and cost (`/session`), replay
+  past sessions offline, use [reusable prompt presets](docs/guide/terminal-ui.md#composer),
+  and connect [custom OpenAI-compatible Responses providers](docs/guide/providers.md).
+
+## Install
+
+Requirements:
+
+- The **managed native runtime**, bundled in release archives and source builds.
+  Use **Codex CLI** directly for `codex login`.
+- Built-in helpers need neither Node.js nor Bun. Semantic lookup (`msymbol`)
+  uses language servers on your `PATH`; see
+  [Agent tools](docs/guide/agent-tools.md#wrapped-session-helpers).
+
+### Release binaries
+
+| Platform | Archive | Minimum OS |
+| --- | --- | --- |
+| Linux x86-64 | `mekugi_linux_amd64.tar.gz` | glibc 2.39 (e.g. Ubuntu 24.04) |
+| Linux ARM64 | `mekugi_linux_arm64.tar.gz` | glibc 2.39 (e.g. Ubuntu 24.04) |
+| macOS Apple Silicon | `mekugi_darwin_arm64.tar.gz` | macOS 15 |
+
+Install `mekugi`, `mekugi-exec`, the native server, helpers, and model catalog
+into `~/.local/bin` (checksum-verified):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mekugi-harness/mekugi/main/install.sh | sh
 ```
 
-Run the following on Windows to install Codex CLI:
+Add `~/.local/bin` to your `PATH` if needed. The installer uses
+[GitHub Releases](https://github.com/mekugi-harness/mekugi/releases/latest)
+and falls back to the [archived v0.7.0 release][legacy-release] until the first
+release from this repository. You can also download archives from a
+[Build and release run][ci]. Non-glibc Linux environments (such as Alpine)
+require a source build.
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+[ci]: https://github.com/mekugi-harness/mekugi/actions/workflows/release.yml
+[legacy-release]: https://github.com/yusing/mekugi/releases/tag/v0.7.0
+
+### Build from source
+
+Requires **Go 1.27+** (CGO enabled), a C/C++ toolchain, **Make**,
+**Bun 1.4.4+**, **Node.js 24.21+**, **Python 3.11+**, and **Rustup**. See
+[native build dependencies](docs/contributing/development.md#native-app-server)
+for Linux libraries and the pinned Rust toolchain.
+
+```sh
+git clone https://github.com/mekugi-harness/mekugi.git
+cd mekugi
+make install
 ```
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+Add `$GOBIN` (or `$(go env GOPATH)/bin`) to your `PATH`. Run `make uninstall`
+to remove installed executables and the bundled model catalog. Start a new
+session after updating.
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+## Quick start
+
+```sh
+mekugi codex                   # Native OpenAI (uses `codex login`)
+mekugi -p work                 # Custom Responses provider profile
 ```
 
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
+Put Mekugi flags **before** `codex` or Codex arguments. Bare `mekugi` requires
+a [custom provider profile](docs/guide/configuration.md#codex-profile-imports).
+Closing the UI leaves threads running and prints resume/replay commands. See
+[Launch and automation](docs/guide/launch.md) for headless runs and flags.
 
-Codex CLI can also be installed via the following package managers:
+| To | Do |
+| --- | --- |
+| Steer the running turn / queue next | `Enter` / `Tab` |
+| Interrupt | `Esc` |
+| Show Main / toggle Diff / focus Agents | `Ctrl-B`, then `1` / `2` / `3` |
+| Inspect or stop a running command | `/ps` |
+| Ask a side question / run a one-off task | `/btw`, `/oneoff` |
+| Compact, fork, or rewind | `/compact`, `/fork`, `/rewind` |
+| Show all shortcuts | `?` in an empty draft |
 
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
+## Guides
 
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
+- [Terminal UI](docs/guide/terminal-ui.md): panes, composer, live diffs, Agents sheet, and output dialogs.
+- [Sessions and recovery](docs/guide/sessions.md): resume, fork, rewind, compaction, and replay storage.
+- [Agent tools and change review](docs/guide/agent-tools.md): `mcat`, `mrun`, `msymbol`, `mfinspect`, and `mchanges`.
+- [Approvals and guards](docs/guide/approvals.md): Codex approvals, remote-write/sudo guards, and GPG passphrase entry.
+- [Server, connector and browser](docs/guide/remote.md): remote control, browser UI, and Docker deployment.
+- [Providers](docs/guide/providers.md): custom Responses providers.
+- [Launch and automation](docs/guide/launch.md): launch options, execution policy, and headless runs.
+- [Configuration and metrics](docs/guide/configuration.md): settings file, flags, metrics, and integrations.
 
-Then simply run `codex` to get started.
+## Documentation
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+[Product requirements and design](docs/product.md) ·
+[Documentation index](docs/index.md) ·
+[Contributing](CONTRIBUTING.md) ·
+[Controlled comparisons](docs/benchmarks.md) ·
+[Codex end-to-end checks](docs/codex-router-e2e.md)
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
+For controlled comparisons against stock Codex, see
+[codex-setup-ab](https://github.com/yusing/codex-setup-ab).
 
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+## License
 
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
-
-### Using Codex with your ChatGPT plan
-
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
-
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+The terminal client and web UI are [MIT licensed](LICENSE-MEKUGI).
+The Codex runtime is [Apache 2.0 licensed](LICENSE).

@@ -1,0 +1,78 @@
+package presentation
+
+import (
+	"strings"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/markdownsyntax"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
+)
+
+// replySections interprets completed child replies and answered side questions. Its result is detached
+// presentation data on the same identified value as the unmodified source body.
+// The summary ends at the next heading the child chose; the details disclosure
+// already labels its content, so a "## Details" heading is omitted. Without a
+// valid section boundary, details carries the headingless body for an excerpt.
+func (entry ItemContent) replySections(body string) (summary, details string) {
+	if entry.SideQuestion != nil {
+		if !entry.SideQuestion.Answered {
+			return "", ""
+		}
+	} else {
+		if !entry.ItemComplete || entry.Agent == "" || entry.Agent == "/root" || entry.Agent == "Main" {
+			return "", ""
+		}
+		if entry.Message != nil && entry.Message.To != "/root" && entry.Message.To != "Main" {
+			return "", ""
+		}
+	}
+	lines := strings.Split(body, "\n")
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	if start == len(lines) || strings.TrimSuffix(lines[start], "\r") != "## Summary" {
+		return "", ""
+	}
+	start++
+	body = textsanitize.MarkdownSource(strings.Join(lines[start:], "\n"))
+	if strings.TrimSpace(body) == "" {
+		return "", ""
+	}
+	fence := ""
+	for i := start; i < len(lines); i++ {
+		line := strings.TrimSuffix(lines[i], "\r")
+		if fence != "" {
+			if markdownsyntax.ClosesFence(line, fence) {
+				fence = ""
+			}
+			continue
+		}
+		if mark, ok := markdownsyntax.FenceDelimiter(line); ok {
+			fence = mark
+			continue
+		}
+		trimmed := strings.TrimLeft(line, " ")
+		if len(line)-len(trimmed) <= 3 && strings.HasPrefix(trimmed, "~~~") {
+			fence = trimmed[:len(trimmed)-len(strings.TrimLeft(trimmed, "~"))]
+			continue
+		}
+		if !heading(line) {
+			continue
+		}
+		summary, details := strings.Join(lines[start:i], "\n"), strings.Join(lines[i+1:], "\n")
+		if strings.TrimSpace(summary) == "" || strings.TrimSpace(details) == "" {
+			return "", body
+		}
+		if line != "## Details" {
+			details = line + "\n" + details
+		}
+		return textsanitize.MarkdownSource(summary), textsanitize.MarkdownSource(details)
+	}
+	return "", body
+}
+
+// heading reports an unindented ATX heading line.
+func heading(line string) bool {
+	level := len(line) - len(strings.TrimLeft(line, "#"))
+	return level >= 1 && level <= 6 && (len(line) == level || line[level] == ' ' || line[level] == '\t')
+}

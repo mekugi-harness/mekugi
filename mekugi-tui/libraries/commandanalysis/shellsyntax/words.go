@@ -1,0 +1,253 @@
+package shellsyntax
+
+import (
+	"slices"
+	"strings"
+
+	"mvdan.cc/sh/v3/expand"
+	"mvdan.cc/sh/v3/syntax"
+)
+
+func Literal(word *syntax.Word) (string, bool) {
+	if word == nil || !LiteralParts(word.Parts, false) {
+		return "", false
+	}
+	return literalArgument(word)
+}
+
+// Literal's assignment expansion leaves unquoted backslashes intact. Decode
+// those fragments as arguments, retaining brace policy at Operand/BraceArgs.
+func literalArgument(word *syntax.Word) (string, bool) {
+	copy := *word
+	copy.Parts = slices.Clone(word.Parts)
+	for index, part := range copy.Parts {
+		literal, ok := part.(*syntax.Lit)
+		if !ok || !strings.Contains(literal.Value, `\`) {
+			continue
+		}
+		fragment := &syntax.Word{Parts: []syntax.WordPart{part}}
+		if syntax.SplitBraces(fragment) {
+			return "", false
+		}
+		values, err := expand.Fields(&expand.Config{}, fragment)
+		if err != nil || len(values) != 1 {
+			return "", false
+		}
+		copy.Parts[index] = &syntax.SglQuoted{Value: values[0]}
+	}
+	value, err := expand.Literal(&expand.Config{}, &copy)
+	return value, err == nil
+}
+
+func LiteralParts(parts []syntax.WordPart, quoted bool) bool {
+	for _, part := range parts {
+		switch value := part.(type) {
+		case *syntax.SglQuoted:
+		case *syntax.DblQuoted:
+			if !LiteralParts(value.Parts, true) {
+				return false
+			}
+		case *syntax.Lit:
+			if !quoted && strings.ContainsAny(value.Value, "~*?[") {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func Heredoc(redirect *syntax.Redirect, partial bool) (string, bool) {
+	if (redirect.Op != syntax.Hdoc && redirect.Op != syntax.DashHdoc) ||
+		(redirect.N != nil && redirect.N.Value != "0") {
+		return "", false
+	}
+	if redirect.Hdoc == nil {
+		return "", true
+	}
+	var source strings.Builder
+	for _, part := range redirect.Hdoc.Parts {
+		literal, ok := part.(*syntax.Lit)
+		if !ok {
+			return "", false
+		}
+		source.WriteString(literal.Value)
+	}
+	content := source.String()
+	quoted := false
+	for _, part := range redirect.Word.Parts {
+		switch part := part.(type) {
+		case *syntax.SglQuoted, *syntax.DblQuoted:
+			quoted = true
+		case *syntax.Lit:
+			quoted = quoted || strings.Contains(part.Value, `\`)
+		}
+	}
+	if !quoted {
+		var err error
+		content, err = expand.Document(&expand.Config{}, redirect.Hdoc)
+		if err != nil {
+			return "", false
+		}
+	}
+	if redirect.Op == syntax.DashHdoc {
+		lines := strings.Split(content, "\n")
+		for index := range lines {
+			lines[index] = strings.TrimLeft(lines[index], "\t")
+		}
+		content = strings.Join(lines, "\n")
+	}
+	if partial {
+		content = strings.TrimSuffix(content, "\n")
+	}
+	return content, true
+}
+
+func Operand(word *syntax.Word) (value string, glob bool, ok bool) {
+	if word == nil {
+		return "", false, false
+	}
+	var pattern strings.Builder
+	escape := func(text string) {
+		for _, char := range text {
+			if strings.ContainsRune(`*?[\`, char) {
+				pattern.WriteByte('\\')
+			}
+			pattern.WriteRune(char)
+		}
+	}
+	for index, part := range word.Parts {
+		switch part := part.(type) {
+		case *syntax.SglQuoted:
+			text, err := expand.Literal(&expand.Config{}, &syntax.Word{Parts: []syntax.WordPart{part}})
+			if err != nil {
+				return "", false, false
+			}
+			escape(text)
+		case *syntax.DblQuoted:
+			for _, inner := range part.Parts {
+				literal, isLiteral := inner.(*syntax.Lit)
+				if !isLiteral {
+					return "", false, false
+				}
+				text, err := expand.Literal(&expand.Config{}, &syntax.Word{Parts: []syntax.WordPart{&syntax.DblQuoted{Parts: []syntax.WordPart{literal}}}})
+				if err != nil {
+					return "", false, false
+				}
+				escape(text)
+			}
+		case *syntax.Lit:
+			text := part.Value
+			if index == 0 && strings.HasPrefix(text, "~") {
+				return "", false, false
+			}
+			if strings.ContainsAny(text, "{}") {
+				return "", false, false
+			}
+			if strings.ContainsAny(text, "*?[") {
+				// Character classes and globstar have no filepath.Match
+				// form; bash negation is [! where Go uses [^.
+				if strings.Contains(text, "[[:") || strings.Contains(text, "**") {
+					return "", false, false
+				}
+				glob = true
+				pattern.WriteString(strings.ReplaceAll(text, "[!", "[^"))
+				continue
+			}
+			literal, ok := literalArgument(&syntax.Word{Parts: []syntax.WordPart{part}})
+			if !ok {
+				return "", false, false
+			}
+			escape(literal)
+		default:
+			return "", false, false
+		}
+	}
+	if glob {
+		return pattern.String(), true, true
+	}
+	literal, ok := literalArgument(word)
+	return literal, false, ok
+}
+
+func Args(words []*syntax.Word) ([]string, bool) {
+	values := make([]string, 0, len(words))
+	for _, word := range words {
+		value, glob, ok := Operand(word)
+		if !ok {
+			return nil, false
+		}
+		if glob {
+			// Keep the literal spelling; callers that need operands resolve
+			// them through operand().
+			value = word.Lit()
+			if value == "" {
+				return nil, false
+			}
+		}
+		values = append(values, value)
+	}
+	return values, true
+}
+
+// BraceArgs expands bounded lexical braces before reading static arguments.
+// It never resolves parameters, expands filesystem globs, or executes source.
+// Source: libraries/commandanalysis/execscope/shell.go:1007:1028@2f371767.
+func BraceArgs(words []*syntax.Word) ([]string, bool) {
+	var values []string
+	for _, word := range words {
+		copy := *word
+		copy.Parts = slices.Clone(word.Parts)
+		syntax.SplitBraces(&copy)
+		for expanded, err := range expand.BracesSeq(nil, &copy) {
+			if err != nil || len(values) >= 4096 {
+				return nil, false
+			}
+			args, ok := Args([]*syntax.Word{expanded})
+			if !ok {
+				return nil, false
+			}
+			values = append(values, args...)
+		}
+	}
+	return values, true
+}
+
+func EnvArgs(args []*syntax.Word) ([]*syntax.Word, string) {
+	assignments := false
+	for len(args) != 0 {
+		next, ok := Literal(args[0])
+		if !assignments && ok && (next == "-u" || next == "--unset" || strings.HasPrefix(next, "--unset=")) {
+			variable, inline := strings.CutPrefix(next, "--unset=")
+			count := 1
+			if !inline && len(args) > 1 {
+				variable, ok = Literal(args[1])
+				count = 2
+			} else if !inline {
+				ok = false
+			}
+			if !ok || variable == "" || variable == "PATH" {
+				return nil, "env unset changes command resolution or is not literal"
+			}
+			args = args[count:]
+			continue
+		}
+		if !ok || strings.HasPrefix(next, "-") {
+			return nil, "env options are not parsed"
+		}
+		if !strings.Contains(next, "=") {
+			break
+		}
+		if variable, _, _ := strings.Cut(next, "="); variable == "PATH" {
+			return nil, "command resolution changes"
+		}
+		assignments = true
+		args = args[1:]
+	}
+	return args, ""
+}
+
+func IsDigits(value string) bool {
+	return value != "" && strings.Trim(value, "0123456789") == ""
+}

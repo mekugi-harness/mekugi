@@ -1,0 +1,5 @@
+● worker                                                                08:00:02
+│ • Thought for 2s • Inspecting order
+│   First checkpoint.
+│   Second checkpoint.
+│ └ Ran     echo later                                                     100ms

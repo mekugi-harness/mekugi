@@ -1,0 +1,133 @@
+package terminalui
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
+)
+
+func TestDialogFitsOnlyPathFromLeft(t *testing.T) {
+	path := StyledPath("/home/dev/projects/very-long-directory/distinctive.go")
+	page := DialogPage{Title: "Read · " + path + " · 2s", TitlePath: path}
+	rows := new(Painter).Dialog(DialogFrame{Page: page}, 48, 8)
+	if line := ansi.Strip(rows[0]); !strings.Contains(line, "Read · …") || !strings.Contains(line, "distinctive.go · 2s") || strings.Contains(line, "/home/") {
+		t.Fatalf("path title did not retain suffix and nonpath facts: %q", line)
+	}
+	if !strings.Contains(page.Title, "/home/dev") {
+		t.Fatal("painting changed the full title")
+	}
+	page.TitlePath = ""
+	page.Title = "An ordinary long title whose ending should be hidden"
+	rows = new(Painter).Dialog(DialogFrame{Page: page}, 48, 8)
+	if line := ansi.Strip(rows[0]); !strings.Contains(line, "An ordinary long title") || strings.Contains(line, "hidden") {
+		t.Fatalf("nonpath title truncation changed: %q", line)
+	}
+}
+
+func TestUISnapshotDialogSurfaceStyles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		theme diffrender.Theme
+	}{
+		{"terminal", diffrender.TerminalTheme},
+		{"dark", diffrender.DarkTheme},
+		{"light", diffrender.LightTheme},
+	} {
+		for _, fallback := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/fallback=%v", tc.name, fallback), func(t *testing.T) {
+				p := Painter{Theme: tc.theme}
+				frame := DialogFrame{Page: DialogPage{Title: "Title", Detail: Dim + "metadata" + Undim}, Rows: []string{
+					"A\x1b[0mB\x1b[mC\x1b[39;49mD",
+					"\x1b[31mR\x1b[48;2;1;2;3mF\x1b[49mS",
+				}, Footer: "esc close"}
+				rows := p.Dialog(frame, 40, 8)
+				if fallback {
+					for i := range rows {
+						rows[i] = FaintFallback(rows[i])
+					}
+				}
+				rows = append(rows, "outside")
+				path := fmt.Sprintf("testdata/snapshots/dialog_surface_%s_fallback_%t.txt", tc.name, fallback)
+				uisnapshot.AssertTerminal(t, path, rows, 40)
+			})
+		}
+	}
+}
+
+func TestDialogWrappedRowsMatchesWrap(t *testing.T) {
+	for _, text := range []string{"", "abc def  ghi", "界界ab", "e\u0301👩‍💻text", "\x1b[31mcolored text\x1b[0m", "\x1b]8;;https://example.com\x1b\\linked text\x1b]8;;\x1b\\"} {
+		for _, width := range []int{1, 2, 5, 20} {
+			t.Run(fmt.Sprintf("%q/%d", text, width), func(t *testing.T) {
+				if got, want := wrappedRows(text, width), len(Wrap(text, width, true)); got != want {
+					t.Fatalf("rows=%d want %d", got, want)
+				}
+			})
+		}
+	}
+	page := DialogPage{digits: 2, Lines: []DialogLine{{Number: 12, Gutter: "┆", Text: "abcdefgh"}}}
+	rows := page.Rows(0, 9)
+	if len(rows) != 2 || ansi.Strip(rows[0]) != "12 ┆ abcd" || ansi.Strip(rows[1]) != "   ┆ efgh" || page.Indent(0) != 5 || page.RowCount(0, 9) != 2 {
+		t.Fatalf("wrapped numbered rows=%q", rows)
+	}
+}
+
+func TestDialogRowsRangePreservesWrappedContent(t *testing.T) {
+	for _, text := range []string{"", "abc def  ghi", "界界ab", "e\u0301👩‍💻text", "\x1b[31mcolored\x1b[39m text", "\x1b[1;31mabc def\n界界end", "\x1b]8;;https://example.com\x1b\\linked text\x1b]8;;\x1b\\"} {
+		for _, width := range []int{1, 2, 5, 20} {
+			page := DialogPage{}
+			page.Add(DialogLine{Number: 12, Gutter: "│", GutterStyle: "\x1b[35m", Text: text})
+			rows := page.Rows(0, width+5)
+			for first := 0; first <= len(rows); first++ {
+				got := page.RowsRange(0, width+5, first, 2)
+				want := rows[first:min(first+2, len(rows))]
+				if !slices.Equal(got, want) {
+					t.Fatalf("%q width=%d first=%d: got %q want %q", text, width, first, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestDialogRowsRangeMatchesControlWrapping(t *testing.T) {
+	for _, text := range []string{"a\ta", "a\ra", "a\x00a", "a\x7fa", "a\n\tend"} {
+		for _, width := range []int{1, 2, 5} {
+			page := DialogPage{Lines: []DialogLine{{Text: text, Wrap: true}}}
+			rows := Wrap(text, width, true)
+			for first := 0; first <= len(rows); first++ {
+				for _, count := range []int{1, 2} {
+					got := page.RowsRange(0, width, first, count)
+					want := rows[first:min(first+count, len(rows))]
+					if !slices.Equal(got, want) {
+						t.Fatalf("%q width=%d first=%d count=%d: got %q want %q", text, width, first, count, got, want)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestDialogFrameDimensions(t *testing.T) {
+	var p Painter
+	for _, width := range []int{12, 24, 80} {
+		for _, height := range []int{5, 12} {
+			frame := DialogFrame{Page: DialogPage{Title: strings.Repeat("title", 30), Detail: "detail", Live: true}, Position: "2 / 4", Paused: true, Rows: []string{strings.Repeat("界", 100), "short"}, Total: 100, Top: 50, Footer: "escape close · scroll"}
+			rows := p.Dialog(frame, width, height)
+			if len(rows) != height {
+				t.Fatalf("height=%d want %d", len(rows), height)
+			}
+			for i, row := range rows {
+				if got := ansi.StringWidth(row); got != width {
+					t.Errorf("row %d width=%d want %d: %q", i, got, width, ansi.Strip(row))
+				}
+			}
+		}
+	}
+	if p.Dialog(DialogFrame{}, 11, 10) != nil || p.Dialog(DialogFrame{}, 80, DialogChrome) != nil {
+		t.Fatal("undersized frame rendered")
+	}
+}

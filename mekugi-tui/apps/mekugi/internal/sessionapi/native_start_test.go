@@ -1,0 +1,281 @@
+package sessionapi
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"testing/synctest"
+)
+
+type nativeStartupLauncher struct {
+	managedLauncher
+	run func(context.Context, Start, *Server) error
+}
+
+func (l *nativeStartupLauncher) Run(ctx context.Context, start Start, server *Server) error {
+	return l.run(ctx, start, server)
+}
+
+func TestNativeStartupReportsInitializationFailure(t *testing.T) {
+	t.Parallel()
+	launcher := &nativeStartupLauncher{run: func(context.Context, Start, *Server) error {
+		return &NativeExit{Code: 2, Message: "The selected invocation option is unavailable."}
+	}}
+	hub := NewHub(t.Context(), launcher)
+	defer hub.Close()
+	client, _ := serveControl(t, hub.Handler())
+	connection, err := StartNative(t.Context(), client, "http://mekugi", NativeStart{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_, err = connection.Next()
+	outcome, ok := errors.AsType[*NativeExit](err)
+	if !ok || outcome.Code != 2 || outcome.Message != "The selected invocation option is unavailable." {
+		t.Fatalf("startup outcome disappeared before attachment: %v", err)
+	}
+}
+
+func TestNativeResumeAtIdleReleaseWaitsForRuntimeRetirement(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		commit, joining, join := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		launcher := &nativeStartupLauncher{run: func(ctx context.Context, start Start, server *Server) error {
+			native := server.Native()
+			request := <-native.Requests()
+			if err := server.SetSummary(Summary{Thread: "confirmed", Workspace: start.Workspace, Ready: true}); err != nil {
+				return err
+			}
+			frame := nativeTestFrame("confirmed", 1)
+			frame.View.Info.Workspace = start.Workspace
+			frame.Switch = &NativeSwitch{To: "confirmed", Origin: request.Attachment}
+			if err := native.Publish(request.Attachment, frame); err != nil {
+				return err
+			}
+			request.Reply <- ""
+			<-commit
+			if !native.BeginRelease(request.Attachment, nil) {
+				return errors.New("release did not acquire the sole attachment")
+			}
+			close(joining)
+			<-join
+			return nil
+		}}
+		hub := NewHub(t.Context(), launcher)
+		defer hub.Close()
+		conn := pipeControl(t, hub)
+		controlInitialize(t, conn)
+		controlWrite(t, conn, string(testJSON(t, map[string]any{"jsonrpc": "2.0", "id": "start", "method": "native/start", "params": RPCParams{Subscription: "view", Body: testJSON(t, NativeStart{Workspace: t.TempDir()})}})))
+		if reply := controlRead(t, conn); reply.Error != nil {
+			t.Fatal(reply.Error)
+		}
+		_ = controlRead(t, conn) // Initial native snapshot.
+		close(commit)
+		<-joining
+
+		resume := pipeControl(t, hub)
+		controlInitialize(t, resume)
+		controlWrite(t, resume, `{"jsonrpc":"2.0","id":"resume","method":"view/attach","params":{"thread":"confirmed","subscription":"reattached"}}`)
+		reply := make(chan RPCMessage, 1)
+		go func() { reply <- controlRead(t, resume) }()
+		synctest.Wait()
+		var early bool
+		select {
+		case <-reply:
+			early = true
+		default:
+		}
+		close(join)
+		if early {
+			t.Fatal("resume responded before its owner joined")
+		}
+		result := <-reply
+		if result.Error == nil || result.Error.Data == nil || result.Error.Data.Status != 404 {
+			t.Fatalf("resume did not receive saved-history fallback after join: %+v", result)
+		}
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		if hub.sessions["confirmed"] != nil {
+			t.Fatal("saved-history fallback raced live registration")
+		}
+	})
+}
+
+func TestNativeStartupRegistersBeforePublishingConfirmedTarget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		registering, release, published := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		launcher := &nativeStartupLauncher{run: func(ctx context.Context, start Start, server *Server) error {
+			register := server.registerSummary
+			server.registerSummary = func(summary Summary) error {
+				close(registering)
+				<-release
+				return register(summary)
+			}
+			request := <-server.Native().Requests()
+			frame := nativeTestFrame("", 1)
+			frame.View.Info.Workspace = start.Workspace
+			if err := server.Native().Publish(request.Attachment, frame); err != nil {
+				return err
+			}
+			request.Reply <- ""
+			if err := server.SetSummary(Summary{Thread: "confirmed", Workspace: start.Workspace, Ready: true}); err != nil {
+				return err
+			}
+			close(published)
+			frame.View.Main.ID = "confirmed"
+			frame.Switch = &NativeSwitch{To: "confirmed", Origin: request.Attachment}
+			if err := server.Native().Publish(request.Attachment, frame); err != nil {
+				return err
+			}
+			for {
+				select {
+				case request := <-server.Native().Requests():
+					if request.Thread != "confirmed" || request.Startup != "" || request.Operation.Command == nil || *request.Operation.Command != "/rewind" {
+						request.Reply <- "mutation lost its confirmed destination"
+					} else {
+						request.Reply <- ""
+					}
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}}
+		hub := NewHub(t.Context(), launcher)
+		defer hub.Close()
+		conn := pipeControl(t, hub)
+		controlInitialize(t, conn)
+		controlWrite(t, conn, string(testJSON(t, map[string]any{"jsonrpc": "2.0", "id": "start", "method": "native/start", "params": RPCParams{Subscription: "view", Body: testJSON(t, NativeStart{Workspace: t.TempDir()})}})))
+		if reply := controlRead(t, conn); reply.Error != nil {
+			t.Fatal(reply.Error)
+		}
+		readFrame := func(previous NativeEvent) NativeEvent {
+			t.Helper()
+			message := controlRead(t, conn)
+			var publication RPCEvent
+			if message.Method != "subscription/event" || decodeBody(message.Params, &publication) != nil {
+				t.Fatalf("expected native publication: %+v", message)
+			}
+			event, err := decodeNativeEvent(publication.Kind, publication.Data, previous)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return event
+		}
+		startup := readFrame(NativeEvent{})
+		<-registering
+		synctest.Wait()
+		select {
+		case <-published:
+			t.Error("SetSummary returned before target registration completed")
+		default:
+		}
+		close(release)
+		confirmed := readFrame(startup)
+		if confirmed.Target().Thread != "confirmed" || confirmed.Startup != "" || confirmed.Frame.Switch == nil {
+			t.Fatalf("startup did not explicitly confirm its target: %+v", confirmed)
+		}
+		for _, target := range []NativeTarget{confirmed.Target(), startup.Target(), {Thread: "foreign", Attachment: confirmed.Attachment, Version: confirmed.Frame.View.Version}} {
+			mutation := NativeMutation{Attachment: target.Attachment, Version: target.Version, Operation: NativeOperation{Command: new("/rewind")}}
+			controlWrite(t, conn, string(testJSON(t, map[string]any{"jsonrpc": "2.0", "id": "intent", "method": "view/intent", "params": RPCParams{Thread: target.Thread, Startup: target.Startup, Body: testJSON(t, mutation)}})))
+			reply := controlRead(t, conn)
+			if target.Thread == "confirmed" && reply.Error != nil || target.Thread != "confirmed" && reply.Error == nil {
+				t.Fatalf("confirmed/stale/foreign target admission: target=%+v reply=%+v", target, reply)
+			}
+		}
+	})
+}
+
+func TestNativeStartupDisconnectAndJoinedOutcome(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	finish, cleanup, joined := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	running := make(chan context.Context, 1)
+	launcher := &nativeStartupLauncher{run: func(ctx context.Context, start Start, server *Server) error {
+		running <- ctx
+		if start.Native == nil || start.Native.Workspace != workspace {
+			return errors.New("native startup arguments were lost")
+		}
+		for {
+			select {
+			case request := <-server.Native().Requests():
+				if !request.Attach || request.Thread != "" || request.Startup == "" || request.Workspace != workspace {
+					return errors.New("native startup attachment was retargeted")
+				}
+				frame := nativeTestFrame("", 1)
+				frame.View.Info.Workspace = workspace
+				if err := server.Native().Publish(request.Attachment, frame); err != nil {
+					return err
+				}
+				request.Reply <- ""
+			case <-finish:
+				close(cleanup)
+				<-joined
+				return &NativeExit{Code: 17, Message: "Host exited during work."}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}}
+	hub := NewHub(t.Context(), launcher)
+	defer hub.Close()
+	client, _ := serveControl(t, hub.Handler())
+	connection, err := StartNative(t.Context(), client, "http://mekugi", NativeStart{Workspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := connection.Next()
+	if err != nil || event.Startup == "" || event.Target().Thread != "" {
+		t.Fatalf("startup snapshot: %+v, %v", event, err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if ctx := <-running; ctx.Err() != nil {
+		t.Fatalf("client disconnect canceled runtime: %v", ctx.Err())
+	}
+	connection, err = openNativeSubscription(t.Context(), client, "http://mekugi", "view/attach", RPCParams{Startup: event.Startup})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Next(); err != nil {
+		t.Fatal(err)
+	}
+	close(finish)
+	<-cleanup
+	result := make(chan error, 1)
+	go func() { _, err := connection.Next(); result <- err }()
+	select {
+	case err := <-result:
+		t.Fatalf("runtime outcome preceded joined cleanup: %v", err)
+	default:
+	}
+	close(joined)
+	outcome, ok := errors.AsType[*NativeExit](<-result)
+	if !ok || outcome.Code != 17 || outcome.Message != "Host exited during work." {
+		t.Fatalf("joined runtime outcome: %+v", outcome)
+	}
+}
+
+func TestRunNativeCancellationJoinsRuntime(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	joined := make(chan struct{})
+	launcher := &nativeStartupLauncher{run: func(ctx context.Context, _ Start, server *Server) error {
+		cancel()
+		<-ctx.Done()
+		close(joined)
+		return ctx.Err()
+	}}
+	hub := NewHub(t.Context(), launcher)
+	defer hub.Close()
+	_, err := hub.RunNative(ctx, NativeStart{Workspace: t.TempDir()}, "literal")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	select {
+	case <-joined:
+	default:
+		t.Fatal("runtime cleanup not joined")
+	}
+}

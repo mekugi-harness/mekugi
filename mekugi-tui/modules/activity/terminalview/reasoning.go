@@ -1,0 +1,124 @@
+package terminalview
+
+import (
+	"strings"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
+)
+
+// ThinkingTailRows is how much reasoning stays visible while it streams.
+const ThinkingTailRows = 3
+
+// CompactReasoning joins consecutive reasoning without changing the
+// source blocks used by expanded presentation or the dialog's section pages.
+func CompactReasoning(blocks []Block) []Block {
+	var out []Block
+	for i := 0; i < len(blocks); {
+		end := i + 1
+		if blocks[i].Kind == "summary" {
+			for end < len(blocks) && blocks[end].Kind == "summary" {
+				end++
+			}
+		}
+		block := blocks[i]
+		if end > i+1 {
+			values := make([]presentation.Value, end-i)
+			for k, b := range blocks[i:end] {
+				values[k] = b.Value
+			}
+			block.Value = presentation.Reasoning(values)
+			block.Collapsed = true
+		}
+		out = append(out, block)
+		i = end
+	}
+	return out
+}
+
+// thinkingHeader labels long reasoning blocks; short summaries render directly.
+func (p *Painter) thinkingHeader(block Block, width int) (string, bool) {
+	label := block.Label
+	if label == "" {
+		label = block.ReasoningLabel()
+	}
+	if !block.Live && block.Thought >= time.Second {
+		label = reasoningFor(p.Inline(label), presentation.FormatDuration(block.Thought))
+	} else if label == "" && block.Live {
+		label = "Thinking…"
+	} else if label == "" {
+		label = "Thought"
+	} else {
+		label = p.Inline(label)
+	}
+	header := ansi.Truncate(label, max(1, width), "…")
+	if plain := ansi.Strip(header); strings.HasSuffix(plain, " •…") || strings.HasSuffix(plain, " • …") {
+		// A separator with nothing after it reads as a stray bullet.
+		header = ansi.Truncate(label, ansi.StringWidth(strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(plain, "…"), " "), " •")), "")
+	}
+	return header, ansi.StringWidth(label) > max(1, width)
+}
+
+// Lead with elapsed time and strip the visible trailing period, preserving
+// Markdown's terminal styles.
+func reasoningFor(text, elapsed string) string {
+	if dot := strings.LastIndexByte(text, '.'); dot >= 0 && ansi.Strip(text[dot+1:]) == "" {
+		text = text[:dot] + text[dot+1:]
+	}
+	prefix := "Thought for " + elapsed
+	if text == "" {
+		return prefix
+	}
+	return prefix + " • " + text
+}
+
+// reasoningRow keeps the whole row faint and italic, including text after
+// Markdown's combined style resets. Reapply only these attributes, preserving
+// inline colors, hyperlinks, and the remaining Markdown styles.
+func reasoningRow(row string) string {
+	const style = terminalui.Dim + "\x1b[3m"
+	var out strings.Builder
+	out.WriteString(style)
+	var state byte
+	for len(row) > 0 {
+		seq, _, n, next := ansi.DecodeSequence(row, state, nil)
+		if n == 0 {
+			break
+		}
+		state, row = next, row[n:]
+		out.WriteString(seq)
+		if strings.HasPrefix(seq, "\x1b[") && strings.HasSuffix(seq, "m") {
+			out.WriteString(style)
+		}
+	}
+	out.WriteString(terminalui.Reset)
+	return out.String()
+}
+
+// ReasoningElided uses the same wrapped body and short-summary rule as the
+// renderer. A settled one-line summary is not a collapsed detail view.
+func (p *Painter) ReasoningElided(block Block, width int) bool {
+	if len(block.Members) > 1 {
+		return true
+	}
+	width = max(8, width)
+	rows, short, titleOnly := p.reasoningContent(block, width)
+	_, headingElided := p.thinkingHeader(block, width-2)
+	return len(rows) > 0 && !short && (block.Collapsed || block.Live && !block.Expanded && len(rows) > ThinkingTailRows || headingElided && !titleOnly)
+}
+
+func (p *Painter) reasoningContent(block Block, width int) (rows []string, short, titleOnly bool) {
+	if block.Label == "" {
+		block.Label = block.ReasoningLabel()
+	}
+	body := presentation.ReasoningSummaryBody(block.Body)
+	if body == "" {
+		return nil, false, false
+	}
+	rows = p.Markdown(body, max(1, width-2), true)
+	titleOnly = body == strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(block.Body), "<!-- -->"))
+	return rows, len(rows) == 1 && (block.Label == "" || titleOnly), titleOnly
+}

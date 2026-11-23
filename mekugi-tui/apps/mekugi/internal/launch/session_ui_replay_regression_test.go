@@ -1,0 +1,288 @@
+package launch
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
+
+	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+
+	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
+
+	"github.com/charmbracelet/x/ansi"
+)
+
+func TestSessionUIReplaySelectedThreadKeepsNativeIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name, thread, caller string
+		metadata             map[string]any
+	}{
+		{"root", "root", "/root", map[string]any{"source": "cli"}},
+		{"delegate", "child", "/root/worker", map[string]any{"parent_thread_id": "parent", "agent_path": "/root/worker"}},
+		{"native spawn source", "child", "/root/nested/worker", map[string]any{"source": map[string]any{"subagent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": "parent", "agent_path": "/root/nested/worker"}}}}},
+		{"unavailable delegate path", "child", "/root/child", map[string]any{"parent_thread_id": "parent"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			metadata := replayTestMeta(test.thread)
+			for key, value := range test.metadata {
+				metadata["payload"].(map[string]any)[key] = value
+			}
+			path := replayTestWrite(t, t.TempDir(), "selected.jsonl", metadata,
+				replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "turn"}),
+				replayTestItem(test.thread, "turn", replayTestEpoch+1000, replayTestEpoch+2000, map[string]any{"type": "AgentMessage", "id": "answer", "content": []map[string]any{{"type": "Text", "text": "selected thread answer"}}}),
+				replayTestRecord("event_msg", replayTestEpoch+3000, map[string]any{"type": "task_complete", "turn_id": "turn"}),
+			)
+			source, err := replayReadTest(t, new(transportcapture.Service), t.Context(), path, "", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
+			t.Cleanup(p.close)
+			for _, at := range []time.Duration{2 * time.Second, 500 * time.Millisecond} {
+				if err := p.advance(at); err != nil {
+					t.Fatal(err)
+				}
+				view := p.ui.sessionView()
+				if view.Main.Caller != test.caller || view.Info.Caller != test.caller || view.Displayed != view.Main {
+					t.Fatalf("replay selected another identity at %s: %+v", at, view.Main)
+				}
+				if agent := p.ui.session.Activity().Agent(test.thread); agent == nil || agent.Name != test.caller {
+					t.Fatalf("replay roster identity at %s = %+v", at, agent)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionUIReplayRetainsQuestionAnswerWait(t *testing.T) {
+	t.Parallel()
+	path := replayTestWrite(t, t.TempDir(), "root.jsonl", replayTestMeta("root"),
+		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "turn"}),
+		replayTestItem("root", "turn", replayTestEpoch+2000, replayTestEpoch+2000, map[string]any{
+			"type": "AgentMessage", "id": "question", "delivery": "async", "content": []map[string]any{{"type": "Text", "text": "Who receives it?"}},
+			"questions": []map[string]any{{"id": questionTestID("question", 0), "question": "Who receives it?", "options": []any{map[string]any{"label": "Customers"}, map[string]any{"label": "Internal"}}}},
+		}),
+		replayTestItem("root", "turn", replayTestEpoch+8000, replayTestEpoch+8000, map[string]any{
+			"type": "UserMessage", "id": "answer", "content": []map[string]any{{"type": "text", "text": lifecycleReply(t, "question", 0, "Who receives it?", "Customers")}},
+		}),
+		replayTestRecord("event_msg", replayTestEpoch+10000, map[string]any{"type": "task_complete", "turn_id": "turn"}),
+	)
+	source, err := replayReadTest(t, new(transportcapture.Service), t.Context(), path, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 4)
+	t.Cleanup(p.close)
+	for _, step := range []struct {
+		at        time.Duration
+		questions int
+	}{{time.Second, 0}, {2 * time.Second, 1}, {7999 * time.Millisecond, 1}, {8 * time.Second, 0}} {
+		if err := p.advance(step.at); err != nil {
+			t.Fatal(err)
+		}
+		if p.ui.conversation.Questions.Count(p.Source.Thread) != step.questions || p.ui.conversation != p.conversation.Session(p.ui.session.Scope()) {
+			t.Fatalf("at %s: questions=%d want=%d", step.at, p.ui.conversation.Questions.Count(p.Source.Thread), step.questions)
+		}
+		replayPlaybackTestPaint(t, p, 120, 28)
+	}
+}
+
+func TestSessionUIReplayReasoningUsesRecordedItemStart(t *testing.T) {
+	t.Parallel()
+	path := replayTestWrite(t, t.TempDir(), "root.jsonl", replayTestMeta("root"),
+		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "turn"}),
+		replayTestItem("root", "turn", replayTestEpoch+1000, replayTestEpoch+3000, map[string]any{
+			"type": "Reasoning", "id": "r", "summary_text": []string{"**Checking**\n\n" + strings.Repeat("Public summary chunk. ", 20)},
+		}),
+		replayTestRecord("event_msg", replayTestEpoch+4000, map[string]any{"type": "task_complete", "turn_id": "turn"}),
+	)
+	source, err := replayReadTest(t, new(transportcapture.Service), t.Context(), path, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
+	t.Cleanup(p.close)
+	for _, step := range []struct {
+		at   time.Duration
+		want string
+	}{{time.Second, "Working"}, {1500 * time.Millisecond, "Public summary"}, {3 * time.Second, "Thought for 2s • Checking"}} {
+		if err := p.advance(step.at); err != nil {
+			t.Fatal(err)
+		}
+		frame := replayPlaybackTestPaint(t, p, 120, 28)
+		if !strings.Contains(frame, step.want) {
+			t.Fatalf("reasoning at %s lost recorded start or synthetic streaming; want %q:\n%s", step.at, step.want, frame)
+		}
+	}
+}
+
+func TestSessionUIReplayDirectForkSkipsCopiedAncestorEvents(t *testing.T) {
+	t.Parallel()
+	rootItem := replayTestItem("ancestor", "ancestor-turn", replayTestEpoch+1000, replayTestEpoch+2000,
+		map[string]any{"type": "AgentMessage", "id": "ancestor-answer", "content": []map[string]any{{"text": "copied ancestor answer"}}})
+	path := replayTestWrite(t, t.TempDir(), "rollout-2023-fork.jsonl",
+		replayTestMeta("fork"), replayTestMeta("ancestor"),
+		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "ancestor-turn"}), rootItem,
+		replayTestRecord("event_msg", replayTestEpoch+3000, map[string]any{"type": "task_complete", "turn_id": "ancestor-turn"}),
+		replayTestRecord("event_msg", replayTestEpoch+4000, map[string]any{"type": "task_started", "turn_id": "fork-turn"}),
+		replayTestItem("fork", "fork-turn", replayTestEpoch+4500, replayTestEpoch+5500, map[string]any{"type": "AgentMessage", "id": "fork-answer", "content": []map[string]any{{"text": "fork answer"}}}),
+		replayTestRecord("event_msg", replayTestEpoch+6000, map[string]any{"type": "task_complete", "turn_id": "fork-turn"}),
+	)
+	source, err := replayReadTest(t, new(transportcapture.Service), t.Context(), path, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.Thread != "fork" || source.Threads["fork"] != "/root" || source.Items != 1 || len(source.Missing) != 0 || !source.Start.Equal(time.UnixMilli(replayTestEpoch+4000)) {
+		t.Fatalf("direct fork identity/bounds lost: %+v", source)
+	}
+	counts := make(map[string]int)
+	for _, event := range source.Events {
+		if event.ThreadID != "fork" || event.TurnID != "fork-turn" || event.ItemID == "ancestor-answer" {
+			t.Fatalf("copied ancestor event misattributed to fork: %+v", event)
+		}
+		if event.Kind == "turn/started" || event.Kind == "turn/completed" || event.Kind == "item/completed" {
+			counts[string(event.Kind)]++
+		}
+	}
+	if !reflect.DeepEqual(counts, map[string]int{"turn/started": 1, "turn/completed": 1, "item/completed": 1}) {
+		t.Fatalf("direct fork lifecycle duplicated: %v", counts)
+	}
+}
+
+func TestSessionUIReplayItemlessForkTurnUsesSettingsBoundary(t *testing.T) {
+	t.Parallel()
+	path := replayTestWrite(t, t.TempDir(), "fork.jsonl", replayTestMeta("fork"), replayTestMeta("ancestor"),
+		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "inherited"}),
+		replayTestRecord("event_msg", replayTestEpoch+1000, map[string]any{"type": "task_complete", "turn_id": "inherited"}),
+		replayTestRecord("event_msg", replayTestEpoch+2000, map[string]any{"type": "thread_settings_applied", "thread_id": "fork"}),
+		replayTestRecord("event_msg", replayTestEpoch+3000, map[string]any{"type": "task_started", "turn_id": "local"}),
+		replayTestRecord("event_msg", replayTestEpoch+7000, map[string]any{"type": "turn_aborted", "turn_id": "local"}),
+	)
+	source, err := replayReadTest(t, new(transportcapture.Service), t.Context(), path, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.Events) != 2 || source.End.Sub(source.Start) != 4*time.Second {
+		t.Fatalf("itemless local interval lost: %+v", source)
+	}
+	for _, event := range source.Events {
+		if event.ThreadID != "fork" || event.TurnID != "local" {
+			t.Fatalf("incorrect turn owner: %+v", event)
+		}
+	}
+	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
+	t.Cleanup(p.close)
+	if err := p.advance(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if p.ui.Turn != "local" {
+		t.Fatal("local wait interval was omitted")
+	}
+	if err := p.advance(p.Until); err != nil {
+		t.Fatal(err)
+	}
+	if p.ui.Turn != "" || p.ui.presentation.Status.Text != "Interrupted" {
+		t.Fatalf("local abort lost: turn=%q status=%q", p.ui.Turn, p.ui.presentation.Status.Text)
+	}
+}
+
+func TestSessionUIReplayEndPaintSettlesQueuedCommandOutput(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
+	var lines []string
+	for j := range 200 {
+		lines = append(lines, fmt.Sprintf("captured-line-%03d", j))
+	}
+	output := strings.Join(lines, "\n") + "\n"
+	command := observation.Item{ID: "command", Type: "commandExecution", Command: "slow-command", Status: "inProgress"}
+	completed := command
+	completed.Status, completed.ExitCode, completed.DurationMS, completed.AggregatedOutput = "completed", new(0), new(int64(1000)), &output
+	end := start.Add(time.Second)
+	source := &playback.Source{Thread: "root", Cwd: "/workspace/replay", Start: start, End: end, Threads: map[string]string{"root": "/root"}, Events: []playback.Event{
+		{At: start, Kind: "item/started", ThreadID: "root", TurnID: "turn", ItemID: command.ID, Item: command},
+		{At: start.Add(500 * time.Millisecond), Kind: "item/commandExecution/outputDelta", ThreadID: "root", TurnID: "turn", ItemID: command.ID, Delta: output},
+		{At: end, Kind: "item/completed", ThreadID: "root", TurnID: "turn", ItemID: command.ID, Item: completed},
+	}}
+	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
+	t.Cleanup(p.close)
+	p.ui.view.Expansion = 1
+	p.ui.view.Painter.Theme, p.ui.agents.Painter.Theme = diffrender.DarkTheme, diffrender.DarkTheme
+	if err := p.advance(500 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	replayPlaybackTestPaint(t, p, 120, 28)
+	run := p.ui.session.Commands()[[3]string{"root", "turn", command.ID}]
+	if run == nil || !p.ui.streams.Commands[[3]string{"root", "turn", command.ID}].Output.Pending() {
+		t.Fatal("regression requires painted output with a remaining backlog")
+	}
+	if err := p.advance(p.Until); err != nil {
+		t.Fatal(err)
+	}
+	p.Paused = true
+	first := ansi.Strip(replayPlaybackTestPaint(t, p, 120, 28))
+	if len(p.ui.session.Commands()) != 0 {
+		t.Fatal("session-end frame leaves recorded completed command running")
+	}
+	var tail []string
+	for _, entry := range p.ui.source.Entries {
+		if entry.Source.Native != nil && entry.Source.Native.Item == command.ID {
+			tail = entry.Source.OutputTail
+			if entry.Source.Native.Phase != "item/completed" || !entry.Source.Native.CommandEnded.Equal(end) {
+				t.Fatalf("final command evidence unsettled: %+v", entry.Source.Native)
+			}
+		}
+	}
+	if len(tail) == 0 || tail[len(tail)-1] != "captured-line-199" || !strings.Contains(first, "captured-line-199") {
+		t.Fatalf("session-end repaint lost final retained output: tail=%q\n%s", tail, first)
+	}
+	second := ansi.Strip(replayPlaybackTestPaint(t, p, 120, 28))
+	if first != second || !p.At.Equal(end) || p.Position != p.Until {
+		t.Fatal("paused final frame continues rolling output or changes recorded clock")
+	}
+}
+
+func TestReplayChildFileLinksUseSelectedWorkspace(t *testing.T) {
+	p := replayPlaybackTestNew(t)
+	childWorkspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(childWorkspace, "relative.md"), []byte("child document"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p.Source.Workspaces = map[string]string{"root": "/main", "child": childWorkspace}
+	p.reset()
+	p.ui.session.RegisterThread(observation.Thread{ID: "child", Path: "/root/worker"})
+	if err := p.ui.presentation.Display(sessionpresentation.DisplayIntent{Version: p.ui.presentation.View().Version, Thread: sessionpresentation.Thread{ID: "child", Caller: "/root/worker"}}); err != nil {
+		t.Fatal(err)
+	}
+	p.publish()
+	view := p.ui.presentation.View()
+	if view.SourceWorkspace() != childWorkspace || view.Info.Workspace != p.Source.Cwd || view.ReadOnly != sessionpresentation.Replay {
+		t.Fatalf("child replay source or input boundary: %+v", view)
+	}
+	u := p.ui
+	if !u.detailFiles.openTerminalMarkdownFile(&u.session, u.presentation, view.SourceWorkspace(), u.childSource, u.shell, u.agents, "relative.md") {
+		t.Fatal("child link was not admitted")
+	}
+	for u.fileReads != nil {
+		select {
+		case result := <-u.fileReads:
+			if changed, _ := u.loadedTerminalMarkdownFile(&u.session, u.presentation, view.SourceWorkspace(), u.shell, result); !changed {
+				t.Fatal("selected child link opened another workspace")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("child file read did not finish")
+		}
+	}
+	if u.shell.Dialog.File.Source != "child document" {
+		t.Fatal("selected child content was lost")
+	}
+}

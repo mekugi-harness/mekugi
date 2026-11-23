@@ -1,0 +1,120 @@
+package launch
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
+	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
+	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
+	commandsegments "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/segments"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
+	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
+)
+
+// nativeSession owns the serialized execution loop and invocation-lifetime collaborators.
+// Helpers borrow explicit view slots and editors, keeping Main's slots independent.
+type nativeSession struct {
+	hydrating            bool
+	hydration            *nativeHydration
+	hydrationResults     chan *nativeHydration
+	connection           *nativeConnection
+	nativeAgent          *binding.ThreadInfo
+	nativeReadOnly       bool
+	nativeRosterResponse string
+	nativeRosterRoot     string
+	preparer             *executionobservation.Preparer
+	finalCaptures        *nativeFinalCaptures
+	attached             attachedPresentation
+	reviewSource         *changecapture.Service
+	*composer.Editor
+	history  *history.Service
+	segments *reports.Service
+	sessioncontrol.Client[appServerRequest]
+	conversationState     *conversationmodel.Service
+	resumePending         []appserver.Message
+	clock                 func() time.Time
+	backendVersion        string
+	title                 string
+	titleGenerator        *sessionNaming
+	titleUpdates          <-chan sessionTitleUpdate
+	side                  *sessioncontrol.Side
+	notifications         *nativeNotifications
+	questions             nativeQuestionDock
+	approvals             nativeApprovalDock
+	approvalMode          bool
+	reviewHooks           bool
+	statusPanel           *appServerStatusReport
+	sessionCapture        *transportcapture.Recorder
+	resumePicker          *appServerResumePicker
+	statusConfig          appServerStatusConfig
+	picker                composerPicker
+	skillEnvironment      []string
+	managedSkills         sync.WaitGroup
+	commits               *activitypresentation.CommitReader
+	commandSegmentWrites  chan commandSegmentWrite
+	commandSegmentPending int
+	restoredSegments      map[string]*reports.Report
+	controlObservations   *sessioncontrol.Observations
+	usage                 *accounting.Service
+	audience              *sessioncontrol.Audience
+	review                *sessionreview.Review
+	execWindows           *executionobservation.Windows
+	nativeTrace           *nativetrace.Reader
+	retained              changes.Scope
+	changeSource          changes.Service
+	snapshots             *changecapture.Workspaces
+	publishChanges        func([]changes.Update)
+	captureNotice         func(string, string, string, string)
+	execTrack             *commandsegments.Observer
+	shellEdits            appServerShellEdits
+	pendingEditReceipts   []*changepresentation.Receipt
+	issues                *requestexecution.Failures
+	activity              *activitymodel.Service
+	observations          *binding.Observation
+	retainedSession       history.Session
+	ctx                   context.Context
+	quitRequested         bool
+	archived              bool
+	exitUsage             binding.TokenUsage
+	resumeArgv            []string
+	profile               *launchoptions.Profile
+	replayDebugDirectory  string
+	serviceTiers          *inferencegateway.Tiers
+	models                []appServerModel
+	modelsLoading         bool
+	ownedImages           map[string]bool
+	panes                 *nativePreferences
+	restoring             *appServerActivityRestore
+	presentationState     *sessionpresentation.Service
+	settings              preferences.Applied
+	dispatch              func(appserver.Message) error
+}
+
+// Freeze the current retained session when a detail read is admitted, even after replacement.
+func (session *nativeSession) compactionReader(thread, item string) func(context.Context) (string, error) {
+	return compactionSummaryReader(session.retainedSession, session.Client.RolloutPath, thread, item)
+}
+
+func (session *nativeSession) overlayOpen(panel *appServerStatusReport, resume *appServerResumePicker) bool {
+	return panel != nil || resume != nil
+}

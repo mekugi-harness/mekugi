@@ -1,0 +1,13 @@
+❯ Show me how the new transcript
+  search instruction looks like 
+
+❯ Keep it short         11:50:12
+
+● main                  11:50:18
+┃ ↩ re: your message 11:50:06
+┃ ▎ Show me how the new
+┃ ▎ transcript search…
+┃ 
+┃ ▎ Read retained output before
+┃ ▎ searching the transcript for
+┃ ▎ exact historical details.

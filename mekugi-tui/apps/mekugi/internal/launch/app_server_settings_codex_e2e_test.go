@@ -1,0 +1,276 @@
+//go:build codex_e2e
+
+package launch
+
+import (
+	"context"
+	json "encoding/json/v2"
+	"net/http"
+	"net/http/httptest"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+
+	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+
+	"github.com/creack/pty"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
+	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+)
+
+func TestAppServerSideSettingsNativeCodex(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &appSettingsProvider{requests: make(chan []byte, 8), release: make(chan struct{})}
+	close(p.release)
+	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, p, nil, nil))
+	defer server.Close()
+	environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
+	terminal := startAppResumeTerminal(t, func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, codex, "app-server", "-c", `model_providers.preview={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", `model_reasoning_effort="high"`, "-c", "features.plugins=false")
+		cmd.Env, cmd.Dir = environment, workspace
+		return cmd
+	}, "")
+	defer terminal.cancel()
+	terminal.await("Ready")
+	terminal.send("Seed Main context\r")
+	select {
+	case <-p.requests:
+	case <-terminal.ctx.Done():
+		t.Fatal(terminal.ctx.Err())
+	}
+	terminal.await("completed")
+	terminal.send("/oneoff Initial settings task\r")
+	select {
+	case <-p.requests:
+	case <-terminal.ctx.Done():
+		t.Fatal(terminal.ctx.Err())
+	}
+	terminal.awaitMatch("One-off idle", func(frame string) bool {
+		return statLineNames(frame, "One-off") && strings.Contains(frame, "completed")
+	})
+	terminal.send("\x1b[1;2B")
+	terminal.await("Settings saved for next turn")
+	terminal.send("/model gpt-6-sol\r")
+	terminal.await("gpt-6-sol")
+	terminal.send("Side settings request\r")
+	select {
+	case body := <-p.requests:
+		request, err := codexresponses.ParseRequest(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request.Model() != "gpt-6-sol" || request.ReasoningEffort() != "medium" {
+			t.Fatalf("side provider settings: model=%q effort=%q", request.Model(), request.ReasoningEffort())
+		}
+	case <-terminal.ctx.Done():
+		t.Fatal(terminal.ctx.Err())
+	}
+	terminal.awaitMatch("side completed", func(frame string) bool { return composerStatusShows(frame, "completed") })
+	terminal.send("\x021") // Select Main without closing Side.
+	terminal.awaitMatch("Main selected", func(frame string) bool {
+		return statLineNames(frame, "Main") && strings.Contains(frame, "gpt-6-astra (high)")
+	})
+	terminal.send("Main settings request\r")
+	select {
+	case body := <-p.requests:
+		request, err := codexresponses.ParseRequest(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request.Model() != "gpt-6-astra" || request.ReasoningEffort() != "high" {
+			t.Fatalf("Main provider settings changed: model=%q effort=%q", request.Model(), request.ReasoningEffort())
+		}
+	case <-terminal.ctx.Done():
+		t.Fatal(terminal.ctx.Err())
+	}
+	terminal.await("completed")
+	terminal.quit()
+}
+
+type appSettingsProvider struct {
+	requests chan []byte
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (p *appSettingsProvider) ForwardExecution(ctx, _ context.Context, body []byte, _ http.Header, _ string) (*inferencegateway.Response, error) {
+	p.requests <- append([]byte(nil), body...)
+	var err error
+	p.once.Do(func() {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return testGatewayResponse(routerFaultCodexSuccessResponse(), nil)
+}
+
+// A captured inference stays blocked while real Codex accepts the live update.
+// The following turn proves that defaults reached actual provider requests.
+func TestAppServerLiveSettingsNativeCodex(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &appSettingsProvider{requests: make(chan []byte, 8), release: make(chan struct{})}
+	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, p, nil, nil))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-p.release:
+		default:
+			close(p.release)
+		}
+	}()
+	environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
+	terminal := startAppResumeTerminal(t, func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, codex, "app-server", "-c", `model_providers.preview={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", `model_reasoning_effort="low"`, "-c", "features.plugins=false")
+		cmd.Env, cmd.Dir = environment, workspace
+		return cmd
+	}, "")
+	if err := pty.Setsize(terminal.outer, &pty.Winsize{Cols: 200, Rows: 30}); err != nil {
+		t.Fatal(err)
+	}
+	terminal.await("Ready")
+	terminal.send("First captured inference\r")
+	select {
+	case <-p.requests:
+	case <-terminal.ctx.Done():
+		t.Fatal(terminal.ctx.Err())
+	}
+	terminal.await("Working")
+	terminal.send("/effort\r")
+	terminal.await("Choose effort")
+	terminal.await("enter apply")
+	terminal.send("\x1b[B\x1b[B\r")
+	terminal.await("live update published")
+	terminal.send("/model gpt-6-sol\r")
+	terminal.await("gpt-6-sol (high)")
+	// Wait for the turn publication rather than just the thread's new footer.
+	terminal.await("live update published")
+	terminal.send("/model gpt-6-astra --reasoning=high --speed=fast\r")
+	terminal.await("gpt-6-astra (high)")
+	terminal.await("live update published")
+	terminal.await("gpt-6-astra (high) · priority")
+	terminal.send("/permissions\r")
+	terminal.await(":read-only")
+	terminal.send("\x1b")
+	terminal.awaitMatch("permission picker dismissed", func(content string) bool { return !strings.Contains(content, "Choose permissions") })
+	terminal.send("/permissions :read-only --reviewer=user\r")
+	terminal.await("Settings saved for next turn")
+	terminal.send("/permissions :read-only --reviewer=user\r")
+	terminal.await("Settings unchanged")
+	granular := `/permissions :read-only --approval-policy='{"granular":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}'`
+	terminal.send(granular + "\r")
+	terminal.await("Settings saved for next turn")
+	terminal.send(granular + "\r")
+	terminal.await("Settings unchanged")
+	terminal.send("/permissions :read-only --approval-policy=null\r")
+	terminal.await("Use approval policy")
+	terminal.send("\x03")
+	terminal.awaitMatch("invalid permission draft cleared", func(content string) bool { return !strings.Contains(content, "--approval-policy=null") })
+	terminal.send("/model")
+	terminal.await("Choose the model")
+	row := -1
+	for y, line := range strings.Split(terminal.screen.String(), "\n") {
+		if strings.Contains(line, "Choose the model") {
+			row = y
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatal("model completion row not rendered")
+	}
+	terminal.send("\x1b[<0;5;" + strconv.Itoa(row+1) + "M")
+	terminal.await("Choose model")
+	terminal.send("\x1b")
+	terminal.awaitMatch("model picker dismissed", func(content string) bool { return !strings.Contains(content, "Choose model") })
+	close(p.release)
+	terminal.await("completed")
+	terminal.send("Second inference uses saved settings\r")
+	var body []byte
+	select {
+	case body = <-p.requests:
+	case <-terminal.ctx.Done():
+		t.Fatal(terminal.ctx.Err())
+	}
+	var request struct {
+		Input []struct {
+			Type      string `json:"type"`
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		} `json:"input"`
+		Model     string `json:"model"`
+		Tier      string `json:"service_tier"`
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Model != "gpt-6-astra" || request.Tier != "priority" || request.Reasoning.Effort != "low" {
+		t.Fatalf("provider settings: %+v", request)
+	}
+	foundUpdate := false
+	for _, item := range request.Input {
+		if item.Type == "configuration_update" && item.Reasoning.Effort == "high" {
+			foundUpdate = true
+		}
+	}
+	if !foundUpdate {
+		t.Fatal("Codex did not author the high-effort configuration_update")
+	}
+	terminal.await("Second inference uses saved settings")
+	terminal.await("completed")
+	terminal.quit()
+}
+
+func TestAppServerSettingsCatalogNativeCodex(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, &appPreviewProvider{}, nil, nil))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, codex, "app-server", "-c", `model_providers.preview={name="preview",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false")
+	cmd.Env, cmd.Dir = routerFaultCodexEnvironment(t), t.TempDir()
+	client, err := appserver.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	u := appServerTestFeatures(&appServerUI{nativeSession: nativeSession{activity: new(activitymodel.Service), history: testHistory(), Host: client, Requests: sessioncontrol.NewRequests[appServerRequest](client)}})
+	if err := u.Request("initialize", nil); err != nil {
+		t.Fatal(err)
+	}
+	for u.Thread == "" || u.modelsLoading {
+		select {
+		case message := <-client.Messages:
+			if err := u.message(message); err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	if len(effortChoices(u.models, u.settings.Model)) == 0 {
+		t.Fatalf("model=%q catalog=%+v notice=%q", u.settings.Model, u.models, u.attached.feedback.Text)
+	}
+}

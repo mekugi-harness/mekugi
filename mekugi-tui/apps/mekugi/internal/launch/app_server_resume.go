@@ -1,0 +1,417 @@
+package launch
+
+import (
+	"cmp"
+	"context"
+
+	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+
+	json "encoding/json/v2"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
+
+	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+
+	"github.com/BurntSushi/toml"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
+)
+
+func openSession(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, clock func() time.Time, resumePicker **appServerResumePicker, approvalMode bool) error {
+	thread := cmp.Or(control.Replacement.Target, control.Startup.Thread)
+	if thread != "" && thread != "--last" && thread != sessioncontrol.ResumePicker {
+		if err := attached.hooks.reserveThread(thread); err != nil {
+			return err
+		}
+	}
+	opening, err := control.Requests.OpenSession(&control.Startup, &control.Live, approvalMode, appServerRequest{label: "resume/settings"})
+	attached.presentation.BeginOpening(opening)
+	if err != nil {
+
+		_ = attached.hooks.reserveThread("")
+
+		return err
+	}
+	if opening == sessioncontrol.OpeningPicker {
+		return openResumePicker(attached, control, picker, clock, resumePicker, true)
+	}
+	return nil
+}
+
+func resumeSettingsResponse(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, questions *nativeQuestionDock, approvals *nativeApprovalDock, clock func() time.Time, approvalMode bool, dispatch func(appserver.Message) error, resumePending *[]appserver.Message, panes *nativePreferences, m appserver.Message) error {
+	fail := func(message string) error {
+		if control.Replacement.Target != "" {
+			return resumeSessionFailed(attached, control, picker, questions, approvals, clock, dispatch, resumePending, message)
+		}
+		return fmt.Errorf("read resume settings: %s", message)
+	}
+	if m.Error != nil {
+		return fail(m.Error.Message)
+	}
+	thread := cmp.Or(control.Replacement.Target, control.Startup.Thread)
+	info, err := binding.DecodeHistoryThread(m.Result, thread)
+	if err != nil {
+		return fail(err.Error())
+	}
+
+	// Codex skips persisted model/effort when the routing provider is explicit.
+	// Read settings before resume can write its new defaults into the rollout.
+	var retained preferences.Snapshot
+	if panes != nil {
+		state, err := panes.read(info.Cwd, thread)
+		if err != nil {
+			paneError(attached.source, err)
+		} else {
+			retained = state.Snapshot
+		}
+	}
+	evidence, newerThan := retained.ResumeBaseline()
+	evidence = evidence.WithNewer(resumeSettingsEvidence(rollout.ResumeSettings(info.ID, info.Path, newerThan)))
+	err = control.Requests.Resume(&control.Startup, &control.Live, evidence, approvalMode)
+	if control.Startup.MissingSettings {
+		setNotice(&attached.feedback, presentationTime(clock), sessionpresentation.ResumeSettingsUnavailable, true)
+	}
+	return err
+}
+
+// holdResumeEvent decides whether an event waits for a resuming thread's
+// history. During an in-session switch the current session stays live, so
+// only events for other threads wait. Streaming deltas from the resumed
+// thread's descendants are dropped rather than kept: their completed items
+// carry the full content, and busy children must not exhaust the bounded
+// buffer.
+func holdResumeEvent(session *sessionpresentation.Attachment, control *sessioncontrol.Live, startup sessioncontrol.Startup, m appserver.Message, resuming bool) (hold, keep bool) {
+	var p struct {
+		ThreadID string `json:"threadId"`
+		Thread   struct {
+			ID             string `json:"id"`
+			ParentThreadID string `json:"parentThreadId"`
+		} `json:"thread"`
+	}
+	_ = json.Unmarshal(m.Params, &p)
+	thread := cmp.Or(p.ThreadID, p.Thread.ID)
+	if !resuming && (thread == "" || session.KnownCaller(thread) != "" || session.KnownCaller(p.Thread.ParentThreadID) != "") {
+		return false, false
+	}
+	root := cmp.Or(control.Replacement.Target, startup.Thread)
+	delta := strings.HasSuffix(m.Method, "/delta") || strings.HasSuffix(m.Method, "Delta")
+	return true, !delta || thread == "" || thread == root
+}
+
+// replayResumePending delivers events buffered while a thread was pending.
+func replayResumePending(dispatch func(appserver.Message) error, resumePending *[]appserver.Message) error {
+	pending := (*resumePending)
+	(*resumePending) = nil
+	for _, event := range pending {
+		if err := dispatch(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resumeLastResponse(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, clock func() time.Time, resumePicker **appServerResumePicker, approvalMode bool, m appserver.Message) error {
+	if m.Error != nil {
+		return fmt.Errorf("find latest thread: %s", m.Error.Message)
+	}
+	if cursor, err := control.Startup.Latest(m.Result); err != nil {
+		return err
+	} else if cursor != "" {
+		params := sessioncontrol.ResumableThreads(25)
+		params["cwd"], params["cursor"] = control.Startup.Workspace, cursor
+		_, err := control.Requests.Send("thread/list", params, "main", appServerRequest{})
+		return err
+	}
+	if reattachSession(attached, control.Startup.Thread) {
+		// The lookup-only startup stays unconfirmed until its originating view
+		// closes after destination attachment, or the user cancels it.
+		control.Startup.Thread = "--last"
+		return nil
+	}
+	return openSession(attached, control, picker, clock, resumePicker, approvalMode)
+}
+
+// Codex merges saved model metadata after loading process CLI configuration.
+// Forward explicit model settings on resume and request-only hook trust at
+// startup, preserving invocation-local overrides. Other config stays host-owned.
+func appServerResumeConfig(args, resumeArgv []string) map[string]any {
+	config := make(map[string]any)
+	for i := 0; i < len(args); i++ {
+		if args[i] != "-c" || i+1 == len(args) {
+			continue
+		}
+		i++
+		key, value, ok := strings.Cut(args[i], "=")
+		key = strings.Trim(strings.TrimSpace(key), `"'`)
+		if !ok || (key != "model" && key != "model_provider" && key != "model_reasoning_effort" && key != "service_tier" && key != "bypass_hook_trust") {
+			continue
+		}
+		var parsed map[string]any
+		if _, err := toml.Decode("value = "+value, &parsed); err == nil {
+			config[key] = parsed["value"]
+		} else {
+			// Codex accepts bare strings when a CLI value is not valid TOML.
+			config[key] = strings.TrimSpace(value)
+		}
+	}
+	if len(resumeArgv) > 0 {
+		_, userArgs, err := launchoptions.SplitCommand(resumeArgv[1:])
+		if err == nil && !launchoptions.HasModelOverride(userArgs) {
+			// Startup defaults are not explicit resume overrides. Retain the
+			// original invocation's selection, not launcher-generated config.
+			delete(config, "model")
+		}
+	}
+	return config
+}
+
+// History is presentation evidence, not a stream of live lifecycle events.
+// In particular, old edits and collaboration calls must not revive previews,
+// processes or child agents. restoreMainHistory
+// places restored evidence among Main's items: after its native item or
+// rollout anchor, or by time for evidence from another thread. itemAt holds
+// the root's retained item completion times.
+func (session *nativeSession) restoreMainHistory(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, panel **appServerStatusReport, resumePicker **appServerResumePicker, parent context.Context, turns []binding.HistoryTurn, placements []*restoredPlacement, itemAt map[string]time.Time) {
+	previousSegments := session.restoredSegments
+	defer func() { session.restoredSegments = previousSegments }()
+	positions := historyPositions(turns, itemAt)
+	byTurn := make(map[int][]*restoredPlacement)
+	// Native history can reach receipts older than the bounded rollout scan.
+	// Prefer its item anchor even if a rollout copy was ascribed another turn.
+	var nativeReceipts map[string]struct{}
+	var activeSince time.Time
+	for index, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Type != "contextCompaction" || !sessionpresentation.CompletedCompaction(item.Status) || item.SourceAcquisition == nil {
+				continue
+			}
+			at := cmp.Or(itemAt[item.ID], historyTime(cmp.Or(turn.CompletedAt, turn.StartedAt)))
+			entry, ok := sessionpresentation.NativeSourceAcquisitionEntry(attached.cwd, session.Client.Thread, turn.ID, item.SourceAcquisition, at)
+			if !ok {
+				continue
+			}
+			entry, ok = sessionpresentation.MainActivityEntry(entry, true)
+			if !ok {
+				continue
+			}
+			if nativeReceipts == nil {
+				nativeReceipts = make(map[string]struct{})
+			}
+			if _, seen := nativeReceipts[entry.Native.Item]; seen {
+				continue
+			}
+			nativeReceipts[entry.Native.Item] = struct{}{}
+			byTurn[index] = append(byTurn[index], &restoredPlacement{entry: entry, turn: turn.ID, anchor: item.ID, at: at})
+		}
+	}
+	for _, p := range placements {
+		if p.entry.Kind == "attachments" && p.entry.Native != nil && p.entry.Native.Thread == session.Client.Thread {
+			if _, seen := nativeReceipts[p.entry.Native.Item]; seen {
+				continue
+			}
+		}
+		index := p.position().TurnFor(positions)
+		if index >= 0 {
+			byTurn[index] = append(byTurn[index], p)
+		} else if p.entry.Kind == "hook" || p.turn == "" {
+			// A retained delivery can arrive before the receiver has any turns.
+			applyRestoredMain(attached, session.Client.Thread, []*restoredPlacement{p})
+		}
+	}
+	for index, turn := range turns {
+		if session.hydration != nil {
+			session.restoredSegments = session.hydration.content.segments[turn.ID]
+		} else {
+			session.restoredSegments = prepareCommandSegments(parent, session.retained, session.segments, session.Client.Thread, attached.cwd, turn)
+		}
+		placements := byTurn[index]
+		slots := positions[index].Slots(restoredPositions(placements))
+		place := func(indices []int) {
+			for _, index := range indices {
+				applyRestoredMain(attached, session.Client.Thread, placements[index:index+1])
+			}
+		}
+		place(slots[0])
+		for i, item := range turn.Items {
+			before := attached.source.LastSeq
+			at := cmp.Or(itemAt[item.ID], historyTime(cmp.Or(turn.CompletedAt, turn.StartedAt)))
+			itemClock := clock
+			if !at.IsZero() {
+				// Linked audiences must receive the retained time at admission.
+				itemClock = func() time.Time { return at }
+			}
+			session.restoreHistoryItem(attached, picker, editor, itemClock, panel, resumePicker, parent, turn, item)
+			if !at.IsZero() {
+				for j := len(attached.source.Entries) - 1; j >= 0 && attached.source.Entries[j].Source.Seq > before; j-- {
+					attached.source.Model.Mutate(j, func(record *sessionpresentation.ActivityRecord) { record.Source.Observed = at })
+				}
+			}
+			place(slots[i+1])
+		}
+		if turn.Status == "failed" {
+			// Live, the failure only reaches the status line, which resuming replaces.
+			text := "Turn failed"
+			if turn.Error != nil && strings.TrimSpace(turn.Error.Message) != "" {
+				text += ": " + turn.Error.Message
+			}
+			attached.source.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{{Seq: attached.source.LastSeq + 1, Agent: "Main", Kind: "error", Text: text,
+				Observed: historyTime(cmp.Or(turn.CompletedAt, turn.StartedAt))}}})
+		}
+		if turn.Status == "inProgress" {
+			session.Client.Turn = turn.ID
+			if session.nativeAgent != nil && session.nativeAgent.ParentThreadID != "" && !session.nativeReadOnly {
+				activeSince = historyTime(turn.StartedAt)
+			}
+			attached.presentation.Status.Started = cmp.Or(activeSince, presentationTime(clock))
+			attached.presentation.Status.SetText("Working")
+		}
+	}
+	lifecycle := attached.session.Lifecycle(session.Client.Thread)
+	lifecycle.Restore(restoredAgentIntervals(turns), uint64(len(turns)), session.Client.Turn != "")
+	lifecycle.RestoreActiveSince(activeSince)
+	// Keep future activity sequence numbers ahead of the hydrated transcript.
+	attached.session.Activity().AdvanceSequence(attached.source.LastSeq)
+	applyActivity(attached, &session.approvals, session.review, &session.pendingEditReceipts, session.Client.Thread, clock, nil, attached.session.Roster())
+}
+
+func applyRestoredMain(attached *attachedPresentation, thread string, placements []*restoredPlacement) {
+	for _, p := range placements {
+		entry := p.entry
+		if entry.Observed.IsZero() {
+			entry.Observed = p.at
+		}
+		if sessionpresentation.MainActivityLinked(entry) {
+			// Retained deliveries need the same exact Activity target as live
+			// deliveries for summary disclosure and opening their original body.
+			entry.Seq = attached.session.Activity().NextSequence()
+			sessionpresentation.ApplyActivity(thread, attached.source, attached.childSource, []sessionpresentation.ActivityEntry{entry}, nil)
+		} else {
+			attached.source.ApplyMain(entry)
+		}
+	}
+}
+
+func (session *nativeSession) restoreHistoryItem(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, panel **appServerStatusReport, resumePicker **appServerResumePicker, parent context.Context, turn binding.HistoryTurn, item binding.ThreadItem) {
+	if item.Type == "userMessage" {
+		session.Client.HasUserTurn = true
+	}
+	facts := item.Observation()
+	text := observation.TextEvent{Kind: observation.ItemCompleted, Item: transcriptItem(item, session.Client.Thread, turn.ID, item.ID)}
+	if observeMessageQuestions(attached, &session.Client, &session.approvals, clock, &session.questions, editor, picker, session.overlayOpen(*panel, *resumePicker), session.notifications, text, facts, true) {
+		return
+	}
+	if item.Type == "userMessage" {
+		var content []conversationbinding.UserContent
+		if json.Unmarshal(item.Content, &content) == nil {
+			var text strings.Builder
+			var attachmentFrames []string
+			var spans []composer.Span
+			for _, part := range content {
+				if part.Type == "text" {
+					if frames, ok := attachments.Decode(part.Text); ok {
+						attachmentFrames = append(attachmentFrames, frames...)
+						continue
+					}
+					for _, span := range conversationbinding.ElementSpans(part.Text, part.Elements) {
+						span.Start += text.Len()
+						span.End += text.Len()
+						spans = append(spans, span)
+					}
+					text.WriteString(part.Text)
+				}
+			}
+			draft := conversationmodel.Input{Text: text.String()}
+			draft.Selections = composer.RestoreSelections(draft.Text, attachmentFrames)
+			draft.Skills = conversationbinding.SkillBindings(draft.Text, conversationbinding.ContentSkills(content), spans)
+			if attached.inputHistory != nil && len(binding.QuestionReplies(draft.Text)) == 0 {
+				attached.conversation.Editor.RestoreHistory(session.Client.Thread, draft.Draft)
+			} else {
+				rememberInput(attached.conversation, draft)
+			}
+		}
+	}
+	method := "item/completed"
+	if turn.Status == "inProgress" && (item.Type == "agentMessage" && item.CompletedAtMS == nil || item.Status == "inProgress") {
+		method = "item/started"
+	}
+	switch item.Type {
+	case "functionCallOutput":
+		sessionpresentation.ReduceObservation(&attached.session, attached.presentation, attached.source, attached.childSource, attached.transcript, session.activity.Outputs(attached.session.Scope()), sessionpresentation.ObservationInput{
+			Event: observation.Event{Kind: observation.Kind(method), ThreadID: session.Client.Thread, TurnID: turn.ID, ItemID: item.ID, Item: facts, At: presentationTime(clock)},
+			Text:  text, Main: session.Client.Thread, Selected: session.Client.Turn, Workspace: attached.cwd,
+		})
+	case "contextCompaction":
+		if sessionpresentation.CompletedCompaction(item.Status) {
+			attached.source.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{{
+				Seq: attached.source.LastSeq + 1, Agent: "Main", Kind: "compaction", Text: cmp.Or(item.Text, "Compaction summary unavailable."), Observed: presentationTime(clock),
+				Native: &sessionpresentation.NativeItem{Thread: session.Client.Thread, Turn: turn.ID, Item: item.ID, Phase: "item/completed", Duration: sessionpresentation.ItemDuration(facts), CompactionTimed: facts.DurationMS != nil},
+			}}})
+		}
+	case "mcpToolCall", "collabAgentToolCall", "subAgentActivity", "agentSideQuestion":
+		if item.Type == "collabAgentToolCall" && item.Tool != "wait" {
+			return
+		}
+		if (item.Type == "subAgentActivity" || item.Type == "agentSideQuestion") && (method != "item/completed" || facts.AgentStart == nil && facts.SideAnswer == nil) {
+			return
+		}
+		entry := sessionpresentation.ActivityEntry{Seq: attached.session.Activity().NextSequence(), Agent: attached.session.Caller(session.Client.Thread), CallID: item.ID, Observed: presentationTime(clock),
+			Native: &sessionpresentation.NativeItem{Thread: session.Client.Thread, Turn: turn.ID, Item: item.ID, Phase: method, Status: item.Status, Duration: sessionpresentation.ItemDuration(facts)}}
+		entry = attached.session.CoordinationEntry(entry, facts)
+		sessionpresentation.ApplyActivity(session.Client.Thread, attached.source, attached.childSource, []sessionpresentation.ActivityEntry{entry}, nil)
+	case "imageView", "imageGeneration":
+		text, images := sessionpresentation.ImagePresentation(facts, method, attached.cwd)
+		if text == "" {
+			return
+		}
+		entry := sessionpresentation.ActivityEntry{Seq: attached.source.LastSeq + 1, Agent: "Main", Kind: "tool", Text: text, CallID: item.ID, Observed: presentationTime(clock),
+			Native: &sessionpresentation.NativeItem{Thread: session.Client.Thread, Turn: turn.ID, Item: item.ID, Phase: method, Images: images}}
+		attached.source.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{entry}})
+	case "commandExecution", "fileChange", "webSearch":
+		text := sessionpresentation.ToolText(facts, attached.cwd)
+		if item.Type == "fileChange" {
+			text = activitypresentation.HostEditText(facts, attached.cwd)
+		}
+		entry := sessionpresentation.ActivityEntry{Seq: attached.source.LastSeq + 1, Agent: "Main", Kind: "tool", Text: text, CallID: item.ID, Observed: time.Now(),
+			Native: &sessionpresentation.NativeItem{Thread: session.Client.Thread, Turn: turn.ID, Item: item.ID, Phase: method, Command: item.Command, CommandCwd: sessionpresentation.CommandDirectory(facts, attached.cwd), Status: item.Status, Duration: sessionpresentation.ItemDuration(facts), SearchResults: sessionpresentation.SearchResults(facts), Workdir: sessionpresentation.CommandWorkdir(facts, attached.cwd)}}
+		if item.Type == "fileChange" {
+			entry.Native.EditPages = activitypresentation.HostEditPages(facts, attached.cwd, method)
+		}
+		attached.session.CompleteCommand(entry.Native, facts, session.activity.Outputs(attached.session.Scope()))
+		sessionpresentation.CommandOutput(&entry, facts, time.Time{})
+		restoreCommandSegments(parent, session.retained, session.segments, attached, session.activity, session.restoredSegments, &entry, item, attached.cwd)
+		attached.source.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{entry}})
+		if len(entry.Native.Segments) == 0 && item.ExitCode != nil && *item.ExitCode != 0 {
+			exit := sessionpresentation.ActivityEntry{Seq: attached.source.LastSeq + 1, Agent: "Main", Kind: "exit", Text: strconv.Itoa(*item.ExitCode), CallID: item.ID}
+			exit.OutputTail, exit.OutputOmit, exit.OutputClipped = sessionpresentation.OutputTail(item.AggregatedOutput)
+			attached.source.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{exit}})
+		}
+	default:
+		if update, ok := historicalTranscript([]binding.ThreadItem{item}, session.Client.Thread, turn.ID, true, false, presentationTime(clock))[item.ID]; ok {
+			update.Phase = method
+			attached.source.ApplyTranscript(update, item.Content, attached.cwd, session.Client.Thread, item.Type == "userMessage")
+		}
+	}
+}
+
+func resumeSettingsEvidence(config map[string]any) preferences.Evidence {
+	var evidence preferences.Evidence
+	evidence.Model, _ = config["model"].(string)
+	evidence.Effort, _ = config["model_reasoning_effort"].(string)
+	evidence.Tier, _ = config["service_tier"].(string)
+	_, evidence.TierKnown = config["service_tier"]
+	return evidence
+}

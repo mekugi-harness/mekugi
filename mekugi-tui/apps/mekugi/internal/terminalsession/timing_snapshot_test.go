@@ -1,0 +1,28 @@
+package terminalsession
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
+	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
+)
+
+func TestUISnapshotLiveElapsedRollover(t *testing.T) {
+	start := time.Unix(100, 0)
+	var painter activityui.Painter
+	dock := BTWDock{body: &conversationmodel.SideView{Status: "Answering", Started: start}, running: true}
+	var rows []string
+	for _, elapsed := range []time.Duration{0, 999 * time.Millisecond, time.Second} {
+		rows = append(rows, fmt.Sprint(elapsed), PaintSessionStatus(diffrender.TerminalTheme, sessionpresentation.Label{Text: "Working", Running: true, Started: start}, start.Add(elapsed), terminalui.Colors{}))
+		rows = append(rows, dock.Render(&painter, start.Add(elapsed), 60, 4).Rows...)
+	}
+	rows = append(rows, PaintSessionStatus(diffrender.TerminalTheme, sessionpresentation.Label{Text: "Completed", CompletionKnown: true, Completion: 125 * time.Millisecond}, start.Add(time.Second), terminalui.Colors{}))
+	uisnapshot.Assert(t, "testdata/snapshots/live_elapsed_rollover.txt", strings.Join(rows, "\n"))
+}

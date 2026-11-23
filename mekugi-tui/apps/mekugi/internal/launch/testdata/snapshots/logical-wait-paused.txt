@@ -1,0 +1,8 @@
+↔ Waiting for worker (timeout 1s)
+
+↔ Finished waiting for worker: paused
+
+
+╭─ Paused ─────────────────────────────────────────────────────────────────────╮
+│ ❯                                                                            │
+╰──────────────────────────────────────── /workspace • test-model (high) • 0% ─╯

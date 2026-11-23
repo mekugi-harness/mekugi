@@ -1,0 +1,87 @@
+package options
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Source: apps/mekugi/internal/router/config.go:14:63@[e448711c]
+
+// Settings contains validated invocation-local configuration.
+type Settings struct {
+	Features     Features          `toml:"features"`
+	ServiceTiers map[string]string `toml:"service_tiers"`
+}
+
+// Features contains optional file defaults for Mekugi-owned boolean flags.
+// Nil keeps the built-in default; explicit false remains distinct from absence.
+type Features struct {
+	ChildReplySummary *bool `toml:"child_reply_summary"`
+
+	Debug *bool `toml:"debug"`
+}
+
+// ResolveFeatures applies file defaults without replacing explicit CLI choices.
+// The parsed configuration remains reusable by independent invocations.
+func (c Config) ResolveFeatures(features Features) Config {
+	if summary, ok := c.ChildReplySummaryOverride(features); ok {
+		c.ChildReplySummary = summary
+	}
+	if features.Debug != nil && !c.debugSet {
+		c.Debug = *features.Debug
+	}
+	return c
+}
+
+// ChildReplySummaryOverride returns only an explicit Mekugi choice, so the
+// unset default does not override native configuration.
+func (c Config) ChildReplySummaryOverride(features Features) (bool, bool) {
+	if c.childReplySummarySet {
+		return c.ChildReplySummary, true
+	}
+	if features.ChildReplySummary != nil {
+		return *features.ChildReplySummary, true
+	}
+	return false, false
+}
+
+// LoadSettings reads Mekugi configuration without loading provider credentials.
+func LoadSettings() (Settings, error) {
+	var config Settings
+	directory, err := os.UserConfigDir()
+	if err != nil {
+
+		return config, nil
+	}
+	body, err := os.ReadFile(filepath.Join(directory, "mekugi", "config.toml"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Settings{}, errors.New("cannot read Mekugi config.toml")
+	}
+	if err == nil {
+		metadata, err := toml.Decode(string(body), &config)
+		if err != nil {
+			// TOML errors can quote a line containing a credential.
+			return Settings{}, errors.New("invalid Mekugi config.toml")
+		}
+		if len(metadata.Undecoded()) != 0 {
+			return Settings{}, errors.New("unknown setting in Mekugi config.toml")
+		}
+	}
+	for model, tier := range config.ServiceTiers {
+		if strings.TrimSpace(model) == "" || model != strings.TrimSpace(model) {
+			return Settings{}, errors.New("invalid model in Mekugi service_tiers")
+		}
+		switch tier {
+		case "fast":
+			config.ServiceTiers[model] = "priority"
+		case "priority", "default", "auto", "flex":
+		default:
+			return Settings{}, errors.New("invalid service tier in Mekugi config.toml")
+		}
+	}
+	return config, nil
+}

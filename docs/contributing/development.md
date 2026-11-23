@@ -1,0 +1,372 @@
+# Development
+
+Build, test, diagnose, and profile Mekugi. Run checkout commands from the repository root.
+See [Contributing](../../CONTRIBUTING.md) for the contributor entry point.
+
+## Build and test
+
+From a checkout with [source prerequisites](../../README.md#build-from-source):
+
+```sh
+make build
+make test
+make lint
+make docs-check
+```
+
+Recipes suppress command echoes and compact tool output when RTK is enabled.
+Go tests summarize successful packages and stream failure diagnostics; lint keeps
+native diagnostics and exit status. Set `RTK=` for native Go package outcomes.
+
+`make webui` builds the pinned Svelte application for embedding; `make build-binaries`
+and release recipes include it. Plain `make build` checks the Go workspace.
+Browser build and check recipes use **Bun 1.4.4+** on `PATH` to install pinned
+dependencies from `bun.lock` and run package scripts. Node.js remains required
+for the Vite build and browser binding tests.
+`make webui-check` runs browser binding tests, `bun check` for TypeScript,
+`svelte-check` for Svelte script/template and CSS diagnostics, lint and formatting
+checks. Focused tests use `node --test` with
+the selected test file under
+`mekugi-webui/app/src/lib/`.
+`make webui-fmt` formats the browser sources with `bun fmt`, using the existing
+`.oxfmtrc.json` configuration. The assets host returns 503 until assets are built.
+
+After building assets, the opt-in browser fixtures exercise the actual UI,
+connector and server with controlled execution hosts:
+
+```sh
+MEKUGI_TEST_WEBUI_BROWSER=1 make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/internal/launch TEST_RUN='^TestWebUI(BrowserMachines|SemanticBrowser)$'
+```
+
+They require Chrome and `agent-browser`; `MEKUGI_TEST_AGENT_BROWSER` may select an
+absolute executable. They cover machine isolation, reconnection, semantic controls,
+attached-input recovery, native continuation and replay. Live-provider behavior and
+deployed TLS require separate checks.
+
+Run the session metrics and responsive Features checks independently of the
+file-details flow:
+
+```sh
+MEKUGI_TEST_WEBUI_BROWSER=1 make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/internal/launch TEST_RUN='^TestWebUIMetricsBrowser$'
+```
+
+The build, test, lint, generation, and snapshot recipes load
+`mekugi-tui/go.work`. For raw Go commands, run inside `mekugi-tui/` or set
+`GOWORK="$PWD/mekugi-tui/go.work"` at the repository root. `make build-binaries`
+writes the Go executables and native runtime to `bin/` without installing them. Run member tests from
+that member with the workspace enabled. Local modules are released together and
+resolved by `go.work`, not unpublished version requirements or local replacements.
+See [workspace ownership](../contracts/composition.md).
+
+The [module reference](../reference/modules.md) is generated from workspace
+descriptors, binding declarations and composition. `make generate` refreshes it
+alongside the other generated assets. `make check-generated` checks the reference
+without rewriting it; CI runs the same check.
+
+Interpreter and query fixtures use Node.js/ripgrep; lint needs `golangci-lint`/`deadcode` and installs neither.
+Focus tests with `TEST_PACKAGES`/`TEST_RUN`/`TEST_FLAGS`; `-count=1` bypasses caching.
+`make test-saved-diff` checks retained-Diff presentation, rendering and shared diff
+primitives; `make test-live-preview` checks provisional projection, streaming and
+rendering. Both accept `TEST_RUN`/`TEST_FLAGS` without compiling Launch. Launch
+retains host/session integration checks, so run its affected tests when changing
+those boundaries. These focused checks do not replace the snapshot commit gate.
+Make builds use `-trimpath` so unchanged packages reuse the Go build cache across
+worktrees and staged snapshot checks. Set `GO_BUILD_FLAGS=` when absolute source
+paths are needed.
+Use `make test-host` for the focused runtime checks with local mock providers;
+see [host acceptance](testing-host.md).
+`make test-ui-snapshots` checks fixtures; review before updating. See [snapshot procedures](testing-snapshots.md).
+Enable the repository's Git hooks from the main checkout once per clone:
+
+```sh
+git config --local core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"
+```
+
+When Git checks out a new linked worktree, the hook seeds it with a copy of the main
+checkout's Graphify output, if present. This is a snapshot, not a refresh, and it
+does not replace existing output.
+
+When documentation changes are staged, the gate checks local link targets and Markdown
+heading anchors across the staged documentation. It excludes dependency, build and
+test-fixture directories. Run `make docs-check` for the same validation in the checkout.
+The gate checks affected UI snapshots against the staged source in a temporary checkout.
+Go source changes select snapshot packages through transitive imports, including test and
+platform-tagged imports. Snapshot baseline changes select their owning package; shared
+renderer changes still check downstream rendering consumers. Other inputs, including build
+configuration and resources without known ownership, retain the full snapshot gate.
+It skips commits made while a rebase is in progress, including amended or reworded steps, so
+run `make docs-check` on the rebased tip when documentation changed, and
+`make test-ui-snapshots` when UI sources changed.
+The absolute hook path also applies the gate to this clone's other worktrees. To test changes
+to the hook in another worktree, use `git -c core.hooksPath="$PWD/.githooks" commit` there;
+this selects that worktree's hook without changing the clone's configuration.
+Older staged workspace runners ignore the shared hook's optional affected-path input
+and continue checking all snapshots.
+Unstaged fixes cannot hide stale staged fixtures. A mismatch blocks the commit and
+prints its diff. Review and update the affected baselines, then stage them with the
+source change. The existing Linux CI suite also checks all UI snapshots.
+The [release workflow](../../.github/workflows/release.yml) packages Linux/macOS; tags publish assets.
+
+## Preview the terminal UI
+
+Build the native runtime with `make build-native`, then run
+`make preview-native-ui` in a terminal. The preview runs real Mekugi against a
+scripted local provider. It needs no credentials and calls no live model. Its
+workspace and session data are discarded when it exits.
+
+- Submit `demo` to watch a streamed edit and an agent review. Use **Ctrl+B, 2**
+  to open Saved Diff and **Ctrl+B, 3** to inspect the agent.
+- Submit `questions` to try the synchronous and asynchronous question flows.
+  Use **Ctrl+B, Q** to open pending questions.
+- Use `/quit` to exit.
+
+## Native app-server
+
+Build the [native runtime](../../codex-rs) from the same checkout, without
+installing anything:
+
+```sh
+make build-native
+make check-native
+make test-native
+make package-native
+```
+
+Building needs Python 3.11+, Rustup, a C/C++ toolchain and, on Linux,
+`pkg-config`, `libcap-dev` and `libssl-dev`. Rustup selects the fork's pinned
+toolchain; the build uses its pinned V8 downloader. First builds need network
+access. Checks and tests default to `dev-small`. `make build-native` uses the
+`release` profile with LTO disabled by default to reduce peak build memory.
+Use `make build-native NATIVE_PROFILE=release` to use the release profile's
+ThinLTO setting. `make package-native` and CI release packaging use that setting
+by default. CI runs native integration tests in `dev-small` and smoke-tests the
+full release archive through the installer on each platform. To cap local
+compile concurrency, optionally set
+`CARGO_BUILD_JOBS=2`; the native runner does not set a jobs limit.
+
+For an affected crate, forward Cargo selectors through `NATIVE_ARGS`:
+
+```sh
+make check-native NATIVE_ARGS='-p codex-core --tests'
+make test-native NATIVE_ARGS='-p codex-core --lib -- capture_delivery'
+```
+
+To run matching app-server integration cases with the freshly staged server and
+code-mode host, use a test name or substring instead of Cargo selectors. The
+filter applies to both the subprocess and broader app-server integration suites:
+
+```sh
+make test-native NATIVE_TEST_FILTER='suite::v2::code_mode_host'
+```
+
+Use `check-native` to catch compilation errors without generating or linking the
+application and test binaries.
+Focused Cargo selectors skip separate runtime staging and packaging. A test-name
+filter limits execution, not compilation of the selected test binary. Keep the same
+profile and target directory across runs; Cargo retains separate check and test
+artifacts.
+
+In the `dev-small` profile, `codex-core` and `codex-git-utils` use rustc's
+incremental compilation. Their first builds seed local artifacts; later edits
+can reuse them. Other crates remain eligible for sccache. If your global Cargo
+config sets `build.incremental = false`, scope that default to `[profile.dev]`
+instead so it does not suppress the package settings. With sccache as the
+compiler wrapper, set `SCCACHE_ALLOW_INCREMENTAL=1` so incremental builds
+bypass the cache.
+
+When staging the runtime for integration tests, `test-native` builds the runtime
+binaries and selected suites together. By default it does not build the broader
+app-server integration suite. The default subprocess harness does not link the
+app-server library, so an app-server-only source edit does not rebuild it.
+Both commands use the pinned V8 environment; tests inherit the fork's 8 MiB test
+stack default. No cache cleanup is needed between runs.
+
+The native runner honors Cargo's configured target directory, including global
+`build.target-dir` and `CARGO_TARGET_DIR` overrides. V8 downloads and Cargo build
+outputs use that same directory.
+The runner forwards `CARGO_TARGET_DIR` and `CARGO_INCREMENTAL=0`/`1` as Cargo
+options rather than compiler environment variables, avoiding unnecessary sccache
+key splits. Equivalent configured and environment settings can reuse the same
+cache entries; genuinely different compilation settings still have separate keys.
+
+Builds and the default native regression suite put executables in `bin/native`;
+packaging puts the archive in `bin/mekugi-native.tar.gz`. `make build-binaries` places the complete client and
+runtime together in `bin/`; `make install` installs both in the Go binary directory.
+Override these with `NATIVE_OUTPUT` and `NATIVE_ARCHIVE`. Keep the server beside
+`codex-code-mode-host` and Linux `bwrap`. The archive also includes protocol
+schemas, the bundled model catalog, licenses and the source revision. Shells and
+`rg` remain host tools.
+Release CI packages native Linux amd64/arm64 and macOS arm64 builds.
+
+Run `bin/native/mekugi-app-server` for stdio JSON-RPC, or pass
+`--listen unix:///absolute/path/server.sock` for a Unix-socket attachment.
+The fork's existing configuration and transport options remain available through
+`--help`. Terminal, browser and headless sessions use this executable, including
+their Codex children, Side and One-off turns. Launch resolves it from the caller's
+`PATH`, then beside the Mekugi executable. There is no stock-runtime fallback for
+these sessions. Mekugi does not wrap stock CLI commands such as `exec` or `review`.
+Use `mekugi codex headless --yolo` with a stdin prompt for noninteractive execution;
+run Codex administrative commands directly.
+
+`make test-native` runs the existing standalone CLI, command execution, connection,
+code-mode-host and strict-configuration tests using local fixtures, not live
+providers. When importing upstream Codex changes, review security changes, rerun
+these checks and compare protocol changes with client consumers before packaging.
+
+## Integrate reviewed work
+
+Main can batch ready operations through the [workspace helper](../../mekugi-tui/apps/mekugi/cmd/workspace/integrate.go),
+without a receipt or acceptance-state store. Supply explicit commits in pick order
+or one reviewed Mekugi merge ref, and check argv after `--`:
+
+```sh
+make integrate INTEGRATE_ARGS='--commits "COMMIT1 COMMIT2" -- make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/cmd/workspace'
+make integrate INTEGRATE_ARGS='--merge REVIEWED_MEKUGI_REF -- make test-native'
+```
+
+Preparation does not infer acceptance or set statuses. After Main's QA,
+reuse already-completed related-batch checks by explicitly
+attesting their full HEAD and choosing the desired status:
+
+```sh
+make integrate INTEGRATE_ARGS='--checked-head FULL_HEAD --accept --items "MEKUGI-123 MEKUGI-124" --state "Pending QA"'
+make integrate INTEGRATE_ARGS='--checked-head FULL_HEAD --accept --items "MEKUGI-123 MEKUGI-124" --state Done --cleanup .worktrees/task-name'
+```
+
+`--accept` is Main's explicit authorization of the requested status/cleanup, not
+an inferred result of a passed command. Check argv can instead accompany these
+steps in one call when QA and authorization are already settled. Main owns the
+coverage claim: the helper neither selects tests nor verifies that a successful
+command ran adequate tests. Checks run in the actual integration worktree,
+including preserved unrelated dirty files. A checked-HEAD attestation is not an
+immutable-clean-tree certificate. Its full hash must match current HEAD and
+cannot accompany new picks. No fresh full suite is imposed for each item.
+
+A staged index is refused before mutation; unrelated unstaged/untracked files
+are not staged, stashed or discarded. Git cherry-pick refuses actual overlaps
+and retains configured signing. Merges also refuse local untracked or ignored
+paths that overlap the incoming tree. If a merge fails, inspect Git and finish or
+abort the merge manually. Earlier writes are not rolled back, and checks and
+finalization do not run after a merge failure.
+Check or Plane failures stop the sequence before cleanup; all requested statuses
+must succeed first. Earlier successful writes are not rolled back. Inspect an
+uncertain Plane write before retrying.
+
+Repeat `--cleanup PATH` for explicitly authorized source worktrees beneath this
+checkout's `.worktrees`. Cleanup checks exact repository/worktree identity, source
+dirt, `git cherry` patch equivalence and unmatched merges, because `git cherry`
+omits merge-only changes. Ignored files also block cleanup, except the fixed
+generated destinations: `mekugi-webui/app/node_modules/`,
+`mekugi-webui/dist/app/`. These dependencies and bundles are discarded
+with the worktree; neighboring ignored source/configuration and other output
+paths remain protected. It removes only the checked Mekugi worktree, then its
+branch.
+A cleanup failure retains whatever has not yet been removed; status writes
+remain, and a failed branch removal leaves the branch for
+recovery. Serialize integration and source edits; this is sequencing, not a
+transaction or concurrent-mutation guarantee. Commit gates, signing, pushes and
+additional browser/live-provider QA remain unchanged.
+
+## Diagnostics
+
+`--debug` records future requests under `$XDG_STATE_HOME/mekugi/debug` (default
+`~/.local/state/mekugi/debug`). **Bundles contain private content and are not
+sanitized.** Inactive bundles expire after 14 days; copy elsewhere to keep one. Exit
+prints a diagnosis command. Codex tracing uses uncapped private temporary storage;
+shutdown removes it, forced kills may leave it. See [diagnostics](../../mekugi-tui/modules/diagnostics/SPEC.md).
+
+Automatically started local servers also retain private stderr and start/exit
+records under `$XDG_STATE_HOME/mekugi/server` (default
+`~/.local/state/mekugi/server`), even without `--debug` and after the client exits.
+Inspect `process.jsonl` for timestamps, PID, build and exit evidence; read
+`stderr.previous.log` before `stderr.log` for the retained tail. Stderr is bounded
+to 1 MiB per server. These files are unsanitized and expire after 14 inactive days.
+See [diagnostics](../../mekugi-tui/modules/diagnostics/SPEC.md)
+for collection limits.
+
+### Inspect a session
+
+For historical behavior, start with recorded calls/results; current code explains intended behavior.
+`--thread ID` finds the thread's rollout under `$CODEX_HOME/sessions` or `archived_sessions`
+(default `~/.codex`) by its exact metadata identity; `--session PATH` reads a rollout file directly.
+Child sessions and inherited fork history are not independent user sessions.
+
+Session reports include the thread's retained `instructions`: what Mekugi forwarded to the model,
+including environment facts, Mekugi guidance, developer messages and tool descriptions, as
+content revisions with the time, model and turn each began. They are recorded without `--debug`;
+older or expired threads report them as `unavailable`. Revisions reference `content` by digest.
+
+Add `--ax` to inspect the thread's recent retained request phases without a debug
+bundle. `ax.request_timing` distinguishes local preparation, request send, first
+provider output and completion. Missing phases, including unpairable tool-result
+readiness, are unknown rather than zero. First output is observed transport data,
+not a first-token measurement. This bounded window does not establish lifetime
+coverage or attribute every gap to Mekugi; see
+[transport diagnostics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md).
+
+Inspection runs no recorded operations. Rollout and debug-bundle reports omit private
+text unless `--field` selects it; `--field instructions` selects only retained instruction text.
+`--request-id ID --field all` drills into one debug request.
+Failure lookup with `--failures [REF]` always includes complete private error text,
+which may contain request content or credentials.
+
+```sh
+mekugi inspect-session --thread THREAD_ID
+mekugi inspect-session --thread THREAD_ID --ax
+mekugi inspect-session --thread THREAD_ID --field instructions --text-bytes 65536
+mekugi inspect-session --debug-dir /path/to/debug --field diagnostic --limit 5 --text-bytes 512
+```
+
+Narrow debug reports by `--request-id` and paginate with `--offset`. Select JSON fields rather
+than line-limiting minified output.
+
+See [session inspection](../../mekugi-tui/modules/sessioninspection/SPEC.md) and [AX evidence](../../mekugi-tui/modules/agentmetrics/SPEC.md).
+
+### Replay a session
+
+```sh
+mekugi replay-session --session SESSION_ID
+```
+
+Use the literal full session ID from `CODEX_HOME` sessions/archives, not a path. Replay makes no provider, command,
+or approval calls; it simulates retained text/timing, not original inputs or live
+previews. Missing evidence is reported; private content may appear on screen. `p`
+pauses, `+`/`-` changes speed, `[`/`]` seeks, `r` restarts, `q` quits. Use `--from 5m
+--until 6m` for intervals or `--headless --width 160 --height 48 --seed 1 --speed 1` for
+repeatable timing. Fix inputs, speed, and dimensions for comparisons. Replay measures rendering,
+not terminal backpressure or live host/provider latency. See
+[replay](../../mekugi-tui/modules/sessionreplay/SPEC.md).
+
+## Profile live sessions and replay
+
+For reported live CPU/RAM faults, identify the affected binary, retained history/store scale,
+and lifecycle phase. Sample the actual process within the authorized isolation boundary, or
+reproduce those dimensions in an isolated process. Fresh sessions and replay cannot establish
+coverage of missing retained process state.
+
+`make mekugi-pprof` builds a separate optimized executable with symbols and the
+`pprof` build tag, plus its sibling executor, without installing or replacing the
+normal command. Launch arguments, worker dispatch and hooks retain their behavior.
+The normal build starts no profiling listener.
+
+Launch or [replay](../../mekugi-tui/modules/sessionreplay/SPEC.md) with `bin/mekugi-pprof`. For rendering profiles,
+use `bin/mekugi-pprof replay-session --session ID --headless --width 160 --height 48`.
+Each owning process binds its own OS-assigned IPv4 loopback port and prints
+`mekugi-pprof: http://127.0.0.1:PORT/debug/pprof/` to stderr before UI handoff.
+The native interactive client opens its listener before connecting to the server;
+profile that URL for client rendering and the server URL for session execution.
+The standalone server opens its listener before accepting sessions. Start a CPU
+capture before connecting a client to include session startup and resume costs;
+all server-owned sessions share that listener. Use its URL with `go tool pprof`.
+Workers and hooks start no listener; process completion cancels active captures
+and closes the profiling listener.
+
+Standard routes expose CPU, heap, allocs, goroutine, block, mutex and execution
+trace data. CPU and trace collection start only on request. Block sampling uses
+a 1 ms blocked-time rate; mutex sampling records one in ten contention events.
+Instrumentation may perturb performance. Profiles cover the Mekugi process,
+including UI, routing and replay, not separate Codex, executor or worker processes.
+
+The routes have no additional authentication: local callers can read command-line
+arguments and other private process data. Keep captures private. Profiling is
+independent of sanitized metrics and debug evidence.

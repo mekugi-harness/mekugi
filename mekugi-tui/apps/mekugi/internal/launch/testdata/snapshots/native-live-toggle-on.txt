@@ -1,0 +1,28 @@
+LIVE · 1 file
+  main · ◐ A live.txt +1 -0
+▎ 1│+Live edit still in progress
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Ready · Live pane on for this session
+────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  snapshot-model (high)
+  Main • /workspace • → diff • ctrl+e view

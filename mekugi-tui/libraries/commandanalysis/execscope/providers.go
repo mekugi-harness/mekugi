@@ -1,0 +1,237 @@
+package execscope
+
+import (
+	"io"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/sourceparse"
+
+	"mvdan.cc/sh/v3/syntax"
+)
+
+const Budget = 200 * time.Millisecond
+const SourceLimit = 1 << 20
+
+type execProviderInput struct {
+	createdSource, createdScript string
+	created                      bool
+	authoredOnly                 bool
+	depth                        int
+	identity                     string
+	args                         []string
+	cwd                          string
+	stdin                        string
+	deadline                     time.Time
+	changes                      ChangeResolver
+	pythonArgv                   []string
+}
+
+type execProviderResult struct {
+	programs     []Program
+	unhandled    bool
+	scope        []Entry
+	fallbackDirs []string
+	open         bool
+	unresolved   bool
+	// opaque preserves named scope while admitting additional unknown effects.
+	opaque bool
+	reason string
+}
+
+type execScopeProvider func(execProviderInput) execProviderResult
+
+// Providers inspect source and metadata only. They never run the user's program.
+var execScopeProviders map[string]execScopeProvider
+
+func init() {
+	execScopeProviders = map[string]execScopeProvider{
+		"python":  execPythonScope,
+		"node":    execJavaScriptScope,
+		"bun":     execJavaScriptScope,
+		"bun fmt": execFixerScope,
+		"deno":    execJavaScriptScope,
+		"sh":      execInlineShellScope,
+		"bash":    execInlineShellScope,
+		"git":     execGitScope,
+		"svn":     execSVNScope,
+		"hg":      execHGScope,
+		"jj":      execJJScope,
+	}
+	for _, name := range []string{"gofmt", "goimports", "prettier", "eslint", "ruff", "black", "rustfmt", "cargo", "go", "npm", "pnpm", "yarn", "uv", "poetry"} {
+		execScopeProviders[name] = execFixerScope
+	}
+}
+
+func execInlineShellScope(input execProviderInput) execProviderResult {
+	for i, arg := range input.args {
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg, "c") && i+1 < len(input.args) {
+			plan := classifyExecShellSource(input.args[i+1], input.cwd, input.identity, input.deadline, input.depth+1, input.changes, input.authoredOnly)
+			return execProviderResult{scope: plan.Scope, fallbackDirs: plan.FallbackDirs, open: plan.Class == Opaque, unresolved: plan.Unresolved, reason: plan.Reason, programs: plan.Programs}
+		}
+	}
+	return execProviderResult{open: true, reason: "shell source is not literal"}
+}
+
+func (w *execShellWalker) provider(identity string, args []*syntax.Word) bool {
+	if identity == "bun" && len(args) > 0 {
+		if subcommand, literal := shellsyntax.Literal(args[0]); literal && subcommand == "fmt" {
+			identity, args = "bun fmt", args[1:]
+		}
+	}
+	key := identity
+	if strings.HasPrefix(key, "python") {
+		key = "python"
+	}
+	provider := execScopeProviders[key]
+	if w.authoredOnly && execFormatterIdentity(key) {
+		w.program.Direct = true
+		for _, arg := range args {
+			if _, literal := shellsyntax.Literal(arg); !literal {
+				w.opaque("formatter operands are not individual literal targets")
+				return true
+			}
+		}
+	}
+	if provider == nil || w.authoredOnly && !w.program.Direct && !commandanalysis.IsVCSTool(key) {
+		return false
+	}
+	if w.depth >= 3 {
+		w.opaque("scope provider recursion limit")
+		return true
+	}
+	values, ok := shellsyntax.Args(args)
+	if w.braceExpansion && execFormatterIdentity(key) {
+		values, ok = shellsyntax.BraceArgs(args)
+	}
+	if !ok {
+		w.opaque("provider arguments are dynamic")
+		return true
+	}
+	if len(values) != 0 && (identity == "bun" || identity == "deno") && execPackageSubcommands[values[0]] {
+		provider = execFixerScope
+	}
+	if w.deadline.IsZero() {
+		w.deadline = time.Now().Add(Budget)
+	}
+	if time.Now().After(w.deadline) {
+		w.opaque("scope provider deadline")
+		return true
+	}
+	input := execProviderInput{authoredOnly: w.authoredOnly, identity: identity, args: values, cwd: w.cwd, stdin: w.stdin, deadline: w.deadline, depth: w.depth, changes: w.changes}
+	input.createdSource, input.createdScript, input.created = CreatedScript(w.source, w.statement, w.cwd)
+	result := provider(input)
+	if result.unhandled {
+		return false
+	}
+	w.plan.Unresolved = w.plan.Unresolved || result.unresolved
+	w.plan.FallbackDirs = append(w.plan.FallbackDirs, result.fallbackDirs...)
+	if time.Now().After(w.deadline) {
+		w.opaque("scope provider deadline")
+		return true
+	}
+	if len(result.scope) == 0 {
+		w.opaque(result.reason)
+		return true
+	}
+	w.plan.Scope = append(w.plan.Scope, result.scope...)
+	w.plan.Programs = append(w.plan.Programs, result.programs...)
+	w.plan.label(w.program.Label)
+	w.fallbackDirectory()
+	w.plan.raise(Scoped, result.reason)
+	if result.opaque {
+		w.opaque(result.reason)
+	}
+	if !slices.Contains(w.plan.Programs, w.program) {
+		w.plan.Programs = append(w.plan.Programs, w.program)
+	}
+	return true
+}
+
+// ReadSource selects literal eval/stdin/script input without evaluating it.
+func ReadSource(input Interpreter) (source, script, reason string) {
+	source, script, _, reason = readSource(input, readInterpreterFile)
+	return
+}
+
+func readInterpreterFile(path string) (string, string) {
+	file, err := sourceparse.Open(path)
+	if err != nil {
+		return "", "interpreter source unavailable"
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", "interpreter source is not regular"
+	}
+	data, err := io.ReadAll(io.LimitReader(file, SourceLimit+1))
+	if err != nil || len(data) > SourceLimit {
+		return "", "interpreter source exceeds capture bound"
+	}
+	return string(data), ""
+}
+
+func readSource(input Interpreter, read func(string) (string, string)) (source, script string, argv []string, reason string) {
+	python := strings.HasPrefix(input.Identity, "python")
+	options := true
+	for i := 0; i < len(input.Arguments); i++ {
+		arg := input.Arguments[i]
+		if options && (arg == "-c" && python || !python && (arg == "-e" || arg == "--eval" || arg == "-p" || arg == "--print")) {
+			if i+1 < len(input.Arguments) {
+				return input.Arguments[i+1], "", append([]string{"-c"}, input.Arguments[i+2:]...), ""
+			}
+			return "", "", nil, "missing interpreter source"
+		}
+		if options && !python && (strings.HasPrefix(arg, "--eval=") || strings.HasPrefix(arg, "--print=")) {
+			_, value, _ := strings.Cut(arg, "=")
+			return value, "", nil, ""
+		}
+		if options && (arg == "-m" && python || arg == "--require" || arg == "-r" || arg == "--import" || arg == "--loader") {
+			return "", "", nil, "interpreter loader is not inspected"
+		}
+		if arg == "-" {
+			return input.Stdin, "", append([]string{"-"}, input.Arguments[i+1:]...), ""
+		}
+		if python && options && arg == "--" {
+			options = false
+			continue
+		}
+		if python && options && (arg == "-W" || arg == "-X" || arg == "--check-hash-based-pycs") {
+			i++ // These interpreter options consume a value, not a script name.
+			continue
+		}
+		if options && (strings.HasPrefix(arg, "-") || (input.Identity == "deno" || input.Identity == "bun") && arg == "run") {
+			continue
+		}
+		if !filepath.IsAbs(arg) {
+			if !filepath.IsAbs(input.Directory) {
+				return "", "", nil, "interpreter working directory unavailable"
+			}
+			arg = filepath.Join(input.Directory, arg)
+		}
+		source, reason = read(arg)
+		return source, arg, input.Arguments[i:], reason
+	}
+	if input.Stdin != "" {
+		return input.Stdin, "", []string{""}, ""
+	}
+	return "", "", nil, "interpreter source is not literal"
+}
+
+func execProviderFiles(paths []string, tree bool) Entry {
+	entry := Entry{Kind: File, Through: true}
+	if tree {
+		entry.Kind, entry.Through = Tree, false
+	}
+	for _, path := range paths {
+		if path != "" {
+			entry.Operands = append(entry.Operands, Operand{Path: path})
+		}
+	}
+	return entry
+}

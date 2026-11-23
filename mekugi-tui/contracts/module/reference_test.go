@@ -1,0 +1,107 @@
+package module
+
+import (
+	"context"
+	"encoding/json/jsontext"
+	"reflect"
+	"testing"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/presentation"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/diagnosticsection"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
+)
+
+func TestDescriptorReference(t *testing.T) {
+	descriptor := Descriptor[struct{}, struct{}, NoBindings, NoViews]{
+		ID: "example", Summary: "Declared metadata", Requires: []ID{"dependency"},
+		Lifetime: Invocation, Resources: []string{"retained store"},
+		HostsRecords: true,
+		HostsInspection: true, HostsDiagnosticSections: true,
+		New:   func(struct{}, Slots) (struct{}, error) { panic("New executed") },
+		Start: func(context.Context, struct{}) error { panic("Start executed") },
+		Stop:  func(context.Context, struct{}) error { panic("Stop executed") },
+		Contributes: Contributions[struct{}]{
+			Presentation: []presentation.Status{{ID: "example.status", Placements: []presentation.Placement{presentation.ComposerCaption}, Text: func(presentation.Thread) string { panic("status projection executed") }}},
+			Commands: []command.Definition[struct{}]{
+				{Name: "reader",
+					Run: func(struct{}, context.Context, command.Request) (command.Output, error) { panic("Run executed") }},
+				{Name: "writer"},
+			},
+			RecordKinds: []recordkind.Spec{
+				{ID: "changes", Match: func(string) bool { panic("Match executed") },
+					Dependencies: func(recordkind.Record) ([]string, error) { panic("record Dependencies executed") },
+					Retirement: func(context.Context, recordkind.Record) (recordkind.RetirementPlanner, error) {
+						panic("Retirement executed")
+					}},
+				{ID: "cursor"}, {ID: "output"},
+			},
+			Inspection: []inspection.Definition[struct{}]{{
+				NewAX: func(struct{}) inspection.AXCollector { panic("NewAX executed") },
+				ProviderUsage: func(struct{}, context.Context, string, inspection.UsageFilter) (map[string]inspection.Usage, error) {
+					panic("ProviderUsage executed")
+				},
+			}},
+			DiagnosticSections: []diagnosticsection.Definition[struct{}]{{
+				Transport: &diagnosticsection.Transport{
+					Record:  func(map[string]jsontext.Value) diagnosticsection.Record { panic("Record executed") },
+					Metrics: func(map[string]jsontext.Value) map[string]jsontext.Value { panic("Metrics executed") },
+				},
+				PrepareReads: func(struct{}, string, ...string) error { panic("PrepareReads executed") },
+				ReadSnapshot: func(struct{}, context.Context, string) (diagnosticsection.Reads, error) {
+					panic("ReadSnapshot executed")
+				},
+			}},
+		},
+	}
+	want := Reference{
+		ID: "example", Summary: "Declared metadata", Requires: []ID{"dependency"},
+		Lifetime: Invocation, Resources: []string{"retained store"},
+		Contributes: []string{"commands", "record-kinds", "inspection", "diagnostic-sections", "presentation"},
+		Hosts:       []string{"record-kinds", "inspection", "diagnostic-sections"},
+		Commands:    []string{"reader", "writer"}, Records: []string{"changes", "cursor", "output"},
+	}
+	got := descriptor.Reference()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reference() = %+v, want %+v", got, want)
+	}
+	got.Requires[0] = "changed"
+	for _, values := range [][]string{got.Resources, got.Contributes, got.Hosts, got.Commands, got.Records} {
+		values[0] = "changed"
+	}
+	if next := descriptor.Reference(); !reflect.DeepEqual(next, want) {
+		t.Fatalf("reference mutation changed subsequent snapshot: %+v", next)
+	}
+
+	snapshot := descriptor.Reference()
+	descriptor.Requires[0] = "different"
+	descriptor.Resources[0] = "different"
+	descriptor.Contributes.Commands[0].Name = "different"
+	descriptor.Contributes.RecordKinds[0].ID = "different"
+	if !reflect.DeepEqual(snapshot, want) {
+		t.Fatalf("declaration mutation changed existing snapshot: %+v", snapshot)
+	}
+}
+
+func TestDescriptorReferenceSlotsAreIndependent(t *testing.T) {
+	descriptor := Descriptor[struct{}, struct{}, NoBindings, NoViews]{
+		HostsRecords: true,
+		Contributes:  Contributions[struct{}]{Commands: []command.Definition[struct{}]{{Name: "source"}}},
+	}
+	want := Reference{Contributes: []string{"commands"}, Hosts: []string{"record-kinds"}, Commands: []string{"source"}}
+	if got := descriptor.Reference(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reference() = %+v, want %+v", got, want)
+	}
+
+}
+
+func TestEmptyReferences(t *testing.T) {
+	if got := (Descriptor[struct{}, struct{}, NoBindings, NoViews]{}).Reference(); !reflect.DeepEqual(got, Reference{}) {
+		t.Fatalf("zero descriptor Reference() = %+v", got)
+	}
+	if got := (NoBindings{}).Reference(); !reflect.DeepEqual(got, BindingReference{}) {
+		t.Fatalf("NoBindings.Reference() = %+v", got)
+	}
+}

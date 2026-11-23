@@ -1,0 +1,94 @@
+package launch
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/vt"
+	"github.com/creack/pty"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+)
+
+func TestNativeControlsTerminalFrames(t *testing.T) {
+	const width, height = 120, 35
+	master, slave, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer master.Close()
+	defer slave.Close()
+	if err := pty.Setsize(master, &pty.Winsize{Rows: height, Cols: width}); err != nil {
+		t.Fatal(err)
+	}
+	frames := make(chan []byte, 4)
+	go func() {
+		var pending synchronizedFrameBuffer
+		buffer := make([]byte, 8192)
+		for {
+			n, err := master.Read(buffer)
+			if err != nil {
+				return
+			}
+			pending.Append(buffer[:n])
+			if frame, ok := pending.Next(); ok {
+				frames <- bytes.Clone(frame)
+			}
+		}
+	}()
+	screen := vt.NewEmulator(width, height)
+	defer screen.Close()
+	u := newAppServerSessionTestUI(t, t.TempDir())
+	paint := func() string {
+		t.Helper()
+		finishPacing(u.testActivity(u.shell.Transcript), u.testActivity(u.shell.Agents))
+		if err := u.testPaint(slave, width, height); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case frame := <-frames:
+			if _, err := screen.Write(frame); err != nil {
+				t.Fatal(err)
+			}
+			return screen.String()
+		case <-time.After(2 * time.Second):
+			t.Fatal("terminal frame did not finish")
+			return ""
+		}
+	}
+	if frame := paint(); !strings.Contains(frame, "\n  Main") {
+		t.Fatalf("initial frame lacks Main:\n%s", frame)
+	}
+	u.attached.session.RegisterThread(observation.Thread{ID: "child", Path: "/root/worker"})
+	appServerTestNotify(t, u, "turn/started", map[string]any{"threadId": "child", "turn": map[string]any{"id": "child-turn"}})
+	if frame := paint(); !strings.Contains(frame, "\n  Main") {
+		t.Fatalf("spawn hid Main:\n%s", frame)
+	}
+	appServerTestNotify(t, u, "turn/completed", map[string]any{"threadId": "child", "turn": map[string]any{"id": "child-turn", "status": "failed"}})
+	if frame := paint(); !strings.Contains(frame, "\n  Main") {
+		t.Fatalf("failed child hid Main:\n%s", frame)
+	}
+	appServerTestKeys(t, u, "/lock\r")
+	if frame := paint(); !strings.Contains(frame, "Locked · /unlock") {
+		t.Fatalf("lock is not visible:\n%s", frame)
+	}
+	wire := u.Host.Input.(*appServerTestInput)
+	if len(restoreContentRequests(t, wire)) != 0 {
+		t.Fatal("view requested native child metadata")
+	}
+	appServerTestKeys(t, u, "/unlock\r")
+	appServerTestTurn(t, u, "work")
+	appServerTestKeys(t, u, "/compact\t")
+	if frame := paint(); !strings.Contains(frame, "Compaction queued after this turn") {
+		t.Fatalf("queued compaction is not visible:\n%s", frame)
+	}
+	nativeTestCancel(t, u)
+	if frame := paint(); !strings.Contains(frame, "Queued compaction cancelled") || !strings.Contains(frame, "❯ /compact") || wire.Len() != 0 || u.Turn != "work" {
+		t.Fatalf("compact cancellation lost its draft or interrupted Main: wire=%q\n%s", wire.String(), frame)
+	}
+	appServerTestTurnEnd(t, u, "work", "completed")
+	if wire.Len() != 0 {
+		t.Fatalf("cancelled compaction ran after Main finished: %s", wire.String())
+	}
+}

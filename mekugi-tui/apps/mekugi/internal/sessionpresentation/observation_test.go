@@ -1,0 +1,354 @@
+package sessionpresentation
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/transcript"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
+)
+
+func TestUISnapshotCompactionOverridesRosterWait(t *testing.T) {
+	for _, thread := range []string{"main", "child"} {
+		t.Run(thread, func(t *testing.T) {
+			var attached Attachment
+			attached.Start("main")
+			attached.RegisterThread(observation.Thread{ID: thread, Path: "/root/" + thread})
+			feeds := attached.Activity()
+			main := &ActivitySource{Model: &feeds.Main, Audience: MainAudience}
+			child := &ActivitySource{Model: &feeds.Children, Audience: ChildAudience}
+			model := new(Model)
+			model.Attach(Thread{ID: "main", Caller: "/root/main"}, false)
+			var text transcript.State
+			var outputs feed.Retention
+			at := time.Unix(100, 0)
+			lifecycle := attached.Lifecycle(thread)
+			lifecycle.SetWaiting(true, at)
+			if thread == "child" {
+				lifecycle.Wait = &activity.Value{Kind: "progress", Body: "Waiting for", WaitTargets: []activity.WaitTarget{{Name: "/root/worker"}}, Live: true}
+			}
+			turn := "turn"
+			reduce := func(kind observation.Kind, item observation.Item) {
+				in := ObservationInput{Main: "main", Selected: turn, AuxiliaryTurn: true, Event: observation.Event{Kind: kind, ThreadID: thread, TurnID: turn, ItemID: item.ID, Item: item, TurnStatus: "interrupted", At: at}}
+				ReduceObservation(&attached, model, main, child, &text, &outputs, in)
+			}
+			view := terminalview.NewView()
+			view.Painter.Theme = diffrender.DarkTheme
+			view.Clock = func() time.Time { return at }
+			view.Painter.Clock = view.Clock
+			var frames []string
+			for _, outcome := range []string{"completed", "failed", "interrupted", "turn-ended"} {
+				turn = outcome
+				reduce(observation.TurnStarted, observation.Item{})
+				item := observation.Item{ID: outcome, Type: "contextCompaction", Status: "inProgress"}
+				reduce(observation.ItemStarted, item)
+				publication := child.Publication(model, nil)
+				agent := publication.Roster[0].Agent
+				if agent.Wait == nil || !agent.Compacting || !agent.Waiting || agent.Wait.Body != "Compacting context" || agent.Status != "waiting" {
+					t.Fatalf("compaction did not override stale wait: %+v", agent)
+				}
+				if attached.Roster()[0].Wait != agent.Wait {
+					t.Fatal("unchanged compaction reallocated its progress value")
+				}
+				view.Update(publication, terminalview.Display{})
+				if outcome == "completed" {
+					frames = append(frames, view.RosterSheet(80, 4, at)...)
+				}
+				if outcome == "turn-ended" {
+					reduce(observation.TurnCompleted, observation.Item{})
+				} else {
+					item.Status = outcome
+					reduce(observation.ItemCompleted, item)
+				}
+				settled := child.Publication(model, nil).Roster[0].Agent
+				if settled.Compacting || settled.Wait != lifecycle.Wait || !lifecycle.Waiting {
+					t.Fatal("compaction settlement changed logical wait lifecycle or retained progress")
+				}
+			}
+			attached.RestoreCompactions(thread, []string{"historical"})
+			if attached.Roster()[0].Wait != lifecycle.Wait {
+				t.Fatal("restored compaction revived live progress")
+			}
+			uisnapshot.AssertTerminal(t, "testdata/snapshots/compaction-roster-"+thread+".txt", append(frames, "plain after roster"), 80)
+		})
+	}
+}
+
+func TestObservationReductionWithoutTerminal(t *testing.T) {
+	for _, thread := range []string{"main", "child"} {
+		t.Run(thread, func(t *testing.T) {
+			var attachment Attachment
+			attachment.Start("main")
+			attachment.Activity().StartRoster(ActivityAgent{Thread: "main", Name: "/root"})
+			feeds := attachment.Activity()
+			main := &ActivitySource{Model: &feeds.Main, Audience: MainAudience}
+			child := &ActivitySource{Model: &feeds.Children, Audience: ChildAudience}
+			model := new(Model)
+			model.Attach(Thread{ID: "main", Caller: "/root"}, false)
+			var text transcript.State
+			var outputs feed.Retention
+			at := time.Unix(100, 0)
+			reduce := func(kind observation.Kind, item observation.Item, delta string) ObservationResult {
+				in := ObservationInput{Main: "main", Workspace: "/workspace", Event: observation.Event{Kind: kind, ThreadID: thread, TurnID: "turn", ItemID: item.ID, Item: item, Delta: delta, At: at}}
+				in.Text = observation.TextEvent{Kind: kind, Delta: delta, At: at, Item: observation.TextItem{Ref: observation.ItemRef{ThreadID: thread, TurnID: "turn", ItemID: item.ID}, Type: item.Type, Summary: item.Summary}}
+				return ReduceObservation(&attachment, model, main, child, &text, &outputs, in)
+			}
+			item := observation.Item{ID: "cmd", Type: "commandExecution", Command: "go test ./...", Status: "inProgress"}
+			started := reduce(observation.ItemStarted, item, "")
+			if len(started.Deliveries) != 1 || started.Deliveries[0].Command == nil {
+				t.Fatalf("missing detached start: %+v", started)
+			}
+			key := [3]string{thread, "turn", item.ID}
+			invocation := attachment.Commands()[key].Entry.Native.Invocation
+			body := strings.Repeat("observed output\n", 20)
+			reduce(observation.Kind("item/commandExecution/outputDelta"), item, body)
+			item.Status, item.ExitCode, item.AggregatedOutput = "completed", new(0), &body
+			at = at.Add(time.Second)
+			completed := reduce(observation.ItemCompleted, item, "")
+			if attachment.Commands()[key] != nil || invocation.Running() || len(completed.Deliveries) != 1 {
+				t.Fatal("source completion depends on a terminal consumer")
+			}
+			source := main
+			if thread == "child" {
+				source = child
+			}
+			entry := source.Entries[0].Source
+			if entry.Native.Invocation != invocation || entry.Native.Phase != "item/completed" || len(entry.OutputTail) != 5 {
+				t.Fatalf("completion lost source identity or output: %+v", entry)
+			}
+			item.Status = "inProgress"
+			reduce(observation.ItemStarted, item, "")
+			reduce(observation.Kind("item/commandExecution/outputDelta"), item, "late output")
+			if attachment.Commands()[key] != nil || invocation.Running() || source.Entries[0].Source.Native.Invocation != invocation {
+				t.Fatal("late input reopened completed source state")
+			}
+			reasoning := observation.Item{ID: "reasoning", Type: "reasoning", Summary: []string{"Complete public summary"}}
+			reduce(observation.ItemCompleted, reasoning, "")
+			if last := source.Entries[len(source.Entries)-1].Source; last.Text != reasoning.Summary[0] || last.Native.Phase != "item/completed" {
+				t.Fatalf("reasoning admission requires a renderer: %+v", last)
+			}
+			before := source.Revision
+			attachment.Retire()
+			if result := reduce(observation.ItemStarted, item, ""); result.Publish || source.Revision != before {
+				t.Fatal("retired attachment accepted an observation")
+			}
+		})
+	}
+}
+
+func TestCompactionAdmissionKeepsCurrentRoster(t *testing.T) {
+	for _, thread := range []string{"main", "child"} {
+		t.Run(thread, func(t *testing.T) {
+			var attached Attachment
+			attached.Start("main")
+			attached.RegisterThread(observation.Thread{ID: thread, Path: "/root/" + thread})
+			attached.RestoreCompactions(thread, nil)
+			feeds := attached.Activity()
+			main := &ActivitySource{Model: &feeds.Main, Audience: MainAudience}
+			child := &ActivitySource{Model: &feeds.Children, Audience: ChildAudience}
+			model := new(Model)
+			model.Attach(Thread{ID: "main", Caller: "/root/main"}, false)
+			var text transcript.State
+			var outputs feed.Retention
+			reduce := func(kind observation.Kind, turn string, item observation.Item) {
+				ReduceObservation(&attached, model, main, child, &text, &outputs, ObservationInput{
+					Main: "main", Selected: "new", Event: observation.Event{Kind: kind, ThreadID: thread, TurnID: turn, ItemID: item.ID, Item: item, At: time.Unix(100, 0)},
+				})
+			}
+			reduce(observation.TurnStarted, "old", observation.Item{})
+			reduce(observation.TurnStarted, "new", observation.Item{})
+			current := observation.Item{ID: "current", Type: "contextCompaction", Status: "inProgress"}
+			reduce(observation.ItemStarted, "new", current)
+			progress := child.Publication(model, nil).Roster[0].Agent.Wait
+			if progress == nil {
+				t.Fatal("current compaction was not admitted")
+			}
+			stale := observation.Item{ID: "stale", Type: "contextCompaction", Status: "inProgress"}
+			reduce(observation.ItemStarted, "old", stale)
+			reduce(observation.TurnCompleted, "old", observation.Item{})
+			reduce(observation.ItemStarted, "old", stale)
+			stale.Status = "completed"
+			reduce(observation.ItemCompleted, "old", stale)
+			if got := child.Publication(model, nil).Roster[0].Agent; !got.Compacting || got.Wait != progress {
+				t.Fatal("stale start or nonmatching completion replaced current compaction")
+			}
+			if count := attached.InspectionMetrics(thread).Compactions; count == nil || *count != 1 {
+				t.Fatal("stale progress admission suppressed independent completion accounting")
+			}
+			current.Status = "completed"
+			reduce(observation.ItemCompleted, "new", current)
+			reduce(observation.TurnCompleted, "new", observation.Item{})
+			reduce(observation.ItemStarted, "old", observation.Item{ID: "late-old", Type: "contextCompaction"})
+			reduce(observation.ItemStarted, "new", observation.Item{ID: "late-new", Type: "contextCompaction"})
+			if got := child.Publication(model, nil).Roster[0].Agent; got.Compacting || got.Wait != nil {
+				t.Fatal("closed turn revived compaction progress")
+			}
+		})
+	}
+}
+
+func TestCommandReportReductionWithoutReveal(t *testing.T) {
+	invocation := activity.NewInvocation(activity.CommandSource{}, time.Time{}, nil)
+	output := strings.Repeat("amber1 +1 -0\n", 10)
+	state := ObserveCommandReport(invocation, activity.SegmentReport{
+		Ended: true, Closed: true, Done: true,
+		Segments: []activity.SegmentObservation{
+			{Source: "mchanges --list", Text: "List changes", Began: true, Finished: true, Output: output},
+			{Source: "printf done"},
+		},
+	}, true)
+	if !state.Snapshot.Complete || len(state.Segments) != 2 || !state.Segments[1].Skipped {
+		t.Fatalf("source report did not settle: %+v", state)
+	}
+	segment := state.Segments[0]
+	if len(segment.Tail) != 5 || segment.Omit != 5 || segment.Output != nil || len(segment.Changes) != 6 || segment.Changes[0].OmittedLines != 5 {
+		t.Fatalf("bounded source summary requires retention or terminal reveal: %+v", segment)
+	}
+}
+
+func TestCommandReportResultCounts(t *testing.T) {
+	for _, lossy := range []bool{false, true} {
+		invocation := activity.NewInvocation(activity.CommandSource{}, time.Time{}, new(feed.Retention))
+		state := ObserveCommandReport(invocation, activity.SegmentReport{
+			Ended: true, Closed: true, Done: true, Lossy: lossy,
+			Segments: []activity.SegmentObservation{
+				{Source: "rg 'x|^$' matches.txt", Analysis: "rg 'x|^$' matches.txt", Text: "Search `x|^$` in `matches.txt`", Began: true, Finished: true, Output: "x\n\n"},
+				{Source: "inspect_file a.go", Analysis: "inspect_file a.go", Text: "Inspect `a.go`", Began: true, Finished: true, Output: "1-2 import\n4-6 function main\n"},
+			},
+		}, true)
+		// Repeated publication reads the same retained rows.
+		if again := invocation.ReportSnapshot(true); !lossy && (again.Segments[0].Results == nil || *again.Segments[0].Results != 2) {
+			t.Fatal("result count changed after publication")
+		}
+		entry := ActivityEntry{Kind: "tool", Native: &NativeItem{Segments: state.Segments}}
+		command := CommandPresentation(entry)
+		values := command.SegmentValues(false)
+		if len(values) != 2 {
+			t.Fatalf("values: %+v", values)
+		}
+		for _, value := range values {
+			if lossy {
+				if value.Results != nil {
+					t.Fatal("count from lost attribution")
+				}
+			} else if value.Results == nil || *value.Results != 2 {
+				t.Fatalf("missing segment count: %+v", value)
+			}
+		}
+	}
+}
+
+func TestCommandReportCountLimitsPreserveAttribution(t *testing.T) {
+	invocation := activity.NewInvocation(activity.CommandSource{}, time.Time{}, new(feed.Retention))
+	report := activity.SegmentReport{Segments: []activity.SegmentObservation{
+		{Source: "rg --files", Analysis: "rg --files", Text: "List `.`", Began: true, Output: strings.Repeat("a.go\n", 120000)},
+		{Source: "ls src", Analysis: "ls src", Text: "List `src`"},
+	}}
+	ObserveCommandReport(invocation, report, false)
+	report.Ended, report.Closed, report.Done = true, true, true
+	report.Segments[0].Finished = true
+	report.Segments[1].Began, report.Segments[1].Finished, report.Segments[1].Output = true, true, "one\ntwo\n"
+	state := ObserveCommandReport(invocation, report, true)
+	if state.Release || !state.Snapshot.SeparateOutput || state.Segments[0].Output == nil || state.Segments[1].Output == nil {
+		t.Fatalf("count limit lost segment attribution: %+v", state)
+	}
+	values := CommandPresentation(ActivityEntry{Kind: "tool", Native: &NativeItem{Segments: state.Segments}}).SegmentValues(false)
+	if len(values) != 2 || values[0].Results != nil || values[1].Results == nil || *values[1].Results != 2 {
+		t.Fatalf("count limit affected sibling results: %+v", values)
+	}
+}
+
+func TestUISnapshotCompactionMeasurements(t *testing.T) {
+	for _, thread := range []string{"main", "child"} {
+		t.Run(thread, func(t *testing.T) {
+			var attached Attachment
+			attached.Start("main")
+			attached.RegisterThread(observation.Thread{ID: thread, Path: "/root/" + thread})
+			feeds := attached.Activity()
+			main := &ActivitySource{Model: &feeds.Main, Audience: MainAudience}
+			child := &ActivitySource{Model: &feeds.Children, Audience: ChildAudience}
+			model := new(Model)
+			model.Attach(Thread{ID: "main", Caller: "/root/main"}, false)
+			var text transcript.State
+			var outputs feed.Retention
+			at := time.Unix(100, 0)
+			reduce := func(kind observation.Kind, item observation.Item) {
+				in := ObservationInput{Main: "main", Selected: "turn", Event: observation.Event{Kind: kind, ThreadID: thread, TurnID: "turn", ItemID: item.ID, Item: item, At: at}}
+				ReduceObservation(&attached, model, main, child, &text, &outputs, in)
+			}
+			reduce(observation.TurnStarted, observation.Item{})
+			agent := attached.Agent(attached.KnownCaller(thread))
+			agent.ContextKnown, agent.ContextTokens, agent.ContextWindow = true, 171300, 285000
+			item := observation.Item{ID: "compact", Type: "contextCompaction", Status: "inProgress"}
+			reduce(observation.ItemStarted, item)
+			if agent.ContextKnown {
+				t.Fatal("start did not invalidate context")
+			}
+			at = at.Add(time.Second)
+			agent.ContextKnown, agent.ContextTokens = true, 4000
+			reduce(observation.ItemStarted, item)
+			at = at.Add(64 * time.Second)
+			item.Status = "completed"
+			reduce(observation.ItemCompleted, item)
+			reduce(observation.ItemCompleted, item)
+			var value activity.Value
+			for _, record := range child.Entries {
+				if record.Source.Kind == "compaction" {
+					value = record.Values[0]
+				}
+			}
+			if value.Label != "Context compacted at 171300 tokens (60%) • 1m5s" {
+				t.Fatalf("start measurement or timing changed: %+v", value)
+			}
+			view := terminalview.NewView()
+			view.Painter.Theme = diffrender.DarkTheme
+			rows := view.Painter.Block(terminalview.Block{Value: value}, 100)
+			uisnapshot.AssertTerminal(t, "testdata/snapshots/compaction-measurements.txt", append(rows, "plain after compaction"), 100)
+		})
+	}
+}
+
+func TestUISnapshotCompactionUnknownAndRetainedMeasurements(t *testing.T) {
+	for _, test := range []struct {
+		method  observation.CompactionMethod
+		context *observation.Context
+		elapsed *int64
+		want    string
+	}{
+		{want: "Context compacted"},
+		{method: observation.ContextSummary, want: "Context compacted"},
+		{method: observation.ContextReset, want: "Context reset"},
+		{context: &observation.Context{Known: true}, elapsed: new(int64(0)), want: "Context compacted at 0 tokens • 0s"},
+		{context: &observation.Context{Known: true, Tokens: 1200, Window: 2000}, elapsed: new(int64(900)), want: "Context compacted at 1200 tokens (60%) • 900ms"},
+	} {
+		var attached Attachment
+		attached.Start("main")
+		attached.RegisterThread(observation.Thread{ID: "main", Path: "/root"})
+		feeds := attached.Activity()
+		main := &ActivitySource{Model: &feeds.Main, Audience: MainAudience}
+		child := &ActivitySource{Model: &feeds.Children, Audience: ChildAudience}
+		model := new(Model)
+		var text transcript.State
+		var outputs feed.Retention
+		item := observation.Item{ID: "historic", Type: "contextCompaction", Status: "completed", CompactionContext: test.context, DurationMS: test.elapsed, CompactionMethod: test.method}
+		ReduceObservation(&attached, model, main, child, &text, &outputs, ObservationInput{Main: "main", Event: observation.Event{Kind: observation.ItemCompleted, ThreadID: "main", TurnID: "turn", Item: item, At: time.Unix(100, 0)}})
+		if got := main.Entries[0].Values[0].Label; got != test.want {
+			t.Fatalf("got %q, want %q", got, test.want)
+		}
+		if got := main.Entries[0].Values[0].Disclosure(); (got == nil) != (test.method == observation.ContextReset) {
+			t.Fatalf("method %q disclosure = %+v", test.method, got)
+		}
+		if test.method == observation.ContextReset {
+			view := terminalview.NewView()
+			view.Painter.Theme = diffrender.DarkTheme
+			rows := view.Painter.Block(terminalview.Block{Value: main.Entries[0].Values[0]}, 80)
+			uisnapshot.AssertTerminal(t, "testdata/snapshots/context-reset.txt", append(rows, "plain after reset"), 80)
+		}
+	}
+}

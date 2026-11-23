@@ -1,0 +1,2 @@
+└ Ran     git reset --hard HEAD
+    Edited  20 tool-managed files (diagnostic: +20 -0) via git reset

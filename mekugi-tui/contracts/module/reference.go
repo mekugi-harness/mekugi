@@ -1,0 +1,62 @@
+package module
+
+import (
+	"slices"
+)
+
+// Reference contains declaration metadata without executable callbacks.
+type Reference struct {
+	ID          ID
+	Summary     string
+	Requires    []ID
+	Lifetime    Lifetime
+	Resources   []string
+	Contributes []string
+	Hosts       []string
+	Commands    []string
+	Records     []string
+}
+
+// BindingReference describes declared connections, not installed-host availability.
+type BindingReference struct {
+	Mechanisms []string
+}
+
+func (NoBindings) Reference() BindingReference { return BindingReference{} }
+
+// Reference reads declaration values without constructing a service or invoking
+// lifecycle, contribution or binding callbacks.
+func (d Descriptor[D, S, B, V]) Reference() Reference {
+	r := Reference{
+		ID: d.ID, Summary: d.Summary, Requires: slices.Clone(d.Requires),
+		Lifetime: d.Lifetime, Resources: slices.Clone(d.Resources),
+	}
+	for _, slot := range []struct {
+		name  string
+		count int
+		host  bool
+	}{
+		{"commands", len(d.Contributes.Commands), false},
+		{"record-kinds", len(d.Contributes.RecordKinds), d.HostsRecords},
+		{"inspection", len(d.Contributes.Inspection), d.HostsInspection},
+		{"diagnostic-sections", len(d.Contributes.DiagnosticSections), d.HostsDiagnosticSections},
+		{"presentation", len(d.Contributes.Presentation), false},
+	} {
+		if slot.count != 0 {
+			r.Contributes = append(r.Contributes, slot.name)
+		}
+		if slot.host {
+			r.Hosts = append(r.Hosts, slot.name)
+		}
+	}
+	if views, ok := any(d.Views).(interface{ ViewKinds() []string }); ok {
+		r.Contributes = append(r.Contributes, views.ViewKinds()...)
+	}
+	for _, definition := range d.Contributes.Commands {
+		r.Commands = append(r.Commands, definition.Name)
+	}
+	for _, definition := range d.Contributes.RecordKinds {
+		r.Records = append(r.Records, definition.ID)
+	}
+	return r
+}

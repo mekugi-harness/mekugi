@@ -1,0 +1,18 @@
+
+
+
+
+
+
+
+
+
+
+
+
+  ── Ran · echo original · 1 line · exit 0 ────────────────────────────────────── [×] ──  
+                                                                                          
+  1 ┆ original output                                                                     
+                                                                                          
+                                                                                          
+  ↑↓ PgUp/PgDn g/G scroll · / find · y copy · esc close                                   

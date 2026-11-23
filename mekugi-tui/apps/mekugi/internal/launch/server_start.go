@@ -1,0 +1,224 @@
+// Source: apps/mekugi/internal/launch/web_start.go@14a6d1f3 catalog and environment policy.
+package launch
+
+import (
+	"context"
+	json "encoding/json/v2"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
+)
+
+type serverLauncher struct {
+	headless     *headless.Stream
+	workers      frontends.WorkerImage
+	hub          *sessionapi.Hub
+	sourceSocket string
+	mu           sync.Mutex
+	catalog      *sessionapi.StartOptions
+}
+
+func (l *serverLauncher) PrepareInput(ctx context.Context, workspace string, input sessionapi.InputRequest) (*sessionapi.PreparedInput, error) {
+	return prepareAPIInput(ctx, workspace, input)
+}
+
+func (l *serverLauncher) StartOptions(ctx context.Context) (sessionapi.StartOptions, error) {
+	options, err := l.models(ctx)
+	if err != nil {
+		return options, err
+	}
+	options.Workspaces = recentServerWorkspaces(ctx)
+	return options, nil
+}
+
+func (l *serverLauncher) models(ctx context.Context) (sessionapi.StartOptions, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.catalog != nil {
+		return *l.catalog, nil
+	}
+	options := defaultStartOptions()
+	executable, err := invocationExecutable("mekugi-app-server", os.Environ(), "")
+	var body []byte
+	if err == nil {
+		body, err = bundledModelCatalog(ctx, executable)
+	}
+	if err == nil {
+		options, err = startModelOptions(body)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return options, ctx.Err()
+		}
+		options = defaultStartOptions()
+		options.Note = "The full model catalog is unavailable; provider defaults are still available."
+		return options, nil
+	}
+	l.catalog = &options
+	return options, nil
+}
+
+func defaultStartOptions() sessionapi.StartOptions {
+	return sessionapi.StartOptions{DefaultModel: "codex", Models: []sessionapi.ModelGroup{{Label: "Codex", Models: []sessionapi.Model{{ID: "codex", Label: "Default"}}}}}
+}
+
+func startModelOptions(body []byte) (sessionapi.StartOptions, error) {
+	options := defaultStartOptions()
+	type catalogModel struct {
+		Slug       string `json:"slug"`
+		Label      string `json:"display_name"`
+		Visibility string `json:"visibility"`
+		Default    string `json:"default_reasoning_level"`
+		Efforts    []struct {
+			Effort string `json:"effort"`
+		} `json:"supported_reasoning_levels"`
+	}
+	read := func(body []byte, namespace string) error {
+		var catalog struct {
+			Models []catalogModel `json:"models"`
+		}
+		if err := json.Unmarshal(body, &catalog); err != nil {
+			return err
+		}
+		if len(catalog.Models) == 0 {
+			return errors.New("model catalog has no models")
+		}
+		for _, entry := range catalog.Models {
+			if entry.Visibility != "list" || entry.Slug == "" {
+				continue
+			}
+			group := 0
+			model := sessionapi.Model{ID: namespace + "/" + entry.Slug, Label: entry.Label, DefaultEffort: entry.Default}
+			if model.Label == "" {
+				model.Label = entry.Slug
+			}
+			for _, effort := range entry.Efforts {
+				model.Efforts = append(model.Efforts, effort.Effort)
+			}
+			options.Models[group].Models = append(options.Models[group].Models, model)
+		}
+		return nil
+	}
+	if err := read(body, "codex"); err != nil {
+		return options, err
+	}
+	return options, nil
+}
+
+func (l *serverLauncher) Run(ctx context.Context, start sessionapi.Start, api *sessionapi.Server) error {
+	if start.Replay != nil {
+		return runServerReplay(ctx, *start.Replay, api)
+	}
+	execution := &threadExecution{hub: l.hub, workers: &l.workers, sourceSocket: l.sourceSocket, headless: l.headless}
+	if start.Native != nil {
+		if start.Native.Environment != nil {
+			ctx = context.WithValue(ctx, invocationEnvironmentKey{}, start.Native.Environment)
+		}
+		code, err := runServerSession(ctx, start.Native.RouterArgs, start.Native.Args, api, start.Workspace, execution)
+		if l.headless != nil {
+			if err == nil && code != 0 {
+				err = fmt.Errorf("session exited with status %d", code)
+			}
+			return err
+		}
+		outcome := &sessionapi.NativeExit{Code: code}
+		if err != nil {
+			outcome.Message = err.Error()
+		} else if code != 0 {
+			outcome.Message = fmt.Sprintf("session exited with status %d", code)
+		}
+		return outcome
+	}
+	var routerArgs []string
+	namespace, model, _ := strings.Cut(start.Model, "/")
+	if namespace != "codex" {
+		return fmt.Errorf("unsupported model namespace %q", namespace)
+	}
+	var args []string
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	if start.Effort != "" {
+		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", start.Effort))
+	}
+	if start.Resume != "" {
+		args = append(args, "resume", start.Resume)
+	}
+	code, err := runServerSession(ctx, routerArgs, args, api, start.Workspace, execution)
+	if err == nil && code != 0 {
+		return fmt.Errorf("session exited with status %d", code)
+	}
+	return err
+}
+
+func serverEnvironment(environment []string) []string {
+	terminal := ""
+	result := make([]string, 0, len(environment))
+	for _, entry := range withoutInheritedFrontend(environment) {
+		key, value, _ := strings.Cut(entry, "=")
+		if key == "TERM" {
+			terminal = value
+		}
+		if slices.Contains([]string{"MEKUGI_BASE_URL", "MEKUGI_RUNTIME_DIR", "TMUX", "TMUX_PANE", "TERM"}, key) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	if terminal == "" || terminal == "dumb" {
+		terminal = "xterm-256color"
+	}
+	return append(result, "TERM="+terminal)
+}
+
+func recentServerWorkspaces(ctx context.Context) []string {
+	directory, err := rollout.HomeDirectory()
+	if err != nil {
+		return nil
+	}
+	var workspaces []string
+	files, directories := 0, 0
+	var walk func(string, int)
+	walk = func(directory string, depth int) {
+		if ctx.Err() != nil || files >= 400 || len(workspaces) >= 20 || directories >= 1600 {
+			return
+		}
+		directories++
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return
+		}
+		for _, entry := range slices.Backward(entries) {
+			if ctx.Err() != nil || files >= 400 || len(workspaces) >= 20 {
+				return
+			}
+
+			path := filepath.Join(directory, entry.Name())
+			if entry.IsDir() && depth < 3 {
+				walk(path, depth+1)
+				continue
+			}
+			if depth != 3 || !strings.HasSuffix(entry.Name(), ".jsonl") {
+				continue
+			}
+			files++
+			header, err := rollout.ReadHeader(path)
+			if err != nil || !filepath.IsAbs(header.Workspace) || slices.Contains(workspaces, header.Workspace) {
+				continue
+			}
+			if info, err := os.Stat(header.Workspace); err == nil && info.IsDir() {
+				workspaces = append(workspaces, header.Workspace)
+			}
+		}
+	}
+	walk(filepath.Join(directory, "sessions"), 0)
+	return workspaces
+}

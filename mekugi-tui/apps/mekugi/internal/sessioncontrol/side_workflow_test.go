@@ -1,0 +1,391 @@
+package sessioncontrol
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
+	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
+)
+
+func TestSideRepliesAppendUserSelectionsAndRejectExpandedOverflow(t *testing.T) {
+	for _, oversize := range []bool{false, true} {
+		side := &Side{SideAnswer: &conversationmodel.SideAnswer{ID: 1}, Thread: "side", Turn: "turn", Busy: true}
+		transport := &requestTransport{id: "steer"}
+		requests := NewRequests[struct{}](transport)
+		const label = "[Selected message]"
+		body := "selected reply"
+		if oversize {
+			body = strings.Repeat("x", codexresponses.UserTextLimit)
+		}
+		input := conversationmodel.Input{Text: label, Selections: []composer.Token{{Start: 0, End: len(label), Text: body}}}
+		update, err := requests.ReplySide(side, "side", "turn", input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if oversize {
+			if !update.NoticeError || update.Restore.Selections[0].Text != body || len(transport.sends) != 0 {
+				t.Fatal("overflow was sent or its supplied text was lost")
+			}
+			continue
+		}
+		params := transport.sends[0].params.(map[string]any)
+		parts := params["input"].([]map[string]any)
+		if got := parts[len(parts)-1]["text"]; got != "\n\n---\nUser selections:\n- message: selected reply" {
+			t.Fatalf("side user input: %q", got)
+		}
+	}
+}
+
+func TestAnswerOnlyClassificationUsesLiveForkLedger(t *testing.T) {
+	for _, oneoff := range []bool{false, true} {
+		for _, btw := range []bool{false, true} {
+			t.Run(fmt.Sprintf("oneoff=%t/btw=%t", oneoff, btw), func(t *testing.T) {
+				transport := &requestTransport{id: "fork"}
+				r := NewRequests[struct{}](transport)
+				r.ObserveCacheKey("main", "source-custom-key")
+				admitted := false
+				r.AdmitSideFork = func(source, thread, workspace string) {
+					if source != "main" || thread != "side" || workspace != "" {
+						t.Fatal("fork admission changed native identity or cwd")
+					}
+					admitted = true
+				}
+				side := &Side{SideAnswer: &conversationmodel.SideAnswer{OneOff: oneoff}, ForkPending: true, LowReasoning: btw}
+				if _, err := r.StartSide(side, SideMain{Thread: "main"}, time.Time{}); err != nil {
+					t.Fatal(err)
+				}
+				request, _ := r.Take("fork")
+				if r.ForkCacheKey("side") != "" {
+					t.Fatal("unconfirmed fork acquired cache affinity")
+				}
+				r.ObserveCacheKey("main", "new-source-key")
+				if _, err := r.ObserveSide(appserver.Message{Result: []byte(`{"thread":{"id":"side"}}`)}, request, "main"); err != nil {
+					t.Fatal(err)
+				}
+				r.AdmitSideChild("child", "side")
+				r.ObserveCacheKey("side", "native-side-key")
+				if !admitted || r.ForkCacheKey("side") != "source-custom-key" || r.ForkCacheKey("child") != "" || r.cacheKey != "new-source-key" {
+					t.Fatal("side cache affinity lost fork-time ownership or changed source routing")
+				}
+				if r.IsSideThread("side") != !oneoff || r.IsBTWThread("side") != btw || r.IsSideThread("child") || r.IsBTWThread("child") {
+					t.Fatal("classification confused root kind or descendant admission")
+				}
+				var workers sync.WaitGroup
+				workers.Go(func() {
+					for range 1000 {
+						r.IsSideThread("side")
+						r.IsBTWThread("side")
+					}
+				})
+				for range 100 {
+					side.Begin("follow-up", conversationmodel.Input{Text: "follow-up"})
+				}
+				if _, err := r.ObserveSide(appserver.Message{Method: "thread/archived", Params: []byte(`{"threadId":"side"}`)}, Request[struct{}]{}, "main"); err != nil {
+					t.Fatal(err)
+				}
+				workers.Wait()
+				if r.IsSideThread("side") || r.IsBTWThread("side") || r.Side("side") != side {
+					t.Fatal("archived open dock retained classification or lost correlation")
+				}
+			})
+		}
+	}
+}
+
+func TestSideNativeRetryIsProgress(t *testing.T) {
+	for _, oneoff := range []bool{false, true} {
+		for _, recovery := range []string{"item/agentMessage/delta", "item/reasoning/summaryTextDelta", "item/started"} {
+			r := NewRequests[struct{}](&requestTransport{})
+			side := &Side{SideAnswer: &conversationmodel.SideAnswer{OneOff: oneoff}, Thread: "side", Turn: "turn", Busy: true}
+			r.TrackSide(side.Thread, side)
+			notify := func(method, params string) {
+				t.Helper()
+				if _, err := r.ObserveSide(appserver.Message{Method: method, Params: []byte(params)}, Request[struct{}]{}, "main"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			notify("error", `{"threadId":"side","turnId":"turn","willRetry":true,"error":{"message":"Reconnecting... 2/5","additionalDetails":"Model at capacity"}}`)
+			if side.Alert || !side.Busy || !strings.Contains(side.Status, "2/5") || !strings.Contains(side.Status, "Model at capacity") {
+				t.Fatalf("retry became failure: %+v", side)
+			}
+			notify("error", `{"threadId":"side","turnId":"old","willRetry":true,"error":{"message":"stale"}}`)
+			if !strings.Contains(side.Status, "2/5") {
+				t.Fatal("stale retry replaced current progress")
+			}
+			notify("item/completed", `{"threadId":"side","turnId":"turn","item":{"id":"bg","type":"commandExecution","status":"failed","exitCode":1}}`)
+			notify("item/completed", `{"threadId":"side","turnId":"turn","item":{"id":"steer","type":"userMessage"}}`)
+			if !strings.Contains(side.Status, "2/5") {
+				t.Fatalf("non-response item cleared side retry: %+v", side)
+			}
+			notify(recovery, `{"threadId":"side","turnId":"turn","itemId":"answer","delta":"Recovered","item":{"id":"tool","type":"commandExecution"}}`)
+			if side.Alert || strings.Contains(side.Status, "Reconnecting") {
+				t.Fatalf("retry did not clear: %+v", side)
+			}
+		}
+	}
+}
+
+func TestClosedSideHostCloseBeforeStartAcknowledgement(t *testing.T) {
+	transport := &requestTransport{id: "archive"}
+	r := NewRequests[struct{}](transport)
+	side := &Side{SideAnswer: new(conversationmodel.SideAnswer), Thread: "side", Starting: true, Busy: true}
+	r.TrackSide(side.Thread, side)
+	side.Close()
+	if _, err := r.ObserveSide(appserver.Message{Method: "thread/closed", Params: []byte(`{"threadId":"side"}`)}, Request[struct{}]{}, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ObserveSide(appserver.Message{Result: []byte(`{"turn":{"id":"late"}}`)}, Request[struct{}]{Side: side, Method: "turn/start"}, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if side.Starting || side.Turn != "" || len(transport.sends) != 1 || transport.sends[0].method != "thread/archive" {
+		t.Fatal("late start revived execution or blocked cleanup")
+	}
+}
+
+func TestSideArchiveFailureCanRetryAfterHostClose(t *testing.T) {
+	for _, failure := range []string{"send", "acknowledgement"} {
+		t.Run(failure, func(t *testing.T) {
+			transport := &requestTransport{id: "archive"}
+			r := NewRequests[struct{}](transport)
+			side := &Side{SideAnswer: new(conversationmodel.SideAnswer), Thread: "side"}
+			r.TrackSide(side.Thread, side)
+			if failure == "send" {
+				transport.err = errors.New("write failed")
+			}
+			if err := r.ReleaseSide(side); (err != nil) != (failure == "send") {
+				t.Fatal(err)
+			}
+			if _, err := r.ObserveSide(appserver.Message{Method: "thread/closed", Params: []byte(`{"threadId":"side"}`)}, Request[struct{}]{}, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if failure == "acknowledgement" {
+				if err := r.ReleaseSide(side); err != nil || len(transport.sends) != 1 {
+					t.Fatal("host close duplicated an in-flight archive")
+				}
+				request, _ := r.Take("archive")
+				update, err := r.ObserveSide(appserver.Message{Error: &appserver.Error{Message: "archive rejected"}}, request, "main")
+				if err != nil || !update.NoticeError {
+					t.Fatal("archive rejection was hidden")
+				}
+			}
+			if !side.Unloaded() || side.Archived() || r.Side("side") != side {
+				t.Fatal("host close or retry correlation lost")
+			}
+			transport.err = nil
+			side.Close()
+			if err := r.ReleaseSide(side); err != nil || transport.sends[len(transport.sends)-1].method != "thread/archive" {
+				t.Fatal("failed archive cannot retry")
+			}
+			request, _ := r.Take("archive")
+			if _, err := r.ObserveSide(appserver.Message{}, request, "main"); err != nil || !side.Archived() || r.HasSides() {
+				t.Fatal("successful retry retained the dismissed fork")
+			}
+		})
+	}
+}
+
+func TestSideForkInheritedEffort(t *testing.T) {
+	catalog := new(inferencegateway.ReasoningCatalog)
+	catalog.Capture([]byte(`{"models":[{"slug":"model","multi_agent_reasoning_effort":"high","supported_reasoning_levels":[{"effort":"high"},{"effort":"max"},{"effort":"ultra"}]}]}`))
+	for _, oneoff := range []bool{false, true} {
+		for _, effort := range []string{"ultra", "max"} {
+			t.Run(fmt.Sprintf("oneoff=%t/%s", oneoff, effort), func(t *testing.T) {
+				transport := &requestTransport{id: "fork"}
+				requests := NewRequests[struct{}](transport)
+				requests.InheritedEffort = catalog.InheritedEffort
+				side := &Side{SideAnswer: &conversationmodel.SideAnswer{OneOff: oneoff, Pending: conversationmodel.Input{Text: "task"}}, Busy: true}
+				if _, err := requests.StartSide(side, SideMain{Thread: "main", Model: "model", Effort: effort}, time.Time{}); err != nil {
+					t.Fatal(err)
+				}
+				want := effort
+				if effort == "ultra" {
+					want = "high"
+				}
+				params := transport.sends[0].params.(map[string]any)
+				if got := params["config"].(map[string]any)["model_reasoning_effort"]; got != want || side.Effort != want {
+					t.Fatalf("fork effort=%v side=%s, want %s", got, side.Effort, want)
+				}
+			})
+		}
+	}
+}
+
+func TestSideForkWaitsForCatalogAndRestoresOnFailure(t *testing.T) {
+	transport := &requestTransport{id: "fork"}
+	requests := NewRequests[struct{}](transport)
+	requests.CatalogPending = true
+	side := &Side{SideAnswer: &conversationmodel.SideAnswer{OneOff: true, Pending: conversationmodel.Input{Text: "task"}}, Busy: true}
+	main := SideMain{Thread: "main", Model: "model", Effort: "ultra"}
+	if _, err := requests.StartSide(side, main, time.Time{}); err != nil || len(transport.sends) != 0 {
+		t.Fatalf("fork did not wait for config: %v", err)
+	}
+	requests.CatalogPending = false
+	update, err := requests.StartSide(side, main, time.Time{})
+	if err != nil || !update.NoticeError || update.Restore.Text != "task" || len(transport.sends) != 0 {
+		t.Fatalf("unavailable catalog did not restore input: %+v %v", update, err)
+	}
+}
+
+func TestArchiveSidesDrainsClosedNativeThread(t *testing.T) {
+	transport := &requestTransport{id: "archive"}
+	requests := NewRequests[struct{}](transport)
+	side := &Side{SideAnswer: new(conversationmodel.SideAnswer), Thread: "side"}
+	side.release.HostClosed()
+	requests.TrackSide(side.Thread, side)
+	messages := make(chan appserver.Message, 1)
+	messages <- appserver.Message{ID: []byte("archive"), Result: []byte(`{}`)}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := requests.ArchiveSides(ctx, messages, side); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sends) != 1 || transport.sends[0].method != "thread/archive" || !side.Archived() || requests.HasSides() {
+		t.Fatalf("closed native history was not archived once: %+v %+v", transport.sends, side)
+	}
+}
+
+func TestArchiveSidesDrainsDismissedPendingFork(t *testing.T) {
+	transport := &requestTransport{id: "fork"}
+	requests := NewRequests[struct{}](transport)
+	side := &Side{SideAnswer: &conversationmodel.SideAnswer{Pending: conversationmodel.Input{Text: "question"}}, Busy: true}
+	if _, err := requests.StartSide(side, SideMain{Thread: "main"}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	side.Close()
+	if err := requests.ReleaseSide(side); err != nil {
+		t.Fatal(err)
+	}
+	// The dismissed slot is gone; only the pending request owns its delayed fork.
+	transport.id = "archive"
+	messages := make(chan appserver.Message, 2)
+	messages <- appserver.Message{ID: []byte("fork"), Result: []byte(`{"thread":{"id":"side"}}`)}
+	messages <- appserver.Message{ID: []byte("archive"), Result: []byte(`{}`)}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := requests.ArchiveSides(ctx, messages); err != nil {
+		t.Fatal(err)
+	}
+	if !side.Archived() || requests.HasSides() || len(transport.sends) != 2 || transport.sends[1].method != "thread/archive" {
+		t.Fatalf("dismissed fork survived cleanup: %+v %+v", side, transport.sends)
+	}
+}
+
+func TestSideReplyHistoryAdmission(t *testing.T) {
+	for _, result := range []string{`{"turn":{"id":"turn"}}`, `{}`} {
+		for _, replies := range []int{0, 1} {
+			t.Run(fmt.Sprintf("result=%s/replies=%d", result, replies), func(t *testing.T) {
+				requests := NewRequests[struct{}](&requestTransport{id: "reply"})
+				side := &Side{SideAnswer: new(conversationmodel.SideAnswer), Thread: "side"}
+				input := conversationmodel.Input{Text: "input", ReplyCount: replies}
+				if _, err := requests.ReplySide(side, "side", "", input); err != nil {
+					t.Fatal(err)
+				}
+				response, _ := requests.Take("reply")
+				if _, err := requests.ObserveSide(appserver.Message{Result: []byte(result)}, response, "main"); err != nil {
+					t.Fatal(err)
+				}
+				want := 0
+				if result != `{}` && replies == 0 {
+					want = 1
+				}
+				if len(side.Drafts.Editor.InputHistory) != want {
+					t.Fatalf("history = %+v", side.Drafts.Editor.InputHistory)
+				}
+			})
+		}
+	}
+}
+
+func TestOneoffSteeringExchangeAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name, thread string
+		input        conversationmodel.Input
+		closed       bool
+		want         string
+	}{
+		{name: "ordinary", thread: "oneoff", input: conversationmodel.Input{Text: "steer"}, want: "task\n\nsteer"},
+		{name: "async reply", thread: "oneoff", input: conversationmodel.Input{Text: "reply", ReplyCount: 1}, want: "task"},
+		{name: "root companion", thread: "oneoff", input: conversationmodel.Input{Text: "image", Question: &prompt.Call{Thread: "oneoff"}}, want: "task"},
+		{name: "child companion", thread: "child", input: conversationmodel.Input{Text: "image", Question: &prompt.Call{Thread: "child"}}, want: "task"},
+		{name: "closed", thread: "oneoff", input: conversationmodel.Input{Text: "steer"}, closed: true, want: "task"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := NewRequests[struct{}](&requestTransport{id: "steer"})
+			side := &Side{SideAnswer: &conversationmodel.SideAnswer{OneOff: true, ID: 1, Question: "task"}, Thread: "oneoff", Turn: "turn"}
+			if _, err := requests.ReplySide(side, tc.thread, "turn", tc.input); err != nil {
+				t.Fatal(err)
+			}
+			response, _ := requests.Take("steer")
+			side.Closed = tc.closed
+			if _, err := requests.ObserveSide(appserver.Message{Result: []byte(`{}`)}, response, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if side.Question != tc.want {
+				t.Fatalf("exchange = %q, want %q", side.Question, tc.want)
+			}
+		})
+	}
+}
+
+func TestSideWorkflowWithoutRenderer(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "open", true: "closed during fork"}[closed], func(t *testing.T) {
+			answer := &conversationmodel.SideAnswer{Pending: conversationmodel.Input{Text: "question"}}
+			side := &Side{SideAnswer: answer, Busy: true}
+			transport := &requestTransport{id: "fork"}
+			requests := NewRequests[struct{}](transport)
+			main := SideMain{Thread: "main", Blocked: true}
+			if _, err := requests.StartSide(side, main, time.Time{}); err != nil || len(transport.sends) != 0 {
+				t.Fatal("fork escaped Main's pending submission")
+			}
+			main.Blocked = false
+			if _, err := requests.StartSide(side, main, time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			requests.Retire("main")
+			if closed {
+				side.Close()
+			}
+			fork, found := requests.Take("fork")
+			if !found || fork.Side != side || side.SideAnswer != answer {
+				t.Fatal("side correlation or Conversation owner changed")
+			}
+			transport.id = "next"
+			update, err := requests.ObserveSide(appserver.Message{Result: []byte(`{"thread":{"id":"side"}}`)}, fork, "replacement-main")
+			if err != nil || !update.Handled || !requests.IsSideThread("side") || update.Flush == closed {
+				t.Fatalf("fork result: update=%+v err=%v", update, err)
+			}
+			if closed {
+				if transport.sends[len(transport.sends)-1].method != "thread/archive" || answer.Pending.Text != "" {
+					t.Fatal("closed fork sampled or retained its visible draft")
+				}
+				response, _ := requests.Take("next")
+				if _, err := requests.ObserveSide(appserver.Message{}, response, "replacement-main"); err != nil || requests.IsSideThread("side") {
+					t.Fatal("unsubscribe failed to retire side classification")
+				}
+				return
+			}
+			update, err = requests.StartSide(side, main, time.Time{})
+			if err != nil || !update.TurnRequested || transport.sends[len(transport.sends)-1].method != "turn/start" {
+				t.Fatal("classified side did not start through the existing ledger")
+			}
+			if _, err := requests.ObserveSide(appserver.Message{Method: "turn/completed", Params: []byte(`{"threadId":"side","turn":{"id":"turn","status":"completed"}}`)}, Request[struct{}]{}, "main"); err != nil {
+				t.Fatal(err)
+			}
+			response, _ := requests.Take("next")
+			if _, err := requests.ObserveSide(appserver.Message{Result: []byte(`{"turn":{"id":"turn"}}`)}, response, "main"); err != nil || side.Turn != "" || side.Busy {
+				t.Fatal("late start acknowledgement revived completed side work")
+			}
+		})
+	}
+}

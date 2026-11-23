@@ -1,0 +1,15 @@
+  ── Ran · pwd; rg --files · 268ms · 2 lines · exit 0 ───────────────── [×] ──  
+                                                                                
+  1 ┆ /workspace                                                                
+  2 ┆ setup.sh                                                                  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+  esc close · ↑↓ scroll · c copy                                                

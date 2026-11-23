@@ -1,0 +1,7 @@
+
+  …rnal/uisnapshot/snapshot.go
+› …i/activity/snapshot_test.go
+  …i/diffview/snapshot_test.go
+
+
+  @! include excluded files

@@ -1,0 +1,61 @@
+package launch
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+)
+
+// runHeadless borrows the ordinary server runtime without a renderer or a
+// detached daemon. The task owns admission, evidence delivery and family cleanup.
+func runHeadless(ctx context.Context, routerArgs, args []string, input io.Reader, output io.Writer) (int, error) {
+	profile, _, err := launchoptions.ProfileSelector(args)
+	if err != nil {
+		return 2, err
+	}
+	if err := validateCodexArgs(args, profile != ""); err != nil {
+		return 2, err
+	}
+	_, resume, yolo, err := appServerArgs(expandReasoningShortcuts(args))
+	if err != nil {
+		return 2, err
+	}
+	if !yolo {
+		return 2, errors.New("headless cannot answer approvals; it requires explicit --yolo")
+	}
+	if resume != "" {
+		return 2, errors.New("headless runs a new thread; resume is not supported")
+	}
+	prompt, err := headless.ReadPrompt(ctx, input)
+	if err != nil {
+		return 1, err
+	}
+	workspace, err := os.Getwd()
+	if err != nil {
+		return 1, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream := headless.NewStream(output, cancel)
+	launcher := &serverLauncher{headless: stream}
+	hub := sessionapi.NewHub(ctx, launcher)
+	launcher.hub = hub
+	thread, err := hub.RunNative(ctx, sessionapi.NativeStart{Workspace: workspace, RouterArgs: routerArgs, Args: args}, prompt)
+	hub.Close()
+	err = errors.Join(err, launcher.workers.Close(), stream.Err())
+	if err != nil {
+		return 1, err
+	}
+	if err := ctx.Err(); err != nil {
+		return 1, err
+	}
+	if err := stream.Complete(thread); err != nil {
+		return 1, err
+	}
+	return 0, nil
+}

@@ -1,0 +1,28 @@
+✓ worker → main finished                                                                   11:50:00
+│ An unrelated reply.
+├─✓ finished · 1s
+│ Fixed exact reply navigation and kept the original evidence available. Focused checks pass, while
+│ live model compliance remains unverified.
+╰─↩ Open reply
+
+
+
+
+
+
+
+
+
+
+
+  ── /root/worker ───────────────────────────────────────────────────────────────────────── [×] ──
+
+  The supporting explanation stays in the retained reply.
+  Second detail with emphasis.
+  Third detail.
+  Fourth detail.
+  Fifth detail.
+  End of evidence.
+  ↑↓ PgUp/PgDn g/G scroll · / find · y copy · esc close
+
+  Main • /workspace • ↓ roster • → diff • ctrl+e view

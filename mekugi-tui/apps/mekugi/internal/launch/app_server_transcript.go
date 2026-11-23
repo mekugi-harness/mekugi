@@ -1,0 +1,82 @@
+package launch
+
+import (
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/transcript"
+)
+
+func providerStarted(attached *attachedPresentation, thread string, at time.Time) []observation.TextUpdate {
+	s := &attached.session
+	if thread == "" {
+		return nil
+	}
+	return attached.transcript.ProviderStarted(thread, at, s.Thread(thread))
+}
+
+// Host snapshots retain their original payload for control and evidence; this
+// projection supplies only text facts to the shared transcript owner.
+func transcriptItem(item binding.ThreadItem, thread, turn, id string) observation.TextItem {
+	return (binding.TranscriptItem{ID: item.ID, Type: item.Type, Text: item.Text, Status: item.Status, Summary: item.Summary, Delivery: item.Delivery, Phase: item.Phase, Questions: item.Questions}).Observation(thread, turn, id)
+}
+
+func historicalTranscript(items []binding.ThreadItem, thread, turn string, main, promote bool, at time.Time) map[string]observation.TextUpdate {
+	events := make([]observation.TextEvent, len(items))
+	for i, item := range items {
+		events[i] = observation.TextEvent{At: at, Kind: observation.ItemCompleted, Item: transcriptItem(item, thread, turn, item.ID)}
+	}
+	return transcript.History(events, main, promote)
+}
+
+// observeMessageQuestions binds live and restored message admission. Playback
+// uses the same Conversation reducer without response handles. Parking precedes
+// the model transition so external replies cannot discard an active draft before
+// it reaches the question's editor.
+func observeMessageQuestions(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], approvals *nativeApprovalDock, clock func() time.Time, questions *nativeQuestionDock, editor **composer.Editor, picker *composerPicker, overlay bool, notifications *nativeNotifications, text observation.TextEvent, item observation.Item, history bool) bool {
+	var userText string
+	if item.Type == "userMessage" {
+		userText, _, _ = sessionpresentation.UserText(item.Content)
+	}
+	in := conversationbinding.MessageQuestions(text, item, userText, (text.Item.Ref.ThreadID == control.Thread || control.Requests.WorkSide(text.Item.Ref.ThreadID)), history)
+	if questions.NeedsParking(in) {
+		(*editor) = hideQuestionEditor(questions, attached.conversation, (*editor), control.Thread)
+	}
+	changes := questions.ObserveMessage(in)
+	if changes.Added != nil {
+		bindQuestion(attached, control, picker, editor, questions, approvals, clock, overlay, notifications, &sessioncontrol.Question{Call: changes.Added}, history)
+	}
+	for _, change := range changes.Changed {
+		for _, draft := range change.Discarded {
+			saveUnsentAnswer(attached, clock, draft)
+		}
+		c := questions.handles[change.Call]
+		if change.Superseded {
+			discardQuestionEditors(questions, c)
+		}
+		renderQuestionRecord(attached, control.Turn, presentationTime(clock), c)
+	}
+	return changes.Suppress
+}
+
+func (session *nativeSession) messageTranscript(attached *attachedPresentation, clock func() time.Time, editor **composer.Editor, picker *composerPicker, overlay bool, text observation.TextEvent, item observation.Item, main bool) bool {
+	if observeMessageQuestions(attached, &session.Client, &session.approvals, clock, &session.questions, editor, picker, overlay, session.notifications, text, item, false) {
+		return true
+	}
+	deliveries := sessionpresentation.ProjectMessage(&attached.session, attached.source, attached.childSource, attached.transcript, main, sessionpresentation.ObservationInput{
+		Event: observation.Event{ThreadID: text.Item.Ref.ThreadID, Item: item}, Text: text, Main: session.Client.Thread, Workspace: attached.cwd,
+	})
+	attached.hooks.deliverActivity(attached.executionPresentation, deliveries)
+	if !main || len(deliveries) > 0 {
+		applyActivity(attached, &session.approvals, session.review, &session.pendingEditReceipts, session.Client.Thread, clock, nil, nil)
+	}
+	return false
+}

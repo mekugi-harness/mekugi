@@ -1,0 +1,187 @@
+package launch
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"image"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+)
+
+// prepareAPIInput borrows host references and frames supplied text. It
+// never touches the session's editor, picker, queue or request ledger.
+func prepareAPIInput(ctx context.Context, workspace string, input sessionapi.InputRequest) (_ *sessionapi.PreparedInput, err error) {
+	if input.NativeDraft != nil {
+		return prepareNativeDraft(ctx, workspace, *input.NativeDraft)
+	}
+	invalid := func(message string, limit bool) error {
+		return &sessionapi.InputError{Message: message, Limit: limit}
+	}
+	metadata := len(input.Text)
+	for _, attachment := range input.Attachments {
+		metadata += len(attachment.Source) + len(attachment.Path) + len(attachment.Name)
+	}
+	if metadata > responses.UserTextLimit {
+		return nil, invalid("Input text and attachment metadata exceed the 1 MiB limit.", true)
+	}
+	if !filepath.IsAbs(workspace) {
+		return nil, invalid("Attachment input requires the selected thread's absolute workspace.", false)
+	}
+	var draft composer.Draft
+	var text strings.Builder
+	text.WriteString(input.Text)
+	var acquired []string
+	defer func() {
+		if err != nil {
+			for _, path := range acquired {
+				_ = os.Remove(path)
+			}
+		}
+	}()
+	total := 0
+	for _, attachment := range input.Attachments {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if attachment.Inline && attachment.Source != "selection" {
+			return nil, invalid("Only selection attachments support inline markers.", false)
+		}
+		var path, label string
+		var upload composer.Token
+		isImage := false
+		switch attachment.Source {
+		case "path":
+			if attachment.Path == "" || attachment.Name != "" || attachment.Data != nil {
+				return nil, invalid("A path attachment requires only source and path.", false)
+			}
+			path = attachment.Path
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(workspace, path)
+			}
+			path = filepath.Clean(path)
+			label = (attachments.Reference{Path: pathdisplay.ForWorkspace(workspace, path)}).String()
+			isImage = imageFile(path)
+		case "upload", "selection":
+			if strings.TrimSpace(attachment.Name) == "" || attachment.Source == "upload" && attachment.Path != "" || attachment.Data == nil {
+				return nil, invalid("An upload requires a display name and base64 data, without a host path.", false)
+			}
+			// Check the encoded bound before allocating the decoded byte slice.
+			if len(*attachment.Data) > base64.StdEncoding.EncodedLen(sessionapi.UploadLimit-total) {
+				return nil, invalid("Combined uploads exceed the 32 MiB decoded limit.", true)
+			}
+			data, decodeErr := base64.StdEncoding.Strict().DecodeString(*attachment.Data)
+			if decodeErr != nil {
+				return nil, invalid("Upload data is not valid base64.", false)
+			}
+			total += len(data)
+			if total > sessionapi.UploadLimit {
+				return nil, invalid("Combined uploads exceed the 32 MiB decoded limit.", true)
+			}
+			if attachment.Source == "selection" {
+				if len(data) == 0 || !utf8.Valid(data) || strings.ContainsAny(attachment.Name, "\r\n]") {
+					return nil, invalid("A selection requires UTF-8 text and a single-line description.", false)
+				}
+				if attachment.Inline {
+					// Use the selection owner for label construction and its size limit.
+					var selection composer.Editor
+					if err := selection.InsertSelection(attachment.Name, string(data), attachment.Path, nil); err != nil {
+						return nil, invalid(err.Error(), true)
+					}
+					token := selection.Selections[0]
+					label := selection.Text[token.Start:token.End]
+					start := strings.Index(input.Text, label)
+					if start < 0 || strings.Count(input.Text, label) != 1 {
+						return nil, invalid("An inline reference requires one exact selection marker in the input.", false)
+					}
+					token.Start, token.End = start, start+len(label)
+					if slices.ContainsFunc(draft.Selections, func(other composer.Token) bool { return token.Start < other.End && token.End > other.Start }) {
+						return nil, invalid("Inline selection markers must not overlap.", false)
+					}
+					draft.Selections = append(draft.Selections, token)
+					continue
+				}
+				editor := composer.Editor{Text: text.String(), Selections: draft.Selections}
+				if text.Len() > 0 {
+					editor.InsertText("\n")
+				}
+				if err := editor.InsertSelection(attachment.Name, string(data), attachment.Path, nil); err != nil {
+					return nil, invalid(err.Error(), true)
+				}
+				draft.Selections = editor.Selections
+				text.Reset()
+				text.WriteString(editor.Text)
+				continue
+			}
+			_, format, imageErr := image.DecodeConfig(bytes.NewReader(data))
+			isImage = imageErr == nil
+			if isImage {
+				file, createErr := os.CreateTemp("", "mekugi-upload-*."+format)
+				if createErr != nil {
+					return nil, createErr
+				}
+				path = file.Name()
+				acquired = append(acquired, path)
+				_, writeErr := file.Write(data)
+				if writeErr = errors.Join(writeErr, file.Close()); writeErr != nil {
+					return nil, writeErr
+				}
+			} else {
+				if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
+					return nil, invalid("Text uploads require UTF-8 without NUL bytes.", false)
+				}
+				upload = composer.UploadAttachment(attachment.Name, data)
+			}
+			label = "[Uploaded " + attachment.Name + "]"
+		default:
+			return nil, invalid("Attachment source must be path, upload or selection.", false)
+		}
+		if text.Len() > 0 {
+			text.WriteByte('\n')
+		}
+		if isImage {
+			label = fmt.Sprintf("[Image %d]", len(draft.Images)+1)
+		}
+		start := text.Len()
+		text.WriteString(label)
+		token := composer.Token{Start: start, End: text.Len(), Path: path}
+		if isImage {
+			draft.Images = append(draft.Images, token)
+		} else {
+			if attachment.Source == "upload" {
+				token.Name, token.Text, token.Source = upload.Name, upload.Text, upload.Source
+			}
+			draft.Files = append(draft.Files, token)
+		}
+	}
+	draft.Text = text.String()
+	slices.SortFunc(draft.Selections, func(a, b composer.Token) int { return a.Start - b.Start })
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, snapshot := range draft.Attachments {
+		if _, ok := attachments.Decode(snapshot); !ok {
+			return nil, invalid("Attachment exceeds the supported text envelope limits.", true)
+		}
+	}
+	validation := draft.Clone()
+	if _, err := prepareSubmissionInput(&validation); err != nil {
+		return nil, invalid(err.Error(), true)
+	}
+	if strings.TrimSpace(draft.Text) == "" {
+		return nil, invalid("Input is empty.", false)
+	}
+	return sessionapi.NewPreparedInput(draft, acquired), nil
+}

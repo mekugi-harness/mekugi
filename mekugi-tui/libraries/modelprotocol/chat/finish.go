@@ -1,0 +1,26 @@
+// Source: internal/chat/finish.go:1:36@[48bc03a0] protocol implementation.
+// Package chat classifies Chat Completions wire facts. It does not accumulate
+// chunks, validate executable calls, synthesize Responses events, or own capture.
+package chat
+
+type FinishReason string
+
+const (
+	Stop          FinishReason = "stop"
+	ToolCalls     FinishReason = "tool_calls"
+	Length        FinishReason = "length"
+	ContentFilter FinishReason = "content_filter"
+)
+
+// ResponseStatus reports recognized completion evidence, not usable output.
+// Unknown and absent reasons must not be treated as completion.
+func (r FinishReason) ResponseStatus() string {
+	switch r {
+	case Stop, ToolCalls:
+		return "completed"
+	case Length, ContentFilter:
+		return "incomplete"
+	default:
+		return ""
+	}
+}

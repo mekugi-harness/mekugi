@@ -1,0 +1,169 @@
+package launch
+
+import (
+	"context"
+	"io"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/vt"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	terminalsession "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+)
+
+func (u *appServerUI) sessionLabel(now time.Time) string {
+	return terminalsession.PaintSessionStatus(diffrender.TerminalTheme, publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Session, now, u.shell.Transcript.Painter.Colors)
+}
+func (u *appServerUI) stateLabel(now time.Time) string {
+	view := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	return paintedComposerStatus(view, &u.shell.Transcript.Painter, now)
+}
+
+func paintedComposerStatus(view sessionpresentation.View, painter *activityui.Painter, now time.Time) string {
+	var main terminalsession.Main
+	main.Update(view)
+	// In a short pane the status is just above the draft, without a rule.
+	frame := main.Render(activityui.NewView(), painter, new(terminalsession.Prompts),
+		terminalsession.MainOptions{Now: now}, 120, 7, 0)
+	return frame.Rows[main.ComposerRect.Y-1]
+}
+func (u *appServerUI) composerErrorText() string {
+	return terminalsession.MainStatusDetails(publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Status)
+}
+
+// testMainFrame settles directly configured fixture state before rendering.
+func (u *appServerUI) testMainFrame(width, height, dock int) ([]string, terminalsession.Rect) {
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	return u.mainFrame(width, height, dock)
+}
+
+// testPaint delivers an explicitly settled fixture through the real renderer.
+func (u *appServerUI) testPaint(out io.Writer, width, height int) error {
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	return paintSession(&u.attached, u.shell, &u.detailFiles, u.ctx, presentationTime(u.clock), out, width, height)
+}
+
+func (u *appServerUI) deleteDraft(backward bool) {
+	key := "\x1b[3~"
+	if backward {
+		key = "\x7f"
+	}
+	u.applyComposerKey(key)
+}
+func (u *appServerUI) undoDraft(redo bool) {
+	key := "\x1a"
+	if redo {
+		key = "\x19"
+	}
+	u.applyComposerKey(key)
+}
+
+func (u *appServerUI) recallInput(backward bool) {
+	if u.Editor.Recall(backward) {
+		u.shell.Main.CursorColumn = nil
+		setNotice(&u.attached.feedback, presentationTime(u.clock), "", false)
+		pruneDraftImages(u.ownedImages, u.Editor, u.attached.conversation, &u.questions, &u.approvals, u.side, u.attached.hooks.nativeImages)
+	}
+}
+
+func (u *appServerUI) publishedTitle() string {
+	return u.shell.FrameInput(presentationTime(u.clock), mekugiVersion()).Status().Title
+}
+
+// statLineNames reports whether the second stat line, which leads with the
+// displayed thread (preceded by Main's tab on child/One-off views), names thread.
+func statLineNames(frame, thread string) bool {
+	for row := range strings.Lines(frame) {
+		row = strings.TrimRight(row, " \n")
+		if row == "  "+thread || strings.HasPrefix(row, "  "+thread+" • ") ||
+			thread != "Main" && (row == "  Main • "+thread || strings.HasPrefix(row, "  Main • "+thread+" • ")) {
+			return true
+		}
+	}
+	return false
+}
+
+// mainFrame hydrates identified output between terminal-only render passes.
+func (u *appServerUI) mainFrame(width, height, dock int) ([]string, terminalsession.Rect) {
+	frame := u.renderMainFrame(width, height, dock)
+	return frame.Rows, frame.Dock
+}
+
+func (u *appServerUI) renderMainFrame(width, height, dock int) terminalsession.MainFrame {
+	transcript := transcriptView(u.attached.presentation, u.shell)
+	options := terminalsession.MainOptions{Now: presentationTime(u.clock), Focused: terminalTest(u) == nil || terminalTest(u).Focus == 0, Version: mekugiVersion()}
+	for {
+		frame := u.shell.Main.Render(transcript, &u.shell.Transcript.Painter, u.shell.Prompts, options, width, height, dock)
+		if len(frame.Demands) == 0 {
+			return frame
+		}
+		transcript.Hydrate(activitySource(&u.attached, u.shell, transcript).ResolveOutputDemands(frame.Demands))
+	}
+}
+
+func (u *terminalUI) paintSelection(rows []string) {
+	if !u.Frame.PaintSelection(u.frameInput(), rows) {
+		u.Selection = nil
+	}
+}
+
+func (u *appServerUI) testDeliveredMainFrame(t *testing.T, width, height, dock int) ([]string, terminalsession.NoticeReceipt) {
+	t.Helper()
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	frame := u.renderMainFrame(width, height, dock)
+	var delivered terminalsession.Frame
+	if err := delivered.Write(io.Discard, terminalsession.RenderedFrame{Rows: frame.Rows, Notices: frame.Notices}, width, true); err != nil {
+		t.Fatal(err)
+	}
+	return frame.Rows, delivered.Notices
+}
+
+func (u *appServerUI) applyComposerKey(key string) (bool, error) {
+	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	return u.applyComposerInput(u.shell.Main.ComposerKey(key, u.shell.Prompts, transcriptView(u.attached.presentation, u.shell)))
+}
+func (u *appServerUI) approvalKey(key string) (bool, error) {
+	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	input := u.shell.Main.PromptKey(key, u.shell.Prompts)
+	if input == nil {
+		return false, nil
+	}
+	return u.nativeSession.applyApprovalInput(&u.attached, u.shell, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, *input)
+}
+func (u *appServerUI) questionKey(key string) (bool, error) {
+	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	input := u.shell.Main.PromptKey(key, u.shell.Prompts)
+	if input == nil {
+		return false, nil
+	}
+	return u.nativeSession.applyQuestionInput(&u.attached, u.shell, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, u.ctx, *input)
+}
+
+func paintSession(attached *attachedPresentation, terminal *terminalsession.Attachment, files *detailFiles, ctx context.Context, at time.Time, out io.Writer, width, height int) error {
+	terminal.Width, terminal.Height = max(1, width), max(1, height)
+	terminal.Main.ContentPainted = false
+	files.prepareOutput(&attached.session, terminal)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	view := transcriptView(attached.presentation, terminal)
+	return paintNative(files, terminal, terminal.FrameInput(at, mekugiVersion()), view, activitySource(attached, terminal, view), ctx, out)
+}
+
+// testStatLines paints a full frame and returns its two stat lines, plain and
+// without trailing blanks.
+func (u *appServerUI) testStatLines(t *testing.T, width, height int) (caption, status string) {
+	t.Helper()
+	screen := vt.NewEmulator(width, height)
+	defer screen.Close()
+	terminalTest(u).Frame.Rows = nil // A fresh screen needs every row.
+	if err := u.testPaint(screen, width, height); err != nil {
+		t.Fatal(err)
+	}
+	rows := strings.Split(screen.String(), "\n")
+	return strings.TrimRight(rows[height-2], " "), strings.TrimRight(rows[height-1], " ")
+}

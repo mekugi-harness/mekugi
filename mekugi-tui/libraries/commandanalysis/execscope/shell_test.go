@@ -1,0 +1,361 @@
+package execscope
+
+import (
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
+	"mvdan.cc/sh/v3/syntax"
+)
+
+// sedInPlace spells an in-place sed edit without a backup for the dialect of
+// the sed on PATH; BSD sed takes an explicit empty suffix.
+func sedInPlace() string {
+	if bsdSedAt("sed") {
+		return "sed -i ''"
+	}
+	return "sed -i"
+}
+
+func TestSedDialectArguments(t *testing.T) {
+	for _, test := range []struct {
+		command        string
+		bsd            bool
+		scripts, files []string
+		inPlace        bool
+		suffix, reason string
+	}{
+		{command: "sed -i 's/a/b/' f", scripts: []string{"s/a/b/"}, files: []string{"f"}, inPlace: true},
+		{command: "sed 's/a/b/' -i.bak f", scripts: []string{"s/a/b/"}, files: []string{"f"}, inPlace: true, suffix: ".bak"},
+		{command: "sed -i -- 's/a/b/' f", scripts: []string{"s/a/b/"}, files: []string{"f"}, inPlace: true},
+		{command: "sed -i -e 's/a/b/' -- -f", scripts: []string{"s/a/b/"}, files: []string{"-f"}, inPlace: true},
+		{command: "sed -i -- \"$script\" f", reason: "dynamic sed script"},
+		{command: "sed --in-place=.bak -e 's/a/b/' f", scripts: []string{"s/a/b/"}, files: []string{"f"}, inPlace: true, suffix: ".bak"},
+		{command: "sed -i 's/a/b/' f", bsd: true, scripts: []string{"f"}, inPlace: true, suffix: "s/a/b/"},
+		{command: "sed -i '' 's/a/b/' f", bsd: true, scripts: []string{"s/a/b/"}, files: []string{"f"}, inPlace: true},
+		{command: "sed -Eni '' 's/a/b/p' f", bsd: true, scripts: []string{"s/a/b/p"}, files: []string{"f"}, inPlace: true},
+		{command: "sed -i.bak -e 's/a/b/' f g", bsd: true, scripts: []string{"s/a/b/"}, files: []string{"f", "g"}, inPlace: true, suffix: ".bak"},
+		{command: "sed -i -n p f", bsd: true, scripts: []string{"p"}, files: []string{"f"}, inPlace: true, suffix: "-n"},
+		{command: "sed -I .orig 's/a/b/' f", bsd: true, scripts: []string{"s/a/b/"}, files: []string{"f"}, inPlace: true, suffix: ".orig"},
+		{command: "sed 's/a/b/' -i '' f", bsd: true, scripts: []string{"s/a/b/"}, files: []string{"-i", "", "f"}},
+		{command: "sed -n -- p -i", bsd: true, scripts: []string{"p"}, files: []string{"-i"}},
+		{command: "sed --in-place 's/a/b/' f", bsd: true, reason: "sed options are not parsed"},
+		{command: "sed -f script f", bsd: true, reason: "sed script file is not inspected"},
+		{command: "sed -i", bsd: true, reason: "sed option without a value"},
+	} {
+		file, err := syntax.NewParser().Parse(strings.NewReader(test.command), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		parse := gnuSedArguments
+		if test.bsd {
+			parse = bsdSedArguments
+		}
+		parsed, reason := parse(file.Stmts[0].Cmd.(*syntax.CallExpr).Args[1:])
+		var files []string
+		for _, word := range parsed.files {
+			text, _ := shellsyntax.Literal(word)
+			files = append(files, text)
+		}
+		if reason != test.reason || reason == "" && (!slices.Equal(parsed.scripts, test.scripts) || !slices.Equal(files, test.files) ||
+			parsed.inPlace != test.inPlace || parsed.suffix != test.suffix) {
+			t.Errorf("%q bsd=%t: scripts=%q files=%q in-place=%t suffix=%q reason=%q", test.command, test.bsd,
+				parsed.scripts, files, parsed.inPlace, parsed.suffix, reason)
+		}
+	}
+}
+
+func classifyExecShell(command, workdir, shell string) Result {
+	return Classify(Input{Command: command, Directory: workdir, Shell: shell, Deadline: time.Now().Add(Budget)})
+}
+
+func execPlanScope(plan Result, workdir string) []string {
+	var scope []string
+	for _, entry := range plan.Scope {
+		var operands []string
+		for _, operand := range entry.Operands {
+			path := strings.TrimPrefix(operand.Path, workdir+"/")
+			if operand.Glob {
+				path += "(glob)"
+			}
+			operands = append(operands, path)
+		}
+		text := string(entry.Kind) + ":" + strings.Join(operands, ",")
+		if entry.Kind == Into {
+			text += "->" + strings.TrimPrefix(entry.Dest, workdir+"/")
+			if entry.DestDir {
+				text += "/"
+			}
+		}
+		if entry.Backup != "" {
+			text += "+backup" + entry.Backup
+		}
+		scope = append(scope, text)
+	}
+	return scope
+}
+
+func TestClassifyExecShellDeclaredOperations(t *testing.T) {
+	const workdir = "/work"
+	for _, test := range []struct {
+		command string
+		labels  []string
+		scope   []string
+	}{
+		{"cp a.txt b.txt", []string{"cp"}, []string{"into:a.txt->b.txt"}},
+		{"cp -r src dst", []string{"cp"}, []string{"into:src->dst"}},
+		{"cp a b dir", []string{"cp"}, []string{"into:a,b->dir/"}},
+		{"cp -t dir a", []string{"cp"}, []string{"into:a->dir/"}},
+		{"cp --backup=simple a b", []string{"cp"}, []string{"into:a->b+backup~"}},
+		{"ln -S .orig --backup=never a b", []string{"ln"}, []string{"into:a->b+backup.orig"}},
+		{"mv old.go new.go", []string{"mv"}, []string{"into:old.go->new.go"}},
+		{"rm -f *.tmp", []string{"rm"}, []string{"file:*.tmp(glob)"}},
+		{"rm -rf build", []string{"rm"}, []string{"tree:build"}},
+		{"touch x && tee y < /dev/null", []string{"touch", "tee"}, []string{"file:x", "file:y"}},
+		{"cd sub && rm z", []string{"rm"}, []string{"file:sub/z"}},
+		{"printf 'x\\n' > out.txt", []string{"printf"}, []string{"file:out.txt"}},
+		{"cat <<'EOF' >> log.txt\nline\nEOF", []string{"cat"}, []string{"file:log.txt"}},
+		{sedInPlace() + " 's/a/b/' f.go", []string{"sed"}, []string{"file:f.go"}},
+		{"ln -s target link", []string{"ln"}, []string{"into:target->link"}},
+		{"git mv a b", []string{"git mv"}, nil},
+		{"echo hi > /dev/null", nil, nil},
+		{"cd sub || exit 1\nrm z", []string{"rm"}, []string{"file:sub/z"}},
+		{"cd sub && cd deeper && rm z", []string{"rm"}, []string{"file:sub/deeper/z"}},
+		{"(cd sub && rm z); rm y", []string{"rm"}, []string{"file:sub/z", "file:y"}},
+		{"cd sub; rm /abs/z", []string{"rm"}, []string{"file:/abs/z"}},
+		{"rm [!a]*.log", []string{"rm"}, []string{"file:[^a]*.log(glob)"}},
+		{"sort -uo out.txt in.txt", []string{"sort"}, []string{"file:out.txt"}},
+		{"sort --output out.txt in.txt", []string{"sort"}, []string{"file:out.txt"}},
+		{"sort -k2 -t, in.txt", nil, nil},
+		{"sed -n ':a;N;$!ba;p' f", nil, nil},
+		{"awk -F, '{print $1}' \"$f\"", nil, nil},
+		{"/usr/bin/rm a", []string{"rm"}, []string{"file:a"}},
+		{"cat \"$f\" > out", []string{"cat"}, []string{"file:out"}},
+	} {
+		plan := classifyExecShell(test.command, workdir, "bash")
+		if plan.Class != Declared && !(test.labels == nil && plan.Class == Neutral) {
+			t.Errorf("%q class = %v (%s)", test.command, plan.Class, plan.Reason)
+			continue
+		}
+		if !slices.Equal(plan.Labels, test.labels) {
+			t.Errorf("%q labels = %q, want %q", test.command, plan.Labels, test.labels)
+		}
+		if scope := execPlanScope(plan, workdir); test.scope != nil && !slices.Equal(scope, test.scope) {
+			t.Errorf("%q scope = %q, want %q", test.command, scope, test.scope)
+		}
+	}
+}
+
+func TestSequentialDirectoryAlternatives(t *testing.T) {
+	for _, test := range []struct {
+		command string
+		want    []string
+	}{
+		{"cd a; rm target", []string{"file:target", "file:a/target"}},
+		{"cd a; cd b; rm target", []string{"file:target", "file:b/target", "file:a/target", "file:a/b/target"}},
+		{"printf x > before; cd a; cd b; cd c; rm target; rm /absolute", []string{"file:before", "file:/absolute"}},
+		{"cd \"$dir\"; rm target; rm /absolute", []string{"file:/absolute"}},
+		{"cd a && cd b; rm target; rm /absolute", []string{"file:/absolute"}},
+		{"{ cd a; cd b; }; rm target; rm /absolute", []string{"file:/absolute"}},
+		{"cd a; cd b; sh -c 'cd c; rm target'; rm /absolute", []string{"file:/absolute"}},
+	} {
+		plan := classifyExecShell(test.command, "/work", "bash")
+		if got := execPlanScope(plan, "/work"); !slices.Equal(got, test.want) || plan.Class != Opaque {
+			t.Errorf("%s: scope=%v class=%s reason=%s; want %v with opaque scope", test.command, got, plan.Class, plan.Reason, test.want)
+		}
+		if strings.HasPrefix(test.command, "printf") && !strings.Contains(plan.Reason, "alternatives exceed four") {
+			t.Errorf("directory cap lost its diagnostic: %+v", plan)
+		}
+	}
+}
+
+func TestClassifyExecShellNeutralAndOpaque(t *testing.T) {
+	const workdir = "/work"
+	for _, command := range []string{
+		"ls -la", "git status && git diff", "rg foo | head", "go version", "cat a.txt",
+		"if test -f a; then echo yes; fi", "git config --get user.name", "fd -e go", "less -R a",
+	} {
+		if plan := classifyExecShell(command, workdir, "bash"); plan.Class != Neutral {
+			t.Errorf("%q class = %v (%s), want neutral", command, plan.Class, plan.Reason)
+		}
+	}
+	for _, command := range []string{
+		"python3 script.py", "make build", "cp --parents a/b dst", "rm $FILE", "cp ~/a b",
+		"sleep 10 &", "git commit -m x", "find . -delete", "awk '{print > \"x\"}' f",
+		"sed 'w out' f", "eval rm a", "git stash",
+		// The directory is unknown after a cd that may have failed.
+		"cd sub; rm z", "cd sub && rm a; rm z", "cd sub || rm a\nrm z", "cd -; rm z",
+		"if true; then cd sub; fi; rm z",
+		// Substitutions run commands even where no operand uses them.
+		"cat <<EOF > out\n$(rm x)\nEOF", "[[ $(rm x) ]]", "sed -n \"$(rm x)p\" f",
+		"cp -a src/. dst", "cp -r . ../backup", "cp -b a b", "cp --backup=numbered a b",
+		"git rm '*.go'", "git rm ':(glob)*.go'", "git mv '*.go' dst",
+		"sed -n ':a;w out' f", "sed --follow-symlinks -i s/a/b/ f", "sed --unknown -i s/a/b/ f",
+		"sort --compress-program=gzip -o out in", "fd -x rm", "fd --exec rm", "rg --pre ./x foo",
+		"tree -o out", "less -o log a", "less '+!rm x' a", "hg cat -o out a", "git -c core.pager=x log",
+		"git config core.hooksPath x", "git grep -O foo", "gawk -p '{}' f", "awk -f prog.awk f",
+		"shopt -s globstar; rm **/*.log", "alias rm=true; rm a", "hash -p /tmp/x rm; rm a",
+		"PATH=/tmp:$PATH rm a", "export PATH=/tmp; rm a", "env PATH=/tmp rm a", "./rm a", "bin/cp a b",
+		"rm [[:alpha:]]*", "rm **/*.log",
+	} {
+		if plan := classifyExecShell(command, workdir, "bash"); plan.Class != Opaque {
+			t.Errorf("%q class = %v, want opaque", command, plan.Class)
+		}
+	}
+	// Code in a substitution leaves perl -i scoped rather than declared.
+	for _, command := range []string{"bash -c 'rm a'", "perl -pi -e 's/a/${\\ `rm x`}/' f", "perl -pi -e 's/(?{ system 1 })//' f"} {
+		if plan := classifyExecShell(command, workdir, "bash"); plan.Class != Scoped {
+			t.Errorf("%q class = %v, want scoped", command, plan.Class)
+		}
+	}
+	for _, shell := range []string{"/usr/bin/fish", "zsh", ""} {
+		if plan := classifyExecShell("rm a", workdir, shell); plan.Class != Opaque {
+			t.Errorf("shell %q class = %v, want opaque", shell, plan.Class)
+		}
+	}
+}
+
+func TestClassifyRTKWrappersAndEnvUnset(t *testing.T) {
+	const workdir = "/work"
+	for _, command := range []string{
+		"env -u BASH_ENV rm a",
+		"env -u BASH_ENV MODE=x rm a",
+		"env --unset BASH_ENV rm a",
+		"env --unset=BASH_ENV rm a",
+		"env -u BASH_ENV rtk proxy rm a",
+	} {
+		plan := classifyExecShell(command, workdir, "bash")
+		if plan.Class != Declared || !slices.Equal(execPlanScope(plan, workdir), []string{"file:a"}) {
+			t.Errorf("literal scope lost through %q: class=%v scope=%q reason=%q", command, plan.Class, execPlanScope(plan, workdir), plan.Reason)
+		}
+	}
+	for _, command := range []string{
+		"env -u PATH rm a",
+		"env MODE=x -u BASH_ENV rm a",
+		"env --unset=PATH rm a",
+		"env -u \"$VARIABLE\" rm a",
+	} {
+		if plan := classifyExecShell(command, workdir, "bash"); plan.Class != Opaque {
+			t.Errorf("unsafe env wrapper %q class=%v, want opaque", command, plan.Class)
+		}
+	}
+
+	for _, command := range []string{
+		"rtk run -c 'rm target'",
+		"rtk run --command 'rm target'",
+		"rtk run -c 'env -u BASH_ENV rm target'",
+		"rtk err rm target",
+	} {
+		plan := classifyExecShell(command, workdir, "bash")
+		if plan.Class != Declared || !slices.Equal(execPlanScope(plan, workdir), []string{"file:target"}) {
+			t.Errorf("literal nested rtk command %q: class=%v scope=%q reason=%q", command, plan.Class, execPlanScope(plan, workdir), plan.Reason)
+		}
+	}
+	for _, command := range []string{
+		`rtk run -c "$COMMAND"`,
+		"rtk err 'cat input; rm target'",
+		"rtk err --shell sh 'rm target'",
+		`rtk err "$EXECUTABLE" target`,
+		`rtk proxy "$EXECUTABLE" rm a`,
+		"rtk proxy ./rm a",
+		"/tmp/rtk proxy rm a",
+		`RTK_BIN=rtk; "$RTK_BIN" proxy rm a`,
+		"rtk() { command rm \"$@\"; }; rtk proxy rm a",
+	} {
+		if plan := classifyExecShell(command, workdir, "bash"); plan.Class != Opaque {
+			t.Errorf("ambiguous rtk impostor %q class=%v, want opaque", command, plan.Class)
+		}
+	}
+
+	plan := classifyExecShell("rtk go test ./...", workdir, "bash")
+	if !slices.ContainsFunc(plan.Programs, func(program Program) bool { return program.Label == "go test" }) ||
+		slices.ContainsFunc(plan.Programs, func(program Program) bool { return strings.HasPrefix(program.Label, "rtk") }) {
+		t.Fatalf("wrapped go test program labels = %+v; want go test, not rtk", plan.Programs)
+	}
+	for _, command := range []string{"cat input", "make check-native", "make test"} {
+		want := classifyExecShell(command, workdir, "bash")
+		got := classifyExecShell("rtk err "+command, workdir, "bash")
+		if got.Class != want.Class || got.Reason != want.Reason || !slices.Equal(got.Programs, want.Programs) {
+			t.Errorf("rtk err %s: %+v, want child classification %+v", command, got, want)
+		}
+	}
+}
+
+func TestClassifyMRunWrappers(t *testing.T) {
+	const workdir = "/work"
+	for _, pair := range [][2]string{
+		{"mrun -n 20 rm target", "rm target"},
+		{"mrun --head -n 20 rm target", "rm target"},
+		{"mrun --max-tokens=2000 --tail -- cat target", "cat target"},
+		{"env -u BASH_ENV mrun --tail -n 20 -- rm target", "rm target"},
+		{"rtk proxy mrun -n 20 rm target", "rm target"},
+		{"mrun -n 20 env MODE=x rm target", "rm target"},
+		{"mrun -n 20 mrun --max-tokens 100 cat target", "cat target"},
+		{"mrun -n 20 gofmt -w target.go", "gofmt -w target.go"},
+		{"mrun -n 20 make test", "make test"},
+		{`mrun -n 20 rm "$TARGET"`, `rm "$TARGET"`},
+		{"mrun -n 20 ./rm target", "./rm target"},
+		{"mrun -n 20 cat source > target", "cat source > target"},
+		{"rm() { :; }; mrun -n 20 rm target", "rm target"},
+	} {
+		plan, child := classifyExecShell(pair[0], workdir, "bash"), classifyExecShell(pair[1], workdir, "bash")
+		if plan.Class != child.Class || plan.Reason != child.Reason || !slices.Equal(execPlanScope(plan, workdir), execPlanScope(child, workdir)) || !slices.Equal(plan.Programs, child.Programs) {
+			t.Errorf("wrapped %q: %+v, want child scope %+v", pair[0], plan, child)
+		}
+	}
+	for _, command := range []string{
+		"mrun rm target", "mrun -n 0 rm target", "mrun --help rm target",
+		"mrun -n 20 -n 30 rm target", "mrun --max-tokens 100 --max-tokens 200 rm target",
+		"mrun --tail -n 20 --head rm target",
+		`mrun -n "$LIMIT" rm target`, `mrun -n 20 "$COMMAND" target`,
+		"./mrun -n 20 rm target", "/usr/bin/mrun -n 20 rm target",
+		"mrun() { command cat \"$@\"; }; mrun -n 20 rm target",
+	} {
+		if plan := classifyExecShell(command, workdir, "bash"); plan.Class != Opaque || len(plan.Scope) != 0 {
+			t.Errorf("invalid or shadowed wrapper %q: %+v, want opaque without named targets", command, plan)
+		}
+	}
+}
+
+func TestClassifyReadCommandFormsWithoutFalseWriters(t *testing.T) {
+	for _, command := range []string{
+		`rg -n 'editPages|nativeStatus\(' internal/router/{app_server_events.go,live_activity_view.go,terminal_ui.go,native_shell.go,native_edit_navigation.go}`,
+		`rg -n 'pattern' src/{one,two{a,b}}.go`,
+		`rg -n 'pattern' src/{1..5}.go`,
+		`rtk rg -n pattern internal/{router,ui}`,
+		`[ -d "$directory" ] && echo directory`,
+		`find "$HOME/.codex/sessions" -type f -name '*rollout*' -print 2>/dev/null | head -20`,
+		`find "${XDG_STATE_HOME:-$HOME/.local/state}/mekugi" -type f -print`,
+		`skills-mgr info`,
+		`skills-mgr get golang-best-practices`,
+		`skills-mgr get golang-best-practices/references/go.md 1:20`,
+	} {
+		if plan := classifyExecShell(command, "/work", "bash"); plan.Class != Neutral {
+			t.Errorf("read command %q classified as %s: %s", command, plan.Class, plan.Reason)
+		}
+	}
+	for _, command := range []string{
+		`rg --{pre,no-ignore} tool pattern`,
+		`rg "$options" pattern`,
+		`find "$HOME/.codex" -delete`,
+		`find "$root" -print`,
+		`find "$@/folder" -print`,
+		`find "${paths[@]}/folder" -print`,
+		`find "$HOME/$(touch changed)" -print`,
+		`find "$HOME/.codex" -{print,delete}`,
+		`skills-mgr list`,
+		`skills-mgr run use-modern-go/scripts/run-tool.sh list --go-version 1.27`,
+		`skills-mgr adopt`,
+		`rg() { touch changed; }; rg pattern src/{one,two}`,
+	} {
+		if plan := classifyExecShell(command, "/work", "bash"); plan.Class != Opaque {
+			t.Errorf("possible writer %q classified as %s: %s", command, plan.Class, plan.Reason)
+		}
+	}
+	plan := classifyExecShell(`rg -n pattern src/{one,two}.go > matches.txt`, "/work", "bash")
+	if plan.Class != Declared || !slices.Equal(execPlanScope(plan, "/work"), []string{"file:matches.txt"}) {
+		t.Fatalf("reader redirection lost write scope: %+v", plan)
+	}
+}

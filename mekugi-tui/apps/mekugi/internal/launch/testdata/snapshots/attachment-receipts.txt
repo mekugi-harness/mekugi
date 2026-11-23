@@ -1,0 +1,5 @@
+❯                                                                       12:34:56
+
+└ Attach sample.go (4 lines)
+         guide (4 lines)
+         missing.txt · missing · exit 1

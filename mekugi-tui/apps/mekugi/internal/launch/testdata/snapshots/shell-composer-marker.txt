@@ -1,0 +1,6 @@
+"\x1b[1mMekugi dev • codex\x1b[m                  "
+"                                    "
+"                                    "
+"                                    "
+"\x1b[31mShell Mode\x1b[m · Ready                  "
+"\x1b[31m❯ \x1b[m!\x1b[7m \x1b[m                                "

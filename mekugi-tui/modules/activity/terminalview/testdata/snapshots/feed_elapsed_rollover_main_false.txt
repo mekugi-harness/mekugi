@@ -1,0 +1,6 @@
+== 999ms ==
+● main      12:00:00
+▎ Running pwd
+== 1s ==
+● main      12:00:00
+▎ Running pwd     1s

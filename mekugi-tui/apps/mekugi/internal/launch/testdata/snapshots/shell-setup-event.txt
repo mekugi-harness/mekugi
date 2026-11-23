@@ -1,0 +1,1 @@
+└ Ran     probe_root=$(mktemp -d /tmp/setup-apt-baseline.XXXXXX) (+9 lines)

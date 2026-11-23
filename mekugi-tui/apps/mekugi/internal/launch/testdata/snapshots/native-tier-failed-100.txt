@@ -1,0 +1,7 @@
+  ── Choose tier ────────────────────────────────────────────────────────────────────────── [×] ──
+
+    Model choices unavailable · Esc to close; use an explicit VALUE
+
+
+
+  ↑/↓ choose · enter apply · esc cancel

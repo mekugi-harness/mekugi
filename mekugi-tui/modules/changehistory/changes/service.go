@@ -1,0 +1,120 @@
+package changes
+
+import (
+	"context"
+	"strconv"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
+)
+
+// MaxReadBytes bounds retained review projections and mutation source reads.
+const MaxReadBytes = 64 << 20
+
+// Scope carries authenticated retained ownership and the existing publication
+// handle, separate from the working directory used to spell path filters.
+type Scope struct {
+	Store             *history.Store
+	Namespace, Thread string
+	Limits            history.Limits
+	Writes            *persistence.Counter
+}
+
+type Query struct {
+	// Workspace is the caller directory for path resolution/display, not an ownership selector.
+	Workspace  string
+	IDs, Paths []string
+	View       string
+	Mine       bool
+	OmitOwn    bool // Automatic recipient attachments omit that thread's authored changes.
+	// Yielded omits acknowledged capture prefixes from automatic completion reads.
+	// Explicit mchanges, preload and reload queries leave this nil.
+	Yielded map[string]int
+}
+
+// CaptureKey joins progress and retained reads by immutable publication identity.
+// Legacy records without capture order cannot be safely suppressed.
+func CaptureKey(workspace, caller, change string, order uint64) string {
+	if order == 0 {
+		return ""
+	}
+	return workspace + "\x00" + caller + "\x00" + change + "\x00" + strconv.FormatUint(order, 10)
+}
+
+// Publication associates already-published evidence with an allocated change.
+// Publish and Repair key each publication by its host call ID. Sequence is the
+// source batch ordering, not the durable index sequence.
+type Publication struct {
+	ChangeID, CorrelationID, ExecutingThread string
+	Sequence                                 uint64
+	Managed, Confirmed                       bool
+	// Dependency retains evidence without publishing a completed attempt.
+	Dependency bool
+	// NoEffect settles an unfinished reservation without publishing an attempt.
+	NoEffect bool
+}
+
+type Call struct {
+	Thread, ID string
+}
+type Change struct {
+	Correlation  string
+	Calls        []Call
+	Dependencies []string
+}
+type Stream struct {
+	Name, Thread string
+	Next         int
+}
+
+// Snapshot contains domain membership, not a writable index or record encoding.
+type Snapshot struct {
+	Workspace, Namespace string
+	Streams              []Stream
+	Changes              map[string]Change
+}
+
+type Update struct {
+	Workspace, Namespace, Thread string
+	Stream                       int
+	ID                           string
+	Change                       Change
+}
+
+// ForkPlan contains frozen membership. Prepare and Publish belong to the same
+// caller-owned transaction; dependencies are retained before Publish is called.
+type ForkPlan interface {
+	Dependencies() []string
+	Publish(*history.Transaction) error
+}
+
+// Service owns retained change meaning. Publish and PrepareFork borrow the
+// caller's transaction. Reserve, Repair, Read, Freeze, and MutationPaths acquire
+// their own transaction; callers must not nest them inside another publication.
+// ProjectFrozen materializes only the selected retained record/chunk ranges.
+type Service interface {
+	Reserve(context.Context, Scope, string, string, string) (string, error)
+	Publish(*history.Transaction, Scope, string, map[string]Publication) ([]Update, error)
+	Repair(context.Context, Scope, string, map[string]Publication) ([]Update, error)
+	Inspect(Scope, string) (Snapshot, error)
+	// InspectVisible filters calls to admitted threads and includes all frozen
+	// inherited calls/workspaces of admitted fork namespaces. Nil admits all calls.
+	InspectVisible(Scope, string, map[string]bool) ([]Snapshot, error)
+	Dependencies(Scope, string, []string, bool) ([]string, error)
+	PrepareFork(Scope, string, string, string) (ForkPlan, error)
+	Parse([]string, string) (Query, error)
+	Read(context.Context, Scope, Query) (string, error)
+	Freeze(context.Context, Scope, Query) (FrozenRead, error)
+	ProjectFrozen(context.Context, Scope, FrozenRead, map[string]uint64) (ProjectedCapture, error)
+	ProjectLegacyFrozen(context.Context, LegacyFrozenRead, map[string]uint64) (ProjectedCapture, error)
+	MutationPaths(context.Context, Scope, Query) ([]string, error)
+	Execute(context.Context, command.Request) (command.Output, error)
+}
+
+// PublicationError identifies failed retention/admission/publication so the
+// application can present its storage diagnostic without classifying read errors.
+type PublicationError struct{ Err error }
+
+func (e *PublicationError) Error() string { return e.Err.Error() }
+func (e *PublicationError) Unwrap() error { return e.Err }

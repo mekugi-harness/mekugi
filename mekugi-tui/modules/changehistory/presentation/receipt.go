@@ -1,0 +1,269 @@
+package presentation
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/markdownsyntax"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
+)
+
+// ReceiptEvidence contains captured facts needed for a source-text edit summary.
+// It carries no request, backend or retained-store handles.
+type ReceiptEvidence struct {
+	Files []diffmodel.ReviewFile
+	// Counts preserve exact totals when Files contains detached bounded excerpts.
+	Counts [][2]int
+	// Truncated marks excerpts whose full omitted-row count is unavailable.
+	Truncated                  []bool
+	Labels, DeletedDirectories []string
+	Source, ChangeID           string
+}
+
+// NewReceipt retains detached summary inputs so intervals of the same invocation
+// can be combined before rendering their diagnostic stat row.
+func NewReceipt(workspace string, evidence ReceiptEvidence) *Receipt {
+	evidence.Files = slices.Clone(evidence.Files)
+	evidence.Counts = slices.Clone(evidence.Counts)
+	evidence.Truncated = slices.Clone(evidence.Truncated)
+	if len(evidence.Truncated) != len(evidence.Files) {
+		evidence.Truncated = make([]bool, len(evidence.Files))
+	}
+	if len(evidence.Counts) != len(evidence.Files) {
+		evidence.Counts = make([][2]int, len(evidence.Files))
+		for i, file := range evidence.Files {
+			evidence.Counts[i][0], evidence.Counts[i][1] = file.LineCounts()
+		}
+	}
+	evidence.Labels = slices.Clone(evidence.Labels)
+	evidence.DeletedDirectories = slices.Clone(evidence.DeletedDirectories)
+	return &Receipt{Text: ReceiptText(workspace, evidence), workspace: workspace, evidence: &evidence}
+}
+
+// Source: apps/mekugi/internal/router/native_edit_receipt.go@6f68e18a.
+// Receipt diffs are display-only and stay well inside one publication.
+const (
+	MaxReceiptDiffBytes     = 8 << 10
+	maxEditReceiptFileLines = 80
+)
+
+// ReceiptText summarizes captured files and bounded hunks without consulting
+// current workspace content or changing the retained evidence.
+func ReceiptText(workspace string, evidence ReceiptEvidence) string {
+	var summaries []string
+	var gitSources []string
+	gitPaths := make(map[string]bool)
+	gitAdded, gitRemoved := 0, 0
+	gitCountsKnown := true
+	reasons := make(map[string]int)
+	budget := MaxReceiptDiffBytes
+	directories := make(map[string]int)
+	roots := evidence.DeletedDirectories
+	for _, root := range roots {
+		count, removed := 0, true
+		for _, file := range evidence.Files {
+			if !changes.PathWithin(file.BeforePath, root) {
+				continue
+			}
+			// Missing content does not undo the confirmed removal of a path.
+			if file.AfterPath != "" || !changes.AuthoredReview(file) {
+				removed = false
+			}
+			if !file.Directory {
+				count++
+			}
+		}
+		if count > 0 && removed {
+			directories[root] = count
+		}
+	}
+	for index, file := range evidence.Files {
+		counts := func() (int, int) {
+			if len(evidence.Counts) == len(evidence.Files) {
+				return evidence.Counts[index][0], evidence.Counts[index][1]
+			}
+			return file.LineCounts()
+		}
+		if !changes.AuthoredReview(file) {
+			if changes.GitDiagnosticReview(file) {
+				path := file.AfterPath
+				if path == "" {
+					path = file.BeforePath
+				}
+				gitPaths[pathdisplay.ForWorkspace(workspace, path)] = true
+				if !slices.Contains(gitSources, file.Origin) {
+					gitSources = append(gitSources, file.Origin)
+				}
+				if file.Incomplete != "" || file.Binary {
+					gitCountsKnown = false
+				} else {
+					added, removed := counts()
+					gitAdded, gitRemoved = gitAdded+added, gitRemoved+removed
+				}
+			}
+			continue
+		}
+		if file.Incomplete != "" {
+			reasons[file.Incomplete]++
+		}
+		grouped := false
+		for _, root := range roots {
+			count, compact := directories[root]
+			if !compact || !changes.PathWithin(file.BeforePath, root) {
+				continue
+			}
+			if count > 0 {
+				noun := "files"
+				if count == 1 {
+					noun = "file"
+				}
+				summaries = append(summaries, fmt.Sprintf("Delete %s • %d %s · %s", markdownsyntax.QuoteCode(strings.TrimSuffix(pathdisplay.ForWorkspace(workspace, root), "/")+"/"), count, noun, strings.Join(evidence.Labels, ", ")))
+				directories[root] = 0
+			}
+			grouped = true
+			break
+		}
+		if grouped {
+			continue
+		}
+		action := file.Action().Title()
+		path := file.AfterPath
+		if path == "" {
+			path = file.BeforePath
+		}
+		path = pathdisplay.ForWorkspace(workspace, path)
+		if action == "Move" {
+			path = pathdisplay.Move(workspace, file.BeforePath, file.AfterPath)
+		}
+		if file.Directory {
+			summaries = append(summaries, action+" "+markdownsyntax.QuoteCode(path+"/"))
+			continue
+		}
+		if file.Incomplete != "" {
+			continue
+		}
+		summary := action + " " + markdownsyntax.QuoteCode(path)
+		if file.OriginNote != "" && !receiptNamesSharedOrigin(evidence.Labels, file.OriginNote) {
+			summary += " (" + file.OriginNote + ")"
+		}
+		if file.CopyFrom != "" {
+			summary += " (copy of " + markdownsyntax.QuoteCode(pathdisplay.ForWorkspace(workspace, file.CopyFrom)) + ")"
+		}
+		if file.Binary {
+			summary += " binary"
+		} else {
+			added, removed := counts()
+			summary += fmt.Sprintf(" +%d -%d", added, removed)
+		}
+		if len(evidence.Labels) != 0 {
+			summary += " · " + strings.Join(evidence.Labels, ", ")
+		} else if evidence.Source != "" {
+			summary += " · " + evidence.Source
+		}
+		if !file.Binary {
+			truncated := len(evidence.Truncated) == len(evidence.Files) && evidence.Truncated[index]
+			if hunks := editReceiptHunks(file.Diff, &budget, truncated); hunks != "" {
+				summary += "\n" + markdownsyntax.SourceFence("diff", hunks)
+			}
+		}
+		summaries = append(summaries, summary)
+	}
+	if len(gitPaths) > 0 {
+		counts := "counts unavailable"
+		if gitCountsKnown {
+			counts = fmt.Sprintf("+%d -%d", gitAdded, gitRemoved)
+		}
+		summaries = append(summaries, fmt.Sprintf("+ %d tool-managed files (diagnostic: %s) · %s", len(gitPaths), counts, strings.Join(gitSources, ", ")))
+	}
+	if len(reasons) != 0 {
+		// Capture omissions are evidence gaps, not confirmed edits. Keep the
+		// full path/reason records in mchanges without flooding Activity.
+		summary := "Capture · " + captureGapSummary(reasons)
+		if evidence.ChangeID != "" {
+			summary += " · " + markdownsyntax.QuoteCode("mchanges "+evidence.ChangeID+" --summary")
+		}
+		summaries = append(summaries, summary)
+	}
+	return strings.Join(summaries, "\n\n")
+}
+
+// Keep Activity summaries useful without flooding them with
+// per-path errors. Full reasons remain on the retained per-path review records.
+func captureGapSummary(reasons map[string]int) string {
+	keys := make([]string, 0, len(reasons))
+	total := 0
+	for reason, count := range reasons {
+		keys = append(keys, reason)
+		total += count
+	}
+	slices.SortFunc(keys, func(a, b string) int {
+		if reasons[a] != reasons[b] {
+			return reasons[b] - reasons[a]
+		}
+		return strings.Compare(a, b)
+	})
+	var parts []string
+	for _, reason := range keys[:min(3, len(keys))] {
+		text := []rune(reason)
+		if len(text) > 120 {
+			text = append(text[:120], '…')
+		}
+		parts = append(parts, fmt.Sprintf("%d × %q", reasons[reason], string(text)))
+	}
+	if len(keys) > 3 {
+		parts = append(parts, fmt.Sprintf("other reasons: %d", len(keys)-3))
+	}
+	noun := "paths"
+	if total == 1 {
+		noun = "path"
+	}
+	return fmt.Sprintf("incomplete evidence for %d %s (not confirmed edits): %s", total, noun, strings.Join(parts, "; "))
+}
+
+// editReceiptHunks keeps hunk rows only; file headers repeat the summary.
+func editReceiptHunks(diff string, budget *int, truncated bool) string {
+	const omitted = "… more diff content\n"
+	_, hunks, ok := strings.Cut(diff, "\n@@ ")
+	if !ok || *budget <= 0 {
+		if truncated {
+			*budget -= len(omitted)
+			return omitted
+		}
+		return ""
+	}
+	lines := strings.Split(strings.TrimSuffix("@@ "+hunks, "\n"), "\n")
+	var kept strings.Builder
+	shown := 0
+	for _, line := range lines {
+		if shown == maxEditReceiptFileLines || kept.Len()+len(line)+1 > *budget {
+			break
+		}
+		kept.WriteString(line)
+		kept.WriteByte('\n')
+		shown++
+	}
+	if truncated {
+		kept.WriteString(omitted)
+	} else if hidden := len(lines) - shown; hidden > 0 {
+		fmt.Fprintf(&kept, "… %d more diff lines\n", hidden)
+	}
+	*budget -= kept.Len()
+	return kept.String()
+}
+
+// Command labels already naming every shared-origin tool make its note redundant.
+func receiptNamesSharedOrigin(labels []string, note string) bool {
+	tools, ok := strings.CutSuffix(note, changes.SharedOriginSuffix)
+	if !ok {
+		return false
+	}
+	for tool := range strings.SplitSeq(tools, ", ") {
+		if !slices.Contains(labels, tool) {
+			return false
+		}
+	}
+	return true
+}

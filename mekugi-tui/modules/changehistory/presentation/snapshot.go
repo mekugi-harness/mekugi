@@ -1,0 +1,384 @@
+package presentation
+
+import (
+	"cmp"
+	"errors"
+	"fmt"
+	"iter"
+	"maps"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
+)
+
+type AttemptKey struct{ Workspace, Call string }
+
+type AttemptIdentity struct {
+	Key                 AttemptKey
+	Change, Correlation string
+	Stream              int
+}
+
+// Receipt is an immutable captured-effect projection. Calls retain their order:
+// SourceAnchor selects the last witnessed writer; older receipts use the first
+// host item. Siblings do not repeat its summary.
+type Receipt struct {
+	Thread    string
+	Calls     []string
+	Text      string
+	Pages     []activitydetail.Page
+	workspace string
+	evidence  *ReceiptEvidence
+
+	SourceAnchor activitydetail.SourceAnchor
+}
+
+// AnchorCall preserves the historical default when no witnessed boundary joins
+// this receipt's host membership.
+func (r *Receipt) AnchorCall() string {
+	if slices.Contains(r.Calls, r.SourceAnchor.Call) {
+		return r.SourceAnchor.Call
+	}
+	if len(r.Calls) > 0 {
+		return r.Calls[0]
+	}
+	return ""
+}
+
+type Attempt struct {
+	AttemptIdentity
+	Operation activitydetail.Operation
+	Chunks    []Chunk
+	Receipt   *Receipt
+}
+
+// HasAuthoredChanges excludes diagnostic detail chunks from edit workflows.
+func (a Attempt) HasAuthoredChanges() bool {
+	return slices.ContainsFunc(a.Chunks, func(chunk Chunk) bool { return changes.AuthoredReview(chunk.Review) })
+}
+
+type Counts struct {
+	Callers map[string]diffmodel.Counts
+	Net     *diffmodel.Counts
+}
+
+// Publication is detached, immutable saved-review content. Terminal selection
+// and caller filtering cannot alter its unfiltered composition or totals.
+type Publication struct {
+	Files       []File
+	Diagnostics []Chunk // Captured Git effects, excluded from authored Diff/counts.
+	Unfiltered  map[string]File
+	Counts      Counts
+	initialized bool
+}
+
+// ReviewView joins admitted evidence with its attached workspace and coverage.
+// Publication is immutable; revisions identify source replacement, not paint.
+type ReviewView struct {
+	Publication
+	Workspace, Coverage, Failure string
+	Revision                     uint64
+}
+
+// With derives one replacement from supplied captures, preserving stable order
+// and recent-update marks. Consumers share the resulting unfiltered composition.
+func (p Publication) With(files []File) Publication {
+	v := View{Files: p.Files, Visible: p.Unfiltered, Initialized: p.initialized}
+	v.Merge(files)
+	v.RefreshVisible()
+	return Publication{Files: v.Files, Diagnostics: p.Diagnostics, Unfiltered: v.Visible,
+		Counts: Counts{Callers: CallerCounts(v.Files), Net: NetCounts(&v)}, initialized: true}
+}
+
+// ForDiff omits temporary-only captures and confirmed empty net files from the saved pane, without changing
+// the retained publication used by details and edit totals. Boundary-crossing
+// moves keep both endpoints so their non-temporary effects remain reviewable.
+func (p Publication) ForDiff(workspace string) Publication {
+	var captures []Chunk
+	filtered := false
+	for _, file := range p.Files {
+		for _, chunk := range file.Chunks {
+			onlyTemporary := chunk.Review.BeforePath != "" || chunk.Review.AfterPath != ""
+			for _, path := range []string{chunk.Review.BeforePath, chunk.Review.AfterPath} {
+				if path == "" {
+					continue
+				}
+				if !filepath.IsAbs(path) {
+					base := cmp.Or(chunk.Workspace, workspace)
+					if !filepath.IsAbs(base) {
+						onlyTemporary = false
+						break
+					}
+					path = filepath.Join(base, path)
+				}
+				path = filepath.Clean(path)
+				base := cmp.Or(chunk.Workspace, workspace)
+				if filepath.IsAbs(base) {
+					relative, err := filepath.Rel(base, path)
+					if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+						onlyTemporary = false
+						break
+					}
+				}
+				if path != "/tmp" && !strings.HasPrefix(path, "/tmp/") {
+					onlyTemporary = false
+					break
+				}
+			}
+			if onlyTemporary {
+				filtered = true
+			} else {
+				captures = append(captures, chunk)
+			}
+		}
+	}
+	if filtered {
+		p = p.With(GroupCaptures(captures))
+	}
+	// Keep the complete publication for history, details and edit totals. A
+	// zero line count alone cannot hide moves, empty creations or unknown bytes.
+	// Link captures do not retain each endpoint's type, so identical rendered
+	// text cannot prove that a regular-file/symlink replacement was reversed.
+	var files []File
+	var visible map[string]File
+	for i, file := range p.Files {
+		composed, known := p.Unfiltered[file.Key()]
+		if known && !composed.incomplete && len(composed.Chunks) == 0 &&
+			!slices.ContainsFunc(file.Chunks, func(chunk Chunk) bool { return chunk.Review.Link }) {
+			if visible == nil {
+				files = slices.Clone(p.Files[:i])
+				visible = maps.Clone(p.Unfiltered)
+			}
+			delete(visible, file.Key())
+		} else if visible != nil {
+			files = append(files, file)
+		}
+	}
+	if visible != nil {
+		p.Files, p.Unfiltered = files, visible
+	}
+	return p
+}
+
+// Snapshot owns exact attempts and their one derived publication. Its contents
+// remain immutable after Builder.Finish, including shared receipts and slices.
+type Snapshot struct {
+	Publication Publication
+	attempts    map[AttemptKey]Attempt
+	order       []AttemptKey
+	receipts    []*Receipt // Immutable references, assembled only during hydration.
+	bytes       int
+	// Negative positions block paths touched by structural or colliding groups.
+	paths           map[string]int
+	maxCaptureOrder uint64
+}
+
+func (s *Snapshot) Attempts() iter.Seq[Attempt] {
+	return func(yield func(Attempt) bool) {
+		if s != nil {
+			for _, key := range s.order {
+				if !yield(s.attempts[key]) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func (s *Snapshot) Len() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.order)
+}
+
+func (s *Snapshot) Receipts() []*Receipt {
+	if s == nil {
+		return nil
+	}
+	return s.receipts
+}
+
+// Builder belongs to one unpublished hydration job. Previously accepted data
+// is shared read-only; new attempts cannot escape a failed or stale job.
+type Builder struct {
+	base     *Snapshot
+	next     Snapshot
+	finished bool
+}
+
+func NewBuilder(base *Snapshot) *Builder {
+	b := &Builder{base: base}
+	if base != nil {
+		b.next = *base
+	}
+	return b
+}
+
+// Known validates repeated identities before the application reopens evidence.
+func (b *Builder) Known(identity AttemptIdentity) (bool, error) {
+	if old, found := b.next.attempts[identity.Key]; found {
+		if old.AttemptIdentity != identity {
+			return false, errors.New("live diff attempt identity changed")
+		}
+		return true, nil
+	}
+	if len(b.next.order) >= 65536 {
+		return false, errors.New("live diff exceeds 65,536 attempts")
+	}
+	return false, nil
+}
+
+func (b *Builder) Add(attempt Attempt) error {
+	if b.finished {
+		return errors.New("saved-review builder is already published")
+	}
+	if found, err := b.Known(attempt.AttemptIdentity); found || err != nil {
+		return err
+	}
+	if !filepath.IsAbs(attempt.Key.Workspace) {
+		return errors.New("live diff workspace must be absolute")
+	}
+	bytes := b.next.bytes
+	if attempt.Receipt != nil {
+		receipt := *attempt.Receipt
+		receipt.Calls, receipt.Pages = slices.Clone(receipt.Calls), slices.Clone(receipt.Pages)
+		attempt.Receipt = &receipt
+		bytes += len(receipt.Text)
+	}
+	attempt.Chunks = slices.Clone(attempt.Chunks)
+	for _, chunk := range attempt.Chunks {
+		bytes += len(chunk.Review.Diff) + len(chunk.Review.BeforePath) + len(chunk.Review.AfterPath) + len(attempt.Key.Workspace) + 1 + len(attempt.Key.Call) + len(chunk.Caller) + len(chunk.Source)
+	}
+	if bytes > changes.MaxReadBytes {
+		return errors.New("live diff exceeds 64 MiB; use mchanges with a narrower range")
+	}
+	if b.next.attempts == nil || b.base != nil && len(b.next.order) == len(b.base.order) {
+		b.next.attempts = maps.Clone(b.next.attempts)
+		if b.next.attempts == nil {
+			b.next.attempts = make(map[AttemptKey]Attempt)
+		}
+		b.next.order = slices.Clone(b.next.order)
+		b.next.receipts = slices.Clone(b.next.receipts)
+		b.next.Publication.Diagnostics = slices.Clone(b.next.Publication.Diagnostics)
+	}
+	b.next.bytes = bytes
+	b.next.attempts[attempt.Key] = attempt
+	b.next.order = append(b.next.order, attempt.Key)
+	for _, chunk := range attempt.Chunks {
+		if changes.GitDiagnosticReview(chunk.Review) {
+			b.next.Publication.Diagnostics = append(b.next.Publication.Diagnostics, chunk)
+		}
+	}
+	if attempt.Receipt != nil {
+		for i, prior := range b.next.receipts {
+			if len(prior.Calls) != 0 && prior.Thread == attempt.Receipt.Thread && slices.Equal(prior.Calls, attempt.Receipt.Calls) {
+				merged := *prior
+				if prior.evidence != nil && attempt.Receipt.evidence != nil && prior.workspace == attempt.Receipt.workspace {
+					evidence := *prior.evidence
+					evidence.Files = append(slices.Clone(evidence.Files), attempt.Receipt.evidence.Files...)
+					evidence.Counts = append(slices.Clone(evidence.Counts), attempt.Receipt.evidence.Counts...)
+					evidence.Truncated = append(slices.Clone(evidence.Truncated), attempt.Receipt.evidence.Truncated...)
+					merged.evidence = &evidence
+					merged.Text = ReceiptText(prior.workspace, evidence)
+				} else {
+					merged.Text = strings.TrimSpace(prior.Text + "\n" + attempt.Receipt.Text)
+				}
+				merged.Pages = append(slices.Clone(prior.Pages), attempt.Receipt.Pages...)
+				b.next.receipts[i] = &merged
+				return nil
+			}
+		}
+		b.next.receipts = append(b.next.receipts, attempt.Receipt)
+	}
+	return nil
+}
+
+func (b *Builder) Finish() *Snapshot {
+	if b.finished {
+		return &b.next
+	}
+	b.finished = true
+	if b.base != nil && b.base.Publication.initialized && len(b.next.order) == len(b.base.order) {
+		return b.base
+	}
+	if b.base != nil && b.base.Publication.initialized {
+		var captures []Chunk
+		for _, key := range b.next.order[len(b.base.order):] {
+			for _, chunk := range b.next.attempts[key].Chunks {
+				if changes.AuthoredReview(chunk.Review) {
+					captures = append(captures, chunk)
+				}
+			}
+		}
+		if len(captures) == 0 {
+			return &b.next
+		}
+		if b.appendCaptures(captures) {
+			return &b.next
+		}
+	}
+	var captures []Chunk
+	for _, key := range b.next.order {
+		for _, chunk := range b.next.attempts[key].Chunks {
+			if changes.AuthoredReview(chunk.Review) {
+				captures = append(captures, chunk)
+			}
+		}
+	}
+	b.next.Publication = b.next.Publication.With(GroupCaptures(captures))
+	b.next.indexPaths()
+	return &b.next
+}
+
+func (b *Builder) RequirePresent(present map[AttemptKey]bool) error {
+	for _, key := range b.next.order {
+		if !present[key] {
+			return errors.New("change records were removed; restart the live view")
+		}
+	}
+	return nil
+}
+
+// ActivityDetail resolves the original captured invocation, never a composed
+// successor or current workspace contents. Source: apps/mekugi/internal/router/native_edit_navigation.go:18:74@[5927a739].
+func (s *Snapshot) ActivityDetail(request activitydetail.Request) activitydetail.Result {
+	if request.Thread == "" || request.Item == "" {
+		return activitydetail.Result{}
+	}
+	var result activitydetail.Result
+	for attempt := range s.Attempts() {
+		match := attempt.Operation == request.Operation
+		if receipt := attempt.Receipt; receipt != nil {
+			match = receipt.Thread == request.Thread && slices.Contains(receipt.Calls, request.Item)
+		}
+		if !match || len(attempt.Chunks) == 0 {
+			continue
+		}
+		for i, chunk := range attempt.Chunks {
+			workspace := cmp.Or(chunk.Workspace, attempt.Key.Workspace)
+			target := pathdisplay.ForWorkspace(workspace, cmp.Or(chunk.Review.AfterPath, chunk.Review.BeforePath))
+			page := activitydetail.Page{ID: "changehistory:" + cmp.Or(chunk.Key, fmt.Sprintf("%s\x00%s/%d", attempt.Key.Workspace, attempt.Key.Call, i)),
+				Verb: chunk.Review.Action().Title(), Path: target, Language: "diff",
+				Code: chunk.Review.UnifiedDiffWithPaths(pathdisplay.ForWorkspace(workspace, chunk.Review.BeforePath), pathdisplay.ForWorkspace(workspace, chunk.Review.AfterPath))}
+			if page.Verb == "Move" {
+				page.DisplayPath = pathdisplay.Move(workspace, chunk.Review.BeforePath, chunk.Review.AfterPath)
+			}
+			result.Pages = append(result.Pages, page)
+			if result.Selected == "" && (request.Path == "" || request.Path == target ||
+				chunk.Review.Action().Title() == "Move" && request.Path == pathdisplay.Move(workspace, chunk.Review.BeforePath, chunk.Review.AfterPath) ||
+				request.Directory && strings.HasPrefix(target, strings.TrimSuffix(request.Path, "/")+"/")) {
+				result.Selected = page.ID
+			}
+		}
+	}
+	if result.Selected == "" {
+		return activitydetail.Result{}
+	}
+	return result
+}

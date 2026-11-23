@@ -1,0 +1,95 @@
+package launch
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+)
+
+func (session *nativeSession) referenceInput(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, side **sessioncontrol.Side, panel **appServerStatusReport, resumePicker **appServerResumePicker, parent context.Context, intent sessionpresentation.ReferenceIntent) bool {
+	defer func() {
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
+	}()
+	if attached.effects != nil {
+		if err := attached.presentation.ClientReference(intent); err != nil {
+			setNotice(&attached.feedback, presentationTime(clock), err.Error(), true)
+			return false
+		}
+		pending := slices.Concat(attached.conversation.Submitted[session.Client.Submission().ID].Parts, attached.conversation.Unsent, attached.conversation.Queued, attached.conversation.Parts(session.Client.Steers()))
+		// Selection labels only depend on pending text, never its attachment
+		// snapshots. Keep those payloads with their actual input owners.
+		drafts := make([]composer.Draft, len(pending))
+		for i, input := range pending {
+			drafts[i].Text = input.Text
+		}
+		// Resolve the description against this draft and pending inputs so inline
+		// references keep distinct labels through queueing and continuation.
+		selection := composer.Editor{Text: (*editor).Text}
+		if err := selection.InsertSelection(intent.Description, intent.Text, intent.Source, drafts); err != nil {
+			setNotice(&attached.feedback, presentationTime(clock), err.Error(), true)
+			return false
+		}
+		if len(selection.Selections) == 0 {
+			return false
+		}
+		token := selection.Selections[0]
+		description := strings.TrimSuffix(strings.TrimPrefix(selection.Text[token.Start:token.End], composer.SelectionPrefix), "]")
+		thread := intent.Thread
+		if thread == "" {
+			thread = attached.presentation.View().Input.ID
+		}
+		attached.effects.add(sessionapi.NativeEffect{Thread: thread, Target: new(intent.Target), Selection: &sessionapi.NativeSelection{Description: description, Text: intent.Text, Source: intent.Source, Pending: drafts}})
+		return true
+	}
+	if err := attached.presentation.Reference(intent, attached.conversation); err != nil {
+		setNotice(&attached.feedback, presentationTime(clock), err.Error(), true)
+		return false
+	}
+	insertSelection(attached, &session.Client, editor, &session.questions, &session.approvals, clock, side, &session.ownedImages, intent.Description, intent.Text, intent.Source)
+	picker.refreshPicker(attached, clock, session.Client.Requests, (*editor), parent, session.skillEnvironment)
+	(*editor).Run = composer.NoRun
+	return true
+}
+
+// composer.Token is a screen selection mentioned as one composer token.
+// The draft shows only its concise label; the quoted text travels in the
+// submitted attachment envelope, so history, forks and resume keep it.
+
+// insertSelection mentions text at the caret as one undoable token. A label
+// already in the draft or pending input gains a counter, so the queued, steered
+// or restored input that joins them still names one quote per mention.
+func insertSelection(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], editor **composer.Editor, questions *nativeQuestionDock, approvals *nativeApprovalDock, clock func() time.Time, side **sessioncontrol.Side, owned *map[string]bool, description, text, source string) {
+	if text == "" {
+		return
+	}
+	pending := slices.Concat(attached.conversation.Submitted[control.Submission().ID].Parts, attached.conversation.Unsent, attached.conversation.Queued, attached.conversation.Parts(control.Steers()))
+	for _, call := range questions.calls() {
+		for i, question := range call.Questions {
+			draft := question.Editor.Snapshot.Draft
+			if question.IsSecret {
+				draft = questions.secretState(call.ID).Editors[i].Snapshot.Draft
+			}
+			pending = append(pending, conversationmodel.Input{Draft: draft})
+		}
+	}
+	if questions.Current() != nil {
+		pending = append(pending, conversationmodel.Input{Draft: attached.conversation.PromptEditor.Parked.Snapshot.Draft})
+	}
+	if err := (*editor).InsertSelection(description, text, source, conversationmodel.Drafts(pending)); err != nil {
+		setNotice(&attached.feedback, presentationTime(clock), err.Error(), true)
+		return
+	}
+	setNotice(&attached.feedback, presentationTime(clock), "", false)
+	pruneDraftImages((*owned), (*editor), attached.conversation, questions, approvals, (*side), attached.hooks.nativeImages)
+	if q := questions.Current(); q != nil {
+		q.Edit(!q.Note)
+	}
+}

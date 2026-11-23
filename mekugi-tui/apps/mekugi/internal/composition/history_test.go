@@ -1,0 +1,319 @@
+package composition
+
+import (
+	"context"
+	json "encoding/json/v2"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessioninspection/query"
+	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
+)
+
+func BenchmarkPeerAdmission(b *testing.B) {
+	for _, records := range []int{128, 120000} {
+		b.Run(fmt.Sprint(records), func(b *testing.B) {
+			runtime, err := Frontends(b.Context(), false, true, "", nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() { _ = runtime.Close(context.WithoutCancel(b.Context())) })
+			directory := b.TempDir()
+			for i := range records {
+				if err := os.WriteFile(filepath.Join(directory, fmt.Sprintf("call-%064x.json", i)), []byte("{}"), 0600); err != nil {
+					b.Fatal(err)
+				}
+			}
+			store := runtime.History.Attach(directory)
+			migrationStarted := time.Now()
+			if err := store.Transaction(b.Context(), nil, func(tx *history.Transaction) error {
+				return tx.Admit(history.Limits{}, "call-"+strings.Repeat("f", 64)+".json", 0)
+			}); err != nil {
+				b.Fatal(err)
+			}
+			migration := time.Since(migrationStarted)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				for writer := range 2 {
+					owner := runtime.History.Attach(directory)
+					if err := owner.Transaction(b.Context(), nil, func(tx *history.Transaction) error {
+						name := "call-" + strings.Repeat("f", 64) + ".json"
+						data := []byte(fmt.Sprintf(`{"iteration":%d,"writer":%d}`, i, writer))
+						if err := tx.Admit(history.Limits{}, name, int64(len(data))); err != nil {
+							return err
+						}
+						return tx.Write(name, "benchmark-pending-", data)
+					}); err != nil {
+						b.Fatal(err)
+					}
+				}
+			}
+			b.ReportMetric(float64(migration.Nanoseconds()), "migration-ns")
+		})
+	}
+}
+
+func TestFrontendsRetainedSegmentsWithoutTransport(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		name := "disabled"
+		if live {
+			name = "unavailable"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			temp := root
+			if live {
+				// A regular file makes transport acquisition fail even as root.
+				temp = filepath.Join(root, "not-a-directory")
+				if err := os.WriteFile(temp, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("TMPDIR", temp)
+			runtime, err := Frontends(t.Context(), live, true, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := runtime.Close(context.WithoutCancel(t.Context())); err != nil {
+					t.Error(err)
+				}
+			})
+			if runtime.Segments.Live != nil || (runtime.Segments.LiveError != nil) != live {
+				t.Fatalf("optional transport: live=%v err=%v", runtime.Segments.Live, runtime.Segments.LiveError)
+			}
+			entries, err := os.ReadDir(root)
+			wantEntries := 0
+			if live {
+				wantEntries = 1
+			}
+			if err != nil || len(entries) != wantEntries {
+				t.Fatalf("composition acquired temporary resources: entries=%v err=%v", entries, err)
+			}
+			workspace := t.TempDir()
+			directory := t.TempDir()
+			id := reports.ID("turn", "item")
+			name := reports.Name(workspace, id)
+			kind, found, err := runtime.History.Kind(name)
+			if err != nil || !found || kind.ID != "commandsegments" {
+				t.Fatalf("record contribution: kind=%+v found=%v err=%v", kind, found, err)
+			}
+			scope := reports.Scope{Store: runtime.History.Attach(directory), Workspace: workspace, Thread: "viewer"}
+			report := reports.Report{Command: "echo ok", Parts: []reports.Part{{Source: "echo ok"}}}
+			if err := runtime.Segments.Reports.Publish(t.Context(), scope, id, report); err != nil {
+				t.Fatal(err)
+			}
+			if _, found, err := runtime.Segments.Reports.Inspect(directory, workspace, id); err != nil || !found {
+				t.Fatalf("retained API without transport: found=%v err=%v", found, err)
+			}
+		})
+	}
+}
+
+func TestCompositionCollectsRecordKindsBeforeHostConstruction(t *testing.T) {
+	later := recordkind.Spec{ID: "later", Match: func(name string) bool { return name == "later.json" }, Keep: true}
+	var c Composition
+	host := c.Add(sessionhistory.Module, func() sessionhistory.Deps { return sessionhistory.Deps{} })
+	contributor := descriptor("later")
+	contributor.Contributes.RecordKinds = []recordkind.Spec{later}
+	contributor.New = func(_ struct{}, slots module.Slots) (*testService, error) {
+		if len(slots.RecordKinds) != 0 {
+			t.Fatal("non-host received record contributions")
+		}
+		return new(testService), nil
+	}
+	c.Add(contributor, emptyDeps)
+	runtime, err := c.Activate(t.Context(), new(binding.Registry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(context.WithoutCancel(t.Context())); err != nil {
+			t.Error(err)
+		}
+	})
+	kind, found, err := host.Value().Kind("later.json")
+	if err != nil || !found || kind.ID != later.ID || kind.Keep != later.Keep {
+		t.Fatalf("collected later: kind=%+v found=%v err=%v", kind, found, err)
+	}
+}
+
+func TestFrontendsRetainedRequestTimingContribution(t *testing.T) {
+	runtime, err := Frontends(t.Context(), false, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(context.WithoutCancel(t.Context())); err != nil {
+			t.Error(err)
+		}
+	})
+	store, err := runtime.History.Open(t.Context(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder, err := runtime.TransportDiagnostics.Open(transportcapture.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recorder.Close()
+	recorder.RetainTimings(store, history.Limits{}, func(_ string, err error) { t.Error(err) })
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"fixture"}`))
+	request.Header.Set("thread-id", "thread")
+	recorder.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		transportcapture.ObserveRequestOutcome(r.Context(), "completed")
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(t.TempDir(), "rollout.jsonl")
+	if err := os.WriteFile(rollout, []byte(`{"type":"session_meta","payload":{"id":"thread"}}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := runtime.Inspection.Inspect(t.Context(), query.SingleOptions{Session: rollout, ReplayDirectory: store.Directory(), AX: true, Limit: 1, TextBytes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ax struct {
+		Timing struct {
+			State    string                           `json:"state"`
+			Thread   string                           `json:"thread_id"`
+			Requests []transportcapture.RequestTiming `json:"requests"`
+		} `json:"request_timing"`
+	}
+	if err := json.Unmarshal(report.AX, &ax); err != nil {
+		t.Fatal(err)
+	}
+	if ax.Timing.State != "observed_window" || ax.Timing.Thread != "thread" || len(ax.Timing.Requests) != 1 || ax.Timing.Requests[0].Outcome != "completed" {
+		t.Fatalf("composed timing contribution: %s", report.AX)
+	}
+}
+
+func TestFrontendsExposesConstructedHistoryHost(t *testing.T) {
+	runtime, err := Frontends(t.Context(), false, true, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(context.WithoutCancel(t.Context())); err != nil {
+			t.Error(err)
+		}
+	})
+	if runtime.History == nil {
+		t.Fatal("application omitted the history host")
+	}
+	for _, tc := range []struct{ name, id string }{
+		{legacycall.Name("/workspace", "call", false), "call"},
+		{legacycall.Name("/workspace", "commentary", true), "commentary"},
+		{legacycall.SnapshotName([]byte("snapshot")), "snapshot"},
+		{"wait-0002a56ee5625e517b301ff9722d588a16f1cd41c9f8a8599cd1ba8793cd44d6.json", "wait"},
+		{"usage-" + strings.Repeat("a", 64) + ".json", "usage"},
+		{"failure-" + strings.Repeat("a", 64) + ".json", "failure"},
+		{"changes-v3-" + strings.Repeat("a", 64) + ".json", "changes"},
+		{reports.Name("/workspace", reports.ID("turn", "item")), "commandsegments"},
+		{"compact-" + strings.Repeat("a", 64) + ".json", "compact"},
+		{history.HookObservationsName("/workspace", "thread"), "hooks"},
+		{"frozen-reload-" + strings.Repeat("a", 64) + ".json", "frozen-file"},
+		{"frozen-output-" + strings.Repeat("b", 64) + ".txt", "frozen-file"},
+		{"resource-" + strings.Repeat("c", 64) + ".json", "frozen-resource"},
+	} {
+		kind, found, err := runtime.History.Kind(tc.name)
+		if err != nil || !found || kind.ID != tc.id {
+			t.Fatalf("%s contribution: kind=%+v found=%v err=%v", tc.id, kind, found, err)
+		}
+		if kind.SeparateBudget != (tc.id == "commentary") || tc.id == "commentary" && kind.Limit != 16<<20 {
+			t.Fatalf("%s budget changed: %+v", tc.id, kind)
+		}
+		if tc.id == "call" {
+			if kind.Dependencies == nil {
+				t.Fatal("call contribution omitted snapshot dependency validation")
+			}
+			ref := legacycall.SnapshotName([]byte("snapshot"))
+			data := []byte(`{"Version":2,"Workspace":"/workspace","CallID":"call","Snapshots":{"ExecFiles":"` + ref + `"}}`)
+			deps, err := kind.Dependencies(recordkind.Record{Name: tc.name, Data: data})
+			if err != nil || len(deps) != 1 || deps[0] != ref {
+				t.Fatalf("call dependencies: %v, %v", deps, err)
+			}
+		}
+		suffix := ".json"
+		if strings.HasSuffix(tc.name, ".json.gz") {
+			suffix = ".json.gz"
+		} else if strings.HasSuffix(tc.name, ".txt") {
+			suffix = ".txt"
+		}
+		prefix := tc.name[:len(tc.name)-len(suffix)-64]
+		for _, invalid := range []string{"../" + tc.name, prefix + strings.Repeat("A", 64) + suffix, prefix + strings.Repeat("g", 64) + suffix, tc.name + ".tmp"} {
+			if kind.Match(invalid) {
+				t.Fatalf("invalid record %q recognized as %s", invalid, kind.ID)
+			}
+		}
+	}
+	for _, name := range []string{"frozen--aaaa.txt", "frozen-BAD-" + strings.Repeat("a", 64) + ".txt", "frozen-reload-" + strings.Repeat("a", 64) + ".bin", "../frozen-reload-" + strings.Repeat("a", 64) + ".json"} {
+		if kind, found, err := runtime.History.Kind(name); err == nil && found {
+			t.Fatalf("invalid ID %q recognized as %s", name, kind.ID)
+		}
+	}
+	if runtime.Segments == nil {
+		t.Fatal("application omitted the command-segment owner")
+	}
+	kind, found, err := runtime.History.Kind(reports.Name("/workspace", reports.ID("turn", "item")))
+	if err != nil || !found || kind.ID != "commandsegments" {
+		t.Fatalf("command segment contribution: kind=%+v found=%v err=%v", kind, found, err)
+	}
+
+}
+
+func TestFrontendsOwnsWorkspaceCapture(t *testing.T) {
+	directory := t.TempDir()
+	runtime, err := Frontends(t.Context(), false, true, directory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := runtime.Close(context.WithoutCancel(t.Context())); err != nil {
+			t.Error(err)
+		}
+	}()
+	snapshots, err := runtime.Changes.Checkpoints(directory)
+	if err != nil || snapshots == nil {
+		t.Fatalf("composed checkpoints: %v %v", snapshots, err)
+	}
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "source.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	observation, observed := capture.Capture(t.Context(), []commandanalysis.Command{{Command: "custom-generator", Workdir: workspace}}, false, false, capture.Options{Directory: workspace, Workspaces: snapshots})
+	if !observed || observation == nil || observation.Tree == "" {
+		t.Fatalf("composed baseline: %+v", observation)
+	}
+	if err := os.WriteFile(path, []byte("after\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := capture.Reconcile(t.Context(), *observation, capture.Comparison{Workspace: workspace, Workspaces: snapshots})
+	if result.SnapshotError != nil || len(result.Files) != 1 || !strings.Contains(result.Files[0].Diff, "+after") {
+		t.Fatalf("composed result: %+v", result)
+	}
+	if err := runtime.Close(context.WithoutCancel(t.Context())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Changes.Checkpoints(directory); err == nil {
+		t.Fatal("composition left capture owner available")
+	}
+}

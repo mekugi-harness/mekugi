@@ -1,0 +1,151 @@
+package launch
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
+)
+
+func TestNativeViewQueuedImageClaimsEndAtReceiptOrDisconnect(t *testing.T) {
+	for _, disconnect := range []bool{false, true} {
+		t.Run(map[bool]string{false: "receipt", true: "disconnect"}[disconnect], func(t *testing.T) {
+			u, _ := newAppServerTestUI()
+			u.startSession("main", "/workspace")
+			n := newNativeViews(t.Context(), sessionapi.NewLive().Native(), u.presentationState, u.activity, u.Requests)
+			defer n.close()
+			if refusal := n.attach(sessionapi.NativeRequest{Attachment: "view", Thread: "main", Workspace: "/workspace", Context: t.Context(), ViewContext: t.Context()}, &u.attached, "main"); refusal != "" {
+				t.Fatal(refusal)
+			}
+			u.attached.hooks.nativeImages, u.attached.hooks.restoreInput = n.imageClaims, n.restore
+			prune := func() {
+				pruneDraftImages(u.ownedImages, u.Editor, u.attached.conversation, &u.questions, &u.approvals, u.side, n.imageClaims)
+			}
+			n.retiring = func(*nativeSessionView) error { prune(); return nil }
+			path, borrowed := filepath.Join(t.TempDir(), "owned.png"), pasteTestImage(t)
+			if err := os.WriteFile(path, []byte("owned fixture"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			u.ownedImages = map[string]bool{path: true}
+			u.attached.conversation.QueueInput(conversation.Input{Origin: "view", Text: "[Image 1] [Image 2]", Images: []composer.Token{{Start: 0, End: 9, Path: path}, {Start: 10, End: 19, Path: borrowed}}}, true)
+			editQueued(&u.attached, &u.Client, &u.picker, &u.questions, &u.approvals, u.clock)
+			prune()
+			if _, err := os.Stat(path); err != nil {
+				t.Fatal("withdrawal lost image before client copied it:", err)
+			}
+			view := n.views["view"]
+			if disconnect {
+				n.retire("view")
+			} else {
+				id := view.effects.pending[0].ID
+				if refusal := view.applyView(sessionapi.NativeOperation{Receipt: &sessionapi.NativeReceipt{Effect: id}}); refusal != "" {
+					t.Fatal(refusal)
+				}
+				prune()
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("retired claim kept unsubmitted image: %v", err)
+			}
+			if _, err := os.Stat(borrowed); err != nil {
+				t.Fatal("image claims conferred deletion authority over a borrowed path:", err)
+			}
+		})
+	}
+}
+
+func TestNativeSideImageAdmissionAndPendingReplacementClaims(t *testing.T) {
+	u, wire := newAppServerTestUI()
+	workspace := t.TempDir()
+	u.startSession("main", workspace)
+	n := newNativeViews(t.Context(), sessionapi.NewLive().Native(), u.presentationState, u.activity, u.Requests)
+	defer n.close()
+	if refusal := n.attach(sessionapi.NativeRequest{Attachment: "view", Thread: "main", Workspace: workspace, Context: t.Context(), ViewContext: t.Context()}, &u.attached, "main"); refusal != "" {
+		t.Fatal(refusal)
+	}
+	v := n.views["view"]
+	u.attached.hooks.nativeImages = n.imageClaims
+	u.side = &sessioncontrol.Side{SideAnswer: &conversation.SideAnswer{Key: "existing"}, Thread: "side"}
+	u.attached.conversation.Side = u.side.SideAnswer
+	image := pasteTestImage(t)
+	draft := composer.Draft{Text: "[Image 1]", Images: []composer.Token{{Start: 0, End: 9, Path: image}}}
+	prepare := func(draft composer.Draft) *sessionapi.PreparedInput {
+		t.Helper()
+		prepared, err := prepareAPIInput(t.Context(), workspace, sessionapi.InputRequest{NativeDraft: &draft})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(prepared.Cleanup)
+		for _, image := range prepared.Draft.Images {
+			t.Cleanup(func() { _ = os.Remove(image.Path) })
+		}
+		return prepared
+	}
+	submit := func(prepared *sessionapi.PreparedInput) *composer.Editor {
+		t.Helper()
+		editor := new(composer.Editor)
+		editor.Replace(prepared.Draft)
+		if err := u.nativeSession.submitBTW(&v.attached, &v.picker, &editor, u.clock, &u.side, false, &composerPreparation{ctx: t.Context(), input: prepared}); err != nil {
+			t.Fatal(err)
+		}
+		return editor
+	}
+	refused := prepare(draft)
+	u.side.Busy = true
+	if editor := submit(refused); editor.Text == "" || refused.Admitted() || wire.Len() != 0 {
+		t.Fatal("busy side consumed or admitted a prepared request")
+	}
+	refused.Cleanup()
+	u.side.Busy = false
+	prepared := prepare(draft)
+	if editor := submit(prepared); editor.Text != "" || !prepared.Admitted() || !strings.Contains(wire.String(), prepared.Draft.Images[0].Path) {
+		t.Fatalf("side submission lost its admitted image: %s", wire.String())
+	}
+	// A pending replacement owns its copied image before any replacement host
+	// operation, and cancelling that chooser releases only the server copy.
+	u.side.Busy, u.side.Starting = false, false
+	oneoff := composer.Join(composer.Draft{Text: "/oneoff"}, draft)
+	replacement := prepare(oneoff)
+	editor := submit(replacement)
+	copy := replacement.Draft.Images[0].Path
+	pruneDraftImages(u.ownedImages, u.Editor, u.attached.conversation, &u.questions, &u.approvals, u.side, n.imageClaims)
+	if !replacement.Admitted() || v.picker.sideTask == nil {
+		t.Fatal("replacement lost its admitted pending payload")
+	}
+	if _, err := os.Stat(copy); err != nil {
+		t.Fatal("pending replacement image was reclaimed:", err)
+	}
+	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, u.side, true)
+	action := sessionpresentation.MenuAction{Version: view.Version, Menu: view.Menu.ID, Kind: sessionpresentation.MenuAccept, Choice: view.Menu.Choices[0].Identity()}
+	u.nativeSession.applyMenuResult(&v.attached, &v.picker, &editor, &u.side, u.clock, false, t.Context(), terminalsession.MenuResult{Action: action, Handled: true})
+	pruneDraftImages(u.ownedImages, u.Editor, u.attached.conversation, &u.questions, &u.approvals, u.side, n.imageClaims)
+	if v.picker.sideTask != nil {
+		t.Fatal("cancel kept pending replacement state")
+	}
+	if _, err := os.Stat(copy); !os.IsNotExist(err) {
+		t.Fatalf("cancel kept copied replacement image: %v", err)
+	}
+	if _, err := os.Stat(image); err != nil {
+		t.Fatal("cancel reclaimed client source:", err)
+	}
+	confirmed := prepare(oneoff)
+	editor = submit(confirmed)
+	previous := u.side
+	view = publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, u.side, true)
+	action = sessionpresentation.MenuAction{Version: view.Version, Menu: view.Menu.ID, Kind: sessionpresentation.MenuAccept, Choice: view.Menu.Choices[1].Identity()}
+	u.nativeSession.applyMenuResult(&v.attached, &v.picker, &editor, &u.side, u.clock, false, t.Context(), terminalsession.MenuResult{Action: action, Handled: true})
+	pruneDraftImages(u.ownedImages, u.Editor, u.attached.conversation, &u.questions, &u.approvals, u.side, n.imageClaims)
+	if u.side == previous || u.side.Pending.Origin != "view" || v.picker.sideTask != nil {
+		t.Fatal("confirmed replacement lost its origin or retained the chooser")
+	}
+	if _, err := os.Stat(confirmed.Draft.Images[0].Path); err != nil {
+		t.Fatal("admitted side pending input lost its image claim:", err)
+	}
+}

@@ -1,0 +1,45 @@
+package launch
+
+import (
+	"net/url"
+	"time"
+
+	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
+	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+)
+
+func openSelectionTarget(attached *attachedPresentation, terminal *terminalsession.Attachment, clock func() time.Time, changes *changecapture.Service, files *detailFiles, surface *terminalsession.Attachment, target terminalsession.SelectionTarget) {
+	if target.Link == "" && target.Entry == 0 && target.Snippet == (activityui.Snippet{}) {
+		return
+	}
+	view := attached.presentation.View()
+	if target.Version != view.Version || target.Thread != view.Displayed.ID || target.Workspace != view.Info.Workspace || target.Workspace != attached.cwd || activitySource(attached, terminal, target.View) == nil {
+		setNotice(&attached.feedback, presentationTime(clock), sessionpresentation.ErrStaleIntent.Error(), true)
+		return
+	}
+	switch {
+	case target.Link != "":
+		if !files.openTerminalMarkdownFile(&attached.session, attached.presentation, attached.cwd, activitySource(attached, terminal, target.View), surface, target.View, target.Link) {
+			link := target.Link
+			if parsed, err := url.Parse(link); err == nil && parsed.Scheme == "file" {
+				link = parsed.Path
+			}
+			copyText(&attached.feedback, clock, surface, link)
+		}
+	case target.Entry != 0:
+		if target.View == terminal.Transcript && openActivityReply(attached, terminal, files, surface, target.Entry) {
+			return
+		}
+		openEntry(attached, terminal, files, surface, target.View, target.Entry)
+	default:
+		snippet := target.Snippet
+		if snippet.Block == activityui.EditNavigationSnippet {
+			openActivityEdit(attached, terminal, files, changes, surface, target.View, snippet.Run, snippet.Path)
+		} else if !openOutput(attached, terminal, files, changes, surface, target.View, snippet) {
+			openEntry(attached, terminal, files, surface, target.View, snippet.Run)
+		}
+	}
+}

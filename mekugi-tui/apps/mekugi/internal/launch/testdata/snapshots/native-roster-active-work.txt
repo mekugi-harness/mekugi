@@ -1,0 +1,11 @@
+Active: 20 seconds of work
+
+ ◐ worker  working                                                                0%  20s · 20s ago
+
+Paused: same work after 10 idle minutes
+
+ ● worker  idle                                                                0%  20s · 10m20s ago
+
+Resumed: 27 seconds of work
+
+ ◐ worker  working                                                             0%  27s · 10m27s ago

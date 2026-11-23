@@ -1,0 +1,37 @@
+// Source: apps/mekugi/internal/router/response_delivery.go:1:44@b9679c93.
+package requestexecution
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+
+	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+	responseevents "github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
+)
+
+func CopyResponse(writer io.Writer, response *http.Response, streamResponse bool, transformer codexresponses.Transformer, hooks *ResponseHooks) (responseevents.TerminalState, error) {
+	if streamResponse && hooks != nil && hooks.StreamDiagnostics != nil {
+		transport := hooks.Transport
+		if transport == "" {
+			transport = "unknown"
+		}
+		hooks.StreamDiagnostics.ResponseStarted(response, transport)
+		if id := response.Header.Get("X-Request-Id"); responseevents.SafeDiagnosticIdentity(id) {
+			hooks.StreamDiagnostics.ProviderRequestID = id
+		}
+	}
+	defer response.Body.Close()
+	var reader io.Reader = response.Body
+	if streamResponse && hooks != nil {
+		reader = diagnosticStreamReader{reader: reader, diagnostics: hooks.StreamDiagnostics, receivedAt: &hooks.ReceivedAt}
+	}
+	terminalState, err := codexresponses.CopyBody(writer, reader, streamResponse, transformer, hooks)
+	if streamResponse && hooks != nil {
+		recordStreamCopyStop(hooks.StreamDiagnostics, err)
+	}
+	if err != nil {
+		return terminalState, fmt.Errorf("copy upstream response: %w", err)
+	}
+	return terminalState, nil
+}

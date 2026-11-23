@@ -1,0 +1,16 @@
+
+
+
+
+
+
+
+
+
+› /compact  Compact context now; Tab queues while busy                          
+
+  ↑/↓ navigate · enter select · tab queue · esc close
+◐ Working · Queued compaction cancelled · input restored · Main continues
+────────────────────────────────────────────────────────────────────────────────
+❯ /compact 
+────────────────────────────────────────────────────────────────────────────────

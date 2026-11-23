@@ -1,0 +1,104 @@
+// Source: apps/mekugi/cmd/mekugi/main.go:1:86@[ebde9ad5]
+package launch
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"slices"
+	"syscall"
+
+	inspectioncli "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inspectioncli"
+
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/mcptransport"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/composition"
+)
+
+// Source: main.go:36:48 process signals and router exit behavior.
+// Run dispatches the process invocation and returns its exit status.
+func Run() (exitCode int) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	worker, err := frontends.Recognize(os.Args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if worker == nil && len(os.Args) > 1 && os.Args[1] == "mcp-bridge" {
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "mekugi: mcp-bridge requires one socket path")
+			return 2
+		}
+		if err := mcptransport.RelayStdio(ctx, os.Args[2], os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "mekugi:", err)
+			return 1
+		}
+		return 0
+	}
+	if worker == nil && len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "server":
+			if os.Getenv(nativeServerSupervisorEnvironment) != "" {
+				return runNativeServerSupervisor(ctx, os.Args[2:])
+			}
+			return RunServer(ctx, os.Args[2:], os.Stderr)
+		case "connector":
+			return RunConnector(ctx, os.Args[2:], os.Stderr)
+		case "web":
+			return RunWeb(ctx, os.Args[2:], os.Stderr)
+		}
+	}
+	operation := ""
+	if len(os.Args) > 1 {
+		operation = os.Args[1]
+	}
+	if worker != nil || slices.Contains([]string{"inspect-sessions", "replay-session", "inspect-session", "inspect-storage"}, operation) {
+		runtime, err := composition.Frontends(ctx, false, true, "", sessionapi.ReadNativeSkillCatalog)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mekugi:", err)
+			return 1
+		}
+		defer func() {
+			if err := runtime.Close(context.WithoutCancel(ctx)); err != nil {
+				fmt.Fprintln(os.Stderr, "mekugi:", err)
+				if exitCode == 0 {
+					exitCode = 1
+				}
+			}
+		}()
+		if worker != nil {
+			return worker.Run(runtime.History, runtime.Commands, command.DedicatedHostProcess, ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+		}
+		switch operation {
+		case "inspect-sessions":
+			return inspectioncli.RunSessionCorpusInspection(runtime.Inspection, ctx, os.Args[2:], os.Stdout, os.Stderr)
+		case "replay-session":
+			return RunSessionUIReplay(runtime.Terminal, runtime.Presentation, runtime.Conversation, runtime.Observation, runtime.Activity, runtime.Replay, ctx, os.Args[2:], os.Stdin, os.Stdout, os.Stderr)
+		case "inspect-session":
+			return inspectioncli.RunSessionInspection(runtime.Inspection, runtime.Diagnostics, ctx, os.Args[2:], os.Stdout, os.Stderr)
+		case "inspect-storage":
+			return inspectioncli.RunStorageInspection(runtime.History, runtime.Segments.Reports, ctx, os.Args[2:], os.Stdout, os.Stderr)
+		}
+	}
+	routerArgs, command, err := launchoptions.SplitCommand(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		launchoptions.PrintUsage(os.Stdout)
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mekugi:", err)
+		return 2
+	}
+	stop()
+	return runWrap(routerArgs, command)
+}

@@ -1,0 +1,460 @@
+// Source: apps/mekugi/cmd/mekugi/wrap.go:1:609@[ebde9ad5]
+package launch
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
+
+	history "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
+
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/composition"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
+	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
+
+	"golang.org/x/term"
+)
+
+func runWrap(routerArgs, args []string) int {
+	if len(args) > 0 && args[0] == "codex" {
+		args = args[1:]
+	} else {
+		routerArgs = append(slices.Clone(routerArgs), "custom-provider")
+	}
+	native := interactiveCodexArgs(args) && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
+	signals := []os.Signal{syscall.SIGTERM}
+	_, headless := headlessCommand(args)
+	if native || headless {
+		signals = append(signals, os.Interrupt)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), signals...)
+	defer stop()
+	code, err := wrapCodex(ctx, routerArgs, args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "mekugi:", err)
+	}
+	return code
+}
+
+func wrapCodex(ctx context.Context, routerArgs, args []string) (code int, runErr error) {
+	if headlessArgs, ok := headlessCommand(args); ok {
+		return runHeadless(ctx, routerArgs, headlessArgs, os.Stdin, os.Stdout)
+	}
+	if interactiveCodexArgs(args) && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		if _, _, err := launchoptions.ProfileSelector(args); err != nil {
+			return 2, err
+		}
+		stopProfiling, err := startProfiling(ctx, os.Stderr)
+		if err != nil {
+			return 1, err
+		}
+		defer func() { runErr = errors.Join(runErr, stopProfiling()) }()
+		err = runNativeClient(ctx, "", routerArgs, args, os.Stdin, os.Stdout)
+		if outcome, ok := errors.AsType[*sessionapi.NativeExit](err); ok {
+			return outcome.Code, err
+		}
+		if err != nil {
+			return 1, err
+		}
+		return 0, nil
+	}
+	if !interactiveCodexArgs(args) {
+		return 2, errors.New("raw Codex subcommands are unsupported; run administrative commands directly with codex, or use mekugi codex headless --yolo for automation")
+	}
+	return 2, errors.New("interactive sessions require terminal stdin and stdout; use mekugi codex headless --yolo for automation")
+}
+
+// runServerSession borrows an explicitly supplied API while owning execution until
+// ctx ends. Its host, stores and request ledger are the ordinary invocation owners.
+func runServerSession(ctx context.Context, routerArgs, args []string, api *sessionapi.Server, workspace string, threads *threadExecution) (int, error) {
+	if api == nil {
+		return 2, errors.New("server session requires a control API")
+	}
+	if !filepath.IsAbs(workspace) {
+		return 2, errors.New("server sessions require an absolute workspace")
+	}
+	if !interactiveCodexArgs(args) {
+		return 2, errors.New("server sessions require interactive session arguments")
+	}
+	return runOwnedInvocation(ctx, routerArgs, args, api, workspace, threads)
+}
+
+func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *sessionapi.Server, workspace string, threads *threadExecution) (code int, runErr error) {
+	if api == nil {
+		return 1, errors.New("server session requires a control API")
+	}
+	if threads == nil {
+		return 1, errors.New("server session requires native thread execution resources")
+	}
+	suppliedArgs := slices.Clone(args)
+	args = expandReasoningShortcuts(args)
+	options, err := launchoptions.Parse(routerArgs)
+	if err != nil {
+		return 2, err
+	}
+	var settings launchoptions.Settings
+	environment := invocationEnvironment(ctx)
+	if threads.setup != nil {
+		options, settings = threads.setup.options, threads.setup.settings
+		environment = slices.Clone(threads.setup.environment)
+	} else {
+		options.Profile, args, err = launchoptions.ImportProfile(args, environment)
+		if err != nil {
+			return 2, err
+		}
+		settings, err = launchoptions.LoadSettings()
+		if err != nil {
+			return 1, err
+		}
+	}
+	if err := validateCodexArgs(args, options.Profile != nil); err != nil {
+		return 2, err
+	}
+	if options.RequireCustomProvider {
+		route, err := profileRoute(args, options.Profile)
+		if err != nil {
+			return 2, err
+		}
+		if route == nil {
+			return 2, errors.New("mekugi requires a custom Responses provider profile: configure NAME.config.toml and run mekugi -p NAME; use mekugi codex for native OpenAI")
+		}
+	}
+	options = options.ResolveFeatures(settings.Features)
+	var resumeThread string
+	var resumeArgv []string
+	approvals := false
+	{
+		var err error
+		var yolo bool
+		args, resumeThread, yolo, err = appServerArgs(args)
+		if err != nil {
+			return 2, err
+		}
+		approvals = !yolo
+		resumeArgv = appServerResumeArgv(os.Args[0], routerArgs, suppliedArgs)
+		if resumeThread != "" && resumeThread != "--last" && resumeThread != sessioncontrol.ResumePicker {
+			if err := api.ReserveThread(resumeThread); err != nil {
+				return 1, err
+			}
+		}
+	}
+	var executable string
+	if threads.setup != nil {
+		executable, args, approvals = threads.setup.executable, slices.Clone(threads.setup.args), threads.setup.approvals
+	} else {
+		executable, err = invocationExecutable("mekugi-app-server", environment, workspace)
+		if err != nil {
+			return 1, fmt.Errorf("locate mekugi-app-server: %w", err)
+		}
+	}
+	environment = serverEnvironment(environment)
+	captureDirectory, err := history.ReplayDirectory()
+	if err != nil {
+		return 1, fmt.Errorf("initialize replay storage: %w", err)
+	}
+	if options.Profile != nil {
+		api.BindProfileIdentity(sessionapi.ProfileIdentity{Name: options.Profile.Name, Home: options.Profile.Home})
+	}
+	if threads.setup == nil {
+		threads.setup = &threadSetup{options: options, settings: settings, executable: executable, args: slices.Clone(args), environment: slices.Clone(environment), approvals: approvals}
+	}
+	frontends, err := composition.Frontends(ctx, true, options.ChildReplySummary, captureDirectory, sessionapi.ReadNativeSkillCatalog)
+	if err != nil {
+		return 1, err
+	}
+	threads.tools = frontends.MCP
+	issues := requestexecution.NewFailures(frontends.Notifications)
+	defer func() {
+		for _, message := range issues.Notices.Pending() {
+			fmt.Fprintln(os.Stderr, textsanitize.Safe(message, false))
+		}
+	}()
+	defer func() {
+		if err := frontends.Close(context.WithoutCancel(ctx)); err != nil {
+			runErr = errors.Join(runErr, err)
+			if code == 0 {
+				code = 1
+			}
+		}
+	}()
+
+	var debugPaths []string
+	defer func() {
+		if len(debugPaths) == 0 {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "To diagnose this session, ask an agent to run:")
+		directory := filepath.Dir(debugPaths[0])
+		fmt.Fprintf(os.Stderr, "  mekugi inspect-session --debug-dir %s --field diagnostic\n", commandargs.Quote(directory))
+	}()
+	return runInvocation(frontends.Presentation, frontends.Conversation, frontends.LivePreview, frontends.Activity, frontends.History, frontends.Preferences, frontends.Segments, frontends.Changes, frontends.Usage, frontends.AgentMetrics, frontends.TransportDiagnostics, frontends.Diagnostics, ctx, frontends.Commands, frontends.Naming, frontends.Observation, options, settings, issues, executable, args, environment, os.Stderr, resumeThread, resumeArgv, approvals, func(paths []string) { debugPaths = paths }, api, workspace, threads)
+}
+
+// Reasoning shortcuts are session-local Codex config overrides. Preserve option
+// operands and everything after -- rather than interpreting prompt contents.
+func expandReasoningShortcuts(args []string) []string {
+	// Non-session subcommands can own trailing child-process arguments without
+	// a -- delimiter (for example mcp add and sandbox). Leave those intact.
+	if !interactiveCodexArgs(args) && (len(args) == 0 || args[0] != "headless") {
+		return args
+	}
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return append(result, args[i:]...)
+		}
+		switch arg {
+		case "--low", "--medium", "--high", "--xhigh", "--max", "--ultra":
+			result = append(result, "-c", fmt.Sprintf("model_reasoning_effort=%q", strings.TrimPrefix(arg, "--")))
+		case "-c", "--config", "--enable", "--disable", "-i", "--image", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir":
+			result = append(result, arg)
+			if i+1 < len(args) {
+				i++
+				result = append(result, args[i])
+			}
+		default:
+			result = append(result, arg)
+		}
+	}
+	return result
+}
+
+// execTrackHelper is the installed command-segment helper beside this
+// executable, or empty when it is missing and commands run untracked.
+func execTrackHelper() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	helper := filepath.Join(filepath.Dir(executable), "mekugi-exec")
+	if info, err := os.Stat(helper); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return ""
+	}
+	return helper
+}
+
+const userBashEnvEnvironment = "MEKUGI_USER_BASH_ENV"
+const frontendBashEnvMarker = "# Mekugi frontend shell startup\n"
+
+// withoutInheritedFrontend removes invocation-owned shell state and restores
+// the user's startup file before another invocation installs its own frontend.
+func withoutInheritedFrontend(environment []string) []string {
+	values := map[string]string{}
+	for _, entry := range environment {
+		key, value, _ := strings.Cut(entry, "=")
+		values[key] = value
+	}
+	frontendDirectory := ""
+	if path := values["BASH_ENV"]; filepath.Base(path) == "frontend-bash-env" {
+		if body, err := os.ReadFile(path); err == nil && strings.HasPrefix(string(body), frontendBashEnvMarker) {
+			frontendDirectory = filepath.Dir(path)
+		}
+	}
+	vcsGuard, sudoGuard := values["CODEX_SHELL_GUARD_VCS_DIR"], values["CODEX_SHELL_GUARD_SUDO_DIR"]
+	result := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		key, value, _ := strings.Cut(entry, "=")
+		if slices.Contains([]string{"CODEX_THREAD_ID", userBashEnvEnvironment, shellinstrumentation.Guard, shellinstrumentation.ShTrackerEnvironment, "CODEX_SHELL_GUARD_SOCKET", "CODEX_SHELL_GUARD_VCS_DIR", "CODEX_SHELL_GUARD_SUDO_DIR"}, key) {
+			continue
+		}
+		if key == "BASH_ENV" && frontendDirectory != "" {
+			if previous := values[userBashEnvEnvironment]; previous != "" {
+				result = append(result, "BASH_ENV="+previous)
+			}
+			continue
+		}
+		if key == "PATH" && (frontendDirectory != "" || vcsGuard != "" || sudoGuard != "") {
+			paths := filepath.SplitList(value)
+			paths = slices.DeleteFunc(paths, func(path string) bool {
+				if path != "" && (path == vcsGuard || path == sudoGuard) {
+					return true
+				}
+				if frontendDirectory == "" {
+					return false
+				}
+				relative, err := filepath.Rel(frontendDirectory, path)
+				return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+			})
+			entry = "PATH=" + strings.Join(paths, string(os.PathListSeparator))
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
+// frontendShellEnvironment restores the frontend PATH in Codex's Bash command
+// shells and, with a helper, reports each command's segments.
+func frontendShellEnvironment(environment []string, directory, helper string, reports segmenttransport.Endpoints) ([]string, error) {
+	environment = withoutInheritedFrontend(environment)
+	// Login Bash may replace inherited PATH while reading /etc/profile. Its
+	// noninteractive startup file runs afterward, including for `bash -lc`.
+	previous := ""
+	basePath := ""
+	for _, entry := range environment {
+		if value, ok := strings.CutPrefix(entry, "BASH_ENV="); ok {
+			previous = value
+		}
+		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
+			basePath = value
+		}
+	}
+	startup := frontendBashEnvMarker
+	if previous != "" {
+		startup += ". " + commandargs.Quote(previous) + "\n"
+	}
+	front := directory
+	startup += "PATH=" + commandargs.Quote(front) + ":\"$PATH\"\n"
+	startup += "if [ -n \"${CODEX_ARG0_PATH_DIR:-}\" ]; then\n" +
+		"  case :$PATH: in \":$CODEX_ARG0_PATH_DIR:\"*) ;; *) PATH=\"$CODEX_ARG0_PATH_DIR:$PATH\" ;; esac\n" +
+		"fi\n" +
+		"export PATH\n"
+	// Login profiles can replace PATH. Retain inherited command directories as
+	// fallbacks without accumulating them each time a nested shell starts.
+	if paths := filepath.SplitList(basePath); len(paths) != 0 {
+		for i := range paths {
+			paths[i] = commandargs.Quote(paths[i])
+		}
+		startup += "for __mekugi_path in " + strings.Join(paths, " ") + "; do\n" +
+			"  case :$PATH: in *\":$__mekugi_path:\"*) ;; *) PATH=\"$PATH:$__mekugi_path\" ;; esac\n" +
+			"done\nunset __mekugi_path\n"
+	}
+
+	environment = slices.DeleteFunc(environment, func(entry string) bool {
+		return strings.HasPrefix(entry, "PATH=") || strings.HasPrefix(entry, "BASH_ENV=")
+	})
+	if helper != "" && reports.Requests != "" {
+		socket, trackDirectory := reports.Requests, reports.Directory
+		tracker := filepath.Join(filepath.Dir(directory), "exec-track.bash")
+		if err := os.WriteFile(tracker, []byte(shellinstrumentation.Tracker(helper, socket, trackDirectory)), 0o600); err != nil {
+			return nil, fmt.Errorf("prepare command tracking: %w", err)
+		}
+		startup += shellinstrumentation.Hook(tracker)
+		shTracker := filepath.Join(filepath.Dir(directory), "exec-track.sh")
+		if err := os.WriteFile(shTracker, []byte(shellinstrumentation.ShTracker(helper, socket, trackDirectory)), 0o600); err != nil {
+			return nil, fmt.Errorf("prepare sh command tracking: %w", err)
+		}
+		environment = append(environment, shellinstrumentation.ShTrackerEnvironment+"="+shTracker)
+	}
+	path := filepath.Join(filepath.Dir(directory), "frontend-bash-env")
+	if err := os.WriteFile(path, []byte(startup), 0o600); err != nil {
+		return nil, fmt.Errorf("prepare frontend shell environment: %w", err)
+	}
+	return append(environment,
+		"PATH="+front+string(os.PathListSeparator)+basePath,
+		"BASH_ENV="+path, userBashEnvEnvironment+"="+previous), nil
+}
+
+func codexArgs(baseURL string, args []string, route *inferencegateway.NativeProvider) []string {
+	args = slices.Clone(args)
+	// Apply invocation-local endpoints after caller config without crossing --.
+	index := slices.Index(args, "--")
+	if index < 0 {
+		index = len(args)
+	}
+	var overrides []string
+	if route != nil {
+		providers, _ := launchoptions.ConfigOverrides(args)["model_providers"].(map[string]any)
+		if providers == nil {
+			providers = make(map[string]any)
+		}
+		definition, _ := providers[route.ID].(map[string]any)
+		if definition == nil {
+			definition = make(map[string]any)
+			providers[route.ID] = definition
+		}
+		if route.ID == "openai" {
+			overrides = append(overrides, "-c", fmt.Sprintf("openai_base_url=%q", baseURL))
+		} else {
+			definition["base_url"] = baseURL
+		}
+		if route.CatalogURL != "" {
+			definition["model_catalog_url"] = baseURL + "/models"
+		}
+		// The parsed TOML tree contains only representable TOML values. Encoding
+		// the whole top-level value preserves literal provider IDs containing dots.
+		if value, err := launchoptions.TOMLValue(providers); err == nil {
+			overrides = append(overrides, "-c", "model_providers="+value)
+		}
+		overrides = append(overrides, "-c", fmt.Sprintf("model_provider=%q", route.ID))
+	} else {
+		// Keep stock capabilities and runtime-only internal metadata.
+		overrides = append(overrides, "-c", `model_provider="openai"`, "-c", fmt.Sprintf(`openai_base_url=%q`, baseURL))
+	}
+	return slices.Insert(args, index, overrides...)
+}
+
+func validateCodexArgs(args []string, profile bool) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		if arg == "--oss" || arg == "--local-provider" || strings.HasPrefix(arg, "--local-provider=") {
+			return errors.New("mekugi codex does not support provider-selection arguments; custom providers are not supported")
+		}
+		var override string
+		switch {
+		case arg == "-c" || arg == "--config":
+			if i+1 < len(args) {
+				i++
+				override = args[i]
+			}
+		case strings.HasPrefix(arg, "--config="):
+			override = strings.TrimPrefix(arg, "--config=")
+		case strings.HasPrefix(arg, "-c"):
+			override = strings.TrimPrefix(arg, "-c")
+		}
+		key, _, _ := strings.Cut(strings.TrimPrefix(override, "="), "=")
+		root, _, _ := strings.Cut(key, ".")
+		root = strings.Trim(strings.TrimSpace(root), `"'`)
+		if root == "model_provider" || root == "model_providers" || root == "openai_base_url" || root == "oss_provider" {
+			if profile && root != "oss_provider" {
+				continue
+			}
+			return errors.New("mekugi codex does not support provider overrides; it overrides config.toml provider selection and uses the router's default upstream")
+		}
+	}
+	return nil
+}
+
+// Only session arguments may enter the native interactive client.
+func interactiveCodexArgs(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--":
+			return true
+		case "-h", "--help", "-V", "--version":
+			return false
+		case "-c", "--config", "--enable", "--disable", "-i", "--image", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir":
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		switch arg {
+		case "headless", "exec", "e", "review", "login", "logout", "mcp", "mcp-server", "app-server", "app", "completion", "sandbox", "debug", "apply", "a", "cloud", "features", "help":
+			return false
+		default:
+			return true // resume, fork, or the initial interactive prompt.
+		}
+	}
+	return true
+}

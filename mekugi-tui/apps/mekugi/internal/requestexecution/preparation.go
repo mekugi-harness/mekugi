@@ -1,0 +1,40 @@
+package requestexecution
+
+import (
+	"context"
+	"net/http"
+
+	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
+)
+
+// Preparation identifies one admitted request, including automatic continuation.
+type Preparation struct {
+	Session, Thread                   string
+	Metadata                          codexresponses.TurnMetadata
+	MetadataValid, Prewarm, Automatic bool
+	ApprovalReview                    bool
+	Trace                             Trace
+}
+
+// Preparer joins execution observations and review admission before forwarding.
+// Implementations keep capture and retained-publication state at their owners.
+type Preparer interface {
+	Prepare(context.Context, *codexresponses.Request, Preparation) (Prepared, error)
+}
+
+// Prepared has request lifetime. Rebinding drops only the response-start deadline.
+type Prepared interface {
+	codexresponses.Transformer
+	Usage() *accounting.Observation
+	ObserveUsage(inference.Usage)
+	BindExecution(context.Context)
+	Close()
+}
+
+// Naming is the request-facing part of the invocation's naming coordinator.
+type Naming interface {
+	ObserveInput(string, []byte)
+	Completed(context.Context, string, http.Header)
+}

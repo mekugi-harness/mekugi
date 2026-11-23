@@ -1,0 +1,380 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  main_validation:
+    name: Check for duplicate main validation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      reused: ${{ steps.approve_archive.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Look up validation of the merged tree
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          FORCED: ${{ github.event.forced }}
+        run: bash .github/scripts/reuse-pr-validation.sh
+      - name: Approve native archives from the verified PR run
+        id: approve_archive
+        if: steps.pr.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-approved-run-${{ steps.pr.outputs.run_id }}
+          path: ${{ runner.temp }}/native-approved-run
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: main_validation
+    if: ${{ !cancelled() && needs.main_validation.outputs.reused != 'true' }}
+    permissions:
+      actions: read
+      contents: read
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux_amd64
+            runner: ubuntu-24.04
+          - platform: linux_arm64
+            runner: ubuntu-24.04-arm
+          - platform: darwin_arm64
+            runner: macos-15
+    env:
+      CGO_ENABLED: '1'
+      BUILD_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      SCCACHE_GHA_ENABLED: 'true'
+      SCCACHE_IDLE_TIMEOUT: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: mekugi-tui/go.work
+          cache-dependency-path: |
+            mekugi-tui/go.work.sum
+            **/go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24.21.0'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      - name: Cache Bun dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-v1-${{ runner.os }}-${{ hashFiles('mekugi-webui/app/bun.lock') }}
+          restore-keys: |
+            bun-v1-${{ runner.os }}-
+      - name: Install offline-suite tools
+        if: matrix.platform == 'linux_amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ripgrep
+      - name: Test offline suite
+        if: matrix.platform == 'linux_amd64'
+        run: make test TEST_FLAGS=-count=1
+      - name: Check documentation and generated references
+        if: matrix.platform == 'linux_amd64'
+        run: make docs-check check-generated
+      - name: Check web UI
+        if: matrix.platform == 'linux_amd64'
+        run: make webui-check
+      - name: Cache lint tools
+        if: matrix.platform == 'linux_amd64'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/bin/golangci-lint
+            ~/go/bin/deadcode
+          key: lint-tools-v1-${{ matrix.platform }}-${{ hashFiles('mekugi-tui/go.work') }}-v2.14.0-v0.51.0
+      - name: Install lint tools
+        if: matrix.platform == 'linux_amd64'
+        run: |
+          command -v golangci-lint >/dev/null || go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          command -v deadcode >/dev/null || go install golang.org/x/tools/cmd/deadcode@v0.51.0
+      - name: Lint
+        if: matrix.platform == 'linux_amd64'
+        run: make lint
+      - name: Test commands
+        if: matrix.platform != 'linux_amd64'
+        run: make test TEST_PACKAGES='./mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec'
+      - name: Test welcome and linked version
+        run: |
+          MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/internal/launch TEST_RUN='^(TestMekugi(BuildVersion|LinkedBuildVersion)|TestNativeWelcome|TestUISnapshotNativeWelcome)' TEST_FLAGS="-ldflags='-X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG'"
+      - name: Resolve native runtime archive key
+        id: native_key
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          RUNNER_LABEL: ${{ matrix.runner }}
+          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'Makefile', 'runtime/build.py') }}
+        run: |
+          native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
+          image="$RUNNER_LABEL-${ImageVersion:-$GITHUB_RUN_ID}"
+          key="$(printf '%s\n' "$PLATFORM" "$image" "$native_tree" "$RECIPE_HASH" | shasum -a 256 | cut -d' ' -f1)"
+          echo "name=mekugi_${PLATFORM}-$key" >> "$GITHUB_OUTPUT"
+      - name: Cache packaged native runtime
+        id: native_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/artifacts/mekugi-native_${{ matrix.platform }}.tar.gz
+          key: native-bundle-v2-${{ steps.native_key.outputs.name }}
+      - name: Restore packaged native runtime from main
+        id: native_artifact
+        if: steps.native_cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: ${{ steps.native_key.outputs.name }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          # Artifact retention is independent of the compiler cache's LRU eviction.
+          list_runs() {
+            gh api --paginate --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
+              -f name="$1" -F per_page=100 --jq '.artifacts[] | select(.expired == false) | .workflow_run.id'
+          }
+          source_type() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1" | jq -r --arg repo "$GITHUB_REPOSITORY" '
+              select(.path == ".github/workflows/release.yml" and .conclusion == "success" and
+                .head_repository.full_name == $repo) |
+              if .event == "push" and .head_branch == "main" then "main"
+              elif .event == "pull_request" and .run_attempt == 1 then "pr"
+              else empty end
+            '
+          }
+          approved_on_main() {
+            local approvals approval type
+            if ! approvals="$(list_runs "native-approved-run-$1")"; then
+              echo "::warning::Could not list native archive approvals for run $1."
+              return 1
+            fi
+            for approval in $approvals; do
+              if ! type="$(source_type "$approval")"; then
+                echo "::warning::Could not verify native archive approval from run $approval."
+                continue
+              fi
+              [[ "$type" == main ]] && return 0
+            done
+            return 1
+          }
+          if ! candidates="$(list_runs "$ARTIFACT_NAME")"; then
+            echo "::warning::Could not list matching native archives; building locally."
+            exit 0
+          fi
+          while IFS= read -r run_id; do
+            [[ -n "$run_id" ]] || continue
+            if ! type="$(source_type "$run_id")"; then
+              echo "::warning::Could not verify native archive source run $run_id."
+              continue
+            fi
+            if [[ "$type" != main ]] && { [[ "$type" != pr ]] || ! approved_on_main "$run_id"; }; then
+              continue
+            fi
+            download="$RUNNER_TEMP/native-artifact"
+            archive="$download/mekugi-native_${PLATFORM}.tar.gz"
+            if ! gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir "$download" ||
+               [[ ! -s "$archive" ]]; then
+              echo "::warning::Could not restore native archive from run $run_id; building locally."
+              exit 0
+            fi
+            mkdir -p "$RUNNER_TEMP/artifacts"
+            mv "$archive" "$RUNNER_TEMP/artifacts/"
+            echo "restored=true" >> "$GITHUB_OUTPUT"
+            break
+          done <<< "$candidates"
+      - name: Install native Linux build dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pkg-config libcap-dev libssl-dev
+      - name: Enable unprivileged user namespaces
+        if: runner.os == 'Linux'
+        run: |
+          # Match upstream Codex CI on the disposable Ubuntu runners.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.19.0
+      - name: Cache Cargo dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-deps-v1-${{ matrix.platform }}-${{ hashFiles('codex-rs/Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-v1-${{ matrix.platform }}-
+      - name: Cache prebuilt V8 artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: codex-rs/target/v8-artifacts
+          key: v8-artifacts-v1-${{ matrix.platform }}-${{ hashFiles('third_party/v8/rusty_v8_*_release_manifests.sha256') }}
+      - name: Test native runtime
+        env: &native_env
+          CARGO_BUILD_JOBS: ${{ runner.os == 'Linux' && '4' || '2' }}
+          CARGO_INCREMENTAL: '0'
+          # Use system Git for V8's nested Git dependencies instead of Cargo's libgit2 transport.
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          PLATFORM: ${{ matrix.platform }}
+          RUSTC_WRAPPER: sccache
+        run: |
+          # App-server integration fixtures use debug-only startup options.
+          make test-native NATIVE_PROFILE=dev-small
+      - name: Package native runtime
+        if: steps.native_cache.outputs.cache-hit != 'true' && steps.native_artifact.outputs.restored != 'true'
+        env: *native_env
+        run: |
+          make package-native NATIVE_ARCHIVE="$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
+      - name: Build and package
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          test "$(go env GOOS)_$(go env GOARCH)" = "$PLATFORM"
+          package_dir="$RUNNER_TEMP/package"
+          mkdir -p "$package_dir" "$RUNNER_TEMP/artifacts"
+          make webui build
+          GOWORK="$PWD/mekugi-tui/go.work" go build -trimpath -ldflags="-s -w -X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG" -o "$package_dir/" ./mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec
+          native_files=(mekugi-app-server codex-code-mode-host mekugi-models.json)
+          if [ "$RUNNER_OS" = Linux ]; then
+            native_files+=(bwrap)
+          fi
+          tar -xzf "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz" -C "$package_dir" "${native_files[@]}"
+          cp LICENSE-MEKUGI "$package_dir/LICENSE"
+          cp NOTICE "$package_dir/NOTICE"
+          mkdir -p "$package_dir/licenses"
+          cp LICENSE "$package_dir/licenses/codex.txt"
+          if [ "$RUNNER_OS" = Linux ]; then
+            cp codex-rs/vendor/bubblewrap/COPYING "$package_dir/licenses/bubblewrap.txt"
+          fi
+          tar -czf "$RUNNER_TEMP/artifacts/mekugi_${PLATFORM}.tar.gz" -C "$package_dir" .
+      - name: Install and smoke-test the release archive
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          smoke="$RUNNER_TEMP/install-smoke"
+          mkdir -p "$smoke/bin" "$smoke/home"
+          export RELEASE_FIXTURE="$smoke"
+          archive="mekugi_${PLATFORM}.tar.gz"
+          # Serve the exact release archive and checksum without publishing first.
+          (
+            cd "$RUNNER_TEMP/artifacts"
+            shasum -a 256 "./$archive" > "$smoke/SHA256SUMS"
+          )
+          cat > "$smoke/bin/curl" <<'SH'
+          #!/bin/sh
+          set -eu
+          release=https://github.com/mekugi-harness/mekugi/releases/latest/download
+          if [ "$1" = -sSL ] && [ "$2" = -w ] && [ "$3" = '%{http_code}' ] &&
+             [ "$4" = "$release/SHA256SUMS" ] && [ "$5" = -o ]; then
+            cp "$RELEASE_FIXTURE/SHA256SUMS" "$6"
+            printf '200'
+            exit
+          fi
+          case "$2" in
+            "$release/mekugi_${PLATFORM}.tar.gz")
+              cp "$RUNNER_TEMP/artifacts/mekugi_${PLATFORM}.tar.gz" "$4" ;;
+            *) exit 2 ;;
+          esac
+          SH
+          chmod +x "$smoke/bin/curl"
+          HOME="$smoke/home" PATH="$smoke/bin:$PATH" sh install.sh
+          installed="$smoke/home/.local/bin"
+          "$installed/mekugi" --help
+          "$installed/mekugi-exec" --created-path ''
+          "$installed/mekugi-app-server" --help
+          "$installed/codex-code-mode-host" --help
+          test -s "$installed/mekugi-models.json"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            "$installed/bwrap" --unshare-user --unshare-net \
+              --ro-bind / / -- /bin/true
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.native_key.outputs.name || format('mekugi_{0}', matrix.platform) }}
+          path: ${{ runner.temp }}/artifacts/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+      - name: Record the fully tested PR tree
+        id: validated_tree
+        if: matrix.platform == 'linux_amd64' && github.event_name == 'pull_request'
+        run: |
+          # Only record receipts for runs that execute the full suite.
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          printf '%s\n' "$tree" > "$RUNNER_TEMP/validated-tree"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+      - name: Upload validation receipt
+        if: matrix.platform == 'linux_amd64' && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: validated-pr-${{ github.event.number }}-${{ steps.validated_tree.outputs.tree }}
+          path: ${{ runner.temp }}/validated-tree
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mekugi_*
+          path: ${{ runner.temp }}/artifacts
+          merge-multiple: true
+      - name: Publish archives and checksums
+        working-directory: ${{ runner.temp }}/artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum ./*.tar.gz > SHA256SUMS
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./*.tar.gz SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" ./*.tar.gz SHA256SUMS --verify-tag --generate-notes
+          fi

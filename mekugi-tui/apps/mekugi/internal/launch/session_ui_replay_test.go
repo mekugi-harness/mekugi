@@ -1,0 +1,335 @@
+package launch
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+
+	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
+
+	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
+	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
+	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
+
+	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/vt"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
+)
+
+func replayPlaybackTestSource() *playback.Source {
+	start := time.Date(2026, 9, 30, 8, 0, 0, 0, time.Local)
+	event := func(second int, method string, item observation.Item, delta string) playback.Event {
+		return playback.Event{At: start.Add(time.Duration(second) * time.Second), Kind: observation.Kind(method), ThreadID: "root", TurnID: "turn", ItemID: item.ID, Item: item, Delta: delta}
+	}
+	command := observation.Item{ID: "command", Type: "commandExecution", Command: "sleep 1; printf 'captured output'", Cwd: "/workspace/replay", Status: "inProgress"}
+	completed := command
+	completed.Status, completed.ExitCode, completed.DurationMS = "completed", new(0), new(int64(2000))
+	completed.AggregatedOutput = new("captured output\n")
+	message := observation.Item{ID: "answer", Type: "agentMessage", Phase: "final_answer"}
+	answer := message
+	answer.Text = "Repaint diagnosis complete."
+	events := []playback.Event{
+		{At: start, Kind: "turn/started", ThreadID: "root", TurnID: "turn", TurnStatus: "inProgress"},
+		event(1, "replay/providerStarted", observation.Item{}, ""),
+		event(2, "item/reasoning/summaryTextDelta", observation.Item{ID: "reasoning", Type: "reasoning"}, "Inspecting repaint timing."),
+		event(3, "item/completed", observation.Item{ID: "reasoning", Type: "reasoning", Summary: []string{"Inspecting repaint timing."}}, ""),
+		event(3, "replay/providerCompleted", observation.Item{}, ""),
+		event(4, "item/started", command, ""),
+		event(5, "item/commandExecution/outputDelta", command, "captured output\n"),
+		event(6, "item/completed", completed, ""),
+		event(7, "item/started", message, ""),
+		event(8, "item/agentMessage/delta", message, "Repaint diagnosis "),
+		event(9, "item/completed", answer, ""),
+		{At: start.Add(10 * time.Second), Kind: "turn/completed", ThreadID: "root", TurnID: "turn", TurnStatus: "completed"},
+	}
+	return &playback.Source{Thread: "root", Cwd: "/workspace/replay", Start: start, End: start.Add(20 * time.Second), Threads: map[string]string{"root": "/root"}, Events: events, Items: 3, Providers: 1}
+}
+
+func replayPlaybackTestNew(t *testing.T) *uiReplayPlayback {
+	t.Helper()
+	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), replayPlaybackTestSource(), 1)
+	t.Cleanup(p.close)
+	p.ui.view.Painter.Theme, p.ui.agents.Painter.Theme = diffrender.DarkTheme, diffrender.DarkTheme
+	return p
+}
+
+func replayPlaybackTestPaint(t *testing.T, p *uiReplayPlayback, width, height int) string {
+	t.Helper()
+	screen := vt.NewEmulator(width, height)
+	defer screen.Close()
+	p.ui.shell.Frame.Rows = nil
+	p.publish()
+	if err := p.paint(screen, width, height); err != nil {
+		t.Fatal(err)
+	}
+	return screen.String()
+}
+
+func TestSessionUIReplayPlaybackUsesRecordedClockAndSeekReset(t *testing.T) {
+	t.Parallel()
+	p := replayPlaybackTestNew(t)
+	if err := p.advance(4500 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	wantNow := p.Source.Start.Add(4500 * time.Millisecond)
+	if !p.At.Equal(wantNow) || !p.ui.view.Clock().Equal(wantNow) || !p.ui.agents.Clock().Equal(wantNow) {
+		t.Fatal("presentation clocks are not tied to recorded position")
+	}
+	command := p.ui.session.Commands()[[3]string{"root", "turn", "command"}]
+	if command == nil || !command.Entry.Observed.Equal(p.Source.Start.Add(4*time.Second)) || !command.Entry.Native.CommandStarted.Equal(p.Source.Start.Add(4*time.Second)) {
+		t.Fatalf("command start used playback wall time: %+v", command)
+	}
+	if quit, err := p.key(' '); err != nil || quit || !p.Paused {
+		t.Fatalf("pause: quit=%v error=%v paused=%v", quit, err, p.Paused)
+	}
+	next := p.Next
+	replayPlaybackTestPaint(t, p, 120, 28)
+	replayPlaybackTestPaint(t, p, 120, 28)
+	if p.Position != 4500*time.Millisecond || p.Next != next || !p.At.Equal(wantNow) {
+		t.Fatal("painting while paused advanced recorded time")
+	}
+	if err := p.advance(12 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	replayPlaybackTestPaint(t, p, 120, 28)
+	oldUI := p.ui
+	oldThread := p.ui.session.FindThread(p.Source.Thread)
+	outputs := p.activity.Outputs(p.ui.session.Scope())
+	if err := p.advance(2 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if p.activity.Outputs(p.ui.session.Scope()) == outputs {
+		t.Fatal("backward seek reused activity state")
+	}
+	if p.ui.session.FindThread(p.Source.Thread) == oldThread || oldUI.session.Scope() != nil || oldUI.session.Transcript(p.Source.Thread, "turn").Turn != nil {
+		t.Fatal("backward seek retained old correlation scopes")
+	}
+	if p.ui == oldUI || len(p.ui.session.Commands()) != 0 || p.ui.Turn != "turn" || !p.At.Equal(p.Source.Start.Add(2*time.Second)) {
+		t.Fatalf("seek did not rebuild earlier state: position=%v commands=%d", p.Position, len(p.ui.session.Commands()))
+	}
+	if !strings.Contains(replayPlaybackTestPaint(t, p, 120, 28), "Inspecting repaint timing.") {
+		t.Fatal("seek did not replay earlier reasoning")
+	}
+	for _, entry := range p.ui.source.Entries {
+		if strings.Contains(entry.Source.Text, "captured output") || strings.Contains(entry.Source.Text, "Repaint diagnosis") {
+			t.Fatalf("future content survived rewind: %+v", entry)
+		}
+	}
+	for _, key := range []byte{'\n', 'a', '/', '?', 'j', 'k', 'r'} {
+		if quit, err := p.key(key); err != nil || quit {
+			t.Fatalf("replay key %q: quit=%v error=%v", key, quit, err)
+		}
+	}
+	if p.Paused || p.Position != p.From || p.ui.conversation.Editor.Text != "" {
+		t.Fatalf("replay controls leaked into live composer/transport: paused=%v position=%v draft=%q", p.Paused, p.Position, p.ui.conversation.Editor.Text)
+	}
+}
+
+func TestSessionUIReplayPlaybackShowsOnlyArrivedContent(t *testing.T) {
+	t.Parallel()
+	p := completionTestReplay(t)
+	if err := p.advance(4500 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	early := ansi.Strip(replayPlaybackTestPaint(t, p, 120, 28))
+	if !strings.Contains(early, "printf") || strings.Contains(early, "Repaint diagnosis complete.") {
+		t.Fatalf("early frame lost running command or exposed final answer:\n%s", early)
+	}
+	if run := p.ui.session.Commands()[[3]string{"root", "turn", "command"}]; run == nil || p.ui.streams.Commands[[3]string{"root", "turn", "command"}].Holding || run.CompletedAt != (time.Time{}) {
+		t.Fatal("running command was prematurely completed")
+	}
+	if err := p.advance(8 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	partial := ansi.Strip(replayPlaybackTestPaint(t, p, 120, 28))
+	if !strings.Contains(partial, completionTestTrailer[:16]) || !strings.Contains(partial, "Repaint diagnosis") || strings.Contains(partial, "Repaint diagnosis complete.") {
+		t.Fatalf("streaming frame does not reflect arrived message prefix:\n%s", partial)
+	}
+	if err := p.advance(12 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	final := ansi.Strip(replayPlaybackTestPaint(t, p, 120, 28))
+	if !strings.Contains(final, completionTestTrailer) || !strings.Contains(final, "Repaint diagnosis complete.") || len(p.ui.session.Commands()) != 0 {
+		t.Fatalf("completed frame/state did not settle:\n%s", final)
+	}
+	if err := p.advance(8 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if frame := replayPlaybackTestPaint(t, p, 120, 28); !strings.Contains(frame, completionTestTrailer[:16]) || strings.Contains(frame, completionTestTrailer) {
+		t.Fatal("backward replay lost the arrived source text or exposed its future suffix")
+	}
+}
+
+func TestSessionUIReplayPlaybackControlsClampAndPreserveClock(t *testing.T) {
+	t.Parallel()
+	p := replayPlaybackTestNew(t)
+	p.From = 2 * time.Second
+	if err := p.advance(p.From); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []byte{'+', '+', '-'} {
+		if _, err := p.key(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p.Speed != 2 || p.Position != p.From || !p.At.Equal(p.Source.Start.Add(p.From)) {
+		t.Fatal("speed changes rewrote recorded position")
+	}
+	for range 12 {
+		p.key('+')
+	}
+	if p.Speed != 100 {
+		t.Fatalf("speed upper limit = %v", p.Speed)
+	}
+	for range 20 {
+		p.key('-')
+	}
+	if p.Speed != 0.1 {
+		t.Fatalf("speed lower limit = %v", p.Speed)
+	}
+	if _, err := p.key(']'); err != nil || p.Position != 12*time.Second {
+		t.Fatalf("forward seek: position=%v error=%v", p.Position, err)
+	}
+	if _, err := p.key(']'); err != nil || p.Position != p.Until {
+		t.Fatalf("forward seek limit: position=%v error=%v", p.Position, err)
+	}
+	if _, err := p.key('['); err != nil || p.Position != 10*time.Second {
+		t.Fatalf("backward seek: position=%v error=%v", p.Position, err)
+	}
+	if _, err := p.key('['); err != nil || p.Position != p.From {
+		t.Fatalf("backward seek start limit: position=%v error=%v", p.Position, err)
+	}
+	for _, key := range []byte{'q', 3, 27} {
+		if quit, err := p.key(key); err != nil || !quit {
+			t.Fatalf("quit key %q: quit=%v error=%v", key, quit, err)
+		}
+	}
+}
+
+func TestSessionUIReplayBatchElapsedUsesRecordedClock(t *testing.T) {
+	t.Parallel()
+	p := replayPlaybackTestNew(t)
+	for _, tc := range []struct {
+		position time.Duration
+		elapsed  string
+	}{
+		{4500 * time.Millisecond, ""},
+		{5500 * time.Millisecond, "1s"},
+		{4500 * time.Millisecond, ""},
+	} {
+		move := p.advance
+		if tc.position < p.Position {
+			move = p.seek
+		}
+		if err := move(tc.position); err != nil {
+			t.Fatal(err)
+		}
+		frame := replayPlaybackTestPaint(t, p, 120, 28)
+		_, tail, found := strings.Cut(frame, "Running sleep 1; printf 'captured output'")
+		row, _, _ := strings.Cut(tail, "\n")
+		// The elapsed time alone follows the command, set against the right edge.
+		if !found || strings.TrimSpace(row) != tc.elapsed {
+			t.Fatalf("replayed elapsed time at %v is not %s:\n%s", tc.position, tc.elapsed, frame)
+		}
+	}
+}
+
+func TestUISnapshotSessionUIReplay(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		position time.Duration
+		paused   bool
+	}{
+		{"running", 4500 * time.Millisecond, false},
+		{"paused-streaming", 8 * time.Second, true},
+		{"completed", 20 * time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := replayPlaybackTestNew(t)
+			if err := p.advance(tc.position); err != nil {
+				t.Fatal(err)
+			}
+			p.Paused = tc.paused
+			uisnapshot.Assert(t, "testdata/snapshots/session-ui-replay-"+tc.name+".txt", replayPlaybackTestPaint(t, p, 120, 28))
+		})
+	}
+	t.Run("narrow-paused-bar", func(t *testing.T) {
+		p := replayPlaybackTestNew(t)
+		if err := p.advance(8 * time.Second); err != nil {
+			t.Fatal(err)
+		}
+		p.Paused = true
+		uisnapshot.Assert(t, "testdata/snapshots/session-ui-replay-narrow-paused-bar.txt", p.bar(42)+"\n")
+	})
+}
+
+func TestSessionUIReplayExcludesNativeWaitTime(t *testing.T) {
+	path := replayTestWrite(t, t.TempDir(), "rollout-root.jsonl", replayTestMeta("root"),
+		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "turn"}),
+		replayTestItem("root", "turn", replayTestEpoch+5000, replayTestEpoch+15000,
+			map[string]any{"type": "CollabAgentToolCall", "id": "wait", "tool": "wait", "status": "completed", "receiver_thread_ids": []string{"child"}}),
+		replayTestRecord("event_msg", replayTestEpoch+20000, map[string]any{"type": "task_complete", "turn_id": "turn"}),
+	)
+	source, err := replayReadTest(t, new(transportcapture.Service), t.Context(), path, "", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
+	t.Cleanup(p.close)
+	for _, step := range []struct {
+		position time.Duration
+		label    string
+	}{
+		{4 * time.Second, "Working 4s"},
+		{12 * time.Second, "Working 5s"},
+		{18 * time.Second, "Working 8s"},
+		{20 * time.Second, "Completed in 10s"},
+	} {
+		if err := p.advance(step.position); err != nil {
+			t.Fatal(err)
+		}
+		if frame := replayPlaybackTestPaint(t, p, 100, 24); !strings.Contains(frame, step.label) {
+			t.Fatalf("at %s, wanted %q in:\n%s", step.position, step.label, frame)
+		}
+	}
+}
+
+func newTestUIReplayPlayback(activity *activitymodel.Service, ctx context.Context, source *playback.Source, speed float64) *uiReplayPlayback {
+	conversation := new(conversationmodel.Service)
+	observations := conversationbinding.Codex.Observation(conversation)
+	reviewSource := new(changecapture.Service)
+	return newUIReplayPlayback(testTerminalViews(reviewSource), replayOwners{testPresentation(), conversation, &observations, activity}, ctx, source, speed)
+}
+
+func runTestSessionUIReplay(activity *activitymodel.Service, service *playback.Service, ctx context.Context, args []string, stdin, stdout, stderr *os.File) int {
+	conversation := new(conversationmodel.Service)
+	observations := conversationbinding.Codex.Observation(conversation)
+	reviewSource := new(changecapture.Service)
+	return RunSessionUIReplay(testTerminalViews(reviewSource), testPresentation(), conversation, &observations, activity, service, ctx, args, stdin, stdout, stderr)
+}
+
+func (u *replayAttachment) testActivity(view *activityui.View) *activityAdapter {
+	fixture := &activityAdapter{ActivitySource: u.activitySource(view), View: view, display: u.presentation}
+	if view == u.agents {
+		fixture.mainView = &activityAdapter{ActivitySource: u.source, View: u.view, display: u.presentation}
+	}
+	return fixture
+}
+
+func openReplayBlocks(p *uiReplayPlayback, view *activityui.View, pages []activityui.Block) {
+	u := p.ui
+	u.detailFiles.openTerminalDetailSelection(&u.session, u.presentation.View().Version, u.activitySource(view), u.shell, view, activitypresentation.DetailPages(activityui.Values(pages)), false)
+}

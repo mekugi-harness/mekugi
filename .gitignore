@@ -94,3 +94,16 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
+
+# Mekugi local and build output
+node_modules/
+.env
+.env.*
+!.env.example
+.docker/
+__pycache__/
+docs/proposals/
+/bin
+!/mekugi-webui/dist/
+/mekugi-webui/dist/app/
+/.worktrees/

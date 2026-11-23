@@ -1,0 +1,17 @@
+module github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui
+
+go 1.27.0
+
+require (
+	github.com/charmbracelet/ultraviolet v0.0.0-20260922123528-4e49372c11f9
+	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/vt v0.0.0-20260924144451-d676b019604b
+	github.com/creack/pty v1.1.24
+	github.com/muesli/cancelreader v0.2.2
+	github.com/rivo/uniseg v0.4.7
+	github.com/yuin/goldmark v1.8.6
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.46.0
+)
+
+require golang.org/x/image v0.47.0

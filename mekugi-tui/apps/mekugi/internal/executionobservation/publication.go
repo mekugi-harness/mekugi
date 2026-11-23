@@ -1,0 +1,61 @@
+package executionobservation
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"maps"
+	"slices"
+	"strings"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/recordtransactions"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
+)
+
+func publishObservations(ctx context.Context, selected changes.Scope, source changes.Service, publish func([]changes.Update), workspace string, histories map[string]mekugiHistory, continuations ...execIntervalContinuation) error {
+	if selected.Store == nil {
+		return nil
+	}
+	selected = observationScope(ctx, selected)
+	updates, err := recordtransactions.PublishEvidence(ctx, selected, source, workspace, changePublications(histories), func(tx *history.Transaction) error {
+		// Required writer endpoints precede the terminal record. A retry can
+		// never find completed evidence while its continuation is still missing.
+		for _, continuation := range continuations {
+			if err := continuation.publish(tx, source); err != nil {
+				return err
+			}
+		}
+		for _, id := range slices.SortedFunc(maps.Keys(histories), func(a, b string) int {
+			return cmp.Or(cmp.Compare(histories[a].sequence, histories[b].sequence), strings.Compare(a, b))
+		}) {
+			if err := publishCapturedObservation(tx, selected, workspace, id, histories[id]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		notifyChanges(publish, updates)
+	}
+	return changeError(err)
+}
+
+// The application classifies capture eligibility; Session History owns merging,
+// ordering and publication of the neutral retained envelope.
+func publishObservation(tx *history.Transaction, selected changes.Scope, record legacycall.Record) error {
+	failed := record.History.ExecOutcome != nil && record.History.ExecOutcome.Status == string(changecapture.StatusFailed) && record.History.ExecOutcome.SharedWith == ""
+	ordered := record.History.ChangeID != "" && len(record.History.ReviewFiles) > 0 || failed
+	err := tx.PublishHostCall(selected.Thread, selected.Limits, record, ordered)
+	var publication *history.PublicationError
+	var conflict *history.HostConflict
+	var capacity *history.CapacityError
+	if errors.As(err, &publication) || errors.As(err, &conflict) || errors.As(err, &capacity) {
+		return requestexecution.StoragePublicationError(err)
+	}
+	return err
+}

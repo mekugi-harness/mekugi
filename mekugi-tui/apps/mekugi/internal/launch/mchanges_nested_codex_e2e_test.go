@@ -1,0 +1,765 @@
+//go:build codex_e2e
+
+package launch
+
+import (
+	"bytes"
+	"context"
+	"encoding/json/jsontext"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/shellhook"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
+
+	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
+
+	json "encoding/json/v2"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// This acceptance test uses the installed Codex consumer with a deterministic
+// local provider. Nested tool results are observed through Codex rollout trace,
+// never through exec's printed output.
+type mchangesNestedCodexProvider struct {
+	mu                        sync.Mutex
+	program                   string
+	callID                    string
+	threadID                  string
+	turns                     int
+	resultSeen                bool
+	terminalOutput            string
+	finalMessage              string
+	waitCall                  string
+	expectPending, sawPending bool
+	expectProcess             bool
+	processWait               bool
+	trace                     *nativetrace.Reader
+	store                     *mekugiReplayStore
+	workspace                 string
+	overlapProgram            string
+	overlapCell               string
+	codexArgs                 []string
+	observedCalls             []nativetrace.Call
+	laterProgram              string
+	processSession            int
+}
+
+func (p *mchangesNestedCodexProvider) ForwardExecution(
+	ctx context.Context,
+	_ context.Context,
+	body []byte,
+	headers http.Header,
+	_ string,
+) (*inferencegateway.Response, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.turns++
+	metadata, _ := codexresponses.DecodeTurnMetadata(headers)
+	thread := headers.Get(codexresponses.ThreadIDHeader)
+	if thread == "" {
+		thread = metadata.ThreadID
+	}
+	if thread == "" {
+		return nil, fmt.Errorf("Codex request omitted its stable thread identity")
+	}
+	if p.threadID == "" {
+		p.threadID = thread
+	} else if p.threadID != thread {
+		return nil, fmt.Errorf("Codex request thread changed from %q to %q", p.threadID, thread)
+	}
+
+	if p.turns == 1 {
+		if !bytes.Contains(body, []byte(applyPatchToolName)) || !bytes.Contains(body, []byte(nativeExecCommandToolName)) {
+			return nil, fmt.Errorf("Codex request does not advertise both nested stock tools")
+		}
+		return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{
+			"type": "custom_tool_call", "id": p.callID + "-item", "call_id": p.callID,
+			"name": "exec", "status": "completed", "input": p.program,
+		}), nil)
+	}
+	if p.turns > 8 {
+		return nil, fmt.Errorf("unexpected provider turn %d", p.turns)
+	}
+	var request struct {
+		Input []struct {
+			Type   string         `json:"type"`
+			CallID string         `json:"call_id"`
+			Output jsontext.Value `json:"output"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return nil, err
+	}
+	expected := p.callID
+	if p.waitCall != "" {
+		expected = p.waitCall
+	}
+	for _, item := range request.Input {
+		if (item.Type != "custom_tool_call_output" && item.Type != "function_call_output") || item.CallID != expected {
+			continue
+		}
+		if p.processWait {
+			result := binding.DecodeExecutionResult("write_stdin", item.Output)
+			if !result.Terminal || result.ExitCode == nil || *result.ExitCode != 0 {
+				return nil, fmt.Errorf("native process continuation did not finish successfully")
+			}
+			p.resultSeen = true
+			break
+		}
+		result := binding.DecodeExecutionResult("exec", item.Output)
+		if p.laterProgram != "" && p.waitCall == p.callID+"-overlap" && result.Terminal {
+			p.waitCall = p.callID + "-later"
+			program := strings.ReplaceAll(p.laterProgram, "SESSION", strconv.Itoa(p.processSession))
+			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": program}), nil)
+		}
+		if p.overlapCell != "" && p.waitCall == p.callID+"-overlap" && result.Terminal {
+			p.waitCall = "nested-overlap-wait"
+			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": p.overlapCell, "yield_time_ms": 10000}))}), nil)
+		}
+		if result.Terminal && p.expectProcess && !p.sawPending {
+			evidence := p.trace.ReadCell(p.threadID, p.callID, p.program)
+			calls := evidence.Calls()
+			if !evidence.Ended() || !evidence.Pending() || len(calls) != 1 {
+				return nil, fmt.Errorf("expected a completed cell with a live nested process")
+			}
+			pendingCtx, release, err := p.store.beginSession(ctx, p.threadID, "")
+			if err != nil {
+				return nil, err
+			}
+			list, err := p.store.changes.Read(pendingCtx, p.store.scoped(pendingCtx).changeScope(), changes.Query{Workspace: p.workspace, View: "list"})
+			release()
+			if err != nil || list != "" {
+				return nil, fmt.Errorf("completed cell finalized a running process: %q, %v", list, err)
+			}
+			session, err := strconv.Atoi(calls[0].Session)
+			if err != nil {
+				return nil, err
+			}
+			p.sawPending = true
+			if p.laterProgram != "" {
+				p.processSession = session
+				p.waitCall = p.callID + "-overlap"
+				return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": p.overlapProgram}), nil)
+			}
+			p.processWait = true
+			p.waitCall = "nested-process-wait"
+			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "write_stdin", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"session_id": session, "chars": "", "yield_time_ms": 10000}))}), nil)
+		}
+		if cell := strings.TrimPrefix(result.ResumeHandle, "cell:"); cell != "" {
+			if p.expectPending {
+				pendingCtx, release, err := p.store.beginSession(ctx, p.threadID, "")
+				if err != nil {
+					return nil, err
+				}
+				list, err := p.store.changes.Read(pendingCtx, p.store.scoped(pendingCtx).changeScope(), changes.Query{Workspace: p.workspace, View: "list"})
+				release()
+				if err != nil || list != "" {
+					return nil, fmt.Errorf("yielded edits finalized prematurely: %q, %v", list, err)
+				}
+				p.sawPending = true
+			}
+			if p.overlapProgram != "" && p.overlapCell == "" && p.laterProgram == "" {
+				if !strings.Contains(result.Text, "runner-ready") {
+					return nil, fmt.Errorf("runner did not reach the overlap boundary: %s", result.Text)
+				}
+				p.overlapCell = cell
+				p.waitCall = p.callID + "-overlap"
+				return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": p.overlapProgram}), nil)
+			}
+			p.waitCall = fmt.Sprintf("nested-wait-%d", p.turns)
+			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": cell, "yield_time_ms": 10000}))}), nil)
+		}
+		p.resultSeen = result.Terminal
+		p.terminalOutput = string(item.Output)
+		break
+	}
+	if !p.resultSeen {
+		return nil, fmt.Errorf("Codex did not return the completed exec cell result: %.3000s", body)
+	}
+	p.observedCalls = p.trace.ReadCell(p.threadID, p.callID, p.program).Calls()
+	return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{
+		"type": "message", "id": p.callID + "-final", "role": "assistant", "status": "completed",
+		"content": []any{map[string]any{"type": "output_text", "text": p.finalMessage}},
+	}), nil)
+}
+
+func mchangesNestedCodexResponse(turn int, item map[string]any) *http.Response {
+	responseID := fmt.Sprintf("mchanges-nested-%d", turn)
+	response := map[string]any{
+		"id": responseID, "status": "completed", "output": []any{item},
+		"usage": map[string]any{
+			"input_tokens": 10, "input_tokens_details": map[string]any{"cached_tokens": 0},
+			"output_tokens": 5, "output_tokens_details": map[string]any{"reasoning_tokens": 0}, "total_tokens": 15,
+		},
+	}
+	var wire strings.Builder
+	for _, event := range []map[string]any{
+		{"type": "response.created", "response": map[string]any{"id": responseID, "status": "in_progress", "output": []any{}}},
+		{"type": "response.output_item.added", "output_index": 0, "item": item},
+		{"type": "response.output_item.done", "output_index": 0, "item": item},
+		{"type": "response.completed", "response": response},
+	} {
+		wire.WriteString("data: ")
+		wire.Write(responses.MustMarshalJSON(event))
+		wire.WriteString("\n\n")
+	}
+	result := serverHTTPResponse(wire.String())
+	result.Header.Set("Content-Type", "text/event-stream")
+	return result
+}
+
+func TestMChangesNoOpFormatterOverlapNativeCodexE2E(t *testing.T) {
+	testMChangesCheckOverlap(t, "gofmt -w first_test.go second_test.go && cmp first_test.go first_test.go.expected && cmp second_test.go second_test.go.expected && printf 'runner-ready\\n' && mrun --max-tokens 2000 make test", true)
+}
+
+func TestMChangesYieldedCheckOverlapNativeCodex(t *testing.T) {
+	for _, check := range []string{"make test", "rtk err make check-native"} {
+		t.Run(check, func(t *testing.T) { testMChangesCheckOverlap(t, check, false) })
+	}
+}
+
+func testMChangesCheckOverlap(t *testing.T, command string, formatter bool) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv(routerTestWorkerEnvironment, "1")
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatal("installed Codex is required for formatter overlap acceptance")
+	}
+	registry, err := buildToolRegistryForTest(t, t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := registry.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	store, err := openMekugiReplayStore(registry.ReplayDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setCodexFrontendLoginEnvironment(t, filepath.Dir(filepath.Join(registry.FrontendDirectory, "mrun")))
+	for name, content := range map[string]string{
+		"first_test.go":  "package fixture\n\nconst Value = 1\n",
+		"second_test.go": "package fixture\n\nconst Other = 1\n",
+	} {
+		writeTestFile(t, filepath.Join(workspace, name), content)
+		writeTestFile(t, filepath.Join(workspace, name+".expected"), content)
+	}
+	writeTestFile(t, filepath.Join(workspace, "Makefile"), ".PHONY: test check-native\ntest check-native:\n\t@i=0; while ! grep -q 'Value = 2' first_test.go; do i=$$((i+1)); test $$i -lt 400 || exit 1; sleep 0.05; done\n\t@sleep 1; printf 'check-passed\\n'\n")
+	program := "// @exec: {\"yield_time_ms\": 2000}\nconst started = await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(command)) + ", yield_time_ms: 1000});\ntext(started.output);\nif (typeof started.session_id !== 'number') throw new Error('check did not yield');\nconst ended = await tools.write_stdin({session_id: started.session_id, chars: '', yield_time_ms: 10000});\ntext(ended.output);\nif (ended.exit_code !== 0) throw new Error('check failed');"
+	patch := "*** Begin Patch\n*** Update File: first_test.go\n@@\n-const Value = 1\n+const Value = 2\n*** End Patch\n"
+	provider := &mchangesNestedCodexProvider{
+		program: program, callID: "formatter-check", finalMessage: "formatter overlap completed", expectPending: true,
+		store: store, workspace: workspace, overlapProgram: "await tools.apply_patch(" + string(responses.MustMarshalJSON(patch)) + ");",
+	}
+	if !formatter {
+		provider.program = "text(await tools.exec_command({cmd:" + strconv.Quote(command) + ",yield_time_ms:1000}));"
+		provider.expectPending, provider.expectProcess = false, true
+		provider.laterProgram = "const r=await tools.write_stdin({session_id:SESSION,chars:'',yield_time_ms:10000}); if(r.exit_code!==0) throw Error(r.output);"
+	}
+	thread := runMChangesNestedCodexCell(t, codex, registry, store, workspace, provider)
+	ctx, release, err := store.beginSession(t.Context(), thread, "formatter-overlap-read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	writer, found, err := store.scoped(ctx).lookup(ctx, workspace, legacycall.ExecCallID(provider.callID, true))
+	if err != nil || !found || writer.ExecOutcome == nil {
+		t.Fatalf("formatter terminal capture: found=%t error=%v history=%+v", found, err, writer)
+	}
+	t.Logf("runner capture: change_id=%q coverage=%q scope_reason=%q files=%d", writer.ChangeID, writer.ExecOutcome.Coverage, writer.ExecOutcome.ScopeReason, len(writer.ReviewFiles))
+	if writer.ChangeID != "" || len(writer.ReviewFiles) != 0 || writer.ExecOutcome.Coverage != changecapture.CoverageExact || writer.ExecOutcome.Exit == nil || *writer.ExecOutcome.Exit != 0 || strings.Contains(writer.ExecOutcome.ScopeReason, "rtk is not recognized") {
+		t.Fatalf("runner claimed an edit, lost the check scope or reported incomplete effects: %+v", writer)
+	}
+	edited, found, err := store.scoped(ctx).lookup(ctx, workspace, legacycall.PatchCallID(provider.callID+"-overlap", 0))
+	if err != nil || !found || edited.ChangeID == "" {
+		t.Fatalf("overlapping patch capture: found=%t error=%v history=%+v", found, err, edited)
+	}
+	net := runMChangesNestedShell(t, registry, workspace, thread, "mchanges "+edited.ChangeID)
+	history := runMChangesNestedShell(t, registry, workspace, thread, "mchanges "+edited.ChangeID+" --history")
+	t.Logf("patch %s: net_status=%d net_stderr=%q\n%s", edited.ChangeID, net.status, net.stderr, net.stdout)
+	if net.status != 0 || net.stderr != "" || !strings.Contains(net.stdout, "-const Value = 1\n+const Value = 2") || history.status != 0 || history.stderr != "" || strings.Contains(history.stdout, "overlapping writer endpoint unavailable") {
+		t.Fatalf("overlapping patch lost complete evidence: net=%+v history=%+v", net, history)
+	}
+}
+
+func TestMChangesSubmoduleBatchDuringRunnerNativeCodex(t *testing.T) {
+	module, workspace := newGitFixture(t), newGitFixture(t)
+	for _, name := range []string{"direct.go", "first.go", "second.go", "third.go", "untouched.go"} {
+		module.write(name, "package fixture\n\nconst value = 1\n")
+	}
+	module.write("Makefile", "check:\n\t@printf 'runner-ready\\n'\n\t@i=0; until grep -q 'value = 2' third.go; do i=$$((i+1)); test $$i -lt 400 || exit 1; sleep .05; done\n")
+	module.run("add", ".")
+	module.run("commit", "-qm", "base")
+	workspace.run("-c", "protocol.file.allow=always", "submodule", "add", "-q", module.dir, "native")
+	nested := filepath.Join(workspace.dir, "native")
+	t.Setenv(routerTestWorkerEnvironment, "1")
+	registry, err := buildToolRegistryForTest(t, t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := registry.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	store, err := openMekugiReplayStore(registry.ReplayDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setCodexFrontendLoginEnvironment(t, registry.FrontendDirectory)
+	runner := "python3 -c 'import subprocess; subprocess.run([\"make\", \"check\"], check=True)'"
+	program := "// @exec: {\"yield_time_ms\":2000}\nconst r = await tools.exec_command({cmd:" + strconv.Quote(runner) + ", workdir:" + strconv.Quote(nested) + ",yield_time_ms:1000}); text(r.output); if(!r.session_id) throw Error('expected running check'); text(await tools.write_stdin({session_id:r.session_id,chars:'',yield_time_ms:10000}));"
+	edit := `python3 - <<'PY'
+from pathlib import Path
+base = Path('native')
+p = base / 'direct.go'
+p.write_text(p.read_text().replace('= 1', '=2'))
+for name in ['first.go', 'second.go', 'third.go', 'untouched.go']:
+    if name == 'untouched.go': raise SystemExit(7)
+    p = base / name
+    p.write_text(p.read_text().replace('= 1', '= 2'))
+PY`
+	format := "gofmt -w native/direct.go"
+	provider := &mchangesNestedCodexProvider{program: program, callID: "python-runner", finalMessage: "check completed", expectPending: true, store: store, workspace: workspace.dir,
+		overlapProgram: "const r = await tools.exec_command({cmd:" + strconv.Quote(edit) + "}); if(r.exit_code!==7) throw Error('expected partial write'); const f = await tools.exec_command({cmd:" + strconv.Quote(format) + "}); if(f.exit_code!==0) throw Error('format failed'); text('batch finished '.repeat(40));"}
+	thread := runMChangesNestedCodexCell(t, "codex", registry, store, workspace.dir, provider)
+	ctx, release, err := store.beginSession(t.Context(), thread, "read")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	check, found, err := store.scoped(ctx).lookup(ctx, workspace.dir, legacycall.ExecCallID(provider.callID, true))
+	if err != nil || !found || len(check.ReviewFiles) != 0 || check.ChangeID != "" {
+		t.Fatalf("runner claimed batch edits: found=%v id=%q files=%d err=%v", found, check.ChangeID, len(check.ReviewFiles), err)
+	}
+	batch, found, err := store.scoped(ctx).lookup(ctx, workspace.dir, legacycall.ExecCallID(provider.callID+"-overlap", true))
+	if err != nil || !found || batch.ChangeID == "" {
+		t.Fatalf("missing batch: found=%v err=%v", found, err)
+	}
+	net := runMChangesNestedShell(t, registry, workspace.dir, thread, "mchanges "+batch.ChangeID)
+	if net.status != 0 || strings.Count(net.stdout, "-const value = 1") != 4 || strings.Count(net.stdout, "+const value = 2") != 4 || strings.Contains(net.stdout, "untouched.go") {
+		t.Fatalf("partial batch and formatter lost endpoints: %+v", net)
+	}
+}
+
+func TestMChangesNestedNativeCodexE2E(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Fatal("installed Codex is required for the mchanges nested-tool acceptance gate")
+	}
+	registry, err := buildToolRegistryForTest(t, t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := registry.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	frontend := filepath.Join(registry.FrontendDirectory, "mchanges")
+	if _, err := os.Stat(frontend); err != nil {
+		t.Fatal("mchanges executable frontend is unavailable")
+	}
+	replayDirectory := registry.ReplayDirectory
+	store, err := openMekugiReplayStore(replayDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	setCodexFrontendLoginEnvironment(t, filepath.Dir(frontend))
+
+	patch := "*** Begin Patch\n*** Add File: nested-patch.txt\n+patch-result\n*** End Patch\n"
+	shellCommand := "echo command-result > nested-command.txt"
+	successProgram := "await tools.apply_patch(" + string(responses.MustMarshalJSON(patch)) + ");\n" +
+		"await tools.exec_command({cmd:" + string(responses.MustMarshalJSON(shellCommand)) +
+		",workdir:" + string(responses.MustMarshalJSON(workspace)) + "});"
+	successProvider := &mchangesNestedCodexProvider{
+		program: successProgram, callID: "nested-success-call", finalMessage: "nested edits completed",
+	}
+	successThread := runMChangesNestedCodexCell(t, codex, registry, store, workspace, successProvider)
+	// The helper has removed native traces. A fresh store must still expose
+	// the host receipts, including to a reviewer in the shared namespace.
+	store, err = openMekugiReplayStore(replayDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !successProvider.resultSeen {
+		t.Fatal("Codex did not acknowledge the successful exec cell")
+	}
+	for name, want := range map[string]string{"nested-patch.txt": "patch-result\n", "nested-command.txt": "command-result\n"} {
+		got, err := os.ReadFile(filepath.Join(workspace, name))
+		if err != nil || string(got) != want {
+			t.Fatalf("host file %s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+
+	rootList := runMChangesNestedShell(t, registry, workspace, successThread, "mchanges --mine --list")
+	if rootList.status != 0 || rootList.stderr != "" {
+		t.Fatalf("root --list: stdout=%q stderr=%q status=%d", rootList.stdout, rootList.stderr, rootList.status)
+	}
+	successIDs := mchangesThreadIDs(t, store, workspace, successThread)
+	if len(successIDs) != 2 {
+		t.Fatalf("nested success allocated %d change IDs, want one for apply_patch and one for exec_command: %q", len(successIDs), rootList.stdout)
+	}
+	for _, id := range successIDs {
+		if !strings.Contains(rootList.stdout, id) {
+			t.Errorf("--list omitted nested change ID %s: %q", id, rootList.stdout)
+		}
+	}
+	if !strings.Contains(rootList.stdout, "+1 -0") || strings.Contains(rootList.stdout, "completed") ||
+		strings.Contains(rootList.stdout, "pending") || strings.Contains(rootList.stdout, "unconfirmed") {
+		t.Fatalf("nested change IDs and counts missing from --list: %q", rootList.stdout)
+	}
+
+	net := runMChangesNestedShell(t, registry, workspace, successThread, "mchanges --mine --net")
+	if net.status != 0 || net.stderr != "" || !strings.Contains(net.stdout, "+patch-result") || !strings.Contains(net.stdout, "+command-result") ||
+		!strings.Contains(net.stdout, "nested-patch.txt") || !strings.Contains(net.stdout, "nested-command.txt") {
+		t.Fatalf("--mine --net did not compose confirmed nested effects: stdout=%q stderr=%q status=%d", net.stdout, net.stderr, net.status)
+	}
+
+	rootContext, releaseRoot, err := store.beginSession(t.Context(), successThread, "mchanges-nested-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseRoot()
+	rootStore := store.scoped(rootContext)
+	index, err := rootStore.changes.Inspect(rootStore.changeScope(), workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range successIDs {
+		for _, call := range index.Changes[id].Calls {
+			record, found, err := rootStore.read(workspace, call.ID, false)
+			if err != nil || !found || len(record.History.HostResults) != 1 {
+				t.Fatalf("nested success lacks durable native receipt: %s found=%t err=%v history=%+v", id, found, err, record.History)
+			}
+		}
+	}
+	inspectorThread := "mchanges-reviewer-" + filepath.Base(workspace)
+	reviewerContext, releaseReviewer, err := store.beginSession(t.Context(), inspectorThread, "mchanges-nested-reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseReviewer()
+	reviewerContext = bindTestHandleScope(t, store, reviewerContext, successThread, "")
+	if err := store.scoped(reviewerContext).retainInput(reviewerContext, workspace, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	reviewerList := runMChangesNestedShell(t, registry, workspace, inspectorThread, "mchanges --list")
+	if reviewerList.status != 0 || reviewerList.stderr != "" {
+		t.Fatalf("reviewer --list: stdout=%q stderr=%q status=%d", reviewerList.stdout, reviewerList.stderr, reviewerList.status)
+	}
+	for _, id := range successIDs {
+		if strings.Contains(reviewerList.stdout, id) {
+			t.Errorf("reviewer own-thread list leaked author change ID %s: %q", id, reviewerList.stdout)
+		}
+	}
+	explicit := runMChangesNestedShell(t, registry, workspace, inspectorThread,
+		"mchanges "+strings.Join(successIDs, " ")+" --history")
+	if explicit.status != 0 || explicit.stderr != "" || !strings.Contains(explicit.stdout, "nested-patch.txt") || !strings.Contains(explicit.stdout, "nested-command.txt") ||
+		!strings.Contains(explicit.stdout, patch) || !strings.Contains(explicit.stdout, shellCommand) {
+		t.Fatalf("reviewer explicit-ID read lost nested edit evidence: stdout=%q stderr=%q status=%d", explicit.stdout, explicit.stderr, explicit.status)
+	}
+
+	// A second real cell catches both nested host failures. Its outer exec
+	// result still completes, but neither nested change may become applied.
+	failureWorkspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failurePatch := "*** Begin Patch\n*** Update File: nested-patch.txt\n@@\n-absent-before-line\n+replacement\n*** End Patch\n"
+	failureCommand := "echo partial-result > nested-partial.txt; exit 7"
+	failureProgram := "try { await tools.apply_patch(" + string(responses.MustMarshalJSON(failurePatch)) + "); } catch (_) {}\n" +
+		"try { await tools.exec_command({cmd:" + string(responses.MustMarshalJSON(failureCommand)) +
+		",workdir:" + string(responses.MustMarshalJSON(failureWorkspace)) + "}); } catch (_) {}"
+	failureProvider := &mchangesNestedCodexProvider{
+		program: failureProgram, callID: "nested-failure-call", finalMessage: "outer cell completed after caught failures",
+	}
+	failureThread := runMChangesNestedCodexCell(t, codex, registry, store, failureWorkspace, failureProvider)
+	if !failureProvider.resultSeen {
+		t.Fatal("Codex did not complete the outer exec cell after caught nested failures")
+	}
+	failureList := runMChangesNestedShell(t, registry, failureWorkspace, failureThread, "mchanges --mine --list")
+	if failureList.status != 0 || failureList.stderr != "" {
+		t.Fatalf("failure --list: stdout=%q stderr=%q status=%d", failureList.stdout, failureList.stderr, failureList.status)
+	}
+	failureIDs := mchangesThreadIDs(t, store, failureWorkspace, failureThread)
+	if len(failureIDs) != 1 {
+		t.Fatalf("caught nested failures allocated %d change IDs, want only the shell's file effect: %q", len(failureIDs), failureList.stdout)
+	}
+	failedContext, releaseFailed, err := store.beginSession(t.Context(), failureThread, "mchanges-nested-failures")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseFailed()
+	failedStore := store.scoped(failedContext)
+	failedIndex, err := failedStore.changes.Inspect(failedStore.changeScope(), failureWorkspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawPatch, sawNonzeroExec bool
+	failedPatch, found, err := failedStore.lookup(failedContext, failureWorkspace, legacycall.PatchCallID(failureProvider.callID, 0))
+	if err != nil || !found || failedPatch.ChangeID != "" || len(failedPatch.HostResults) != 1 || failedPatch.HostResults[0].Status != "failed" {
+		t.Fatalf("unchanged failed attempt was lost or allocated a change ID: %+v found=%t err=%v", failedPatch, found, err)
+	}
+	sawPatch = true
+	for _, id := range failureIDs {
+		change, ok := failedIndex.Changes[id]
+		if !ok || len(change.Calls) == 0 {
+			t.Fatalf("failed nested change %s has no retained call: %+v", id, change)
+		}
+		for _, call := range change.Calls {
+			record, found, err := failedStore.read(failureWorkspace, call.ID, false)
+			if err != nil || !found {
+				t.Fatalf("read nested failure %s: found=%t err=%v", call.ID, found, err)
+			}
+			history := record.History
+			if history.ChangeID == "" || len(history.ReviewFiles) == 0 {
+				t.Errorf("caught nested edit lacks saved effect: id=%s call=%s history=%+v", id, call.ID, history)
+			}
+			if history.ToolName == applyPatchToolName && strings.Contains(history.Script, "absent-before-line") {
+				sawPatch = true
+			}
+			if history.ExecOutcome != nil && history.ExecOutcome.Status == changecapture.StatusFailed &&
+				strings.Contains(history.Script, "nested-partial.txt") {
+				sawNonzeroExec = true
+			}
+		}
+	}
+	if !sawPatch || !sawNonzeroExec {
+		t.Fatalf("nested failure receipts were not distinguished: patch=%t nonzero_exec=%t; list=%q", sawPatch, sawNonzeroExec, failureList.stdout)
+	}
+	failureNet := runMChangesNestedShell(t, registry, failureWorkspace, failureThread, "mchanges --mine --net")
+	if failureNet.status != 0 || failureNet.stderr != "" || strings.Contains(failureNet.stdout, "composing observed effects") || !strings.Contains(failureNet.stdout, "+partial-result") {
+		t.Fatalf("failed effects lost their diff or leaked outcome notice: stdout=%q stderr=%q status=%d", failureNet.stdout, failureNet.stderr, failureNet.status)
+	}
+
+	yieldWorkspace := t.TempDir()
+	yieldProgram := "// @exec: {\"yield_time_ms\": 1}\nconst result = await tools.exec_command({cmd: \"sleep 2; echo yielded-result > yielded.txt\", workdir: " + string(responses.MustMarshalJSON(yieldWorkspace)) + ", yield_time_ms: 1000});\nif (result.session_id) { await tools.write_stdin({session_id: result.session_id, chars: \"\", yield_time_ms: 10000}); }"
+	yieldProvider := &mchangesNestedCodexProvider{program: yieldProgram, callID: "nested-yield-call", finalMessage: "yielded edit completed", expectPending: true, store: store, workspace: yieldWorkspace}
+	yieldThread := runMChangesNestedCodexCell(t, codex, registry, store, yieldWorkspace, yieldProvider)
+	if !yieldProvider.sawPending {
+		t.Fatal("native fixture did not observe the running cell")
+	}
+	yieldIDs := mchangesThreadIDs(t, store, yieldWorkspace, yieldThread)
+	if len(yieldIDs) != 1 {
+		t.Fatalf("yielded command IDs = %v", yieldIDs)
+	}
+	yieldHistory := runMChangesNestedShell(t, registry, yieldWorkspace, yieldThread, "mchanges "+yieldIDs[0]+" --history")
+	if yieldHistory.status != 0 || !strings.Contains(yieldHistory.stdout, "host tool ") || !strings.Contains(yieldHistory.stdout, "; exit 0") || !strings.Contains(yieldHistory.stdout, "+yielded-result") {
+		t.Fatalf("yielded confirmation missing: %+v", yieldHistory)
+	}
+	processWorkspace := t.TempDir()
+	processProgram := "await tools.exec_command({cmd: \"sleep 2; echo process-result > process.txt\", workdir: " + string(responses.MustMarshalJSON(processWorkspace)) + ", yield_time_ms: 1000});"
+	processProvider := &mchangesNestedCodexProvider{program: processProgram, callID: "nested-process-call", finalMessage: "nested process completed", expectProcess: true, store: store, workspace: processWorkspace}
+	processThread := runMChangesNestedCodexCell(t, codex, registry, store, processWorkspace, processProvider)
+	processIDs := mchangesThreadIDs(t, store, processWorkspace, processThread)
+	if !processProvider.sawPending || len(processIDs) != 1 {
+		t.Fatalf("completed-cell lifecycle: pending=%t IDs=%v", processProvider.sawPending, processIDs)
+	}
+	processHistory := runMChangesNestedShell(t, registry, processWorkspace, processThread, "mchanges "+processIDs[0]+" --history")
+	if processHistory.status != 0 || !strings.Contains(processHistory.stdout, "host tool ") || !strings.Contains(processHistory.stdout, "; exit 0") || !strings.Contains(processHistory.stdout, "+process-result") {
+		t.Fatalf("completed-cell process confirmation missing: %+v", processHistory)
+	}
+
+	// Literal loops have one static call site and no dynamic inventory. The
+	// second patch is rejected by the host, but its distinct outcome survives;
+	// both shell calls append once, proving observation does not replay effects.
+	loopWorkspace := t.TempDir()
+	writeTestFile(t, filepath.Join(loopWorkspace, "loop-patch.txt"), "before\n")
+	loopPatch := "*** Begin Patch\n*** Update File: loop-patch.txt\n@@\n-before\n+after\n*** End Patch\n"
+	loopCommand := "printf x >> loop-command.txt"
+	loopProgram := "for (let i = 0; i < 2; i++) { try { await tools.apply_patch(" + string(responses.MustMarshalJSON(loopPatch)) + "); } catch {} } " +
+		"for (let i = 0; i < 2; i++) await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(loopCommand)) + "});"
+	loopProvider := &mchangesNestedCodexProvider{program: loopProgram, callID: "nested-literal-loop", finalMessage: "literal loops completed"}
+	loopThread := runMChangesNestedCodexCell(t, codex, registry, store, loopWorkspace, loopProvider)
+	loopContext, releaseLoop, err := store.beginSession(t.Context(), loopThread, "mchanges-literal-loops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLoop()
+	loopStore := store.scoped(loopContext)
+	original, found, err := loopStore.lookup(loopContext, loopWorkspace, loopProvider.callID)
+	if err != nil || !found || original.ResolvedBaseline != nil || len(original.NativePatches) != 1 || len(original.ExecObservation.Commands) != 1 {
+		t.Fatalf("literal loops must reuse static baselines without an inventory: %+v, %v", original, err)
+	}
+	var previousPatchCall string
+	for index, status := range []string{"completed", "failed"} {
+		attempt, found, err := loopStore.lookup(loopContext, loopWorkspace, legacycall.PatchCallID(loopProvider.callID, index))
+		if err != nil || !found || len(attempt.HostResults) != 1 || attempt.HostResults[0].Status != status || attempt.HostResults[0].CallID == previousPatchCall {
+			t.Fatalf("literal loop patch %d lost its distinct host outcome: %+v, %v", index, attempt, err)
+		}
+		previousPatchCall = attempt.HostResults[0].CallID
+		if index == 0 && len(attempt.ReviewFiles) != 1 || index == 1 && (len(attempt.ReviewFiles) != 0 || attempt.TranslationError == "") {
+			t.Fatalf("literal loop patch %d duplicated effects or lost failure", index)
+		}
+	}
+	commandAttempt, found, err := loopStore.lookup(loopContext, loopWorkspace, legacycall.ExecCallID(loopProvider.callID, true))
+	if err != nil || !found || len(commandAttempt.HostResults) != 2 || commandAttempt.HostResults[0].CallID == commandAttempt.HostResults[1].CallID ||
+		len(commandAttempt.ReviewFiles) != 1 || commandAttempt.ExecOutcome.Coverage != changecapture.CoverageExact {
+		t.Fatalf("literal command loop lost host occurrences or scoped effects: %+v, %v", commandAttempt, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(loopWorkspace, "loop-command.txt")); err != nil || string(content) != "xx" {
+		t.Fatalf("literal command must execute exactly twice: %q, %v", content, err)
+	}
+	loopNet := runMChangesNestedShell(t, registry, loopWorkspace, loopThread, "mchanges --mine --net")
+	if loopNet.status != 0 || loopNet.stderr != "" || !strings.Contains(loopNet.stdout, "+after") || !strings.Contains(loopNet.stdout, "+xx") {
+		t.Fatalf("literal loops lost composed net evidence: %+v", loopNet)
+	}
+}
+
+type mchangesNestedShellResult struct {
+	stdout, stderr string
+	status         int
+}
+
+func runMChangesNestedShell(t *testing.T, registry *frontends.Registry, workspace, thread, script string) mchangesNestedShellResult {
+	t.Helper()
+	invocation := newShellWorkerTestInvocation(workspace,
+		"XDG_STATE_HOME="+t.TempDir(), "MEKUGI_RUNTIME_DIR="+t.TempDir(),
+		"CODEX_THREAD_ID="+thread, routerTestWorkerUnscopedEnvironment+"=0")
+	stdout, stderr, status := runShellWorkerTest(t, registry, "bash", nil, script, nil, invocation)
+	return mchangesNestedShellResult{stdout: stdout, stderr: stderr, status: status}
+}
+
+func mchangesThreadIDs(t *testing.T, store *mekugiReplayStore, workspace, thread string) []string {
+	t.Helper()
+	ctx, release, err := store.beginSession(t.Context(), thread, "mchanges-nested-ids")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	index, err := store.scoped(ctx).changes.Inspect(store.scoped(ctx).changeScope(), workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stream := range index.Streams {
+		if stream.Thread != thread {
+			continue
+		}
+		ids := make([]string, stream.Next)
+		for number := range stream.Next {
+			ids[number] = changes.ID(stream.Name, number+1)
+		}
+		return ids
+	}
+	return nil
+}
+
+func runMChangesNestedCodexCell(
+	t *testing.T,
+	codex string,
+	registry *frontends.Registry,
+	store *mekugiReplayStore,
+	workspace string,
+	provider *mchangesNestedCodexProvider,
+) string {
+	t.Helper()
+	// Codex declares repository workspaces in its routing metadata. A temp
+	// directory without repository metadata deliberately has no relative scope.
+	if output, err := exec.Command("git", "init", "--quiet", workspace).CombinedOutput(); err != nil {
+		t.Fatalf("initialize isolated workspace: %v: %s", err, output)
+	}
+	traceRoot := t.TempDir()
+	defer func() {
+		if err := os.RemoveAll(traceRoot); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := os.Chmod(traceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_ROLLOUT_TRACE_ROOT", traceRoot)
+	proxy := newProxyWithSharedTestRegistry(t, registry)
+	setTestProxyStore(proxy, store)
+	proxy.nativeTrace = nativetrace.NewWithNotice(traceRoot, nil)
+	provider.trace = proxy.nativeTrace
+	boundaryServer, err := transport.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer boundaryServer.Close()
+	boundaryOwner := executionobservation.New(executionobservation.Config{Windows: proxy.execWindows, NativeTrace: proxy.nativeTrace, Changes: proxy.changeSource, Checkpoints: store.snapshots})
+	if err := boundaryServer.RegisterBoundary(boundaryOwner.ObserveNativeBoundary); err != nil {
+		t.Fatal(err)
+	}
+	helper, err := execTrackTestHelper()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook, state, _, err := shellhook.Config(helper, "", filepath.Dir(boundaryServer.Endpoints().Requests), shellhook.Invocation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(provider.codexArgs) == 0 {
+		provider.codexArgs = []string{"-c", hook, "-c", state}
+	}
+	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, testCriticalErrors(), proxy))
+	defer server.Close()
+	config := `model_providers.mchanges_fixture={name="mchanges_fixture",base_url=` +
+		strconv.Quote(server.URL+"/v1") + `,wire_api="responses",requires_openai_auth=false}`
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, codex,
+		"-c", config, "-c", `model_provider="mchanges_fixture"`, "-c", "features.plugins=false",
+		"--model", "gpt-6-astra", "--sandbox", "danger-full-access", "--ask-for-approval", "never",
+		"exec", "--ignore-user-config", "--skip-git-repo-check", "--json", "--color", "never",
+		"-C", workspace, "Exercise the supplied literal exec operations exactly once.",
+	)
+	command.Args = append(command.Args[:1], append(provider.codexArgs, command.Args[1:]...)...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("installed Codex nested-tool fixture: %v\nstdout: %.8000s\nstderr: %.8000s", err, stdout.String(), stderr.String())
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if !provider.resultSeen || !strings.Contains(stdout.String(), provider.finalMessage) || (!provider.expectPending && !provider.expectProcess && provider.turns != 2) || ((provider.expectPending || provider.expectProcess) && !provider.sawPending) {
+		t.Fatalf("nested exec acceptance: turns=%d result=%t\nstdout: %.8000s\nstderr: %.8000s",
+			provider.turns, provider.resultSeen, stdout.String(), stderr.String())
+	}
+	cell := proxy.nativeTrace.ReadCell(provider.threadID, provider.callID, provider.program)
+	if cell == nil {
+		t.Fatalf("native trace cell unavailable; stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+	return provider.threadID
+}

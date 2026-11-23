@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+
+case "$(uname -s)/$(uname -m)" in
+  Linux/x86_64) mekugi_platform=linux_amd64 ;;
+  Linux/aarch64|Linux/arm64) mekugi_platform=linux_arm64 ;;
+  Darwin/arm64) mekugi_platform=darwin_arm64 ;;
+  *) printf 'Unsupported platform; build Mekugi from source instead\n' >&2; exit 1 ;;
+esac
+
+mekugi_archive="mekugi_${mekugi_platform}.tar.gz"
+mekugi_release_url=https://github.com/mekugi-harness/mekugi/releases/latest/download
+mekugi_install_dir="${HOME:?HOME must be set}/.local/bin"
+mekugi_install_tmp=$(mktemp -d)
+trap 'rm -rf "$mekugi_install_tmp"' 0
+trap 'exit 1' HUP INT TERM
+cd "$mekugi_install_tmp"
+
+# Keep the archived release installable until this repository publishes one.
+mekugi_status=$(curl -sSL -w '%{http_code}' "$mekugi_release_url/SHA256SUMS" -o SHA256SUMS)
+case "$mekugi_status" in
+  200) ;;
+  404)
+    mekugi_release_url=https://github.com/yusing/mekugi/releases/download/v0.7.0
+    curl -fsSL "$mekugi_release_url/SHA256SUMS" -o SHA256SUMS
+    ;;
+  *) printf 'Could not download release checksums (HTTP %s)\n' "$mekugi_status" >&2; exit 1 ;;
+esac
+
+printf 'Downloading %s\n' "$mekugi_archive"
+curl -fsSL "$mekugi_release_url/$mekugi_archive" -o "$mekugi_archive"
+awk -v archive="$mekugi_archive" '
+  $2 == archive || $2 == "./" archive { print; found = 1 }
+  END {
+    if (!found) {
+      print "Missing checksum for " archive > "/dev/stderr"
+      exit 1
+    }
+  }
+' SHA256SUMS > checksum
+
+case "$mekugi_platform" in
+  darwin_*) shasum -a 256 -c checksum ;;
+  *) sha256sum -c checksum ;;
+esac
+
+tar -xzf "$mekugi_archive"
+set -- mekugi mekugi-exec mekugi-app-server codex-code-mode-host
+case "$mekugi_platform" in
+  linux_*) set -- "$@" bwrap ;;
+esac
+for mekugi_file in "$@" mekugi-models.json; do
+  if [ ! -f "$mekugi_file" ]; then
+    printf 'Incomplete release: %s is missing %s\n' \
+      "$mekugi_archive" "$mekugi_file" >&2
+    exit 1
+  fi
+done
+mkdir -p "$mekugi_install_dir"
+mekugi_stage_dir=$(mktemp -d "$mekugi_install_dir/.mekugi-install.XXXXXX")
+trap 'rm -rf "$mekugi_install_tmp" "$mekugi_stage_dir"' 0
+for mekugi_file in "$@"; do
+  install -m 755 "$mekugi_file" "$mekugi_stage_dir/$mekugi_file"
+  mv -f "$mekugi_stage_dir/$mekugi_file" "$mekugi_install_dir/$mekugi_file"
+done
+install -m 644 mekugi-models.json "$mekugi_stage_dir/mekugi-models.json"
+mv -f "$mekugi_stage_dir/mekugi-models.json" "$mekugi_install_dir/mekugi-models.json"
+printf 'Installed Mekugi and its native runtime in %s\n' "$mekugi_install_dir"
+printf 'Add that directory to PATH if needed\n'

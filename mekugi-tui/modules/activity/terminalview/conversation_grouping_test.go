@@ -1,0 +1,126 @@
+package terminalview
+
+import (
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
+)
+
+func TestUISnapshotConversationReasoningAndEdits(t *testing.T) {
+	for _, scenario := range []struct{ titled, restored, heading bool }{{false, true, false}, {true, true, false}, {false, false, false}, {true, false, false}, {true, false, true}} {
+		titled, restored := scenario.titled, scenario.restored
+		t.Run(fmt.Sprintf("titled=%t/restored=%t/heading=%t", titled, restored, scenario.heading), func(t *testing.T) {
+			v := NewView()
+			v.Conversation = true
+			v.Painter.Theme = diffrender.DarkTheme
+			var entries []presentation.Entry
+			for i, title := range []string{"Inspecting", "Implementing"} {
+				seq := uint64(i + 1)
+				body := "**" + title + "**\n\nRetained details for " + title + "."
+				if !titled {
+					body, title = title+" the changes.", ""
+				}
+				if scenario.heading {
+					body = "**" + title + "**"
+				}
+				entries = append(entries, presentation.Entry{
+					Seq: seq, Agent: "Main", Kind: "reasoning", Restored: restored, Live: !restored, ItemComplete: true,
+					Values: []presentation.Value{{Kind: "summary", Source: seq, Label: title, Body: body, Thought: time.Duration(i+1) * time.Second}},
+				})
+			}
+			for i, path := range []string{"first.go", "second.go"} {
+				seq := uint64(i + 3)
+				entries = append(entries, presentation.Entry{
+					Seq: seq, Agent: "Main", Kind: "tool", Text: "apply_patch", Restored: true,
+					Values: []presentation.Value{{Kind: "op", Source: seq, Verb: "Edit", Label: path, EditSource: "apply_patch"}},
+				})
+			}
+			v.Update(&presentation.Publication{Entries: entries}, Display{})
+			for _, expansion := range []uint8{0, 1} {
+				v.Expansion = expansion
+				feed := v.RenderConversation(80)
+				if expansion == 0 && !slices.ContainsFunc(feed.Snippets, func(snippet Snippet) bool {
+					block, ok := v.SnippetBlock(snippet)
+					return ok && block.Kind == "summary"
+				}) {
+					t.Fatal("compacted reasoning has no rendered disclosure target")
+				}
+				for _, run := range v.Runs {
+					if len(run.Blocks) == 0 || run.Blocks[0].Kind != "summary" {
+						continue
+					}
+					if expansion == 0 && (len(run.Blocks) != 1 || run.Blocks[0].Thought != 3*time.Second) {
+						t.Fatalf("consecutive reasoning did not compact: %+v", run.Blocks)
+					}
+					pages := presentation.DetailPages(Values(run.Blocks))
+					if len(pages) != 2 {
+						t.Fatalf("reasoning pages = %d", len(pages))
+					}
+					for i, page := range pages {
+						if page.Value.Source != uint64(i+1) || v.Painter.DialogPage(Block{Value: page.Value}, 80).Text != entries[i].Values[0].Body {
+							t.Fatalf("reasoning source/copy changed: %+v", page)
+						}
+					}
+				}
+				if text := strings.Join(feed.Lines, "\n"); !strings.Contains(text, "first.go") || !strings.Contains(text, "second.go") {
+					t.Fatalf("edit paths collapsed: %s", text)
+				}
+				name := "conversation_grouping"
+				if scenario.heading && expansion == 1 {
+					name = "conversation_heading_grouping"
+				}
+				uisnapshot.AssertTerminal(t, fmt.Sprintf("testdata/snapshots/%s_%t_%d.txt", name, titled, expansion), feed.Lines, 80)
+			}
+			v.Expansion = 0
+			entries = append(entries[:2], presentation.Entry{
+				Seq: 5, Agent: "Main", Kind: "reasoning", Live: true,
+				Values: []presentation.Value{{Kind: "summary", Source: 5, Body: "Streaming the next thought.", Live: true}},
+			})
+			v.Update(&presentation.Publication{Entries: entries}, Display{})
+			feed := v.RenderConversation(80)
+			if !strings.Contains(strings.Join(feed.Lines, "\n"), "Streaming the next thought.") {
+				t.Fatal("completed grouping hid the live reasoning stream")
+			}
+			for _, run := range v.Runs {
+				if len(run.Blocks) != 1 || !run.Blocks[0].Live || len(presentation.DetailPages(Values(run.Blocks))) != 3 {
+					t.Fatalf("grouping lost live disclosure or original pages: %+v", run.Blocks)
+				}
+			}
+		})
+	}
+}
+
+func TestConversationSameItemReasoningHeadingsShareOneRow(t *testing.T) {
+	const body = "**Reviewing stats persistence scope**\n\n**Reviewing handoff recovery**\n\n**Inspecting read-only retrieval**"
+	for _, live := range []bool{false, true} {
+		for _, restored := range []bool{false, true} {
+			v := NewView()
+			v.Conversation = true
+			values := presentation.ReasoningSections(body)
+			values[len(values)-1].Live = live
+			values[len(values)-1].Thought = 2 * time.Second
+			v.Update(&presentation.Publication{Entries: []presentation.Entry{{Seq: 1, Agent: "Main", Kind: "reasoning", Restored: restored, Live: !restored, ItemComplete: !live, Values: values}}}, Display{})
+			feed := v.RenderConversation(80)
+			if len(feed.Lines) != 1 || !strings.Contains(feed.Lines[0], "Inspecting read-only retrieval") {
+				t.Fatalf("live=%t restored=%t: headings did not collapse: %v", live, restored, feed.Lines)
+			}
+			var blocks []Block
+			for _, run := range v.Runs {
+				blocks = append(blocks, run.Blocks...)
+			}
+			if len(blocks) != 1 || blocks[0].Live != live || blocks[0].Thought != 2*time.Second || len(presentation.DetailPages(Values(blocks))) != 3 {
+				t.Fatalf("group lost lifecycle, timing or original pages: %+v", blocks)
+			}
+			v.Expansion = 1
+			if expanded := v.RenderConversation(80); len(expanded.Lines) != 3 {
+				t.Fatalf("expanded headings lost: %v", expanded.Lines)
+			}
+		}
+	}
+}
