@@ -72,6 +72,7 @@ impl ReasoningEffortPin {
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
 pub(crate) struct SessionState {
+    pub(crate) question_id_high_water_mark: u64,
     pub(crate) session_configuration: SessionConfiguration,
     /// Shared root tier publication starts when the runtime wins registration.
     pub(crate) shared_service_tier_pending: bool,
@@ -145,6 +146,7 @@ impl SessionState {
         history: ContextManager,
     ) -> Self {
         Self {
+            question_id_high_water_mark: 0,
             active_disabled_plugin_ids: Vec::new(),
             persisted_dynamic_tools: Arc::clone(&session_configuration.dynamic_tools),
             session_configuration,

@@ -1868,9 +1868,11 @@ async fn live_app_server_turn_completion_repairs_dropped_message_deltas() {
         memory_citation: None,
         delivery: None,
         questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
-            title: "Which way?".into(),
-            options: None,
-        }]),
+options: None,
+question: "Which way?".into(),
+id: "q1".to_string(),
+header: None,
+}]),
     })];
     chat.handle_server_notification(
         ServerNotification::TurnCompleted(TurnCompletedNotification {

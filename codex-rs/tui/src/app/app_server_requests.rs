@@ -917,9 +917,12 @@ mod tests {
                         answers: std::iter::once((
                             "question".to_string(),
                             ToolRequestUserInputAnswer {
-                                answers: vec!["yes".to_string()],
+                                id: "question".to_string(),
+                                other: Some("yes".to_string()),
+                                ..Default::default()
                             },
                         ))
+                        .map(|(_, answer)| answer)
                         .collect(),
                     },
                 },
@@ -934,9 +937,12 @@ mod tests {
                 answers: std::iter::once((
                     "question".to_string(),
                     ToolRequestUserInputAnswer {
-                        answers: vec!["yes".to_string()],
+                        id: "question".to_string(),
+                        other: Some("yes".to_string()),
+                        ..Default::default()
                     },
                 ))
+                .map(|(_, answer)| answer)
                 .collect(),
             }
         );
@@ -1173,7 +1179,7 @@ mod tests {
         }
 
         let response = ToolRequestUserInputResponse {
-            answers: HashMap::new(),
+            answers: Vec::new(),
         };
         let first_response = pending
             .take_resolution(

@@ -196,7 +196,7 @@ async fn spawn_inherits_captured_settings_after_a_turn_update(
             .await?;
         configured[0].config = EnvironmentConfigState::Ready(config);
     }
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
 
     let child_thread_id = tokio::time::timeout(
         std::time::Duration::from_secs(/*secs*/ 10),

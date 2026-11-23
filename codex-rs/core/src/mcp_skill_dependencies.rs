@@ -263,7 +263,7 @@ async fn should_install_mcp_dependencies(
     let server_list = format_missing_mcp_dependencies(missing);
     let question = RequestUserInputQuestion {
         id: SKILL_MCP_DEPENDENCY_PROMPT_ID.to_string(),
-        header: "Install MCP servers?".to_string(),
+        header: Some("Install MCP servers?".to_string()),
         question: format!(
             "The following MCP servers are required by the selected skills but are not installed yet: {server_list}. Install them now?"
         ),
@@ -272,19 +272,22 @@ async fn should_install_mcp_dependencies(
         options: Some(vec![
             RequestUserInputQuestionOption {
                 label: MCP_DEPENDENCY_OPTION_INSTALL.to_string(),
-                description:
-                    "Install and enable the missing MCP servers in your global config."
-                        .to_string(),
+                description: Some("Install and enable the missing MCP servers in your global config."
+                    .to_string()),
+                preview: None,
+                recommended: false,
             },
             RequestUserInputQuestionOption {
                 label: MCP_DEPENDENCY_OPTION_SKIP.to_string(),
-                description: "Skip installation for now and do not show again for these MCP servers in this session."
-                    .to_string(),
+                description: Some("Skip installation for now and do not show again for these MCP servers in this session."
+                    .to_string()),
+                preview: None,
+                recommended: false,
             },
         ]),
     };
     let args = RequestUserInputArgs {
-        questions: vec![question],
+        questions: vec![question.clone()],
         is_blocking: true,
         auto_resolution_ms: None,
     };
@@ -295,24 +298,26 @@ async fn should_install_mcp_dependencies(
         biased;
         _ = cancellation_token.cancelled() => {
             let empty = RequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             };
             sess.notify_user_input_response(sub_id, empty.clone()).await;
             empty
         }
         response = response_fut => response.map(|accepted| accepted.response).unwrap_or_else(|| RequestUserInputResponse {
-            answers: HashMap::new(),
+            answers: Vec::new(),
         }),
     };
 
     let install = response
         .answers
-        .get(SKILL_MCP_DEPENDENCY_PROMPT_ID)
+        .iter()
+        .find(|answer| answer.is_valid_for(&question))
         .is_some_and(|answer| {
             answer
-                .answers
-                .iter()
-                .any(|entry| entry == MCP_DEPENDENCY_OPTION_INSTALL)
+                .selected_option(&question)
+                .map(|option| option.label.as_str())
+                .or(answer.other.as_deref())
+                == Some(MCP_DEPENDENCY_OPTION_INSTALL)
         });
 
     let prompted_keys = missing

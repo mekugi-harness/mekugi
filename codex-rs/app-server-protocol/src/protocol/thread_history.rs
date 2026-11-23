@@ -2994,12 +2994,28 @@ mod tests {
     fn preserves_agent_message_phase_delivery_and_questions_in_history() {
         let questions = vec![
             AsyncUserInputQuestion {
-                title: "Which environment?".into(),
-                options: Some(vec!["Staging".into(), "Production".into()]),
+                options: Some(
+                    (vec!["Staging".into(), "Production".into()])
+                        .into_iter()
+                        .map(|label: String| {
+                            codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                recommended: label == "Production",
+                                preview: (label == "Production").then(|| "deployment diff".into()),
+                                label,
+                                ..Default::default()
+                            }
+                        })
+                        .collect(),
+                ),
+                question: "Which environment?".into(),
+                id: "q1".to_string(),
+                header: Some("Environment".into()),
             },
             AsyncUserInputQuestion {
-                title: "Anything else?".into(),
                 options: None,
+                question: "Anything else?".into(),
+                id: "q2".to_string(),
+                header: None,
             },
         ];
         let events = vec![EventMsg::AgentMessage(AgentMessageEvent {

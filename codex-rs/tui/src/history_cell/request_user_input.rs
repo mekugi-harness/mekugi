@@ -23,9 +23,9 @@ impl HistoryCell for RequestUserInputResultCell {
             .questions
             .iter()
             .filter(|question| {
-                self.answers
-                    .get(&question.id)
-                    .is_some_and(|answer| !answer.answers.is_empty())
+                self.answers.get(&question.id).is_some_and(|answer| {
+                    !answer.skipped && (answer.choice.is_some() || answer.other.is_some())
+                })
             })
             .count();
         let unanswered = total.saturating_sub(answered);
@@ -41,7 +41,9 @@ impl HistoryCell for RequestUserInputResultCell {
         for question in &self.questions {
             let answer = self.answers.get(&question.id);
             let answer_missing = match answer {
-                Some(answer) => answer.answers.is_empty(),
+                Some(answer) => {
+                    answer.skipped || (answer.choice.is_none() && answer.other.is_none())
+                }
                 None => true,
             };
             let mut question_lines = wrap_with_prefix(
@@ -73,7 +75,9 @@ impl HistoryCell for RequestUserInputResultCell {
             }
             lines.extend(question_lines);
 
-            let Some(answer) = answer.filter(|answer| !answer.answers.is_empty()) else {
+            let Some(answer) = answer.filter(|answer| {
+                !answer.skipped && (answer.choice.is_some() || answer.other.is_some())
+            }) else {
                 continue;
             };
             if question.is_secret {
@@ -87,7 +91,7 @@ impl HistoryCell for RequestUserInputResultCell {
                 continue;
             }
 
-            let (options, note) = split_request_user_input_answer(answer);
+            let (options, note) = split_request_user_input_answer(question, answer);
 
             for option in options {
                 lines.extend(wrap_with_prefix(
@@ -140,9 +144,9 @@ impl HistoryCell for RequestUserInputResultCell {
             .questions
             .iter()
             .filter(|question| {
-                self.answers
-                    .get(&question.id)
-                    .is_some_and(|answer| !answer.answers.is_empty())
+                self.answers.get(&question.id).is_some_and(|answer| {
+                    !answer.skipped && (answer.choice.is_some() || answer.other.is_some())
+                })
             })
             .count();
         let mut lines = vec![Line::from(format!("Questions {answered}/{total} answered"))];
@@ -151,15 +155,13 @@ impl HistoryCell for RequestUserInputResultCell {
         }
         for question in &self.questions {
             lines.push(Line::from(question.question.clone()));
-            if let Some(answer) = self
-                .answers
-                .get(&question.id)
-                .filter(|answer| !answer.answers.is_empty())
-            {
+            if let Some(answer) = self.answers.get(&question.id).filter(|answer| {
+                !answer.skipped && (answer.choice.is_some() || answer.other.is_some())
+            }) {
                 if question.is_secret {
                     lines.push(Line::from("answer: ******"));
                 } else {
-                    let (options, note) = split_request_user_input_answer(answer);
+                    let (options, note) = split_request_user_input_answer(question, answer);
                     lines.extend(
                         options
                             .into_iter()
@@ -195,21 +197,20 @@ fn wrap_with_prefix(
     wrapped
 }
 
-/// Split a request_user_input answer into option labels and an optional freeform note.
-/// Notes are encoded as "user_note: <text>" entries in the answers list.
+/// Resolve the original option label and preserve an optional freeform note.
 fn split_request_user_input_answer(
+    question: &ToolRequestUserInputQuestion,
     answer: &ToolRequestUserInputAnswer,
 ) -> (Vec<String>, Option<String>) {
-    let mut options = Vec::new();
-    let mut note = None;
-    for entry in &answer.answers {
-        if let Some(note_text) = entry.strip_prefix("user_note: ") {
-            note = Some(note_text.to_string());
-        } else {
-            options.push(entry.clone());
-        }
-    }
-    (options, note)
+    let label = answer
+        .choice
+        .and_then(|choice| choice.checked_sub(1))
+        .and_then(|index| question.options.as_ref()?.get(index))
+        .map(|option| option.label.clone());
+    (
+        label.or_else(|| answer.other.clone()).into_iter().collect(),
+        answer.note.clone(),
+    )
 }
 
 #[cfg(test)]

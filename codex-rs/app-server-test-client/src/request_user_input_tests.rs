@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Cursor;
 
 use codex_app_server_protocol::ToolRequestUserInputAnswer;
@@ -19,24 +18,28 @@ fn collects_option_and_free_form_answers() {
         questions: vec![
             ToolRequestUserInputQuestion {
                 id: "target".to_string(),
-                header: "Target".to_string(),
+                header: Some("Target".to_string()),
                 question: "Which target?".to_string(),
                 is_other: true,
                 is_secret: false,
                 options: Some(vec![
                     ToolRequestUserInputOption {
                         label: "Core".to_string(),
-                        description: "Inspect core".to_string(),
+                        description: Some("Inspect core".to_string()),
+                        preview: None,
+                        recommended: false,
                     },
                     ToolRequestUserInputOption {
                         label: "TUI".to_string(),
-                        description: "Inspect TUI".to_string(),
+                        description: Some("Inspect TUI".to_string()),
+                        preview: None,
+                        recommended: false,
                     },
                 ]),
             },
             ToolRequestUserInputQuestion {
                 id: "details".to_string(),
-                header: "Details".to_string(),
+                header: Some("Details".to_string()),
                 question: "Anything else?".to_string(),
                 is_other: true,
                 is_secret: false,
@@ -54,20 +57,18 @@ fn collects_option_and_free_form_answers() {
     assert_eq!(
         response,
         ToolRequestUserInputResponse {
-            answers: HashMap::from([
-                (
-                    "target".to_string(),
-                    ToolRequestUserInputAnswer {
-                        answers: vec!["TUI".to_string()],
-                    },
-                ),
-                (
-                    "details".to_string(),
-                    ToolRequestUserInputAnswer {
-                        answers: vec!["user_note: include snapshots".to_string()],
-                    },
-                ),
-            ]),
+            answers: vec![
+                ToolRequestUserInputAnswer {
+                    id: "target".to_string(),
+                    choice: Some(2),
+                    ..Default::default()
+                },
+                ToolRequestUserInputAnswer {
+                    id: "details".to_string(),
+                    other: Some("include snapshots".to_string()),
+                    ..Default::default()
+                }
+            ],
         }
     );
     assert_eq!(
@@ -94,13 +95,15 @@ fn retries_invalid_selection_and_collects_other_answer() {
         item_id: "item-1".to_string(),
         questions: vec![ToolRequestUserInputQuestion {
             id: "target".to_string(),
-            header: "Target".to_string(),
+            header: Some("Target".to_string()),
             question: "Which target?".to_string(),
             is_other: true,
             is_secret: false,
             options: Some(vec![ToolRequestUserInputOption {
                 label: "Core".to_string(),
-                description: "Inspect core".to_string(),
+                description: Some("Inspect core".to_string()),
+                preview: None,
+                recommended: false,
             }]),
         }],
         is_blocking: true,
@@ -114,12 +117,11 @@ fn retries_invalid_selection_and_collects_other_answer() {
     assert_eq!(
         response,
         ToolRequestUserInputResponse {
-            answers: HashMap::from([(
-                "target".to_string(),
-                ToolRequestUserInputAnswer {
-                    answers: vec!["user_note: SDK wrapper".to_string()],
-                },
-            )]),
+            answers: vec![ToolRequestUserInputAnswer {
+                id: "target".to_string(),
+                other: Some("SDK wrapper".to_string()),
+                ..Default::default()
+            }],
         }
     );
     let output = String::from_utf8(output).unwrap();

@@ -1174,12 +1174,13 @@ async fn astra_switches_environments_for_the_rest_of_the_active_turn() -> Result
                     "functions",
                     "request_user_input",
                     &json!({"questions": [{
-                        "id": "continue", "header": "Continue", "question": "Continue in the other workspace?",
+                         "header": "Continue", "question": "Continue in the other workspace?",
                         "options": [
                             {"label": "Yes", "description": "Continue working."},
                             {"label": "No", "description": "Stop working."}
                         ]
-                    }]}).to_string(),
+                    }]})
+                    .to_string(),
                 ),
                 ev_completed("first-step"),
             ]),
@@ -1298,12 +1299,11 @@ async fn astra_switches_environments_for_the_rest_of_the_active_turn() -> Result
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

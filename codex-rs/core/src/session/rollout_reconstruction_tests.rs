@@ -33,6 +33,125 @@ use std::path::PathBuf;
 use test_case::test_case;
 
 #[tokio::test]
+async fn rollout_reconstruction_preserves_legacy_async_questions() {
+    let line = codex_rollout::parse_rollout_line(r#"{"timestamp":"2025-01-03T12:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Please choose.","delivery":"async","questions":[{"title":"Continue?","options":["Yes","No"]},{"id":"authored-id","title":"Why?"},{"id":"q8","question":"New?"},{"id":"q+99","title":"Legacy authored ID?"}]}}"#).unwrap();
+    let RolloutItem::EventMsg(EventMsg::AgentMessage(message)) = &line.item else {
+        panic!("expected saved agent message")
+    };
+    let questions = message.questions.as_ref().unwrap();
+    assert_eq!(questions[0].question, "Continue?");
+    assert_eq!(questions[0].options.as_ref().unwrap()[0].label, "Yes");
+    assert_eq!(questions[1].id, "authored-id");
+    assert_eq!(
+        rollout_reconstruction::question_id_high_water_mark(&[line.item.clone()]),
+        8
+    );
+    let (session, turn) = make_session_and_context().await;
+    session
+        .apply_rollout_reconstruction(&Arc::new(turn), &[line.item])
+        .await;
+    assert_eq!(session.allocate_question_ids(1).await, ["q9"]);
+}
+
+#[tokio::test]
+async fn rollout_reconstruction_restores_question_ids_from_persisted_carriers() {
+    let (session, turn) = make_session_and_context().await;
+    assert_eq!(session.allocate_question_ids(2).await, ["q1", "q2"]);
+    assert_eq!(session.allocate_question_ids(0).await, Vec::<String>::new());
+    let blocking = EventMsg::RequestUserInput(
+        serde_json::from_value(json!({
+            "call_id":"call", "turn_id":"turn", "isBlocking":true,
+            "questions":[{"id":"q7", "question":"Pending?", "options":null}]
+        }))
+        .unwrap(),
+    );
+    let message =
+        codex_protocol::items::TurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
+            moderation: None,
+            id: "async".into(),
+            content: vec![],
+            phase: None,
+            memory_citation: None,
+            delivery: Some(codex_protocol::items::AgentMessageDelivery::Async),
+            questions: Some(vec![codex_protocol::items::AsyncUserInputQuestion {
+                id: "q12".into(),
+                header: None,
+                question: "Which?".into(),
+                options: None,
+            }]),
+        });
+    let started = EventMsg::ItemStarted(codex_protocol::protocol::ItemStartedEvent {
+        thread_id: session.thread_id,
+        turn_id: turn.sub_id.clone(),
+        item: message,
+        started_at_ms: 0,
+    });
+    session.allocate_question_ids(10).await;
+    let checkpoint_metadata = {
+        let state = session.state.lock().await;
+        session.compaction_resume_metadata(&state)
+    };
+    for mode in [ThreadHistoryMode::Legacy, ThreadHistoryMode::Paginated] {
+        let mut items = codex_rollout::persisted_rollout_items(
+            &[
+                RolloutItem::EventMsg(blocking.clone()),
+                RolloutItem::EventMsg(started.clone()),
+            ],
+            mode,
+        );
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            rollout_reconstruction::question_id_high_water_mark(&items),
+            12
+        );
+        items.push(RolloutItem::Compacted(Box::new(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(Vec::new()),
+            retained_context: None,
+            guardian_history: None,
+            mcp_resource_origins: None,
+            window_number: Some(1),
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+            compaction_response_id: None,
+            latest_token_usage_record: None,
+            resume_metadata: Some(checkpoint_metadata.clone()),
+        })));
+        let encoded = serde_json::to_string(&items).unwrap();
+        let items: Vec<RolloutItem> = serde_json::from_str(&encoded).unwrap();
+        let mut scan = ModelContextScan::default();
+        for item in items.into_iter().rev() {
+            if scan.push(item) == ModelContextScanProgress::Complete {
+                break;
+            }
+        }
+        let items = scan.finish();
+        assert_eq!(items.len(), 1);
+        let (resumed, resumed_turn) = make_session_and_context().await;
+        let resumed_turn = Arc::new(resumed_turn);
+        resumed
+            .apply_rollout_reconstruction(&resumed_turn, &items)
+            .await;
+        assert_eq!(resumed.allocate_question_ids(2).await, ["q13", "q14"]);
+        resumed
+            .apply_rollout_reconstruction(&resumed_turn, &items)
+            .await;
+        assert_eq!(resumed.allocate_question_ids(1).await, ["q15"]);
+        resumed
+            .record_initial_history(InitialHistory::Cleared)
+            .await;
+        assert_eq!(resumed.allocate_question_ids(1).await, ["q16"]);
+        let (forked, _) = make_session_and_context().await;
+        forked
+            .record_initial_history(InitialHistory::Forked(items))
+            .await;
+        assert_eq!(forked.allocate_question_ids(1).await, ["q13"]);
+    }
+    assert_eq!(rollout_reconstruction::question_id_high_water_mark(&[]), 0);
+}
+
+#[tokio::test]
 async fn recorded_questions_share_queued_input_order_across_resume() {
     let (session, turn) = make_session_and_context().await;
     let question = |call_id: &str| {
@@ -1642,6 +1761,7 @@ async fn bounded_replay_matches_full_replay_after_empty_turn_compactions(
                     compaction_response_id: None,
                     latest_token_usage_record: None,
                     resume_metadata: current.then(|| codex_history::CompactionResumeMetadata {
+                        question_id_high_water_mark: None,
                         next_item_ordinal: None,
                         rejected_audio_file_ids: Default::default(),
                         dynamic_tools: None,

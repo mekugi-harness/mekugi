@@ -1112,13 +1112,15 @@ async fn startup_draft_handoff_recognizes_late_user_input_as_new_protected_view(
     };
     params.questions.push(ToolRequestUserInputQuestion {
         id: "choice".to_string(),
-        header: "Pick one".to_string(),
+        header: Some("Pick one".to_string()),
         question: "Choose an option.".to_string(),
         is_other: false,
         is_secret: false,
         options: Some(vec![ToolRequestUserInputOption {
             label: "First".to_string(),
-            description: "First option".to_string(),
+            description: Some("First option".to_string()),
+            preview: None,
+            recommended: false,
         }]),
     });
     let _ = app

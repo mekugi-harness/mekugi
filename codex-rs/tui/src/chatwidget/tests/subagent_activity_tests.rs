@@ -174,7 +174,7 @@ async fn terminal_turn_drains_subagents_without_opening_queued_questions() {
             item_id: "question-1".to_string(),
             questions: vec![ToolRequestUserInputQuestion {
                 id: "scope".to_string(),
-                header: "Scope".to_string(),
+                header: Some("Scope".to_string()),
                 question: "Which change should I review?".to_string(),
                 is_other: false,
                 is_secret: false,

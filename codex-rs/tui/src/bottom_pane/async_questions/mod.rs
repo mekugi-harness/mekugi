@@ -129,7 +129,7 @@ impl AsyncQuestions {
         format!("{current} of {total}")
     }
 
-    fn options(&self) -> &[String] {
+    fn options(&self) -> &[codex_protocol::request_user_input::RequestUserInputQuestionOption] {
         self.current_question()
             .and_then(|q| q.options.as_deref())
             .unwrap_or_default()
@@ -155,7 +155,7 @@ impl AsyncQuestions {
 
     pub(super) fn wrapped_question_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         self.current_question()
-            .map(|question| render_markdown_for_viewport(&question.title, width))
+            .map(|question| render_markdown_for_viewport(&question.question, width))
             .unwrap_or_default()
     }
 
@@ -170,7 +170,8 @@ impl AsyncQuestions {
         let other = self.other_label();
         self.options()
             .iter()
-            .chain(std::iter::once(&other))
+            .map(|option| option.label.as_str())
+            .chain(std::iter::once(other.as_str()))
             .enumerate()
             .map(|(index, label)| {
                 let prefix = if self.selected_option_index() == Some(index) {
@@ -242,7 +243,7 @@ impl AsyncQuestions {
         if self
             .options()
             .iter()
-            .any(|label| label.eq_ignore_ascii_case("Other"))
+            .any(|option| option.label.eq_ignore_ascii_case("Other"))
         {
             "Other (write an answer)"
         } else {

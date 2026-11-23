@@ -239,7 +239,6 @@ mod tests {
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
-    use std::collections::HashMap;
 
     fn request_user_input_request(call_id: &str, turn_id: &str) -> ServerRequest {
         ServerRequest::ToolRequestUserInput {
@@ -377,7 +376,7 @@ mod tests {
         store.note_outbound_op(&Op::UserInputAnswer {
             id: "turn-1".to_string(),
             response: ToolRequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             },
         });
 
@@ -468,7 +467,7 @@ mod tests {
         store.note_outbound_op(&Op::UserInputAnswer {
             id: "turn-1".to_string(),
             response: ToolRequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             },
         });
 
@@ -496,7 +495,7 @@ mod tests {
         store.note_outbound_op(&Op::UserInputAnswer {
             id: "turn-1".to_string(),
             response: ToolRequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             },
         });
 

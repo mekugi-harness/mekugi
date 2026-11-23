@@ -280,6 +280,7 @@ async fn fork_version_stops_before_older_segments_once_resolved() {
             unreachable!();
         };
         compacted.resume_metadata = Some(codex_rollout::CompactionResumeMetadata {
+            question_id_high_water_mark: None,
             next_item_ordinal: None,
             rejected_audio_file_ids: Default::default(),
             dynamic_tools: None,

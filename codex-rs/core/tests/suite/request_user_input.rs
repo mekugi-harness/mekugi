@@ -2,7 +2,6 @@
 
 use codex_core::TurnInputRequest;
 use core_test_support::test_codex::local_requests;
-use std::collections::HashMap;
 
 use codex_features::Feature;
 use codex_protocol::config_types::CollaborationMode;
@@ -100,7 +99,7 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
     let expected_is_blocking = mode == ModeKind::Plan;
     let request_args = json!({
         "questions": [{
-            "id": "confirm_path",
+
             "header": "Confirm",
             "question": "Proceed with the plan?",
             "options": [{
@@ -182,14 +181,13 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
         "TokenCount should wait until request_user_input resolves"
     );
 
-    let mut answers = HashMap::new();
-    answers.insert(
-        "confirm_path".to_string(),
-        RequestUserInputAnswer {
-            answers: vec!["yes".to_string()],
-        },
-    );
-    let response = RequestUserInputResponse { answers };
+    assert_eq!(request.questions[0].id, "q1");
+    let answers = vec![RequestUserInputAnswer {
+        id: "q1".into(),
+        choice: Some(1),
+        ..Default::default()
+    }];
+    let response = RequestUserInputResponse { answers: answers };
     codex
         .submit(Op::UserInputAnswer {
             id: request.turn_id.clone(),
@@ -203,14 +201,7 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
     let req = second_mock.single_request();
     let output_text = call_output(&req, call_id);
     let output_json: Value = serde_json::from_str(&output_text)?;
-    assert_eq!(
-        output_json,
-        json!({
-            "answers": {
-                "confirm_path": { "answers": ["yes"] }
-            }
-        })
-    );
+    assert_eq!(output_json, json!([{"id":"q1","choice":1}]));
 
     Ok(())
 }
@@ -254,7 +245,7 @@ async fn request_user_input_interrupt_emits_deferred_token_count(
     let call_id = "user-input-interrupt";
     let request_args = json!({
         "questions": [{
-            "id": "confirm_path",
+
             "header": "Confirm",
             "question": "Proceed with the plan?",
             "options": [{
@@ -349,7 +340,7 @@ where
     let call_id = format!("user-input-{mode_slug}-call");
     let request_args = json!({
         "questions": [{
-            "id": "confirm_path",
+
             "header": "Confirm",
             "question": "Proceed with the plan?",
             "options": [{

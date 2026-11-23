@@ -257,8 +257,10 @@ async fn cloud_async_question_reply_uses_cloud_admission() -> Result<()> {
                     memory_citation: None,
                     delivery: None,
                     questions: Some(vec![AsyncUserInputQuestion {
-                        title: title.into(),
                         options: None,
+                        question: title.into(),
+                        id: "q1".to_string(),
+                        header: None,
                     }]),
                 },
                 /*started_at_ms*/ None,

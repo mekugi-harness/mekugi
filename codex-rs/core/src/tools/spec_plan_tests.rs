@@ -925,6 +925,30 @@ async fn request_user_input_tool_respects_experimental_config_gate() {
 }
 
 #[tokio::test]
+async fn request_user_input_async_ignores_catalog_legacy_parameters() {
+    let plan = probe(|turn| {
+        update_turn_settings_for_test(turn, |settings| {
+            let model = Arc::make_mut(&mut settings.model_info);
+            model.experimental_supported_tools.push("send_user_message_async".into());
+            model.model_messages = Some(serde_json::from_value(json!({
+                "tools": {"send_user_message_async": {
+                    "description": "Catalog wording",
+                    "parameters": "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"}}}"
+                }}
+            })).unwrap());
+        });
+    }).await;
+    let ToolSpec::Function(blocking) = plan.visible_spec("request_user_input") else {
+        panic!("blocking function tool");
+    };
+    let ToolSpec::Function(asynchronous) = plan.visible_spec("request_user_input_async") else {
+        panic!("async function tool");
+    };
+    assert_eq!(blocking.parameters, asynchronous.parameters);
+    assert_eq!(asynchronous.description, "Catalog wording");
+}
+
+#[tokio::test]
 async fn update_plan_tool_respects_config_gate() {
     let disabled = probe(|_| {}).await;
     disabled.assert_visible_lacks(&["update_plan"]);

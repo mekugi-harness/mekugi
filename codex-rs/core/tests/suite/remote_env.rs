@@ -896,7 +896,7 @@ async fn settings_update_does_not_retarget_active_turn_environment() -> Result<(
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue after settings update?",
                             "options": [{
@@ -1014,12 +1014,11 @@ async fn settings_update_does_not_retarget_active_turn_environment() -> Result<(
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -1071,7 +1070,7 @@ async fn active_environment_update_waits_for_a_configured_executor_to_connect(
                     "pause-for-switch",
                     "request_user_input",
                     &json!({"questions": [{
-                        "id": "continue", "header": "Continue", "question": "Continue?",
+                         "header": "Continue", "question": "Continue?",
                         "options": [
                             {"label": "Yes", "description": "Continue the test."},
                             {"label": "No", "description": "Stop the test."}
@@ -1153,12 +1152,11 @@ async fn active_environment_update_waits_for_a_configured_executor_to_connect(
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -1215,7 +1213,7 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue after the environment starts?",
                             "options": [{
@@ -1366,12 +1364,11 @@ async fn deferred_executor_promotes_primary_environment_when_startup_completes()
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -3581,7 +3578,7 @@ async fn deferred_executor_compaction_preserves_then_updates_environment_once() 
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue after startup?",
                             "options": [{
@@ -3652,12 +3649,11 @@ async fn deferred_executor_compaction_preserves_then_updates_environment_once() 
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

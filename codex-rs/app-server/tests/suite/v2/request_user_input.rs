@@ -25,7 +25,7 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 fn create_request_user_input_sse_response(call_id: &str) -> anyhow::Result<String> {
     let tool_call_arguments = serde_json::to_string(&json!({
         "questions": [{
-            "id": "confirm_path",
+
             "header": "Confirm",
             "question": "Proceed with the plan?",
             "options": [{
@@ -142,11 +142,7 @@ async fn request_user_input_round_trip_for_mode(
 
     mcp.send_response(
         request_id,
-        serde_json::json!({
-            "answers": {
-                "confirm_path": { "answers": ["yes"] }
-            }
-        }),
+        serde_json::json!({"answers": [{"id":"q1","choice":1}]}),
     )
     .await?;
     let mut saw_resolved = false;

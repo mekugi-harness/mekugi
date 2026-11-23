@@ -608,6 +608,8 @@ pub(crate) fn assign_missing_item_id(
 impl Session {
     fn compaction_resume_metadata(&self, state: &SessionState) -> CompactionResumeMetadata {
         CompactionResumeMetadata {
+            question_id_high_water_mark: (state.question_id_high_water_mark > 0)
+                .then_some(state.question_id_high_water_mark),
             next_item_ordinal: None,
             rejected_audio_file_ids: state.history.rejected_audio_file_ids(),
             dynamic_tools: Some(Box::new(DynamicToolsSnapshot {
@@ -2020,6 +2022,12 @@ impl Session {
         turn_context: &Arc<TurnContext>,
         rollout_items: &[RolloutItem],
     ) -> Option<PreviousTurnSettings> {
+        let high_water_mark = rollout_reconstruction::question_id_high_water_mark(rollout_items);
+        {
+            let mut state = self.state.lock().await;
+            state.question_id_high_water_mark =
+                state.question_id_high_water_mark.max(high_water_mark);
+        }
         if let Some(history) = &self.realtime_history {
             history
                 .lock()

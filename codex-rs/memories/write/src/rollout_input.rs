@@ -10,7 +10,7 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::request_user_input::RequestUserInputResponse;
+use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_rollout::ReverseJsonlScanner;
 use codex_rollout::RolloutItem;
 use codex_rollout::ScanOutcome;
@@ -160,15 +160,7 @@ pub(crate) fn serialize_tiered_input(
                 output,
                 ..
             } if user_input_calls.contains_key(call_id)
-                && output
-                    .text_content()
-                    .and_then(|text| serde_json::from_str::<RequestUserInputResponse>(text).ok())
-                    .is_some_and(|reply| {
-                        reply
-                            .answers
-                            .values()
-                            .any(|answer| answer.answers.iter().any(|text| !text.trim().is_empty()))
-                    }) =>
+                && output.text_content().is_some_and(has_user_input_answer) =>
             {
                 user_input_calls.remove(call_id)
             }
@@ -357,6 +349,38 @@ fn is_memory_excluded_contextual_user_fragment(content_item: &ContentItem) -> bo
 
     matches_marked_fragment(text, "# AGENTS.md instructions", "</INSTRUCTIONS>")
         || matches_marked_fragment(text, "<skill>", "</skill>")
+}
+
+fn has_user_input_answer(text: &str) -> bool {
+    if let Ok(answers) = serde_json::from_str::<Vec<RequestUserInputAnswer>>(text) {
+        return answers.iter().any(|answer| {
+            !answer.skipped
+                && (answer.choice.is_some_and(|choice| choice > 0)
+                    || answer
+                        .other
+                        .as_ref()
+                        .is_some_and(|other| !other.trim().is_empty()))
+        });
+    }
+    let Ok(reply) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    reply
+        .get("answers")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|answers| {
+            answers.values().any(|answer| {
+                answer
+                    .get("answers")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|texts| {
+                        texts
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .any(|text| !text.trim().is_empty())
+                    })
+            })
+        })
 }
 
 fn matches_marked_fragment(text: &str, start_marker: &str, end_marker: &str) -> bool {

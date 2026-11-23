@@ -867,7 +867,7 @@ async fn physical_chords_route_list_and_mixed_request_input_modals() -> Result<(
             item_id: "call-1".to_string(),
             questions: vec![ToolRequestUserInputQuestion {
                 id: "choice".to_string(),
-                header: "Pick one".to_string(),
+                header: Some("Pick one".to_string()),
                 question: "Choose an option.".to_string(),
                 is_other: false,
                 is_secret: false,
@@ -876,7 +876,9 @@ async fn physical_chords_route_list_and_mixed_request_input_modals() -> Result<(
                         .into_iter()
                         .map(|label| ToolRequestUserInputOption {
                             label: label.to_string(),
-                            description: label.to_string(),
+                            description: Some(label.to_string()),
+                            preview: None,
+                            recommended: false,
                         })
                         .collect(),
                 ),

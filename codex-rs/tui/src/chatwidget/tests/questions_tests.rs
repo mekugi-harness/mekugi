@@ -656,8 +656,20 @@ fn open_questions(chat: &mut ChatWidget, options: Option<Vec<String>>) {
             delivery: None,
             questions: Some(vec![
                 AsyncUserInputQuestion {
-                    title: "First?".into(),
-                    options,
+                    options: options.map(|options| {
+                        options
+                            .into_iter()
+                            .map(|label| {
+                                codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                    label,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect()
+                    }),
+                    question: "First?".into(),
+                    id: "q1".to_string(),
+                    header: None,
                 },
                 question("Second?", Some(vec!["Next".into()])),
             ]),
@@ -880,8 +892,20 @@ fn assert_answer(op: Op, expected: &str) {
 
 fn question(title: &str, options: Option<Vec<String>>) -> AsyncUserInputQuestion {
     AsyncUserInputQuestion {
-        title: title.into(),
-        options,
+        options: options.map(|options| {
+            options
+                .into_iter()
+                .map(
+                    |label| codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                        label,
+                        ..Default::default()
+                    },
+                )
+                .collect()
+        }),
+        question: title.into(),
+        id: "q1".to_string(),
+        header: None,
     }
 }
 

@@ -120,7 +120,7 @@ async fn turn_finalization_drains_lifecycle_queue_before_interrupting_remaining_
         item_id: "question-1".to_string(),
         questions: vec![ToolRequestUserInputQuestion {
             id: "scope".to_string(),
-            header: "Scope".to_string(),
+            header: Some("Scope".to_string()),
             question: "Which change should I review?".to_string(),
             is_other: false,
             is_secret: false,

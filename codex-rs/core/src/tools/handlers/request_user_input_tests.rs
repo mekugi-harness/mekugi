@@ -16,7 +16,6 @@ use codex_protocol::request_user_input::RequestUserInputAnswer;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use test_case::test_case;
 use tokio::sync::Mutex;
@@ -46,7 +45,7 @@ async fn request_user_input_rejects_restricted_threads() {
                 "questions": [{
                     "header": "Hdr",
                     "question": "Pick one",
-                    "id": "pick_one",
+
                     "options": [
                         {
                             "label": "A",
@@ -75,18 +74,89 @@ async fn request_user_input_rejects_restricted_threads() {
     );
 }
 
+#[tokio::test]
+async fn request_user_input_returns_ordered_compact_answers_and_continues_ids() {
+    let (session, turn, events) = make_session_and_context_with_rx().await;
+    *session.active_turn.lock().await = Some(ActiveTurn::default());
+    for (call, first) in [("first", 1), ("second", 6)] {
+        let payload = ToolPayload::Function { arguments: json!({"questions":[
+            {"question":"Which?", "options":[{"label":"A"},{"label":"B", "recommended":true, "preview":"private preview"}]},
+            {"question":"Which with a note?", "options":[{"label":"A"},{"label":"B"}]},
+            {"question":"Explain"}, {"question":"Skip?"}, {"question":"No answer"}
+        ]}).to_string() };
+        let request = tokio::spawn({
+            let session = Arc::clone(&session);
+            let turn = Arc::clone(&turn);
+            let payload = payload.clone();
+            async move {
+                RequestUserInputHandler {
+                    available_modes: vec![ModeKind::Default],
+                }
+                .handle(ToolInvocation {
+                    session,
+                    step_context: StepContext::for_test(Arc::clone(&turn)),
+                    turn,
+                    cancellation_token: tokio_util::sync::CancellationToken::new(),
+                    tracker: Arc::new(Mutex::new(TurnDiffTracker::default())),
+                    call_id: call.into(),
+                    tool_name: codex_tools::ToolName::plain(REQUEST_USER_INPUT_TOOL_NAME),
+                    source: crate::tools::context::ToolCallSource::Direct,
+                    native_call: None,
+                    environments: Default::default(),
+                    payload,
+                })
+                .await
+            }
+        });
+        let event = loop {
+            let event = events.recv().await.unwrap();
+            if let EventMsg::RequestUserInput(event) = event.msg {
+                break event;
+            }
+        };
+        let ids = (first..first + 5)
+            .map(|id| format!("q{id}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            event
+                .questions
+                .iter()
+                .map(|question| question.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        let expected = json!([
+            {"id":ids[0],"choice":2}, {"id":ids[1],"choice":1,"note":"note"},
+            {"id":ids[2],"other":"free text"}, {"id":ids[3],"skipped":true},
+            {"id":ids[4],"skipped":true}
+        ]);
+        let mut answers: Vec<RequestUserInputAnswer> =
+            serde_json::from_value(expected.clone()).unwrap();
+        answers.pop();
+        answers.reverse();
+        session
+            .notify_user_input_response(&event.turn_id, RequestUserInputResponse { answers })
+            .await;
+        let output = request.await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&output.log_output()).unwrap(),
+            expected
+        );
+    }
+}
+
 #[test_case(None, RenderedVerifiedAnswers { fragments: vec![], complete: true }; "empty")]
 #[test_case(Some(("other_question", "A".to_owned())), RenderedVerifiedAnswers { fragments: vec![], complete: true }; "unrequested question")]
-#[test_case(Some(("pick_one", " ".to_owned())), RenderedVerifiedAnswers { fragments: vec![], complete: true }; "blank answer")]
-#[test_case(Some(("pick_one", "A".to_owned())), RenderedVerifiedAnswers {
+#[test_case(Some(("q1", " ".to_owned())), RenderedVerifiedAnswers { fragments: vec![], complete: true }; "blank answer")]
+#[test_case(Some(("q1", "A".to_owned())), RenderedVerifiedAnswers {
     fragments: vec!["assistant: Pick one\nassistant: A: A\nuser: A\n".to_owned()],
     complete: true,
 }; "genuine answer")]
-#[test_case(Some(("pick_one", "A\nB".to_owned())), RenderedVerifiedAnswers {
+#[test_case(Some(("q1", "A\nB".to_owned())), RenderedVerifiedAnswers {
     fragments: vec!["assistant: Pick one\nuser: A\nuser: B\n".to_owned()],
     complete: true,
 }; "short multiline answer")]
-#[test_case(Some(("pick_one", "x\n".repeat(/*n*/ 900))), RenderedVerifiedAnswers {
+#[test_case(Some(("q1", "x\n".repeat(/*n*/ 900))), RenderedVerifiedAnswers {
     fragments: vec!["Host notice: some verified user answers are unavailable within the evidence budget. Do not treat the remaining answers as complete authorization for an action.\n".to_owned()],
     complete: false,
 }; "oversized multiline answer")]
@@ -126,7 +196,7 @@ async fn request_user_input_sets_non_blocking_outside_plan_mode(
                         "questions": [{
                             "header": "Hdr",
                             "question": "Pick one",
-                            "id": "pick_one",
+
                             "options": [
                                 {
                                     "label": "A",
@@ -163,10 +233,14 @@ async fn request_user_input_sets_non_blocking_outside_plan_mode(
                         (
                             (*question_id).to_owned(),
                             RequestUserInputAnswer {
-                                answers: vec![answer.clone()],
+                                id: (*question_id).to_owned(),
+                                choice: (answer == "A").then_some(1),
+                                other: (answer != "A").then(|| answer.clone()),
+                                ..Default::default()
                             },
                         )
                     })
+                    .map(|(_, answer)| answer)
                     .collect(),
             },
         )
@@ -203,7 +277,7 @@ async fn request_user_input_sets_non_blocking_outside_plan_mode(
         .services
         .thread_extension_data
         .get_or_init(GuardianReviewEvidence::default);
-    let has_answer = matches!(&answer, Some(("pick_one", answer)) if !answer.trim().is_empty());
+    let has_answer = matches!(&answer, Some(("q1", answer)) if !answer.trim().is_empty());
     assert_eq!(
         evidence.authorization_version(history.as_ref()),
         GuardianAuthorizationVersion {
@@ -249,7 +323,7 @@ async fn request_user_input_sets_blocking_from_turn_mode() {
                         "questions": [{
                             "header": "Hdr",
                             "question": "Pick one",
-                            "id": "pick_one",
+
                             "options": [
                                 {
                                     "label": "A",
@@ -280,7 +354,7 @@ async fn request_user_input_sets_blocking_from_turn_mode() {
         .notify_user_input_response(
             &request_event.turn_id,
             RequestUserInputResponse {
-                answers: HashMap::new(),
+                answers: Vec::new(),
             },
         )
         .await;

@@ -42,8 +42,8 @@ impl ChatWidget {
         let added_count = self.bottom_pane.question_editor().unanswered_count() - previous_count;
         if added_count > 0 {
             let title = match questions {
-                [question] if !question.title.trim().is_empty() => {
-                    truncate_text(question.title.trim(), /*max_graphemes*/ 30)
+                [question] if !question.question.trim().is_empty() => {
+                    truncate_text(question.question.trim(), /*max_graphemes*/ 30)
                 }
                 _ if added_count == 1 => "Question requested".to_string(),
                 _ => format!("{added_count} questions requested"),

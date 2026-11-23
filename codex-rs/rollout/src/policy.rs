@@ -132,7 +132,11 @@ fn persisted_event_msg(
 ) -> Option<Cow<'_, EventMsg>> {
     match ev {
         EventMsg::ItemCompleted(event) => persisted_item_completed_event(ev, event, history_mode),
+        EventMsg::ItemStarted(event) if matches!(&event.item, TurnItem::AgentMessage(message) if message.questions.is_some()) => {
+            Some(Cow::Borrowed(ev))
+        }
         EventMsg::TokenCount(_)
+        | EventMsg::RequestUserInput(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadRolledBack(_)
         | EventMsg::TurnAborted(_)
@@ -205,7 +209,6 @@ fn persisted_event_msg(
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::ExecApprovalRequest(_)
         | EventMsg::RequestPermissions(_)
-        | EventMsg::RequestUserInput(_)
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ElicitationAbandoned(_)
         | EventMsg::NetworkApprovalResolved { .. }

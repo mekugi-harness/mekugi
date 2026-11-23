@@ -189,7 +189,7 @@ fn pause_call(call_id: &str) -> Value {
         "request_user_input",
         &json!({
             "questions": [{
-                "id": "continue",
+
                 "header": "Continue",
                 "question": "Continue after the settings update?",
                 "options": [{
@@ -219,17 +219,16 @@ async fn start_paused_turn(thread: &CodexThread) -> Result<RequestUserInputEvent
     .await)
 }
 
-async fn answer_paused_turn(thread: &CodexThread, turn_id: &str) -> Result<()> {
+async fn answer_paused_turn(thread: &CodexThread, request: &RequestUserInputEvent) -> Result<()> {
     thread
         .submit(Op::UserInputAnswer {
-            id: turn_id.to_string(),
+            id: request.turn_id.clone(),
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    choice: Some(1),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -469,7 +468,7 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused_request.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused_request).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -800,7 +799,7 @@ async fn settings_updates_preserve_turn_identity_and_target(target: SettingsTarg
             );
         }
     }
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     let mut settings_events = Vec::new();
     let mut new_turns = Vec::new();
     let completion = wait_for_event(&test.codex, |event| match event {
@@ -974,7 +973,7 @@ async fn new_context_after_model_switch_uses_captured_extension_window() -> Resu
         .await?,
         TurnSettingsUpdateOutcome::Applied
     );
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -1053,13 +1052,13 @@ async fn active_model_switch_updates_core_context_from_captured_settings() -> Re
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     let request = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,
     })
     .await;
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     wait_for_event(&test.codex, |event| match event {
         EventMsg::Error(error) => panic!("settings activation failed: {}", error.message),
         EventMsg::TurnComplete(_) => true,
@@ -1191,7 +1190,7 @@ async fn active_model_switch_updates_multi_agent_policy_from_captured_effort(
         .await?,
         TurnSettingsUpdateOutcome::Applied
     );
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -1337,12 +1336,11 @@ async fn mcp_confirmation_policy_follows_step_model_changes() -> Result<()> {
         .submit(Op::UserInputAnswer {
             id: request.turn_id.clone(),
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    request.questions[0].id.clone(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Allow".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Allow".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;
@@ -1479,7 +1477,7 @@ async fn captured_model_replans_tools_and_retains_the_issuing_request_router() -
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     let paused = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,
@@ -1497,7 +1495,7 @@ async fn captured_model_replans_tools_and_retains_the_issuing_request_router() -
     .await?;
     // B's response issues its patch after A is active, so dispatch must retain B's router.
     release_patch.send(()).expect("release B's patch call");
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -1640,7 +1638,7 @@ async fn captured_model_enables_and_executes_code_mode() -> Result<()> {
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -1714,7 +1712,7 @@ async fn response_metadata_uses_the_captured_step_after_a_turn_update() -> Resul
         .await?,
         TurnSettingsUpdateOutcome::Applied
     );
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
 
     let mut reroutes = Vec::new();
     let mut buffering_events = Vec::new();
@@ -1827,7 +1825,7 @@ async fn sparse_updates_preserve_divergent_active_and_future_models() -> Result<
         test.codex.current_turn_model(&request.turn_id).await,
         Some(MODEL_C.to_string())
     );
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     let second_request = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,
@@ -1868,7 +1866,7 @@ async fn sparse_updates_preserve_divergent_active_and_future_models() -> Result<
         durable_settings.service_tier,
         Some(ServiceTier::Fast.request_value().to_string())
     );
-    answer_paused_turn(&test.codex, &second_request.turn_id).await?;
+    answer_paused_turn(&test.codex, &second_request).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -2044,7 +2042,7 @@ async fn model_activation_uses_destination_metadata_defaults(
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     let paused = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,
@@ -2061,7 +2059,7 @@ async fn model_activation_uses_destination_metadata_defaults(
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| match event {
         EventMsg::Error(error) => panic!("model activation failed: {}", error.message),
         EventMsg::TurnComplete(_) => true,
@@ -2234,7 +2232,7 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| match event {
         EventMsg::Error(error) => panic!("model activation failed: {}", error.message),
         EventMsg::TurnComplete(_) => true,
@@ -2252,6 +2250,7 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
                     body["tools"].as_array().expect("request tools")
                         .iter().find(|tool| tool["name"] == name).expect(name)
                 };
+                assert_eq!(tool("request_user_input_async")["parameters"], tool("request_user_input")["parameters"]);
                 let multi_agent_messages = MULTI_AGENT_TOOLS.map(|name| {
                     let tool = namespace_child_tool(&body, "collaboration", name).expect(name);
                     (name.to_string(), json!({
@@ -2263,7 +2262,6 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
                 json!({
                     "model": body["model"],
                     "async_description": tool("request_user_input_async")["description"],
-                    "async_parameters": tool("request_user_input_async")["parameters"],
                     "multi_agent_messages": multi_agent_messages,
                     "channel_post_description": channel_post["description"].as_str().expect("post description").lines().next(),
                     "channel_post_required": channel_post["parameters"]["required"],
@@ -2277,7 +2275,6 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
             .map(|model| json!({
                 "model": model,
                 "async_description": format!("Async message description for {model}."),
-                "async_parameters": async_parameters(model),
                 "multi_agent_messages": MULTI_AGENT_TOOLS
                     .map(|name| (name.to_string(), json!({
                         "description": format!("{name} description for {model}."),
@@ -2345,7 +2342,7 @@ async fn persistent_instructions_follow_mid_turn_model_changes() -> Result<()> {
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| match event {
         EventMsg::Error(error) => panic!("model activation failed: {}", error.message),
         EventMsg::TurnComplete(_) => true,
@@ -2432,7 +2429,7 @@ async fn turn_settings_rejection_preserves_independent_future_settings() -> Resu
         }
     );
     assert_eq!(test.codex.thread_settings_snapshot().await, future);
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -2521,7 +2518,7 @@ async fn request_preference_activation_keeps_admitted_model_metadata() -> Result
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &request.turn_id).await?;
+    answer_paused_turn(&test.codex, &request).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -2634,7 +2631,7 @@ async fn captured_step_controls_exec_completion_and_write_stdin_output() -> Resu
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     let paused = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,
@@ -2650,7 +2647,7 @@ async fn captured_step_controls_exec_completion_and_write_stdin_output() -> Resu
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     let mut end = None;
     let mut turn_complete = false;
     wait_for_event(&test.codex, |event| {
@@ -2780,7 +2777,7 @@ async fn captured_step_controls_mcp_output_limit(supports_images: bool) -> Resul
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     let recorded_output = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RawResponseItem(item) => {
             let item = serde_json::to_value(&item.item).expect("raw response JSON");
@@ -2920,7 +2917,7 @@ async fn captured_step_settings_and_history_reach_extension_executor(
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
@@ -3044,7 +3041,7 @@ async fn captured_step_controls_mcp_resource_output() -> Result<()> {
         },
     )
     .await?;
-    answer_paused_turn(&test.codex, &paused.turn_id).await?;
+    answer_paused_turn(&test.codex, &paused).await?;
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })

@@ -182,7 +182,7 @@ async fn settings_updates_report_results_and_preserve_the_target_on_saved_thread
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue after the settings update?",
                             "options": [{
@@ -562,7 +562,7 @@ async fn live_reviewer_updates_route_approvals_without_changing_future_turns(
             "pause-turn",
             "request_user_input",
             &json!({"questions": [{
-                "id": "continue", "header": "Continue", "question": "Continue?",
+                 "header": "Continue", "question": "Continue?",
                 "options": [
                     {"label": "Yes", "description": "Continue"},
                     {"label": "No", "description": "Stop"}

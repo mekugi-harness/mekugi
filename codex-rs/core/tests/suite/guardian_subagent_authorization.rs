@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1085,7 +1084,7 @@ async fn run_guardian_subagent_review(
                 ASK_CALL_ID,
                 "request_user_input",
                 &json!({"questions": [{
-                    "id": "deploy", "header": "Deploy", "question": ROOT_QUESTION,
+                     "header": "Deploy", "question": ROOT_QUESTION,
                     "options": [
                         {"label": "Yes", "description": "Deploy privately."},
                         {"label": "No", "description": "Do not deploy."}
@@ -1204,12 +1203,11 @@ async fn run_guardian_subagent_review(
         .submit(Op::UserInputAnswer {
             id: question.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "deploy".to_owned(),
-                    RequestUserInputAnswer {
-                        answers: vec![answer],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: question.questions[0].id.clone(),
+                    other: Some(answer),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

@@ -43,6 +43,7 @@ impl ToolExecutor<ToolInvocation> for RequestUserInputHandler {
 }
 
 impl RequestUserInputHandler {
+    #[tracing::instrument(skip_all)]
     async fn handle_call(
         &self,
         invocation: ToolInvocation,
@@ -78,8 +79,14 @@ impl RequestUserInputHandler {
         let args: RequestUserInputToolArgs = parse_arguments(&arguments)?;
         let args = normalize_request_user_input_tool_args(args)
             .map_err(FunctionCallError::RespondToModel)?;
+        let ids = session.allocate_question_ids(args.questions.len()).await;
         let args = RequestUserInputArgs {
-            questions: args.questions,
+            questions: args
+                .questions
+                .into_iter()
+                .zip(ids)
+                .map(|(question, id)| question.with_id(id))
+                .collect(),
             is_blocking: mode == ModeKind::Plan,
             auto_resolution_ms: None,
         };
@@ -93,9 +100,26 @@ impl RequestUserInputHandler {
                 ))
             })?;
 
-        let response = accepted.response;
+        let answers = questions
+            .iter()
+            .map(|question| {
+                accepted
+                    .response
+                    .answers
+                    .iter()
+                    .find(|answer| answer.is_valid_for(question))
+                    .cloned()
+                    .unwrap_or_else(
+                        || codex_protocol::request_user_input::RequestUserInputAnswer {
+                            id: question.id.clone(),
+                            skipped: true,
+                            ..Default::default()
+                        },
+                    )
+            })
+            .collect::<Vec<_>>();
 
-        let content = serde_json::to_string(&response).map_err(|err| {
+        let content = serde_json::to_string(&answers).map_err(|err| {
             FunctionCallError::Fatal(format!(
                 "failed to serialize {REQUEST_USER_INPUT_TOOL_NAME} response: {err}"
             ))
@@ -105,29 +129,21 @@ impl RequestUserInputHandler {
             let user_input = questions
                 .iter()
                 .filter_map(|question| {
-                    let response = response.answers.get(&question.id)?;
-                    let answers = response
-                        .answers
-                        .iter()
-                        .filter(|answer| !answer.trim().is_empty())
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    if answers.is_empty() {
+                    let response = answers.iter().find(|answer| answer.id == question.id)?;
+                    let answer = response.readable_answer(question)?;
+                    if answer.trim().is_empty() {
                         return None;
                     }
                     let mut question_text = question.question.clone();
-                    for option in question
-                        .options
-                        .iter()
-                        .flatten()
-                        .filter(|option| response.answers.contains(&option.label))
-                    {
-                        question_text
-                            .push_str(&format!("\n{}: {}", option.label, option.description));
+                    if let Some(option) = response.selected_option(question) {
+                        question_text.push_str(&format!("\n{}", option.label));
+                        if let Some(description) = &option.description {
+                            question_text.push_str(&format!(": {description}"));
+                        }
                     }
                     Some(VerifiedQuestionAnswer {
                         question: question_text,
-                        answer: answers.join("\n"),
+                        answer,
                     })
                 })
                 .collect::<Vec<_>>();

@@ -1385,9 +1385,6 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
                 description: model_messages
                     .request_user_input_async_description()
                     .to_string(),
-                parameters: model_messages
-                    .request_user_input_async_parameters_override()
-                    .map(str::to_owned),
             },
             ToolExposure::DirectModelOnly,
         );

@@ -1,20 +1,25 @@
-use std::collections::HashMap;
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+#[ts(rename = "ToolRequestUserInputOption")]
+#[schemars(rename = "ToolRequestUserInputOption")]
 pub struct RequestUserInputQuestionOption {
     pub label: String,
-    pub description: String,
+    pub description: Option<String>,
+    pub preview: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct RequestUserInputQuestion {
     pub id: String,
-    pub header: String,
+    pub header: Option<String>,
     pub question: String,
     #[serde(rename = "isOther", default)]
     #[schemars(rename = "isOther")]
@@ -41,14 +46,62 @@ pub struct RequestUserInputArgs {
     pub auto_resolution_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+#[ts(rename = "ToolRequestUserInputAnswer")]
+#[schemars(rename = "ToolRequestUserInputAnswer")]
 pub struct RequestUserInputAnswer {
-    pub answers: Vec<String>,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub choice: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub other: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
+}
+
+impl RequestUserInputAnswer {
+    pub fn selected_option<'a>(
+        &self,
+        question: &'a RequestUserInputQuestion,
+    ) -> Option<&'a RequestUserInputQuestionOption> {
+        question.options.as_ref()?.get(self.choice?.checked_sub(1)?)
+    }
+
+    pub fn is_valid_for(&self, question: &RequestUserInputQuestion) -> bool {
+        self.id == question.id
+            && match (self.choice, &self.other, self.skipped) {
+                (Some(_), None, false) => self.selected_option(question).is_some(),
+                (None, Some(_), false) | (None, None, true) => self.note.is_none(),
+                _ => false,
+            }
+    }
+
+    pub fn readable_answer(&self, question: &RequestUserInputQuestion) -> Option<String> {
+        if !self.is_valid_for(question) || self.skipped {
+            return None;
+        }
+        let mut text = self
+            .selected_option(question)
+            .map(|option| option.label.clone())
+            .or_else(|| self.other.clone())?;
+        if let Some(note) = &self.note {
+            text.push('\n');
+            text.push_str(note);
+        }
+        Some(text)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct RequestUserInputResponse {
-    pub answers: HashMap<String, RequestUserInputAnswer>,
+    pub answers: Vec<RequestUserInputAnswer>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, JsonSchema, TS)]

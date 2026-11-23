@@ -992,7 +992,7 @@ async fn assert_plugin_measurement_analytics(remote: bool, background: bool) -> 
                 "request_user_input",
                 &json!({
                     "questions": [{
-                        "id": "continue", "header": "Continue", "question": "Continue?",
+                         "header": "Continue", "question": "Continue?",
                         "options": [
                             {"label": "Yes", "description": "Continue the turn."},
                             {"label": "No", "description": "Stop the turn."}

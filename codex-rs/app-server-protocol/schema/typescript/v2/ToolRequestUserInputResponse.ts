@@ -4,6 +4,6 @@
 import type { ToolRequestUserInputAnswer } from "./ToolRequestUserInputAnswer";
 
 /**
- * EXPERIMENTAL. Response payload mapping question ids to answers.
+ * EXPERIMENTAL. Compact answers identified by runtime question IDs.
  */
-export type ToolRequestUserInputResponse = { answers: { [key in string]?: ToolRequestUserInputAnswer }, };
+export type ToolRequestUserInputResponse = { answers: Array<ToolRequestUserInputAnswer>, };

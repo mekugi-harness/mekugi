@@ -60,7 +60,6 @@ use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use test_case::test_case;
 use wiremock::MockServer;
@@ -478,7 +477,7 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue",
+
                             "header": "Continue",
                             "question": "Continue after settings update?",
                             "options": [{
@@ -551,12 +550,11 @@ async fn settings_update_during_active_turn_applies_to_next_turn_only() -> Resul
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
-                answers: HashMap::from([(
-                    "continue".to_string(),
-                    RequestUserInputAnswer {
-                        answers: vec!["Yes (Recommended)".to_string()],
-                    },
-                )]),
+                answers: vec![RequestUserInputAnswer {
+                    id: request.questions[0].id.clone(),
+                    other: Some("Yes (Recommended)".to_string()),
+                    ..Default::default()
+                }],
             },
         })
         .await?;

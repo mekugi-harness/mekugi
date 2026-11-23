@@ -111,7 +111,7 @@ async fn standalone_web_search_uses_new_permissions_only_on_the_next_turn() -> R
                     "request_user_input",
                     &json!({
                         "questions": [{
-                            "id": "continue", "header": "Continue", "question": "Search again?",
+                             "header": "Continue", "question": "Search again?",
                             "options": [
                                 {"label": "Yes", "description": "Search again"},
                                 {"label": "No", "description": "Finish"}

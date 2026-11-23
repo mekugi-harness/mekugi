@@ -907,7 +907,7 @@ fn custom_mcp_tool_question_mentions_server_name() {
         /*question_override*/ None,
     );
 
-    assert_eq!(question.header, "Approve app tool call?");
+    assert_eq!(question.header.as_deref(), Some("Approve app tool call?"));
     assert_eq!(
         question.question,
         "Allow the custom_server MCP server to run tool \"run_action\"?"
@@ -957,11 +957,13 @@ fn trusted_codex_apps_tool_question_offers_always_allow() {
 
     assert!(options.iter().any(|option| {
         option.label == MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION
-            && option.description == "Run the tool and remember this choice for this session."
+            && option.description.as_deref()
+                == Some("Run the tool and remember this choice for this session.")
     }));
     assert!(options.iter().any(|option| {
         option.label == MCP_TOOL_APPROVAL_ACCEPT_AND_REMEMBER
-            && option.description == "Run the tool and remember this choice for future tool calls."
+            && option.description.as_deref()
+                == Some("Run the tool and remember this choice for future tool calls.")
     }));
     assert_eq!(
         options
@@ -2061,12 +2063,11 @@ fn accepted_elicitation_content_converts_to_request_user_input_response() {
     assert_eq!(
         response,
         Some(RequestUserInputResponse {
-            answers: std::collections::HashMap::from([(
-                "approval".to_string(),
-                RequestUserInputAnswer {
-                    answers: vec![MCP_TOOL_APPROVAL_ACCEPT_AND_REMEMBER.to_string()],
-                },
-            )]),
+            answers: vec![RequestUserInputAnswer {
+                id: "approval".to_string(),
+                other: Some(MCP_TOOL_APPROVAL_ACCEPT_AND_REMEMBER.to_string()),
+                ..Default::default()
+            }],
         })
     );
 }

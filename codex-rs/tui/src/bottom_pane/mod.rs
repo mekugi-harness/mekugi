@@ -2854,7 +2854,7 @@ mod tests {
             auto_resolution_ms: None,
             questions: vec![codex_app_server_protocol::ToolRequestUserInputQuestion {
                 id: "question".into(),
-                header: String::new(),
+                header: Some(String::new()),
                 question: "Which way?".into(),
                 is_other: false,
                 is_secret: false,

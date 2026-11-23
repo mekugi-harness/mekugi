@@ -87,8 +87,22 @@ fn completed_reply_preserves_the_full_text_phase_questions_and_timestamp() -> Re
                 memory_citation: None,
                 delivery: None,
                 questions: Some(vec![protocol::AsyncUserInputQuestion {
-                    title: "Which?".into(),
-                    options: Some(vec!["One".into(), "Two".into()]),
+                    options: Some(
+                        (vec!["One".into(), "Two".into()])
+                            .into_iter()
+                            .map(|label: String| {
+                                codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                    label,
+                                    preview: None,
+                                    recommended: false,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect()
+                    ),
+                    question: "Which?".into(),
+                    id: String::new(),
+                    header: None,
                 }]),
             },
             /*started_at_ms*/ None,
