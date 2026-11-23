@@ -3468,3 +3468,122 @@ async fn instant_interrupt_steer_drain_suppresses_partial_assistant_message_on_w
     server.shutdown().await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instant_interrupt_steer_does_not_cancel_tools_on_non_lite_websocket() -> anyhow::Result<()>
+{
+    core_test_support::skip_if_no_network!(Ok(()));
+
+    let msg_done = ev_assistant_message("msg-1", "Working on it.");
+    let server = responses::start_websocket_server(vec![
+        vec![vec![ev_response_created("warm-0"), ev_completed("warm-0")]],
+        vec![
+            vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+            vec![
+                ev_response_created("resp-1"),
+                ev_message_item_added("msg-1", ""),
+                ev_output_text_delta("Working on it"),
+                msg_done.clone(),
+                ev_function_call("call-1", "non_lite_tool", "{}"),
+                ev_completed("resp-1"),
+            ],
+            vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-2", "Steered reply"),
+                ev_completed("resp-2"),
+            ],
+        ],
+    ])
+    .await;
+    let release_msg = server.gate_response_event(&msg_done);
+
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = false;
+        })
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::InstantInterrupt)
+                .expect("enable InstantInterrupt feature");
+        })
+        .build_with_websocket_server(&server)
+        .await?;
+    let codex = test
+        .thread_manager
+        .start_thread(StartThreadOptions {
+            dynamic_tools: vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                name: "non_lite_tool".to_string(),
+                description: "Non-lite websocket tool.".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                defer_loading: false,
+            })],
+            ..StartThreadOptions::new(test.config.clone())
+        })
+        .await?
+        .thread;
+
+    submit_user_input(&codex, "first prompt").await;
+    wait_for_event(&codex, |event| {
+        matches!(
+            event,
+            EventMsg::AgentMessageContentDelta(delta) if delta.delta == "Working on it"
+        )
+    })
+    .await;
+
+    steer_user_input(&codex, "change direction").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    release_msg.send(()).expect("release assistant message");
+
+    let mut saw_tool_request = false;
+    loop {
+        let event = codex.next_event().await.expect("next event");
+        match event.msg {
+            EventMsg::DynamicToolCallRequest(request) if request.call_id == "call-1" => {
+                saw_tool_request = true;
+                codex
+                    .submit(Op::DynamicToolResponse {
+                        id: request.call_id,
+                        response: DynamicToolResponse {
+                            content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                                text: "tool-ok".to_string(),
+                            }],
+                            success: true,
+                        },
+                    })
+                    .await?;
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        saw_tool_request,
+        "completed tool call on non-Lite WebSocket must execute rather than be cancelled"
+    );
+
+    let connections = server.connections();
+    let follow_up = connections
+        .last()
+        .and_then(|connection| connection.last())
+        .expect("follow-up websocket request")
+        .body_json();
+    assert_eq!(
+        function_call_output_text(&follow_up, "call-1"),
+        Some("tool-ok"),
+        "tool output must be preserved in follow-up request"
+    );
+    assert!(
+        message_input_texts(&follow_up, "user")
+            .iter()
+            .any(|text| text == "change direction"),
+        "steered user input must be delivered in follow-up request"
+    );
+
+    codex.shutdown_and_wait().await?;
+    server.shutdown().await;
+    Ok(())
+}

@@ -3240,13 +3240,14 @@ async fn try_run_sampling_request(
             // observed by the mapper has finished accounting.
             *wait_for_bill_only = streaming || !stream.settlement_started.load(Ordering::Acquire);
             stream.consumer_dropped.cancel();
+            *draining_for_steer = true;
         } else if !stream.settlement_started.load(Ordering::Acquire)
-            && let Some(interrupt) = stream.interrupt.take()
             && step_context.settings.model_info.use_responses_lite
+            && let Some(interrupt) = stream.interrupt.take()
+            && interrupt.send(codex_api::ResponseInterrupt::Drain).is_ok()
         {
-            let _ = interrupt.send(codex_api::ResponseInterrupt::Drain);
+            *draining_for_steer = true;
         }
-        *draining_for_steer = true;
         *needs_follow_up = true;
     };
     let outcome: CodexResult<SamplingRequestResult> = loop {
