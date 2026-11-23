@@ -10,7 +10,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/outputbudget"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -130,8 +129,8 @@ func TestNativeFinalRangeRecoveryExcludesLaterCaptures(t *testing.T) {
 	if !strings.HasSuffix(source, "+visible line of retained evidence\n") || !strings.Contains(payload, "+oversized line") || strings.Contains(source, "oversized line") {
 		t.Fatal("a partially visible row was marked as a deduplication source")
 	}
-	if tokens, err := new(outputbudget.Budget).Count(frozen.FullText); err != nil || tokens > CompletionTokens {
-		t.Fatalf("framing exceeded completion budget: %d, %v", tokens, err)
+	if tokens := approxTokenCount(frozen.FullText); tokens > CompletionTokens {
+		t.Fatalf("framing exceeded completion budget: %d", tokens)
 	}
 	f.publish(t, id, "large", "late-call", mekugiHistory{ReviewFiles: []diffmodel.ReviewFile{diffmodel.RenderReviewFile("", "late.txt", "", "late-content\n")}})
 	projection := appserver.FinalCaptureProjectRequest{RootThreadID: f.thread, ThreadID: "worker", OperationID: "work", RecipientThreadID: f.thread,

@@ -13,7 +13,6 @@ use (
 	./libraries/legacycall
 	./libraries/mcptransport
 	./libraries/modelprotocol
-	./libraries/outputbudget
 	./libraries/pathdisplay
 	./libraries/persistence
 	./libraries/shellinstrumentation

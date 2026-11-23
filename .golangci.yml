@@ -16,6 +16,3 @@ linters:
         - all
         - '-QF*'
         - '-ST*'
-  exclusions:
-    paths:
-      - mekugi-tui/libraries/outputbudget/tokenizer/regex/regexp.gen.go

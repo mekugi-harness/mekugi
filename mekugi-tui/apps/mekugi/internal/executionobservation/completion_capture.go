@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/outputbudget"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
@@ -16,6 +16,27 @@ import (
 // CompletionTokens bounds one automatic attachment, including source labels,
 // diagnostics and its continuation. Explicit preloads and reloads remain full.
 const CompletionTokens = 4000
+
+const approxBytesPerToken = 4
+
+// approxTokenCount matches codex-utils-string::approx_token_count (ceil(bytes/4)).
+func approxTokenCount(s string) int {
+	return (len(s) + approxBytesPerToken - 1) / approxBytesPerToken
+}
+
+func truncateUTF8Prefix(s string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	if len(s) <= maxBytes {
+		return s
+	}
+	end := maxBytes
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end]
+}
 
 type completionSource struct {
 	command    string
@@ -55,12 +76,11 @@ func completionText(result compact.CapturedSource, sources []completionSource) s
 }
 
 func boundCompletion(ctx context.Context, result compact.CapturedSource, sources []completionSource, selected changes.Scope) (string, error) {
-	budget := outputbudget.Budget{}
 	// Avoid copying a full retained diff just to reject it on the byte limit.
-	if len(result.Stdout) <= 4*CompletionTokens {
+	if len(result.Stdout) <= approxBytesPerToken*CompletionTokens {
 		text := completionText(result, sources)
-		if fits, err := budget.Fits(text, CompletionTokens); err != nil || fits {
-			return text, err
+		if approxTokenCount(text) <= CompletionTokens {
+			return text, nil
 		}
 	}
 	if selected.Store == nil {
@@ -84,24 +104,17 @@ func boundCompletion(ctx context.Context, result compact.CapturedSource, sources
 		return "Completion output exceeds budget. Read the complete output with: mcat " + quotedPath + "\n"
 	}
 	maxNotice := fmt.Sprintf("Completion output exceeds budget. Read the remaining output with: mcat %s %d:%d\n", quotedPath, totalLines, totalLines)
-	trailerTokens, err := budget.Count("\n" + maxNotice)
-	if err != nil {
-		return "", err
+	remaining := CompletionTokens - approxTokenCount("\n"+maxNotice)
+	if remaining <= 0 {
+		return "", errors.New("completion continuation exceeds output budget")
 	}
-	remaining := CompletionTokens - trailerTokens
 	var text string
 	for {
-		prefix, err := budget.SelectText(full, remaining, false)
-		if err != nil {
-			return "", err
-		}
-		result.Stdout = prefix.Text
-		result.Stderr = completionNotice(prefix.Text)
+		prefix := truncateUTF8Prefix(full, remaining*approxBytesPerToken)
+		result.Stdout = prefix
+		result.Stderr = completionNotice(prefix)
 		text = completionText(result, sources)
-		tokens, err := budget.Count(text)
-		if err != nil {
-			return "", err
-		}
+		tokens := approxTokenCount(text)
 		if tokens <= CompletionTokens {
 			break
 		}
