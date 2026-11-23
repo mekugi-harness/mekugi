@@ -147,6 +147,7 @@ async fn explicit_escalation_prepares_exec_without_managed_network() -> anyhow::
                 SandboxPermissions::RequireEscalated,
             ),
             /*environment_id*/ None,
+            /*runtime_socket*/ None,
         )
         .await
         .expect("prepare exec request");

@@ -22,7 +22,23 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   native build; the fork uses Mekugi's release process, not upstream release CI.
 - `codex-arg0` dispatches the native Rust `mcat`, `mfinspect`, `msymbol`, and
   `mrun` CLIs (`codex-mekugi-tools`) through stock PATH symlinks and exports
-  `CODEX_ARG0_PATH_DIR` so login shells retain those aliases on `PATH`.
+  `CODEX_ARG0_PATH_DIR` so login shells retain those aliases on `PATH`. It also
+  stages per-session `vcs-guard/` (`git`, `gh`, `hg`, `svn`, `jj`) and
+  `sudo-guard/` (`sudo`, `gpg`, `gpg2`, `mekugi-sudo-askpass`) symlinks
+  dispatched by `codex-shell-guard` without adding them to the process-wide
+  `PATH`.
+- Native shell guarding (`codex-shell-guard`, gated by `features.shell_guard`,
+  default enabled in interactive sessions and disabled for headless/internal
+  runs) prepends the staged guard directories in `codex-core` after user
+  `PreToolUse` hooks run and applies a minimal `tree-sitter-bash` executable-word
+  rewriter for explicit paths, `env -i`, `command -p`, `PATH` overrides, and
+  nested `-c` shells without a patched shell or `BASH_ENV` function injection.
+  The session tracking hook instruments the command selected by user hooks;
+  competing user rewrites still resolve in native completion order.
+  Shims communicate over a session-private Unix socket (`codex-uds`) bridged by
+  `mekugi-app-server` to App-Server Protocol v2 `shellGuard/requestApproval` and
+  `shellGuard/requestSecret` requests, keeping secrets zeroized and excluded
+  from rollouts, tracing, and analytics.
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
   runtime, including the exec-server fixture's Linux sandbox helper so it can

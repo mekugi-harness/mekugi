@@ -2018,6 +2018,18 @@ server_request_definitions! {
         response: v2::PermissionsRequestApprovalResponse,
     },
 
+    /// Request interactive approval for a guarded remote VCS write or sudo command.
+    ShellGuardRequestApproval => "shellGuard/requestApproval" {
+        params: v2::ShellGuardRequestApprovalParams,
+        response: v2::ShellGuardRequestApprovalResponse,
+    },
+
+    /// Request a private sudo password or GPG passphrase without persisting it.
+    ShellGuardRequestSecret => "shellGuard/requestSecret" {
+        params: v2::ShellGuardRequestSecretParams,
+        response: v2::ShellGuardRequestSecretResponse,
+    },
+
     /// Execute a dynamic tool call on the client.
     DynamicToolCall => "item/tool/call" {
         params: v2::DynamicToolCallParams,

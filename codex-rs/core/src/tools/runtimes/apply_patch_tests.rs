@@ -347,6 +347,7 @@ async fn file_system_sandbox_context_respects_sandbox_request() {
     assert_eq!(
         ApplyPatchRuntime::file_system_sandbox_context_for_attempt(&req, &attempt),
         Some(FileSystemSandboxContext {
+            runtime_socket: None,
             sandbox_override: SandboxOverride::NoOverride,
             permissions,
             cwd: cwd.clone(),

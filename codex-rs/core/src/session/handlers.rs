@@ -357,6 +357,7 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
         startup_prewarm.abort().await;
     }
     let _ = sess.conversation.shutdown().await;
+    sess.services.shell_guard.shutdown().await;
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
     if let Some(reporting) = &sess.outcome_reporting {
         reporting.handoffs.wait().await;
@@ -891,6 +892,29 @@ pub(super) async fn submission_loop(
                 }
                 Op::DynamicToolResponse { id, response } => {
                     dynamic_tool_response(&sess, id, response).await;
+                    false
+                }
+                Op::ShellGuardApprovalResponse {
+                    id,
+                    decision,
+                    reason,
+                } => {
+                    sess.services
+                        .shell_guard
+                        .resolve_approval(&id, decision, reason)
+                        .await;
+                    false
+                }
+                Op::ShellGuardSecretResponse {
+                    id,
+                    decision,
+                    secret,
+                    reason,
+                } => {
+                    sess.services
+                        .shell_guard
+                        .resolve_secret(&id, decision, secret, reason)
+                        .await;
                     false
                 }
                 Op::RefreshMcpServers => {

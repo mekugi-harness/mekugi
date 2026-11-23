@@ -7165,6 +7165,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         network_proxy_audit_metadata: crate::config::NetworkProxyAuditMetadata::default(),
         managed_network_requirements_configured: false,
         network_approval: Arc::clone(&network_approval),
+        shell_guard: Arc::new(crate::shell_guard::ShellGuardService::default()),
         state_db: None,
         live_thread: None,
         image_store: crate::passthrough_image_store(),
@@ -9521,6 +9522,7 @@ where
         network_proxy_audit_metadata: crate::config::NetworkProxyAuditMetadata::default(),
         managed_network_requirements_configured: false,
         network_approval: Arc::clone(&network_approval),
+        shell_guard: Arc::new(crate::shell_guard::ShellGuardService::default()),
         state_db: state_db.clone(),
         live_thread: None,
         image_store: crate::passthrough_image_store(),
@@ -10462,6 +10464,7 @@ async fn capability_discovery_uses_environment_permission_profile() {
     environment_config.windows_sandbox_level = WindowsSandboxLevel::Elevated;
     environment_config.use_legacy_landlock = true;
     let expected_sandbox = FileSystemSandboxContext {
+        runtime_socket: None,
         sandbox_override: SandboxOverride::NoOverride,
         permissions: environment.permission_profile().clone(),
         cwd: environment.cwd().clone(),

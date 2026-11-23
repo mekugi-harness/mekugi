@@ -192,7 +192,8 @@ pub(crate) async fn prepare_exec_request_with_telemetry(
                 enforce_managed_network,
                 proxy_handle.as_ref().and_then(NetworkProxyHandle::proxy),
                 /*environment_id*/ None,
-            ),
+            )
+            .with_runtime_socket(sandbox_context.runtime_socket.as_ref()),
             sandbox_policy_cwd: &sandbox_context.cwd,
             sandbox_exe: if cfg!(windows) {
                 Some(runtime_paths.codex_self_exe.as_path())

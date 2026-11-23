@@ -47,6 +47,10 @@ pub struct Arg0PathEntryGuard {
     // Fields drop in declaration order. Close the lock before removing its
     // directory so NFS does not retain the open file as a `.nfs*` entry.
     _lock_file: File,
+    // On a separate filesystem the image cannot be hard-linked. Retain its
+    // identity until core lazily copies it on the first guarded invocation.
+    #[cfg(unix)]
+    _guard_image: Option<File>,
     _temp_dir: TempDir,
     paths: Arg0DispatchPaths,
 }
@@ -56,6 +60,8 @@ impl Arg0PathEntryGuard {
         Self {
             _temp_dir: temp_dir,
             _lock_file: lock_file,
+            #[cfg(unix)]
+            _guard_image: None,
             paths,
         }
     }
@@ -93,6 +99,11 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         std::process::exit(codex_mekugi_tools::run_msymbol_main());
     } else if exe_name == MRUN_ARG0 {
         std::process::exit(codex_mekugi_tools::run_mrun_main());
+    }
+
+    #[cfg(unix)]
+    if let Some(code) = codex_shell_guard::shim::try_dispatch_arg0() {
+        std::process::exit(code);
     }
 
     let argv1 = args.next().unwrap_or_default();
@@ -439,6 +450,26 @@ fn prepare_aliases_in_home(
         }
     }
 
+    #[cfg(unix)]
+    let guard_image = {
+        use std::os::fd::AsRawFd;
+        let pinned = path.join(codex_shell_guard::PINNED_EXE_NAME);
+        if std::fs::hard_link(&exe, &pinned).is_ok() {
+            None
+        } else {
+            // /dev/fd is resolved only inside this app-server process. Keep
+            // unrelated PATH helpers usable if a guard cannot be staged.
+            File::open(&exe).ok().and_then(|image| {
+                symlink(
+                    format!("/dev/fd/{}", image.as_raw_fd()),
+                    path.join(".codex-image"),
+                )
+                .ok()?;
+                Some(image)
+            })
+        }
+    };
+
     let updated_path_env_var = path_env_with_entry(path, existing_path);
 
     let paths = Arg0DispatchPaths {
@@ -456,10 +487,12 @@ fn prepare_aliases_in_home(
         },
     };
 
-    Ok((
-        Arg0PathEntryGuard::new(temp_dir, lock_file, paths),
-        updated_path_env_var,
-    ))
+    let mut guard = Arg0PathEntryGuard::new(temp_dir, lock_file, paths);
+    #[cfg(unix)]
+    {
+        guard._guard_image = guard_image;
+    }
+    Ok((guard, updated_path_env_var))
 }
 
 #[cfg(windows)]

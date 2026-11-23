@@ -7,6 +7,7 @@ use codex_protocol::protocol::HookOutputEntry;
 use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookRunSummary;
+use codex_protocol::protocol::HookSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use serde_json::Value;
@@ -93,7 +94,7 @@ pub(crate) async fn run(
         };
     }
 
-    let input = match command_input(&request) {
+    let mut input = match command_input(&request) {
         Ok(input) => input,
         Err(error) => {
             let hook_events = common::serialization_failure_hook_events_for_tool_use(
@@ -106,15 +107,41 @@ pub(crate) async fn run(
         }
     };
 
-    let results = dispatcher::execute_handlers(
+    // The Go host's session-layer observer instruments the effective script.
+    // User hooks retain stock concurrency and completion-order precedence.
+    let (tracking, handlers): (Vec<_>, Vec<_>) = matched.into_iter().partition(|handler| {
+        handler.source == HookSource::SessionFlags
+            && handler
+                .matcher
+                .as_ref()
+                .is_some_and(|matcher| matcher.as_str() == "Bash|MekugiCommandTracking")
+    });
+    let mut results = dispatcher::execute_handlers(
         engine,
-        matched,
+        handlers,
         &input,
         request.cwd.as_path(),
         Some(request.turn_id.clone()),
         parse_completed,
     )
     .await;
+    let mut updated_input = latest_updated_input(&results);
+    if !tracking.is_empty() {
+        if let Some(effective) = &updated_input {
+            input["tool_input"].clone_from(effective);
+        }
+        let tracked = dispatcher::execute_handlers(
+            engine,
+            tracking,
+            &input,
+            request.cwd.as_path(),
+            Some(request.turn_id.clone()),
+            parse_completed,
+        )
+        .await;
+        updated_input = latest_updated_input(&tracked).or(updated_input);
+        results.extend(tracked);
+    }
 
     let should_block = results.iter().any(|result| result.data.should_block);
     let block_reason = results
@@ -130,11 +157,9 @@ pub(crate) async fn run(
         .output_spiller()
         .maybe_spill_additional_contexts(additional_contexts)
         .await;
-    let updated_input = if should_block {
-        None
-    } else {
-        latest_updated_input(&results)
-    };
+    if should_block {
+        updated_input = None;
+    }
 
     PreToolUseOutcome {
         hook_events: results

@@ -262,6 +262,7 @@ impl TurnEnvironment {
             additional_permissions.as_ref(),
         );
         FileSystemSandboxContext {
+            runtime_socket: None,
             sandbox_override: SandboxOverride::NoOverride,
             permissions,
             cwd: self.cwd().clone(),

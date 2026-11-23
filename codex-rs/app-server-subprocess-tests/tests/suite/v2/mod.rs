@@ -9,3 +9,5 @@ mod connection_handling_websocket;
 mod connection_handling_websocket_compression;
 #[cfg(unix)]
 mod connection_handling_websocket_unix;
+#[cfg(unix)]
+mod shell_guard;
