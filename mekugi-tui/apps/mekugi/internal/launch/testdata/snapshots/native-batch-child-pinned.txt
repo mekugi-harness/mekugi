@@ -40,9 +40,9 @@ LIVE · 3 files · 1–2/3 · ^B e next · pinned
   39│+second_line_39
 ▎ 40│+second_line_40
 
-Read-only
+Read-only • ↑ back to parent Main
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  Main • editor • /workspace • ↑ back to parent Main • ↓ roster • → diff • ctrl+e view
+  Main • editor • /workspace • ↓ roster • → diff • ctrl+e view

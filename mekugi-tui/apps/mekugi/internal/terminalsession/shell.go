@@ -25,7 +25,7 @@ type Shell struct {
 	StatHover      byte // Action of the stat-line target under the pointer.
 }
 
-// StatTarget is a clickable stat-line segment.
+// StatTarget is a clickable status-line segment.
 type StatTarget struct {
 	Rect
 	Action byte
@@ -58,7 +58,7 @@ type ShellContent struct {
 // subagent counts, title and the navigation available to an empty composer.
 type ShellStatus struct {
 	Agent, Title, Scroll, Skills, SideLabel string
-	Workspace, Parent                       string
+	Workspace                               string
 	DiffSummary, DiffState                  string
 	Summary                                 activityui.RosterSummary
 	MainTab, SideSelected                   bool
@@ -146,14 +146,14 @@ type statSegment struct {
 }
 
 // StatLine paints the second stat line at row y:
-// agent • counts • title • workspace • ↑ parent • ↓ roster • ← main | → diff • ctrl+e view.
+// agent • counts • title • workspace • ↓ roster • ← main | → diff • ctrl+e view.
 // While One-off is displayed, a Main tab precedes it.
 // Navigation hints show only while their keys act, with an empty composer.
 // A clickable segment underlines while the pointer is over it.
 // Narrow lines abbreviate the workspace to a sixth of the line and shorten
 // the title, then drop focused Diff info, pane keys, ctrl+e view, live
 // batches, net lines, skills, the workspace, the side thread, finished counts,
-// the scroll position, parent, Diff and roster hints, the title, and finally the
+// the scroll position, Diff and roster hints, the title, and finally the
 // remaining counts.
 func (s *Shell) StatLine(in ShellStatus, width, y int) string {
 	s.Clamp()
@@ -215,9 +215,6 @@ func (s *Shell) StatLine(in ShellStatus, width, y int) string {
 		add(hints.Render(), 0, 1)
 	} else {
 		// The roster sheet shows its own keys.
-		if in.Parent != "" {
-			add(hint("↑", "back to parent "+in.Parent), statParent, 4)
-		}
 		if in.Empty && in.Summary.Children && s.RosterLabel != "" && s.Focus == 0 {
 			add(hint("↓", "roster"), StatRoster, 3)
 		}

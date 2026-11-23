@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -166,14 +167,24 @@ func TestNativeClientRosterArrowNavigation(t *testing.T) {
 		if step.key == "\r" && r.active.renderer.terminal.Focus != 0 {
 			t.Fatal("confirming the roster should return focus to the displayed thread")
 		}
-		stat := ansi.Strip(frame.Rows[len(frame.Rows)-1])
-		_, parent, _ := strings.Cut(stat, "↑ back to parent ")
-		parent, _, _ = strings.Cut(parent, " • ")
-		if parent != step.parent {
-			t.Fatalf("key %q on %s: parent hint = %q, want %q (stat: %q)", step.key, step.thread, parent, step.parent, stat)
+		const hint = "↑ back to parent "
+		var parent string
+		for i, row := range frame.Rows {
+			before, name, found := strings.Cut(ansi.Strip(row), hint)
+			if !found {
+				continue
+			}
+			if i+1 == len(frame.Rows) || !strings.HasPrefix(ansi.Strip(frame.Rows[i+1]), "──") {
+				t.Fatalf("parent hint is not on the composer status row: %q", row)
+			}
+			parent = strings.TrimSpace(name)
+			target := terminalsession.Rect{X: ansi.StringWidth(before), Y: i, W: ansi.StringWidth(hint + parent), H: 1}
+			if !slices.ContainsFunc(r.active.renderer.terminal.Targets, func(hit terminalsession.StatTarget) bool { return hit.Rect == target }) {
+				t.Fatalf("parent hint has no mouse target at %+v", target)
+			}
 		}
-		if step.parent != "" {
-			t.Log(stat)
+		if parent != step.parent {
+			t.Fatalf("key %q on %s: parent hint = %q, want %q", step.key, step.thread, parent, step.parent)
 		}
 		if step.key == "\r" && step.thread == "parent" && !strings.Contains(ansi.Strip(strings.Join(frame.Rows, "\n")), "keep this draft") {
 			t.Fatal("confirming the roster should return to the unsent draft")

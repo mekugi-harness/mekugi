@@ -99,17 +99,6 @@ func (in FrameInput) Status() ShellStatus {
 		DiffUnseen: in.DiffUnseen, Prefix: in.Prefix, LiveCount: in.Live.Live(), Locked: in.Main.InterruptLocked, Empty: in.EmptyComposer(),
 		Workspace: v.SourceWorkspace(),
 	}
-	// A scrollable selection owns the normal Up key.
-	if v.Displayed != v.SideThread && !in.Prefix && in.Dialog == nil &&
-		(in.Selection == nil || in.Selection.screenRows == 0) && in.arrowAction(keyUp) == statParent {
-		switch parent := in.parentCaller(); parent {
-		case "/root":
-			status.Parent = "Main"
-		case "":
-		default:
-			status.Parent = pathdisplay.AgentDisplayName(parent)
-		}
-	}
 	if in.Shell.DiffOpen && in.Shell.Focus == 1 && in.Shell.Auxiliary != nil {
 		summary, state := in.Shell.Auxiliary.Title()
 		status.DiffSummary = strings.TrimPrefix(summary, "saved · ")
@@ -125,6 +114,28 @@ func (in FrameInput) Status() ShellStatus {
 		status.SideLabel, status.SideSelected = side.Label, v.Displayed == v.SideThread
 	}
 	return status
+}
+
+func (in FrameInput) parentHint() string {
+	v := in.Main.session
+	// A scrollable selection owns the normal Up key.
+	if v.Displayed == v.SideThread || in.Prefix || in.Dialog != nil ||
+		in.Selection != nil && in.Selection.screenRows > 0 || in.arrowAction(keyUp) != statParent {
+		return ""
+	}
+	parent := in.parentCaller()
+	if parent == "" {
+		return ""
+	}
+	name := pathdisplay.AgentDisplayName(parent)
+	if parent == "/root" {
+		name = "Main"
+	}
+	hint := "↑" + terminalui.Dim + " back to parent " + textsanitize.Safe(name, false) + terminalui.Undim
+	if in.Shell.StatHover == statParent {
+		hint = "\x1b[4m" + hint + "\x1b[24m"
+	}
+	return hint
 }
 
 // compactDiffState drops focus and editor labels that the Diff navigator and
@@ -197,7 +208,7 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 		shell.Focus = 0
 	}
 	plan := shell.Plan(width, height)
-	processRect, rosterRect := Rect{}, Rect{}
+	processRect, rosterRect, parentHint := Rect{}, Rect{}, Rect{}
 	var roster []string
 	var mainImageDemands []terminalui.ImageSource
 	var mainImagePlacements []terminalui.ImagePlacement
@@ -254,7 +265,10 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 			dockRows = ih
 		}
 		rosterHits := in.Agents.Hits
-		main := in.Main.Render(in.displayedTranscript(), &in.Transcript.Painter, in.Prompts, MainOptions{Now: in.Now, Focused: shell.Focus == 0, Version: in.Version, HideComposer: panel}, iw, ih, dockRows)
+		main := in.Main.Render(in.displayedTranscript(), &in.Transcript.Painter, in.Prompts, MainOptions{
+			Now: in.Now, Focused: shell.Focus == 0, Version: in.Version, HideComposer: panel,
+			ParentHint: in.parentHint(),
+		}, iw, ih, dockRows)
 		in.Agents.Hits = rosterHits
 		if len(main.Demands) != 0 {
 			out.Demands = main.Demands
@@ -272,6 +286,7 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 			}
 		}
 		out.composer = main.composer
+		parentHint = main.parentHint
 		mainImageDemands = main.ImageDemands
 		mainImagePlacements = main.ImagePlacements
 		content.Main, content.Dock = main.Rows, main.Dock
@@ -306,6 +321,11 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 			captionLine(shell.Theme, view.Caption, usage, width),
 			shell.StatLine(in.Status(), width, height-1),
 		}
+	}
+	if parentHint.W > 0 {
+		parentHint.X += plan.Layout.Main.X
+		parentHint.Y += plan.Layout.Main.Y
+		shell.Targets = append(shell.Targets, StatTarget{parentHint, statParent})
 	}
 	out.Rows = shell.Compose(plan, content)
 	shell.Layout.Roster = rosterRect

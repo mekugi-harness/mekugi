@@ -16,9 +16,9 @@
 
 
 
-Read-only
+Read-only • ↑ back to parent Main
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-  Main • reader • /workspace • ↑ back to parent Main • ctrl+e view
+  Main • reader • /workspace • ctrl+e view

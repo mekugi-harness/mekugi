@@ -14,10 +14,11 @@ left and red with a tenth left, and stays on a narrow line after the cost leaves
 The second names the displayed thread, its working (◐), finished (✓)
 and failed (!) subagent counts, the session title, the working directory, the
 lines below the view after you scroll back (▼ N below), and the
-arrow keys that act on an empty composer: ↑ back to the named parent from a
-child, ↓ roster and → diff (or ← main from Diff), plus `ctrl+e` view. Narrow lines
-shorten the directory and title, then drop the least important parts; failed and
-working counts outlast the title. Click a hint to use it.
+arrow keys that act on an empty composer: ↓ roster and → diff (or ← main from
+Diff), plus `ctrl+e` view. Narrow lines shorten the directory and title, then
+drop the least important parts; failed and working counts outlast the title.
+In a child thread, ↑ back to the named parent appears above the composer,
+beside Read-only when shown. Click a hint to use it.
 A notice above the composer offers `[details]` when it hides text and `[×]` to dismiss it.
 
 | Action | Shortcut |

@@ -20,9 +20,9 @@ LIVE · 1 file
   39│+child_line_39
 ▎ 40│+child_line_40
 
-Read-only
+Read-only • ↑ back to parent Main
 ────────────────────────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────────────────────────
 
-  Main • editor • /workspace • ↑ back to parent Main • ↓ roster • → diff
+  Main • editor • /workspace • ↓ roster • → diff • ctrl+b e next live

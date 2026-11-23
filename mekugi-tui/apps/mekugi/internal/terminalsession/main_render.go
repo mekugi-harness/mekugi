@@ -24,6 +24,7 @@ type MainOptions struct {
 	Focused      bool
 	HideComposer bool
 	Version      string
+	ParentHint   string
 }
 
 // Render paints the attached views without resolving source output. The application
@@ -62,6 +63,7 @@ func (m *Main) Render(transcript *activityui.View, painter *activityui.Painter, 
 	}
 	in := mainInput{
 		HideComposer: options.HideComposer,
+		ParentHint:   options.ParentHint,
 		Session:      presentation, Draft: presentation.Draft.Draft, Now: options.Now, ReadOnly: readOnly,
 		Focused: options.Focused, Empty: transcript.Empty(),
 		Picker: picker, Welcome: welcome(options.Version, presentation.Info.BackendVersion), Selection: SelectionStyle(&painter.Painter), TurnIdle: presentation.Interrupt.Turn == "",

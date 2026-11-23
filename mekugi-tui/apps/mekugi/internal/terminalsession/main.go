@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/rivo/uniseg"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
@@ -18,6 +17,7 @@ import (
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	conversationui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/terminalview"
+	"github.com/rivo/uniseg"
 )
 
 // Only the preview executable links welcome copy beyond the normal banner.
@@ -50,7 +50,7 @@ type mainInput struct {
 	Now                                                          time.Time
 	ReadOnly, Focused, Empty, Picker, Secret, Question, TurnIdle bool
 	HideComposer                                                 bool
-	Welcome, ApprovalAgent                                       string
+	Welcome, ApprovalAgent, ParentHint                           string
 	Selection                                                    string
 	QuestionLayout                                               *conversationui.QuestionLayout
 	ApprovalLayout                                               *conversationui.ApprovalLayout
@@ -66,6 +66,7 @@ type MainFrame struct {
 	ImagePlacements       []terminalui.ImagePlacement
 	Rows                  []string
 	Feed, Dock, Questions Rect
+	parentHint            Rect
 	composer              composerDocument
 }
 
@@ -137,6 +138,7 @@ func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height, 
 		defer func() {
 			out.Rows = append(welcome, out.Rows...)
 			out.Dock.Y += len(welcome)
+			out.parentHint.Y += len(welcome)
 			m.ComposerRect.Y += len(welcome)
 			m.BTW.Rect.Y += len(welcome)
 			m.PromptRect.Y += len(welcome)
@@ -244,7 +246,20 @@ func (m *Main) layout(in mainInput, painter *activityui.Painter, width, height, 
 		rule = painter.Theme.Danger() + strings.Repeat("─", width) + terminalui.Reset
 	}
 	if boxed {
-		frame = append(frame, m.statusLine(painter.Theme, presentation.Status, in.Now, painter.Colors, width, len(frame)))
+		line := m.statusLine(painter.Theme, presentation.Status, in.Now, painter.Colors, width, len(frame))
+		if in.ParentHint != "" {
+			x, hintWidth := ansi.StringWidth(line), ansi.StringWidth(in.ParentHint)
+			separator := ""
+			if x > 0 {
+				separator = terminalui.Dim + " • " + terminalui.Undim
+				x += 3
+			}
+			if x+hintWidth < width {
+				line += separator + in.ParentHint + terminalui.Reset
+				out.parentHint = Rect{x, len(frame), hintWidth, 1}
+			}
+		}
+		frame = append(frame, line)
 	}
 	if ruled {
 		frame = append(frame, rule)
