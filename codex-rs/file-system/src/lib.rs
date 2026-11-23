@@ -368,6 +368,9 @@ pub struct FileSystemSandboxContext {
     /// Executor-local default directories used to resolve `:tmpdir` policy entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temporary_directories: Option<Vec<PathUri>>,
+    /// A controller-owned IPC endpoint needed by this process inside the macOS sandbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_socket: Option<PathUri>,
     #[serde(rename = "windowsSandboxLevel")]
     pub windows_sandbox_selection: WindowsSandboxSelection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -385,6 +388,7 @@ impl FileSystemSandboxContext {
             cwd,
             user_home_dir: None,
             temporary_directories: None,
+            runtime_socket: None,
             windows_sandbox_selection: WindowsSandboxSelection::Disabled,
             windows_sandbox_proxy_settings_mode: None,
             use_legacy_landlock: false,
@@ -462,6 +466,8 @@ pub struct WireFileSystemSandboxContext {
     user_home_dir: Option<PathUri>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     temporary_directories: Option<Vec<PathUri>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_socket: Option<PathUri>,
     #[serde(rename = "windowsSandboxLevel")]
     windows_sandbox_selection: WindowsSandboxSelection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -489,6 +495,7 @@ impl From<FileSystemSandboxContext> for WireFileSystemSandboxContext {
             workspace_roots,
             user_home_dir,
             temporary_directories,
+            runtime_socket,
             windows_sandbox_selection,
             windows_sandbox_proxy_settings_mode,
             use_legacy_landlock,
@@ -534,6 +541,7 @@ impl From<FileSystemSandboxContext> for WireFileSystemSandboxContext {
             }),
             user_home_dir,
             temporary_directories,
+            runtime_socket,
             windows_sandbox_selection,
             windows_sandbox_proxy_settings_mode,
             use_legacy_landlock,
@@ -581,6 +589,7 @@ impl WireFileSystemSandboxContext {
             },
             user_home_dir: self.user_home_dir,
             temporary_directories: self.temporary_directories,
+            runtime_socket: self.runtime_socket,
             windows_sandbox_selection: self.windows_sandbox_selection,
             windows_sandbox_proxy_settings_mode: self.windows_sandbox_proxy_settings_mode,
             use_legacy_landlock: self.use_legacy_landlock,

@@ -503,6 +503,7 @@ impl<'a> SandboxAttempt<'a> {
         options: ExecOptions,
         network: Option<&NetworkProxy>,
         environment_id: Option<&str>,
+        runtime_socket: Option<&PathUri>,
     ) -> Result<crate::sandboxing::ExecRequest, CodexErr> {
         crate::sandboxing::ExecRequest::prepare_local_sandbox(
             self.manager,
@@ -512,7 +513,8 @@ impl<'a> SandboxAttempt<'a> {
                 workspace_roots: Some(self.workspace_roots),
                 runtime_readable_paths: None,
                 selection: self.local_selection,
-                network: SandboxNetwork::new(self.enforce_managed_network, network, environment_id),
+                network: SandboxNetwork::new(self.enforce_managed_network, network, environment_id)
+                    .with_runtime_socket(runtime_socket),
                 sandbox_policy_cwd: self.sandbox_cwd,
                 sandbox_exe: self.sandbox_exe.map(std::path::PathBuf::as_path),
                 use_legacy_landlock: self.use_legacy_landlock,
@@ -567,6 +569,7 @@ impl<'a> SandboxAttempt<'a> {
             exec_request.exec_server_enforce_managed_network =
                 self.enforce_managed_network && !proxy_disabled;
             exec_request.exec_server_sandbox = Some(FileSystemSandboxContext {
+                runtime_socket: None,
                 permissions: exec_server_permissions,
                 sandbox_override: self.sandbox_override,
                 cwd: exec_request.windows_sandbox_policy_cwd.clone(),

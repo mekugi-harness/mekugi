@@ -101,6 +101,7 @@ impl ApplyPatchRuntime {
             req.additional_permissions.as_ref(),
         );
         Some(FileSystemSandboxContext {
+            runtime_socket: None,
             sandbox_override: attempt.sandbox_override,
             permissions,
             cwd: attempt.sandbox_cwd.clone(),

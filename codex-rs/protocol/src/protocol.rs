@@ -62,6 +62,12 @@ use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
 use crate::response_item_id::OptionalWireItemId;
+use crate::shell_guard::ShellGuardApprovalDecision;
+use crate::shell_guard::ShellGuardApprovalRequestEvent;
+use crate::shell_guard::ShellGuardRequestResolvedReason;
+use crate::shell_guard::ShellGuardSecretDecision;
+use crate::shell_guard::ShellGuardSecretRequestEvent;
+use crate::shell_guard::ShellGuardSecretValue;
 use crate::turn_input::CyberAccessProgram;
 use crate::turn_input::SuspendTurnOutcome;
 use crate::turn_input::TurnInputSubmission;
@@ -934,6 +940,23 @@ pub enum Op {
         response: DynamicToolResponse,
     },
 
+    /// Resolve an in-process shell-guard command approval request.
+    #[debug("ShellGuardApprovalResponse {{ id: {id:?}, decision: {decision:?} }}")]
+    ShellGuardApprovalResponse {
+        id: String,
+        decision: ShellGuardApprovalDecision,
+        reason: Option<String>,
+    },
+
+    /// Resolve an in-process shell-guard secret prompt without logging the secret.
+    #[debug("ShellGuardSecretResponse {{ id: {id:?}, decision: {decision:?} }}")]
+    ShellGuardSecretResponse {
+        id: String,
+        decision: ShellGuardSecretDecision,
+        secret: Option<ShellGuardSecretValue>,
+        reason: Option<String>,
+    },
+
     /// Request MCP servers to reinitialize and refresh cached tool lists.
     RefreshMcpServers,
 
@@ -1198,6 +1221,8 @@ impl Op {
             Self::UserInputAnswer { .. } => "user_input_answer",
             Self::RequestPermissionsResponse { .. } => "request_permissions_response",
             Self::DynamicToolResponse { .. } => "dynamic_tool_response",
+            Self::ShellGuardApprovalResponse { .. } => "shell_guard_approval_response",
+            Self::ShellGuardSecretResponse { .. } => "shell_guard_secret_response",
             Self::RefreshMcpServers => "refresh_mcp_servers",
             Self::ReloadUserConfig => "reload_user_config",
             Self::Compact { .. } | Self::ManualCompact { .. } => "compact",
@@ -1735,6 +1760,27 @@ pub enum EventMsg {
     #[ts(skip)]
     NetworkApprovalResolved {
         approval_id: String,
+    },
+
+    /// In-process shell-guard approval request (never persisted to rollouts).
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ShellGuardApprovalRequest(ShellGuardApprovalRequestEvent),
+
+    /// In-process shell-guard secret request (never persisted to rollouts).
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ShellGuardSecretRequest(ShellGuardSecretRequestEvent),
+
+    /// Ends an in-process shell-guard prompt when the shim exits or times out.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ShellGuardRequestResolved {
+        request_id: String,
+        reason: ShellGuardRequestResolvedReason,
     },
 
     RequestPermissions(RequestPermissionsEvent),

@@ -437,6 +437,22 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             .then(crate::tools::runtimes::arg0_path_dir_from_env)
             .flatten();
         #[cfg(unix)]
+        let guard = if crate::shell_guard::active(&ctx.step_context.turn, environment_is_remote) {
+            let guard =
+                crate::shell_guard::GuardLaunch::prepare(&ctx.session, arg0_path_dir.as_deref())
+                    .await
+                    .map_err(|err| {
+                        ToolError::Rejected(format!("failed to start shell guard: {err}"))
+                    })?;
+            guard.set_environment(&mut env);
+            Some(guard)
+        } else {
+            env.remove(codex_shell_guard::SOCKET_ENV_VAR);
+            env.remove(codex_shell_guard::VCS_DIR_ENV_VAR);
+            env.remove(codex_shell_guard::SUDO_DIR_ENV_VAR);
+            None
+        };
+        #[cfg(unix)]
         let runtime_path_prepends = {
             let mut runtime_path_prepends = RuntimePathPrepends::default();
             if !environment_is_remote {
@@ -445,6 +461,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                     &mut runtime_path_prepends,
                     arg0_path_dir.as_deref(),
                 );
+                if let Some(guard) = &guard {
+                    runtime_path_prepends.prepend(&mut env, &guard.sudo_dir);
+                    runtime_path_prepends.prepend(&mut env, &guard.vcs_dir);
+                }
                 runtime_path_prepends.append(
                     &mut env,
                     &crate::exec_env::session_tmp_path(ctx.session.session_id()),
@@ -459,6 +479,23 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
         // `base_command` already carries the requested login mode; keep it if setup is unavailable.
         // `hook_command` is the raw script the helper needs to prepend setup inside that same shell.
         let mut command = base_command.to_vec();
+        #[cfg(unix)]
+        let effective_hook_command = if let (Some(guard), [_, flag, script, ..]) =
+            (&guard, command.as_mut_slice())
+            && matches!(flag.as_str(), "-c" | "-lc")
+        {
+            *script = guard.rewrite(
+                &prepared.hook_command,
+                &ctx.session.thread_id.to_string(),
+                &ctx.call_id,
+                prepared.resolved.shell.is_posix_login(),
+            );
+            script.clone()
+        } else {
+            prepared.hook_command.clone()
+        };
+        #[cfg(not(unix))]
+        let effective_hook_command = prepared.hook_command.clone();
         if prepared.resolved.shell.is_posix_login() && !explicit_env_overrides.contains_key("PATH")
         {
             let package_path_enabled = ctx.session.enabled(Feature::LoginShellPackagePath);
@@ -485,7 +522,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 && let Some(command_with_path_prepends) = prepared
                     .resolved
                     .shell
-                    .derive_exec_args_with_path_prepends(&prepared.hook_command, &prepend_dirs)
+                    .derive_exec_args_with_path_prepends(&effective_hook_command, &prepend_dirs)
             {
                 command = command_with_path_prepends;
             }
@@ -640,8 +677,16 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             ));
         };
         let options = unified_exec_options(attempt.network_denial_cancellation_token.clone());
+        #[cfg(target_os = "macos")]
+        let runtime_socket = guard
+            .as_ref()
+            .map(|guard| PathUri::from_host_native_path(&guard.socket))
+            .transpose()
+            .map_err(|err| ToolError::Rejected(format!("invalid shell guard socket: {err}")))?;
+        #[cfg(not(target_os = "macos"))]
+        let runtime_socket = None;
         let request = if executor_managed {
-            attempt
+            let mut request = attempt
                 .env_for_exec_server(
                     command,
                     prepared.cwd.clone(),
@@ -652,6 +697,11 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                     options,
                 )
                 .await
+                .map_err(ToolError::Codex)?;
+            if let Some(sandbox) = request.exec_server_sandbox.as_mut() {
+                sandbox.runtime_socket = runtime_socket;
+            }
+            request
         } else {
             let command = SandboxCommand {
                 program: program.as_str().into(),
@@ -667,10 +717,11 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                     options,
                     managed_network,
                     Some(&prepared.turn_environment.selection.environment_id),
+                    runtime_socket.as_ref(),
                 )
                 .await
-        }
-        .map_err(ToolError::Codex)?;
+                .map_err(ToolError::Codex)?
+        };
         let process = self
             .manager
             .open_session_with_exec_env(

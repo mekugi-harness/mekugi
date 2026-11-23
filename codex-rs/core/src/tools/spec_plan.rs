@@ -1284,7 +1284,7 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
                 .is_some_and(|shell| shell.shell_type == crate::shell::ShellType::PowerShell)
         }),
     };
-    let helper_guidance = context
+    let mut helper_guidance = context
         .environments
         .primary()
         .filter(|environment| !environment.environment().is_remote())
@@ -1298,6 +1298,13 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, registry: &mut ToolRegistr
         .map_or_else(String::new, |path| {
             crate::mekugi_guidance::shell_guidance(path.as_ref())
         });
+    if context.environments.primary().is_some_and(|environment| {
+        crate::shell_guard::active(turn_context, environment.environment().is_remote())
+    }) {
+        helper_guidance.push_str(
+            "\n\nUse `sudo` without `-n` or `--non-interactive` when authentication may be needed.",
+        );
+    }
     let unified_exec = features.enabled(Feature::UnifiedExec);
     let command = if unified_exec {
         ExecCommandHandler::new(options)

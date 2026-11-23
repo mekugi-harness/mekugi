@@ -153,6 +153,7 @@ pub struct SandboxNetwork<'a> {
     /// The caller keeps the proxy listeners alive while the child uses them.
     proxy: Option<&'a NetworkProxy>,
     environment_id: Option<&'a str>,
+    runtime_socket: Option<&'a PathUri>,
 }
 
 impl<'a> SandboxNetwork<'a> {
@@ -165,7 +166,14 @@ impl<'a> SandboxNetwork<'a> {
             enforce_managed_network,
             proxy,
             environment_id,
+            runtime_socket: None,
         }
+    }
+
+    /// Grants a runtime-owned endpoint, never a socket selected by the child environment.
+    pub fn with_runtime_socket(mut self, socket: Option<&'a PathUri>) -> Self {
+        self.runtime_socket = socket;
+        self
     }
 }
 
@@ -442,7 +450,10 @@ impl SandboxManager {
             enforce_managed_network,
             proxy: network,
             environment_id,
+            runtime_socket,
         } = request.network;
+        #[cfg(not(target_os = "macos"))]
+        let _ = runtime_socket;
         let is_file_system_helper = matches!(self.operation, SandboxOperation::FileSystemHelper);
         if is_file_system_helper
             && (network.is_some() || enforce_managed_network || command.managed_network.is_some())
@@ -615,8 +626,14 @@ impl SandboxManager {
                     }
                     (context, _) => context,
                 };
+                let runtime_socket = runtime_socket
+                    .map(PathUri::to_abs_path)
+                    .transpose()
+                    .map_err(SandboxTransformError::InvalidPolicy)?;
                 let (profile, sockets) = match &self.operation {
-                    SandboxOperation::Command => (MacosSeatbeltProfile::Process, [].as_slice()),
+                    SandboxOperation::Command => {
+                        (MacosSeatbeltProfile::Process, runtime_socket.as_slice())
+                    }
                     SandboxOperation::InheritedTerminal { allow_unix_sockets } => (
                         MacosSeatbeltProfile::ProcessWithInheritedTerminal,
                         allow_unix_sockets.as_slice(),

@@ -91,6 +91,12 @@ pub(crate) struct PendingNetworkApproval {
     pub(crate) permission_guard: crate::thread_status::ThreadWatchActiveGuard,
 }
 
+/// Retained while a shell-guard approval or secret prompt is awaiting resolution.
+pub(crate) struct PendingShellGuardRequest {
+    pub(crate) request_id: RequestId,
+    pub(crate) watch_guard: crate::thread_status::ThreadWatchActiveGuard,
+}
+
 /// Metadata accumulated for one turn until its terminal notification.
 #[derive(Default, Clone)]
 pub(crate) struct TurnSummary {
@@ -105,6 +111,7 @@ pub(crate) struct ThreadState {
     goal_resume_lock: Arc<Mutex<()>>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
+    pub(crate) shell_guard_requests: HashMap<String, PendingShellGuardRequest>,
     pub(crate) turn_summaries: HashMap<String, TurnSummary>,
     // A background command can emit events even after its originating turn finishes.
     pub(crate) command_start_times: HashMap<String, HashMap<String, i64>>,

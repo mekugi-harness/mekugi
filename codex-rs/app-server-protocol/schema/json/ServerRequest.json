@@ -2193,6 +2193,110 @@
       },
       "type": "object"
     },
+    "ShellGuardApprovalKind": {
+      "enum": [
+        "remoteWrite",
+        "sudo"
+      ],
+      "type": "string"
+    },
+    "ShellGuardRequestApprovalParams": {
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "executable": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/ShellGuardApprovalKind"
+        },
+        "startedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "argv",
+        "cwd",
+        "executable",
+        "kind",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "ShellGuardRequestSecretParams": {
+      "properties": {
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "executable": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/ShellGuardSecretKind"
+        },
+        "startedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "argv",
+        "cwd",
+        "executable",
+        "kind",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "ShellGuardSecretKind": {
+      "enum": [
+        "sudoPassword",
+        "gpgPassphrase"
+      ],
+      "type": "string"
+    },
     "SummaryResult": {
       "oneOf": [
         {
@@ -2613,6 +2717,56 @@
         "params"
       ],
       "title": "Item/permissions/requestApprovalRequest",
+      "type": "object"
+    },
+    {
+      "description": "Request interactive approval for a guarded remote VCS write or sudo command.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "shellGuard/requestApproval"
+          ],
+          "title": "ShellGuard/requestApprovalRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ShellGuardRequestApprovalParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ShellGuard/requestApprovalRequest",
+      "type": "object"
+    },
+    {
+      "description": "Request a private sudo password or GPG passphrase without persisting it.",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "shellGuard/requestSecret"
+          ],
+          "title": "ShellGuard/requestSecretRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ShellGuardRequestSecretParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "ShellGuard/requestSecretRequest",
       "type": "object"
     },
     {

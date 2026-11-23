@@ -1985,6 +1985,7 @@ impl Session {
                 network_proxy_audit_metadata,
                 managed_network_requirements_configured,
                 network_approval: Arc::clone(&network_approval),
+                shell_guard: Arc::new(crate::shell_guard::ShellGuardService::default()),
                 state_db: state_db_ctx.clone(),
                 live_thread: live_thread.clone(),
                 image_store,

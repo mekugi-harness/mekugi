@@ -335,6 +335,7 @@ async fn windows_sandbox_env_preserves_denied_reads_or_rejects_unsupported_backe
             options(),
             /*network*/ None,
             /*environment_id*/ None,
+            /*runtime_socket*/ None,
         )
         .await
         .expect("prepare elevated Windows sandbox request");
@@ -352,6 +353,7 @@ async fn windows_sandbox_env_preserves_denied_reads_or_rejects_unsupported_backe
             options(),
             /*network*/ None,
             /*environment_id*/ None,
+            /*runtime_socket*/ None,
         )
         .await
         .expect_err("restricted-token Windows sandbox cannot enforce deny-read restrictions");
@@ -433,6 +435,7 @@ async fn exec_server_env_keeps_command_native_and_carries_sandbox_context() {
     assert_eq!(
         request.exec_server_sandbox,
         Some(codex_exec_server::FileSystemSandboxContext {
+            runtime_socket: None,
             sandbox_override: SandboxOverride::NoOverride,
             permissions: exec_server_permissions.clone(),
             cwd: cwd_uri.clone(),

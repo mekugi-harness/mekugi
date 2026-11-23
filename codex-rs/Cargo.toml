@@ -86,6 +86,7 @@ members = [
     "runtime-agent-instance",
     "response-debug-context",
     "sandboxing",
+    "shell-guard",
     "otel",
     "user-input",
     "user-verification",
@@ -295,6 +296,7 @@ codex-runtime-agent-instance = { path = "runtime-agent-instance" }
 codex-sandboxing = { path = "sandboxing" }
 codex-secrets = { path = "secrets" }
 codex-shell-command = { path = "shell-command" }
+codex-shell-guard = { path = "shell-guard" }
 codex-skills-extension = { path = "ext/skills" }
 codex-skills = { path = "skills" }
 codex-state = { path = "state" }

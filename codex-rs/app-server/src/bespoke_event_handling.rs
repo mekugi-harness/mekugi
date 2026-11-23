@@ -4,6 +4,7 @@ use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
 use crate::request_processors::thread_settings_from_config_snapshot;
 use crate::server_request_error::is_turn_transition_server_request_error;
 use crate::thread_state::PendingNetworkApproval;
+use crate::thread_state::PendingShellGuardRequest;
 use crate::thread_state::ThreadListenerCommand;
 use crate::thread_state::ThreadState;
 use crate::thread_state::resolve_server_request_on_thread_listener;
@@ -52,6 +53,12 @@ use codex_app_server_protocol::RawResponseItemCompletedNotification;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestPayload;
+use codex_app_server_protocol::ShellGuardApprovalKind as V2ShellGuardApprovalKind;
+use codex_app_server_protocol::ShellGuardRequestApprovalParams;
+use codex_app_server_protocol::ShellGuardRequestApprovalResponse;
+use codex_app_server_protocol::ShellGuardRequestSecretParams;
+use codex_app_server_protocol::ShellGuardRequestSecretResponse;
+use codex_app_server_protocol::ShellGuardSecretKind as V2ShellGuardSecretKind;
 use codex_app_server_protocol::StrictReviewRequiredNotification;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
@@ -117,6 +124,9 @@ use codex_protocol::request_permissions::PermissionGrantScope as CorePermissionG
 use codex_protocol::request_permissions::RequestPermissionProfile as CoreRequestPermissionProfile;
 use codex_protocol::request_permissions::RequestPermissionsResponse as CoreRequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse as CoreRequestUserInputResponse;
+use codex_protocol::shell_guard::ShellGuardApprovalDecision as CoreShellGuardApprovalDecision;
+use codex_protocol::shell_guard::ShellGuardSecretDecision as CoreShellGuardSecretDecision;
+use codex_protocol::shell_guard::ShellGuardSecretValue;
 use codex_shell_command::parse_command::shlex_join;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
@@ -867,6 +877,89 @@ pub(crate) async fn apply_bespoke_event_handling(
             if let Some(pending) = pending {
                 outgoing.resolve_server_request(pending.request_id).await;
                 drop(pending.permission_guard);
+            }
+        }
+        EventMsg::ShellGuardApprovalRequest(request) => {
+            let watch_guard = thread_watch_manager
+                .note_permission_requested(&conversation_id.to_string())
+                .await;
+            let params = ShellGuardRequestApprovalParams {
+                thread_id: conversation_id.to_string(),
+                turn_id: request.turn_id,
+                item_id: request.item_id,
+                started_at_ms: request.started_at_ms,
+                kind: V2ShellGuardApprovalKind::from(request.kind),
+                cwd: request.cwd,
+                executable: request.executable,
+                argv: request.argv,
+            };
+            let (pending_request_id, rx) = outgoing
+                .send_request(ServerRequestPayload::ShellGuardRequestApproval(params))
+                .await;
+            let guard_request_id = request.request_id;
+            thread_state.lock().await.shell_guard_requests.insert(
+                guard_request_id.clone(),
+                PendingShellGuardRequest {
+                    request_id: pending_request_id.clone(),
+                    watch_guard,
+                },
+            );
+            tokio::spawn(async move {
+                on_shell_guard_approval_response(
+                    guard_request_id,
+                    pending_request_id,
+                    rx,
+                    conversation,
+                    thread_state,
+                )
+                .await;
+            });
+        }
+        EventMsg::ShellGuardSecretRequest(request) => {
+            let watch_guard = thread_watch_manager
+                .note_user_input_requested(&conversation_id.to_string())
+                .await;
+            let params = ShellGuardRequestSecretParams {
+                thread_id: conversation_id.to_string(),
+                turn_id: request.turn_id,
+                item_id: request.item_id,
+                started_at_ms: request.started_at_ms,
+                kind: V2ShellGuardSecretKind::from(request.kind),
+                cwd: request.cwd,
+                executable: request.executable,
+                argv: request.argv,
+            };
+            let (pending_request_id, rx) = outgoing
+                .send_request(ServerRequestPayload::ShellGuardRequestSecret(params))
+                .await;
+            let guard_request_id = request.request_id;
+            thread_state.lock().await.shell_guard_requests.insert(
+                guard_request_id.clone(),
+                PendingShellGuardRequest {
+                    request_id: pending_request_id.clone(),
+                    watch_guard,
+                },
+            );
+            tokio::spawn(async move {
+                on_shell_guard_secret_response(
+                    guard_request_id,
+                    pending_request_id,
+                    rx,
+                    conversation,
+                    thread_state,
+                )
+                .await;
+            });
+        }
+        EventMsg::ShellGuardRequestResolved { request_id, .. } => {
+            let pending = thread_state
+                .lock()
+                .await
+                .shell_guard_requests
+                .remove(&request_id);
+            if let Some(pending) = pending {
+                outgoing.resolve_server_request(pending.request_id).await;
+                drop(pending.watch_guard);
             }
         }
         EventMsg::RequestUserInput(request) => {
@@ -2201,6 +2294,172 @@ async fn on_command_execution_request_approval_response(
         .await
     {
         error!("failed to submit ExecApproval: {err}");
+    }
+}
+
+async fn on_shell_guard_approval_response(
+    guard_request_id: String,
+    pending_request_id: RequestId,
+    receiver: oneshot::Receiver<ClientRequestResult>,
+    conversation: Arc<CodexThread>,
+    thread_state: Arc<Mutex<ThreadState>>,
+) {
+    let response = receiver.await;
+    let pending = thread_state
+        .lock()
+        .await
+        .shell_guard_requests
+        .remove(&guard_request_id);
+    if pending.is_some() {
+        resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    }
+    drop(pending);
+
+    let (decision, reason) = match response {
+        Ok(Ok(value)) => match serde_json::from_value::<ShellGuardRequestApprovalResponse>(value) {
+            Ok(parsed) => (
+                CoreShellGuardApprovalDecision::from(parsed.decision),
+                parsed.reason,
+            ),
+            Err(err) => {
+                error!("failed to deserialize ShellGuardRequestApprovalResponse: {err}");
+                (
+                    CoreShellGuardApprovalDecision::Decline,
+                    Some("invalid approval response".to_owned()),
+                )
+            }
+        },
+        Ok(Err(err)) => {
+            if is_turn_transition_server_request_error(&err) {
+                (
+                    CoreShellGuardApprovalDecision::Decline,
+                    Some("turn ended before an answer".to_owned()),
+                )
+            } else {
+                error!("shellGuard/requestApproval failed with client error: {err:?}");
+                (
+                    CoreShellGuardApprovalDecision::Decline,
+                    Some("approval request failed".to_owned()),
+                )
+            }
+        }
+        Err(_) => (
+            CoreShellGuardApprovalDecision::Decline,
+            Some("approval request canceled".to_owned()),
+        ),
+    };
+
+    if let Err(err) = conversation
+        .submit(Op::ShellGuardApprovalResponse {
+            id: guard_request_id,
+            decision,
+            reason,
+        })
+        .await
+    {
+        error!("failed to submit ShellGuardApprovalResponse: {err}");
+    }
+}
+
+async fn on_shell_guard_secret_response(
+    guard_request_id: String,
+    pending_request_id: RequestId,
+    receiver: oneshot::Receiver<ClientRequestResult>,
+    conversation: Arc<CodexThread>,
+    thread_state: Arc<Mutex<ThreadState>>,
+) {
+    let response = receiver.await;
+    let pending = thread_state
+        .lock()
+        .await
+        .shell_guard_requests
+        .remove(&guard_request_id);
+    if pending.is_some() {
+        resolve_server_request_on_thread_listener(&thread_state, pending_request_id).await;
+    }
+    drop(pending);
+
+    let (decision, secret, reason) = match response {
+        Ok(Ok(mut value)) => {
+            let extracted_secret =
+                value
+                    .as_object_mut()
+                    .and_then(|map| match map.remove("secret") {
+                        Some(serde_json::Value::String(secret)) => {
+                            Some(Ok(ShellGuardSecretValue::new(secret)))
+                        }
+                        Some(serde_json::Value::Null) | None => None,
+                        Some(_) => Some(Err(())),
+                    });
+            match (
+                extracted_secret,
+                serde_json::from_value::<ShellGuardRequestSecretResponse>(value),
+            ) {
+                (Some(Err(())), _) => {
+                    error!("failed to deserialize ShellGuardRequestSecretResponse");
+                    (
+                        CoreShellGuardSecretDecision::Decline,
+                        None,
+                        Some("invalid authentication response".to_owned()),
+                    )
+                }
+                (secret_opt, Ok(mut parsed)) => {
+                    let secret = secret_opt.and_then(Result::ok);
+                    let reason = parsed.reason.take();
+                    (
+                        CoreShellGuardSecretDecision::from(parsed.decision),
+                        secret,
+                        reason,
+                    )
+                }
+                (secret_opt, Err(_)) => {
+                    drop(secret_opt);
+                    // Never log raw deserialization values for secret responses.
+                    error!("failed to deserialize ShellGuardRequestSecretResponse");
+                    (
+                        CoreShellGuardSecretDecision::Decline,
+                        None,
+                        Some("invalid authentication response".to_owned()),
+                    )
+                }
+            }
+        }
+        Ok(Err(err)) => {
+            if is_turn_transition_server_request_error(&err) {
+                (
+                    CoreShellGuardSecretDecision::Decline,
+                    None,
+                    Some("turn ended before an answer".to_owned()),
+                )
+            } else {
+                error!(
+                    code = err.code,
+                    "shellGuard/requestSecret failed with client error"
+                );
+                (
+                    CoreShellGuardSecretDecision::Decline,
+                    None,
+                    Some("authentication request failed".to_owned()),
+                )
+            }
+        }
+        Err(_) => (
+            CoreShellGuardSecretDecision::Decline,
+            None,
+            Some("authentication canceled".to_owned()),
+        ),
+    };
+
+    if let Err(err) = conversation
+        .submit(Op::ShellGuardSecretResponse {
+            id: guard_request_id,
+            decision,
+            secret,
+            reason,
+        })
+        .await
+    {
+        error!("failed to submit ShellGuardSecretResponse: {err}");
     }
 }
 

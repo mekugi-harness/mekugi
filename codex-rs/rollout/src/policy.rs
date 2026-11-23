@@ -212,6 +212,9 @@ fn persisted_event_msg(
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ElicitationAbandoned(_)
         | EventMsg::NetworkApprovalResolved { .. }
+        | EventMsg::ShellGuardApprovalRequest(_)
+        | EventMsg::ShellGuardSecretRequest(_)
+        | EventMsg::ShellGuardRequestResolved { .. }
         | EventMsg::ApplyPatchApprovalRequest(_)
         | EventMsg::StreamError(_)
         | EventMsg::PatchApplyBegin(_)

@@ -16,6 +16,7 @@ use crate::exec_policy::ExecPolicyManager;
 use crate::mcp::McpManager;
 use crate::mcp_tool_exposure::McpHandlerCache;
 use crate::runtime_auth::RuntimeAuthSlot;
+use crate::shell_guard::ShellGuardService;
 use crate::tools::ExecutedToolCalls;
 use crate::tools::code_mode::CodeModeService;
 use crate::tools::handlers::ToolSearchHandlerCache;
@@ -94,6 +95,7 @@ pub(crate) struct SessionServices {
     pub(crate) network_proxy_audit_metadata: NetworkProxyAuditMetadata,
     pub(crate) managed_network_requirements_configured: bool,
     pub(crate) network_approval: Arc<NetworkApprovalService>,
+    pub(crate) shell_guard: Arc<ShellGuardService>,
     pub(crate) state_db: Option<StateDbHandle>,
     pub(crate) live_thread: Option<LiveThread>,
     pub(crate) image_store: Arc<dyn AttachmentStore>,

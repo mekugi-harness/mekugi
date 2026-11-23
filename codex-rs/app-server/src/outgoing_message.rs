@@ -648,6 +648,7 @@ impl OutgoingMessageSender {
                 let completed_at_ms = now_unix_timestamp_ms();
                 if entry.resource_owner.is_none()
                     && entry.verification_owner.is_none()
+                    && !matches!(entry.request, ServerRequest::ShellGuardRequestSecret { .. })
                     && let Ok(response) = entry.request.response_from_result(result.clone())
                 {
                     tracing::info!("<- response: {response:?}");

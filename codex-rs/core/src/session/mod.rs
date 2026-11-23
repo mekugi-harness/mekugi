@@ -3018,6 +3018,11 @@ impl Session {
         self.conversation.clear_active_handoff().await;
     }
 
+    pub(crate) async fn last_started_turn_id(&self) -> String {
+        let state = self.state.lock().await;
+        state.last_started_turn_id.clone().unwrap_or_default()
+    }
+
     pub(crate) async fn send_event_raw(&self, event: Event) {
         // Keep event persistence out of callers' stack frames.
         Box::pin(self.send_event_raw_with_persistence(event, /*persist*/ true)).await;

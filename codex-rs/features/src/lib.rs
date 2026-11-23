@@ -328,6 +328,8 @@ pub enum Feature {
     SuppressModelChangeAnnouncements,
     /// Ask native children to structure substantial replies to their parent.
     ChildReplySummary,
+    /// Guard interactive remote VCS writes, `sudo`, and `gpg`/`gpg2` passphrases natively.
+    ShellGuard,
     /// Preserve inherited tool declarations in MCP-disabled prediction forks.
     PredictionPreserveParentTools,
     /// Diff CodeModeOnly exec definitions within the incremental tool catalog.
@@ -1907,6 +1909,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::ChildReplySummary,
         key: "child_reply_summary",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::ShellGuard,
+        key: "shell_guard",
         stage: Stage::Stable,
         default_enabled: true,
     },

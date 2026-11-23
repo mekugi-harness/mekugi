@@ -151,6 +151,7 @@ pub(crate) mod mentions {
 mod sandbox_tags;
 pub mod sandboxing;
 mod session_prefix;
+pub(crate) mod shell_guard;
 mod skills;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;
 #[cfg(test)]

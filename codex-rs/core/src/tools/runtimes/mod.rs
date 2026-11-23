@@ -447,6 +447,9 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         CODEX_PERMISSION_PROFILE_ENV_VAR,
         CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
         PLUGIN_METRICS_OUTPUT_ENV_VAR,
+        codex_shell_guard::SOCKET_ENV_VAR,
+        codex_shell_guard::VCS_DIR_ENV_VAR,
+        codex_shell_guard::SUDO_DIR_ENV_VAR,
     ] {
         if let Some(value) = env.get(key) {
             override_env.insert(key.to_string(), value.clone());
@@ -460,6 +463,9 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
             CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
             PLUGIN_METRICS_OUTPUT_ENV_VAR,
             CODEX_TOOL_CALL_ID_ENV_VAR,
+            codex_shell_guard::SOCKET_ENV_VAR,
+            codex_shell_guard::VCS_DIR_ENV_VAR,
+            codex_shell_guard::SUDO_DIR_ENV_VAR,
         ],
     );
     let (proxy_captures, proxy_exports) = build_proxy_env_exports(env);
