@@ -44,6 +44,7 @@ use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
 use core_test_support::context_snapshot::SnapshotEntry;
 use core_test_support::responses;
+use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_custom_tool_call;
@@ -3181,4 +3182,289 @@ async fn steered_user_input_waits_when_tool_output_triggers_compact_before_next_
     );
 
     server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instant_interrupt_steer_waits_for_active_assistant_message() {
+    let (release_message, message_gate) = oneshot::channel();
+    let (_hold_second_message, second_message_gate) = oneshot::channel();
+    let first_chunks = vec![
+        chunk(ev_response_created("resp-1")),
+        chunk(json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "id": "msg-1",
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": []
+            }
+        })),
+        chunk(json!({
+            "type": "response.output_text.delta",
+            "item_id": "msg-1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "The latest trace"
+        })),
+        gated_chunk(
+            message_gate,
+            vec![
+                json!({
+                    "type": "response.output_text.delta",
+                    "item_id": "msg-1",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": " is complete."
+                }),
+                json!({
+                    "type": "response.output_text.done",
+                    "item_id": "msg-1",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": "The latest trace is complete."
+                }),
+                ev_assistant_message("msg-1", "The latest trace is complete."),
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": 1,
+                    "item": {
+                        "id": "msg-2",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": []
+                    }
+                }),
+                json!({
+                    "type": "response.output_text.delta",
+                    "item_id": "msg-2",
+                    "output_index": 1,
+                    "content_index": 0,
+                    "delta": "Should not stream"
+                }),
+            ],
+        ),
+        gated_chunk(second_message_gate, vec![ev_completed("resp-1")]),
+    ];
+    let second_chunks = vec![
+        chunk(ev_response_created("resp-2")),
+        chunk(ev_assistant_message("msg-final", "Steered reply")),
+        chunk(ev_completed("resp-2")),
+    ];
+    let (server, _) = start_streaming_sse_server(vec![first_chunks, second_chunks]).await;
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::InstantInterrupt)
+                .expect("enable InstantInterrupt feature");
+            config.model_provider.supports_websockets = false;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .expect("build streaming Codex test session");
+    let codex = &test.codex;
+
+    submit_user_input(codex, "first prompt").await;
+    wait_for_event(codex, |event| {
+        matches!(
+            event,
+            EventMsg::AgentMessageContentDelta(delta) if delta.delta == "The latest trace"
+        )
+    })
+    .await;
+
+    steer_user_input(codex, "change direction").await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        server.requests().await.len(),
+        1,
+        "steer must not preempt an in-progress assistant message"
+    );
+
+    release_message.send(()).expect("release active message");
+
+    let mut completed_order = Vec::new();
+    let mut saw_second_message_delta = false;
+    loop {
+        let event = codex.next_event().await.expect("next event");
+        match event.msg {
+            EventMsg::AgentMessageContentDelta(delta)
+                if delta.delta.contains("Should not stream") =>
+            {
+                saw_second_message_delta = true;
+            }
+            EventMsg::ItemCompleted(completed) => match completed.item {
+                codex_protocol::items::TurnItem::AgentMessage(msg) => {
+                    let text: String = msg
+                        .content
+                        .into_iter()
+                        .map(|c| match c {
+                            codex_protocol::items::AgentMessageContent::Text { text } => text,
+                        })
+                        .collect();
+                    completed_order.push(format!("assistant:{text}"));
+                }
+                codex_protocol::items::TurnItem::UserMessage(msg) => {
+                    completed_order.push(format!("user:{}", msg.message()));
+                }
+                _ => {}
+            },
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        !saw_second_message_delta,
+        "subsequent assistant message must not stream after deferred steer preemption"
+    );
+    assert_eq!(
+        completed_order,
+        vec![
+            "assistant:The latest trace is complete.",
+            "user:change direction",
+            "assistant:Steered reply",
+        ]
+    );
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    let second: Value = from_slice(&requests[1]).expect("parse second request");
+    let assistant_texts: Vec<String> = second
+        .get("input")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
+        .filter(|item| item.get("role").and_then(Value::as_str) == Some("assistant"))
+        .filter_map(|item| item.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|span| span.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|span| span.get("text").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    assert!(
+        assistant_texts
+            .iter()
+            .any(|text| text == "The latest trace is complete."),
+        "completed assistant message must be preserved in follow-up request: {assistant_texts:?}"
+    );
+    assert!(
+        message_input_texts(&second, "user")
+            .iter()
+            .any(|text| text == "change direction"),
+        "steered user input must be delivered in follow-up request"
+    );
+
+    codex.shutdown_and_wait().await.expect("shutdown");
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instant_interrupt_steer_drain_suppresses_partial_assistant_message_on_websocket()
+-> anyhow::Result<()> {
+    core_test_support::skip_if_no_network!(Ok(()));
+
+    let server = responses::start_websocket_server(vec![vec![
+        vec![ev_response_created("warm-1"), ev_completed("warm-1")],
+        vec![
+            ev_response_created("resp-interrupted"),
+            ev_reasoning_item_added("reason-1", &["thinking"]),
+        ],
+        vec![
+            json!({"type": "response.interrupt.accepted", "response_id": "resp-interrupted"}),
+            json!({
+                "type": "response.output_item.added",
+                "output_index": 1,
+                "item": {
+                    "id": "partial-msg",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "content": []
+                }
+            }),
+            json!({
+                "type": "response.output_text.delta",
+                "item_id": "partial-msg",
+                "output_index": 1,
+                "content_index": 0,
+                "delta": "Mid-truncated"
+            }),
+            ev_completed("resp-interrupted"),
+        ],
+        vec![
+            ev_response_created("resp-steered"),
+            ev_assistant_message("msg-steered", "Steered reply"),
+            ev_completed("resp-steered"),
+        ],
+    ]])
+    .await;
+
+    let test = test_codex()
+        .with_model("gpt-5.4")
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::InstantInterrupt)
+                .expect("enable InstantInterrupt feature");
+        })
+        .build_with_websocket_server(&server)
+        .await?;
+    let codex = &test.codex;
+
+    submit_user_input(codex, "first prompt").await;
+    wait_for_reasoning_item_started(codex).await;
+
+    steer_user_input(codex, "second prompt").await;
+
+    let mut saw_partial_message = false;
+    let mut completed_messages = Vec::new();
+    loop {
+        let event = codex.next_event().await.expect("next event");
+        match event.msg {
+            EventMsg::ItemStarted(started) => {
+                if let codex_protocol::items::TurnItem::AgentMessage(msg) = started.item
+                    && msg.id == "partial-msg"
+                {
+                    saw_partial_message = true;
+                }
+            }
+            EventMsg::AgentMessageContentDelta(delta)
+                if delta.item_id == "partial-msg" || delta.delta.contains("Mid-truncated") =>
+            {
+                saw_partial_message = true;
+            }
+            EventMsg::ItemCompleted(completed) => {
+                if let codex_protocol::items::TurnItem::AgentMessage(msg) = completed.item {
+                    let text: String = msg
+                        .content
+                        .into_iter()
+                        .map(|c| match c {
+                            codex_protocol::items::AgentMessageContent::Text { text } => text,
+                        })
+                        .collect();
+                    completed_messages.push(text);
+                }
+            }
+            EventMsg::TurnComplete(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        !saw_partial_message,
+        "partial assistant message arriving during steer drain must not stream to client"
+    );
+    assert_eq!(completed_messages, vec!["Steered reply"]);
+
+    codex.shutdown_and_wait().await?;
+    server.shutdown().await;
+    Ok(())
 }

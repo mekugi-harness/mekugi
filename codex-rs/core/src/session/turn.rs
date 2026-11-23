@@ -3193,6 +3193,8 @@ async fn try_run_sampling_request(
     let streaming = turn_context.config.response_process_mode
         == codex_config::config_toml::ResponseProcessMode::Streaming;
     let mut wait_for_bill_only = false;
+    let mut draining_for_steer = false;
+    let mut steer_preempt_deferred = false;
     let mut in_flight = FuturesOrdered::new();
     let mut needs_follow_up = false;
     let mut last_agent_message = AssistantMessages::default();
@@ -3226,6 +3228,24 @@ async fn try_run_sampling_request(
     let mut between_items = false;
     let mut stopping_tools = false;
     let mut completed_tools = Vec::new();
+    let trigger_steer_preempt = |stream: &mut SamplingStream,
+                                 wait_for_bill_only: &mut bool,
+                                 draining_for_steer: &mut bool,
+                                 needs_follow_up: &mut bool| {
+        if stream.interrupt.is_none() {
+            // Stop upstream polling, but keep receiving until any completion already
+            // observed by the mapper has finished accounting.
+            *wait_for_bill_only = streaming || !stream.settlement_started.load(Ordering::Acquire);
+            stream.consumer_dropped.cancel();
+        } else if !stream.settlement_started.load(Ordering::Acquire)
+            && let Some(interrupt) = stream.interrupt.take()
+            && step_context.settings.model_info.use_responses_lite
+        {
+            let _ = interrupt.send(codex_api::ResponseInterrupt::Drain);
+        }
+        *draining_for_steer = true;
+        *needs_follow_up = true;
+    };
     let outcome: CodexResult<SamplingRequestResult> = loop {
         if response_completed && resampling.accepted_output.is_empty() {
             if resampling.update_usage_boundary {
@@ -3282,26 +3302,28 @@ async fn try_run_sampling_request(
             Ok(Ok(event)) => event,
             Ok(Err(_)) => {
                 if *draining_for_mailbox
+                    || draining_for_steer
                     || (interrupt_at_boundary && tool_cancellation.is_cancelled())
                 {
                     preempt = CancellationToken::new();
                     continue;
                 }
-                if stream.interrupt.is_none() {
-                    // Stop upstream polling, but keep receiving until any completion already
-                    // observed by the mapper has finished accounting.
-                    wait_for_bill_only =
-                        streaming || !stream.settlement_started.load(Ordering::Acquire);
-                    stream.consumer_dropped.cancel();
-                } else if !stream.settlement_started.load(Ordering::Acquire)
-                    && let Some(interrupt) = stream.interrupt.take()
-                    && step_context.settings.model_info.use_responses_lite
-                {
-                    let _ = interrupt.send(codex_api::ResponseInterrupt::Drain);
+                if matches!(active_item, Some(TurnItem::AgentMessage(_))) {
+                    // Finish the currently streaming assistant message before preempting so
+                    // steering never cuts off an in-progress message mid-sentence.
+                    steer_preempt_deferred = true;
+                    preempt = CancellationToken::new();
+                    needs_follow_up = true;
+                    continue;
                 }
+                trigger_steer_preempt(
+                    &mut stream,
+                    &mut wait_for_bill_only,
+                    &mut draining_for_steer,
+                    &mut needs_follow_up,
+                );
                 // A steer cannot start another request before the accounting owner returns its decision.
                 preempt = CancellationToken::new();
-                needs_follow_up = true;
                 continue;
             }
             Err(_) => break Err(CodexErr::TurnAborted),
@@ -3454,6 +3476,19 @@ async fn try_run_sampling_request(
                     )
                     .await
                 {
+                    if steer_preempt_deferred
+                        && !*draining_for_mailbox
+                        && !draining_for_steer
+                        && !(interrupt_at_boundary && tool_cancellation.is_cancelled())
+                    {
+                        steer_preempt_deferred = false;
+                        trigger_steer_preempt(
+                            &mut stream,
+                            &mut wait_for_bill_only,
+                            &mut draining_for_steer,
+                            &mut needs_follow_up,
+                        );
+                    }
                     continue;
                 }
 
@@ -3468,9 +3503,9 @@ async fn try_run_sampling_request(
                     tool_runtime,
                     cancellation_token: tool_cancellation.child_token(),
                 };
-                if *draining_for_mailbox {
+                if *draining_for_mailbox || draining_for_steer {
                     // Retain buffered calls in history, but use the existing pre-dispatch
-                    // cancellation path so they cannot run ahead of the queued mail.
+                    // cancellation path so they cannot run ahead of the queued input.
                     ctx.cancellation_token.cancel();
                 }
 
@@ -3520,6 +3555,20 @@ async fn try_run_sampling_request(
                     last_agent_message.record(agent_message);
                 }
                 needs_follow_up |= output_result.needs_follow_up;
+                if steer_preempt_deferred
+                    && !*draining_for_mailbox
+                    && !draining_for_steer
+                    && !(interrupt_at_boundary && tool_cancellation.is_cancelled())
+                {
+                    steer_preempt_deferred = false;
+                    trigger_steer_preempt(
+                        &mut stream,
+                        &mut wait_for_bill_only,
+                        &mut draining_for_steer,
+                        &mut needs_follow_up,
+                    );
+                    continue;
+                }
                 // Hosts can keep the current response intact and deliver mail before the next
                 // model request instead of cutting off its remaining tool calls.
                 if preempt_for_mailbox_mail
@@ -3567,7 +3616,8 @@ async fn try_run_sampling_request(
                 sess.assign_missing_response_item_id(&mut item);
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
-                if !*draining_for_mailbox
+                let draining = *draining_for_mailbox || draining_for_steer;
+                if !draining
                     && let ResponseItem::CustomToolCall {
                         call_id,
                         name,
@@ -3594,7 +3644,7 @@ async fn try_run_sampling_request(
                     // An interrupted response may discard its partial item. Only expose
                     // items received during this drain once OutputItemDone confirms them.
                     let stream_item_to_client =
-                        !*draining_for_mailbox && !defer_streamed_turn_items_for_contributors;
+                        !draining && !defer_streamed_turn_items_for_contributors;
                     let mut seeded_parsed: Option<ParsedAssistantTextDelta> = None;
                     let mut seeded_item_id: Option<String> = None;
                     if stream_item_to_client
@@ -3780,7 +3830,7 @@ async fn try_run_sampling_request(
                         last_agent_message,
                     });
                 }
-                if resampling.retry_pending {
+                if !draining_for_steer && !steer_preempt_deferred && resampling.retry_pending {
                     response_completed = false;
                     response_id_for_assessment = None;
                     pending_assessment = None;
