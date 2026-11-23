@@ -17,6 +17,7 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -197,6 +198,91 @@ func TestAgentEditNoticeCodeModeStructuredOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEditNotice(t, transform.ctx, proxy, workspace, &request, "code-call", "code-call:effects", original, "f", true)
+}
+
+func TestAgentEditNoticeIgnoredWorktreeCleanup(t *testing.T) {
+	isolateSnapshotGit(t)
+	for _, name := range []string{"cleanup only", "with authored effects"} {
+		t.Run(name, func(t *testing.T) {
+			proxy := newManagedMekugiProxy(t)
+			attachTestReplayStore(t, proxy)
+			workspace := gitTestWorkspace(t)
+			writeTestFile(t, filepath.Join(workspace, ".gitignore"), ".worktrees/\ngraphify-out/\nignored.txt\nunread.txt\n")
+			writeTestFile(t, filepath.Join(workspace, "tracked.txt"), "tracked before\n")
+			gitTestCommit(t, workspace)
+			const child = ".worktrees/task"
+			gitTestRun(t, workspace, "worktree", "add", "--quiet", "-b", "task", child)
+			writeOversized := func(path string) {
+				t.Helper()
+				path = filepath.Join(workspace, path)
+				writeTestFile(t, path, "")
+				if err := os.Truncate(path, changecapture.MaxFileBytes+1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeTestFile(t, filepath.Join(workspace, child, "graphify-out", "cache.txt"), "generated cache\n")
+			command := "git -C " + child + " clean -fdX -- .ruff_cache/ graphify-out/ scripts/.venv/ scripts/codex_package/__pycache__/ && git worktree remove " + child + " && git branch -d task"
+			wantFiles := 0
+			if name == "with authored effects" {
+				writeTestFile(t, filepath.Join(workspace, "ignored.txt"), "old\n")
+				writeOversized("unread.txt")
+				command += " && printf 'tracked after\\n' > tracked.txt && printf 'new\\n' > ignored.txt && printf 'new\\n' > unread.txt"
+				wantFiles = 3
+			}
+			transform := prepareNativeStockTransform(t, proxy, workspace, "cleanup")
+			call := map[string]any{
+				"type": "custom_tool_call", "id": "code-item", "call_id": "code-call", "name": "exec",
+				"input": "text(await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(command)) + "}));", "status": "completed",
+			}
+			if _, err := transform.TransformJSON(mustTestJSON(t, map[string]any{"id": "response", "status": "completed", "output": []any{call}})); err != nil {
+				t.Fatal(err)
+			}
+			// Test bounded work without relying on a host-specific deadline.
+			observation := transform.local["code-call"].ExecObservation
+			if observation == nil {
+				t.Fatal("missing command observation")
+			}
+			if len(observation.Files) != wantFiles || len(observation.Listings) != 0 {
+				t.Fatalf("named scope captured %d files and %d listings; want %d files and no listings",
+					len(observation.Files), len(observation.Listings), wantFiles)
+			}
+			shell := exec.CommandContext(t.Context(), "bash", "-c", command)
+			shell.Dir = workspace
+			output, err := shell.CombinedOutput()
+			if err != nil {
+				t.Fatalf("cleanup command: %v: %s", err, output)
+			}
+			original := "Script completed\nWall time 0.1 seconds\nOutput:\n" + string(output)
+			request := codexresponses.Request{Fields: map[string]jsonv1.RawMessage{"input": mustTestJSON(t, []any{call, map[string]any{
+				"type": "custom_tool_call_output", "call_id": "code-call", "output": []any{map[string]any{"type": "input_text", "text": original}},
+			}})}}
+			if _, err := proxy.reconcileVisibleInput(transform.ctx, &request, workspace, transform.historySessionID); err != nil {
+				t.Fatal(err)
+			}
+			if name == "cleanup only" {
+				assertEditNotice(t, transform.ctx, proxy, workspace, &request, "code-call", "code-call:effects", original, "", false)
+				return
+			}
+			store := testProxyStore(proxy)
+			record, found, err := store.lookup(transform.ctx, workspace, "code-call:effects")
+			if err != nil || !found || record.ChangeID == "" {
+				t.Fatalf("authored effects not retained: found=%v, err=%v", found, err)
+			}
+			parts := projectedEditOutput(t, &request, "code-call")
+			if len(parts) != 2 || parts[0]["text"] != original {
+				t.Fatalf("unexpected projected output: %+v", parts)
+			}
+			notice, _ := parts[1]["text"].(string)
+			if !strings.HasPrefix(notice, record.ChangeID+"\nCapture incomplete: ") ||
+				!strings.Contains(notice, "unread.txt") || strings.Contains(notice, "graphify-out") {
+				t.Fatalf("receipt should keep only the genuine gap: %q", notice)
+			}
+			details, err := store.changes.Read(transform.ctx, store.scoped(transform.ctx).changeScope(), changes.Query{Workspace: workspace, IDs: []string{record.ChangeID}})
+			if err != nil || !strings.Contains(details, "-tracked before\n+tracked after\n") || !strings.Contains(details, "-old\n+new\n") || strings.Contains(details, "graphify-out") {
+				t.Fatalf("mchanges lost an authored effect or included generated cleanup: %v\n%s", err, details)
+			}
+		})
+	}
 }
 
 func TestAgentEditNoticeShellContinuation(t *testing.T) {

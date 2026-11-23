@@ -110,21 +110,31 @@ func TestGitRestoreAndCheckoutPathQueriesFromSubdirectory(t *testing.T) {
 	}
 }
 
-func TestGitCleanProviderExpandsDirectoriesAndPreservesDiscardedBytes(t *testing.T) {
-	repo := newExecVCSTestRepo(t, map[string]string{"tracked.txt": "keep\n"})
-	discarded := filepath.Join(repo, "untracked", "nested", "discarded.txt")
-	writeTestFile(t, discarded, "untracked original bytes\n")
+func TestGitCleanProviderPreservesDiscardedBytes(t *testing.T) {
+	for _, test := range []struct {
+		name, arguments, ignore string
+	}{
+		{name: "untracked directory", arguments: "-fd"},
+		{name: "directory selected by custom exclude", arguments: "-fdX -e untracked/ -- untracked/"},
+		{name: "named ignored file", arguments: "-fdX -- untracked/nested/discarded.txt", ignore: "discarded.txt\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newExecVCSTestRepo(t, map[string]string{".gitignore": test.ignore, "tracked.txt": "keep\n"})
+			discarded := filepath.Join(repo, "untracked", "nested", "discarded.txt")
+			writeTestFile(t, discarded, "untracked original bytes\n")
 
-	observation := captureExecVCSTestCommand(t, repo, "git clean -fd")
-	assertCapturedExecVCSTestFile(t, observation, discarded, "untracked original bytes\n")
-	assertExecVCSTestFileContent(t, discarded, "untracked original bytes\n")
-	runExecVCSTestGit(t, repo, "clean", "-fd")
+			observation := captureExecVCSTestCommand(t, repo, "git clean "+test.arguments)
+			assertCapturedExecVCSTestFile(t, observation, discarded, "untracked original bytes\n")
+			assertExecVCSTestFileContent(t, discarded, "untracked original bytes\n")
+			runExecVCSTestGit(t, repo, append([]string{"clean"}, strings.Fields(test.arguments)...)...)
 
-	reviews := reconcileExecVCSTestExact(t, observation)
-	if len(reviews) != 1 || reviews[0].Action().Title() != "Delete" ||
-		reviews[0].BeforePath != discarded || reviews[0].AfterPath != "" ||
-		!strings.Contains(reviews[0].Diff, "-untracked original bytes") {
-		t.Fatalf("clean evidence = %+v; want exact deleted-file evidence", reviews)
+			reviews := reconcileExecVCSTestExact(t, observation)
+			if len(reviews) != 1 || reviews[0].Action().Title() != "Delete" ||
+				reviews[0].BeforePath != discarded || reviews[0].AfterPath != "" ||
+				!strings.Contains(reviews[0].Diff, "-untracked original bytes") {
+				t.Fatalf("clean evidence = %+v; want exact deleted-file evidence", reviews)
+			}
+		})
 	}
 }
 

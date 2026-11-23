@@ -76,6 +76,7 @@ func execGitScope(input execProviderInput) execProviderResult {
 	diff := []string{"diff", "--no-relative", "--no-ext-diff", "--no-textconv", "--name-only", "-z"}
 	var query, extra []string
 	open := false
+	skipCleanDirectories := false
 	source := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -194,6 +195,7 @@ func execGitScope(input execProviderInput) execProviderResult {
 		}
 	case "clean":
 		query = []string{"clean", "-n"}
+		var ignoreOnly, customExcludes bool
 		for i := 0; i < len(args); i++ {
 			arg := args[i]
 			if arg == "--" {
@@ -201,6 +203,7 @@ func execGitScope(input execProviderInput) execProviderResult {
 				break
 			}
 			if arg == "-e" || arg == "--exclude" {
+				customExcludes = true
 				if i+1 == len(args) {
 					return fallback("clean exclusion is missing")
 				}
@@ -209,11 +212,14 @@ func execGitScope(input execProviderInput) execProviderResult {
 				continue
 			}
 			if strings.HasPrefix(arg, "--exclude=") || strings.HasPrefix(arg, "-e") {
+				customExcludes = true
 				query = append(query, arg)
 				continue
 			}
 			if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") {
 				for _, flag := range strings.TrimPrefix(arg, "-") {
+					ignoreOnly = ignoreOnly || flag == 'X'
+					customExcludes = customExcludes || flag == 'e'
 					if strings.ContainsRune("dxX", flag) {
 						query = append(query, "-"+string(flag))
 					}
@@ -222,6 +228,7 @@ func execGitScope(input execProviderInput) execProviderResult {
 				query = append(query, arg)
 			}
 		}
+		skipCleanDirectories = ignoreOnly && !customExcludes
 	case "apply", "am":
 		query = []string{"apply", "--numstat", "--summary", "-z"}
 		for i := 0; i < len(args); i++ {
@@ -265,6 +272,11 @@ func execGitScope(input execProviderInput) execProviderResult {
 			if path, ok := strings.CutPrefix(line, "Would remove "); ok {
 				if decoded, err := strconv.Unquote(path); err == nil {
 					path = decoded
+				}
+				// Git has already applied its ignores and collapsed these
+				// directories. Don't re-expand ignored artifacts for review.
+				if skipCleanDirectories && strings.HasSuffix(path, "/") {
+					continue
 				}
 				paths = append(paths, sourceparse.Path(input.cwd, strings.TrimSuffix(path, "/")))
 			}
