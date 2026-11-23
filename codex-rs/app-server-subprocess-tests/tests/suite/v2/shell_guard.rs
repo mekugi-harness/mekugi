@@ -128,6 +128,15 @@ done
 printf 'MOCK_GIT:%s\n' "$*"
 "#,
     )?;
+    // Some macOS releases do not provide timeout on the fixture's system PATH.
+    // Only external command lookup and argv forwarding matter to this test.
+    if !Path::new("/usr/bin/timeout").exists() {
+        write_executable(
+            mock_bin.path(),
+            "timeout",
+            "#!/bin/bash\nshift\nexec \"$@\"\n",
+        )?;
+    }
     for name in ["gh", "hg", "svn", "jj"] {
         write_executable(
             mock_bin.path(),
