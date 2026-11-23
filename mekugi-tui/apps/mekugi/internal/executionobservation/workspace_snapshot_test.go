@@ -576,6 +576,77 @@ PY
 	}
 }
 
+func TestStockExecCapturesSessionScratchRedirects(t *testing.T) {
+	isolateSnapshotGit(t)
+	proxy := newManagedMekugiProxy(t)
+	attachTestReplayStore(t, proxy)
+	transform, _, _, workspace := newMekugiTestTransformWithProxy(t, proxy)
+	trace := newNativeTraceFixture(t)
+	trace.turn = "test-turn"
+	transform.sessionShell, transform.shellTurnID = "bash", trace.turn
+	thread := transform.shellThreadID
+	proxy.NativeTrace = nativetrace.NewWithNotice(trace.root, nil)
+
+	scratch := filepath.Join(t.TempDir(), "session scratch")
+	first := filepath.Join(scratch, "probe", "base.yml")
+	second := filepath.Join(scratch, "probe", "plane.yml")
+	writeTestFile(t, second, "old\n")
+	const command = `mkdir -p "$SESSION_TMP/probe"
+cat > "$SESSION_TMP/probe/base.yml" <<'EOF'
+services: {}
+EOF
+cat > "${SESSION_TMP}/probe/plane.yml" <<'EOF'
+configs: {}
+EOF
+exit 7`
+	args := string(responses.MustMarshalJSON(map[string]string{"cmd": command, "workdir": workspace}))
+	source := "await tools.exec_command(" + args + ");"
+	call := map[string]any{
+		"type": "custom_tool_call", "id": "scratch-item", "call_id": "scratch",
+		"name": "exec", "input": source, "status": "completed",
+	}
+	if _, err := transform.TransformJSON(mustTestJSON(t, map[string]any{
+		"id": "response", "status": "completed", "output": []any{call},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	trace.start(thread, "cell", "scratch", source)
+	trace.tool(thread, "cell", "shell", nativeExecCommandToolName, args)
+	ctx, cancel := context.WithTimeout(transform.ctx, segmenttransport.BoundaryHold)
+	deadline, _ := ctx.Deadline()
+	proxy.ObserveNativeBoundary(ctx, segmenttransport.Boundary{
+		Thread: thread, Turn: trace.turn, Item: "shell", Tool: "Bash",
+		CWD: workspace, Input: command, SessionTmp: scratch, Deadline: deadline,
+	})
+	cancel()
+	host := exec.Command(execTrackShellExecutable(t, "bash"), "-c", command)
+	host.Dir = workspace
+	host.Env = append(os.Environ(), "BASH_ENV=", "MEKUGI_EXEC_TRACK=", "SESSION_TMP="+scratch)
+	if output, _ := host.CombinedOutput(); host.ProcessState.ExitCode() != 7 {
+		t.Fatalf("scratch writer: %q, %v", output, host.ProcessState)
+	}
+	trace.result(thread, "shell", "completed", map[string]any{"exit_code": 7})
+	trace.end(thread, "cell")
+	request := codexresponses.Request{Fields: map[string]jsonv1.RawMessage{
+		"input": mustTestJSON(t, []any{call, map[string]any{
+			"type": "custom_tool_call_output", "call_id": "scratch",
+			"output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
+		}}),
+	}}
+	if _, err := proxy.reconcileVisibleInput(transform.ctx, &request, workspace, transform.historySessionID); err != nil {
+		t.Fatal(err)
+	}
+	record, found, err := testProxyStore(proxy).lookup(t.Context(), workspace, "scratch:effects")
+	if err != nil || !found || record.ChangeID == "" || len(record.ReviewFiles) != 2 {
+		t.Fatalf("scratch writes not retained: found=%t err=%v paths=%q", found, err, reviewPaths(record))
+	}
+	created, edited := record.ReviewFiles[0], record.ReviewFiles[1]
+	if created.BeforePath != "" || created.AfterPath != first || !strings.Contains(created.Diff, "\n+services: {}\n") ||
+		edited.BeforePath != second || edited.AfterPath != second || !strings.Contains(edited.Diff, "\n-old\n+configs: {}\n") {
+		t.Fatalf("scratch contents not captured: %+v %+v", created, edited)
+	}
+}
+
 func TestWorkspaceSnapshotClaimsStayWithinTheirWorkspace(t *testing.T) {
 	isolateSnapshotGit(t)
 	f := newMChangesSliceFixture(t, "snapshot-domains")

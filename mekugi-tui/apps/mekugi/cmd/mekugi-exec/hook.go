@@ -39,7 +39,8 @@ func trackingHook(args []string, input io.Reader, output, stderr io.Writer) int 
 		return fail(err)
 	}
 	if len(args) == 2 && request.Input.Command != nil {
-		transport.ObserveBoundary(args[1], transport.Boundary{Thread: request.Thread, Turn: request.Turn, Item: request.Item, Tool: request.Tool, CWD: request.CWD, Input: *request.Input.Command, Deadline: deadline})
+		transport.ObserveBoundary(args[1], transport.Boundary{Thread: request.Thread, Turn: request.Turn, Item: request.Item, Tool: request.Tool,
+			CWD: request.CWD, Input: *request.Input.Command, SessionTmp: request.SessionTmp, Deadline: deadline})
 	}
 	data, err = json.Marshal(result)
 	if err != nil {

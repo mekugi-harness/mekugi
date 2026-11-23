@@ -108,6 +108,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `SESSION_TMP`, and appends it to `PATH` (reported via `on_path="true"` on
   `<session_tmp>`). The native skills extension uses the local `skills-mgr`
   catalog where configured and otherwise retains stock skill discovery.
+- The private shell capture hook receives the runtime's `SESSION_TMP` path
+  for direct output redirects. Activity can show the resulting edit counts
+  and diffs without changing ordinary hook input or saved Diff filtering.
 - Model requests reuse repeated tool output and source text without replacing
   the original retained records, preferring a single-base unified diff over
   fragmented multi-segment references when savings stay within a bounded

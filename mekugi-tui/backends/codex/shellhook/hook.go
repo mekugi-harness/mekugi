@@ -22,13 +22,14 @@ const Flag = "--tracking-hook"
 
 // Input is the native hook event. Trusted tracking resources come from argv.
 type Input struct {
-	Event  string `json:"hook_event_name"`
-	Tool   string `json:"tool_name"`
-	Item   string `json:"tool_use_id"`
-	Thread string `json:"session_id"`
-	Turn   string `json:"turn_id"`
-	CWD    string `json:"cwd"`
-	Input  struct {
+	Event      string `json:"hook_event_name"`
+	Tool       string `json:"tool_name"`
+	Item       string `json:"tool_use_id"`
+	Thread     string `json:"session_id"`
+	Turn       string `json:"turn_id"`
+	CWD        string `json:"cwd"`
+	SessionTmp string `json:"mekugi_session_tmp"`
+	Input      struct {
 		Command *string `json:"command"`
 	} `json:"tool_input"`
 }

@@ -35,6 +35,9 @@
   files. The `git clean -X` diagnostic does not expand ignored directories when no custom excludes
   are supplied. `sed` arguments follow the dialect of the sed binary that runs: GNU, or BSD, where
   `-i` always takes a suffix.
+- The local shell boundary can resolve direct output redirections through
+  `SESSION_TMP` using the runtime's scratch path before execution. These edits
+  retain normal Activity stats and details; saved Diff filtering is unchanged.
 - **Bounded workspace fallback** snapshots non-read-only commands using private Git state (never
   touching user Git config/hooks/filters) with ignore rules, per-directory checkpoints for
   `cd`/worktrees/symlinks, a 1s acquisition/comparison budget, 20k-file cap without Git ignore, and

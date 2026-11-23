@@ -204,6 +204,11 @@ pub(crate) async fn run_pre_tool_use_hooks(
     target_environments: &[&str],
 ) -> PreToolUseHookResult {
     let turn_context = &step_context.turn;
+    let mekugi_session_tmp = (tool_name.name() == "Bash" && tool_cwd.is_some()).then(|| {
+        crate::exec_env::session_tmp_path(sess.session_id())
+            .to_string_lossy()
+            .into_owned()
+    });
     let request = PreToolUseRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -214,6 +219,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
         model: step_context.settings.model_info.slug.clone(),
         permission_mode: hook_permission_mode(step_context.settings.approval_policy()),
         tool_name: tool_name.name().to_string(),
+        mekugi_session_tmp,
         matcher_aliases: tool_name.matcher_aliases().to_vec(),
         tool_use_id,
         tool_input: tool_input.clone(),

@@ -49,8 +49,13 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 		if request.Tool == "Bash" && incoming.dynamic {
 			directoryWitness = p.nativeDirectory(ctx, incoming, call)
 		}
+		shell := cmp.Or(call.Command.Shell, incoming.shell)
+		var scratchPaths []string
+		if request.Tool == "Bash" {
+			scratchPaths = execscope.SessionScratchRedirects(request.Input, shell, request.SessionTmp)
+		}
 		cuts := p.Windows.intervalCuts([]string{incoming.ref})
-		if request.Tool == "Bash" && len(cuts) == 0 && directoryWitness == nil {
+		if request.Tool == "Bash" && len(cuts) == 0 && directoryWitness == nil && len(scratchPaths) == 0 {
 			return
 		}
 		var eager mekugiHistory
@@ -79,10 +84,6 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 				return
 			}
 		} else if len(cuts) > 0 {
-			shell := call.Command.Shell
-			if shell == "" {
-				shell = incoming.shell
-			}
 			plan := execscope.Classify(execscope.Input{Command: call.Command.Command, Directory: directory, Shell: shell, Deadline: deadline, Changes: storeChangeResolver(ctx, incoming.scope, p.Changes)})
 			for _, entry := range plan.Scope {
 				if entry.Kind != execscope.File {
@@ -95,7 +96,7 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 				}
 			}
 		}
-		if len(paths) == 0 && directoryWitness == nil || ctx.Err() != nil {
+		if len(paths) == 0 && directoryWitness == nil && len(scratchPaths) == 0 || ctx.Err() != nil {
 			return
 		}
 		// An earlier command in this same cell keeps the earliest cell baseline.
@@ -137,6 +138,7 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 		}
 		var terminal []execIntervalCut
 		var missing []execIntervalCut
+		paths = append(paths, scratchPaths...)
 		identities := make(changecapture.PathIdentities)
 		physical := make(map[string]string, len(paths))
 		for _, path := range paths {
@@ -148,14 +150,18 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 		ended := make(map[string]bool)
 		var shared []string
 		if !priorWriter {
-			// Dynamic patch targets first become known at this boundary.
+			// Dynamic patch and scratch targets first become known here.
 			// Reuse ordinary interval splitting for writers absent from the
 			// eager pre-cell cut, rather than losing their preceding effect.
+			discovered := scratchPaths
 			if request.Tool == applyPatchToolName {
+				discovered = paths
+			}
+			if len(discovered) != 0 {
 				state.mu.Lock()
 				for _, writer := range state.windows {
 					if writer.ref != incoming.ref && writer.group != incoming.group && writer.closed.IsZero() && writer.scope.Store != nil &&
-						!slices.ContainsFunc(cuts, func(c execIntervalCut) bool { return c.writer == writer.ref }) && slices.ContainsFunc(paths, func(path string) bool { return covers(writer, path) }) {
+						!slices.ContainsFunc(cuts, func(c execIntervalCut) bool { return c.writer == writer.ref }) && slices.ContainsFunc(discovered, func(path string) bool { return covers(writer, path) }) {
 						missing = append(missing, execIntervalCut{writer: writer.ref, workspace: writer.workspace, scope: writer.scope})
 					}
 				}
@@ -193,6 +199,20 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 		}
 		if request.Tool != applyPatchToolName || eagerPatch {
 			paths = shared
+		}
+		var scratchRoot string
+		if len(scratchPaths) != 0 {
+			if priorWriter {
+				// These bytes may already include an earlier tool's effects.
+				if directoryWitness == nil {
+					directoryWitness = new(changecapture.Observation)
+				}
+				directoryWitness.Unresolved = true
+				directoryWitness.Reason = strings.TrimPrefix(directoryWitness.Reason+"; scratch baseline unavailable after earlier writer", "; ")
+			} else {
+				paths = append(paths, scratchPaths...)
+				scratchRoot = request.SessionTmp
+			}
 		}
 		if len(paths) == 0 && directoryWitness == nil {
 			return
@@ -273,6 +293,9 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 			}
 			baseline.ExecObservation = directoryWitness
 			baseline.ExecObservation.Files = files
+			if scratchRoot != "" {
+				baseline.ExecObservation.Roots = changecapture.AddRoot(baseline.ExecObservation.Roots, scratchRoot)
+			}
 		}
 		// Publication precedes releasing the native pre-tool boundary. Each
 		// terminal interval closes only shared paths; other scope remains open.
@@ -319,6 +342,9 @@ func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.
 		}
 		incoming.paths = slices.Compact(slices.Sorted(slices.Values(append(incoming.paths, paths...))))
 		incoming.roots = changecapture.AddRoot(incoming.roots, incoming.workspace)
+		if scratchRoot != "" {
+			incoming.roots = changecapture.AddRoot(incoming.roots, scratchRoot)
+		}
 		state.mu.Unlock()
 		return
 	}
@@ -492,6 +518,19 @@ func (p *Preparer) loadNativeBoundaries(ctx context.Context, workspace, callID s
 					}
 				}
 				copy.Files = rebaseNativeFiles(copy.Files, baseline.ExecObservation.Files)
+				if len(baseline.ExecObservation.Roots) != 0 {
+					copy.Roots = slices.Clone(copy.Roots)
+					for _, root := range baseline.ExecObservation.Roots {
+						copy.Roots = changecapture.AddRoot(copy.Roots, root)
+					}
+				}
+				// The first native writer can witness named targets the eager
+				// classifier couldn't resolve from the model's source alone.
+				for _, file := range baseline.ExecObservation.Files {
+					if !slices.ContainsFunc(copy.Files, func(before changecapture.File) bool { return before.Path == file.Path }) {
+						copy.Files = append(copy.Files, file)
+					}
+				}
 			}
 			if tool.LocalEnvironment && o.LiteralClass != "" {
 				directory := shellCallDirectory(workspace, tool.Command.Workdir)

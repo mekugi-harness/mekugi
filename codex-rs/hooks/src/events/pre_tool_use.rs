@@ -35,6 +35,8 @@ pub struct PreToolUseRequest {
     pub model: String,
     pub permission_mode: String,
     pub tool_name: String,
+    /// Runtime-owned shell path for the private Mekugi capture hook only.
+    pub mekugi_session_tmp: Option<String>,
     pub matcher_aliases: Vec<String>,
     pub tool_use_id: String,
     pub tool_input: Value,
@@ -129,6 +131,9 @@ pub(crate) async fn run(
     if !tracking.is_empty() {
         if let Some(effective) = &updated_input {
             input["tool_input"].clone_from(effective);
+        }
+        if let Some(path) = &request.mekugi_session_tmp {
+            input["mekugi_session_tmp"] = Value::String(path.clone());
         }
         let tracked = dispatcher::execute_handlers(
             engine,
@@ -381,6 +386,14 @@ mod tests {
         let input = command_input(&request).expect("serialize command input");
 
         assert_eq!(input["tool_name"], "apply_patch");
+    }
+
+    #[test]
+    fn ordinary_hook_input_omits_mekugi_scratch_path() {
+        let mut request = request_for_tool_use("call-shell");
+        let ordinary = command_input(&request).unwrap();
+        request.mekugi_session_tmp = Some("/tmp/mekugi-session-fixture".to_string());
+        assert_eq!(command_input(&request).unwrap(), ordinary);
     }
 
     #[test]
@@ -862,6 +875,7 @@ mod tests {
             model: "gpt-test".to_string(),
             permission_mode: "default".to_string(),
             tool_name: "Bash".to_string(),
+            mekugi_session_tmp: None,
             matcher_aliases: Vec::new(),
             tool_use_id: tool_use_id.to_string(),
             tool_input: serde_json::json!({ "command": "echo hello" }),

@@ -14,6 +14,7 @@ import (
 // Deadline covers transport and acquisition from native helper entry.
 type Boundary struct {
 	Thread, Turn, Item, Tool, CWD, Input string
+	SessionTmp                           string `json:",omitempty"`
 	Deadline                             time.Time
 }
 
