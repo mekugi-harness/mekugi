@@ -255,12 +255,19 @@ uncertain Plane write before retrying.
 Repeat `--cleanup PATH` for explicitly authorized source worktrees beneath this
 checkout's `.worktrees`. Cleanup checks exact repository/worktree identity, source
 dirt, `git cherry` patch equivalence and unmatched merges, because `git cherry`
-omits merge-only changes. Ignored files also block cleanup, except the fixed
-generated destinations: `mekugi-webui/app/node_modules/`,
-`mekugi-webui/dist/app/`. These dependencies and bundles are discarded
-with the worktree; neighboring ignored source/configuration and other output
-paths remain protected. It removes only the checked Mekugi worktree, then its
-branch.
+omits merge-only changes. Ignored files also block cleanup, except fixed
+generated outputs:
+
+- Browser dependencies and bundles: `mekugi-webui/app/node_modules/` and
+  `mekugi-webui/dist/app/`.
+- Native outputs: `codex-rs/target/`, `bin/native/` and
+  `bin/mekugi-native.tar.gz`.
+- Local generated data: `graphify-out/`, `runtime/__pycache__/` and
+  `scripts/codex_package/__pycache__/`.
+
+These outputs are discarded with the worktree. Neighboring ignored files and
+custom output paths remain protected, and output outside the worktree is
+untouched. Cleanup removes only the checked worktree, then its branch.
 A cleanup failure retains whatever has not yet been removed; status writes
 remain, and a failed branch removal leaves the branch for
 recovery. Serialize integration and source edits; this is sequencing, not a

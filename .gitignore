@@ -106,4 +106,5 @@ docs/proposals/
 /bin
 !/mekugi-webui/dist/
 /mekugi-webui/dist/app/
+/graphify-out/
 /.worktrees/

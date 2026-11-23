@@ -142,14 +142,24 @@ func cleanupIntegration(root, path, checked string) error {
 		return err
 	}
 	for entry := range strings.SplitSeq(status, "\x00") {
-		// Only ignored output at the fixed Makefile/package build destinations is
-		// disposable. Tracked changes and neighboring ignored source stay protected.
+		// Only fixed generated destinations are disposable. Tracked changes
+		// and neighboring ignored source stay protected.
 		switch entry {
-		case "", "!! mekugi-webui/app/node_modules/", "!! mekugi-webui/dist/app/":
+		case "", "!! codex-rs/target/", "!! graphify-out/",
+			"!! mekugi-webui/app/node_modules/", "!! mekugi-webui/dist/app/",
+			"!! runtime/__pycache__/", "!! scripts/codex_package/__pycache__/":
 			continue
-		default:
-			return retained
+		case "!! bin/":
+			// Git reports the whole ignored parent, not the native outputs inside it.
+			onlyNative, err := integrationBinOnlyNative(source)
+			if err != nil {
+				return err
+			}
+			if onlyNative {
+				continue
+			}
 		}
+		return retained
 	}
 	// git cherry omits merges, including merge-only conflict resolutions.
 	for _, arguments := range [][]string{{"cherry", checked, "HEAD"}, {"rev-list", "--merges", checked + "..HEAD"}} {
@@ -168,6 +178,22 @@ func cleanupIntegration(root, path, checked string) error {
 		return err
 	}
 	return integrationCommand(root, "git", "branch", "-D", "--", branch)
+}
+
+func integrationBinOnlyNative(source string) (bool, error) {
+	entries, err := os.ReadDir(filepath.Join(source, "bin"))
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		switch {
+		case entry.Name() == "native" && entry.IsDir():
+		case entry.Name() == "mekugi-native.tar.gz" && entry.Type().IsRegular():
+		default:
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func integrationGit(directory string, args ...string) (string, error) {

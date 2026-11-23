@@ -14,11 +14,14 @@ type integrationFixture struct{ root, source, commit, events string }
 func newIntegrationFixture(t *testing.T) integrationFixture {
 	t.Helper()
 	// Read through a testdata symlink so Go's test cache keys on it.
-	gitignore, err := os.ReadFile("testdata/gitignore")
-	if err != nil {
-		t.Fatal(err)
+	ignoreFiles := make(map[string]string)
+	for path, fixture := range map[string]string{".gitignore": "gitignore", "codex-rs/.gitignore": "native-gitignore"} {
+		gitignore, err := os.ReadFile(filepath.Join("testdata", fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ignoreFiles[path] = string(gitignore)
 	}
-	ignoreFiles := map[string]string{".gitignore": string(gitignore)}
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		if strings.HasPrefix(name, "GIT_") {
@@ -164,16 +167,20 @@ func TestIntegrationProtectsGeneratedOutputNeighbors(t *testing.T) {
 		"mekugi-webui/dist/app-local/.env",
 		"other/node_modules/source.js",
 		"bin/mekugi",
+		"bin/.env.local",
+		"codex-rs/target-custom/source.rs",
+		"scripts/codex_package/.env.local",
 		"mekugi-webui/app/.env.\nconfiguration",
 	} {
 		t.Run(path, func(t *testing.T) {
 			f := newIntegrationFixture(t)
 			writeWorkspaceSource(t, filepath.Join(f.source, "mekugi-webui/dist/app/assets/app.js"), "generated\n")
+			writeWorkspaceSource(t, filepath.Join(f.source, "bin/native/mekugi-app-server"), "generated\n")
 			writeWorkspaceSource(t, filepath.Join(f.source, path), "keep\n")
 			if err := integrate([]string{"--commits", f.commit, "--accept", "--cleanup", f.source, "--", "check"}); err == nil {
 				t.Fatal("cleanup discarded protected source beside generated output")
 			}
-			for _, retained := range []string{path, "mekugi-webui/dist/app/assets/app.js"} {
+			for _, retained := range []string{path, "bin/native/mekugi-app-server", "mekugi-webui/dist/app/assets/app.js"} {
 				want := "keep\n"
 				if retained != path {
 					want = "generated\n"
@@ -310,8 +317,18 @@ func TestIntegrationMakeRecipe(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := newIntegrationFixture(t)
-	writeWorkspaceSource(t, filepath.Join(f.source, "mekugi-webui/app/node_modules/.bun-install"), "generated\n")
-	writeWorkspaceSource(t, filepath.Join(f.source, "mekugi-webui/dist/app/assets/app.js"), "generated\n")
+	for _, path := range []string{
+		"bin/native/mekugi-app-server",
+		"bin/mekugi-native.tar.gz",
+		"codex-rs/target/dev-small/mekugi-app-server",
+		"graphify-out/graph.json",
+		"mekugi-webui/app/node_modules/.bun-install",
+		"mekugi-webui/dist/app/assets/app.js",
+		"runtime/__pycache__/build.cpython-313.pyc",
+		"scripts/codex_package/__pycache__/targets.cpython-313.pyc",
+	} {
+		writeWorkspaceSource(t, filepath.Join(f.source, path), "generated\n")
+	}
 	writeWorkspaceSource(t, "Makefile", string(makefile))
 	wrapper := filepath.Join(t.TempDir(), "workspace")
 	writeWorkspaceSource(t, wrapper, "#!/bin/sh\nexec '"+strings.ReplaceAll(executable, "'", "'\\''")+"' -test.run=^TestMakefileWorkspaceFixture$ -- \"$@\"\n")
