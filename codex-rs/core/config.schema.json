@@ -9323,6 +9323,13 @@
       "description": "Optional explicit service tier request id for new turns (for example `default`, `priority`, or `flex`; legacy `fast` also works).",
       "type": "string"
     },
+    "service_tiers": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Request tier defaults keyed by the exact model ID.",
+      "type": "object"
+    },
     "shell_environment_policy": {
       "allOf": [
         {
