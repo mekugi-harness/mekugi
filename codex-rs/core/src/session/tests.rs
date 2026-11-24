@@ -5797,6 +5797,7 @@ async fn active_profile_update_rebuilds_network_proxy_config(
             (
                 "locked-down".to_string(),
                 PermissionProfileToml {
+                    credentials: None,
                     description: None,
                     extends: None,
                     workspace_roots: None,
@@ -5813,6 +5814,7 @@ async fn active_profile_update_rebuilds_network_proxy_config(
             (
                 "web-enabled".to_string(),
                 PermissionProfileToml {
+                    credentials: None,
                     description: None,
                     extends: None,
                     workspace_roots: None,
@@ -7222,6 +7224,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         parent_observer_event_tx: OnceLock::new(),
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        initial_context_publication: Semaphore::new(/*permits*/ 1),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -9579,6 +9582,7 @@ where
         parent_observer_event_tx: OnceLock::new(),
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        initial_context_publication: Semaphore::new(/*permits*/ 1),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),

@@ -5,11 +5,11 @@ It covers the native runtime Mekugi ships, not the host UI or changes already
 in upstream Codex.
 
 The fork started at `rust-v0.169.0`. The current comparison baseline is
-`rust-v0.171.0` (imported in `221fbc5eed`). Upstream imports are squashes.
+`rust-v0.172.0` (imported atop PR #10). Upstream imports are squashes.
 Compare the release tree directly with the fork tree, not their Git merge base:
 
 ```sh
-git diff rust-v0.171.0 HEAD
+git diff rust-v0.172.0 HEAD
 git log --first-parent --oneline rust-v0.169.0..HEAD
 ```
 
@@ -167,6 +167,7 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 | Release | Fork commit |
 | --- | --- |
+| `rust-v0.172.0` | Pending merge (`chore/upstream-rust-v0.172.0`) |
 | `rust-v0.171.0` | `221fbc5eed` |
 | `rust-v0.170.0` | `a9129794eb` |
 | `rust-v0.169.1` | `518e161a8d` |

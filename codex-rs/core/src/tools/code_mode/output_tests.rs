@@ -130,5 +130,8 @@ fn max_output_tokens_above_history_budget_preserves_spill_id_without_double_trun
     let FunctionCallOutputContentItem::InputText { text } = &items[1] else {
         panic!("expected text item");
     };
-    assert!(text.contains(" (id: "), "expected spill id marker in: {text}");
+    assert!(
+        text.contains(" (id: "),
+        "expected spill id marker in: {text}"
+    );
 }

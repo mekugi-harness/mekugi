@@ -78,7 +78,7 @@ pub fn thread_from_stored_thread(
         recency_at: Some(thread.recency_at.timestamp()),
         status: ThreadStatus::NotLoaded,
         path,
-        cwd,
+        cwd: cwd.into(),
         cli_version: thread.cli_version,
         originator: thread.originator,
         agent_nickname: source.get_nickname(),
@@ -89,6 +89,7 @@ pub fn thread_from_stored_thread(
         git_info,
         name: thread.name,
         daybreak_enabled: thread.daybreak_enabled,
+        daybreak_program_propagation_enrolled: None,
         turns: Vec::new(),
     };
     (thread, history)
@@ -136,7 +137,7 @@ pub fn build_thread_from_snapshot(
         recency_at: Some(now),
         status: ThreadStatus::NotLoaded,
         path,
-        cwd: config_snapshot.cwd().clone(),
+        cwd: config_snapshot.cwd().clone().into(),
         cli_version: env!("CARGO_PKG_VERSION").to_string(),
         originator: (!config_snapshot.originator.is_empty())
             .then(|| config_snapshot.originator.clone()),
@@ -152,6 +153,7 @@ pub fn build_thread_from_snapshot(
         git_info: None,
         name: None,
         daybreak_enabled: None,
+        daybreak_program_propagation_enrolled: None,
         turns: Vec::new(),
     }
 }

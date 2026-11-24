@@ -113,7 +113,9 @@ fn select_matching_abs_paths(
                 && path_matches_filters(from, path_filters)
             {
                 matched.insert(dest_abs);
-                matched.insert(normalize_abs_path(&record.metadata.workspace_root.join(from)));
+                matched.insert(normalize_abs_path(
+                    &record.metadata.workspace_root.join(from),
+                ));
             }
         }
     }

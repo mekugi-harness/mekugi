@@ -347,7 +347,8 @@ mod tests {
             let owner = ConnectionId(7);
             let disconnect = CancellationToken::new();
             let tree = CancellationToken::new();
-            let callbacks = host_resources(&outgoing, owner, disconnect.clone(), tree.clone(), false);
+            let callbacks =
+                host_resources(&outgoing, owner, disconnect.clone(), tree.clone(), false);
             let task = tokio::spawn((callbacks.prepare_final_capture)(
                 request(),
                 CancellationToken::new(),
@@ -399,9 +400,7 @@ mod tests {
             CancellationToken::new(),
         ));
         let id = request_id(&mut rx, owner).await;
-        outgoing
-            .notify_client_response(owner, id, json!({}))
-            .await;
+        outgoing.notify_client_response(owner, id, json!({})).await;
         let _ = task.await.unwrap().unwrap();
         outgoing.shutdown_host_requests().await;
     }

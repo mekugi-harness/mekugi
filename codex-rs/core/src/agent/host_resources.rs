@@ -65,9 +65,11 @@ impl super::control::LocalAgentRuntime {
         };
         let barrier_cancel = cancellation.child_token();
         let _cancel_on_drop = barrier_cancel.clone().drop_guard();
-        let _ =
-            tokio::time::timeout(BEFORE_TOOL_BARRIER_TIMEOUT, observe(request, barrier_cancel))
-                .await;
+        let _ = tokio::time::timeout(
+            BEFORE_TOOL_BARRIER_TIMEOUT,
+            observe(request, barrier_cancel),
+        )
+        .await;
     }
 
     /// Admit the reserved identity to host capture storage before any child input
@@ -181,7 +183,9 @@ pub(crate) mod tests {
             seen_cb.lock().unwrap().push(req);
             Box::pin(async move {
                 if fail {
-                    Err(codex_protocol::error::CodexErr::Fatal("observer error".into()))
+                    Err(codex_protocol::error::CodexErr::Fatal(
+                        "observer error".into(),
+                    ))
                 } else {
                     Ok(codex_app_server_protocol::ExecutionBeforeToolResponse {})
                 }

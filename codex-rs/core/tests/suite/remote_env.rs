@@ -1640,6 +1640,7 @@ impl NoiseRendezvousConnectProvider for OfflineThenReadyNoiseConnectProvider {
             });
         }
         let bundle = NoiseRendezvousConnectBundle {
+            http_headers: Default::default(),
             websocket_url: self.websocket_url.clone(),
             environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
             executor_registration_id: "ready-first-registration".to_string(),

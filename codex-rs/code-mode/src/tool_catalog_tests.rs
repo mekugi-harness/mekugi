@@ -12,6 +12,7 @@ fn references_require_an_acknowledged_matching_admission() {
         name: "echo".to_string(),
         tool_name: ToolName::plain("echo"),
         description: String::new(),
+        pauses_cell_deadline: false,
         kind: CodeModeToolKind::Function,
         input_schema: None,
         input_schema_max_bytes: None,

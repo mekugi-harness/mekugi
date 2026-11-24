@@ -100,6 +100,7 @@ fn mcp_tool_output_response_item_includes_wall_time() {
         },
         tool_input: json!({}),
         result_metadata_capture_allowed: false,
+        result_capture: Default::default(),
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
@@ -148,6 +149,7 @@ fn mcp_tool_output_response_item_truncates_large_structured_content() {
         },
         tool_input: json!({}),
         result_metadata_capture_allowed: false,
+        result_capture: Default::default(),
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(128),
@@ -200,6 +202,7 @@ fn mcp_tool_output_response_item_preserves_content_items() {
         },
         tool_input: json!({}),
         result_metadata_capture_allowed: false,
+        result_capture: Default::default(),
         wall_time: std::time::Duration::from_millis(500),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
@@ -263,6 +266,7 @@ fn mcp_tool_output_code_mode_result_preserves_content_without_private_metadata(
         },
         tool_input: json!({}),
         result_metadata_capture_allowed: false,
+        result_capture: Default::default(),
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy,
@@ -487,7 +491,7 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
             original_token_count: Some(123),
             hook_command: None,
             tool_cwd: None,
-        truncated_output_dir: None,
+            truncated_output_dir: None,
         }
         .to_response_item("call-42", &payload);
 

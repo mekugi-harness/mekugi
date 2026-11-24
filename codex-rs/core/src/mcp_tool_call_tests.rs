@@ -2610,6 +2610,7 @@ async fn persist_codex_app_tool_approval_writes_tool_override() {
                             AppToolConfig {
                                 enabled: None,
                                 approval_mode: Some(AppToolApproval::Approve),
+                                approvals_reviewer: None,
                             },
                         )]),
                     }),
@@ -2823,6 +2824,7 @@ async fn maybe_persist_mcp_tool_approval_reloads_session_config() {
         &AppToolConfig {
             enabled: None,
             approval_mode: Some(AppToolApproval::Approve),
+            approvals_reviewer: None,
         }
     );
 }
@@ -3069,6 +3071,7 @@ async fn approve_mode_skips_when_annotations_do_not_require_approval() {
         test_environment_id(&turn_context),
         &McpServerKey::unscoped(&invocation.server),
         McpToolApprovalPolicy::for_server(AppToolApproval::Approve),
+        turn_context.config.approvals_reviewer,
     )
     .await;
 
@@ -3154,6 +3157,7 @@ async fn guardian_mode_skips_auto_when_annotations_do_not_require_approval() {
         test_environment_id(&turn_context),
         &McpServerKey::unscoped(&invocation.server),
         McpToolApprovalPolicy::for_server(AppToolApproval::Auto),
+        turn_context.config.approvals_reviewer,
     )
     .await;
 
@@ -3223,6 +3227,7 @@ async fn permission_request_hook_allows_mcp_tool_call() {
             test_environment_id(&turn_context),
             &McpServerKey::unscoped(&invocation.server),
             McpToolApprovalPolicy::for_server(AppToolApproval::Auto),
+            turn_context.config.approvals_reviewer,
         ),
     )
     .await
@@ -3308,6 +3313,7 @@ async fn permission_request_hook_uses_hook_tool_name_without_metadata() {
             test_environment_id(&turn_context),
             &McpServerKey::unscoped(&invocation.server),
             McpToolApprovalPolicy::for_server(AppToolApproval::Auto),
+            turn_context.config.approvals_reviewer,
         ),
     )
     .await
@@ -3411,6 +3417,7 @@ async fn permission_request_hook_runs_after_remembered_mcp_approval() {
         test_environment_id(&turn_context),
         &McpServerKey::unscoped(&invocation.server),
         McpToolApprovalPolicy::for_server(AppToolApproval::Auto),
+        turn_context.config.approvals_reviewer,
     )
     .await;
 
@@ -3529,6 +3536,7 @@ async fn strict_auto_review_forces_guardian_for_mcp_policy_skip(
         test_environment_id(&turn_context),
         &McpServerKey::unscoped(&invocation.server),
         McpToolApprovalPolicy::for_server(approval_mode),
+        turn_context.config.approvals_reviewer,
     )
     .await;
 
@@ -3616,6 +3624,7 @@ async fn assert_mcp_user_approval_persistence(
                 test_environment_id(&turn_context),
                 &McpServerKey::unscoped(&invocation.server),
                 McpToolApprovalPolicy::for_server(AppToolApproval::Auto),
+                turn_context.config.approvals_reviewer,
             )
             .await
         }
@@ -3706,6 +3715,7 @@ async fn prompt_mode_waits_for_approval_when_annotations_do_not_require_approval
                 test_environment_id(&turn_context),
                 &McpServerKey::unscoped(&invocation.server),
                 McpToolApprovalPolicy::for_server(AppToolApproval::Prompt),
+                turn_context.config.approvals_reviewer,
             )
             .await
         })
@@ -3776,6 +3786,7 @@ async fn full_access_mode_skips_mcp_tool_approval_for_all_approval_modes() {
             test_environment_id(&turn_context),
             &McpServerKey::unscoped(&invocation.server),
             McpToolApprovalPolicy::for_server(approval_mode),
+            turn_context.config.approvals_reviewer,
         )
         .await;
 
@@ -3874,6 +3885,7 @@ async fn approve_mode_skips_guardian_in_every_permission_mode() {
             test_environment_id(&turn_context),
             &McpServerKey::unscoped(&invocation.server),
             McpToolApprovalPolicy::for_server(AppToolApproval::Approve),
+            turn_context.config.approvals_reviewer,
         )
         .await;
 
@@ -3906,6 +3918,7 @@ async fn approval_metadata_is_released_when_the_invocation_future_is_dropped() {
             metadata.clone(),
             review_context.clone(),
             /*environment_permissions*/ None,
+            ApprovalsReviewer::User,
         );
         std::future::pending::<()>().await;
     });
@@ -3917,12 +3930,17 @@ async fn approval_metadata_is_released_when_the_invocation_future_is_dropped() {
         metadata.clone(),
         review_context.clone(),
         /*environment_permissions*/ None,
+        ApprovalsReviewer::User,
     );
     assert_eq!(
         session
             .mcp_tool_approval_metadata(&McpServerKey::unscoped(CODEX_APPS_MCP_SERVER_NAME), "call")
-            .map(|context| (context.invocation, context.metadata.connector_id)),
-        Some((Some(invocation.clone()), Some("connector".to_string()))),
+            .as_ref()
+            .map(|context| (
+                context.invocation.as_ref(),
+                context.metadata.connector_id.as_deref()
+            )),
+        Some((Some(&invocation), Some("connector"))),
     );
     assert!(
         session
@@ -3942,6 +3960,7 @@ async fn approval_metadata_is_released_when_the_invocation_future_is_dropped() {
         metadata,
         review_context,
         /*environment_permissions*/ None,
+        ApprovalsReviewer::User,
     );
     let registry = session.mcp_tool_approval_metadata.lock().unwrap();
     let mut keys = registry.keys().cloned().collect::<Vec<_>>();

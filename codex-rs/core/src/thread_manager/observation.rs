@@ -319,12 +319,12 @@ impl ThreadManagerState {
                 view.model = Some(settings.model);
                 view.reasoning_effort = settings.reasoning_effort;
                 view.service_tier = settings.service_tier;
-                view.cwd = settings.cwd;
+                view.cwd = settings.cwd.into();
             }
         }
         if let Some(thread) = loaded {
             let config = thread.config_snapshot().await;
-            view.cwd = config.cwd().clone();
+            view.cwd = config.cwd().clone().into();
             view.model = Some(config.model);
             view.service_tier = config.service_tier;
             view.reasoning_effort = config.reasoning_effort;
