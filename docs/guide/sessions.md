@@ -65,7 +65,7 @@ without rereading merely because the thread resumes; the next reset reads curren
 sources. Earlier saved sessions retain their compaction summaries, available
 from **Context compacted** in the transcript. Captured changes and output remain
 readable while their [storage](#replay-storage) is retained. See the
-[compaction contract](../../mekugi-tui/modules/agentguidance/SPEC.md#compaction-context) (note that stock
+[compaction contract](../reference/agent-guidance.md#compaction-context) (note that stock
 Codex startup still reads a caller-configured `experimental_compact_prompt_file` even though native
 reset ignores it).
 

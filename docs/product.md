@@ -65,7 +65,7 @@ The current product implements these requirements through:
   model-input output deduplication, and native helper commands (`mcat`, `mrun`, `msymbol`,
   `mfinspect`).
 - **Go server and clients (`mekugi-tui/apps/mekugi`, `modules/`)** owning server-managed thread lifetimes,
-  terminal and Svelte browser UIs, authenticated session helpers (`mchanges`, internal `mreload`),
+  terminal and Svelte browser UIs, authenticated session helpers (`mchanges`),
   passive capture and 3-way merge revert/apply, shell guards, custom Responses routing, retained
   session history, and offline inspection/replay.
 - **Single-generation model structure**: compaction selections and child reply summaries ride

@@ -33,7 +33,7 @@ func TestHookConfigCommandAdapter(t *testing.T) {
 				}
 			}
 			resources := []string{filepath.Join(directory, "tracker's")}
-			config, _, _, err := Config(helper, resources[0], "", Invocation{})
+			config, _, _, err := Config(helper, resources[0], Invocation{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -67,28 +67,3 @@ func TestHookConfigCommandAdapter(t *testing.T) {
 	}
 }
 
-func TestCaptureHookFailureLeavesPatchesAvailable(t *testing.T) {
-	config, _, _, err := Config(filepath.Join(t.TempDir(), "missing-helper"), "", "/capture", Invocation{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var parsed struct {
-		Hooks struct {
-			PreToolUse []struct {
-				Matcher string
-				Hooks   []struct{ Command string }
-			}
-		}
-	}
-	if _, err := toml.Decode(config, &parsed); err != nil {
-		t.Fatal(err)
-	}
-	groups := parsed.Hooks.PreToolUse
-	if len(groups) != 2 || groups[0].Matcher != "Bash|MekugiCommandTracking" || groups[1].Matcher != "^apply_patch$" {
-		t.Fatalf("unexpected hook config: %s", config)
-	}
-	command := exec.CommandContext(t.Context(), "/bin/sh", "-c", groups[1].Hooks[0].Command)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("missing capture helper unavailable a patch: %v %s", err, output)
-	}
-}

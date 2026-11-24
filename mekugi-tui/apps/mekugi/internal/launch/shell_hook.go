@@ -12,7 +12,7 @@ import (
 )
 
 // Append tracking after caller hooks, preserving their native order and trust.
-func optionalTrackingHookArgs(args []string, helper, tracker, capture string) ([]string, string, error) {
+func optionalTrackingHookArgs(args []string, helper, tracker string) ([]string, string, error) {
 	index := slices.Index(args, "--")
 	if index < 0 {
 		index = len(args)
@@ -27,7 +27,7 @@ func optionalTrackingHookArgs(args []string, helper, tracker, capture string) ([
 			return args, "", fmt.Errorf("read CLI hooks: %w", err)
 		}
 	}
-	config, state, hash, err := shellhook.Config(helper, tracker, capture, prior)
+	config, state, hash, err := shellhook.Config(helper, tracker, prior)
 	if err != nil {
 		return args, "", err
 	}

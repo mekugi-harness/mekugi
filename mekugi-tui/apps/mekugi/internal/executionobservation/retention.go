@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/recordtransactions"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
@@ -59,8 +58,8 @@ func observationRetentionInput(workspace string, raw json.RawMessage, items []ma
 	input := recordtransactions.Input{Workspace: workspace, ReleaseSnapshot: releaseSnapshot}
 	for _, item := range items {
 		kind, reference := responses.StringField(item, "type"), responses.StringField(item, "encrypted_content")
-		if (kind == "compaction" || kind == "compaction_summary") && strings.HasPrefix(reference, compact.Prefix) {
-			input.Files = append(input.Files, compact.Name(reference))
+		if (kind == "compaction" || kind == "compaction_summary") && strings.HasPrefix(reference, history.CompactSummaryPrefix) {
+			input.Files = append(input.Files, history.CompactSummaryName(reference))
 		}
 		if responses.StringField(item, "type") == "message" {
 			input.OptionalFiles = append(input.OptionalFiles, legacycall.Name(workspace, responses.StringField(item, "id"), true))

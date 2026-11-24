@@ -23,6 +23,7 @@ var Module = module.Descriptor[Deps, *history.Service, module.NoBindings, module
 	Contributes: module.Contributions[*history.Service]{RecordKinds: []recordkind.Spec{
 		history.HookRecord,
 		history.CompactionRecord,
+		history.CompactSummaryRecord,
 		history.FrozenFileRecord,
 		history.FrozenResourceRecord,
 		history.LegacyOutputRecord,

@@ -25,6 +25,8 @@ codex-agent-roles = { workspace = true }
 codex-api = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-apply-patch = { workspace = true }
+codex-change-history = { workspace = true }
+codex-exec-track = { workspace = true }
 codex-async-utils = { workspace = true }
 codex-attachment-store = { workspace = true }
 codex-client = { workspace = true }

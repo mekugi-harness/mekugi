@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
 
@@ -210,7 +209,7 @@ func (p *Preparer) reconcileVisibleInput(ctx context.Context, request *codexresp
 	filtered := make([]map[string]json.RawMessage, 0, len(items))
 	for _, item := range items {
 		kind, reference := responses.StringField(item, "type"), responses.StringField(item, "encrypted_content")
-		if (kind == "compaction" || kind == "compaction_summary") && strings.HasPrefix(reference, compact.Prefix) {
+		if (kind == "compaction" || kind == "compaction_summary") && strings.HasPrefix(reference, history.CompactSummaryPrefix) {
 			record, err := p.readCompact(ctx, reference)
 			if err != nil {
 				return nil, err

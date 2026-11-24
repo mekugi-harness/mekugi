@@ -14,7 +14,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/replaytiming"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/coordination"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
@@ -137,7 +136,7 @@ func (s *Service) Read(ctx context.Context, options ReadOptions) (*Source, error
 					size = 0
 					var err error
 					if e.Item.CompactionMethod != observation.ContextReset {
-						summary, size, err = compact.ReadSummary(store, thread, e.Item.CompactionReference)
+						summary, size, err = history.ReadCompactSummary(store, thread, e.Item.CompactionReference)
 					}
 					totalBytes += size
 					if totalBytes > 256<<20 {

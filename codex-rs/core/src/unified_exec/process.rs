@@ -35,6 +35,7 @@ use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UNIFIED_EXEC_SOURCE_CAPTURE_MAX_BYTES;
 use super::UnifiedExecError;
+use super::exec_track::ExecTrackAttachment;
 use super::process_state::ProcessState;
 use crate::shell_snapshot::ShellSnapshotFile;
 
@@ -126,6 +127,7 @@ pub(crate) struct UnifiedExecProcess {
     pub(super) termination_requested: AtomicBool,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
+    exec_track: Option<Arc<ExecTrackAttachment>>,
 }
 
 impl std::fmt::Debug for UnifiedExecProcess {
@@ -176,6 +178,7 @@ impl UnifiedExecProcess {
             timed_out: AtomicBool::new(false),
             termination_requested: AtomicBool::new(false),
             _shell_snapshot: None,
+            exec_track: None,
         }
     }
 
@@ -261,8 +264,17 @@ impl UnifiedExecProcess {
     fn finish_termination(&self) {
         self.termination_requested.store(true, Ordering::Release);
         self.output.cancellation_token.cancel();
+        if let Some(exec_track) = &self.exec_track {
+            exec_track.stop();
+        }
         if let Some(output_task) = &self.output_task {
             output_task.abort();
+        }
+    }
+
+    pub(super) fn settle_exec_track(&self, exit_code: Option<i32>) {
+        if let Some(exec_track) = &self.exec_track {
+            exec_track.settle_once(exit_code);
         }
     }
 
@@ -386,13 +398,19 @@ impl UnifiedExecProcess {
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
     ) -> Result<Self, UnifiedExecError> {
-        Self::from_spawned_with_capture(spawned, sandbox_type, /*large_capture*/ false).await
+        Self::from_spawned_with_exec_track(spawned, sandbox_type, /*large_capture*/ false, None)
+            .await
     }
 
-    pub(super) async fn from_spawned_with_capture(
+    pub(super) async fn from_spawned_with_exec_track(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
         large_capture: bool,
+        #[cfg(unix)] exec_track: Option<(
+            Arc<ExecTrackAttachment>,
+            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
+        )>,
+        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
@@ -406,11 +424,22 @@ impl UnifiedExecProcess {
             OutputDrainPolicy::BoundedAfterExit,
             large_capture,
         );
+        #[cfg(unix)]
+        let (exec_track_attachment, drain_rx) = match exec_track {
+            Some((attachment, drain_rx)) => (Some(attachment), drain_rx),
+            None => (None, None),
+        };
+        #[cfg(not(unix))]
+        let exec_track_attachment = exec_track;
+        managed.exec_track = exec_track_attachment.clone();
         managed.output_task = Some(Self::spawn_local_output_task(
             stdout_rx,
             stderr_rx,
             managed.output_handles().clone(),
             managed.output_tx.clone(),
+            exec_track_attachment,
+            #[cfg(unix)]
+            drain_rx,
         ));
 
         match exit_rx.try_recv() {
@@ -452,18 +481,24 @@ impl UnifiedExecProcess {
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
     ) -> Result<Self, UnifiedExecError> {
-        Self::from_exec_server_started_with_capture(
+        Self::from_exec_server_started_with_exec_track(
             started,
             output_drain_policy,
             /*large_capture*/ false,
+            None,
         )
         .await
     }
 
-    pub(super) async fn from_exec_server_started_with_capture(
+    pub(super) async fn from_exec_server_started_with_exec_track(
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
         large_capture: bool,
+        #[cfg(unix)] exec_track: Option<(
+            Arc<ExecTrackAttachment>,
+            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
+        )>,
+        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<Self, UnifiedExecError> {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
         // Older peers do not report this field. In that case, skip local
@@ -475,6 +510,16 @@ impl UnifiedExecProcess {
             output_drain_policy,
             large_capture,
         );
+        #[cfg(unix)]
+        let (exec_track_attachment, drain_rx) = match exec_track {
+            Some((attachment, drain_rx)) => (Some(attachment), drain_rx),
+            None => (None, None),
+        };
+        #[cfg(not(unix))]
+        let exec_track_attachment = exec_track;
+        #[cfg(unix)]
+        drop(drain_rx);
+        managed.exec_track = exec_track_attachment.clone();
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
@@ -483,6 +528,7 @@ impl UnifiedExecProcess {
             managed.output_tx.clone(),
             managed.state_tx.clone(),
             managed.interaction_lock(),
+            exec_track_attachment,
         ));
 
         let mut state_rx = managed.state_rx.clone();
@@ -513,6 +559,7 @@ impl UnifiedExecProcess {
         output_tx: broadcast::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
         interaction_lock: Arc<Mutex<()>>,
+        exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -664,6 +711,9 @@ impl UnifiedExecProcess {
                         }
                         last_seq = chunk.seq;
                         let bytes = chunk.chunk.into_inner();
+                        if let Some(exec_track) = &exec_track {
+                            exec_track.push_output(chunk.stream, &bytes);
+                        }
                         let mut guard = output_buffer.lock().await;
                         guard.push_chunk(chunk.stream, &bytes);
                         drop(guard);
@@ -725,6 +775,10 @@ impl UnifiedExecProcess {
         mut stderr: tokio::sync::mpsc::Receiver<Vec<u8>>,
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,
+        exec_track: Option<Arc<ExecTrackAttachment>>,
+        #[cfg(unix)] mut drain_rx: Option<
+            tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>,
+        >,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -741,18 +795,90 @@ impl UnifiedExecProcess {
             let mut stdout_open = true;
             let mut stderr_open = true;
             while stdout_open || stderr_open {
-                let (stream, chunk) = tokio::select! {
-                    chunk = stdout.recv(), if stdout_open => (ExecOutputStream::Stdout, chunk),
-                    chunk = stderr.recv(), if stderr_open => (ExecOutputStream::Stderr, chunk),
-                };
-                if let Some(chunk) = chunk {
-                    output_buffer.lock().await.push_chunk(stream, &chunk);
-                    let _ = output_tx.send(chunk);
-                    output_notify.notify_waiters();
-                } else if stream == ExecOutputStream::Stdout {
-                    stdout_open = false;
-                } else {
-                    stderr_open = false;
+                #[cfg(unix)]
+                {
+                    enum LocalEvent {
+                        Chunk(ExecOutputStream, Option<Vec<u8>>),
+                        Drain(Option<codex_exec_track::DrainRequest>),
+                    }
+                    let event = tokio::select! {
+                        biased;
+                        chunk = stdout.recv(), if stdout_open => LocalEvent::Chunk(ExecOutputStream::Stdout, chunk),
+                        chunk = stderr.recv(), if stderr_open => LocalEvent::Chunk(ExecOutputStream::Stderr, chunk),
+                        req = async {
+                            match drain_rx.as_mut() {
+                                Some(rx) => rx.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        }, if drain_rx.is_some() => LocalEvent::Drain(req),
+                    };
+                    match event {
+                        LocalEvent::Chunk(stream, Some(chunk)) => {
+                            if let Some(exec_track) = &exec_track {
+                                exec_track.push_output(stream, &chunk);
+                            }
+                            output_buffer.lock().await.push_chunk(stream, &chunk);
+                            let _ = output_tx.send(chunk);
+                            output_notify.notify_waiters();
+                        }
+                        LocalEvent::Chunk(
+                            ExecOutputStream::Stdout | ExecOutputStream::Pty,
+                            None,
+                        ) => {
+                            stdout_open = false;
+                        }
+                        LocalEvent::Chunk(ExecOutputStream::Stderr, None) => {
+                            stderr_open = false;
+                        }
+                        LocalEvent::Drain(Some(req)) => {
+                            tokio::task::yield_now().await;
+                            while let Ok(chunk) = stdout.try_recv() {
+                                if let Some(exec_track) = &exec_track {
+                                    exec_track.push_output(ExecOutputStream::Stdout, &chunk);
+                                }
+                                output_buffer
+                                    .lock()
+                                    .await
+                                    .push_chunk(ExecOutputStream::Stdout, &chunk);
+                                let _ = output_tx.send(chunk);
+                                output_notify.notify_waiters();
+                            }
+                            while let Ok(chunk) = stderr.try_recv() {
+                                if let Some(exec_track) = &exec_track {
+                                    exec_track.push_output(ExecOutputStream::Stderr, &chunk);
+                                }
+                                output_buffer
+                                    .lock()
+                                    .await
+                                    .push_chunk(ExecOutputStream::Stderr, &chunk);
+                                let _ = output_tx.send(chunk);
+                                output_notify.notify_waiters();
+                            }
+                            req.complete();
+                        }
+                        LocalEvent::Drain(None) => {
+                            drain_rx = None;
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    let (stream, chunk) = tokio::select! {
+                        chunk = stdout.recv(), if stdout_open => (ExecOutputStream::Stdout, chunk),
+                        chunk = stderr.recv(), if stderr_open => (ExecOutputStream::Stderr, chunk),
+                    };
+                    if let Some(chunk) = chunk {
+                        if let Some(exec_track) = &exec_track {
+                            exec_track.push_output(stream, &chunk);
+                        }
+                        output_buffer.lock().await.push_chunk(stream, &chunk);
+                        let _ = output_tx.send(chunk);
+                        output_notify.notify_waiters();
+                    } else if stream == ExecOutputStream::Stdout {
+                        stdout_open = false;
+                    } else {
+                        stderr_open = false;
+                    }
                 }
             }
         })

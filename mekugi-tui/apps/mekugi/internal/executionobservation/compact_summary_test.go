@@ -2,8 +2,6 @@ package executionobservation
 
 import (
 	"bytes"
-	"encoding/json"
-	"encoding/json/jsontext"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +10,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/moduletest"
 
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 func TestCompactRecoveryAuthorityAndPrewarm(t *testing.T) {
@@ -31,7 +29,7 @@ func TestCompactRecoveryAuthorityAndPrewarm(t *testing.T) {
 		if parent != "" {
 			meta.SubagentKind = "thread_spawn"
 		}
-		_, err = p.prepareCompactInput(t.Context(), &req, "routing", thread, meta, warm)
+		err = p.prepareCompactInput(t.Context(), &req, "routing", thread, meta, warm)
 		if err == nil && (!bytes.Contains(req.Fields["input"], []byte("retained handover")) || bytes.Contains(req.Fields["input"], []byte("selected.txt"))) {
 			t.Fatal("summary recovery or metadata separation failed")
 		}
@@ -61,7 +59,7 @@ func TestCompactRecoveryAuthorityAndPrewarm(t *testing.T) {
 	if err := recover("child", "", "", later, false); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(p.Retained.Store.Directory(), compact.Name(ref))
+	path := filepath.Join(p.Retained.Store.Directory(), history.CompactSummaryName(ref))
 	if err := os.WriteFile(path, []byte(`{"Version":1,"Reference":"wrong","Summary":"wrong"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -73,82 +71,5 @@ func TestCompactRecoveryAuthorityAndPrewarm(t *testing.T) {
 	}
 	if err := recover("root", "", "", ref, false); err == nil {
 		t.Fatal("missing record accepted")
-	}
-}
-
-func TestPendingCompactForkHasIndependentCallIdentity(t *testing.T) {
-	p := newManagedMekugiProxy(t)
-	attachTestReplayStore(t, p)
-	workspace := t.TempDir()
-	ref, err := moduletest.StoreCompact(t.Context(), p.Retained, "root", "handover", `{"sources":["@selected.txt"]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	prepare := func(thread, fork string) *mekugiResponseTransform {
-		req, e := codexresponses.ParseRequest(mustTestJSON(t, map[string]any{"model": "gpt-test", "instructions": testBaseInstructions, "tools": testExecResponsesTools(), "input": []any{map[string]any{"type": "compaction", "encrypted_content": ref}}}))
-		if e != nil {
-			t.Fatal(e)
-		}
-		meta := codexresponses.TurnMetadata{ThreadID: thread, ForkedFromThreadID: fork, RequestKind: "turn", Directories: map[string]json.RawMessage{workspace: json.RawMessage(`{}`)}}
-		tr, e := p.prepareRequest(t.Context(), &req, "routing-"+thread, thread, meta, true)
-		if e != nil {
-			t.Fatal(e)
-		}
-		t.Cleanup(tr.Close)
-		return tr
-	}
-	root := prepare("root", "")
-	fork := prepare("fork", "root")
-	for _, tr := range []*mekugiResponseTransform{root, fork} {
-		var call map[string]any
-		if err := json.Unmarshal(tr.compactReload, &call); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tr.TransformJSON(mustTestJSON(t, map[string]any{"id": "resp-" + tr.shellThreadID, "status": "completed", "output": []any{call}})); err != nil {
-			t.Fatalf("publish synthetic reader for %s: %v", tr.shellThreadID, err)
-		}
-	}
-}
-
-func TestCompactReaderCallIDsFitOpenAI(t *testing.T) {
-	record := compact.Record{Reference: "mekugi:compact:thread:amber", Selection: `{"sources":["@selected.txt"]}`}
-	raw, _, err := compactReaderCall(record, nil, "01a162ad-ee92-71d2-b3f0-256e1e49b1d1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var call map[string]jsontext.Value
-	if err := json.Unmarshal(raw, &call); err != nil {
-		t.Fatal(err)
-	}
-	var id string
-	if err := json.Unmarshal(call["call_id"], &id); err != nil {
-		t.Fatal(err)
-	}
-	if len(id) > 64 {
-		t.Fatalf("invalid OpenAI call_id: %q", id)
-	}
-}
-
-func TestCompactHostInstructionsSkipAcquisitionButRecognizeHistory(t *testing.T) {
-	record := compact.Record{Reference: "mekugi:compact:thread:amber", Selection: `{"sources":["@AGENTS.md"]}`}
-	if pending, _, err := compactReaderCall(record, nil, "root"); err != nil || len(pending) != 0 {
-		t.Fatalf("host-only selection scheduled acquisition: %s, %v", pending, err)
-	}
-	// A completed acquisition retained before exclusion must still be identified
-	// so its original AGENTS.md result cannot reappear as ordinary tool output.
-	prior := record
-	prior.Selection = `{"sources":["@selected.txt"]}`
-	raw, _, err := compactReaderCall(prior, nil, "root")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var call map[string]jsontext.Value
-	if err := json.Unmarshal(raw, &call); err != nil {
-		t.Fatal(err)
-	}
-	call["input"] = mustTestJSON(t, codexresponses.CompactReadProgram(compact.CaptureCommand(record.Selection)))
-	items := []map[string]jsontext.Value{call, {"type": mustTestJSON(t, "custom_tool_call_output"), "call_id": call["call_id"], "output": mustTestJSON(t, "Script completed\nWall time 0.1 seconds\nOutput:\n")}}
-	if pending, calls, err := compactReaderCall(record, items, "root"); err != nil || len(pending) != 0 || len(calls) != 1 {
-		t.Fatalf("host-only retained acquisition lost identity: %s, %v, %v", pending, calls, err)
 	}
 }

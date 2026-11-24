@@ -41,13 +41,6 @@ const HELPERS: &[(&str, &str)] = &[
          `mchanges revert|apply ID ...` preserves unrelated edits and reports \
          conflicts.",
     ),
-    (
-        "mreload",
-        "Capture source references with `mreload SELECTION_JSON`. It returns a \
-         read-only snapshot file path after acquisition (read with `mcat`). The \
-         selection has a `sources` array, e.g. `@path#L2-L4,L8`, `$skill`, \
-         `mchanges:ID..ID`. Quote paths containing spaces inside the reference.",
-    ),
 ];
 
 pub(crate) const CHILD_REPLY_SUMMARY: &str = "For substantial messages and final replies to your parent, start the same reply \

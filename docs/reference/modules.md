@@ -1,7 +1,7 @@
 # Module reference
 
 Generated from feature descriptors, Codex binding declarations and application
-composition. 16 of 16 feature modules are selected.
+composition. 15 of 15 feature modules are selected.
 Regenerate with `make generate`; verify with `make check-generated`.
 
 The [composition contract](../contracts/composition.md) defines ownership and
@@ -17,17 +17,6 @@ Own host-operation feeds, roster derivation and retained output
 - Contributes: `record-kinds`, `terminal-roster`.
 - Records: `wait`.
 - Codex connections: none.
-
-## [agentguidance](../../mekugi-tui/modules/agentguidance/SPEC.md)
-
-Capture admitted context sources and retain historical summaries
-
-- Composition: selected; lifetime: `stateless`.
-- Requires: `sessionhistory`, `changehistory`.
-- Contributes: `commands`, `record-kinds`.
-- Commands: `mreload`.
-- Records: `compact`.
-- Codex connections: `executable-frontend`.
 
 ## [agentmetrics](../../mekugi-tui/modules/agentmetrics/SPEC.md)
 
@@ -104,7 +93,7 @@ Own retained session publication, namespaces, allocation, leases, and retention
 - Requires: none.
 - Contributes: `record-kinds`.
 - Hosts: `record-kinds`.
-- Records: `hooks`, `compaction`, `frozen-file`, `frozen-resource`, `output`, `cursor`, `call`, `snapshot`, `commentary`.
+- Records: `hooks`, `compaction`, `compact`, `frozen-file`, `frozen-resource`, `output`, `cursor`, `call`, `snapshot`, `commentary`.
 - Codex connections: none.
 
 ## [sessioninspection](../../mekugi-tui/modules/sessioninspection/SPEC.md)
@@ -137,7 +126,7 @@ Retain applied settings and renderer preferences for a workspace and thread
 Schedule retained observations with synthetic streaming and read-only playback controls
 
 - Composition: selected; lifetime: `stateless`.
-- Requires: `activity`, `agentguidance`, `sessionhistory`.
+- Requires: `activity`, `sessionhistory`.
 - Codex connections: `rollout`.
 
 ## [transportdiagnostics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md)

@@ -118,7 +118,11 @@ async fn background_routing_call_sites_skip_config(api_key: Option<&str>) -> any
     let _: InitializeResponse = read_response(&mut outgoing_rx, /*request_id*/ 1).await;
     // Complete the same post-initialize hook used by the real transports.
     processor
-        .connection_initialized(TEST_CONNECTION_ID, /*request_attestation*/ false)
+        .connection_initialized(
+            TEST_CONNECTION_ID,
+            /*request_attestation*/ false,
+            /*observe_before_tool*/ false,
+        )
         .await;
     assert!(
         tokio::time::timeout(Duration::from_secs(/*secs*/ 1), loads_rx.recv())

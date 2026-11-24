@@ -1,4 +1,5 @@
 pub use codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR;
+pub use codex_change_history::MEKUGI_CHANGE_HISTORY_DIR_ENV_VAR;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 #[cfg(test)]
@@ -18,6 +19,10 @@ pub(crate) const CODEX_VERSION_ENV_VAR: &str = "CODEX_VERSION";
 
 pub(crate) fn session_tmp_path(session_id: SessionId) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("mekugi-session-{session_id}"))
+}
+
+pub(crate) fn change_history_dir(session_id: SessionId) -> std::path::PathBuf {
+    session_tmp_path(session_id).join("change-history")
 }
 
 /// Keep scratch files across detach/resume, with the same directory for descendants.
@@ -84,6 +89,12 @@ pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: 
     env.insert(
         SESSION_TMP_ENV_VAR.to_string(),
         session_tmp_path(session_id).to_string_lossy().into_owned(),
+    );
+    env.insert(
+        MEKUGI_CHANGE_HISTORY_DIR_ENV_VAR.to_string(),
+        change_history_dir(session_id)
+            .to_string_lossy()
+            .into_owned(),
     );
     env.insert(CODEX_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
     if cfg!(windows) {

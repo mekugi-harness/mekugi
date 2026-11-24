@@ -22,7 +22,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
@@ -159,13 +158,8 @@ func testCommands() []command.Contribution {
 	if err != nil {
 		panic(err)
 	}
-	guidance, err := agentguidance.Module.New(agentguidance.Deps{Changes: chg, History: hist}, module.Slots{})
-	if err != nil {
-		panic(err)
-	}
 	return []command.Contribution{
 		moduletest.BindCommand(changehistory.Module.Contributes.Commands[0], chg),
-		moduletest.BindCommand(agentguidance.Module.Contributes.Commands[0], guidance),
 	}
 }
 

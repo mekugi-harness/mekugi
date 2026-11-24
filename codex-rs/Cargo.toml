@@ -18,6 +18,7 @@ members = [
     "app-server-protocol-noop-macros",
     "apply-patch",
     "arg0",
+    "change-history",
     "features",
     "install-context",
     "codex-backend-openapi-models",
@@ -49,6 +50,7 @@ members = [
     "exec-server-protocol",
     "exec-server",
     "exec-server/tests/support",
+    "exec-track",
     "execpolicy",
     "ext/extension-api",
     "ext/multi-env-copy-file",
@@ -266,6 +268,8 @@ codex-linux-sandbox = { path = "linux-sandbox" }
 codex-lmstudio = { path = "lmstudio" }
 codex-login = { path = "login" }
 codex-mekugi-tools = { path = "mekugi-tools" }
+codex-change-history = { path = "change-history" }
+codex-exec-track = { path = "exec-track" }
 codex-mermaid = { path = "mermaid" }
 codex-message-history = { path = "message-history" }
 codex-memories-extension = { path = "ext/memories" }

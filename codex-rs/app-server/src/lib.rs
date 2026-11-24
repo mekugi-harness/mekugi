@@ -1263,6 +1263,9 @@ pub async fn run_main_with_transport_options(
                                                     connection_state
                                                         .session
                                                         .request_attestation(),
+                                                    connection_state
+                                                        .session
+                                                        .observe_before_tool(),
                                                 )
                                                 .await;
                                             connection_state

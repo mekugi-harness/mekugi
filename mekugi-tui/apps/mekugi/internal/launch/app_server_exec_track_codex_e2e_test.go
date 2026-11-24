@@ -40,7 +40,7 @@ func TestAppServerExecTrackNativeCodexDash(t *testing.T) {
 	if err := os.WriteFile(tracker, []byte(shellinstrumentation.ShTracker(helper, shell.transport.Endpoints().Requests, shell.transport.Endpoints().Directory)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	hook, state, _, err := shellhook.Config(helper, tracker, "", shellhook.Invocation{})
+	hook, state, _, err := shellhook.Config(helper, tracker, shellhook.Invocation{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestAppServerExecTrackNativeCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(userHome, "config.toml")
-	userConfig, userState, _, err := shellhook.Config(userHook, "", "", shellhook.Invocation{})
+	userConfig, userState, _, err := shellhook.Config(userHook, "", shellhook.Invocation{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestAppServerExecTrackNativeCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	environment = append(environment, "CODEX_HOME="+userHome)
-	args, _, err := optionalTrackingHookArgs([]string{"-c", "features.shell_guard=true"}, helper, filepath.Join(shell.root, "exec-track.sh"), "")
+	args, _, err := optionalTrackingHookArgs([]string{"-c", "features.shell_guard=true"}, helper, filepath.Join(shell.root, "exec-track.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestAppServerExecTrackNativeCodexMovedWorkspace(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf 'hook\\n' >> "+quoteShellWord(marker)+"\nexec "+quoteShellWord(helper)+" \"$@\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	hook, state, _, err := shellhook.Config(wrapper, "", "", shellhook.Invocation{})
+	hook, state, _, err := shellhook.Config(wrapper, "", shellhook.Invocation{})
 	if err != nil {
 		t.Fatal(err)
 	}

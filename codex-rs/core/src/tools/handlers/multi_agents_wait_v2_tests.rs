@@ -265,6 +265,7 @@ fn progress_resources(
     crate::AgentHostResources {
         route_foreign: None,
         prepare_child: None,
+        before_tool: None,
         record_feature_use: None,
         freeze_progress,
         prepare_progress_output: Arc::new(|_, _| {

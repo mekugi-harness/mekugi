@@ -40,8 +40,8 @@
 - Nested references inside selected `.md`, `.json`, and `.txt` sources (and skill files) expand up
   to depth 3 (root = depth 1); reads execute under the receiving thread's permissions, keeping
   individual failures visible without blocking other sources.
-- Go `modules/agentguidance` retains shared preload-selection helpers and read-only support for
-  historical saved compaction summaries. Stock Codex startup may still read a caller-configured
+- Go `modules/sessionhistory` retains read-only support for historical saved compaction summaries.
+  Stock Codex startup may still read a caller-configured
   `experimental_compact_prompt_file` even though native reset does not use it.
 
 ### Source-reference syntax

@@ -17,7 +17,7 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
   (`output_deduplication.rs`).
 - **Go (`mekugi-tui/`)**: server/session lifetime, terminal UI,
   inference gateway & custom Responses routing, passive edit capture & `mchanges`, authenticated
-  Go frontends (`mchanges`, internal `mreload`), approval dock, attachment-scoped session grants &
+  Go frontends (`mchanges`), approval dock, attachment-scoped session grants &
   private secret dialogs, retained session history, inspection, replay, usage/diagnostics.
 - **Browser (`mekugi-webui/`)**: Svelte renderer, generated Session API types, and
   assets-only Go host. `mekugi-webui/DESIGN.md` owns visual and interaction rules.

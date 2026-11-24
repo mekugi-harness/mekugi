@@ -10,7 +10,7 @@ import (
 func TestOptionalTrackingHookArgsPreservesExistingTrustAndCaller(t *testing.T) {
 	caller := []string{"exec", "-c", `hooks.state={other={trusted_hash="existing"}}`, "--", "-c", "hooks.PreToolUse=[]"}
 	original := slices.Clone(caller)
-	got, identity, err := optionalTrackingHookArgs(caller, "/path with spaces/mekugi", "/private/tracker", "")
+	got, identity, err := optionalTrackingHookArgs(caller, "/path with spaces/mekugi", "/private/tracker")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestOptionalTrackingHookArgsPreservesExistingTrustAndCaller(t *testing.T) {
 
 func TestTrackingHookAppendsAfterCLIHandlers(t *testing.T) {
 	for _, setting := range []string{`hooks={PreToolUse=[{matcher="Bash",hooks=[{type="command",command="from-user"}]}]}`, `hooks.PreToolUse=[{matcher="Bash",hooks=[{type="command",command="from-user"}]}]`} {
-		got, _, err := optionalTrackingHookArgs([]string{"-c", setting}, "/helper", "/tracker", "/capture")
+		got, _, err := optionalTrackingHookArgs([]string{"-c", setting}, "/helper", "/tracker")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -56,7 +56,7 @@ func TestTrackingHookAppendsAfterCLIHandlers(t *testing.T) {
 		if _, err := toml.Decode(got[3]+"\n"+got[5], &cfg); err != nil {
 			t.Fatal(err)
 		}
-		if len(cfg.Hooks.PreToolUse) != 3 || cfg.Hooks.PreToolUse[0].Hooks[0].Command != "from-user" || cfg.Hooks.State["/<session-flags>/config.toml:pre_tool_use:1:0"] == nil || cfg.Hooks.State["/<session-flags>/config.toml:pre_tool_use:0:0"] != nil {
+		if len(cfg.Hooks.PreToolUse) != 2 || cfg.Hooks.PreToolUse[0].Hooks[0].Command != "from-user" || cfg.Hooks.State["/<session-flags>/config.toml:pre_tool_use:1:0"] == nil || cfg.Hooks.State["/<session-flags>/config.toml:pre_tool_use:0:0"] != nil {
 			t.Fatalf("caller hook displaced or trusted: %+v", cfg)
 		}
 	}
@@ -70,7 +70,7 @@ func TestOptionalTrackingHookArgsRejectsExplicitConflicts(t *testing.T) {
 	} {
 		for _, args := range [][]string{{"exec", "-c", setting}, {"exec", "--config=" + setting}, {"exec", "-c" + setting}} {
 			original := slices.Clone(args)
-			fallback, _, err := optionalTrackingHookArgs(args, "/mekugi", "/tracker", "")
+			fallback, _, err := optionalTrackingHookArgs(args, "/mekugi", "/tracker")
 			if err == nil {
 				t.Errorf("accepted conflicting config: %q", args)
 			}

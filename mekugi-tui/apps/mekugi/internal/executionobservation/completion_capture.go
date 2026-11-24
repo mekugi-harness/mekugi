@@ -9,7 +9,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
 
@@ -45,39 +44,39 @@ type completionSource struct {
 
 // Frame only complete, visible diff rows. Leave the raw prefix and retained
 // suffix in their original representation, including paging diagnostics.
-func completionText(result compact.CapturedSource, sources []completionSource) string {
+func completionText(result capturedSource, sources []completionSource) string {
 	var text strings.Builder
 	var bodies []attachments.SourceRange
 	through := 0
 	for _, source := range sources {
-		if source.start >= len(result.Stdout) {
+		if source.start >= len(result.stdout) {
 			break
 		}
 		end := source.end
-		if end > len(result.Stdout) {
-			end = source.start + strings.LastIndexByte(result.Stdout[source.start:], '\n') + 1
+		if end > len(result.stdout) {
+			end = source.start + strings.LastIndexByte(result.stdout[source.start:], '\n') + 1
 		}
 		if end <= source.start {
 			break
 		}
-		text.WriteString(result.Stdout[through:source.start])
+		text.WriteString(result.stdout[through:source.start])
 		fmt.Fprintf(&text, "Source %q:\n", source.command)
 		start := text.Len()
-		text.WriteString(result.Stdout[source.start:end])
+		text.WriteString(result.stdout[source.start:end])
 		bodies = append(bodies, attachments.SourceRange{Start: start, End: text.Len()})
 		through = end
 	}
 	if len(bodies) == 0 {
-		return result.Text()
+		return result.text()
 	}
-	text.WriteString(result.Stdout[through:])
-	result.Stdout = text.String()
-	return attachments.SourceRanges(result.Text(), bodies)
+	text.WriteString(result.stdout[through:])
+	result.stdout = text.String()
+	return attachments.SourceRanges(result.text(), bodies)
 }
 
-func boundCompletion(ctx context.Context, result compact.CapturedSource, sources []completionSource, selected changes.Scope) (string, error) {
+func boundCompletion(ctx context.Context, result capturedSource, sources []completionSource, selected changes.Scope) (string, error) {
 	// Avoid copying a full retained diff just to reject it on the byte limit.
-	if len(result.Stdout) <= approxBytesPerToken*CompletionTokens {
+	if len(result.stdout) <= approxBytesPerToken*CompletionTokens {
 		text := completionText(result, sources)
 		if approxTokenCount(text) <= CompletionTokens {
 			return text, nil
@@ -86,7 +85,7 @@ func boundCompletion(ctx context.Context, result compact.CapturedSource, sources
 	if selected.Store == nil {
 		return "", errors.New("completion retained storage is unavailable")
 	}
-	full := result.Stdout
+	full := result.stdout
 	path, _, err := selected.Store.WriteReadOnlyFile(ctx, selected.Thread, selected.Limits, selected.Writes, "completion", ".txt", []byte(full))
 	if err != nil {
 		return "", err
@@ -111,8 +110,8 @@ func boundCompletion(ctx context.Context, result compact.CapturedSource, sources
 	var text string
 	for {
 		prefix := truncateUTF8Prefix(full, remaining*approxBytesPerToken)
-		result.Stdout = prefix
-		result.Stderr = completionNotice(prefix)
+		result.stdout = prefix
+		result.stderr = completionNotice(prefix)
 		text = completionText(result, sources)
 		tokens := approxTokenCount(text)
 		if tokens <= CompletionTokens {

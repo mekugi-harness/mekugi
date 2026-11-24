@@ -23,10 +23,8 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
-	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -478,9 +476,9 @@ func TestCheckpointIntervalsKeepAuthoredWorkspace(t *testing.T) {
 			trace.start(f.thread, "patch-runtime", "patch", patchSource)
 			trace.tool(f.thread, "patch-runtime", "patch-command", "apply_patch", patch)
 			if mode != "eager" {
-				ctx, cancel := context.WithTimeout(f.ctx, segmenttransport.BoundaryHold)
+				ctx, cancel := context.WithTimeout(f.ctx, NativeBoundaryHold)
 				deadline, _ := ctx.Deadline()
-				edit.ObserveNativeBoundary(ctx, segmenttransport.Boundary{Thread: f.thread, Turn: trace.turn, Item: "patch-command", Tool: applyPatchToolName, CWD: directory, Input: patch, Deadline: deadline})
+				edit.ObserveNativeBoundary(ctx, NativeBoundary{Thread: f.thread, Turn: trace.turn, Item: "patch-command", Tool: applyPatchToolName, CWD: directory, Input: patch, Deadline: deadline})
 				cancel()
 			}
 			prefixID := execIntervalID("writer", true, 0)
@@ -685,11 +683,6 @@ func TestYieldedNamedWriterPatchIntervals(t *testing.T) {
 					net, err := retained.changes.Read(transform.ctx, retained.scoped(transform.ctx).changeScope(), query)
 					if err != nil || !strings.Contains(net, "-A\n+C") || strings.Contains(net, "unrelated live") {
 						t.Fatalf("writer-first composition lost endpoints: %q, %v", net, err)
-					}
-					selection := string(responses.MustMarshalJSON(map[string]any{"sources": []any{map[string]any{"changes": query.IDs}}}))
-					preload, err := (compact.Readers{Changes: compact.ChangeReader{Service: retained.changes, Scope: retained.scoped(transform.ctx).changeScope()}}).Read(transform.ctx, selection, workspace, nil)
-					if err != nil || len(preload.Sources) != 1 || preload.Sources[0].ExitCode != 0 || preload.Sources[0].Stderr != "" || preload.Sources[0].Stdout != net {
-						t.Fatalf("composed change preload lost evidence or status: %+v, %v", preload, err)
 					}
 				}
 				return

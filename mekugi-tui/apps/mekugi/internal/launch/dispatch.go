@@ -16,7 +16,6 @@ import (
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/mcptransport"
@@ -63,7 +62,7 @@ func Run() (exitCode int) {
 		operation = os.Args[1]
 	}
 	if worker != nil || slices.Contains([]string{"inspect-sessions", "replay-session", "inspect-session", "inspect-storage"}, operation) {
-		runtime, err := composition.Frontends(ctx, false, true, "", sessionapi.ReadNativeSkillCatalog)
+		runtime, err := composition.Frontends(ctx, false, true, "")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "mekugi:", err)
 			return 1

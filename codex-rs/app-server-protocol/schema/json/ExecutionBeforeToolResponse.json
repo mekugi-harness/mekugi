@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Empty acknowledgement releasing the pre-execution observation barrier early.",
+  "title": "ExecutionBeforeToolResponse",
+  "type": "object"
+}

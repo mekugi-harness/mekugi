@@ -452,6 +452,7 @@ struct ThreadStateManagerInner {
 #[derive(Clone, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
+    pub(crate) observe_before_tool: bool,
     pub(crate) resource_disconnect: tokio_util::sync::CancellationToken,
 }
 
@@ -518,16 +519,21 @@ impl ThreadStateManager {
             .insert(connection_id, capabilities);
     }
 
-    pub(crate) async fn resource_host_disconnect(
+    pub(crate) async fn resource_host_registration(
         &self,
         connection: ConnectionId,
-    ) -> Option<tokio_util::sync::CancellationToken> {
+    ) -> Option<(tokio_util::sync::CancellationToken, bool)> {
         self.state
             .lock()
             .await
             .live_connections
             .get(&connection)
-            .map(|capabilities| capabilities.resource_disconnect.clone())
+            .map(|capabilities| {
+                (
+                    capabilities.resource_disconnect.clone(),
+                    capabilities.observe_before_tool,
+                )
+            })
     }
 
     pub(crate) async fn first_attestation_capable_connection_for_thread(

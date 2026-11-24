@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -15,10 +14,6 @@ import (
 func StoreCompact(ctx context.Context, store changes.Scope, thread, summary, reload string) (string, error) {
 	if store.Store == nil || thread == "" || strings.TrimSpace(summary) == "" {
 		return "", errors.New("compaction publication requires a retained thread and summary")
-	}
-	_, err := compact.ReadCommands(reload)
-	if err != nil {
-		return "", err
 	}
 	namespace, release, err := store.Store.BeginSession(ctx, store.Writes, store.Limits, thread)
 	if err != nil {
@@ -31,12 +26,12 @@ func StoreCompact(ctx context.Context, store changes.Scope, thread, summary, rel
 		if err != nil {
 			return err
 		}
-		reference = compact.Prefix + namespace + ":" + handles[0]
-		data, err := json.Marshal(compact.Record{Version: 1, Reference: reference, Summary: summary, Selection: reload})
+		reference = history.CompactSummaryPrefix + namespace + ":" + handles[0]
+		data, err := json.Marshal(history.CompactRecord{Version: 1, Reference: reference, Summary: summary, Selection: reload})
 		if err != nil {
 			return err
 		}
-		name := compact.Name(reference)
+		name := history.CompactSummaryName(reference)
 		if err := tx.Admit(store.Limits, name, int64(len(data))); err != nil {
 			return err
 		}

@@ -2,7 +2,6 @@ package composition
 
 import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory"
 	"os"
 	"path/filepath"
@@ -24,10 +23,7 @@ func TestCompositionReplayRolloutAndOptionalTiming(t *testing.T) {
 		t.Run(map[bool]string{false: "without timing", true: "with timing"}[timing], func(t *testing.T) {
 			var c Composition
 			history := c.Add(sessionhistory.Module, func() sessionhistory.Deps { return sessionhistory.Deps{} })
-			changes := c.Add(changehistory.Module, func() changehistory.Deps { return changehistory.Deps{History: history.Value()} })
-			c.Add(agentguidance.Module, func() agentguidance.Deps {
-				return agentguidance.Deps{History: history.Value(), Changes: changes.Value().Service}
-			})
+			c.Add(changehistory.Module, func() changehistory.Deps { return changehistory.Deps{History: history.Value()} })
 			c.Add(activity.Module, func() activity.Deps { return activity.Deps{} })
 			var readTiming func() replaytiming.Reader
 			if timing {

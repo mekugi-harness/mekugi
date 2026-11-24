@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -98,6 +99,17 @@ func (c *nativeConnection) run() (runErr error) {
 		c.root.finalCaptures.freeze = c.root.preparer.FreezeNativeProgress
 		c.root.finalCaptures.output = c.root.preparer.PrepareNativeProgressOutput
 		c.root.finalCaptures.project = c.root.preparer.ProjectNativeFinalCapture
+		c.root.finalCaptures.beforeTool = func(ctx context.Context, request appserver.ExecutionBeforeToolParams) {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				deadline = time.Now().Add(executionobservation.NativeBoundaryHold)
+			}
+			c.root.preparer.ObserveNativeBoundary(ctx, executionobservation.NativeBoundary{
+				Thread: request.ThreadID, Turn: request.TurnID, Item: request.ItemID,
+				Tool: request.Tool, CWD: request.CWD, Input: request.Input, Deadline: deadline,
+				SessionTmp: request.SessionTmp,
+			})
+		}
 	}
 	defer func() {
 		c.root.finalCaptures.close()

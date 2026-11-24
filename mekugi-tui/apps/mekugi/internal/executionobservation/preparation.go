@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"context"
 	jsonv1 "encoding/json"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"errors"
 	"strings"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
@@ -82,7 +79,6 @@ type mekugiTranslationState struct {
 
 type mekugiResponseTransform struct {
 	owners           *Preparer
-	compactReload    jsonv1.RawMessage
 	generation       sessioncontrol.Generation
 	generationOnly   bool
 	toolTrace        requestexecution.Trace
@@ -141,18 +137,14 @@ func (t *mekugiResponseTransform) ObserveUsage(counts inference.Usage) {
 // Prewarm shares model projection but cannot initialize execution, replay, or
 // agent lifecycle state. Only the non-generating WebSocket path selects it.
 func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexresponses.Request, sessionID, threadID string, metadata codexresponses.TurnMetadata, metadataValid, prewarm bool) (*mekugiResponseTransform, error) {
-	var reload jsonv1.RawMessage
-	var reloadCalls map[string]bool
 	var attachments attachmentPreparation
-	if bytes.Contains(request.Fields["input"], []byte(compact.Prefix)) {
+	if bytes.Contains(request.Fields["input"], []byte(history.CompactSummaryPrefix)) {
 		if !metadataValid {
 			return nil, errors.New("compaction recovery requires valid metadata")
 		}
-		prepared, err := p.prepareCompactInput(ctx, request, sessionID, threadID, metadata, prewarm)
-		if err != nil {
+		if err := p.prepareCompactInput(ctx, request, sessionID, threadID, metadata, prewarm); err != nil {
 			return nil, err
 		}
-		reload, reloadCalls = prepared.reader, prepared.calls
 	}
 	if metadataValid && !metadata.ActivityIdentityInvalid && (metadata.ThreadID == "" || metadata.ThreadID == threadID) {
 		prepared, err := p.prepareAttachmentContext(ctx, request, threadID, metadata, prewarm)
@@ -160,31 +152,6 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 			return nil, err
 		}
 		attachments = prepared
-	}
-	if reloadCalls == nil && bytes.Contains(request.Fields["input"], []byte(compact.SnapshotPrefix)) {
-		reloadCalls = make(map[string]bool)
-	}
-	reloadOutputs, err := p.compactSnapshots(ctx, request.Fields["input"], reloadCalls, threadID, metadata, !prewarm)
-	if err != nil {
-		return nil, err
-	}
-	projectReload := func() error {
-		if len(reloadCalls) == 0 {
-			return nil
-		}
-		var items []map[string]jsontext.Value
-		input, err := hydrateCompactSnapshots(request.Fields["input"], reloadOutputs)
-		if err != nil {
-			return err
-		}
-		if err := json.Unmarshal(input, &items); err != nil {
-			return err
-		}
-		input, err = compactReaderInput(items, reloadCalls)
-		if err == nil {
-			request.Fields["input"] = input
-		}
-		return err
 	}
 	if err := validateProviderContext(request.Fields["input"]); err != nil {
 		return nil, err
@@ -199,7 +166,7 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 			}
 			p.notice(sessionID, threadID, "compaction_observation", "Completed host results could not be retained during compaction. Provider compaction is unchanged; change evidence may be incomplete.")
 		}
-		return nil, projectReload()
+		return nil, nil
 	}
 	if p == nil {
 		return nil, errors.New("mekugi response proxy is unavailable")
@@ -216,15 +183,7 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 		if !prewarm && strings.TrimSpace(threadID) == "" {
 			return nil, errors.New("mekugi rewrite requires a valid Codex thread ID")
 		}
-		if !prewarm {
-			input, err := hydrateCompactSnapshots(request.Fields["input"], reloadOutputs)
-			if err != nil {
-				return nil, err
-			}
-			request.Fields["input"] = input
-			reloadOutputs = nil
-		}
-		return nil, projectReload()
+		return nil, nil
 	}
 	// Recognize the native execution tool for observation, without changing its
 	// catalog or assuming that a prewarm handshake has tools at all.
@@ -233,7 +192,7 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 		return nil, err
 	}
 	if prewarm {
-		return nil, projectReload()
+		return nil, nil
 	}
 	directory := p.observationDirectory(metadata.Directories, threadID)
 	responseContract := codexresponses.CaptureResponseContract(request.Fields)
@@ -268,18 +227,15 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 		retained.Finish(false)
 		return nil, err
 	}
-	if len(reload) == 0 {
-		if err := p.prepareAttachmentHints(ctx, request, attachments); err != nil {
-			retained.Finish(false)
-			return nil, err
-		}
+	if err := p.prepareAttachmentHints(ctx, request, attachments); err != nil {
+		retained.Finish(false)
+		return nil, err
 	}
 	activityThreadID := p.admitActivityThread(threadID, metadata)
 	if activityThreadID != "" {
 		p.Audience.BeginResponse(activityThreadID, false, time.Now())
 	}
 	transform := &mekugiResponseTransform{
-		compactReload:    reload,
 		owners:           p,
 		ctx:              ctx,
 		sessionID:        sessionID,
@@ -306,16 +262,6 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 	}
 	p.observeCodeModeFailures(activityThreadID, codeModeToolName, request, visible)
 	if err := request.AppendApprovalFeedback(p.Control.Feedback(threadID, metadata.TurnID)); err != nil {
-		transform.Close()
-		return nil, err
-	}
-	request.Fields["input"], err = hydrateCompactSnapshots(request.Fields["input"], reloadOutputs)
-	if err != nil {
-		transform.Close()
-		return nil, err
-	}
-	reloadOutputs = nil
-	if err := projectReload(); err != nil {
 		transform.Close()
 		return nil, err
 	}

@@ -13,7 +13,6 @@ import (
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
-	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
@@ -263,7 +262,7 @@ func (t *mekugiResponseTransform) splitExecIntervals(patchCall string, observati
 		}
 	}
 	t.owners.Windows.state().mu.Unlock()
-	acquisition, cancel := context.WithTimeout(t.ctx, segmenttransport.BoundaryHold)
+	acquisition, cancel := context.WithTimeout(t.ctx, NativeBoundaryHold)
 	defer cancel()
 	for _, cut := range candidates {
 		unlock := t.owners.Windows.lockIntervals([]string{cut.writer})

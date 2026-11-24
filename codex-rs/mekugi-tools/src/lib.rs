@@ -3,6 +3,7 @@
 
 mod common;
 mod mcat;
+mod mchanges;
 mod mfinspect;
 mod mrun;
 mod msymbol;
@@ -116,6 +117,15 @@ pub fn run_mrun_main() -> i32 {
     emit_output("mrun", mrun::execute(&args))
 }
 
+/// Execute `mchanges` with process arguments, writing stdout/stderr and returning its exit code.
+pub fn run_mchanges_main() -> i32 {
+    let args = match cli_args() {
+        Ok(args) => args,
+        Err(err) => return emit_arg_error("mchanges", &err, 2),
+    };
+    emit_output("mchanges", mchanges::execute(&args))
+}
+
 /// Run `mcat` in-process and capture stdout, stderr, and exit code.
 pub fn run_mcat(args: &[String]) -> ToolOutput {
     mcat::execute(args)
@@ -134,6 +144,11 @@ pub fn run_msymbol(args: &[String]) -> ToolOutput {
 /// Run `mrun` in-process and capture stdout, stderr, and exit code.
 pub fn run_mrun(args: &[String]) -> ToolOutput {
     mrun::execute(args)
+}
+
+/// Run `mchanges` in-process and capture stdout, stderr, and exit code.
+pub fn run_mchanges(args: &[String]) -> ToolOutput {
+    mchanges::execute(args)
 }
 
 #[cfg(all(test, unix))]

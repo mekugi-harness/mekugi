@@ -1198,6 +1198,7 @@ mod tests {
             ConnectionId(7),
             CancellationToken::new(),
             CancellationToken::new(),
+            false,
         );
         let input = FinalCaptureRequest {
             root_thread_id: ThreadId::new(),

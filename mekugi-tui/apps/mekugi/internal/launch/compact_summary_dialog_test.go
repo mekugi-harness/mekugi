@@ -15,7 +15,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
@@ -152,7 +151,7 @@ func TestUISnapshotCompactionSummaryDialog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := compact.ReadSummary(p.retained.Store, "main", foreign); err == nil {
+	if _, _, err := history.ReadCompactSummary(p.retained.Store, "main", foreign); err == nil {
 		t.Fatal("foreign summary was admitted")
 	}
 }

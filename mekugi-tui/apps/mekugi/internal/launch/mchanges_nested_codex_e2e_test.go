@@ -713,26 +713,6 @@ func runMChangesNestedCodexCell(
 	setTestProxyStore(proxy, store)
 	proxy.nativeTrace = nativetrace.NewWithNotice(traceRoot, nil)
 	provider.trace = proxy.nativeTrace
-	boundaryServer, err := transport.Listen(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer boundaryServer.Close()
-	boundaryOwner := executionobservation.New(executionobservation.Config{Windows: proxy.execWindows, NativeTrace: proxy.nativeTrace, Changes: proxy.changeSource, Checkpoints: store.snapshots})
-	if err := boundaryServer.RegisterBoundary(boundaryOwner.ObserveNativeBoundary); err != nil {
-		t.Fatal(err)
-	}
-	helper, err := execTrackTestHelper()
-	if err != nil {
-		t.Fatal(err)
-	}
-	hook, state, _, err := shellhook.Config(helper, "", filepath.Dir(boundaryServer.Endpoints().Requests), shellhook.Invocation{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(provider.codexArgs) == 0 {
-		provider.codexArgs = []string{"-c", hook, "-c", state}
-	}
 	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, testCriticalErrors(), proxy))
 	defer server.Close()
 	config := `model_providers.mchanges_fixture={name="mchanges_fixture",base_url=` +
