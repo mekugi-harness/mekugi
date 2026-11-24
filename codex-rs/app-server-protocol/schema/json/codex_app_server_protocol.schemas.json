@@ -3863,6 +3863,46 @@
       "title": "ExecCommandApprovalResponse",
       "type": "object"
     },
+    "ExecutionBeforeToolParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Lightweight pre-execution observation barrier emitted immediately before dispatching local `exec_command` (`Bash`) or `apply_patch` calls when a capture observer is registered for the session.",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cwd",
+        "input",
+        "itemId",
+        "threadId",
+        "tool",
+        "turnId"
+      ],
+      "title": "ExecutionBeforeToolParams",
+      "type": "object"
+    },
+    "ExecutionBeforeToolResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Empty acknowledgement releasing the pre-execution observation barrier early.",
+      "title": "ExecutionBeforeToolResponse",
+      "type": "object"
+    },
     "FileChange": {
       "oneOf": [
         {
@@ -4306,6 +4346,10 @@
         },
         "mcpServerOpenaiFormElicitation": {
           "description": "Legacy opt-in for the `openai/form` MCP extension.\n\nNew clients should declare `openai/form` in [`Self::extensions`].",
+          "type": "boolean"
+        },
+        "observeBeforeTool": {
+          "description": "Opt into `execution/beforeTool` pre-execution observation barriers for local `exec_command` (`Bash`) and `apply_patch` calls.",
           "type": "boolean"
         },
         "optOutNotificationMethods": {
@@ -7578,6 +7622,31 @@
             "params"
           ],
           "title": "Agent/finalCapture/projectRequest",
+          "type": "object"
+        },
+        {
+          "description": "Notify a registered capture observer immediately before executing `exec_command` (`Bash`) or `apply_patch` within a bounded fail-open window.",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "execution/beforeTool"
+              ],
+              "title": "Execution/beforeToolRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ExecutionBeforeToolParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Execution/beforeToolRequest",
           "type": "object"
         },
         {

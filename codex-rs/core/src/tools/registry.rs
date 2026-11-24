@@ -898,6 +898,7 @@ impl ToolRegistry {
             Ok(environments) => environments,
             Err(err) => return Err(fail_before_execution(dispatch_trace, &invocation, err).await),
         };
+        let before_tool_params = before_tool_barrier_params(tool.as_ref(), &invocation);
         match apply_pre_tool_use(tool.as_ref(), &mut invocation).await {
             Ok(()) => {}
             Err(PreToolUseError::Blocked(message)) => {
@@ -998,6 +999,15 @@ impl ToolRegistry {
         }
 
         let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
+
+        if let Some(params) = before_tool_params {
+            invocation
+                .session
+                .services
+                .local_agent_runtime
+                .observe_before_tool(params, cancellation_token.clone())
+                .await;
+        }
 
         let result = otel
             .log_tool_result_with_tags(
@@ -1212,6 +1222,53 @@ pub(crate) async fn apply_pre_tool_use(
             Ok(())
         }
     }
+}
+
+fn before_tool_barrier_params(
+    tool: &dyn CoreToolRuntime,
+    invocation: &ToolInvocation,
+) -> Option<codex_app_server_protocol::ExecutionBeforeToolParams> {
+    if !invocation
+        .session
+        .services
+        .local_agent_runtime
+        .has_before_tool_observer()
+    {
+        return None;
+    }
+    let payload = tool.pre_tool_use_payload(invocation)?;
+    let tool_name = payload.tool_name.name();
+    if tool_name != "Bash" && tool_name != "apply_patch" {
+        return None;
+    }
+    let input = payload
+        .tool_input
+        .get("command")
+        .and_then(Value::as_str)?
+        .to_string();
+    let tool_cwd = tool.pre_tool_use_cwd(invocation).ok().flatten();
+    #[allow(deprecated)]
+    let cwd = tool_cwd.as_ref().map_or_else(
+        || {
+            invocation
+                .step_context
+                .environments
+                .local_environment_cwd()
+                .unwrap_or_else(|| invocation.turn.cwd.clone())
+                .as_path()
+                .display()
+                .to_string()
+        },
+        PathUri::inferred_native_path_string,
+    );
+    Some(codex_app_server_protocol::ExecutionBeforeToolParams {
+        thread_id: invocation.session.thread_id.to_string(),
+        turn_id: invocation.turn.sub_id.clone(),
+        item_id: invocation.call_id.clone(),
+        tool: tool_name.to_string(),
+        cwd,
+        input,
+    })
 }
 
 fn function_hook_tool_name(invocation: &ToolInvocation) -> HookToolName {

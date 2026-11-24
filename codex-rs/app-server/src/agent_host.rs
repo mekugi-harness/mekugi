@@ -17,6 +17,7 @@ pub(crate) fn host_resources(
     connection: ConnectionId,
     disconnect: CancellationToken,
     tree_shutdown: CancellationToken,
+    observe_before_tool: bool,
 ) -> AgentHostResources {
     let host = HostRequests {
         outgoing: Arc::downgrade(outgoing),
@@ -29,6 +30,7 @@ pub(crate) fn host_resources(
     let capture = host.clone();
     let admission = host.clone();
     let foreign = host.clone();
+    let before_tool_host = host.clone();
     AgentHostResources {
         route_foreign: Some(Arc::new(move |request, cancellation| {
             let host = foreign.clone();
@@ -54,6 +56,24 @@ pub(crate) fn host_resources(
                 .await
             })
         })),
+        before_tool: if observe_before_tool {
+            Some(Arc::new(move |request, cancellation| {
+                let host = before_tool_host.clone();
+                Box::pin(async move {
+                    let thread = ThreadId::from_string(&request.thread_id).map_err(|err| {
+                        CodexErr::InvalidRequest(format!("invalid thread_id: {err}"))
+                    })?;
+                    host.request(
+                        wire::ServerRequestPayload::ExecutionBeforeTool(request),
+                        thread,
+                        cancellation,
+                    )
+                    .await
+                })
+            }))
+        } else {
+            None
+        },
         record_feature_use: None,
         freeze_progress: Arc::new(move |request, cancellation| {
             let host = freezing.clone();
@@ -237,6 +257,7 @@ mod tests {
             owner,
             CancellationToken::new(),
             CancellationToken::new(),
+            false,
         );
         let input = request();
         let thread = input.thread_id;
@@ -281,6 +302,7 @@ mod tests {
                 owner,
                 CancellationToken::new(),
                 CancellationToken::new(),
+                false,
             );
             let cancellation = CancellationToken::new();
             let task = tokio::spawn((callbacks.prepare_final_capture)(
@@ -325,7 +347,7 @@ mod tests {
             let owner = ConnectionId(7);
             let disconnect = CancellationToken::new();
             let tree = CancellationToken::new();
-            let callbacks = host_resources(&outgoing, owner, disconnect.clone(), tree.clone());
+            let callbacks = host_resources(&outgoing, owner, disconnect.clone(), tree.clone(), false);
             let task = tokio::spawn((callbacks.prepare_final_capture)(
                 request(),
                 CancellationToken::new(),
@@ -340,5 +362,46 @@ mod tests {
             assert!(!outgoing.cancel_request(&id).await);
             outgoing.shutdown_host_requests().await;
         }
+    }
+
+    #[tokio::test]
+    async fn before_tool_callback_is_opt_in_and_owner_only() {
+        let (outgoing, mut rx) = sender(4);
+        let owner = ConnectionId(7);
+        let unobserved = host_resources(
+            &outgoing,
+            owner,
+            CancellationToken::new(),
+            CancellationToken::new(),
+            false,
+        );
+        assert!(unobserved.before_tool.is_none());
+
+        let observed = host_resources(
+            &outgoing,
+            owner,
+            CancellationToken::new(),
+            CancellationToken::new(),
+            true,
+        );
+        let before_tool = observed.before_tool.expect("before_tool callback");
+        let thread = ThreadId::new();
+        let task = tokio::spawn(before_tool(
+            wire::ExecutionBeforeToolParams {
+                thread_id: thread.to_string(),
+                turn_id: "turn-1".into(),
+                item_id: "item-1".into(),
+                tool: "Bash".into(),
+                cwd: "/tmp".into(),
+                input: "echo hi".into(),
+            },
+            CancellationToken::new(),
+        ));
+        let id = request_id(&mut rx, owner).await;
+        outgoing
+            .notify_client_response(owner, id, json!({}))
+            .await;
+        let _ = task.await.unwrap().unwrap();
+        outgoing.shutdown_host_requests().await;
     }
 }

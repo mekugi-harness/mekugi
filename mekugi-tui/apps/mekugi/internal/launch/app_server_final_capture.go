@@ -7,6 +7,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 )
 
@@ -31,6 +32,7 @@ type nativeFinalCaptures struct {
 	output  func(context.Context, appserver.ProgressOutputRequest) (appserver.ProgressOutputResponse, error)
 	project func(context.Context, appserver.FinalCaptureProjectRequest) (appserver.FinalCaptureProjectResponse, error)
 	foreign func(context.Context, appserver.AgentForeignRequest) (appserver.AgentForeignResponse, error)
+	beforeTool func(context.Context, appserver.ExecutionBeforeToolParams)
 }
 
 func (c *nativeFinalCaptures) close() {
@@ -65,6 +67,30 @@ func (session *nativeSession) finalCaptureMessage(m appserver.Message) (bool, er
 		}
 	}
 	if len(m.ID) != 0 {
+		if m.Method == "execution/beforeTool" {
+			var input appserver.ExecutionBeforeToolParams
+			if err := json.Unmarshal(m.Params, &input); err != nil {
+				return true, session.Client.Requests.Respond(m.ID, &appserver.ExecutionBeforeToolResponse{})
+			}
+			owner := session.finalCaptures
+			if owner == nil || owner.beforeTool == nil {
+				return true, session.Client.Requests.Respond(m.ID, &appserver.ExecutionBeforeToolResponse{})
+			}
+			ctx, started := owner.begin(m.ID)
+			if !started {
+				return true, nil
+			}
+			owner.workers.Go(func() {
+				bctx, cancel := context.WithTimeout(ctx, executionobservation.NativeBoundaryHold)
+				defer cancel()
+				owner.beforeTool(bctx, input)
+				select {
+				case owner.results <- finalCaptureReply{id: m.ID, result: &appserver.ExecutionBeforeToolResponse{}}:
+				case <-ctx.Done():
+				}
+			})
+			return true, nil
+		}
 		switch m.Method {
 		case "agent/progress/freeze", "agent/progress/prepareOutput", "agent/finalCapture/project", "agent/foreign/route":
 			owner := session.finalCaptures

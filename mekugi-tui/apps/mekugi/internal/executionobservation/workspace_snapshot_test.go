@@ -25,7 +25,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
-	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
 
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 )
@@ -526,9 +525,9 @@ PY
 			trace.start(thread, "cell", "submodule", source)
 			trace.tool(thread, "cell", "shell", nativeExecCommandToolName, args)
 			if tc.name != "missed-native-boundary" {
-				ctx, cancel := context.WithTimeout(transform.ctx, segmenttransport.BoundaryHold)
+				ctx, cancel := context.WithTimeout(transform.ctx, NativeBoundaryHold)
 				deadline, _ := ctx.Deadline()
-				proxy.ObserveNativeBoundary(ctx, segmenttransport.Boundary{
+				proxy.ObserveNativeBoundary(ctx, NativeBoundary{
 					Thread: thread, Turn: trace.turn, Item: "shell", Tool: "Bash",
 					CWD: workdir, Input: command, Deadline: deadline,
 				})

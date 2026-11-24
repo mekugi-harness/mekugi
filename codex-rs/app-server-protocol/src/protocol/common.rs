@@ -1984,6 +1984,12 @@ server_request_definitions! {
         params: v2::FinalCaptureProjectRequest,
         response: v2::FinalCaptureProjectResponse,
     },
+    /// Notify a registered capture observer immediately before executing
+    /// `exec_command` (`Bash`) or `apply_patch` within a bounded fail-open window.
+    ExecutionBeforeTool => "execution/beforeTool" {
+        params: v2::ExecutionBeforeToolParams,
+        response: v2::ExecutionBeforeToolResponse,
+    },
 
     /// NEW APIs
     /// Sent when approval is requested for a specific command execution.
@@ -2997,6 +3003,7 @@ mod tests {
                     explicit_gateway_oauth: false,
                     experimental_api: true,
                     request_attestation: true,
+                    observe_before_tool: false,
                     mcp_server_openai_form_elicitation: true,
                     opt_out_notification_methods: Some(vec![
                         "thread/started".to_string(),
@@ -3086,6 +3093,7 @@ mod tests {
                         explicit_gateway_oauth: false,
                         experimental_api: true,
                         request_attestation: true,
+                        observe_before_tool: false,
                         mcp_server_openai_form_elicitation: true,
                         opt_out_notification_methods: Some(vec![
                             "thread/started".to_string(),

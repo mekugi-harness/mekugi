@@ -12,16 +12,24 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/execscope"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
+// NativeBoundary is a synchronous native pre-tool observation, never an approval.
+type NativeBoundary struct {
+	Thread, Turn, Item, Tool, CWD, Input string
+	Deadline                             time.Time
+}
+
+// NativeBoundaryHold bounds pre-execution baseline acquisition.
+const NativeBoundaryHold = 500 * time.Millisecond
+
 func nativeBoundaryID(call, item string) string { return call + ":native-boundary:" + item }
 
-// ObserveNativeBoundary borrows the admitted window's authority. A hook cannot
+// ObserveNativeBoundary borrows the admitted window's authority. A barrier cannot
 // enroll a thread or choose a capture workspace. Unavailable observation never
 // rejects the native tool or waits for an approval decision.
-func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request transport.Boundary) {
+func (p *Preparer) ObserveNativeBoundary(ctx context.Context, request NativeBoundary) {
 	if p.Windows == nil || p.NativeTrace == nil || request.Thread == "" || request.Turn == "" || ctx.Err() != nil {
 		return
 	}

@@ -306,6 +306,7 @@ mod tests {
         let resources = crate::AgentHostResources {
             route_foreign: None,
             prepare_child: None,
+            before_tool: None,
             record_feature_use: None,
             freeze_progress: Arc::new(|_, _| Box::pin(async { panic!("not progress") })),
             prepare_progress_output: Arc::new(|_, _| Box::pin(async { panic!("not progress") })),

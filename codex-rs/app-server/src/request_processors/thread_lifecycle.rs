@@ -270,9 +270,9 @@ pub(super) async fn ensure_conversation_listener(
         .thread_state_manager
         .thread_state(conversation_id)
         .await;
-    if let Some(disconnect) = listener_task_context
+    if let Some((disconnect, observe_before_tool)) = listener_task_context
         .thread_state_manager
-        .resource_host_disconnect(connection_id)
+        .resource_host_registration(connection_id)
         .await
     {
         let mut resources = crate::agent_host::host_resources(
@@ -280,6 +280,7 @@ pub(super) async fn ensure_conversation_listener(
             connection_id,
             disconnect,
             conversation.agent_tree_shutdown_token(),
+            observe_before_tool,
         );
         let feature_use = Arc::clone(&listener_task_context.thread_state_manager.feature_use);
         resources.record_feature_use = Some(Arc::new(move |fact| {

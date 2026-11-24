@@ -271,11 +271,6 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 	}
 	mekugiCalls = executionobservation.New(executionobservation.Config{ProgressSnapshot: threads.hub.ProgressSnapshot, Usage: usage, Review: review, Audience: audience, Windows: windows, NativeTrace: nativeTrace, Control: &control, Calls: calls, Retained: retained, Changes: changeSource, Checkpoints: checkpoints, PublishChanges: review.Publish, Notice: issues.AddThreadNotice, PreviewTiming: previewbinding.Timing{Frame: previewview.PreviewFrameDelay, Unit: previewview.PreviewUnitDelay, Finish: previewview.PreviewFinishDrain}})
 	mekugiCalls.ContextAttachments = contextAttachments
-	if segments.Live != nil {
-		if err := segments.Live.RegisterBoundary(mekugiCalls.ObserveNativeBoundary); err != nil {
-			issues.AddNotice("", "capture_boundary", "Native capture boundaries unavailable: "+err.Error())
-		}
-	}
 	usage.Configure(retained.Store, retained.Writes, retained.Limits, func(thread string, err error) {
 		issues.AddThreadNotice("", thread, "usage_storage", "Provider usage could not be retained or restored: "+err.Error())
 	})
@@ -416,10 +411,6 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 	if segments.Live != nil {
 		reportEndpoints = segments.Live.Endpoints()
 	}
-	captureChannel := ""
-	if reportEndpoints.Requests != "" {
-		captureChannel = filepath.Dir(reportEndpoints.Requests)
-	}
 	cmd.Env, err = frontendShellEnvironment(cmd.Env, frontendDirectory, helper, reportEndpoints)
 	if err != nil {
 		return stopFailedStartup(err)
@@ -445,7 +436,7 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 			}
 		}
 		if tracker != "" {
-			cmd.Args, _, err = optionalTrackingHookArgs(cmd.Args, helper, tracker, captureChannel)
+			cmd.Args, _, err = optionalTrackingHookArgs(cmd.Args, helper, tracker)
 			if err != nil {
 				fmt.Fprintln(stderr, "mekugi: sh segment tracking unavailable:", err)
 			}

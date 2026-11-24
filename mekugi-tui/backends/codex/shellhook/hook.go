@@ -36,14 +36,11 @@ type Input struct {
 
 // Config uses the native session-layer hook and exact trust identity. It
 // neither changes user files nor grants sandbox permissions.
-func Config(helper, tracker, capture string, prior Invocation) (config, state, identityHash string, err error) {
+func Config(helper, tracker string, prior Invocation) (config, state, identityHash string, err error) {
 	arguments := []string{helper, Flag, tracker}
 	// The native session layer runs this observer after ordinary Bash hooks
 	// so their effective input, including a replacement, is the source tracked.
 	matcher := "Bash|MekugiCommandTracking"
-	if capture != "" {
-		arguments = append(arguments, capture)
-	}
 	for i := range arguments {
 		arguments[i] = commandargs.Quote(arguments[i])
 	}
@@ -76,32 +73,6 @@ func Config(helper, tracker, capture string, prior Invocation) (config, state, i
 	if err != nil {
 		return "", "", "", err
 	}
-	if capture != "" {
-		// Patch observation has no approval role. Even helper launch failure
-		// must leave native patch execution available.
-		auxiliary := map[string]any{
-			"event_name": "pre_tool_use", "matcher": "^apply_patch$",
-			"hooks": []map[string]any{{"type": "command", "command": command, "timeout": 5, "async": false, "statusMessage": "Observing patch targets"}},
-		}
-		data, err := json.Marshal(auxiliary, json.Deterministic(true))
-		if err != nil {
-			return "", "", "", err
-		}
-		hash := sha256.Sum256(data)
-		key := fmt.Sprintf("/<session-flags>/config.toml:pre_tool_use:%d:0", len(groups))
-		if _, exists := states[key]; exists {
-			return "", "", "", fmt.Errorf("explicit CLI state for tracking hook %q conflicts", key)
-		}
-		states[key], err = json.Marshal(map[string]any{"trusted_hash": "sha256:" + hex.EncodeToString(hash[:]), "enabled": true})
-		if err != nil {
-			return "", "", "", err
-		}
-		group, err := json.Marshal(map[string]any{"matcher": auxiliary["matcher"], "hooks": auxiliary["hooks"]})
-		if err != nil {
-			return "", "", "", err
-		}
-		groups = append(groups, group)
-	}
 	groupJSON, err := json.Marshal(&groups)
 	if err != nil {
 		return "", "", "", err
@@ -122,16 +93,13 @@ func Config(helper, tracker, capture string, prior Invocation) (config, state, i
 	return config, state, identityHash, nil
 }
 
-// Rewrite instruments tracked sh commands and passes apply_patch through.
+// Rewrite instruments tracked sh commands.
 func Rewrite(request Input, tracker string) (any, error) {
-	if request.Event != "PreToolUse" || (request.Tool != "Bash" && request.Tool != "apply_patch") || request.Input.Command == nil {
+	if request.Event != "PreToolUse" || request.Tool != "Bash" || request.Input.Command == nil {
 		return nil, fmt.Errorf("unexpected hook input")
 	}
 	if tracker != "" && !filepath.IsAbs(tracker) {
 		return nil, fmt.Errorf("hook tracker must be absolute")
-	}
-	if request.Tool == "apply_patch" {
-		return map[string]any{}, nil
 	}
 	changed := *request.Input.Command
 	if tracker != "" {

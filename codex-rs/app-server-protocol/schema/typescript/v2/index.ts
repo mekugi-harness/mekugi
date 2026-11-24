@@ -161,6 +161,8 @@ export type { EnvironmentConnectionNotification } from "./EnvironmentConnectionN
 export type { EnvironmentSkillsParams } from "./EnvironmentSkillsParams";
 export type { ErrorNotification } from "./ErrorNotification";
 export type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
+export type { ExecutionBeforeToolParams } from "./ExecutionBeforeToolParams";
+export type { ExecutionBeforeToolResponse } from "./ExecutionBeforeToolResponse";
 export type { ExperimentalFeature } from "./ExperimentalFeature";
 export type { ExperimentalFeatureEnablementSetParams } from "./ExperimentalFeatureEnablementSetParams";
 export type { ExperimentalFeatureEnablementSetResponse } from "./ExperimentalFeatureEnablementSetResponse";

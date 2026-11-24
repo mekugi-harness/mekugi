@@ -39,6 +39,15 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `mekugi-app-server` to App-Server Protocol v2 `shellGuard/requestApproval` and
   `shellGuard/requestSecret` requests, keeping secrets zeroized and excluded
   from rollouts, tracing, and analytics.
+- Native pre-execution capture observation barrier (`execution/beforeTool`):
+  when a client opts in via `InitializeCapabilities.observeBeforeTool`,
+  `codex-core` emits an optional, owner-only `execution/beforeTool` v2 server
+  request (`threadId`, `turnId`, `itemId`, `tool`, `cwd`, `input`) immediately
+  before dispatching local `exec_command` (`Bash`) or `apply_patch` calls,
+  after user `PreToolUse` hooks run. The barrier uses a strict 500 ms
+  fail-open timeout so slow, disconnected, or failing observers never block or
+  alter native tool execution, while headless and unobserved runs incur zero
+  barrier wait.
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
   runtime, including the exec-server fixture's Linux sandbox helper so it can

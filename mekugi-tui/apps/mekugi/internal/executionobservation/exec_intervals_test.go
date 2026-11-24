@@ -25,7 +25,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
-	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -477,9 +476,9 @@ func TestCheckpointIntervalsKeepAuthoredWorkspace(t *testing.T) {
 			trace.start(f.thread, "patch-runtime", "patch", patchSource)
 			trace.tool(f.thread, "patch-runtime", "patch-command", "apply_patch", patch)
 			if mode != "eager" {
-				ctx, cancel := context.WithTimeout(f.ctx, segmenttransport.BoundaryHold)
+				ctx, cancel := context.WithTimeout(f.ctx, NativeBoundaryHold)
 				deadline, _ := ctx.Deadline()
-				edit.ObserveNativeBoundary(ctx, segmenttransport.Boundary{Thread: f.thread, Turn: trace.turn, Item: "patch-command", Tool: applyPatchToolName, CWD: directory, Input: patch, Deadline: deadline})
+				edit.ObserveNativeBoundary(ctx, NativeBoundary{Thread: f.thread, Turn: trace.turn, Item: "patch-command", Tool: applyPatchToolName, CWD: directory, Input: patch, Deadline: deadline})
 				cancel()
 			}
 			prefixID := execIntervalID("writer", true, 0)

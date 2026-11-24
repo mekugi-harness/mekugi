@@ -280,3 +280,58 @@ func TestNativeHostCallbackCancellationIsExactAndSuppressesLateReply(t *testing.
 		t.Fatalf("sibling callback did not survive cancellation: %s", wire.Bytes())
 	}
 }
+
+func TestExecutionBeforeToolBarrierAcksEarlyAndFailsOpen(t *testing.T) {
+	u, wire := newAppServerTestUI()
+	ctx, cancel := context.WithCancel(t.Context())
+	seen := make(chan appserver.ExecutionBeforeToolParams, 1)
+	u.finalCaptures = &nativeFinalCaptures{
+		ctx:     ctx,
+		cancel:  cancel,
+		results: make(chan finalCaptureReply, 1),
+		beforeTool: func(_ context.Context, req appserver.ExecutionBeforeToolParams) {
+			seen <- req
+		},
+	}
+	t.Cleanup(u.finalCaptures.close)
+	handled, err := u.finalCaptureMessage(appserver.Message{
+		ID:     []byte(`"barrier-1"`),
+		Method: "execution/beforeTool",
+		Params: []byte(`{"threadId":"t1","turnId":"turn-1","itemId":"call-1","tool":"apply_patch","cwd":"/workspace","input":"*** Begin Patch"}`),
+	})
+	if !handled || err != nil {
+		t.Fatalf("handled=%t err=%v", handled, err)
+	}
+	got := <-seen
+	if got.ThreadID != "t1" || got.TurnID != "turn-1" || got.ItemID != "call-1" || got.Tool != "apply_patch" || got.CWD != "/workspace" || got.Input != "*** Begin Patch" {
+		t.Fatalf("unexpected barrier params: %+v", got)
+	}
+	if err := u.finalCaptureReply(<-u.finalCaptures.results); err != nil {
+		t.Fatal(err)
+	}
+	var result appserver.Message
+	if err := json.Unmarshal(wire.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if string(result.ID) != `"barrier-1"` || result.Error != nil {
+		t.Fatalf("unexpected barrier ack: %s", wire.Bytes())
+	}
+
+	// Malformed params still fail open with an empty ack.
+	wire.Reset()
+	handled, err = u.finalCaptureMessage(appserver.Message{
+		ID:     []byte(`"barrier-bad"`),
+		Method: "execution/beforeTool",
+		Params: []byte(`{`),
+	})
+	if !handled || err != nil {
+		t.Fatalf("malformed barrier: handled=%t err=%v", handled, err)
+	}
+	var badResult appserver.Message
+	if err := json.Unmarshal(wire.Bytes(), &badResult); err != nil {
+		t.Fatal(err)
+	}
+	if string(badResult.ID) != `"barrier-bad"` || badResult.Error != nil {
+		t.Fatalf("malformed barrier did not fail open: %s", wire.Bytes())
+	}
+}
