@@ -607,10 +607,7 @@ fn measured_tool_output_keeps_charges_paired_with_retained_clips() {
 
 #[test]
 fn formatted_truncate_text_with_spill_writes_omitted_portion_and_id() {
-    let base = std::env::temp_dir().join(format!(
-        "codex-spill-test-{}",
-        std::process::id()
-    ));
+    let base = std::env::temp_dir().join(format!("codex-spill-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let spill_dir = truncated_output_dir(&base);
 
@@ -640,14 +637,14 @@ fn formatted_truncate_text_with_spill_writes_omitted_portion_and_id() {
     assert!(content.contains(&spilled));
 
     // Byte-budget truncation also spills omitted portion.
-    let byte_rendered = truncate_text_with_spill(
-        &content,
-        TruncationPolicy::Bytes(20),
-        Some(&spill_dir),
-    );
+    let byte_rendered =
+        truncate_text_with_spill(&content, TruncationPolicy::Bytes(20), Some(&spill_dir));
     let b_start = byte_rendered.find(" (id: ").expect("missing byte spill id");
     let b_id_start = b_start + " (id: ".len();
-    let b_id_end = byte_rendered[b_id_start..].find(')').expect("closing paren") + b_id_start;
+    let b_id_end = byte_rendered[b_id_start..]
+        .find(')')
+        .expect("closing paren")
+        + b_id_start;
     let b_id = &byte_rendered[b_id_start..b_id_end];
     assert_ne!(b_id, id);
     let byte_spilled = std::fs::read_to_string(spill_dir.join(b_id)).expect("read byte spilled");

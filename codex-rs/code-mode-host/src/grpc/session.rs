@@ -18,6 +18,7 @@ use codex_code_mode_protocol::WaitOutcome;
 use codex_code_mode_protocol::grpc as proto;
 use codex_code_mode_protocol::host::MAX_PENDING_DELEGATE_CALLS;
 use codex_code_mode_runtime::InProcessCodeModeSession;
+use codex_code_mode_runtime::ToolPreload;
 use serde_json::Value as JsonValue;
 use tokio::sync::Notify;
 use tokio::sync::OwnedSemaphorePermit;
@@ -115,6 +116,7 @@ impl GrpcHostState {
         options: CodeModeSessionOptions,
         max_pending_delegate_calls: usize,
         observation_liveness: bool,
+        tool_preloads: &'static [ToolPreload],
     ) -> Result<GrpcStream<proto::SessionEvent>, Status> {
         let id = Uuid::new_v4();
         let (events, receiver) = mpsc::channel(OUTGOING_CHANNEL_CAPACITY);
@@ -128,6 +130,7 @@ impl GrpcHostState {
             options,
             max_pending_delegate_calls,
             observation_liveness,
+            tool_preloads,
         );
         events
             .try_send(Ok(proto::SessionEvent {
@@ -231,6 +234,7 @@ impl GrpcSession {
         options: CodeModeSessionOptions,
         max_pending_delegate_calls: usize,
         observation_liveness: bool,
+        tool_preloads: &'static [ToolPreload],
     ) -> Arc<Self> {
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let failure_session = weak.clone();
@@ -242,9 +246,10 @@ impl GrpcSession {
             });
             Self {
                 id,
-                runtime: Arc::new(InProcessCodeModeSession::with_options(
+                runtime: Arc::new(InProcessCodeModeSession::with_options_and_tool_preloads(
                     options,
                     Some(failure_handler),
+                    tool_preloads,
                 )),
                 closed,
                 state: Mutex::new(SessionState::default()),

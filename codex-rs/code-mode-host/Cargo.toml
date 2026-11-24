@@ -37,6 +37,7 @@ uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 codex-http-client = { workspace = true }
+codex-core = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 codex-plugin-host = { workspace = true }
 codex-code-mode = { workspace = true }

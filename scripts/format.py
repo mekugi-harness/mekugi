@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+LOCKED_PYTHON_RUNNER = "codex-rs/scripts/run_locked_python_tool.py"
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,14 @@ def rust_formatter_group(*, check: bool) -> FormatterGroup:
 
 
 def python_scripts_formatter_group(*, check: bool) -> FormatterGroup:
-    args = ["uv", "run", "--frozen", "--project", "scripts", "ruff", "format"]
+    args = [
+        sys.executable,
+        LOCKED_PYTHON_RUNNER,
+        "--project",
+        "scripts",
+        "ruff",
+        "format",
+    ]
     if check:
         args.append("--check")
     args.extend(

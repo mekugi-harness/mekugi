@@ -41,11 +41,24 @@ const MIN_YIELD_TIME_FOR_GRACE: Duration = Duration::from_secs(10);
 
 /// Reports a timed observation's pause, its continued liveness, or its resumption.
 pub type ObservationLiveness = Box<dyn Fn(bool) + Send + Sync>;
+/// Trusted JavaScript a session installs in cells that expose the named nested tool.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ToolPreload {
+    /// The tool's binding on the Code Mode `tools` object.
+    pub tool: &'static str,
+    /// The exact name dispatched by that binding.
+    pub tool_name: &'static str,
+    /// The exact namespace dispatched by that binding, if any.
+    pub tool_namespace: Option<&'static str>,
+    /// A script evaluated before the cell's module, in the same V8 context.
+    pub source: &'static str,
+}
 
 pub struct InProcessCodeModeSession {
     runtime: SessionRuntime,
     catalog: Mutex<(u64, runtime::ToolCatalog)>,
     options: CodeModeSessionOptions,
+    tool_preloads: &'static [ToolPreload],
 }
 
 impl InProcessCodeModeSession {
@@ -69,9 +82,19 @@ impl InProcessCodeModeSession {
         options: CodeModeSessionOptions,
         task_failure_handler: Option<TaskFailureHandler>,
     ) -> Self {
+        Self::with_options_and_tool_preloads(options, task_failure_handler, &[])
+    }
+
+    /// Creates a session with trusted host helpers selected against each cell's tool catalog.
+    pub fn with_options_and_tool_preloads(
+        options: CodeModeSessionOptions,
+        task_failure_handler: Option<TaskFailureHandler>,
+        tool_preloads: &'static [ToolPreload],
+    ) -> Self {
         Self {
             runtime: SessionRuntime::new_with_task_failure_handler(task_failure_handler),
             catalog: Default::default(),
+            tool_preloads,
             options: CodeModeSessionOptions {
                 cell_execution_limits: CodeModeSessionCellExecutionLimits {
                     max_heap_size_bytes: None,
@@ -124,6 +147,7 @@ impl InProcessCodeModeSession {
             output_truncation: self.options.output_truncation,
             tool_call_id: request.tool_call_id,
             enabled_tools: tools,
+            tool_preloads: self.tool_preloads,
             source: request.source,
         })
     }
@@ -587,7 +611,13 @@ fn missing_cell_response(
     let error_text = format!("exec cell {cell_id} not found");
     let mut output = OutputCollector::new(mode);
     let event = take_completed_event(&mut output, Some(error_text));
-    runtime_response(&cell_id, event, mode, max_output_tokens, /*truncated_output_dir*/ None)
+    runtime_response(
+        &cell_id,
+        event,
+        mode,
+        max_output_tokens,
+        /*truncated_output_dir*/ None,
+    )
 }
 
 fn missing_wait(

@@ -57,8 +57,7 @@ pub fn spill_truncated_output(dir: &Path, omitted: &str) -> std::io::Result<Stri
     for _ in 0..16 {
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
         // Mix pid, timestamp, and monotonic counter into an 8-hex-char ID.
-        let mixed = nanos
-            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        let mixed = nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15)
             ^ pid.wrapping_mul(0xBF58_476D_1CE4_E5B9)
             ^ seq.wrapping_mul(0x94D0_49BB_1331_11EB);
         let id = format!("{:08x}", (mixed ^ (mixed >> 32)) as u32);

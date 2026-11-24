@@ -34,7 +34,6 @@ use crate::tools::handlers::selected_executor;
 use crate::tools::handlers::updated_hook_command;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::orchestrator::ToolOrchestrator;
-use crate::tools::sandboxing::ToolError;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
@@ -44,6 +43,7 @@ use crate::tools::runtimes::apply_patch::ApplyPatchRequest;
 use crate::tools::runtimes::apply_patch::ApplyPatchRuntime;
 use crate::tools::sandboxing::ExecApprovalRequirement;
 use crate::tools::sandboxing::ToolCtx;
+use crate::tools::sandboxing::ToolError;
 use crate::windows_sandbox::windows_sandbox_level_for_legacy_checks;
 use codex_apply_patch::ApplyPatchAction;
 use codex_apply_patch::ApplyPatchFileChange;
@@ -638,7 +638,9 @@ async fn execute_prepared_patch(
             (Err(ToolError::Rejected(msg.clone())), Some(msg))
         }
     };
-    let finish_result = emitter.finish(event_ctx, finish_input, delta.as_ref()).await;
+    let finish_result = emitter
+        .finish(event_ctx, finish_input, delta.as_ref())
+        .await;
     if let Some(msg) = persist_error {
         return Err(FunctionCallError::RespondToModel(msg));
     }

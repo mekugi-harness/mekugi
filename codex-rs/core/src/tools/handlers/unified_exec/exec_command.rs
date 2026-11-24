@@ -272,9 +272,11 @@ impl ExecCommandHandler {
                     original_token_count: Some(original_token_count),
                     hook_command: Some(hook_command),
                     tool_cwd,
-                    truncated_output_dir: Some(codex_utils_output_truncation::truncated_output_dir(
-                        &crate::exec_env::session_tmp_path(context.session.session_id()),
-                    )),
+                    truncated_output_dir: Some(
+                        codex_utils_output_truncation::truncated_output_dir(
+                            &crate::exec_env::session_tmp_path(context.session.session_id()),
+                        ),
+                    ),
                 }))
             }
             Err(err) => {
