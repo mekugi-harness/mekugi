@@ -26,11 +26,6 @@ experimentalApi: boolean,
  */
 requestAttestation: boolean,
 /**
- * Opt into `execution/beforeTool` pre-execution observation barriers for
- * local `exec_command` (`Bash`) and `apply_patch` calls.
- */
-observeBeforeTool?: boolean,
-/**
  * Legacy opt-in for the `openai/form` MCP extension.
  *
  * New clients should declare `openai/form` in [`Self::extensions`].
