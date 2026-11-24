@@ -43,7 +43,6 @@ type nativeSession struct {
 	nativeRosterResponse string
 	nativeRosterRoot     string
 	preparer             *executionobservation.Preparer
-	finalCaptures        *nativeFinalCaptures
 	attached             attachedPresentation
 	reviewSource         *changecapture.Service
 	*composer.Editor
@@ -97,6 +96,7 @@ type nativeSession struct {
 	archived              bool
 	exitUsage             binding.TokenUsage
 	resumeArgv            []string
+	rewindExecutable      string
 	profile               *launchoptions.Profile
 	replayDebugDirectory  string
 	serviceTiers          *inferencegateway.Tiers

@@ -11,6 +11,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
@@ -67,7 +68,8 @@ func rewindEditsFixture(t *testing.T) (*appServerUI, *appServerTestInput) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("rewind plan did not finish")
 	}
-	if len(u.picker.Choices) != 2 || u.picker.Choices[1].Name != "Revert 2 captured changes" || strings.Count(u.picker.rewind.command, "mchanges revert") != 1 {
+	wantCommand := commandargs.Quote(u.rewindExecutable) + " revert 'amber2' 'apple2'"
+	if len(u.picker.Choices) != 2 || u.picker.Choices[1].Name != "Revert 2 captured changes" || u.picker.rewind.command != wantCommand {
 		t.Fatalf("revert plan: %+v", u.picker.rewind)
 	}
 	return u, w

@@ -69,7 +69,7 @@ func (session *nativeSession) sessionCommand(attached *attachedPresentation, pic
 			setNotice(&attached.feedback, presentationTime(clock), "/rewind is disabled before the first user turn", false)
 			return nil
 		}
-		showRewindPicker(&session.Client, picker, session.review)
+		showRewindPicker(&session.Client, picker, session.review, session.rewindExecutable)
 		(*editor).Take()
 		return nil
 	}

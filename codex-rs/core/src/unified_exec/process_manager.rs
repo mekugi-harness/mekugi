@@ -561,12 +561,7 @@ impl UnifiedExecProcessManager {
         let prepared = &request.prepared;
         let command = &prepared.resolved.command;
         let cwd = prepared.cwd.clone();
-        let large_capture = completion
-            .as_ref()
-            .is_some_and(|completion| completion.timeout.is_none());
-        let process = self
-            .open_session_with_sandbox(&request, context, large_capture)
-            .await;
+        let process = self.open_session_with_sandbox(&request, context).await;
 
         let (attempt, mut deferred_network_approval) = match process {
             Ok((attempt, deferred_network_approval)) => (attempt, deferred_network_approval),
@@ -676,80 +671,25 @@ impl UnifiedExecProcessManager {
         // (via start_streaming_output above) and collect a snapshot here for
         // the tool response body.
         let wait = completion.as_ref().map_or_else(
-            || Some(Duration::from_millis(yield_time_ms)),
+            || Duration::from_millis(yield_time_ms),
             |completion| completion.timeout,
         );
-        let (
-            mut collected_output,
-            mut original_token_count,
-            mut output_omitted_bytes,
-            mut collected,
-        ) = if let Some(wait) = wait {
-            let deadline = start.checked_add(wait).ok_or_else(|| {
-                UnifiedExecError::process_failed("timeout_ms is too large".into())
-            })?;
-            let collected_output = Self::collect_output_until_deadline(
-                process.output_handles(),
-                Some(context.session.subscribe_elicitation_pause_state()),
-                deadline,
-            )
-            .await;
-            let original_token_count = usize::try_from(approx_tokens_from_byte_count(
-                collected_output.total_bytes(),
-            ))
-            .unwrap_or(usize::MAX);
-            let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
-            let collected = CapturedStream::from(&collected_output);
-            (
-                Some(collected_output),
-                original_token_count,
-                output_omitted_bytes,
-                collected,
-            )
-        } else {
-            // Internal source readers wait for exit and closed pipes without a polling deadline.
-            let output = process.output_handles();
-            tokio::select! {
-                _ = process.wait_for_exit() => {}
-                _ = context.cancellation_token.cancelled() => {}
-            }
-            loop {
-                let closed = output.output_closed_notify.notified();
-                tokio::pin!(closed);
-                closed.as_mut().enable();
-                if output.output_closed.load(Ordering::Acquire) {
-                    break;
-                }
-                tokio::select! {
-                    _ = &mut closed => {}
-                    _ = context.cancellation_token.cancelled() => break,
-                }
-            }
-            let mut guard = output.output_buffer.lock().await;
-            if let Some(large_capture) = guard.large_capture.take() {
-                let original_token_count =
-                    usize::try_from(approx_tokens_from_byte_count(large_capture.total_bytes()))
-                        .unwrap_or(usize::MAX);
-                let output_omitted_bytes = NonZeroUsize::new(large_capture.omitted_bytes());
-                let collected = CapturedStream::from(&large_capture);
-                (None, original_token_count, output_omitted_bytes, collected)
-            } else {
-                let pending = std::mem::take(&mut guard.pending);
-                let original_token_count =
-                    usize::try_from(approx_tokens_from_byte_count(pending.total_bytes()))
-                        .unwrap_or(usize::MAX);
-                let output_omitted_bytes = NonZeroUsize::new(pending.omitted_bytes());
-                let collected = CapturedStream::from(&pending);
-                (
-                    Some(pending),
-                    original_token_count,
-                    output_omitted_bytes,
-                    collected,
-                )
-            }
-        };
+        let deadline = start
+            .checked_add(wait)
+            .ok_or_else(|| UnifiedExecError::process_failed("timeout_ms is too large".into()))?;
+        let mut collected_output = Self::collect_output_until_deadline(
+            process.output_handles(),
+            Some(context.session.subscribe_elicitation_pause_state()),
+            deadline,
+        )
+        .await;
+        let mut original_token_count = usize::try_from(approx_tokens_from_byte_count(
+            collected_output.total_bytes(),
+        ))
+        .unwrap_or(usize::MAX);
+        let mut output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+        let mut collected = CapturedStream::from(&collected_output);
         if let Some(completion) = completion.as_mut()
-            && completion.timeout.is_some()
             && !process.has_exited()
         {
             completion.timed_out = true;
@@ -830,19 +770,16 @@ impl UnifiedExecProcessManager {
                 } => (Some(process_id), exit_code),
                 ProcessStatus::Exited { exit_code, entry } => {
                     entry.process.cancellation_token().cancel();
-                    if let Some(collected_output) = collected_output.as_mut() {
-                        let trailing = std::mem::take(&mut output_buffer.lock().await.pending);
-                        if trailing.retained_bytes() > 0 || trailing.omitted_bytes() > 0 {
-                            collected_output.push_buffer(trailing);
-                            original_token_count = usize::try_from(approx_tokens_from_byte_count(
-                                collected_output.total_bytes(),
-                            ))
-                            .unwrap_or(usize::MAX);
-                            output_omitted_bytes =
-                                NonZeroUsize::new(collected_output.omitted_bytes());
-                            collected = CapturedStream::from(&*collected_output);
-                            text = collected.text.clone();
-                        }
+                    let trailing = std::mem::take(&mut output_buffer.lock().await.pending);
+                    if trailing.retained_bytes() > 0 || trailing.omitted_bytes() > 0 {
+                        collected_output.push_buffer(trailing);
+                        original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                            collected_output.total_bytes(),
+                        ))
+                        .unwrap_or(usize::MAX);
+                        output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+                        collected = CapturedStream::from(&collected_output);
+                        text = collected.text.clone();
                     }
                     if let Err(message) =
                         finish_deferred_network_approval_after_process_exit_for_session(
@@ -1429,7 +1366,6 @@ impl UnifiedExecProcessManager {
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         tty: bool,
         environment: &codex_exec_server::Environment,
-        large_capture: bool,
         #[cfg(unix)] exec_track: Option<(
             Arc<ExecTrackAttachment>,
             Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
@@ -1451,7 +1387,6 @@ impl UnifiedExecProcessManager {
             network_policy_decider,
             tty,
             environment,
-            large_capture,
             exec_track,
         )
         .await
@@ -1486,7 +1421,6 @@ impl UnifiedExecProcessManager {
             network_policy_decider,
             tty,
             environment,
-            /*large_capture*/ false,
             None,
         )
         .await
@@ -1502,7 +1436,6 @@ impl UnifiedExecProcessManager {
         network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
         tty: bool,
         environment: &codex_exec_server::Environment,
-        large_capture: bool,
         #[cfg(unix)] exec_track: Option<(
             Arc<ExecTrackAttachment>,
             Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
@@ -1544,7 +1477,6 @@ impl UnifiedExecProcessManager {
             return UnifiedExecProcess::from_exec_server_started_with_exec_track(
                 started,
                 output_drain_policy,
-                large_capture,
                 exec_track,
             )
             .await;
@@ -1618,13 +1550,8 @@ impl UnifiedExecProcessManager {
         .await;
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned_with_exec_track(
-            spawned,
-            request.sandbox(),
-            large_capture,
-            exec_track,
-        )
-        .await
+        UnifiedExecProcess::from_spawned_with_exec_track(spawned, request.sandbox(), exec_track)
+            .await
     }
 
     #[tracing::instrument(
@@ -1637,7 +1564,6 @@ impl UnifiedExecProcessManager {
         &self,
         request: &ExecCommandRequest,
         context: &UnifiedExecContext,
-        large_capture: bool,
     ) -> Result<(UnifiedExecAttempt, Option<DeferredNetworkApproval>), UnifiedExecError> {
         let prepared = &request.prepared;
         let shell_environment_policy = prepared.turn_environment.shell_environment_policy();
@@ -1689,7 +1615,6 @@ impl UnifiedExecProcessManager {
             explicit_env_overrides,
             network: request.network.clone(),
             exec_approval_requirement,
-            large_capture,
         };
         let tool_ctx = ToolCtx {
             session: context.session.clone(),

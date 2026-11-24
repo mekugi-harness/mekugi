@@ -37,6 +37,7 @@ pub use rewriter::parse_bash;
 pub use rewriter::rewrite_script;
 pub use rewriter::rewrite_script_tree;
 pub use rewriter::static_word_value;
+pub use rewriter::static_word_value_with_expansion;
 pub use secret::SecretString;
 
 /// Stage guard-only aliases when an interactive session first uses its shell.

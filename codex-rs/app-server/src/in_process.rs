@@ -913,7 +913,6 @@ async fn start_uninitialized(mut args: InProcessStartArgs) -> IoResult<InProcess
         drop(writer_rx);
         drop(process_reply_rx);
         drop(processor_tx);
-        outgoing_message_sender.shutdown_host_requests().await;
         outgoing_message_sender
             .cancel_all_requests(Some(internal_error(
                 "in-process app-server runtime is shutting down",

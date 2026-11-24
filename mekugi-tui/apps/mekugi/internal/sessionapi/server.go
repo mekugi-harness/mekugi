@@ -22,7 +22,6 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -128,7 +127,6 @@ type Server struct {
 	mu              sync.Mutex
 	profileIdentity ProfileIdentity
 	requests        NativeRuntime
-	nativeForeign   func(context.Context, appserver.AgentForeignRequest) (appserver.AgentForeignResponse, error)
 	sideThreads     func(string) bool
 	childAttachment func(context.Context, string, string) error
 	childAttach     sync.Mutex

@@ -23,12 +23,12 @@ import (
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 )
 
-func showRewindPicker(control *sessioncontrol.Client[appServerRequest], picker *composerPicker, review *sessionreview.Review) {
+func showRewindPicker(control *sessioncontrol.Client[appServerRequest], picker *composerPicker, review *sessionreview.Review, executable string) {
 	picker.cancelScan()
 	picker.openMenu("rewind")
 	picker.Target, picker.Choices, picker.Problem, picker.Loading = completion.Target{}, nil, "", true
 	picker.rewindThread = control.Thread
-	picker.rewind = &rewindSelection{problem: "saved change evidence is unavailable"}
+	picker.rewind = &rewindSelection{problem: "saved change evidence is unavailable", executable: executable}
 	if review != nil && review.Projection.Retained.Store != nil && review.Projection.Data != nil && review.Failure == "" && !review.Restoring() {
 		picker.rewind.snapshot, picker.rewind.problem = review.Projection.Data, ""
 		picker.rewind.scope = review.Projection.Scope
@@ -244,6 +244,7 @@ type rewindSelection struct {
 	sources                      []binding.ThreadInfo
 	pending                      []string
 	turn, item, command, problem string
+	executable                   string
 }
 
 func (p *composerPicker) readRewindSource(control *sessioncontrol.Client[appServerRequest], parent context.Context) {
@@ -278,6 +279,8 @@ func (p *composerPicker) readRewindSource(control *sessioncontrol.Client[appServ
 		result := pickerScanResult{id: id, rewind: true}
 		if err != nil {
 			result.problem = err.Error()
+		} else if selection.executable == "" {
+			result.problem = "saved change frontend is unavailable"
 		} else {
 			var commands []string
 			workspaces := make(map[string]int)
@@ -286,7 +289,7 @@ func (p *composerPicker) readRewindSource(control *sessioncontrol.Client[appServ
 				if !exists {
 					index = len(commands)
 					workspaces[change.Workspace] = index
-					commands = append(commands, "mchanges revert")
+					commands = append(commands, commandargs.Quote(selection.executable)+" revert")
 				}
 				commands[index] += " " + commandargs.Quote(change.ID)
 			}

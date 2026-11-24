@@ -1,58 +1,303 @@
-//! Capture selections borrow the host's retained evidence. Delivery is proven by
-//! native history, not by a callback reply or an unprinted JavaScript result.
-
-use std::collections::BTreeMap;
-
-use codex_history::ResponseItemEnvelope;
-use codex_protocol::agent_capture::*;
-use tokio_util::sync::CancellationToken;
+//! Native retained records are immutable. A sampled, complete history item is
+//! the receipt for a change, not the worker's return or an unprinted result.
 
 use super::Session;
+use crate::agent_communication::FinalCaptureAttachment;
+use codex_change_history::{
+    ChangeHistoryStore, ChangeId, ChangeIndexEntry, ChangeRecord, FileState, compose_diff,
+    expand_id_spec,
+};
+use codex_history::ResponseItemEnvelope;
+use codex_protocol::agent_capture::{CaptureCursor, CaptureInterval};
+use codex_protocol::{SessionId, ThreadId};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
+use std::path::{Component, Path, PathBuf};
 
-impl Session {
-    pub(crate) async fn project_final_capture(
-        &self,
-        capture: &crate::agent_communication::FinalCaptureAttachment,
-    ) -> String {
-        if capture.resource_ref.is_empty() {
-            return capture.full_text.clone();
+#[derive(Clone)]
+pub(crate) struct ProgressActor {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) task_name: String,
+}
+
+pub(crate) struct ProgressCapture {
+    pub(crate) actor: ProgressActor,
+    pub(crate) entries: Vec<ChangeIndexEntry>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ProgressOutput {
+    pub(crate) text: String,
+    pub(crate) delivered_intervals: Vec<CaptureInterval>,
+}
+
+pub(crate) fn interval(id: &ChangeId, sequence: u64) -> CaptureInterval {
+    CaptureInterval {
+        key: format!("native:{id}"),
+        change_id: id.to_string(),
+        record_order: sequence,
+        legacy_record_key: None,
+        first_chunk: 1,
+        last_chunk: 1,
+    }
+}
+
+#[tracing::instrument(skip_all)]
+pub(crate) async fn read_change_source(
+    session: SessionId,
+    selection: Vec<String>,
+    recipient: Option<ThreadId>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let store =
+            ChangeHistoryStore::open_existing(crate::exec_env::change_history_dir(session))?;
+        let ids = selection
+            .iter()
+            .map(|spec| expand_id_spec(spec))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut records = store.load_records(&ids.into_iter().flatten().collect::<Vec<_>>())?;
+        if let Some(recipient) = recipient {
+            let recipient = recipient.to_string();
+            records.retain(|record| {
+                record.metadata.thread_id != recipient && record.metadata.source_kind.is_authored()
+            });
         }
-        let project = async {
-            let resources = self
-                .services
-                .local_agent_runtime
-                .host_resources
-                .get()
-                .ok_or_else(|| "capture resource owner unavailable".to_string())?;
-            let (recipient_context_id, seen) = self.capture_context().await;
-            let request = FinalCaptureProjectRequest {
-                root_thread_id: capture.root_thread_id,
-                thread_id: capture.sender_thread_id,
-                operation_id: capture.operation_id.clone(),
-                recipient_thread_id: self.thread_id,
-                recipient_cwd: capture.recipient_cwd.clone(),
-                recipient_context_id,
-                resource_ref: capture.resource_ref.clone(),
-                seen,
-            };
-            let cancellation = self.services.local_agent_runtime.shutdown.child_token();
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => Err("capture projection cancelled".to_string()),
-                result = (resources.project_final_capture)(request, cancellation.clone()) =>
-                    result.map(|response| response.text).map_err(|error| error.to_string()),
+        render_composed_change_source(
+            &store,
+            &records,
+            crate::context_sources::MAX_SOURCE_BYTES,
+        )?
+            .ok_or_else(|| anyhow::anyhow!("source exceeded the retained change attachment budget"))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+fn normalize_abs_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(comp.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                out.push(comp.as_os_str());
             }
         }
-        .await;
-        match project {
-            Ok(text) => text,
-            Err(error) => format!(
-                "{}\nCapture projection unavailable: {error}. Full frozen selection retained above.\n",
-                capture.full_text
-            ),
+    }
+    out
+}
+
+fn render_composed_change_source(
+    store: &ChangeHistoryStore,
+    records: &[ChangeRecord],
+    limit: usize,
+) -> anyhow::Result<Option<String>> {
+    let mut ordered: Vec<&ChangeRecord> = records.iter().collect();
+    ordered.sort_by_key(|record| record.sequence);
+
+    let mut body = String::new();
+    if ordered
+        .iter()
+        .any(|record| record.files.iter().any(|file| !file.coverage.is_complete()))
+    {
+        let notice = "Incomplete capture coverage.\n";
+        if notice.len() > limit {
+            return Ok(None);
+        }
+        body.push_str(notice);
+    }
+
+    // Compose consecutive per-file transitions whose retained endpoints match so
+    // superseded intermediate text is omitted, without folding gaps from skipped
+    // records into the selected edits.
+    let mut by_path: BTreeMap<PathBuf, Vec<(u64, FileState, Vec<ChangeRecord>)>> = BTreeMap::new();
+    for record in ordered {
+        for file in &record.files {
+            let key = normalize_abs_path(&file.abs_path);
+            let single_file = ChangeRecord {
+                schema_version: record.schema_version,
+                id: record.id.clone(),
+                sequence: record.sequence,
+                metadata: record.metadata.clone(),
+                files: vec![file.clone()],
+            };
+            let runs = by_path.entry(key).or_default();
+            if let Some((last_seq, last_after, run)) = runs.last_mut() {
+                if *last_seq == record.sequence {
+                    run.push(single_file);
+                } else if file.moved_from.is_none()
+                    && run.last().is_none_or(|prev| {
+                        prev.files
+                            .iter()
+                            .all(|prev_file| prev_file.moved_from.is_none())
+                    })
+                    && *last_after == file.before
+                {
+                    *last_seq = record.sequence;
+                    *last_after = file.after.clone();
+                    run.push(single_file);
+                } else {
+                    runs.push((record.sequence, file.after.clone(), vec![single_file]));
+                }
+            } else {
+                runs.push((record.sequence, file.after.clone(), vec![single_file]));
+            }
         }
     }
 
+    for runs in by_path.into_values() {
+        for (_, _, run) in runs {
+            for diff in compose_diff(store, &run, &[])? {
+                if body.len().saturating_add(diff.unified_diff.len()) > limit {
+                    return Ok(None);
+                }
+                body.push_str(&diff.unified_diff);
+            }
+        }
+    }
+    Ok(Some(body))
+}
+
+fn render_change_record(
+    store: &ChangeHistoryStore,
+    record: &ChangeRecord,
+    limit: usize,
+) -> anyhow::Result<Option<String>> {
+    let mut body = String::new();
+    if record.files.iter().any(|file| !file.coverage.is_complete()) {
+        let notice = "Incomplete capture coverage.\n";
+        if notice.len() > limit {
+            return Ok(None);
+        }
+        body.push_str(notice);
+    }
+    for diff in compose_diff(store, std::slice::from_ref(record), &[])? {
+        if body.len().saturating_add(diff.unified_diff.len()) > limit {
+            return Ok(None);
+        }
+        body.push_str(&diff.unified_diff);
+    }
+    Ok(Some(body))
+}
+
+impl FinalCaptureAttachment {
+    pub(crate) async fn freeze(
+        session: SessionId,
+        recipient: ThreadId,
+        sources: Vec<String>,
+    ) -> anyhow::Result<(Self, Vec<String>)> {
+        tokio::task::spawn_blocking(move || {
+            let store =
+                ChangeHistoryStore::open_existing(crate::exec_env::change_history_dir(session))?;
+            let entries = store.list_entries()?;
+            let index: HashMap<_, _> = entries.iter().map(|entry| (&entry.id, entry)).collect();
+            let mut changes = Vec::new();
+            let mut diagnostics = Vec::new();
+            let recipient = recipient.to_string();
+            for source in sources {
+                let selection = source
+                    .strip_prefix("mchanges:")
+                    .ok_or_else(|| anyhow::anyhow!("invalid change source: {source}"))?;
+                for spec in selection.split(',') {
+                    let ids = match expand_id_spec(spec) {
+                        Ok(ids) => ids,
+                        Err(error) => {
+                            diagnostics.push(error.to_string());
+                            continue;
+                        }
+                    };
+                    let mut first_missing = None;
+                    for id in ids {
+                        if let Some(entry) = index.get(&id) {
+                            if entry.thread_id != recipient && entry.source_kind.is_authored() {
+                                changes.push(interval(&id, entry.sequence));
+                            }
+                        } else if first_missing.is_none() {
+                            first_missing = Some(id);
+                        }
+                    }
+                    // Bound the diagnostic by the selection, not by a missing range's length.
+                    if let Some(id) = first_missing {
+                        diagnostics.push(format!("mchanges:{spec}: unknown change ID {id}"));
+                    }
+                }
+            }
+            changes.sort_unstable_by_key(|i| i.record_order);
+            changes.dedup_by_key(|i| i.record_order);
+            Ok((
+                Self {
+                    session_id: session,
+                    changes,
+                },
+                diagnostics,
+            ))
+        })
+        .await?
+    }
+
+    pub(crate) async fn project(&self, seen: &[CaptureCursor]) -> (String, Vec<CaptureInterval>) {
+        let seen: HashSet<_> = seen.iter().map(|cursor| &cursor.key).collect();
+        let intervals: Vec<_> = self
+            .changes
+            .iter()
+            .filter(|i| !seen.contains(&i.key))
+            .cloned()
+            .collect();
+        if intervals.is_empty() {
+            return (String::new(), intervals);
+        }
+        let selection = intervals
+            .iter()
+            .map(|i| i.change_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let dir = crate::exec_env::change_history_dir(self.session_id);
+        let ids: Result<Vec<ChangeId>, _> = intervals.iter().map(|i| i.change_id.parse()).collect();
+        let rendered = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+            let store = ChangeHistoryStore::open_existing(dir)?;
+            let records = store.load_records(&ids?)?;
+            let mut text = String::new();
+            for record in &records {
+                let Some(body) =
+                    render_change_record(&store, record, 16_000usize.saturating_sub(text.len()))?
+                else {
+                    return Ok(None);
+                };
+                let source = format!("mchanges:{}", record.id);
+                let frame = crate::context_sources::frame_source_body(&source, &body)?;
+                if text.len() + frame.len() + 1 > 16_000 {
+                    return Ok(None);
+                }
+                writeln!(text, "{frame}")?;
+            }
+            text.pop();
+            Ok(Some(text))
+        })
+        .await;
+        let source = format!("mchanges:{selection}");
+        match rendered
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+        {
+            Ok(Some(text)) => (text, intervals),
+            Ok(None) => (
+                format!("Captured changes exceed the attachment budget. Read {source}."),
+                Vec::new(),
+            ),
+            Err(error) => (
+                format!("{source}: CONTENT NOT ATTACHED: {error}"),
+                Vec::new(),
+            ),
+        }
+    }
+}
+
+impl Session {
     pub(crate) async fn capture_context(&self) -> (String, Vec<CaptureCursor>) {
         let state = self.state.lock().await;
         let context_id = self.current_window_from_state(&state).2.to_string();
@@ -62,58 +307,40 @@ impl Session {
 
     pub(crate) async fn select_progress_ranges(
         &self,
-        operation_id: &str,
         selected: Vec<ProgressActor>,
-        cancellation: CancellationToken,
-    ) -> anyhow::Result<Option<ProgressFreezeResponse>> {
-        let Some(resources) = self.services.local_agent_runtime.host_resources.get() else {
-            return Ok(None);
-        };
-        let (recipient_context_id, seen) = self.capture_context().await;
-        let request = ProgressFreezeRequest {
-            root_thread_id: self.session_id().into(),
-            operation_id: operation_id.to_string(),
-            caller_thread_id: self.thread_id,
-            recipient_context_id,
-            selected,
-            seen,
-        };
-        let frozen = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => anyhow::bail!("capture selection cancelled"),
-            result = (resources.freeze_progress)(request, cancellation.clone()) => result?,
-        };
-        Ok((!frozen.agents.is_empty()).then_some(frozen))
-    }
-
-    pub(crate) async fn prepare_progress_output(
-        &self,
-        operation_id: &str,
-        frozen: ProgressFreezeResponse,
-        agents: Vec<PreparedProgressAgent>,
-        cancellation: CancellationToken,
-    ) -> anyhow::Result<ProgressOutputResponse> {
-        let resources = self
-            .services
-            .local_agent_runtime
-            .host_resources
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("capture resource owner unavailable"))?;
-        let (recipient_context_id, _) = self.capture_context().await;
-        let request = ProgressOutputRequest {
-            root_thread_id: self.session_id().into(),
-            operation_id: operation_id.to_string(),
-            caller_thread_id: self.thread_id,
-            recipient_context_id,
-            selection_ref: frozen.selection_ref,
-            agents,
-            coverage: frozen.coverage,
-        };
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => anyhow::bail!("capture output cancelled"),
-            result = (resources.prepare_progress_output)(request, cancellation.clone()) => Ok(result?),
-        }
+    ) -> anyhow::Result<Vec<ProgressCapture>> {
+        let (_, seen) = self.capture_context().await;
+        let dir = crate::exec_env::change_history_dir(self.session_id());
+        tokio::task::spawn_blocking(move || {
+            if !dir.try_exists()? {
+                return Ok(Vec::new());
+            }
+            let seen: HashSet<_> = seen.into_iter().map(|cursor| cursor.key).collect();
+            let mut agents: Vec<_> = selected
+                .into_iter()
+                .map(|actor| ProgressCapture {
+                    actor,
+                    entries: Vec::new(),
+                })
+                .collect();
+            let positions: HashMap<_, _> = agents
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (a.actor.thread_id.to_string(), i))
+                .collect();
+            for entry in ChangeHistoryStore::open_existing(dir)?.list_entries()? {
+                if entry.source_kind.is_authored()
+                    && let Some(&i) = positions.get(&entry.thread_id)
+                {
+                    if !seen.contains(&format!("native:{}", entry.id)) {
+                        agents[i].entries.push(entry);
+                    }
+                }
+            }
+            agents.retain(|a| !a.entries.is_empty());
+            Ok(agents)
+        })
+        .await?
     }
 }
 
@@ -253,20 +480,15 @@ mod tests {
         let (session, context, _events) =
             crate::session::tests::make_session_and_context_with_rx().await;
         let facts = Arc::new(Mutex::new(Vec::new()));
-        let mut resources =
-            crate::agent::host_resources::tests::admission_resources(Arc::new(|_, _| {
-                Box::pin(async { panic!("not spawning") })
-            }));
-        resources.record_feature_use = Some(Arc::new({
-            let facts = facts.clone();
-            move |fact| facts.lock().unwrap().push(fact)
-        }));
         assert!(
             session
                 .services
                 .local_agent_runtime
-                .host_resources
-                .set(resources)
+                .feature_use
+                .set(Arc::new({
+                    let facts = facts.clone();
+                    move |fact| facts.lock().unwrap().push(fact)
+                }))
                 .is_ok()
         );
         for truncated in [false, true] {
@@ -291,106 +513,106 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn final_mail_projects_when_consumed_and_reset_restores_eligibility() {
-        use crate::agent_communication::{
-            AgentCommunicationContext, AgentCommunicationKind, FinalCaptureAttachment,
-            MessageDelivery,
+    #[test]
+    fn composed_change_source_merges_consecutive_edits_and_preserves_gaps() -> anyhow::Result<()> {
+        use codex_change_history::{
+            ChangeMetadata, ChangeSourceKind, CoverageStatus, FileSnapshot, PendingFileChange,
         };
-        use codex_protocol::protocol::InterAgentCommunication;
-        use codex_protocol::{AgentPath, ThreadId};
-        use std::sync::{Arc, Mutex};
-        let (session, context, _events) =
-            crate::session::tests::make_session_and_context_with_rx().await;
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let resources = crate::AgentHostResources {
-            route_foreign: None,
-            prepare_child: None,
-            before_tool: None,
-            record_feature_use: None,
-            freeze_progress: Arc::new(|_, _| Box::pin(async { panic!("not progress") })),
-            prepare_progress_output: Arc::new(|_, _| Box::pin(async { panic!("not progress") })),
-            prepare_final_capture: Arc::new(|_, _| Box::pin(async { panic!("already frozen") })),
-            project_final_capture: Arc::new({
-                let requests = Arc::clone(&requests);
-                move |request, _| {
-                    let seen = !request.seen.is_empty();
-                    requests.lock().unwrap().push(request);
-                    Box::pin(async move {
-                        Ok(FinalCaptureProjectResponse {
-                            text: if seen {
-                                "unseen extension"
-                            } else {
-                                "full frozen evidence"
-                            }
-                            .into(),
-                        })
-                    })
-                }
-            }),
+
+        let workspace = tempfile::tempdir()?;
+        let store = ChangeHistoryStore::open(workspace.path().join("changes"))?;
+        let path = workspace.path().join("notes.txt");
+        let record = |call_id: &str,
+                      before: FileSnapshot,
+                      after: FileSnapshot,
+                      coverage: CoverageStatus| {
+            store.record_change(
+                ChangeMetadata {
+                    thread_id: "worker".into(),
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    call_id: call_id.into(),
+                    source_kind: ChangeSourceKind::ApplyPatch,
+                    workspace_root: workspace.path().to_path_buf(),
+                    created_at: 1,
+                    exit_code: Some(0),
+                    summary: None,
+                    claim_key: None,
+                },
+                vec![PendingFileChange {
+                    rel_path: "notes.txt".into(),
+                    abs_path: path.clone(),
+                    moved_from: None,
+                    before,
+                    after,
+                    coverage,
+                }],
+            )
         };
+
+        let first = record(
+            "c1",
+            FileSnapshot::Missing,
+            FileSnapshot::Present(b"superseded draft\n".to_vec()),
+            CoverageStatus::Complete,
+        )?;
+        let second = record(
+            "c2",
+            FileSnapshot::Present(b"superseded draft\n".to_vec()),
+            FileSnapshot::Present(b"final text\n".to_vec()),
+            CoverageStatus::Complete,
+        )?;
+        let _skipped = record(
+            "c3",
+            FileSnapshot::Present(b"final text\n".to_vec()),
+            FileSnapshot::Present(b"final text\nskipped edit\n".to_vec()),
+            CoverageStatus::Complete,
+        )?;
+        let after_gap = record(
+            "c4",
+            FileSnapshot::Present(b"final text\nskipped edit\n".to_vec()),
+            FileSnapshot::Present(b"final text\nskipped edit\nafter gap\n".to_vec()),
+            CoverageStatus::Partial {
+                reason: "size cap".into(),
+            },
+        )?;
+
+        // Consecutive edits compose into one cumulative diff without intermediate text.
+        let consecutive = render_composed_change_source(
+            &store,
+            &[first.clone(), second.clone()],
+            16_000,
+        )?
+        .expect("within budget");
+        assert!(consecutive.contains("+final text"), "{consecutive}");
+        assert!(!consecutive.contains("superseded draft"), "{consecutive}");
         assert!(
-            session
-                .services
-                .local_agent_runtime
-                .host_resources
-                .set(resources)
-                .is_ok()
+            !consecutive.contains("Incomplete capture coverage."),
+            "{consecutive}"
         );
-        let (context_id, _) = session.capture_context().await;
-        session.state.lock().await.history.record_annotated_items(
-            &mut [delivery(1, 1, &context_id, 1, 2)],
-            codex_utils_output_truncation::TruncationPolicy::Tokens(1000),
-        );
-        let sender = ThreadId::new();
-        let mut publication =
-            AgentCommunicationContext::new(AgentCommunicationKind::Result, sender);
-        publication.result_operation = Some("final".into());
-        publication.final_capture = Some(Arc::new(FinalCaptureAttachment {
-            root_thread_id: session.session_id().into(),
-            sender_thread_id: sender,
-            operation_id: "final".into(),
-            recipient_cwd: Some("/workspace".into()),
-            resource_ref: "frozen".into(),
-            full_text: "full frozen evidence".into(),
-        }));
-        for reset in [false, true] {
-            let delivery = MessageDelivery::publish_with_context(&publication, &[]);
-            if reset {
-                session.replace_history(Vec::new(), None).await;
-            }
-            let mail = crate::PendingAgentMessage::new(
-                InterAgentCommunication::new(
-                    AgentPath::try_from("/root/child").unwrap(),
-                    AgentPath::root(),
-                    Vec::new(),
-                    "original final answer".into(),
-                    false,
-                ),
-                Some(delivery.clone()),
-            );
-            assert_eq!(mail.result_sender(), Some(sender));
-            session
-                .record_inter_agent_communication(&context, context.model_info(), mail)
-                .await;
-            assert!(delivery.final_capture().is_none());
-            let history = session.clone_history().await;
-            let text = serde_json::to_string(&history.raw_items().collect::<Vec<_>>()).unwrap();
-            assert!(text.contains("original final answer"));
-            assert!(text.contains(if reset {
-                "full frozen evidence"
-            } else {
-                "unseen extension"
-            }));
-        }
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].seen[0].through_chunk, 2);
-        assert!(requests[1].seen.is_empty());
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.operation_id == "final" && request.resource_ref == "frozen")
-        );
+
+        // Consecutive edits before a gap compose, while the skipped edit is not folded in.
+        let with_gap = render_composed_change_source(
+            &store,
+            &[first.clone(), second.clone(), after_gap.clone()],
+            16_000,
+        )?
+        .expect("within budget");
+        assert!(with_gap.contains("Incomplete capture coverage.\n"), "{with_gap}");
+        assert!(with_gap.contains("+final text"), "{with_gap}");
+        assert!(with_gap.contains("+after gap"), "{with_gap}");
+        assert!(!with_gap.contains("superseded draft"), "{with_gap}");
+        assert!(!with_gap.contains("+skipped edit"), "{with_gap}");
+        assert!(with_gap.contains("# coverage:"), "{with_gap}");
+
+        // Per-record final handoff rendering keeps coverage diagnostics and budget enforcement.
+        let single = render_change_record(&store, &after_gap, 16_000)?.expect("within budget");
+        assert!(single.contains("Incomplete capture coverage.\n"), "{single}");
+        assert!(single.contains("+after gap"), "{single}");
+        assert!(render_change_record(&store, &after_gap, 10)?.is_none());
+
+        // Output budget is enforced for composed reads too.
+        assert!(render_composed_change_source(&store, &[first, second], 10)?.is_none());
+        Ok(())
     }
 }

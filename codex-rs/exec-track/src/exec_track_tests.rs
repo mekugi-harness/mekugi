@@ -907,7 +907,12 @@ fn read_policy_blocks_denied_workspace_and_mktemp_paths() {
         p != secret && p != secret_canon && p.file_name().and_then(|n| n.to_str()) != Some(".env")
     };
 
-    let capture = ShellWriteCapture::prepare_with_policy("echo x >> .env", dir.path(), can_read);
+    let capture = ShellWriteCapture::prepare_with_policy(
+        "echo x >> .env",
+        dir.path(),
+        /*session_tmp*/ None,
+        can_read,
+    );
     assert_eq!(capture.candidate_count(), 0);
 
     let mktemp_creations = vec![

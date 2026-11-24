@@ -40,16 +40,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `mekugi-app-server` to App-Server Protocol v2 `shellGuard/requestApproval` and
   `shellGuard/requestSecret` requests, keeping secrets zeroized and excluded
   from rollouts, tracing, and analytics.
-- Native pre-execution capture observation barrier (`execution/beforeTool`):
-  when a client opts in via `InitializeCapabilities.observeBeforeTool`,
-  `codex-core` emits an optional, owner-only `execution/beforeTool` v2 server
-  request (`threadId`, `turnId`, `itemId`, `tool`, `cwd`, `input`) immediately
-  before dispatching local `exec_command` (`Bash`) or `apply_patch` calls,
-  after user `PreToolUse` hooks run. A valid host acknowledgment, including an
-  empty result object, releases the barrier immediately. It uses a strict 500 ms
-  fail-open timeout so slow, disconnected, or failing observers never block or
-  alter native tool execution, while headless and unobserved runs incur zero
-  barrier wait.
+- Native coordination uses the shared thread manager for live foreign messages,
+  side questions, listing and inspection. Child startup, wait-progress selection
+  and final change delivery no longer request resources from a connected Go
+  client. Preload and context reset resolve retained change IDs from the
+  native store without a launcher opt-in. The retired resource
+  callbacks are no longer on the v2 wire.
 - Native change-evidence capture (`codex-change-history`, `MEKUGI-806`):
   `codex-core` captures pre-edit baseline bytes and post-edit observed bytes at
   the `apply_patch` tool boundary (covering direct calls, intercepted shell
@@ -77,9 +73,6 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   runtime, including the exec-server fixture's Linux sandbox helper so it can
   find the bundled `bwrap` without a system installation. The native development
   profile favors incremental rebuilds.
-- The root Just recipes build and package Mekugi's native runtime. `just test`
-  runs the Go workspace suite; use `just test-native` for the prepared native
-  suite or `just test-rust` for direct nextest runs.
 
 ## Execution and model guidance
 
@@ -143,9 +136,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   a concise unchanged notice on directory-only changes), falling back to full
   replacement for complete rewrites or legacy sessions without a baseline.
   Context usage notices and deduplication savings come from native observations
-  instead of host prompt rewriting. Notice IDs stay in local history, including
-  on resume, so full-history requests don't hit provider ID length limits.
-  Mekugi only promises resume for Mekugi sessions.
+  instead of host prompt rewriting. Mekugi only promises resume for Mekugi
+  sessions.
 - Migration 63 records completed compactions in Mekugi state. The upstream
   0.171.0 state migrations were moved to 64 and 65 to preserve the recorded
   checksum in existing Mekugi databases.

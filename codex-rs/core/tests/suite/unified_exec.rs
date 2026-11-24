@@ -533,6 +533,11 @@ async fn session_tmp_matches_world_facts_and_survives_exec_calls() -> Result<()>
             .shell_environment_policy
             .r#set
             .insert("SESSION_TMP".into(), "stale".into());
+        config
+            .permissions
+            .shell_environment_policy
+            .r#set
+            .insert("PATH".into(), "/usr/bin:/bin".into());
     });
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let path = std::env::temp_dir().join(format!(
@@ -543,14 +548,34 @@ async fn session_tmp_matches_world_facts_and_survives_exec_calls() -> Result<()>
         path.is_dir(),
         "session startup must prepare the scratch directory"
     );
+    fs::write(path.join("probe"), "before\n")?;
     let responses = [
-        ("write-scratch", r#"test -d "$SESSION_TMP" && printf scratch > "$SESSION_TMP/probe" && printf '%s' "$SESSION_TMP""#),
-        ("read-scratch", r#"read -r value < "$SESSION_TMP/probe"; printf '%s' "$value""#),
-    ].into_iter().map(|(id, command)| sse(vec![
-        ev_response_created(id),
-        ev_function_call(id, "exec_command", &json!({"cmd": command, "login": true, "yield_time_ms": 5000}).to_string()),
-        ev_completed(id),
-    ])).chain(std::iter::once(sse(vec![ev_assistant_message("done", "done"), ev_completed("done")]))).collect();
+        (
+            "write-scratch",
+            r#"printf 'scratch\n' > "$SESSION_TMP/probe"; printf '%s' "$SESSION_TMP""#,
+        ),
+        (
+            "read-scratch",
+            r#"read -r value < "$SESSION_TMP/probe"; printf '%s' "$value""#,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, command)| {
+        sse(vec![
+            ev_response_created(id),
+            ev_function_call(
+                id,
+                "exec_command",
+                &json!({"cmd": command, "login": true, "yield_time_ms": 5000}).to_string(),
+            ),
+            ev_completed(id),
+        ])
+    })
+    .chain(std::iter::once(sse(vec![
+        ev_assistant_message("done", "done"),
+        ev_completed("done"),
+    ])))
+    .collect();
     mount_sse_sequence(harness.server(), responses).await;
     harness
         .submit_with_permission_profile(
@@ -559,16 +584,21 @@ async fn session_tmp_matches_world_facts_and_survives_exec_calls() -> Result<()>
         )
         .await?;
     assert_eq!(
-        parse_unified_exec_output(&harness.function_call_stdout("write-scratch").await)?
-            .output
-            .trim(),
+        harness
+            .function_call_stdout("write-scratch")
+            .await
+            .lines()
+            .last()
+            .context("scratch path output")?,
         path.to_string_lossy()
     );
     assert_eq!(
-        parse_unified_exec_output(&harness.function_call_stdout("read-scratch").await)?
-            .output
-            .trim(),
-        "scratch"
+        harness
+            .function_call_stdout("read-scratch")
+            .await
+            .lines()
+            .last(),
+        Some("scratch")
     );
     let requests = harness.request_bodies().await;
     let contents = requests[0]["input"]
@@ -586,8 +616,17 @@ async fn session_tmp_matches_world_facts_and_survives_exec_calls() -> Result<()>
             .filter_map(|part| part["text"].as_str())
             .any(|text| text.contains(&scratch))
     );
-    std::fs::remove_file(path.join("probe"))?;
-    std::fs::remove_dir(path)?;
+    let store =
+        codex_change_history::ChangeHistoryStore::open_existing(path.join("change-history"))?;
+    let ids: Vec<_> = store
+        .list_entries()?
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect();
+    let diffs = codex_change_history::compose_diff(&store, &store.load_records(&ids)?, &[])?;
+    assert_eq!(diffs.len(), 1);
+    assert!(diffs[0].unified_diff.contains("-before\n+scratch\n"));
+    fs::remove_dir_all(path)?;
     Ok(())
 }
 

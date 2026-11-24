@@ -284,29 +284,27 @@ impl ThreadManagerState {
             /*resume_preparation*/ None,
         )
         .await?;
-        let items = results
-            .iter()
-            .flat_map(|message| {
-                let mut item =
-                    crate::session::session::Session::inter_agent_history_item(message, config);
-                if let Some(capture) = message
-                    .delivery
-                    .as_ref()
-                    .and_then(|delivery| delivery.final_capture())
-                {
-                    crate::session::session::Session::append_inter_agent_capture(
-                        &mut item,
-                        capture.full_text.clone(),
-                    );
-                }
-                [
-                    RolloutItem::InterAgentCommunicationMetadata {
-                        trigger_turn: message.trigger_turn,
-                    },
-                    RolloutItem::ResponseItem(ResponseItemEnvelope::new(item)),
-                ]
-            })
-            .collect::<Vec<_>>();
+        let mut items = Vec::with_capacity(2 * results.len());
+        for message in results {
+            let mut item =
+                crate::session::session::Session::inter_agent_history_item(message, config);
+            if let Some(capture) = message
+                .delivery
+                .as_ref()
+                .and_then(|delivery| delivery.final_capture())
+            {
+                crate::session::session::Session::append_inter_agent_capture(
+                    &mut item,
+                    capture.project(&[]).await.0,
+                );
+            }
+            items.extend([
+                RolloutItem::InterAgentCommunicationMetadata {
+                    trigger_turn: message.trigger_turn,
+                },
+                RolloutItem::ResponseItem(ResponseItemEnvelope::new(item)),
+            ]);
+        }
         let saved = writer.append_items(&items).await;
         // Shutdown flushes pending items and always releases the acquired writer.
         saved.and(writer.shutdown().await)?;

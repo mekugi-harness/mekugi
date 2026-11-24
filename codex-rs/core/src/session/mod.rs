@@ -253,7 +253,7 @@ pub(crate) mod file_audio;
 pub(crate) use file_audio::FileAudioDurations;
 
 mod approved_plan;
-mod capture_delivery;
+pub(crate) mod capture_delivery;
 mod code_mode_warning;
 mod compaction_replacement;
 mod config_refresh;
@@ -264,6 +264,7 @@ mod extension_interruption;
 pub(crate) mod extension_metrics;
 mod guardian_checkpoint;
 mod handlers;
+pub(crate) use handlers::inter_agent_communication;
 pub(crate) mod inject;
 mod reasoning_effort;
 pub(crate) mod submission;
@@ -2850,8 +2851,26 @@ impl Session {
                 .analytics_events_client
                 .track_guardian_session_event(self.thread_id, &event);
         }
-        self.send_event_raw(event).await;
-        self.maybe_publish_terminal_agent_result(turn_context, &legacy_source)
+        let native_result = turn_context.multi_agent_version == MultiAgentVersion::V2
+            && matches!(
+                &event.msg,
+                EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+            )
+            && matches!(
+                &turn_context.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    agent_path: Some(_),
+                    ..
+                })
+            );
+        if native_result && matches!(event.msg, EventMsg::TurnComplete(_)) {
+            // A ready status wakes wait_agent. First persist the terminal event,
+            // then queue its result (including the frozen capture) for the parent.
+            Box::pin(self.send_event_raw_with_persistence(event, true, None)).await;
+        } else {
+            self.send_event_raw(event).await;
+        }
+        self.maybe_publish_terminal_agent_result(turn_context, &legacy_source, native_result)
             .await;
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
@@ -2876,19 +2895,12 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
+        notify_native_parent: bool,
     ) {
         if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
             return;
         }
 
-        let notify_native_parent = turn_context.multi_agent_version == MultiAgentVersion::V2
-            && matches!(
-                &turn_context.session_source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    agent_path: Some(_),
-                    ..
-                })
-            );
         let reporter = self
             .outcome_reporting
             .as_ref()
@@ -2909,7 +2921,7 @@ impl Session {
         let status = match terminal_error_message {
             Some(message) => {
                 let status = AgentStatus::Errored(message);
-                if notify_native_parent {
+                if notify_native_parent && matches!(msg, EventMsg::TurnAborted(_)) {
                     self.agent_status.send_replace(status.clone());
                 }
                 status
@@ -2949,11 +2961,15 @@ impl Session {
             error_info,
         };
         let host_outcome = if notify_native_parent {
+            let status = outcome.status.clone();
             let host_outcome = reporter.is_some().then(|| outcome.clone());
             self.services
                 .agent_control
                 .turn_finished(outcome, &self.services.rollout_thread_trace)
                 .await;
+            if matches!(msg, EventMsg::TurnComplete(_)) {
+                self.agent_status.send_replace(status);
+            }
             host_outcome
         } else {
             Some(outcome)
@@ -3030,7 +3046,8 @@ impl Session {
 
     pub(crate) async fn send_event_raw(&self, event: Event) {
         // Keep event persistence out of callers' stack frames.
-        Box::pin(self.send_event_raw_with_persistence(event, /*persist*/ true)).await;
+        let status = agent_status_from_event(&event.msg);
+        Box::pin(self.send_event_raw_with_persistence(event, /*persist*/ true, status)).await;
     }
 
     /// Delivers an event without creating a local rollout for a thread that has not materialized.
@@ -3043,10 +3060,17 @@ impl Session {
                 true
             }
         };
-        self.send_event_raw_with_persistence(event, persist).await;
+        let status = agent_status_from_event(&event.msg);
+        self.send_event_raw_with_persistence(event, persist, status)
+            .await;
     }
 
-    async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+    async fn send_event_raw_with_persistence(
+        &self,
+        event: Event,
+        persist: bool,
+        status: Option<AgentStatus>,
+    ) {
         let flush_guardian_completion = persist
             && matches!(event.msg, EventMsg::TurnComplete(_))
             && self.is_private_guardian_reviewer().await;
@@ -3094,10 +3118,15 @@ impl Session {
         if flush_guardian_completion && let Err(err) = self.flush_rollout().await {
             warn!("failed to flush completed Guardian review: {err}");
         }
-        self.deliver_event_raw(event).await;
+        self.deliver_event_with_status(event, status).await;
     }
 
     pub(crate) async fn deliver_event_raw(&self, event: Event) {
+        let status = agent_status_from_event(&event.msg);
+        self.deliver_event_with_status(event, status).await;
+    }
+
+    async fn deliver_event_with_status(&self, event: Event, status: Option<AgentStatus>) {
         if let Some(parent_tx) = self.parent_observer_event_tx.get() {
             let forwarded = match &event.msg {
                 EventMsg::RawResponseItem(item) => {
@@ -3123,7 +3152,7 @@ impl Session {
             }
         }
         // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
+        if let Some(status) = status {
             self.agent_status.send_replace(status);
         }
         if let Err(e) = self.tx_event.send(event).await {
@@ -4952,24 +4981,37 @@ impl Session {
         communication: impl Into<crate::PendingAgentMessage>,
     ) {
         let communication = communication.into();
-        let mut response_item =
-            Self::inter_agent_history_item(&communication, &turn_context.config);
+        let response_item = Self::inter_agent_history_item(&communication, &turn_context.config);
         let capture = communication
             .delivery
             .as_ref()
             .and_then(|delivery| delivery.final_capture());
-        if let Some(capture) = capture.as_ref() {
-            Self::append_inter_agent_capture(
-                &mut response_item,
-                self.project_final_capture(capture).await,
-            );
+        let mut envelope = ResponseItemEnvelope::new(response_item);
+        if let Some(capture) = capture {
+            let (context_id, seen) = self.capture_context().await;
+            let (text, intervals) = capture.project(&seen).await;
+            if !text.is_empty() {
+                Self::append_inter_agent_capture(&mut envelope.item, text);
+                if !intervals.is_empty()
+                    && let Some((_, operation_id)) = communication
+                        .delivery
+                        .as_ref()
+                        .and_then(|d| d.result_operation())
+                {
+                    envelope
+                        .metadata
+                        .get_or_insert_default()
+                        .capture_deliveries
+                        .push(codex_history::CaptureDeliveryReceipt {
+                            operation_id,
+                            context_id,
+                            intervals,
+                        });
+                }
+            }
         }
         let (mut prepared, _) = self
-            .prepare_conversation_items_for_history(
-                turn_context,
-                model_info,
-                vec![ResponseItemEnvelope::new(response_item)],
-            )
+            .prepare_conversation_items_for_history(turn_context, model_info, vec![envelope])
             .await;
         let mut response_item = prepared.remove(0);
         let items = [response_item.item.clone()];
@@ -5013,7 +5055,10 @@ impl Session {
                     sender,
                     operation,
                     codex_protocol::feature_use::FeatureUseEvent::FinalDelivered {
-                        changes: capture.is_some(),
+                        changes: response_item
+                            .metadata
+                            .as_ref()
+                            .is_some_and(|metadata| !metadata.capture_deliveries.is_empty()),
                     },
                 );
             }

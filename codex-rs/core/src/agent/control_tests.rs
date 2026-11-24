@@ -5594,13 +5594,6 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
         .unwrap();
     assert_eq!(child.parent_thread_id, Some(parent_thread_id.to_string()));
     assert_eq!(child.agent_role.as_deref(), Some("explorer"));
-    assert_eq!(
-        manager
-            .loaded_agent_root(grandchild_thread_id)
-            .await
-            .unwrap(),
-        parent_thread_id
-    );
     manager.remove_thread(&parent_thread_id).await;
 
     let mut subtree_thread_ids = manager
@@ -6323,20 +6316,7 @@ async fn v2_spawn_freezes_recipient_sources_and_preload_before_input_admission()
         Some("reader".to_string()),
     )
     .unwrap();
-    let resources = crate::agent::host_resources::tests::admission_resources(Arc::new({
-        let recipient = recipient.clone();
-        move |request, _| {
-            assert_eq!(request.parent_thread_id, parent_id);
-            assert_eq!(request.local_cwd.as_deref(), recipient.to_str());
-            std::fs::write(recipient.join("preload"), "PRELOAD_SOURCE").unwrap();
-            Box::pin(async move {
-                Ok(codex_protocol::agent_capture::ChildHostAdmissionResponse {
-                    thread_id: request.thread_id,
-                })
-            })
-        }
-    }));
-    assert!(parent.install_agent_host_resources(resources));
+    std::fs::write(recipient.join("preload"), "PRELOAD_SOURCE").unwrap();
     let control = parent
         .session
         .services
@@ -6464,45 +6444,6 @@ async fn source_message_restores_evicted_recipient_without_starting_a_turn() {
 }
 
 #[tokio::test]
-async fn child_host_admission_does_not_invent_a_local_workspace() {
-    let (home, mut config) = test_config().await;
-    config.features.enable(Feature::MultiAgentV2).unwrap();
-    let harness = AgentControlHarness::new_with_config(home, config).await;
-    let (_, parent) = harness.start_paginated_thread().await;
-    let admitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let resources = crate::agent::host_resources::tests::admission_resources(Arc::new({
-        let admitted = admitted.clone();
-        move |request, _| {
-            assert_eq!(request.local_cwd, None);
-            admitted.store(true, std::sync::atomic::Ordering::SeqCst);
-            Box::pin(async move {
-                Ok(codex_protocol::agent_capture::ChildHostAdmissionResponse {
-                    thread_id: request.thread_id,
-                })
-            })
-        }
-    }));
-    assert!(parent.install_agent_host_resources(resources));
-    let control = parent
-        .session
-        .services
-        .local_agent_runtime
-        .control(parent.session.session_id());
-    let child =
-        spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "reader").await;
-    assert!(admitted.load(std::sync::atomic::Ordering::SeqCst));
-    harness
-        .manager
-        .get_thread(child.thread_id)
-        .await
-        .unwrap()
-        .shutdown_and_wait()
-        .await
-        .unwrap();
-    parent.shutdown_and_wait().await.unwrap();
-}
-
-#[tokio::test]
 async fn subtree_remains_readable_before_child_materialization() {
     let harness = AgentControlHarness::new().await;
     let (root, parent) = harness.start_paginated_thread().await;
@@ -6585,11 +6526,257 @@ async fn end_agent_validates_tree_and_joins_only_selected_subtree() {
 }
 
 #[tokio::test]
-async fn foreign_operations_preserve_identity_and_cannot_restore_or_enroll_senders() {
-    use codex_app_server_protocol::{
-        AgentForeignOperation as Operation, AgentForeignOrigin, AgentForeignRequest,
-        AgentForeignResponse as Response,
+async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::Result<()> {
+    use crate::session::capture_delivery::{ProgressActor, interval};
+    use crate::tools::handlers::apply_patch_capture::ApplyPatchCapture;
+    use crate::tools::handlers::multi_agents_v2::WaitAgentHandler;
+    use codex_change_history::{ChangeMetadata, ChangeSourceKind};
+    use codex_exec_server::LOCAL_FS;
+    use core_test_support::responses;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = responses::start_mock_server().await;
+    let progress = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            String::from_utf8_lossy(&request.body).contains("Summarize substantive progress")
+        },
+        responses::sse(vec![
+            responses::ev_assistant_message("progress", "Two sections edited."),
+            responses::ev_completed("progress"),
+        ]),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(600)))
+        .with_priority(10)
+        .mount(&server)
+        .await;
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::MultiAgentV2)?;
+    config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    config.model_provider.supports_websockets = false;
+    config.model_provider.stream_idle_timeout_ms = Some(600_000);
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (root_id, root) = harness.start_paginated_thread().await;
+    let runtime = &root.session.services.local_agent_runtime;
+    let child = spawn_v2_reload_test_child(
+        &runtime.control(root.session.session_id()),
+        harness.config.clone(),
+        &root,
+        "editor",
+    )
+    .await;
+    let thread = harness.manager.get_thread(child.thread_id).await?;
+    let workspace = tempfile::tempdir()?;
+    let path = workspace.path().join("delegated.txt");
+    let candidates = vec![PathUri::from(
+        codex_utils_absolute_path::AbsolutePathBuf::try_from(path.clone())?,
+    )];
+    let child_turn = thread.session.new_default_turn().await;
+    let mut records = Vec::new();
+    for (author_id, author, turn, contents) in [
+        (
+            child.thread_id,
+            &thread,
+            child_turn.sub_id.clone(),
+            "delegated bytes\n",
+        ),
+        (
+            root_id,
+            &root,
+            root.session.new_default_turn().await.sub_id.clone(),
+            "delegated bytes\nrecipient bytes\n",
+        ),
+        (
+            child.thread_id,
+            &thread,
+            child_turn.sub_id.clone(),
+            "delegated bytes\nrecipient bytes\nmore delegated bytes\n",
+        ),
+    ] {
+        let capture = ApplyPatchCapture::capture_baselines(LOCAL_FS.as_ref(), &candidates).await;
+        std::fs::write(&path, contents)?;
+        let record = capture
+            .persist_to_dir(
+                LOCAL_FS.as_ref(),
+                &crate::exec_env::change_history_dir(author.session.session_id()),
+                &candidates,
+                None,
+                ChangeMetadata {
+                    thread_id: author_id.to_string(),
+                    session_id: author.session.session_id().to_string(),
+                    turn_id: turn,
+                    call_id: format!("patch-{}", records.len()),
+                    source_kind: ChangeSourceKind::ApplyPatch,
+                    workspace_root: workspace.path().into(),
+                    created_at: 1,
+                    exit_code: Some(0),
+                    summary: None,
+                    claim_key: None,
+                },
+            )
+            .await?
+            .expect("published native change");
+        records.push(record);
+    }
+    let [first, recipient, last] = &records[..] else {
+        unreachable!();
     };
+    let changed = root
+        .session
+        .select_progress_ranges(vec![ProgressActor {
+            thread_id: child.thread_id,
+            task_name: "/root/editor".into(),
+        }])
+        .await?;
+    assert_eq!(
+        changed[0]
+            .entries
+            .iter()
+            .map(|entry| &entry.id)
+            .collect::<Vec<_>>(),
+        [&first.id, &last.id]
+    );
+    for entry in &changed[0].entries {
+        assert_eq!(entry.file_paths, ["delegated.txt"]);
+    }
+    let turn = root.session.new_default_turn().await;
+    let wait = WaitAgentHandler::default();
+    let output = wait.handle(ToolInvocation {
+        session: Arc::clone(&root.session),
+        step_context: StepContext::for_test(Arc::clone(&turn)),
+        turn,
+        cancellation_token: CancellationToken::new(),
+        tracker: Default::default(),
+        call_id: "wait-progress".into(),
+        tool_name: codex_tools::ToolName::plain("wait_agent"),
+        source: ToolCallSource::Direct,
+        payload: ToolPayload::Function {
+            arguments: r#"{"yield_time_ms":300000}"#.into(),
+        },
+        native_call: None,
+        environments: Default::default(),
+    });
+    tokio::pin!(output);
+    tokio::time::pause();
+    tokio::select! {
+        biased;
+        _ = &mut output => panic!("wait returned before the progress deadline"),
+        _ = tokio::time::sleep(Duration::from_millis(300_001)) => {}
+    }
+    tokio::time::resume();
+    let output = tokio::time::timeout(Duration::from_secs(10), output).await??;
+    let output = output.log_output();
+    assert!(output.contains("Two sections edited."), "{output}");
+    let request = progress.single_request().body_json();
+    assert!(request["tools"].is_null() || request["tools"] == serde_json::json!([]));
+    let input = request["input"].to_string();
+    for entry in [first, last] {
+        assert!(input.contains(&format!("mchanges:{} (complete coverage)", entry.id)));
+    }
+    assert!(input.contains("delegated.txt"));
+    assert!(!input.contains(recipient.id.as_str()));
+
+    std::fs::write(path, "later workspace bytes")?;
+    let step = StepContext::for_test(root.session.new_default_turn().await);
+    assert!(step.environments.primary().is_none());
+    let selection = crate::context_sources::acquire_selection(
+        &root.session,
+        &step,
+        &codex_protocol::protocol::ReloadSelection {
+            sources: vec![format!("mchanges:{},{}", first.id, last.id)],
+        },
+        &CancellationToken::new(),
+        None,
+    )
+    .await?
+    .expect("retained changes are independent of executor selection");
+    assert!(selection.contains("+delegated bytes"), "{selection}");
+    assert!(selection.contains("+more delegated bytes"), "{selection}");
+    assert!(!selection.contains("+recipient bytes"), "{selection}");
+    assert!(!selection.contains("later workspace bytes"), "{selection}");
+    let mut status = thread.subscribe_status();
+    status.borrow_and_update();
+    let report = thread.session.send_event(
+        &child_turn,
+        EventMsg::TurnComplete(TurnCompleteEvent {
+            root_turn_id: None,
+            turn_id: child_turn.sub_id.clone(),
+            started_at: None,
+            last_agent_message: Some(format!(
+                "Review mchanges:{},{},amber9999",
+                first.id, last.id
+            )),
+            error: None,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }),
+    );
+    let receive = async {
+        status.wait_for(|s| matches!(s, AgentStatus::Completed(Some(answer)) if answer.starts_with("Review mchanges:"))).await.unwrap();
+        let (mail, _) = root.session.input_queue.drain_mailbox_input_items().await;
+        mail.into_iter()
+            .find_map(|item| match item {
+                crate::session::TurnInput::InterAgentCommunication(mail)
+                    if mail.result_sender() == Some(child.thread_id)
+                        && mail.content.contains("Review mchanges:") =>
+                {
+                    Some(mail)
+                }
+                _ => None,
+            })
+            .expect("terminal readiness includes the captured result in the parent's mailbox")
+    };
+    let (_, mail) = tokio::join!(
+        report,
+        tokio::time::timeout(Duration::from_secs(5), receive)
+    );
+    let mail = mail?;
+    let parent_turn = root.session.new_default_turn().await;
+    root.session
+        .record_inter_agent_communication(&parent_turn, parent_turn.model_info(), mail)
+        .await;
+    let history = root.session.clone_history().await;
+    let body = serde_json::to_string(&history.raw_items().collect::<Vec<_>>())?;
+    assert!(body.contains("+delegated bytes"), "{body}");
+    assert!(body.contains("+more delegated bytes"), "{body}");
+    assert!(
+        body.contains(&format!(r#"Source \"mchanges:{}\""#, first.id)),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(r#"Source \"mchanges:{}\""#, last.id)),
+        "{body}"
+    );
+    assert!(body.contains("unknown change ID amber9999"), "{body}");
+    assert!(!body.contains("+recipient bytes"), "{body}");
+    assert!(!body.contains(recipient.id.as_str()), "{body}");
+    assert!(!body.contains("later workspace bytes"));
+    assert!(
+        history
+            .annotated_items()
+            .iter()
+            .filter_map(|i| i.metadata.as_ref())
+            .flat_map(|m| &m.capture_deliveries)
+            .any(|r| r.intervals
+                == [
+                    interval(&first.id, first.sequence),
+                    interval(&last.id, last.sequence)
+                ])
+    );
+    runtime
+        .control(root.session.session_id())
+        .shutdown_agent_tree(root_id)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn foreign_operations_preserve_identity_and_cannot_restore_or_enroll_senders() {
     let (home, mut config) = test_config().await;
     config.features.enable(Feature::MultiAgentV2).unwrap();
     let harness = AgentControlHarness::new_with_config(home, config).await;
@@ -6599,27 +6786,21 @@ async fn foreign_operations_preserve_identity_and_cannot_restore_or_enroll_sende
     let control = runtime.control(parent.session.session_id());
     let child =
         spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "recipient").await;
-    let sender = ThreadId::new();
-    let request = AgentForeignRequest {
-        source: AgentForeignOrigin {
-            root_thread_id: ThreadId::new(),
-            actor_id: sender,
-            agent_path: AgentPath::try_from("/root/foreign").unwrap(),
-            turn_id: "foreign-turn".into(),
-            call_id: "foreign-call".into(),
-        },
-        target_thread_id: child.thread_id,
-        operation: Operation::Message {
-            message: "frozen foreign message".into(),
-        },
-    };
-    let response = manager
-        .receive_foreign_agent_operation(request.clone(), CancellationToken::new())
+    let (sender, source_thread) = harness.start_paginated_thread().await;
+    source_thread
+        .session
+        .services
+        .local_agent_runtime
+        .register_session_root(sender, None);
+    let origin = &source_thread.session.services.local_agent_runtime;
+    let recipient = origin
+        .foreign_agent(sender, child.thread_id, CancellationToken::new())
         .await
         .unwrap();
-    assert!(
-        matches!(response, Response::Message { accepted: true, target_thread_id, .. } if target_thread_id == child.thread_id)
-    );
+    recipient
+        .message("frozen foreign message", "foreign-turn", "foreign-call")
+        .await
+        .unwrap();
     assert!(
         manager
             .captured_ops()
@@ -6633,58 +6814,36 @@ async fn foreign_operations_preserve_identity_and_cannot_restore_or_enroll_sende
                 ))
     );
     assert!(runtime.ensure_agent_known(sender).is_err());
-    let mut inspect = request.clone();
-    inspect.operation = Operation::Inspect;
+    let inspected = recipient.inspect().await.unwrap();
+    assert_eq!(inspected.id, child.thread_id.to_string());
+    assert_eq!(inspected.can_accept_direct_input, Some(false));
+    let listed = recipient.list().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().any(|thread| thread.id == root.to_string()));
     assert!(
-        matches!(manager.receive_foreign_agent_operation(inspect.clone(), CancellationToken::new()).await.unwrap(),
-        Response::Inspect { thread } if thread["id"] == child.thread_id.to_string() && thread["canAcceptDirectInput"] == false)
-    );
-    let mut list = request.clone();
-    list.operation = Operation::List { path_prefix: None };
-    assert!(
-        matches!(manager.receive_foreign_agent_operation(list, CancellationToken::new()).await.unwrap(),
-        Response::List { threads } if threads.as_array().is_some_and(|threads| threads.len() == 2 && threads.iter().any(|thread| thread["id"] == root.to_string())))
-    );
-    let mut local = request.clone();
-    local.source.root_thread_id = root;
-    let before = manager.captured_ops().len();
-    assert!(
-        manager
-            .receive_foreign_agent_operation(local, CancellationToken::new())
+        origin
+            .foreign_agent(sender, sender, CancellationToken::new())
             .await
             .is_err()
     );
     let canceled = CancellationToken::new();
     canceled.cancel();
     assert!(
-        manager
-            .receive_foreign_agent_operation(request.clone(), canceled)
+        origin
+            .foreign_agent(sender, child.thread_id, canceled)
             .await
             .is_err()
     );
-    assert_eq!(manager.captured_ops().len(), before);
     control.shutdown_agent_tree(child.thread_id).await.unwrap();
     let cold = manager.read_thread_details(child.thread_id).await.unwrap();
     assert!(cold.agent_status.is_none());
     assert_eq!(cold.parent_thread_id, Some(root.to_string()));
-    for operation in [
-        Operation::Inspect,
-        Operation::Message {
-            message: "no restore".into(),
-        },
-        Operation::SideQuestion {
-            question: "no restore".into(),
-        },
-    ] {
-        let mut request = request.clone();
-        request.operation = operation;
-        assert!(
-            manager
-                .receive_foreign_agent_operation(request, CancellationToken::new())
-                .await
-                .is_err()
-        );
-        assert!(manager.get_thread(child.thread_id).await.is_err());
-    }
+    assert!(
+        origin
+            .foreign_agent(sender, child.thread_id, CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert!(manager.get_thread(child.thread_id).await.is_err());
     control.shutdown_agent_tree(root).await.unwrap();
 }

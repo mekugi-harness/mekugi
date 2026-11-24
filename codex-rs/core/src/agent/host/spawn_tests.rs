@@ -283,19 +283,7 @@ async fn reserved_child_preloads_sources_before_first_input() -> anyhow::Result<
     let _guard = reservation.activate(&call);
     let invocation = parent.tool_invocation(&call.turn.sub_id, &call.call_id)?;
     let child_id = ThreadId::new();
-    let resources = crate::agent::host_resources::tests::admission_resources(Arc::new({
-        let source = workspace.path().join("source");
-        move |request, _| {
-            assert_eq!(request.thread_id, child_id);
-            std::fs::write(&source, "RESERVED_CHILD_PRELOAD").unwrap();
-            Box::pin(async move {
-                Ok(codex_protocol::agent_capture::ChildHostAdmissionResponse {
-                    thread_id: request.thread_id,
-                })
-            })
-        }
-    }));
-    assert!(parent.install_agent_host_resources(resources));
+    std::fs::write(workspace.path().join("source"), "RESERVED_CHILD_PRELOAD")?;
     parent
         .create_child(
             &invocation,

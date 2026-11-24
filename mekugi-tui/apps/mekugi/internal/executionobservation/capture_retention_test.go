@@ -18,7 +18,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
@@ -50,90 +49,6 @@ func TestBoundedReceiptAdaptersKeepOmissionUncertainty(t *testing.T) {
 			}
 		}
 	}
-}
-
-func TestLargeNamedCaptureRetainsEveryFileAcrossRestart(t *testing.T) {
-	f := newMChangesSliceFixture(t, "large-named")
-	selected := f.store.scoped(f.ctx).changeScope()
-	data := "before\n" + strings.Repeat("unchanged text with enough rows to keep a small changed region...\n", 6144)
-	var paths []string
-	for i := range 27 {
-		path := filepath.Join(f.workspace, fmt.Sprintf("file-%02d.txt", i))
-		writeTestFile(t, path, data)
-		paths = append(paths, path)
-	}
-	// Isolate the aggregate-byte regression from the independent 500 ms native
-	// forwarding deadline. The same acquisition owner is used by native tools.
-	observation := changecapture.NamedUntil(paths, f.workspace, time.Now().Add(10*time.Second), captureSource(selected))
-	resident := 0
-	for _, file := range observation.Files {
-		resident += len(file.Content)
-		if file.Error != "" || file.ContentRef == nil && file.Content != data {
-			t.Fatalf("baseline %s: error=%q retained=%v", file.Path, file.Error, file.ContentRef != nil)
-		}
-	}
-	if len(observation.Files) != len(paths) || len(observation.Omitted) != 0 || resident > changecapture.MaxContentBytes {
-		t.Fatalf("bounded acquisition lost files: files=%d omissions=%v resident=%d", len(observation.Files), observation.Omitted, resident)
-	}
-	script := "printf 'run\\n' >> executions; " + sedInPlace() + " -e '1s/before/after/' -- file-*.txt"
-	observation.Commands = []commandanalysis.Command{{Command: script, Workdir: f.workspace, Shell: "bash"}}
-	original := mekugiHistory{ToolName: nativeExecCommandToolName, Script: script, ExecutingThread: f.thread, ExecObservation: observation, CarrierPayload: `{"cmd":"original native input"}`}
-	if err := f.store.put(f.ctx, f.workspace, map[string]mekugiHistory{"large": original}); err != nil {
-		t.Fatal(err)
-	}
-	host := exec.Command(execTrackShellExecutable(t, "bash"), "-c", script)
-	host.Dir = f.workspace
-	if output, err := host.CombinedOutput(); err != nil {
-		t.Fatalf("host: %s, %v", output, err)
-	}
-	p := testProxyWithStore(f.store)
-	members := []execCompletion{{callID: "large", history: original, result: binding.DecodeExecutionResult(nativeExecCommandToolName, responses.MustMarshalJSON(map[string]any{"exit_code": 0}))}}
-	for range 2 {
-		if err := finalizeExecObservations(p.Retained, p.Changes, p.Checkpoints, p.PublishChanges, p.Windows, p.Audience, p.Notice, f.ctx, f.workspace, members); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if runs, err := os.ReadFile(filepath.Join(f.workspace, "executions")); err != nil || string(runs) != "run\n" {
-		t.Fatalf("capture repeated host execution: %q, %v", runs, err)
-	}
-	reopened, err := openMekugiReplayStore(f.store.directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cold := reopened.scoped(f.ctx).changeScope()
-	base, found, err := lookupObservation(f.ctx, cold, f.workspace, "large")
-	if err != nil || !found || base.Script != script || base.CarrierPayload != original.CarrierPayload || len(base.ExecObservation.Files) != 27 {
-		t.Fatalf("cold original host facts: found=%v error=%v", found, err)
-	}
-	for _, file := range base.ExecObservation.Files {
-		if file.ContentRef == nil {
-			t.Fatalf("published baseline was not chunked: %s", file.Path)
-		}
-	}
-	completed, found, err := lookupObservation(f.ctx, cold, f.workspace, legacycall.ExecCallID("large", false))
-	if err != nil || !found || len(completed.reviews()) != 27 || completed.ExecOutcome.Coverage != changecapture.CoverageExact {
-		t.Fatalf("cold complete evidence: found=%v reviews=%d error=%v", found, len(completed.reviews()), err)
-	}
-	query := changes.Query{Workspace: f.workspace, IDs: []string{completed.ChangeID}, Paths: []string{paths[26]}}
-	text, err := reopened.changes.Read(f.ctx, cold, query)
-	if err != nil || !strings.Contains(text, "-before\n") || !strings.Contains(text, "+after\n") || strings.Contains(text, "file-00") {
-		t.Fatalf("cold selected last file: bytes=%d prefix=%q error=%v", len(text), text[:min(len(text), 256)], err)
-	}
-	out, stderr, status := f.run(t, "mchanges revert "+completed.ChangeID+" -- file-26.txt")
-	if status != 0 {
-		t.Fatalf("revert: %s %s (%d)", out, stderr, status)
-	}
-	if restored, err := os.ReadFile(paths[26]); err != nil || string(restored) != data {
-		t.Fatalf("large captured baseline not reversible: %v", err)
-	}
-	if untouched, err := os.ReadFile(paths[0]); err != nil || !strings.HasPrefix(string(untouched), "after\n") {
-		t.Fatalf("unselected sibling changed: %v", err)
-	}
-	out, stderr, status = f.run(t, "mchanges apply "+completed.ChangeID+" -- file-26.txt")
-	if status != 0 {
-		t.Fatalf("apply: %s %s (%d)", out, stderr, status)
-	}
-	t.Logf("source_bytes=%d files=%d retained_inline_bytes=%d complete_reviews=%d", len(data)*27, len(observation.Files), resident, len(completed.reviews()))
 }
 
 func TestPatchPythonFormatterCompositionSurvivesPublicationContention(t *testing.T) {

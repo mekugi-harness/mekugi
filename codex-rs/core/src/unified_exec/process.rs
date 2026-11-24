@@ -33,7 +33,6 @@ use codex_utils_pty::SpawnedPty;
 
 use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
-use super::UNIFIED_EXEC_SOURCE_CAPTURE_MAX_BYTES;
 use super::UnifiedExecError;
 use super::exec_track::ExecTrackAttachment;
 use super::process_state::ProcessState;
@@ -48,24 +47,11 @@ const REMOTE_OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) struct OutputBuffers<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
     pub(super) pending: HeadTailBuffer<MAX_BYTES>,
     pub(super) transcript: HeadTailBuffer<MAX_BYTES>,
-    pub(super) large_capture: Option<HeadTailBuffer<UNIFIED_EXEC_SOURCE_CAPTURE_MAX_BYTES>>,
 }
 
 impl<const MAX_BYTES: usize> OutputBuffers<MAX_BYTES> {
-    pub(crate) fn with_large_capture() -> Self {
-        Self {
-            pending: HeadTailBuffer::default(),
-            transcript: HeadTailBuffer::default(),
-            large_capture: Some(HeadTailBuffer::default()),
-        }
-    }
-
     pub(super) fn push_chunk(&mut self, _stream: ExecOutputStream, chunk: &[u8]) {
-        if let Some(large_capture) = &mut self.large_capture {
-            large_capture.push_chunk(chunk);
-        } else {
-            self.pending.push_chunk(chunk);
-        }
+        self.pending.push_chunk(chunk);
         self.transcript.push_chunk(chunk);
     }
 }
@@ -145,15 +131,9 @@ impl UnifiedExecProcess {
         process_handle: ProcessHandle,
         sandbox_type: Option<SandboxType>,
         drain_policy: OutputDrainPolicy,
-        large_capture: bool,
     ) -> Self {
-        let buffers = if large_capture {
-            OutputBuffers::with_large_capture()
-        } else {
-            OutputBuffers::default()
-        };
         let output = OutputHandles {
-            output_buffer: Arc::new(Mutex::new(buffers)),
+            output_buffer: Arc::new(Mutex::new(OutputBuffers::default())),
             output_notify: Arc::new(Notify::new()),
             output_closed: Arc::new(AtomicBool::new(false)),
             output_closed_notify: Arc::new(Notify::new()),
@@ -233,11 +213,6 @@ impl UnifiedExecProcess {
             ProcessHandle::Local(process_handle) => state.has_exited || process_handle.has_exited(),
             ProcessHandle::ExecServer(_) => state.has_exited,
         }
-    }
-
-    pub(super) async fn wait_for_exit(&self) {
-        let mut state = self.state_rx.clone();
-        let _ = state.wait_for(|state| state.has_exited).await;
     }
 
     pub(super) fn exit_code(&self) -> Option<i32> {
@@ -327,11 +302,7 @@ impl UnifiedExecProcess {
     }
 
     async fn snapshot_output(&self) -> Vec<u8> {
-        let guard = self.output.output_buffer.lock().await;
-        guard
-            .large_capture
-            .as_ref()
-            .map_or_else(|| guard.pending.to_bytes(), HeadTailBuffer::to_bytes)
+        self.output.output_buffer.lock().await.pending.to_bytes()
     }
 
     pub(crate) fn sandbox_type(&self) -> Option<SandboxType> {
@@ -409,19 +380,12 @@ impl UnifiedExecProcess {
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
     ) -> Result<Self, UnifiedExecError> {
-        Self::from_spawned_with_exec_track(
-            spawned,
-            sandbox_type,
-            /*large_capture*/ false,
-            None,
-        )
-        .await
+        Self::from_spawned_with_exec_track(spawned, sandbox_type, None).await
     }
 
     pub(super) async fn from_spawned_with_exec_track(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
-        large_capture: bool,
         #[cfg(unix)] exec_track: Option<(
             Arc<ExecTrackAttachment>,
             Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
@@ -438,7 +402,6 @@ impl UnifiedExecProcess {
             ProcessHandle::Local(Box::new(process_handle)),
             Some(sandbox_type),
             OutputDrainPolicy::BoundedAfterExit,
-            large_capture,
         );
         #[cfg(unix)]
         let (exec_track_attachment, drain_rx) = match exec_track {
@@ -497,19 +460,12 @@ impl UnifiedExecProcess {
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
     ) -> Result<Self, UnifiedExecError> {
-        Self::from_exec_server_started_with_exec_track(
-            started,
-            output_drain_policy,
-            /*large_capture*/ false,
-            None,
-        )
-        .await
+        Self::from_exec_server_started_with_exec_track(started, output_drain_policy, None).await
     }
 
     pub(super) async fn from_exec_server_started_with_exec_track(
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
-        large_capture: bool,
         #[cfg(unix)] exec_track: Option<(
             Arc<ExecTrackAttachment>,
             Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
@@ -520,12 +476,7 @@ impl UnifiedExecProcess {
         // Older peers do not report this field. In that case, skip local
         // classification rather than attributing a violation to a guessed backend.
         let sandbox_type = started.sandbox_type;
-        let mut managed = Self::new(
-            process_handle,
-            sandbox_type,
-            output_drain_policy,
-            large_capture,
-        );
+        let mut managed = Self::new(process_handle, sandbox_type, output_drain_policy);
         #[cfg(unix)]
         let (exec_track_attachment, drain_rx) = match exec_track {
             Some((attachment, drain_rx)) => (Some(attachment), drain_rx),

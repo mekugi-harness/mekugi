@@ -10,6 +10,19 @@ struct Body {
     range: Range<usize>,
 }
 
+/// Frame source text while keeping headers and diagnostics outside source bytes.
+pub(super) fn envelope(payload: &str, bodies: &[(usize, usize)]) -> String {
+    let ranges = bodies
+        .iter()
+        .map(|(start, end)| format!("{start}:{end}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{OPEN}{}\" bodies=\"{ranges}\">\n{payload}{CLOSE}",
+        payload.len()
+    )
+}
+
 /// Projects only validated source bodies, retaining framing and failures verbatim.
 /// Returns `None` when the text contains no complete source envelope.
 pub(crate) fn project(
@@ -35,15 +48,11 @@ pub(crate) fn project(
             let replacement = project_body(&body.reference, &payload[body.range.clone()]);
             let start = output.len();
             output.push_str(&replacement);
-            ranges.push(format!("{start}:{}", output.len()));
+            ranges.push((start, output.len()));
             position = body.range.end;
         }
         output.push_str(&payload[position..]);
-        let ranges = ranges.join(",");
-        result.push_str(&format!(
-            "{OPEN}{}\" bodies=\"{ranges}\">\n{output}{CLOSE}",
-            output.len()
-        ));
+        result.push_str(&envelope(&output, &ranges));
         cursor = start + end;
     }
     if !found {

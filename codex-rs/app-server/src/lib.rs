@@ -107,7 +107,6 @@ mod startup_config;
 pub use startup_config::StartupConfigArgs;
 pub use startup_config::print_startup_config;
 
-mod agent_host;
 mod config_manager;
 mod config_manager_service;
 mod connection_cleanup;
@@ -1265,9 +1264,6 @@ pub async fn run_main_with_transport_options(
                                                     connection_state
                                                         .session
                                                         .request_attestation(),
-                                                    connection_state
-                                                        .session
-                                                        .observe_before_tool(),
                                                 )
                                                 .await;
                                             connection_state

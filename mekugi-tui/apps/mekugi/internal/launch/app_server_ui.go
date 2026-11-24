@@ -957,9 +957,6 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 			publishNativeCoordination(attached, event.ThreadID, event.TurnID, sessioncontrol.NativeMessage{}, &event.Projection, presentationTime(clock))
 		}
 	}
-	if handled, err := session.finalCaptureMessage(m); handled {
-		return err
-	}
 	if handled, complete, err := hydrateHistory(&session.Client, m); handled {
 		if err != nil {
 			return err

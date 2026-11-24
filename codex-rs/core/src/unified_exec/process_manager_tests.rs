@@ -517,26 +517,6 @@ async fn output_collection_drains_final_chunk_arriving_before_exit_and_closure()
     assert_eq!(collected.to_bytes(), b"final-chunk");
 }
 
-#[test]
-fn large_capture_output_buffer_retains_more_than_one_mib() {
-    let payload = vec![b'x'; 2 * 1024 * 1024];
-
-    let mut large =
-        OutputBuffers::<{ crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES }>::with_large_capture(
-        );
-    large.push_chunk(ExecOutputStream::Stdout, &payload);
-    let captured = large
-        .large_capture
-        .expect("large_capture should be enabled");
-    assert_eq!(captured.omitted_bytes(), 0);
-    assert_eq!(captured.retained_bytes(), payload.len());
-
-    let mut interactive =
-        OutputBuffers::<{ crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES }>::default();
-    interactive.push_chunk(ExecOutputStream::Stdout, &payload);
-    assert!(interactive.pending.omitted_bytes() > 0);
-}
-
 #[tokio::test(start_paused = true)]
 async fn late_network_denial_grace_observes_cancellation_after_exit() -> anyhow::Result<()> {
     use crate::environment_selection::EnvironmentAttachment;

@@ -29,11 +29,12 @@ Inherited from [product requirements](../product.md#user-requirements):
   (no `timeout_ms`, `compact`, or `reload` fields). Omitting `yield_time_ms` disables timed yields.
   `new_context` owns summary-free reset and source reload separately (wait-specific reset
   composition is deferred; a `new_context` acknowledgement is not completion proof).
-- **Capture-aware progress & final delivery**: no new captured changes means no progress summary or
-  wake. Progress selects exact retained change ranges (never copies diffs) and uses the native
-  restricted auxiliary executor with tools disabled, collecting all changed targets into one
-  combined yield without mutating primary history. Final delivery attaches unseen retained ranges
-  and advances tracking only on confirmed delivery.
+- **Capture-aware progress & final delivery**: no new captured changes means no
+  progress summary or wake. The native tool-free progress executor receives
+  retained change IDs, changed paths, and capture coverage, not diffs. It
+  collects changed targets into one yield without mutating primary history.
+  Final delivery attaches unseen changes individually, without folding in
+  intervening edits, and advances tracking only on confirmed delivery.
 - **Side questions**: branch before ordinary delivery via the restricted auxiliary executor (no
   tools, no primary mutation, no fallback to messaging/steering on failure).
 - **Observability & feature use**: passive native inspection reads settings/context/compaction
@@ -42,11 +43,11 @@ Inherited from [product requirements](../product.md#user-requirements):
 
 ## Current approach (replaceable)
 
-- Native `thread_manager` and `app-server/src/agent_host.rs` own trees, forks, passive inspection,
-  and connection-bound host resources; Go `sessionapi/coordination.go` and `executionobservation`
-  supply direct foreign routing and retained capture-range selection.
+- Native `thread_manager` owns trees, forks, passive inspection and routing
+  between loaded families in that manager. Progress and final delivery read
+  immutable IDs from the family's native change store.
 - Full-history children use native history forking (inheriting settings/cwd without inheriting
   execution, approval, or process handles).
 - Progress `yield_time_ms` enforces a 5-minute minimum interval.
 - Cross-session communication reuses stock Codex local/remote message boards alongside direct
-  foreign message/BTW/list/inspect routing over the destination's authenticated resource connection.
+  foreign message/BTW/list/inspect calls to a loaded native target.

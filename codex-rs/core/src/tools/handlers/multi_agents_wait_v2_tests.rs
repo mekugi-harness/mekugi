@@ -256,182 +256,6 @@ async fn wait_rejects_retired_fields_invalid_mode_and_short_progress_interval() 
     }
 }
 
-fn progress_resources(
-    freeze_progress: crate::CaptureResourceCallback<
-        codex_protocol::agent_capture::ProgressFreezeRequest,
-        codex_protocol::agent_capture::ProgressFreezeResponse,
-    >,
-) -> crate::AgentHostResources {
-    crate::AgentHostResources {
-        route_foreign: None,
-        prepare_child: None,
-        before_tool: None,
-        record_feature_use: None,
-        freeze_progress,
-        prepare_progress_output: Arc::new(|_, _| {
-            Box::pin(async { panic!("unchanged or cancelled selection must not prepare progress") })
-        }),
-        prepare_final_capture: Arc::new(|_, _| {
-            Box::pin(async { panic!("progress must not prepare final capture") })
-        }),
-        project_final_capture: Arc::new(|_, _| {
-            Box::pin(async { panic!("progress must not project final capture") })
-        }),
-    }
-}
-
-#[tokio::test]
-async fn unchanged_progress_intervals_do_not_wake_and_keep_the_native_wait_pending() {
-    use codex_protocol::agent_capture::{CaptureCoverage, ProgressFreezeResponse};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let (manager, session, turn, _) = fixture().await;
-    let probes = Arc::new(AtomicUsize::new(0));
-    let started = Arc::new(tokio::sync::Notify::new());
-    let mut resources = progress_resources(Arc::new({
-        let probes = probes.clone();
-        let started = started.clone();
-        move |request, _| {
-            assert_eq!(request.selected.len(), 2);
-            assert!(
-                request
-                    .selected
-                    .iter()
-                    .all(|actor| actor.task_name.starts_with("/root/"))
-            );
-            probes.fetch_add(1, Ordering::SeqCst);
-            started.notify_one();
-            Box::pin(async {
-                Ok(ProgressFreezeResponse {
-                    selection_ref: String::new(),
-                    publication_revision: 0,
-                    agents: Vec::new(),
-                    coverage: CaptureCoverage {
-                        status: "complete".into(),
-                        diagnostics: Vec::new(),
-                    },
-                })
-            })
-        }
-    }));
-    resources.record_feature_use = Some(Arc::new({
-        let started = started.clone();
-        move |fact| {
-            if matches!(
-                fact.event,
-                codex_protocol::feature_use::FeatureUseEvent::WaitStarted { .. }
-            ) {
-                started.notify_one();
-            }
-        }
-    }));
-    assert!(
-        manager
-            .get_thread(session.thread_id)
-            .await
-            .unwrap()
-            .install_agent_host_resources(resources)
-    );
-    let handler = WaitAgentHandlerV2::default();
-    let call = invocation(
-        session,
-        turn,
-        "wait_agent",
-        function_payload(json!({"yield_time_ms":300000})),
-    );
-    let cancellation = call.cancellation_token.clone();
-    tokio::time::pause();
-    let mut pending = Box::pin(handler.handle(call));
-    assert!(futures::poll!(&mut pending).is_pending());
-    tokio::select! {
-        _ = &mut pending => panic!("wait completed before progress collection"),
-        _ = started.notified() => {}
-    }
-    for expected in 1..=2 {
-        tokio::time::advance(Duration::from_millis(300000)).await;
-        assert!(futures::poll!(&mut pending).is_pending());
-        tokio::select! {
-            _ = &mut pending => panic!("unchanged progress woke the wait"),
-            _ = started.notified() => {}
-        }
-        assert_eq!(probes.load(Ordering::SeqCst), expected);
-    }
-    cancellation.cancel();
-    let output = pending
-        .await
-        .unwrap()
-        .code_mode_result(&function_payload(json!({})));
-    tokio::time::resume();
-    assert_eq!(output["progress"], "");
-}
-
-#[tokio::test]
-async fn native_mail_abandons_inflight_progress_selection_and_cancels_its_request() {
-    let (manager, session, turn, children) = fixture().await;
-    let observed = Arc::new(std::sync::Mutex::new(None));
-    let started = Arc::new(tokio::sync::Notify::new());
-    let mut resources = progress_resources(Arc::new({
-        let observed = observed.clone();
-        let started = started.clone();
-        move |_, cancellation| {
-            *observed.lock().unwrap() = Some(cancellation);
-            started.notify_one();
-            Box::pin(std::future::pending())
-        }
-    }));
-    resources.record_feature_use = Some(Arc::new({
-        let started = started.clone();
-        move |fact| {
-            if matches!(
-                fact.event,
-                codex_protocol::feature_use::FeatureUseEvent::WaitStarted { .. }
-            ) {
-                started.notify_one();
-            }
-        }
-    }));
-    assert!(
-        manager
-            .get_thread(session.thread_id)
-            .await
-            .unwrap()
-            .install_agent_host_resources(resources)
-    );
-    let handler = WaitAgentHandlerV2::default();
-    tokio::time::pause();
-    let mut pending = Box::pin(handler.handle(invocation(
-        session.clone(),
-        turn,
-        "wait_agent",
-        function_payload(json!({"wait_mode":"all","yield_time_ms":300000})),
-    )));
-    assert!(futures::poll!(&mut pending).is_pending());
-    tokio::select! {
-        _ = &mut pending => panic!("wait completed before progress collection"),
-        _ = started.notified() => {}
-    }
-    tokio::time::advance(Duration::from_millis(300000)).await;
-    assert!(futures::poll!(&mut pending).is_pending());
-    tokio::select! {
-        _ = &mut pending => panic!("wait completed during progress selection"),
-        _ = started.notified() => {}
-    }
-    let request = observed
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("freeze request started");
-    assert!(!request.is_cancelled());
-    mail(&session, children[0], false).await;
-    let output = pending
-        .await
-        .unwrap()
-        .code_mode_result(&function_payload(json!({})));
-    tokio::time::resume();
-    assert_eq!(output["message"], "Wait completed.");
-    assert!(request.is_cancelled());
-    assert_eq!(output["progress"], "");
-}
-
 #[tokio::test]
 async fn wait_notifications_identify_selected_agents() {
     let (_manager, session, turn, children, events) = fixture_with_events().await;
@@ -472,21 +296,10 @@ async fn wait_notifications_identify_selected_agents() {
 
 #[tokio::test]
 async fn wait_finishes_its_item_on_progress_failure() {
-    let (manager, session, turn, _, events) = fixture_with_events().await;
-    let resources = progress_resources(Arc::new(|_, _| {
-        Box::pin(async {
-            Err(codex_protocol::error::CodexErr::InvalidRequest(
-                "fixture failed to freeze progress".into(),
-            ))
-        })
-    }));
-    assert!(
-        manager
-            .get_thread(session.thread_id)
-            .await
-            .unwrap()
-            .install_agent_host_resources(resources)
-    );
+    let (_manager, session, turn, _, events) = fixture_with_events().await;
+    let dir = crate::exec_env::change_history_dir(session.session_id());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.json"), b"corrupt").unwrap();
     let handler = WaitAgentHandlerV2::default();
     tokio::time::pause();
     let error = tokio::time::timeout(
@@ -503,11 +316,7 @@ async fn wait_finishes_its_item_on_progress_failure() {
     .err()
     .expect("expect a model-visible progress failure");
     tokio::time::resume();
-    assert!(
-        error
-            .to_string()
-            .contains("fixture failed to freeze progress")
-    );
+    assert!(error.to_string().contains("corrupt store index"));
     assert_wait_item_settled(
         &events,
         codex_protocol::items::CollabAgentToolCallStatus::Failed,
