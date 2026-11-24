@@ -49,7 +49,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_rmcp_client::ElicitationResponse;
-use codex_rmcp_client::with_http_headers_helper;
+use codex_rmcp_client::with_caller_http_headers_helper;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
@@ -1194,6 +1194,7 @@ impl McpRuntime {
 /// environment registry, captured thread selections, and the host-local cwd used by MCP processes.
 #[derive(Clone)]
 pub struct McpRuntimeContext {
+    pub(crate) caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
     pub(crate) connection_pool: Option<McpConnectionPool>,
     environment_manager: Arc<EnvironmentManager>,
     environment_selections: Arc<[TurnEnvironmentSelection]>,
@@ -1211,6 +1212,15 @@ pub fn apply_http_headers_helper(
     client: Arc<dyn HttpClient>,
     config: &codex_config::McpServerConfig,
     local_process_cwd: PathBuf,
+) -> Result<Arc<dyn HttpClient>, String> {
+    apply_caller_headers_helper(client, config, local_process_cwd, None)
+}
+
+fn apply_caller_headers_helper(
+    client: Arc<dyn HttpClient>,
+    config: &codex_config::McpServerConfig,
+    local_process_cwd: PathBuf,
+    caller: Option<codex_protocol::config_types::CallerEnvironment>,
 ) -> Result<Arc<dyn HttpClient>, String> {
     if matches!(
         config.disabled_reason,
@@ -1232,7 +1242,7 @@ pub fn apply_http_headers_helper(
     if !config.is_local_environment() {
         return Err("HTTP headers helpers can only run in the local environment".to_string());
     }
-    with_http_headers_helper(client, url, command, local_process_cwd)
+    with_caller_http_headers_helper(client, url, command, local_process_cwd, caller)
         .map_err(|error| error.to_string())
 }
 
@@ -1243,6 +1253,7 @@ impl McpRuntimeContext {
                 .with_tls_backend_fallback(),
         );
         Self {
+            caller_environment: None,
             connection_pool: None,
             environment_manager,
             environment_selections: Arc::default(),
@@ -1339,7 +1350,12 @@ impl McpRuntimeContext {
             Some(environment) if environment.is_remote() => environment.get_http_client(),
             Some(_) | None => self.local_http_client(),
         };
-        apply_http_headers_helper(client, config, self.local_process_cwd())
+        apply_caller_headers_helper(
+            client,
+            config,
+            self.local_process_cwd(),
+            self.caller_environment.clone(),
+        )
     }
 }
 

@@ -91,6 +91,52 @@ struct ApplicationPolicySnapshot {
     cloud: Option<codex_config::CloudConfigBundle>,
 }
 
+/// Compose the optional observer after both the profile and explicit caller hooks.
+/// Malformed declarations and conflicting trust entries remain untouched.
+fn add_tracking_hook(flags: &mut Vec<(String, TomlValue)>, command: &str) {
+    let mut values = codex_config::build_cli_overrides_layer(flags);
+    let mut hooks = values
+        .as_table_mut()
+        .and_then(|table| table.remove("hooks"))
+        .unwrap_or_else(|| TomlValue::Table(toml::Table::new()));
+    let Some(table) = hooks.as_table_mut() else {
+        return;
+    };
+    let mut groups = match table.remove("PreToolUse") {
+        None => Vec::new(),
+        Some(TomlValue::Array(groups)) => groups,
+        Some(_) => return,
+    };
+    let mut states = match table.remove("state") {
+        None => toml::Table::new(),
+        Some(TomlValue::Table(states)) => states,
+        Some(_) => return,
+    };
+    let group = serde_json::json!({"matcher": "Bash|MekugiCommandTracking",
+        "hooks": [{"type": "command", "command": command, "timeout": 5, "async": false,
+            "statusMessage": "Tracking shell segments"}]});
+    let mut identity = group.clone();
+    identity["event_name"] = "pre_tool_use".into();
+    let hash = codex_config::version_for_toml(&json_to_toml(identity));
+    let group = json_to_toml(group);
+    let key = codex_hooks::hook_key(
+        "/<session-flags>/config.toml",
+        codex_protocol::protocol::HookEventName::PreToolUse,
+        groups.len(),
+        0,
+    );
+    if groups.last() == Some(&group) || states.contains_key(&key) {
+        return;
+    }
+    groups.push(group);
+    states.insert(
+        key,
+        json_to_toml(serde_json::json!({"trusted_hash": hash, "enabled": true})),
+    );
+    flags.push(("hooks.PreToolUse".into(), TomlValue::Array(groups)));
+    flags.push(("hooks.state".into(), TomlValue::Table(states)));
+}
+
 impl ConfigManager {
     pub(crate) fn new(
         codex_home: PathBuf,
@@ -173,6 +219,198 @@ impl ConfigManager {
 
     pub(crate) fn loader_overrides(&self) -> &LoaderOverrides {
         &self.loader_overrides
+    }
+
+    /// Resolve private invocation inputs only for a new runtime, never on a live attach.
+    pub(crate) async fn admit_family(
+        &self,
+        params: codex_app_server_protocol::ThreadFamilyParams,
+        cwd: Option<&Path>,
+        request: Option<&HashMap<String, serde_json::Value>>,
+    ) -> std::io::Result<Arc<codex_core::config::ThreadFamily>> {
+        use std::io::{Error, ErrorKind};
+        let invalid = |message| Error::new(ErrorKind::InvalidInput, message);
+        let cwd = cwd
+            .filter(|cwd| cwd.is_absolute())
+            .ok_or_else(|| invalid("family workspace must be an absolute directory"))?;
+        if !tokio::fs::metadata(cwd).await?.is_dir() {
+            return Err(invalid("family workspace is not a directory"));
+        }
+        if params
+            .environment
+            .iter()
+            .any(|(key, value)| key.is_empty() || key.contains(['=', '\0']) || value.contains('\0'))
+        {
+            return Err(invalid("invalid family environment entry"));
+        }
+        let (home, profile) = Self::family_selector(&params, cwd)?;
+        let mut flags = if let Some(profile) = &profile {
+            let path = codex_core::config::resolve_profile_v2_config_path(
+                home.as_deref()
+                    .ok_or_else(|| invalid("family profile requires a caller home"))?,
+                profile,
+            );
+            if !tokio::fs::metadata(&path)
+                .await
+                .is_ok_and(|meta| meta.is_file())
+            {
+                return Err(invalid("cannot read regular Codex profile file"));
+            }
+            let text = tokio::fs::read_to_string(path)
+                .await
+                .map_err(|_| invalid("cannot read Codex profile file"))?;
+            let values: toml::Table = text
+                .parse()
+                .map_err(|_| invalid("invalid Codex profile TOML"))?;
+            if values.keys().any(|key| key.contains('.')) {
+                return Err(invalid(
+                    "Codex profile has an unrepresentable top-level dotted key",
+                ));
+            }
+            values.into_iter().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        flags.extend(self.current_cli_overrides());
+        flags.extend(
+            request
+                .into_iter()
+                .flatten()
+                .map(|(key, value)| (key.clone(), json_to_toml(value.clone()))),
+        );
+        use codex_app_server_protocol::ThreadFamilyProviderPolicy;
+        let values = codex_config::build_cli_overrides_layer(&flags);
+        let selected = values.get("model_provider").and_then(TomlValue::as_str);
+        let definition = selected.and_then(|id| values.get("model_providers")?.get(id));
+        let base = if selected == Some(OPENAI_PROVIDER_ID) {
+            values.get("openai_base_url")
+        } else {
+            definition.and_then(|provider| provider.get("base_url"))
+        }
+        .and_then(TomlValue::as_str);
+        let custom = selected.is_some_and(|id| {
+            !id.is_empty()
+                && (id != OPENAI_PROVIDER_ID
+                    || base.is_some_and(|url| {
+                        codex_http_client::classify_openai_api_url(url)
+                            == codex_http_client::OpenAiDestination::Other
+                    }))
+        });
+        let require_endpoint = match params.provider_policy {
+            Some(ThreadFamilyProviderPolicy::RequireCustomEndpoint)
+                if !custom || profile.is_none() =>
+            {
+                return Err(invalid(
+                    "mekugi requires a custom Responses provider profile: configure NAME.config.toml and run mekugi -p NAME; use mekugi codex for native OpenAI",
+                ));
+            }
+            Some(ThreadFamilyProviderPolicy::RequireCustomEndpoint) => true,
+            Some(ThreadFamilyProviderPolicy::DefaultOpenai) => {
+                if selected.is_none() {
+                    flags.push((
+                        "model_provider".into(),
+                        TomlValue::String(OPENAI_PROVIDER_ID.into()),
+                    ));
+                }
+                custom
+            }
+            None => false,
+        };
+        let required_route = if require_endpoint {
+            let id = selected.expect("custom provider selection was validated above");
+            let base = base.ok_or_else(|| {
+                invalid("selected provider requires an imported or explicit base_url")
+            })?;
+            let valid_url = |value: &str| {
+                url::Url::parse(value).is_ok_and(|url| {
+                    matches!(url.scheme(), "http" | "https")
+                        && url.has_host()
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                        && url.fragment().is_none()
+                })
+            };
+            if !valid_url(base) {
+                return Err(invalid(
+                    "provider endpoint requires an absolute HTTP(S) URL without userinfo or fragment",
+                ));
+            }
+            if definition
+                .and_then(|provider| provider.get("model_catalog_url"))
+                .and_then(TomlValue::as_str)
+                .is_some_and(|value| !valid_url(value))
+            {
+                return Err(invalid("invalid provider model_catalog_url"));
+            }
+            Some((id.to_owned(), base.to_owned()))
+        } else {
+            None
+        };
+        Ok(Arc::new(codex_core::config::ThreadFamily::new(
+            codex_protocol::config_types::CallerEnvironment::new(params.environment),
+            profile,
+            home,
+            flags,
+            required_route,
+            params.tracking_command,
+        )))
+    }
+
+    pub(crate) fn check_family_selector(
+        config: &Config,
+        requested: &codex_app_server_protocol::ThreadFamilyParams,
+    ) -> std::io::Result<()> {
+        if requested.profile.is_none() {
+            return Ok(());
+        }
+        let (home, profile) = Self::family_selector(requested, config.cwd.as_path())?;
+        if config
+            .family
+            .as_ref()
+            .is_some_and(|family| family.profile == profile && family.caller_home == home)
+        {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the supplied profile differs from the running configuration",
+            ))
+        }
+    }
+
+    fn family_selector(
+        params: &codex_app_server_protocol::ThreadFamilyParams,
+        cwd: &Path,
+    ) -> std::io::Result<(Option<PathBuf>, Option<codex_config::ProfileV2Name>)> {
+        let home = params
+            .environment
+            .get("CODEX_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                params
+                    .environment
+                    .get("HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(|home| PathBuf::from(home).join(".codex"))
+            })
+            .map(|path| {
+                AbsolutePathBuf::from_absolute_path(cwd.join(path))
+                    .map(AbsolutePathBuf::into_path_buf)
+            })
+            .transpose()?;
+        let profile = params
+            .profile
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid family profile name",
+                )
+            })?;
+        Ok((home, profile))
     }
 
     pub(crate) fn current_cli_overrides(&self) -> Vec<(String, TomlValue)> {
@@ -301,19 +539,20 @@ impl ConfigManager {
 
     pub(crate) async fn load_latest_config_with_session_layers(
         &self,
-        session_layers: &ConfigLayerStack,
-        cwd: &Path,
+        session: &Config,
     ) -> std::io::Result<Config> {
+        let cwd = session.cwd.as_path();
         let mcp_ema_cancellation = self.capture_mcp_ema_cancellation();
         let codex_home = AbsolutePathBuf::from_absolute_path(&self.codex_home)?;
         let layers = self
             .load_config_layers_for_cwd(AbsolutePathBuf::from_absolute_path(cwd)?)
             .await?;
-        let mut config = Config::rebuild_with_session_layers(
-            session_layers,
+        let mut config = Config::rebuild_for_family(
+            &session.config_layer_stack,
             cwd.to_path_buf(),
             &layers,
             codex_home,
+            session.family.clone(),
         )
         .await?;
         self.apply_network_policy(&mut config);
@@ -542,6 +781,13 @@ impl ConfigManager {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
+        let family_provider = typesafe_overrides
+            .family
+            .as_ref()
+            .is_some_and(|family| family.overrides("model_provider"))
+            || (typesafe_overrides.family.is_some() && requested_provider.is_some());
+        // A newly admitted family can select a different route on cold resume.
+        let saved_provider = saved_provider.filter(|_| !family_provider);
         if let Some(saved) = saved_provider {
             typesafe_overrides.model_provider = Some(saved.to_owned());
         }
@@ -630,6 +876,7 @@ impl ConfigManager {
             &overrides,
             /*request_overrides*/ None,
             ConfigOverrides {
+                family: thread_config.family.clone(),
                 cwd: Some(cwd.to_path_buf()),
                 default_permissions: Some(permission_profile),
                 codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
@@ -685,7 +932,10 @@ impl ConfigManager {
                 )
             })?);
         }
-        let merged_cli_overrides = cli_overrides
+        let mut merged_cli_overrides = typesafe_overrides
+            .family
+            .as_ref()
+            .map_or(cli_overrides, |family| family.flags.as_slice())
             .iter()
             .cloned()
             .chain(
@@ -694,6 +944,26 @@ impl ConfigManager {
                     .map(|(key, value)| (key, json_to_toml(value))),
             )
             .collect::<Vec<_>>();
+        if let Some(family) = &typesafe_overrides.family {
+            // This setting is request-only in stock Codex.
+            if typesafe_overrides.bypass_hook_trust.is_none()
+                && let Some((_, value)) = family
+                    .flags
+                    .iter()
+                    .rev()
+                    .find(|(key, _)| key == "bypass_hook_trust")
+            {
+                typesafe_overrides.bypass_hook_trust = Some(value.as_bool().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "bypass_hook_trust must be a boolean",
+                    )
+                })?);
+            }
+            if let Some(command) = family.tracking_command.as_deref() {
+                add_tracking_hook(&mut merged_cli_overrides, command);
+            }
+        }
         let result = codex_core::config::ConfigBuilder::default()
             .codex_home(self.codex_home.clone())
             .cli_overrides(merged_cli_overrides)
@@ -713,6 +983,18 @@ impl ConfigManager {
         config.config_layer_stack = config
             .config_layer_stack
             .with_mcp_ema_cancellation(mcp_ema_cancellation);
+        if let Some(family) = &config.family {
+            if family.required_route.as_ref().is_some_and(|(id, base)| {
+                id != &config.model_provider_id
+                    || config.model_provider.base_url.as_ref() != Some(base)
+            }) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "selected provider conflicts with the effective provider",
+                ));
+            }
+            family.initialize_credentials(&config).await?;
+        }
         Ok(config)
     }
 

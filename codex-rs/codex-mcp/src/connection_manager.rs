@@ -435,7 +435,7 @@ impl McpConnectionSet {
             submit_id,
             tx_event,
             startup_cancellation_token,
-            runtime_context,
+            mut runtime_context,
             codex_apps_tools_cache,
             tool_catalog_cache,
             codex_apps_tools_cache_key,
@@ -446,6 +446,9 @@ impl McpConnectionSet {
             elicitation_reviewer,
             elicitation_lifecycle,
         } = input;
+        runtime_context
+            .caller_environment
+            .clone_from(&config.client.caller_environment);
         let store_mode = config.mcp_oauth_credentials_store_mode;
         let keyring_backend_kind = config.auth_keyring_backend_kind;
         let oauth_refresh_mode = config.oauth_refresh_mode;
@@ -781,6 +784,7 @@ impl McpConnectionSet {
             let connection_pool = runtime_context.connection_pool.as_ref().filter(|_| {
                 // Sharing a signed-in helper requires tracking account changes.
                 discover_local_stdio
+                    && runtime_context.caller_environment.is_none()
                     && protocol_mode != McpProtocolMode::Legacy
                     && (auth.is_none() || auth_manager.is_some())
             });

@@ -61,6 +61,7 @@ impl AppServerSession {
                     handle.request_typed::<ConfigReadResponse>(ClientRequest::ConfigRead {
                         request_id: RequestId::String(ID.into()),
                         params: ConfigReadParams {
+                            thread_id: None,
                             include_layers: false,
                             cwd,
                         },

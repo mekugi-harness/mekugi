@@ -138,7 +138,7 @@ impl EnterpriseLoginState {
         let current = thread.config().await;
         let Ok(config) = self
             .config_manager
-            .load_latest_config_with_session_layers(&current.config_layer_stack, &current.cwd)
+            .load_latest_config_with_session_layers(&current)
             .await
         else {
             return false;

@@ -2730,6 +2730,7 @@ mod tests {
         let config_read = ClientRequest::ConfigRead {
             request_id: request_id(),
             params: v2::ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: None,
             },
@@ -3923,7 +3924,8 @@ mod tests {
                     "limit": null,
                     "cursor": null,
                     "includeHidden": null,
-                    "modelProvider": null
+                    "modelProvider": null,
+                    "threadId": null
                 }
             }),
             serde_json::to_value(&request)?,

@@ -67,8 +67,14 @@ impl GcpModelProvider {
             return Ok(Some(base_url));
         }
 
-        let project = std::env::var(GOOGLE_CLOUD_PROJECT_ENV_VAR).ok();
-        let location = std::env::var(GOOGLE_CLOUD_LOCATION_ENV_VAR).ok();
+        let project = codex_protocol::config_types::CallerEnvironment::lookup(
+            self.info.caller_environment.as_ref(),
+            GOOGLE_CLOUD_PROJECT_ENV_VAR,
+        );
+        let location = codex_protocol::config_types::CallerEnvironment::lookup(
+            self.info.caller_environment.as_ref(),
+            GOOGLE_CLOUD_LOCATION_ENV_VAR,
+        );
         vertex_base_url(&self.info, project.as_deref(), location.as_deref()).map(Some)
     }
 }

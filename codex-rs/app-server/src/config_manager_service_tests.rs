@@ -940,6 +940,7 @@ async fn write_value_supports_nested_app_paths() -> Result<()> {
 
     let read = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -997,6 +998,7 @@ async fn write_value_supports_custom_mcp_server_default_tool_approval_mode() -> 
 
     let read = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1035,6 +1037,7 @@ async fn read_includes_origins_and_layers() {
 
     let response = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -1165,6 +1168,7 @@ async fn write_value_reports_override() {
 
     let read_after = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -1552,7 +1556,7 @@ async fn managed_auth_policy_survives_unusable_requirements_file_changes() -> Re
     for refreshed in [
         service.load_latest_config(/*fallback_cwd*/ None).await?,
         service
-            .load_latest_config_with_session_layers(&startup.config_layer_stack, &startup.cwd)
+            .load_latest_config_with_session_layers(&startup)
             .await?,
     ] {
         assert_eq!(refreshed.forced_login_method, None);
@@ -1692,7 +1696,7 @@ async fn thread_refresh_resolves_preserved_layers_before_materialization() -> Re
         .await
         .expect_err("host provider is unavailable");
     let refreshed = service
-        .load_latest_config_with_session_layers(&thread.config_layer_stack, &thread.cwd)
+        .load_latest_config_with_session_layers(&thread)
         .await?;
     assert_eq!(refreshed.model_provider_id, "openai");
     assert_eq!(refreshed.cwd, thread.cwd);
@@ -1705,7 +1709,7 @@ async fn thread_refresh_resolves_preserved_layers_before_materialization() -> Re
     );
     std::fs::write(&selected_path, "approval_policy = false\n")?;
     let error = service
-        .load_latest_config_with_session_layers(&thread.config_layer_stack, &thread.cwd)
+        .load_latest_config_with_session_layers(&thread)
         .await
         .expect_err("invalid final config is rejected");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
@@ -1980,6 +1984,7 @@ enabled = false
 
         let response = service
             .read(ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: None,
             })
@@ -2035,6 +2040,7 @@ tracestate = { managed = { tenant = "enterprise" }, empty = {} }"#,
     );
     let response = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2109,6 +2115,7 @@ tool_result = { max_bytes = 4096 }"#,
 
     let response = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2138,6 +2145,7 @@ environment = "user""#,
     let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
     let response = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2162,6 +2170,7 @@ async fn read_materializes_default_allow_login_shell() {
     let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
     let response = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2234,6 +2243,7 @@ async fn read_reports_managed_overrides_user_and_session_flags() {
 
     let response = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -2442,6 +2452,7 @@ span_attributes = { "service.name" = "managed-service" }"#,
 
     let read = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -2510,6 +2521,7 @@ async fn multi_agent_v2_boolean_layer_owns_enabled_origin_and_overrides() {
 
     let read = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2977,6 +2989,7 @@ custom = true
 
         service
             .read(ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: None,
             })
@@ -3019,6 +3032,7 @@ async fn clear_shell_environment_filter_ignores_ascii_case() -> Result<()> {
     );
     service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -3092,6 +3106,7 @@ set = { KEEP = "1", OTHER = "2", GH_HOST = "github.stale.example" } # keep this 
     }
     service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -3147,6 +3162,7 @@ set = { KEEP = "1", OTHER = "2" } # keep this inline table
         .await?;
     service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -3278,6 +3294,7 @@ exclude = ["AWS_*"]
         }
         service
             .read(ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: None,
             })
@@ -3408,6 +3425,7 @@ async fn cloud_desktop_storage_requirements_control_reads_and_writes() {
     );
     let response = service
         .read(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })

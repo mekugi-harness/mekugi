@@ -132,7 +132,7 @@ pub(super) enum WorkloadIdentitySessionError {
 /// OpenAI workload identity markers select this mode; an ambient SPIFFE socket alone does not.
 /// Partial configuration fails validation rather than falling back to another credential source.
 pub fn is_workload_identity_selected() -> bool {
-    ProcessEnvironment::read().has_marker()
+    ProcessEnvironment::read(None).has_marker()
 }
 
 fn resolve_config(
@@ -287,15 +287,19 @@ struct ProcessEnvironment {
 }
 
 impl ProcessEnvironment {
-    fn read() -> Self {
+    fn read(caller: Option<&codex_protocol::config_types::CallerEnvironment>) -> Self {
+        let lookup = |name: &str| match caller {
+            Some(caller) => caller.values().get(name).map(OsString::from),
+            None => std::env::var_os(name),
+        };
         Self {
-            federation_rule_id: std::env::var_os(OPENAI_FEDERATION_RULE_ID_ENV_VAR),
-            identity_token_file: std::env::var_os(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR),
-            identity_token_source: std::env::var_os(OPENAI_IDENTITY_TOKEN_SOURCE_ENV_VAR),
-            spiffe_endpoint: std::env::var_os(SPIFFE_ENDPOINT_SOCKET_ENV_VAR),
-            spiffe_audience: std::env::var_os(OPENAI_SPIFFE_AUDIENCE_ENV_VAR),
-            spiffe_id: std::env::var_os(OPENAI_SPIFFE_ID_ENV_VAR),
-            workload_identity_context: std::env::var_os(OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR),
+            federation_rule_id: lookup(OPENAI_FEDERATION_RULE_ID_ENV_VAR),
+            identity_token_file: lookup(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR),
+            identity_token_source: lookup(OPENAI_IDENTITY_TOKEN_SOURCE_ENV_VAR),
+            spiffe_endpoint: lookup(SPIFFE_ENDPOINT_SOCKET_ENV_VAR),
+            spiffe_audience: lookup(OPENAI_SPIFFE_AUDIENCE_ENV_VAR),
+            spiffe_id: lookup(OPENAI_SPIFFE_ID_ENV_VAR),
+            workload_identity_context: lookup(OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR),
         }
     }
 
@@ -433,8 +437,9 @@ pub(super) struct WorkloadIdentityExternalAuth {
 }
 
 impl WorkloadIdentityExternalAuth {
-    pub(super) fn from_process_config(
+    pub(super) fn from_config(
         auth_config: &AuthConfig,
+        caller: Option<&codex_protocol::config_types::CallerEnvironment>,
     ) -> Result<Option<Self>, WorkloadIdentitySessionError> {
         let registry = process_registry();
         resolve_config(
@@ -442,7 +447,7 @@ impl WorkloadIdentityExternalAuth {
                 .chatgpt_base_url
                 .as_deref()
                 .unwrap_or("https://chatgpt.com/backend-api"),
-            ProcessEnvironment::read(),
+            ProcessEnvironment::read(caller),
             auth_config.auth_route_config.clone(),
         )?
         .map(|config| Self::from_config_with_registry(config, registry))

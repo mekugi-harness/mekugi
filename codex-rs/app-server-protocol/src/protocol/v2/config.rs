@@ -392,6 +392,9 @@ pub enum ConfigWriteErrorCode {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigReadParams {
+    /// Read the effective layers for this loaded thread instead of resolving from cwd.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_layers: bool,
     /// Optional working directory to resolve project config layers. If specified,

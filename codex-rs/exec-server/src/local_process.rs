@@ -816,6 +816,7 @@ pub(crate) fn apply_exec_metadata(
 
 pub(crate) fn shell_environment_policy(env_policy: &ExecEnvPolicy) -> ShellEnvironmentPolicy {
     ShellEnvironmentPolicy {
+        caller_environment: None,
         inherit: env_policy.inherit.clone(),
         ignore_default_excludes: env_policy.ignore_default_excludes,
         exclude: env_policy

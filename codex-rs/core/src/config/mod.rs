@@ -180,6 +180,8 @@ use toml::Value as TomlValue;
 use toml_edit::DocumentMut;
 
 mod auth_keyring;
+mod thread_family;
+pub use thread_family::ThreadFamily;
 pub mod edit;
 mod guardian_policy;
 mod managed_features;
@@ -641,6 +643,7 @@ pub enum ThreadStoreConfig {
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
+    pub family: Option<Arc<ThreadFamily>>,
     /// App-server-owned destination policy; other runtimes remain unmanaged.
     pub application_network_policy: codex_http_client::NetworkPolicy,
     /// Auth bootstrap routing installed by the app-server configuration owner.
@@ -2043,6 +2046,10 @@ impl Config {
 
         McpConfig {
             client: McpClientConfig {
+                caller_environment: self
+                    .family
+                    .as_ref()
+                    .map(|family| family.environment.clone()),
                 chatgpt_base_url: self.chatgpt_base_url.clone(),
                 requires_read_only_mcp_tools: false,
                 protocol_mode: self.mcp_protocol_mode(),
@@ -2145,6 +2152,16 @@ impl Config {
         refreshed_layers: &ConfigLayerStack,
         codex_home: AbsolutePathBuf,
     ) -> std::io::Result<Self> {
+        Self::rebuild_for_family(session_layers, cwd, refreshed_layers, codex_home, None).await
+    }
+
+    pub async fn rebuild_for_family(
+        session_layers: &ConfigLayerStack,
+        cwd: PathBuf,
+        refreshed_layers: &ConfigLayerStack,
+        codex_home: AbsolutePathBuf,
+        family: Option<Arc<ThreadFamily>>,
+    ) -> std::io::Result<Self> {
         let config_layer_stack =
             Self::layer_stack_preserving_session(session_layers, refreshed_layers)?;
         let cfg = config_toml_from_layers(&config_layer_stack).await?;
@@ -2152,6 +2169,7 @@ impl Config {
             LOCAL_FS.as_ref(),
             cfg,
             ConfigOverrides {
+                family,
                 cwd: Some(cwd),
                 ..Default::default()
             },
@@ -2789,6 +2807,7 @@ impl EffectivePermissionSelection<'_> {
 /// Optional overrides for user configuration (e.g., from CLI flags).
 #[derive(Default, Debug, Clone)]
 pub struct ConfigOverrides {
+    pub family: Option<Arc<ThreadFamily>>,
     pub model: Option<String>,
     pub review_model: Option<String>,
     pub cwd: Option<PathBuf>,
@@ -3593,6 +3612,7 @@ impl Config {
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
+            family,
             model,
             review_model: override_review_model,
             cwd,
@@ -4201,6 +4221,11 @@ impl Config {
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
 
+        if let Some(family) = &family {
+            for provider in model_providers.values_mut() {
+                provider.caller_environment = Some(family.environment.clone());
+            }
+        }
         if let Some(provider) = model_providers.get_mut(GCP_PROVIDER_ID) {
             apply_default_gcp_auth(provider, &resolved_cwd);
         }
@@ -4221,7 +4246,20 @@ impl Config {
             })?
             .clone();
 
-        let shell_environment_policy = ShellEnvironmentPolicy::from(cfg.shell_environment_policy);
+        if family.is_some()
+            && (model_provider.aws.is_some()
+                || model_provider.is_amazon_bedrock()
+                || model_provider.gateway_oauth.is_some())
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Mekugi family routes do not support AWS signing or gateway OAuth",
+            ));
+        }
+        let mut shell_environment_policy = ShellEnvironmentPolicy::from(cfg.shell_environment_policy);
+        if let Some(family) = &family {
+            shell_environment_policy.caller_environment = Some(family.environment.clone());
+        }
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);
 
         let history = cfg.history.unwrap_or_default();
@@ -4716,6 +4754,7 @@ impl Config {
         .map_err(std::io::Error::from)?;
         let otel = otel::resolve_config(cfg.otel.unwrap_or_default(), &mut startup_warnings);
         let mut config = Self {
+            family,
             plugins: cfg.plugins,
             prefer_mxc,
             model,

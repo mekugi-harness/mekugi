@@ -116,13 +116,21 @@ impl ConfigRequestProcessor {
         &self,
         params: ConfigReadParams,
     ) -> Result<ConfigReadResponse, JSONRPCErrorError> {
-        let cwd = params.cwd.as_ref().map(PathBuf::from);
-        let config = match self.load_latest_config(cwd).await {
-            Ok(config) => config,
-            Err(err) => {
-                // Report layer read/decoding errors before full-config validation errors, as before.
-                self.config_manager.read(params).await.map_err(map_error)?;
-                return Err(err);
+        let config = if let Some(id) = &params.thread_id {
+            let thread = super::lookup_loaded_thread(&self.thread_manager, id).await?;
+            self.config_manager
+                .load_latest_config_with_session_layers(&*thread.config().await)
+                .await
+                .map_err(|err| super::config_load_error(&err))?
+        } else {
+            let cwd = params.cwd.as_ref().map(PathBuf::from);
+            match self.load_latest_config(cwd).await {
+                Ok(config) => config,
+                Err(err) => {
+                    // Report layer read/decoding errors before full-config validation errors, as before.
+                    self.config_manager.read(params).await.map_err(map_error)?;
+                    return Err(err);
+                }
             }
         };
         let mut response =
@@ -450,10 +458,7 @@ async fn reload_user_config_inner(config_manager: &ConfigManager, thread_manager
         for attempt in 0..4 {
             let current_config = thread.config().await;
             let next_config = match config_manager
-                .load_latest_config_with_session_layers(
-                    &current_config.config_layer_stack,
-                    &current_config.cwd,
-                )
+                .load_latest_config_with_session_layers(&current_config)
                 .await
             {
                 Ok(config) => config,

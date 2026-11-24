@@ -503,6 +503,183 @@ async fn thread_start_provider_model_fallback_ignores_dynamic_catalog() -> Resul
 }
 
 #[tokio::test]
+async fn thread_family_keeps_caller_route_on_live_attach_and_reloads_on_cold_resume() -> Result<()>
+{
+    let provider = create_mock_responses_server_repeating_assistant("Done").await;
+    let daemon = TempDir::new()?;
+    let caller = TempDir::new()?;
+    create_config_toml(
+        daemon.path(),
+        &provider.uri(),
+        "thread_unload_delay_secs = 0",
+        "env_key = \"FAMILY_TEST_KEY\"",
+    )?;
+    let profile = caller.path().join("team.config.toml");
+    std::fs::write(
+        &profile,
+        "model = 'profile-one'\nhooks.PreToolUse = [{matcher='Bash',hooks=[{type='command',command='/bin/true'}]}]",
+    )?;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(daemon.path())
+        .with_env_overrides(&[("FAMILY_TEST_KEY", Some("daemon"))])
+        .build_initialized()
+        .await?;
+    let admission = |key: &str| codex_app_server_protocol::ThreadFamilyParams {
+        provider_policy: None,
+        tracking_command: Some("/bin/true".into()),
+        environment: [
+            ("CODEX_HOME".into(), caller.path().display().to_string()),
+            ("FAMILY_TEST_KEY".into(), key.into()),
+        ]
+        .into(),
+        profile: Some("team".into()),
+    };
+    let start = |key: &str| ThreadStartParams {
+        family: Some(admission(key)),
+        cwd: Some(caller.path().display().to_string()),
+        ..Default::default()
+    };
+    let first = server.start_thread(start("first")).await?;
+    let second = server.start_thread(start("second")).await?;
+    assert_eq!(&first.model, "profile-one");
+    std::fs::write(&profile, "model_provider = 'amazon-bedrock'")?;
+    let rejected = server
+        .send_thread_start_request_with_auto_env(start("unused"))
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        server.read_stream_until_error_message(RequestId::Integer(rejected)),
+    )
+    .await??;
+    assert!(error.error.message.contains("AWS signing"));
+
+    let settings: codex_app_server_protocol::ConfigReadResponse = server
+        .request(|request_id| ClientRequest::ConfigRead {
+            request_id,
+            params: codex_app_server_protocol::ConfigReadParams {
+                thread_id: Some(first.thread.id.clone()),
+                include_layers: false,
+                cwd: None,
+            },
+        })
+        .await?;
+    assert_eq!(settings.config.model.as_deref(), Some("profile-one"));
+    let hooks: codex_app_server_protocol::HooksListResponse = server
+        .request(|request_id| ClientRequest::HooksList {
+            request_id,
+            params: codex_app_server_protocol::HooksListParams {
+                thread_id: Some(first.thread.id.clone()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let approvals = hooks.data[0]
+        .hooks
+        .iter()
+        .filter_map(|hook| {
+            hook.matcher
+                .as_deref()
+                .map(|matcher| (matcher, &hook.trust_status))
+        })
+        .collect::<Vec<_>>();
+    use codex_app_server_protocol::HookTrustStatus;
+    assert_eq!(
+        approvals,
+        vec![
+            ("Bash", &HookTrustStatus::Untrusted),
+            ("Bash|MekugiCommandTracking", &HookTrustStatus::Trusted)
+        ]
+    );
+    std::fs::write(&profile, "invalid TOML!")?;
+    let tree: codex_app_server_protocol::ThreadListResponse = server
+        .request(|request_id| ClientRequest::ThreadSubtreeList {
+            request_id,
+            params: codex_app_server_protocol::ThreadSubtreeListParams {
+                thread_id: first.thread.id.clone(),
+                family: Some(admission("new")),
+            },
+        })
+        .await?;
+    assert_eq!(tree.data[0].model.as_deref(), Some("profile-one"));
+    for id in [&first.thread.id, &second.thread.id] {
+        server
+            .start_turn_and_wait_for_completion(TurnStartParams {
+                thread_id: id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: "hello".into(),
+                    text_elements: vec![],
+                }],
+                ..Default::default()
+            })
+            .await?;
+    }
+    let resume = |request_id| ClientRequest::ThreadResume {
+        request_id,
+        params: ThreadResumeParams {
+            thread_id: first.thread.id.clone(),
+            family: Some(admission("new")),
+            exclude_turns: true,
+            ..Default::default()
+        },
+    };
+    let live: ThreadResumeResponse = server.request(resume).await?;
+    assert_eq!(&live.model, "profile-one");
+    let requests = provider
+        .received_requests()
+        .await
+        .context("mock received requests")?;
+    let keys = requests
+        .iter()
+        .filter(|request| request.url.path().ends_with("/responses"))
+        .map(|request| {
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(keys, vec![Some("Bearer first"), Some("Bearer second")]);
+
+    let _: ThreadUnsubscribeResponse = server
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: first.thread.id.clone(),
+            },
+        })
+        .await?;
+    let _: ThreadClosedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        server.read_notification("thread/closed"),
+    )
+    .await??;
+    std::fs::write(
+        &profile,
+        "model = 'profile-two'\nmodel_reasoning_effort = 'medium'",
+    )?;
+    let cold: ThreadResumeResponse = server
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: first.thread.id,
+                retained_settings: Some(codex_app_server_protocol::RetainedThreadSettingsParams {
+                    model: "retained".into(),
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    service_tier: Some(Some("flex".into())),
+                }),
+                family: Some(admission("new")),
+                config: Some([("model".into(), json!("explicit"))].into()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(cold.model, "explicit");
+    assert_eq!(cold.reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(cold.service_tier.as_deref(), Some("flex"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
     // Provide a mock server and config so model wiring is valid.
     let server = create_mock_responses_server_repeating_assistant("Done").await;

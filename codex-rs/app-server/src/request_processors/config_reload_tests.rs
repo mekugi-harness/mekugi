@@ -202,7 +202,7 @@ async fn mcp_refresh_rejects_superseded_app_server_policy(
         .thread;
     let current = thread.config().await;
     let next = manager
-        .load_latest_config_with_session_layers(&current.config_layer_stack, &current.cwd)
+        .load_latest_config_with_session_layers(&current)
         .await?;
     let mut replacement = CloudConfigBundle::default();
     replacement

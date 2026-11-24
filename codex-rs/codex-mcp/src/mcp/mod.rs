@@ -129,6 +129,7 @@ pub enum McpServerPermissions {
 /// Runtime-wide settings used to initialize MCP clients and discover their tools.
 #[derive(Debug, Clone, PartialEq)]
 pub struct McpClientConfig {
+    pub caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
     /// Base URL for ChatGPT-hosted app MCP servers, copied from the root config.
     pub chatgpt_base_url: String,
     /// Requests server-side read-only filtering and invocation checks for MCP tools.

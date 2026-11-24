@@ -65,6 +65,7 @@ X-Local = "no"
 
     let id = server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -169,6 +170,7 @@ async fn dotted_managed_provider_id_hides_exact_origins() -> Result<()> {
         .await?;
     let id = server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })

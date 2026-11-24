@@ -13,19 +13,32 @@ use std::ffi::OsString;
 
 pub(crate) const MCP_USER_AGENT: &str = concat!("codex-mcp-client/", env!("CARGO_PKG_VERSION"));
 
+#[cfg(test)]
 pub(crate) fn create_env_for_mcp_server(
     extra_env: Option<HashMap<OsString, OsString>>,
     env_vars: &[McpServerEnvVar],
 ) -> Result<HashMap<OsString, OsString>> {
+    create_env_for_caller(extra_env, env_vars, None)
+}
+
+pub(crate) fn create_env_for_caller(
+    extra_env: Option<HashMap<OsString, OsString>>,
+    env_vars: &[McpServerEnvVar],
+    caller: Option<&codex_protocol::config_types::CallerEnvironment>,
+) -> Result<HashMap<OsString, OsString>> {
+    let lookup = |name: &str| match caller {
+        Some(caller) => caller.values().get(name).map(OsString::from),
+        None => env::var_os(name),
+    };
     let additional_env_vars = local_stdio_env_var_names(env_vars)?;
     let mut env: HashMap<OsString, OsString> = DEFAULT_ENV_VARS
         .iter()
         .copied()
         .chain(additional_env_vars)
-        .filter_map(|var| env::var_os(var).map(|value| (OsString::from(var), value)))
+        .filter_map(|var| lookup(var).map(|value| (OsString::from(var), value)))
         .collect();
     for name in CUSTOM_CA_ENV_KEYS {
-        let Some(value) = env::var_os(name) else {
+        let Some(value) = lookup(name) else {
             continue;
         };
         if value.is_empty() {

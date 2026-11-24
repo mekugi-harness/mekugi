@@ -327,12 +327,24 @@ pub(crate) fn auth_manager_for_provider(
                         credential_file.as_os_str().to_os_string(),
                     );
                 }
-                Some(AuthManager::external_bearer_only_with_env(config, env))
+                Some(AuthManager::external_bearer_with_caller_env(
+                    config,
+                    env,
+                    provider.caller_environment.clone(),
+                ))
             } else {
                 Some(match auth_manager {
                     Some(manager) => crate::shared_state::process_shared_state()
-                        .command_credentials(&config, &manager.runtime_config()),
-                    None => AuthManager::external_bearer_only(config),
+                        .command_credentials(
+                            &config,
+                            &manager.runtime_config(),
+                            provider.caller_environment.as_ref(),
+                        ),
+                    None => AuthManager::external_bearer_with_caller_env(
+                        config,
+                        HashMap::new(),
+                        provider.caller_environment.clone(),
+                    ),
                 })
             }
         }

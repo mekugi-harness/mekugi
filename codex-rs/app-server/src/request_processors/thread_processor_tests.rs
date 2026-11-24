@@ -681,6 +681,7 @@ mod thread_processor_behavior_tests {
             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
             model_catalog_url: None,
             env_key: None,
+            caller_environment: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
@@ -751,6 +752,8 @@ mod thread_processor_behavior_tests {
     fn collect_resume_override_mismatches_includes_service_tier() {
         let cwd = test_path_buf("/tmp").abs();
         let request = ThreadResumeParams {
+            retained_settings: None,
+            family: None,
             thread_id: "thread-1".to_string(),
             history: None,
             path: None,

@@ -138,6 +138,7 @@ struct ResumeConfigState {
 
 #[derive(Default)]
 struct ResumeRetryState<'a> {
+    family: Option<Arc<codex_core::config::ThreadFamily>>,
     prepared_config: Option<PreparedResumeConfig>,
     force_exclusive: bool,
     held_permit: Option<ResumePermit<'a>>,
@@ -311,6 +312,10 @@ fn merge_persisted_resume_metadata(
 
     // Model and reasoning overrides do not imply a provider change.
     if typesafe_overrides.model_provider.is_none()
+        && !typesafe_overrides
+            .family
+            .as_ref()
+            .is_some_and(|family| family.overrides("model_provider"))
         && !request_overrides
             .as_ref()
             .is_some_and(|overrides| overrides.contains_key("model_provider"))
@@ -318,13 +323,25 @@ fn merge_persisted_resume_metadata(
         typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
     }
 
-    if has_model_override {
-        return;
+    let restore_model = typesafe_overrides
+        .family
+        .as_ref()
+        .map_or(!has_model_override, |family| {
+            typesafe_overrides.model.is_none() && !family.overrides("model")
+        });
+    if restore_model {
+        typesafe_overrides
+            .model
+            .clone_from(&persisted_metadata.model);
     }
 
-    typesafe_overrides.model = persisted_metadata.model.clone();
-
-    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
+    let restore_effort = typesafe_overrides
+        .family
+        .as_ref()
+        .map_or(!has_model_override, |family| {
+            !family.overrides("model_reasoning_effort")
+        });
+    if restore_effort && let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String(reasoning_effort.to_string()),
@@ -360,7 +377,11 @@ fn has_model_resume_override(
     request_overrides: Option<&HashMap<String, serde_json::Value>>,
     typesafe_overrides: &ConfigOverrides,
 ) -> bool {
-    typesafe_overrides.model.is_some()
+    typesafe_overrides.family.as_ref().is_some_and(|family| {
+        ["model", "model_provider", "model_reasoning_effort"]
+            .iter()
+            .any(|key| family.overrides(key))
+    }) || typesafe_overrides.model.is_some()
         || typesafe_overrides.model_provider.is_some()
         || request_overrides.is_some_and(|overrides| {
             overrides.contains_key("model") || overrides.contains_key("model_provider")
@@ -373,7 +394,11 @@ fn has_permission_override(
     request_overrides: Option<&HashMap<String, serde_json::Value>>,
     typesafe_overrides: &ConfigOverrides,
 ) -> bool {
-    typesafe_overrides.sandbox_mode.is_some()
+    typesafe_overrides.family.as_ref().is_some_and(|family| {
+        ["sandbox_mode", "default_permissions"]
+            .iter()
+            .any(|key| family.overrides(key))
+    }) || typesafe_overrides.sandbox_mode.is_some()
         || typesafe_overrides.permission_profile.is_some()
         || typesafe_overrides.default_permissions.is_some()
         || request_overrides.is_some_and(|overrides| {
@@ -1136,6 +1161,17 @@ impl ThreadRequestProcessor {
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
         let root = ThreadId::from_string(&params.thread_id)
             .map_err(|error| invalid_request(format!("invalid root agent ID: {error}")))?;
+        if let Some(requested) = &params.family
+            && requested.profile.is_some()
+        {
+            let thread = self
+                .thread_manager
+                .get_thread(root)
+                .await
+                .map_err(|_| invalid_request("family is not running"))?;
+            ConfigManager::check_family_selector(thread.config().await.as_ref(), requested)
+                .map_err(|err| invalid_request(err.to_string()))?;
+        }
         let data = self
             .thread_manager
             .read_thread_subtree(root)
@@ -1444,6 +1480,7 @@ impl ThreadRequestProcessor {
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadStartParams {
+            family,
             model,
             model_provider,
             allow_provider_model_fallback,
@@ -1524,6 +1561,14 @@ impl ThreadRequestProcessor {
             developer_instructions,
             personality,
         );
+        if let Some(family) = family {
+            typesafe_overrides.family = Some(
+                self.config_manager
+                    .admit_family(family, typesafe_overrides.cwd.as_deref(), config.as_ref())
+                    .await
+                    .map_err(|err| config_load_error(&err))?,
+            );
+        }
         typesafe_overrides.ephemeral = ephemeral;
         let listener_task_context = ListenerTaskContext {
             thread_manager: Arc::clone(&self.thread_manager),
@@ -4283,6 +4328,8 @@ impl ThreadRequestProcessor {
         };
 
         let ThreadResumeParams {
+            retained_settings,
+            family,
             thread_id,
             history,
             path,
@@ -4434,6 +4481,7 @@ impl ThreadRequestProcessor {
             // Attach to the resolved child with only the caller's history-paging preferences.
             let attach_params = ThreadResumeParams {
                 thread_id: child_thread_id.to_string(),
+                family,
                 exclude_turns,
                 initial_turns_page,
                 ..Default::default()
@@ -4542,6 +4590,21 @@ impl ThreadRequestProcessor {
             developer_instructions,
             personality,
         );
+        if let Some(params) = family {
+            if retry.family.is_none() {
+                retry.family = Some(
+                    self.config_manager
+                        .admit_family(
+                            params,
+                            typesafe_overrides.cwd.as_deref().or(history_cwd.as_deref()),
+                            request_overrides.as_ref(),
+                        )
+                        .await
+                        .map_err(|err| config_load_error(&err))?,
+                );
+            }
+            typesafe_overrides.family.clone_from(&retry.family);
+        }
         if typesafe_overrides.approval_policy.is_none()
             && let Some(value) = request_overrides
                 .as_mut()
@@ -4555,11 +4618,19 @@ impl ThreadRequestProcessor {
         let has_explicit_model_resume_override =
             has_model_resume_override(request_overrides.as_ref(), &typesafe_overrides);
         let persisted_model_settings = latest_persisted_model_settings(&thread_history);
-        let has_override = |key| {
-            request_overrides
+        let has_override = |key: &str| {
+            typesafe_overrides
+                .family
                 .as_ref()
-                .is_some_and(|overrides| overrides.contains_key(key))
+                .is_some_and(|family| family.overrides(key))
+                || request_overrides
+                    .as_ref()
+                    .is_some_and(|overrides| overrides.contains_key(key))
         };
+        let restore_per_field = typesafe_overrides.family.is_some() || retained_settings.is_some();
+        let restore_model =
+            restore_per_field && typesafe_overrides.model.is_none() && !has_override("model");
+        let restore_effort = restore_per_field && !has_override("model_reasoning_effort");
         let restore_service_tier =
             typesafe_overrides.service_tier.is_none() && !has_override("service_tier");
         let restore_summary = !has_override("model_reasoning_summary");
@@ -4580,10 +4651,44 @@ impl ThreadRequestProcessor {
             )
             .await;
 
-        let clear_reasoning_effort = !has_explicit_model_resume_override
-            && persisted_metadata
-                .as_ref()
-                .is_some_and(|metadata| metadata.reasoning_effort.is_none());
+        let mut clear_reasoning_effort = (restore_effort
+            && persisted_metadata.is_none()
+            && persisted_model_settings
+                .is_some_and(|settings| settings.reasoning_effort.is_none()))
+            || (restore_effort || !has_explicit_model_resume_override)
+                && persisted_metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.reasoning_effort.is_none());
+        if persisted_metadata.is_none()
+            && let Some(settings) = persisted_model_settings
+        {
+            if restore_model {
+                typesafe_overrides.model = Some(settings.model.clone());
+            }
+            if restore_effort && let Some(effort) = &settings.reasoning_effort {
+                request_overrides
+                    .get_or_insert_with(HashMap::new)
+                    .insert("model_reasoning_effort".into(), serde_json::json!(effort));
+            }
+        }
+        // The Mekugi client also retains confirmed settings from before a
+        // rollout exists. They are saved facts, never invocation overrides.
+        if let Some(settings) = &retained_settings {
+            if restore_model {
+                typesafe_overrides.model = Some(settings.model.clone());
+            }
+            if restore_effort {
+                clear_reasoning_effort = settings.reasoning_effort.is_none();
+                if let Some(effort) = &settings.reasoning_effort {
+                    request_overrides
+                        .get_or_insert_with(HashMap::new)
+                        .insert("model_reasoning_effort".into(), serde_json::json!(effort));
+                }
+            }
+            if restore_service_tier && let Some(tier) = &settings.service_tier {
+                typesafe_overrides.service_tier = Some(tier.clone());
+            }
+        }
         let config_state = ResumeConfigState {
             history_cwd: history_cwd.clone(),
             workspace_roots: typesafe_overrides.workspace_roots.clone(),
@@ -4645,7 +4750,11 @@ impl ThreadRequestProcessor {
             config.model_reasoning_effort = None;
         }
         if let Some(settings) = persisted_model_settings {
-            if restore_service_tier {
+            if restore_service_tier
+                && !retained_settings
+                    .as_ref()
+                    .is_some_and(|s| s.service_tier.is_some())
+            {
                 config.service_tier.clone_from(&settings.service_tier);
             }
             if restore_summary {
@@ -4927,10 +5036,19 @@ impl ThreadRequestProcessor {
             return None;
         };
         if let Some(persisted_settings) = persisted_settings {
-            if typesafe_overrides.approval_policy.is_none() {
+            if typesafe_overrides.approval_policy.is_none()
+                && !typesafe_overrides
+                    .family
+                    .as_ref()
+                    .is_some_and(|family| family.overrides("approval_policy"))
+            {
                 typesafe_overrides.approval_policy = Some(persisted_settings.approval_policy);
             }
             if typesafe_overrides.approvals_reviewer.is_none()
+                && !typesafe_overrides
+                    .family
+                    .as_ref()
+                    .is_some_and(|family| family.overrides("approvals_reviewer"))
                 && !request_overrides
                     .as_ref()
                     .is_some_and(|overrides| overrides.contains_key("approvals_reviewer"))
@@ -5044,6 +5162,11 @@ impl ThreadRequestProcessor {
             {
                 return Ok(RunningThreadResumeResult::NeedsExclusive);
             }
+            let live_config = existing_thread.config().await;
+            if let Some(requested) = &params.family {
+                ConfigManager::check_family_selector(&live_config, requested)
+                    .map_err(|err| invalid_request(err.to_string()))?;
+            }
             let mismatch_details = collect_resume_override_mismatches(
                 params,
                 &config_snapshot,
@@ -5067,7 +5190,8 @@ impl ThreadRequestProcessor {
                 if can_accept_direct_input(
                     existing_thread.multi_agent_version(),
                     &config_snapshot.session_source,
-                ) && !has_subscribers
+                ) && live_config.family.is_none()
+                    && !has_subscribers
                     && matches!(loaded_status, ThreadStatus::Idle)
                     && !is_running
                     && !existing_thread.has_active_turn().await
@@ -5868,6 +5992,9 @@ impl ThreadRequestProcessor {
             developer_instructions,
             /*personality*/ None,
         );
+        if let Some(parent) = &loaded_parent {
+            typesafe_overrides.family = parent.config().await.family.clone();
+        }
         typesafe_overrides.ephemeral = ephemeral.then_some(true);
         let restore_approval_policy = typesafe_overrides.approval_policy.is_none();
         let restore_approvals_reviewer = typesafe_overrides.approvals_reviewer.is_none()

@@ -98,6 +98,7 @@ async fn cancelled_refresh_marks_only_started_exchanges_as_unsettled() -> anyhow
             .await,
             /*enable_codex_api_key_env*/ false,
             /*allowed_auth_modes*/ None,
+            /*caller_environment*/ None,
         )
         .await,
     );
@@ -543,6 +544,7 @@ async fn stored_agent_identity_jwt_keeps_auth_json_unchanged() -> anyhow::Result
     )?;
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -739,6 +741,7 @@ async fn chatgpt_auth_registers_agent_identity_when_enabled() -> anyhow::Result<
     stored.tokens.as_mut().unwrap().login_owner_id = Some("login-a".into());
     storage.save(&stored)?;
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -830,6 +833,7 @@ async fn chatgpt_auth_registers_agent_identity_when_enabled() -> anyhow::Result<
     assert_eq!(storage.load()?, Some(stored));
 
     let reloaded = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -875,6 +879,7 @@ async fn chatgpt_auth_retries_transient_agent_identity_registration() -> anyhow:
         codex_home.path(),
     )?;
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -944,6 +949,7 @@ async fn chatgpt_auth_registration_retry_exhaustion_is_fallback_eligible() -> an
         codex_home.path(),
     )?;
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -1008,6 +1014,7 @@ async fn chatgpt_auth_task_registration_retry_exhaustion_is_fallback_eligible() 
     auth_json.agent_identity = Some(AgentIdentityStorage::Record(record.clone()));
     storage.save(&auth_json)?;
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -1067,6 +1074,7 @@ async fn chatgpt_auth_non_retryable_registration_error_is_hard_failure() -> anyh
         codex_home.path(),
     )?;
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -1215,6 +1223,7 @@ async fn pro_account_with_no_api_key_uses_chatgpt_auth() {
     .expect("failed to write auth file");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -1295,6 +1304,7 @@ async fn loads_api_key_from_auth_json() {
         .unwrap();
 
         let auth = super::load_auth(
+            /*caller_environment*/ None,
             dir.path(),
             /*enable_codex_api_key_env*/ false,
             AuthCredentialsStoreMode::File,
@@ -1413,6 +1423,7 @@ async fn refresh_failure_is_scoped_to_the_matching_auth_snapshot() {
     .expect("failed to write auth file");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -2447,6 +2458,7 @@ async fn load_auth_reads_access_token_from_env() {
     let authapi_base_url = server.uri();
     let chatgpt_base_url = format!("{authapi_base_url}/backend-api");
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -2498,6 +2510,7 @@ async fn load_auth_reads_personal_access_token_from_env() {
         AuthCredentialsStoreMode::Ephemeral,
     ] {
         let auth = super::load_auth(
+            /*caller_environment*/ None,
             codex_home.path(),
             /*enable_codex_api_key_env*/ false,
             auth_credentials_store_mode,
@@ -2674,6 +2687,7 @@ async fn load_auth_keeps_codex_api_key_env_precedence() {
     let _api_key_guard = EnvVarGuard::set(CODEX_API_KEY_ENV_VAR, "sk-env");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ true,
         AuthCredentialsStoreMode::File,
@@ -3365,6 +3379,7 @@ async fn plan_type_maps_known_plan() {
     .expect("failed to write auth file");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -3400,6 +3415,7 @@ async fn plan_type_maps_self_serve_business_usage_based_plan() {
     .expect("failed to write auth file");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -3438,6 +3454,7 @@ async fn plan_type_maps_enterprise_cbp_usage_based_plan() {
     .expect("failed to write auth file");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -3476,6 +3493,7 @@ async fn plan_type_maps_unknown_to_unknown() {
     .expect("failed to write auth file");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,
@@ -3511,6 +3529,7 @@ async fn missing_plan_type_maps_to_unknown() {
     .expect("failed to write auth file");
 
     let auth = super::load_auth(
+        /*caller_environment*/ None,
         codex_home.path(),
         /*enable_codex_api_key_env*/ false,
         AuthCredentialsStoreMode::File,

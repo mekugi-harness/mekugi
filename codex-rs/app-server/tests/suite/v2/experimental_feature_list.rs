@@ -524,6 +524,7 @@ async fn set_experimental_feature_enablement(
 async fn read_config(mcp: &mut TestAppServer, cwd: Option<String>) -> Result<ConfigReadResponse> {
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd,
         })

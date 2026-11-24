@@ -80,8 +80,24 @@ impl Hooks {
         thread_id: ThreadId,
         mcp_executor: Arc<dyn HookMcpExecutor>,
     ) -> anyhow::Result<(Self, Receiver<codex_protocol::protocol::HookCompletedEvent>)> {
+        Self::new_for_caller(config, thread_id, mcp_executor, None)
+    }
+
+    pub fn new_for_caller(
+        config: HooksConfig,
+        thread_id: ThreadId,
+        mcp_executor: Arc<dyn HookMcpExecutor>,
+        caller: Option<&codex_protocol::config_types::CallerEnvironment>,
+    ) -> anyhow::Result<(Self, Receiver<codex_protocol::protocol::HookCompletedEvent>)> {
         let (result_sender, result_receiver) = async_channel::unbounded();
-        let environment = Arc::new(std::env::vars_os().collect());
+        let environment = Arc::new(match caller {
+            Some(caller) => caller
+                .values()
+                .iter()
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+                .collect(),
+            None => std::env::vars_os().collect(),
+        });
         let hooks = Self::from_config(config, mcp_executor, Arc::clone(&environment), |shell| {
             CommandHookRuntime::new(shell, environment, thread_id, result_sender)
         });

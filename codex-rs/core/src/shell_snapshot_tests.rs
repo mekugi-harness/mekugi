@@ -210,6 +210,7 @@ async fn snapshot_helper_exec_metadata_child() -> Result<()> {
         SNAPSHOT_TIMEOUT,
         SnapshotShellMode::NonLogin,
         &dir.path().abs(),
+        None,
         /*credential_broker*/ None,
         /*sandbox*/ None,
     )
@@ -232,6 +233,7 @@ async fn snapshot_helper_exec_metadata_child() -> Result<()> {
         &shell,
         &validation_path,
         &dir.path().abs(),
+        None,
         /*credential_broker*/ None,
         /*sandbox*/ None,
     )
@@ -882,6 +884,7 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         &shell,
         &path,
         &dir.path().abs(),
+        None,
         Some(&credential_broker),
         /*sandbox*/ None,
     )
@@ -898,6 +901,7 @@ async fn snapshot_discovers_and_redacts_shell_initialized_credentials() -> Resul
         &shell,
         &validation_path,
         &dir.path().abs(),
+        None,
         Some(&credential_broker),
         /*sandbox*/ None,
     )
@@ -1808,6 +1812,7 @@ async fn snapshot_shell_does_not_inherit_stdin() -> Result<()> {
         Duration::from_secs(2),
         SnapshotShellMode::Login,
         &home,
+        None,
         /*credential_broker*/ None,
         /*sandbox*/ None,
     )
@@ -1853,6 +1858,7 @@ async fn timed_out_snapshot_shell_is_terminated() -> Result<()> {
         Duration::from_secs(1),
         SnapshotShellMode::Login,
         &dir.path().abs(),
+        None,
         /*credential_broker*/ None,
         /*sandbox*/ None,
     )
@@ -2037,6 +2043,7 @@ async fn snapshot_rejects_nul_script_before_execution() -> Result<()> {
         Duration::from_secs(5),
         SnapshotShellMode::NonLogin,
         &root.path().abs(),
+        None,
         /*credential_broker*/ None,
         /*sandbox*/ None,
     )

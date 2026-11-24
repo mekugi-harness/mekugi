@@ -179,11 +179,15 @@ impl CatalogRequestProcessor {
         &self,
         params: ModelListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let (active_config, active_models_manager) = self
-            .model_catalog
-            .current()
-            .await
-            .map_err(|err| config_load_error(&err))?;
+        let (active_config, active_models_manager) = if let Some(id) = &params.thread_id {
+            let thread = lookup_loaded_thread(&self.thread_manager, id).await?;
+            (thread.config().await, thread.models_manager())
+        } else {
+            self.model_catalog
+                .current()
+                .await
+                .map_err(|err| config_load_error(&err))?
+        };
         let (config, models_manager) = match params.model_provider.as_deref() {
             None => (active_config, active_models_manager),
             Some(provider_id) => {
@@ -204,7 +208,7 @@ impl CatalogRequestProcessor {
         // Resolving credentials may refresh them, but explicit host policy prevents browser login.
         if let Some(gateway) = codex_model_provider::create_model_provider(
             config.model_provider.clone(),
-            Some(self.thread_manager.auth_manager()),
+            Some(self.thread_manager.auth_for_config(&config)),
         )
         .gateway_auth_manager()
         .map_err(|error| internal_error(error.to_string()))?
@@ -215,6 +219,9 @@ impl CatalogRequestProcessor {
                 .await
                 .map_err(|err| config_load_error(&err))?;
             if let Err(error) = gateway.resolve_access_token().await {
+                if params.thread_id.is_some() {
+                    return Err(invalid_request(error.to_string()));
+                }
                 let current = self
                     .config_manager
                     .load_latest_config(/*fallback_cwd*/ None)
@@ -310,6 +317,7 @@ impl CatalogRequestProcessor {
             cursor,
             include_hidden,
             model_provider: _,
+            thread_id: _,
         } = params;
         let presets = self
             .model_catalog
@@ -392,10 +400,7 @@ impl CatalogRequestProcessor {
                     .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
                 let thread_config = thread.config().await;
                 self.config_manager
-                    .load_latest_config_with_session_layers(
-                        &thread_config.config_layer_stack,
-                        &thread_config.cwd,
-                    )
+                    .load_latest_config_with_session_layers(&thread_config)
                     .await
                     .map_err(|err| internal_error(format!("failed to reload config: {err}")))?
             }
@@ -657,16 +662,11 @@ impl CatalogRequestProcessor {
             if !cwds.is_empty() {
                 return Err(invalid_request("specify either threadId or cwds"));
             }
-            let thread_id = ThreadId::from_string(&thread_id)
-                .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
-            let thread = self
-                .thread_manager
-                .get_thread(thread_id)
-                .await
-                .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
+            let thread = lookup_loaded_thread(&self.thread_manager, &thread_id).await?;
             let cwd = thread.config_snapshot().await.cwd().to_path_buf();
             let hooks = thread.list_hooks();
             return Ok(HooksListResponse {
+                bypass_hook_trust: thread.config().await.bypass_hook_trust,
                 data: vec![codex_app_server_protocol::HooksListEntry {
                     cwd,
                     hooks: hooks_to_info(&hooks.hooks),
@@ -738,7 +738,10 @@ impl CatalogRequestProcessor {
                 errors: Vec::new(),
             });
         }
-        Ok(HooksListResponse { data })
+        Ok(HooksListResponse {
+            data,
+            bypass_hook_trust: false,
+        })
     }
 
     async fn skills_config_write_response_inner(

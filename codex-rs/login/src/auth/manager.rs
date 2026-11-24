@@ -515,6 +515,7 @@ impl CodexAuth {
         let agent_identity_authapi_base_url =
             agent_identity_authapi_base_url(chatgpt_base_url).ok();
         load_auth(
+            None,
             codex_home,
             /*enable_codex_api_key_env*/ false,
             auth_credentials_store_mode,
@@ -1066,8 +1067,14 @@ pub fn read_codex_access_token_from_env() -> Option<String> {
 }
 
 fn read_non_empty_env_var(key: &str) -> Option<String> {
-    env::var(key)
-        .ok()
+    read_caller_var(None, key)
+}
+
+fn read_caller_var(
+    environment: Option<&codex_protocol::config_types::CallerEnvironment>,
+    key: &str,
+) -> Option<String> {
+    codex_protocol::config_types::CallerEnvironment::lookup(environment, key)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
@@ -1342,11 +1349,22 @@ impl AuthConfig {
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<&[AuthMode]>,
     ) -> std::io::Result<Option<CodexAuth>> {
+        self.load_caller_auth(enable_codex_api_key_env, allowed_auth_modes, None)
+            .await
+    }
+
+    async fn load_caller_auth(
+        &self,
+        enable_codex_api_key_env: bool,
+        allowed_auth_modes: Option<&[AuthMode]>,
+        caller_environment: Option<&codex_protocol::config_types::CallerEnvironment>,
+    ) -> std::io::Result<Option<CodexAuth>> {
         let allowed_login_methods = self.allowed_login_methods();
         let workspaces = self.effective_chatgpt_workspaces();
         let agent_identity_authapi_base_url =
             agent_identity_authapi_base_url(self.chatgpt_base_url.as_deref()).ok();
         let auth = load_auth(
+            caller_environment,
             &self.codex_home,
             enable_codex_api_key_env,
             self.auth_credentials_store_mode,
@@ -1448,6 +1466,7 @@ async fn enforce_login_restrictions_with_agent_identity_authapi_base_url(
     }
 
     let Some(auth) = load_auth(
+        None,
         &config.codex_home,
         /*enable_codex_api_key_env*/ true,
         config.auth_credentials_store_mode,
@@ -1604,6 +1623,7 @@ fn logout_all_stores(
 
 #[allow(clippy::too_many_arguments)]
 async fn load_auth(
+    caller_environment: Option<&codex_protocol::config_types::CallerEnvironment>,
     codex_home: &Path,
     enable_codex_api_key_env: bool,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
@@ -1621,7 +1641,7 @@ async fn load_auth(
     if enable_codex_api_key_env
         && mode_allowed(AuthMode::ApiKey)
         && auth_mode_is_allowed(allowed_login_methods, AuthMode::ApiKey)
-        && let Some(api_key) = read_codex_api_key_from_env()
+        && let Some(api_key) = read_caller_var(caller_environment, CODEX_API_KEY_ENV_VAR)
     {
         return Ok(Some(CodexAuth::from_api_key(api_key.as_str())));
     }
@@ -1633,7 +1653,8 @@ async fn load_auth(
         AuthCredentialsStoreMode::Ephemeral,
         AuthKeyringBackendKind::default(),
     );
-    if let Some(auth_dot_json) = load_stored_auth(ephemeral_storage).await?
+    if caller_environment.is_none()
+        && let Some(auth_dot_json) = load_stored_auth(ephemeral_storage).await?
         && auth_mode_is_allowed(allowed_login_methods, auth_dot_json.resolved_mode())
     {
         if !mode_allowed(auth_dot_json.resolved_mode()) {
@@ -1660,7 +1681,7 @@ async fn load_auth(
     }
 
     if auth_mode_is_allowed(allowed_login_methods, AuthMode::AgentIdentity)
-        && let Some(access_token) = read_codex_access_token_from_env()
+        && let Some(access_token) = read_caller_var(caller_environment, CODEX_ACCESS_TOKEN_ENV_VAR)
     {
         return match classify_codex_access_token(&access_token) {
             CodexAccessToken::PersonalAccessToken(access_token) => {
@@ -2234,6 +2255,7 @@ impl UnauthorizedRecovery {
 /// `reload()` is called explicitly. This matches the design goal of avoiding
 /// different parts of the program seeing inconsistent auth data mid‑run.
 pub struct AuthManager {
+    caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
     codex_home: PathBuf,
     inner: RwLock<CachedAuth>,
     auth_change_tx: watch::Sender<u64>,
@@ -2370,17 +2392,30 @@ impl AuthManager {
             },
             enable_codex_api_key_env,
             /*allowed_auth_modes*/ None,
+            None,
         )
         .await
+    }
+
+    pub async fn for_caller(
+        auth_config: AuthConfig,
+        caller_environment: codex_protocol::config_types::CallerEnvironment,
+    ) -> Result<Arc<Self>, AuthManagerInitializationError> {
+        Self::shared_for_environment(auth_config, true, None, Some(caller_environment)).await
     }
 
     async fn new_from_auth_config(
         auth_config: AuthConfig,
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<Vec<AuthMode>>,
+        caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
     ) -> Self {
         let managed_auth = auth_config
-            .load_auth_with_modes(enable_codex_api_key_env, allowed_auth_modes.as_deref())
+            .load_caller_auth(
+                enable_codex_api_key_env,
+                allowed_auth_modes.as_deref(),
+                caller_environment.as_ref(),
+            )
             .await
             .ok()
             .flatten();
@@ -2398,6 +2433,7 @@ impl AuthManager {
             agent_identity_authapi_base_url(chatgpt_base_url.as_deref()).ok();
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Self {
+            caller_environment,
             codex_home,
             inner: RwLock::new(CachedAuth {
                 auth: managed_auth,
@@ -2460,9 +2496,21 @@ impl AuthManager {
         config: ModelProviderAuthInfo,
         runtime: AuthRuntimeConfig,
     ) -> Arc<Self> {
+        Self::external_bearer_for_caller(config, runtime, None)
+    }
+
+    pub fn external_bearer_for_caller(
+        config: ModelProviderAuthInfo,
+        runtime: AuthRuntimeConfig,
+        caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
+    ) -> Arc<Self> {
         Self::from_cached_auth(
             /*auth*/ None,
-            Some(Arc::new(BearerTokenRefresher::new(config, HashMap::new()))),
+            Some(Arc::new(BearerTokenRefresher::with_environment(
+                config,
+                HashMap::new(),
+                caller_environment,
+            ))),
             runtime,
             /*owns_network_policy*/ false,
         )
@@ -2481,6 +2529,7 @@ impl AuthManager {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
 
         Arc::new(Self {
+            caller_environment: None,
             codex_home: runtime.codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
@@ -2518,6 +2567,7 @@ impl AuthManager {
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
+            caller_environment: None,
             codex_home,
             inner: RwLock::new(cached),
             auth_change_tx,
@@ -2555,6 +2605,7 @@ impl AuthManager {
         };
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
+            caller_environment: None,
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(cached),
             auth_change_tx,
@@ -2594,8 +2645,17 @@ impl AuthManager {
         config: ModelProviderAuthInfo,
         env: HashMap<String, OsString>,
     ) -> Arc<Self> {
+        Self::external_bearer_with_caller_env(config, env, None)
+    }
+
+    pub fn external_bearer_with_caller_env(
+        config: ModelProviderAuthInfo,
+        env: HashMap<String, OsString>,
+        caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
+    ) -> Arc<Self> {
         let (auth_change_tx, _auth_change_rx) = watch::channel(0);
         Arc::new(Self {
+            caller_environment: None,
             codex_home: PathBuf::from("non-existent"),
             inner: RwLock::new(CachedAuth {
                 auth: None,
@@ -2616,7 +2676,11 @@ impl AuthManager {
             unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
-            external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::new(config, env)))),
+            external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::with_environment(
+                config,
+                env,
+                caller_environment,
+            )))),
             workload_identity_selected: false,
             allowed_auth_modes: RwLock::new(None),
             owns_network_policy: false,
@@ -3130,6 +3194,7 @@ impl AuthManager {
         let allowed_login_methods = self.allowed_login_methods();
         let effective_chatgpt_workspaces = self.effective_chatgpt_workspaces();
         let auth = load_auth(
+            self.caller_environment.as_ref(),
             &self.codex_home,
             self.enable_codex_api_key_env,
             self.auth_credentials_store_mode,
@@ -3409,10 +3474,30 @@ impl AuthManager {
         enable_codex_api_key_env: bool,
         allowed_auth_modes: Option<Vec<AuthMode>>,
     ) -> Result<Arc<Self>, AuthManagerInitializationError> {
-        let external_auth = WorkloadIdentityExternalAuth::from_process_config(&auth_config)?;
-        let mut manager =
-            Self::new_from_auth_config(auth_config, enable_codex_api_key_env, allowed_auth_modes)
-                .await;
+        Self::shared_for_environment(
+            auth_config,
+            enable_codex_api_key_env,
+            allowed_auth_modes,
+            None,
+        )
+        .await
+    }
+
+    async fn shared_for_environment(
+        auth_config: AuthConfig,
+        enable_codex_api_key_env: bool,
+        allowed_auth_modes: Option<Vec<AuthMode>>,
+        caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
+    ) -> Result<Arc<Self>, AuthManagerInitializationError> {
+        let external_auth =
+            WorkloadIdentityExternalAuth::from_config(&auth_config, caller_environment.as_ref())?;
+        let mut manager = Self::new_from_auth_config(
+            auth_config,
+            enable_codex_api_key_env,
+            allowed_auth_modes,
+            caller_environment,
+        )
+        .await;
         manager.workload_identity_selected = external_auth.is_some();
         let manager = Arc::new(manager);
         if let Some(external_auth) = external_auth {

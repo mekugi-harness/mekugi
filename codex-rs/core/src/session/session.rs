@@ -1715,10 +1715,11 @@ impl Session {
                 thread_id,
                 session: OnceLock::new(),
             });
-            let (hooks, async_hook_results) = Hooks::new(
+            let (hooks, async_hook_results) = Hooks::new_for_caller(
                 hooks_config,
                 thread_id,
                 hook_mcp_executor.clone(),
+                config.family.as_ref().map(|family| &family.environment),
             )?;
             for warning in hooks.startup_warnings() {
                 post_session_configured_events.push(Event {
