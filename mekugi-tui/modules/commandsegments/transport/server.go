@@ -266,13 +266,6 @@ func serve(ctx context.Context, report, reply *os.File, work string, claim Claim
 	}
 }
 
-func minTime(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
-}
-
 func writeReply(conn *os.File, ok bool) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
 		return err

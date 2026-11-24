@@ -148,7 +148,7 @@ fn collect_write_paths(
     out: &mut BTreeSet<PathBuf>,
 ) {
     match node.kind() {
-        "subshell" => {
+        "subshell" | "command_substitution" => {
             let mut sub_cwd = cwd.clone();
             let mut cursor = node.walk();
             for child in node.named_children(&mut cursor) {

@@ -4,9 +4,6 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use similar::DiffOp;
-use similar::TextDiff;
-
 use crate::diff::compose_transitions_with_continuity;
 use crate::error::ChangeHistoryError;
 use crate::identity::ChangeId;
@@ -288,7 +285,7 @@ fn resolve_target_snapshot(
                     reason: "non-UTF-8 workspace file cannot be merged".to_string(),
                 })?;
 
-            let merged = three_way_merge_strict(base, ours, theirs).ok_or_else(|| {
+            let merged = diffy::merge(base, ours, theirs).map_err(|_| {
                 ChangeHistoryError::DriftConflict {
                     path: path.to_path_buf(),
                     reason: "overlapping edits conflict with workspace changes".to_string(),
@@ -309,143 +306,4 @@ fn resolve_target_snapshot(
             Ok(desired.clone())
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct EditHunk<'a> {
-    base_start: usize,
-    base_end: usize,
-    replacement: Vec<&'a str>,
-}
-
-fn collect_hunks<'a>(base_lines: &[&'a str], target_lines: &[&'a str]) -> Vec<EditHunk<'a>> {
-    let diff = TextDiff::from_slices(base_lines, target_lines);
-    let mut hunks = Vec::new();
-    for op in diff.ops() {
-        match *op {
-            DiffOp::Equal { .. } => {}
-            DiffOp::Delete {
-                old_index, old_len, ..
-            } => hunks.push(EditHunk {
-                base_start: old_index,
-                base_end: old_index + old_len,
-                replacement: Vec::new(),
-            }),
-            DiffOp::Insert {
-                old_index,
-                new_index,
-                new_len,
-            } => hunks.push(EditHunk {
-                base_start: old_index,
-                base_end: old_index,
-                replacement: target_lines[new_index..new_index + new_len].to_vec(),
-            }),
-            DiffOp::Replace {
-                old_index,
-                old_len,
-                new_index,
-                new_len,
-            } => hunks.push(EditHunk {
-                base_start: old_index,
-                base_end: old_index + old_len,
-                replacement: target_lines[new_index..new_index + new_len].to_vec(),
-            }),
-        }
-    }
-    hunks
-}
-
-fn hunks_overlap(a: &EditHunk<'_>, b: &EditHunk<'_>) -> bool {
-    if a.base_start == a.base_end && b.base_start == b.base_end {
-        return a.base_start == b.base_start;
-    }
-    if a.base_start == a.base_end {
-        return a.base_start >= b.base_start && a.base_start <= b.base_end;
-    }
-    if b.base_start == b.base_end {
-        return b.base_start >= a.base_start && b.base_start <= a.base_end;
-    }
-    a.base_start < b.base_end && b.base_start < a.base_end
-}
-
-/// Strict 3-way line merge: preserves non-overlapping edits from both sides and
-/// returns `None` on any overlapping conflict without emitting conflict markers.
-fn three_way_merge_strict(base: &str, ours: &str, theirs: &str) -> Option<String> {
-    let base_lines: Vec<&str> = base.split_inclusive('\n').collect();
-    let ours_lines: Vec<&str> = ours.split_inclusive('\n').collect();
-    let theirs_lines: Vec<&str> = theirs.split_inclusive('\n').collect();
-
-    let ours_hunks = collect_hunks(&base_lines, &ours_lines);
-    let theirs_hunks = collect_hunks(&base_lines, &theirs_lines);
-
-    let mut out = String::new();
-    let mut base_pos = 0usize;
-    let mut i = 0usize;
-    let mut j = 0usize;
-
-    while i < ours_hunks.len() || j < theirs_hunks.len() {
-        match (ours_hunks.get(i), theirs_hunks.get(j)) {
-            (Some(oh), Some(th)) => {
-                if hunks_overlap(oh, th) {
-                    if oh == th {
-                        for line in &base_lines[base_pos..oh.base_start] {
-                            out.push_str(line);
-                        }
-                        for line in &oh.replacement {
-                            out.push_str(line);
-                        }
-                        base_pos = oh.base_end;
-                        i += 1;
-                        j += 1;
-                    } else {
-                        return None;
-                    }
-                } else if (oh.base_start, oh.base_end) <= (th.base_start, th.base_end) {
-                    for line in &base_lines[base_pos..oh.base_start] {
-                        out.push_str(line);
-                    }
-                    for line in &oh.replacement {
-                        out.push_str(line);
-                    }
-                    base_pos = oh.base_end;
-                    i += 1;
-                } else {
-                    for line in &base_lines[base_pos..th.base_start] {
-                        out.push_str(line);
-                    }
-                    for line in &th.replacement {
-                        out.push_str(line);
-                    }
-                    base_pos = th.base_end;
-                    j += 1;
-                }
-            }
-            (Some(oh), None) => {
-                for line in &base_lines[base_pos..oh.base_start] {
-                    out.push_str(line);
-                }
-                for line in &oh.replacement {
-                    out.push_str(line);
-                }
-                base_pos = oh.base_end;
-                i += 1;
-            }
-            (None, Some(th)) => {
-                for line in &base_lines[base_pos..th.base_start] {
-                    out.push_str(line);
-                }
-                for line in &th.replacement {
-                    out.push_str(line);
-                }
-                base_pos = th.base_end;
-                j += 1;
-            }
-            (None, None) => break,
-        }
-    }
-
-    for line in &base_lines[base_pos..] {
-        out.push_str(line);
-    }
-    Some(out)
 }
