@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionnaming"
+
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -202,10 +204,10 @@ type Runtime struct {
 	Preferences          *preferences.Service
 	Diagnostics          *diagnostic.Service
 	Inspection           *query.Service
+	AutoTitle            bool
 	TransportDiagnostics *transportcapture.Service
 	AgentMetrics         *evidence.Service
 	Usage                *accounting.Service
-	Naming               *binding.SessionNaming
 	Observation          *binding.Observation
 
 	Changes  *changecapture.Service
@@ -305,7 +307,7 @@ func (c *Composition) Activate(ctx context.Context, binder *binding.Registry) (*
 			return nil, fmt.Errorf("construct %s: %w", node.id, err)
 		}
 	}
-	runtime.Naming = binder.RegisteredNaming()
+	_, runtime.AutoTitle = positions[sessionnaming.Module.ID]
 	runtime.Observation = binder.RegisteredObservation()
 	runtime.MCP = binder.RegisteredMCP()
 	for _, node := range c.entries {

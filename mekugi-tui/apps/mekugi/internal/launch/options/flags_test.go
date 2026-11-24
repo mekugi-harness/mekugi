@@ -17,7 +17,6 @@ func TestSplitCommand(t *testing.T) {
 		{"--ansi-faint", "on"},
 		{"--ansi-faint=auto"},
 		{"--debug", "--capture-output", "capture.jsonl"},
-		{"--timeout", "30s"},
 		{"--capture-output", "wrap"},
 		{"--capture-output", "--"},
 	} {

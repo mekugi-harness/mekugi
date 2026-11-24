@@ -1,18 +1,13 @@
 package launch
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
-	"io"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
@@ -36,81 +31,11 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
-func TestRunSessionUsesBoundPortAndClosesListener(t *testing.T) {
-	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "skills-mgr"), []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", directory)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	ready := make(chan invocationFixture, 1)
-	done := make(chan error, 1)
-	go func() {
-		done <- testRunSession(testHistory(), ctx, testCommands(), nil, nil, func(session invocationFixture) {
-			ready <- session
-		}, nil)
-	}()
-	var session invocationFixture
-	select {
-	case session = <-ready:
-	case err := <-done:
-		t.Fatalf("router stopped before ready: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("router did not become ready")
-	}
-	baseURL := session.BaseURL
-	address := strings.TrimSuffix(strings.TrimPrefix(baseURL, "http://"), "/v1")
-	if _, port, err := net.SplitHostPort(address); err != nil || port == "0" {
-		t.Fatalf("ready URL = %q", baseURL)
-	}
-	// This fixture owns its requests; do not leave connections in the shared pool.
-	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
-	response, err := client.Get(strings.TrimSuffix(baseURL, "/v1") + "/api/metrics")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("metrics status = %d", response.StatusCode)
-	}
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	conn, err := net.DialTimeout("tcp", address, time.Second)
-	if err == nil {
-		conn.Close()
-		t.Fatal("listener survived router exit")
-	}
-}
-
 func TestRunSessionDoesNotNotifyOnStartupFailure(t *testing.T) {
 	for _, args := range [][]string{{"--unknown-flag"}, {"--stream-idle-timeout", "0"}, {"--listen", "127.0.0.1:0"}, {"--provider-base-url", "https://example.com"}} {
 		if err := testRunSession(testHistory(), t.Context(), testCommands(), args, nil, func(invocationFixture) { t.Error("ready called despite startup failure") }, nil); err == nil {
 			t.Fatalf("accepted %q", args)
 		}
-	}
-}
-
-func TestRunSessionServesMetricsWithoutLogging(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	err := testRunSession(testHistory(), ctx, testCommands(), nil, testCriticalErrors(), func(session invocationFixture) {
-		response, err := http.Get(strings.TrimSuffix(session.BaseURL, "/v1") + "/api/metrics")
-		if err != nil {
-			t.Error(err)
-		} else {
-			body, readErr := io.ReadAll(response.Body)
-			response.Body.Close()
-			if readErr != nil || !bytes.Contains(body, []byte(`"schema":"mekugi.capture.metrics.v7"`)) {
-				t.Errorf("metrics = %s, %v", body, readErr)
-			}
-		}
-		cancel()
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -156,15 +81,11 @@ func testRunSession(service *history.Service, ctx context.Context, commands []co
 		return err
 	}
 	usage := accounting.New()
-	if err := usage.Start(ctx); err != nil {
-		return err
-	}
-	defer usage.Close()
 	// Dependency setup must not consume the runFixtureInvocation cancellation under test.
 	captured, err := newTestCapture(context.WithoutCancel(ctx), "")
 	if err != nil {
 		return err
 	}
 	defer captured.Stop(context.Background())
-	return runFixtureInvocation(terminalsession.Views{}, testPresentation(), new(conversationmodel.Service), previewmodel.New(changecapture.ReadFile), new(activitymodel.Service), service, testPreferences(), &segmentservice.Service{Reports: testReports()}, captured, usage, new(evidence.Service), new(transportcapture.Service), testDiagnostics(new(evidence.Service), new(transportcapture.Service)), ctx, commands, testNaming(), nil, options, issues, ready, artifacts)
+	return runFixtureInvocation(terminalsession.Views{}, testPresentation(), new(conversationmodel.Service), previewmodel.New(changecapture.ReadFile), new(activitymodel.Service), service, testPreferences(), &segmentservice.Service{Reports: testReports()}, captured, usage, new(evidence.Service), new(transportcapture.Service), testDiagnostics(new(evidence.Service), new(transportcapture.Service)), ctx, commands, nil, options, issues, ready, artifacts)
 }

@@ -16,6 +16,10 @@ func validateEvent(event Event) error {
 		if len(event.Changes) == 0 {
 			return errors.New("missing live diff change")
 		}
+	case "native":
+		if event.NativeDir == "" {
+			return errors.New("missing native change-history directory")
+		}
 	case "preview":
 		if event.Preview == nil || event.Preview.ID == "" {
 			return errors.New("missing streaming preview")

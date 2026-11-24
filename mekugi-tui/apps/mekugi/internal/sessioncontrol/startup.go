@@ -17,9 +17,18 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
 )
 
+// ThreadFamily carries private invocation inputs only to native admission.
+type ThreadFamily struct {
+	TrackingCommand       string            `json:"trackingCommand,omitempty"`
+	RequireCustomProvider bool              `json:"requireCustomProvider,omitempty"`
+	Environment           map[string]string `json:"environment"`
+	Profile               string            `json:"profile,omitempty"`
+}
+
 // Startup retains invocation overrides and pre-resume evidence independently of
 // the current attachment. Replacement owns an in-session target until acceptance.
 type Startup struct {
+	Family            *ThreadFamily
 	History           *history.Store
 	Thread, Workspace string
 	Config            map[string]any
@@ -73,6 +82,9 @@ func (r *Requests[T]) OpenSession(s *Startup, control *Live, approvals bool, res
 		return OpeningLatest, err
 	case target == "":
 		params := ThreadPermissions(map[string]any{}, approvals)
+		if s.Family != nil {
+			params["family"] = s.Family
+		}
 		if s.Workspace != "" {
 			params["cwd"] = s.Workspace
 		}
@@ -129,32 +141,24 @@ func (s *Startup) Latest(result jsontext.Value) (string, error) {
 	return "", fmt.Errorf("no resumable Mekugi thread found for %s", s.Workspace)
 }
 
-// Resume restores model and effort evidence without turning the previously
-// applied tier into an override of the current native configuration.
+// Resume passes retained facts separately from explicit invocation settings.
+// Native admission owns precedence over retained thread settings.
 // Source: apps/mekugi/internal/router/app_server_resume.go:55:94,357:372@5ce9382b.
 func (r *Requests[T]) Resume(s *Startup, control *Live, evidence preferences.Evidence, approvals bool) error {
-	config := make(map[string]any, len(s.Config)+3)
-	maps.Copy(config, s.Config)
+	config := maps.Clone(s.Config)
 	s.Evidence, s.MissingSettings = evidence, evidence.Model == ""
-	var saved map[string]any
-	if evidence.Model != "" {
-		saved = map[string]any{"model": evidence.Model, "model_reasoning_effort": nil}
-		if evidence.Effort != "" {
-			saved["model_reasoning_effort"] = evidence.Effort
-		}
-	}
 	params := ThreadPermissions(map[string]any{"threadId": s.Target(control), "config": config, "modelProvider": config["model_provider"]}, approvals)
-	control.ResumeEffort = false
-	for field, value := range saved {
-		if _, explicit := config[field]; explicit {
-			continue
-		}
-		if field == "model_reasoning_effort" && value == nil {
-			control.ResumeEffort = true // TOML cannot express null; repair after acceptance.
-		} else {
-			config[field] = value
-		}
+	if s.Family != nil {
+		params["family"] = s.Family
 	}
+	if evidence.Model != "" {
+		saved := map[string]any{"model": evidence.Model}
+		if evidence.Effort != "" {
+			saved["reasoningEffort"] = evidence.Effort
+		}
+		params["retainedSettings"] = saved
+	}
+	control.ResumeEffort = false
 	if tier, ok := config["service_tier"]; ok {
 		params["serviceTier"] = tier
 		delete(config, "service_tier")

@@ -115,6 +115,22 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 ## Context and retained sessions
 
+- Forks retain inherited context occupancy but start independent provider
+  spending totals, including when the source was compacted. Native response
+  records retain per-thread usage, output timing and reference OpenAI costs.
+  A response completed without usage leaves a coverage gap. Spending
+  updates leave context occupancy unchanged.
+- Mekugi sends requests directly to the selected provider. A custom route
+  requires an endpoint, cannot redirect inference or catalog requests, and has
+  no built-in price. Native exchange measurements feed launch-wide diagnostics
+  without retaining prompts, tool input, or response text in the private log.
+- Native code-mode input events feed provisional live diffs, and Saved Diff
+  reads the session's native capture store alongside legacy captures and
+  client-side user shell edits so newly native-captured edits appear in the
+  Diff pane.
+- When session naming is enabled, new persistent Main threads can receive a
+  native title from a one-shot, untooled request on their selected provider.
+  An existing manual name wins; title failure does not fail the turn.
 - Native request construction expands submitted attachment snapshots and
   attributes standalone tool context without rewriting retained review items.
   Side forks reuse parent cache routing; answer-only forks stop when auto
@@ -131,9 +147,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `SESSION_TMP`, and appends it to `PATH` (reported via `on_path="true"` on
   `<session_tmp>`). The native skills extension uses the local `skills-mgr`
   catalog where configured and otherwise retains stock skill discovery.
-- The private shell capture hook receives the runtime's `SESSION_TMP` path
-  for direct output redirects. Activity can show the resulting edit counts
-  and diffs without changing ordinary hook input or saved Diff filtering.
+- Native shell capture uses the runtime's `SESSION_TMP` path to resolve
+  direct output redirects without changing ordinary hook input.
 - Model requests reuse repeated tool output and source text without replacing
   the original retained records, preferring a single-base unified diff over
   fragmented multi-segment references when savings stay within a bounded
@@ -166,10 +181,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   and final replies can attach retained change ranges; delivery receipts
   distinguish what was rendered and sampled in the recipient's context.
 - The [JSON-RPC protocol](codex-rs/app-server-protocol/src/protocol/common.rs)
-  adds thread inspection and subtree listing, agent end and foreign routing,
+  adds thread inspection and subtree listing, agent end,
   context-reset cancellation and events, mid-turn `beforeItemId` revert targets
-  on `thread/revert`, and feature-use reads. Host callbacks cover child
-  admission and retained capture. Native observation also supplies assignment,
+  on `thread/revert`, and feature-use reads. Native observation supplies assignment,
   usage, and progress facts to Mekugi without a second agent registry.
   A subtree read during child startup returns its readable members without
   waiting for the child or reporting the parent missing.

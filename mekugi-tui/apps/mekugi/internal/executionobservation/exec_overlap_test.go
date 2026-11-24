@@ -74,23 +74,6 @@ func TestExecWindowSiblingMergeAndOtherOverlap(t *testing.T) {
 	}
 }
 
-func TestExecWindowDisjointRootsAndBackground(t *testing.T) {
-	root := t.TempDir()
-	other := t.TempDir()
-	r := &Windows{}
-	r.open(&execWindow{ref: "one", roots: []string{root}, thread: "thread", turn: "old", session: "session:42"})
-	r.open(&execWindow{ref: "elsewhere", roots: []string{other}, thread: "other"})
-	if view := r.close("elsewhere"); len(view.overlaps) != 0 || len(view.background) != 0 {
-		t.Fatalf("disjoint roots should not overlap: %+v", view)
-	}
-	r.markBackground("thread", "new")
-	r.open(&execWindow{ref: "later", roots: []string{root}, thread: "thread", turn: "new"})
-	view := r.close("later")
-	if len(view.overlaps) != 0 || !slices.Equal(view.background, []string{"background session 42"}) {
-		t.Fatalf("running old-turn window should be a background label, not overlap: %+v", view)
-	}
-}
-
 func TestExecWindowRuntimeFamily(t *testing.T) {
 	root := t.TempDir()
 	parent := &Windows{}

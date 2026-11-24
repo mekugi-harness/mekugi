@@ -7,7 +7,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 
-	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -53,8 +52,6 @@ type nativeSession struct {
 	clock                 func() time.Time
 	backendVersion        string
 	title                 string
-	titleGenerator        *sessionNaming
-	titleUpdates          <-chan sessionTitleUpdate
 	side                  *sessioncontrol.Side
 	notifications         *nativeNotifications
 	questions             nativeQuestionDock
@@ -73,31 +70,34 @@ type nativeSession struct {
 	commandSegmentPending int
 	restoredSegments      map[string]*reports.Report
 	controlObservations   *sessioncontrol.Observations
-	usage                 *accounting.Service
-	audience              *sessioncontrol.Audience
-	review                *sessionreview.Review
-	execWindows           *executionobservation.Windows
-	nativeTrace           *nativetrace.Reader
-	retained              changes.Scope
-	changeSource          changes.Service
-	snapshots             *changecapture.Workspaces
-	publishChanges        func([]changes.Update)
-	captureNotice         func(string, string, string, string)
-	execTrack             *commandsegments.Observer
-	shellEdits            appServerShellEdits
-	pendingEditReceipts   []*changepresentation.Receipt
-	issues                *requestexecution.Failures
-	activity              *activitymodel.Service
-	observations          *binding.Observation
-	retainedSession       history.Session
-	ctx                   context.Context
-	quitRequested         bool
-	archived              bool
-	exitUsage             binding.TokenUsage
-	resumeArgv            []string
-	rewindExecutable      string
-	profile               *launchoptions.Profile
-	replayDebugDirectory  string
+
+	usage                *accounting.Service
+	audience             *sessioncontrol.Audience
+	review               *sessionreview.Review
+	execWindows          *executionobservation.Windows
+	nativeTrace          *nativetrace.Reader
+	retained             changes.Scope
+	changeSource         changes.Service
+	snapshots            *changecapture.Workspaces
+	publishChanges       func([]changes.Update)
+	captureNotice        func(string, string, string, string)
+	execTrack            *commandsegments.Observer
+	shellEdits           appServerShellEdits
+	inputPreview         nativeInputPreview
+	pendingEditReceipts  []*changepresentation.Receipt
+	issues               *requestexecution.Failures
+	activity             *activitymodel.Service
+	observations         *binding.Observation
+	retainedSession      history.Session
+	ctx                  context.Context
+	quitRequested        bool
+	archived             bool
+	exitUsage            binding.TokenUsage
+	resumeArgv           []string
+	trackingCommand      string
+	rewindExecutable     string
+	replayDebugDirectory string
+
 	models            []appServerModel
 	modelsLoading     bool
 	ownedImages       map[string]bool

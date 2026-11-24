@@ -50,15 +50,15 @@ import (
 
 // invocationFixture is the fixture child's observed invocation, published after launch.
 type invocationFixture struct {
-	BaseURL, AXReadOutput, FrontendDirectory string
-	ChildReplySummaryOverrides               []string
+	AXReadOutput, FrontendDirectory string
+	ChildReplySummaryOverrides      []string
 }
 
 func runInvocationFixtureChild() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 	go func() { <-ctx.Done(); os.Exit(0) }()
-	session := invocationFixture{BaseURL: os.Getenv("MEKUGI_BASE_URL"), AXReadOutput: os.Getenv(evidence.AXReadOutputEnvironment)}
+	session := invocationFixture{AXReadOutput: os.Getenv(evidence.AXReadOutputEnvironment)}
 	for i := 1; i+1 < len(os.Args); i++ {
 		if value, ok := strings.CutPrefix(os.Args[i+1], "features.child_reply_summary="); os.Args[i] == "-c" && ok {
 			session.ChildReplySummaryOverrides = append(session.ChildReplySummaryOverrides, value)
@@ -108,7 +108,7 @@ func runInvocationFixtureChild() {
 	}
 }
 
-func runFixtureInvocation(terminalViews terminalsession.Views, views *sessionpresentation.Service, conversation *conversationmodel.Service, live *previewmodel.Service, activity *activitymodel.Service, service *history.Service, prefs *preferences.Service, segments *segmentservice.Service, changes *changecapture.Service, usage *accounting.Service, agentMetrics *evidence.Service, diagnostics *transportcapture.Service, diagnosis *diagnostic.Service, ctx context.Context, commands []command.Contribution, naming *binding.SessionNaming, observations *binding.Observation, options launchoptions.Config, issues *requestexecution.Failures, ready func(invocationFixture), artifacts func([]string)) error {
+func runFixtureInvocation(terminalViews terminalsession.Views, views *sessionpresentation.Service, conversation *conversationmodel.Service, live *previewmodel.Service, activity *activitymodel.Service, service *history.Service, prefs *preferences.Service, segments *segmentservice.Service, changes *changecapture.Service, usage *accounting.Service, agentMetrics *evidence.Service, diagnostics *transportcapture.Service, diagnosis *diagnostic.Service, ctx context.Context, commands []command.Contribution, observations *binding.Observation, options launchoptions.Config, issues *requestexecution.Failures, ready func(invocationFixture), artifacts func([]string)) error {
 	if observations == nil {
 		bound := conversationbinding.Codex.Observation(conversation)
 		observations = &bound
@@ -151,7 +151,7 @@ func runFixtureInvocation(terminalViews terminalsession.Views, views *sessionpre
 	hub := sessionapi.NewHub(ctx, nil)
 	defer hub.Close()
 	threads := &threadExecution{hub: hub}
-	code, runErr := runInvocation(views, conversation, live, activity, service, prefs, segments, changes, usage, agentMetrics, diagnostics, diagnosis, ctx, commands, naming, observations, options, settings, issues, executable, nil, append(os.Environ(), "MEKUGI_INVOCATION_FIXTURE_OBSERVATION="+observationPath), io.Discard, "", nil, false, artifacts, sessionapi.NewLive(), workspace, threads)
+	code, runErr := runInvocation(views, conversation, live, activity, service, prefs, segments, changes, usage, agentMetrics, diagnostics, diagnosis, ctx, commands, false, observations, options, settings, issues, executable, nil, append(os.Environ(), "MEKUGI_INVOCATION_FIXTURE_OBSERVATION="+observationPath), io.Discard, "", nil, false, artifacts, sessionapi.NewLive(), workspace, threads)
 	listener.Close()
 	observeErr := <-observed
 	if observeErr != nil && !errors.Is(observeErr, net.ErrClosed) {

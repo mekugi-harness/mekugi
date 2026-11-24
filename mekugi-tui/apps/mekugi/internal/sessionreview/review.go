@@ -30,6 +30,8 @@ type Event struct {
 	Kind         string
 	Scope        *previewmodel.Scope   `json:",omitempty"`
 	Changes      []Change              `json:",omitempty"`
+	NativeDir    string                `json:",omitempty"`
+	Callers      map[string]string     `json:",omitempty"`
 	Status       string                `json:",omitempty"`
 	Preview      *previewmodel.Preview `json:",omitempty"`
 	TurnRevision uint64                `json:",omitzero"`
@@ -63,6 +65,8 @@ type Review struct {
 	ctx                context.Context
 	scope              previewmodel.Scope
 	workspace          string
+	nativeDir          string
+	callers            map[string]string
 	scopeBytes         int
 	lineage, exhausted bool
 	changed            chan struct{}
@@ -220,7 +224,7 @@ func (r *Review) includeLocked(workspace, thread string, root bool) {
 		r.preview.SetScope(r.scope)
 	}
 	scope := r.scope
-	r.emitLocked(Event{Kind: "scope", Scope: &scope})
+	r.emitLocked(Event{Kind: "scope", Scope: &scope, NativeDir: r.nativeDir, Callers: maps.Clone(r.callers)})
 	if rootSelected && !r.exhausted {
 		r.workspace = workspace
 	}
@@ -243,6 +247,7 @@ func (r *Review) ResetScope() {
 		r.preview.Enable()
 	}
 	r.workspace, r.lineage = "", true
+	r.nativeDir, r.callers = "", nil
 	r.scope = previewmodel.Scope{Workspaces: make(map[string]map[string]bool)}
 	r.scopeBytes = len(`{"Workspaces":{}}`)
 	if r.preview != nil {
@@ -285,7 +290,7 @@ func (r *Review) Subscribe() *Subscription {
 	defer r.mu.Unlock()
 	sub := &Subscription{events: make(chan Event, 32), gap: make(chan struct{})}
 	scope := r.scope
-	event := Event{Kind: "scope", Scope: &scope, Resync: true}
+	event := Event{Kind: "scope", Scope: &scope, NativeDir: r.nativeDir, Callers: maps.Clone(r.callers), Resync: true}
 	if r.preview != nil {
 		sub.session = r.preview
 		sub.preview, event.PreviewIDs = sub.session.Subscribe()
@@ -362,4 +367,55 @@ func FromUpdate(update changes.Update) Change {
 		value.Calls = append(value.Calls, call.ID)
 	}
 	return value
+}
+
+// SetSession binds the session's native change-history store directory.
+func (r *Review) SetSession(sessionID string) {
+	if r == nil {
+		return
+	}
+	r.SetNativeDir(NativeStoreDir(sessionID))
+}
+
+// SetNativeDir binds an explicit native change-history store directory.
+func (r *Review) SetNativeDir(dir string) {
+	if r == nil || dir == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exhausted || r.nativeDir == dir {
+		return
+	}
+	r.nativeDir = dir
+	if len(r.scope.Workspaces) > 0 {
+		scope := r.scope
+		r.emitLocked(Event{Kind: "scope", Scope: &scope, NativeDir: r.nativeDir, Callers: maps.Clone(r.callers)})
+	}
+}
+
+// SetCaller records a canonical caller path for native change attribution.
+func (r *Review) SetCaller(thread, caller string) {
+	if r == nil || thread == "" || caller == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.callers == nil {
+		r.callers = make(map[string]string)
+	}
+	r.callers[thread] = caller
+}
+
+// RefreshNative schedules an incremental read of the session's native capture store.
+func (r *Review) RefreshNative() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.exhausted || r.nativeDir == "" || len(r.scope.Workspaces) == 0 {
+		return
+	}
+	r.emitLocked(Event{Kind: "native", NativeDir: r.nativeDir, Callers: maps.Clone(r.callers)})
 }

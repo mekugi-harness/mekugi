@@ -13,7 +13,7 @@ import (
 
 func retentionTestSession(t *testing.T, store *mekugiReplayStore, thread string, age time.Duration) (context.Context, func()) {
 	t.Helper()
-	ctx, release, err := store.beginSession(t.Context(), thread, thread)
+	ctx, release, err := store.beginSession(t.Context(), thread)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +57,12 @@ func retentionTestExists(t *testing.T, store *mekugiReplayStore, workspace, call
 	}
 }
 
-func (s *mekugiReplayStore) beginSession(ctx context.Context, thread, routing string) (context.Context, func(), error) {
-	return beginRetainedSession(ctx, s.publication, s.writes, s.retentionLimits(), thread, routing)
+func (s *mekugiReplayStore) beginSession(ctx context.Context, thread string) (context.Context, func(), error) {
+	namespace, release, err := s.publication.BeginSession(ctx, s.writes, s.retentionLimits(), thread)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, storageSessionKey{}, storageSessionIdentity{Thread: thread, Namespace: namespace}), release, nil
 }
 
 func (s *mekugiReplayStore) retainFiles(names ...string) error {

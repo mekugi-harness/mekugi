@@ -9,7 +9,6 @@ import (
 // Keep request-local state out of immutable replay comparisons as well as JSON.
 func durableHistory(h mekugiHistory) mekugiHistory {
 	h.confirmed, h.sequence = false, 0
-	h.nativeCell = nil
 	if len(h.NativePatches) == 0 {
 		h.NativePatches = nil // Empty omitted slices read back as nil.
 	}

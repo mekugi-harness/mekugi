@@ -143,6 +143,7 @@ pub(crate) struct SamplingCharge {
 pub(crate) struct SamplingEvent {
     pub(crate) event: Result<ResponseEvent>,
     pub(crate) hook_output: SamplingCharge,
+    pub(crate) request_duration_ms: Option<i64>,
 }
 
 /// The provider's usage and the hook's contribution describe the same
@@ -168,6 +169,7 @@ impl From<Result<ResponseEvent>> for SamplingEvent {
         Self {
             event,
             hook_output: Default::default(),
+            request_duration_ms: None,
         }
     }
 }

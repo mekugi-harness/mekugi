@@ -25,7 +25,7 @@ import (
 // hydrateReview admits retained host evidence into one unpublished module job.
 // Backend/history interpretation and filesystem reads remain in this adapter.
 // Source: apps/mekugi/internal/router/live_diff_data.go:24:107@[bab31cbe] retained evidence.
-func hydrateReview(ctx context.Context, retained changes.Scope, builder *presentation.Builder, event Change) error {
+func hydrateReview(ctx context.Context, retained changes.Scope, builder *presentation.Builder, event Change, legacyCalls map[[2]string]bool) error {
 	for _, call := range event.Calls {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -120,40 +120,49 @@ func hydrateReview(ctx context.Context, retained changes.Scope, builder *present
 		if err := builder.Add(attempt); err != nil {
 			return err
 		}
+		recordLegacyAttemptCalls(legacyCalls, attempt)
 	}
 	return nil
 }
 
 // Reconciliation reuses admitted immutable attempts, while checking current
 // scope membership before a complete replacement can be published.
-func reconcileReview(ctx context.Context, retained changes.Scope, service changes.Service, builder *presentation.Builder, scope previewmodel.Scope) error {
+func reconcileReview(ctx context.Context, retained changes.Scope, service changes.Service, nativeDir string, callers map[string]string, base *presentation.Snapshot, builder *presentation.Builder, scope previewmodel.Scope) error {
 	present := make(map[presentation.AttemptKey]bool)
-	for _, workspace := range slices.Sorted(maps.Keys(scope.Workspaces)) {
-		if !filepath.IsAbs(workspace) {
-			return errors.New("live diff workspace must be absolute")
-		}
-		indexes, err := service.InspectVisible(retained, workspace, scope.Workspaces[workspace])
-		if err != nil {
-			return err
-		}
-		for _, index := range indexes {
-			if !filepath.IsAbs(index.Workspace) {
+	legacyCalls := collectLegacyCalls(base)
+	if retained.Store != nil {
+		for _, workspace := range slices.Sorted(maps.Keys(scope.Workspaces)) {
+			if !filepath.IsAbs(workspace) {
 				return errors.New("live diff workspace must be absolute")
 			}
-			for stream, info := range index.Streams {
-				for number := 1; number <= info.Next; number++ {
-					id := changes.ID(index.Streams[stream].Name, number)
-					change := index.Changes[id]
-					for _, call := range change.Calls {
-						present[presentation.AttemptKey{Workspace: index.Workspace, Call: call.ID}] = true
-					}
-					if err := hydrateReview(ctx, retained, builder, FromUpdate(changes.Update{
-						Workspace: index.Workspace, Namespace: index.Namespace, Thread: info.Thread, Stream: stream, ID: id, Change: change,
-					})); err != nil {
-						return err
+			indexes, err := service.InspectVisible(retained, workspace, scope.Workspaces[workspace])
+			if err != nil {
+				return err
+			}
+			for _, index := range indexes {
+				if !filepath.IsAbs(index.Workspace) {
+					return errors.New("live diff workspace must be absolute")
+				}
+				for stream, info := range index.Streams {
+					for number := 1; number <= info.Next; number++ {
+						id := changes.ID(index.Streams[stream].Name, number)
+						change := index.Changes[id]
+						for _, call := range change.Calls {
+							present[presentation.AttemptKey{Workspace: index.Workspace, Call: call.ID}] = true
+						}
+						if err := hydrateReview(ctx, retained, builder, FromUpdate(changes.Update{
+							Workspace: index.Workspace, Namespace: index.Namespace, Thread: info.Thread, Stream: stream, ID: id, Change: change,
+						}), legacyCalls); err != nil {
+							return err
+						}
 					}
 				}
 			}
+		}
+	}
+	if nativeDir != "" {
+		if _, err := reconcileNativeReview(ctx, nativeDir, callers, builder, scope, legacyCalls, present); err != nil {
+			return err
 		}
 	}
 	return builder.RequirePresent(present)

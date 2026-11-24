@@ -68,8 +68,7 @@ func resumeSettingsResponse(attached *attachedPresentation, control *sessioncont
 		return fail(err.Error())
 	}
 
-	// Codex skips persisted model/effort when the routing provider is explicit.
-	// Read settings before resume can write its new defaults into the rollout.
+	// Read confirmed evidence before resume can checkpoint new settings.
 	var retained preferences.Snapshot
 	if panes != nil {
 		state, err := panes.read(info.Cwd, thread)

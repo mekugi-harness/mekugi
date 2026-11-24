@@ -3,24 +3,14 @@
 package launch
 
 import (
-	"bytes"
 	"context"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
-
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/providers/openai"
 )
 
 // A side fork's first inference must reuse its already-cached Main prefix.
@@ -30,52 +20,20 @@ func TestSideCacheEligibilityLiveOpenAI(t *testing.T) {
 	if model == "" {
 		t.Fatal("MEKUGI_E2E_MODEL must be set")
 	}
-	configRoot := os.Getenv("CODEX_HOME")
-	if configRoot == "" {
-		user, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		configRoot = filepath.Join(user, ".codex")
-	}
-	auth, err := os.ReadFile(filepath.Join(configRoot, "auth.json"))
-	if err != nil {
-		t.Fatal("live Codex authentication required")
-	}
 	for _, command := range []string{"/btw", "/oneoff"} {
 		for _, order := range []string{"main-first", "fork-first"} {
 			t.Run(strings.TrimPrefix(command, "/")+"/"+order, func(t *testing.T) {
 				t.Setenv("XDG_STATE_HOME", t.TempDir())
-				upstream := http.DefaultTransport.(*http.Transport).Clone()
-				defer upstream.CloseIdleConnections()
-				transport := &cacheAffinityE2ETransport{delegate: upstream}
-				proxy := newManagedMekugiProxy(t)
-				handler := testResponsesHandler(t.Context(), 3*time.Minute,
-					newTestProviderClient(openai.BaseURL, &http.Client{Transport: transport}), nil, proxy)
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-						http.Error(w, "use HTTP", http.StatusUpgradeRequired)
-						return
-					}
-					handler(w, r)
-				}))
-				defer server.Close()
-				environment := builtInOpenAICodexEnvironment(t)
-				for _, entry := range environment {
-					if path, ok := strings.CutPrefix(entry, "CODEX_HOME="); ok {
-						if err := os.WriteFile(filepath.Join(path, "auth.json"), auth, 0600); err != nil {
-							t.Fatal(err)
-						}
-					}
-				}
+				traceRoot := t.TempDir()
+				environment := liveOpenAIEnvironment(t, traceRoot)
 				workspace := t.TempDir()
-				terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {
-					args := nativeAppServerArgs(codexArgs(server.URL+"/v1", []string{"-c", fmt.Sprintf("model=%q", model),
-						"-c", "features.plugins=false", "-c", `model_reasoning_effort="low"`}, nil))
+				terminal := startAppResumeTerminal(t, func(ctx context.Context) *exec.Cmd {
+					args := []string{"-c", fmt.Sprintf("model=%q", model), "-c", `model_provider="openai"`,
+						"-c", "features.plugins=false", "-c", `model_reasoning_effort="low"`}
 					cmd := exec.CommandContext(ctx, "mekugi-app-server", args...)
 					cmd.Env, cmd.Dir = environment, workspace
 					return cmd
-				}, "", testAppServerIntegration(proxy))
+				}, "")
 				terminal.await("Ready")
 				terminal.send("Without using tools, join these parts with no spaces and reply with only the result: MAIN, _, READY.\r")
 				terminal.await("MAIN_READY")
@@ -83,13 +41,6 @@ func TestSideCacheEligibilityLiveOpenAI(t *testing.T) {
 				terminal.send("Without using tools, join these parts with no spaces and reply with only the result: MAIN, _, WARM.\r")
 				terminal.await("MAIN_WARM")
 				terminal.awaitStatus("Completed")
-				seed, _, _ := transport.snapshot()
-				for i, usage := range seed {
-					t.Logf("Main request %d: input=%d cached=%d", i+1, usage.InputTokens, usage.InputTokens-usage.UncachedInputTokens)
-				}
-				if len(seed) < 2 || seed[len(seed)-1].InputTokens <= seed[len(seed)-1].UncachedInputTokens {
-					t.Fatal("Main did not establish a cached prefix before the fork")
-				}
 				prompt := "Without using tools, join these parts with no spaces and reply with only the result: SIDE, _, READY."
 				terminal.send(command + " " + prompt + "\r")
 				terminal.await("SIDE_READY")
@@ -98,20 +49,6 @@ func TestSideCacheEligibilityLiveOpenAI(t *testing.T) {
 				} else {
 					terminal.awaitStatus("completed")
 				}
-				usages, _, _ := transport.snapshot()
-				if len(usages) <= len(seed) {
-					t.Fatalf("missing side usage: seed=%d final=%d", len(seed), len(usages))
-				}
-				for i, usage := range usages[len(seed):] {
-					t.Logf("side request %d: input=%d cached=%d", i+1, usage.InputTokens, usage.InputTokens-usage.UncachedInputTokens)
-				}
-				first := usages[len(seed)]
-				bodies := transport.requestBodies()
-				assertSideCachePrefix(t, bodies[len(seed)-1], bodies[len(seed)])
-				if first.InputTokens <= first.UncachedInputTokens {
-					t.Error("first side request had no cached input tokens despite warmed Main")
-				}
-				prior := map[string]int{"main": len(seed) - 1, "fork": len(seed)}
 				sequence := []string{"main", "fork"}
 				if order == "fork-first" {
 					sequence[0], sequence[1] = sequence[1], sequence[0]
@@ -138,7 +75,6 @@ func TestSideCacheEligibilityLiveOpenAI(t *testing.T) {
 					if branch == "fork" && command == "/btw" {
 						prompt = "/btw " + prompt
 					}
-					before := len(usages)
 					terminal.send(prompt + "\r")
 					terminal.await(marker)
 					if branch == "main" {
@@ -148,64 +84,61 @@ func TestSideCacheEligibilityLiveOpenAI(t *testing.T) {
 					} else {
 						terminal.awaitStatus("completed")
 					}
-					var headers []http.Header
-					usages, _, headers = transport.snapshot()
-					bodies = transport.requestBodies()
-					if len(usages) != before+1 || len(bodies) != len(usages) {
-						t.Fatalf("unexpected %s continuation requests: before=%d usages=%d bodies=%d", branch, before, len(usages), len(bodies))
-					}
-					assertSideCachePrefix(t, bodies[prior[branch]], bodies[before])
-					priorThread := codexresponses.ThreadID(headers[prior[branch]])
-					if priorThread == "" || priorThread != codexresponses.ThreadID(headers[before]) {
+				}
+				terminal.quit()
+				samples := readLiveInferences(t, traceRoot)
+				if len(samples) != 5 {
+					t.Fatalf("want two Main turns, a fork turn, and two continuations; got %d calls", len(samples))
+				}
+				main := samples[1]
+				fork := samples[2]
+				if main.Thread == "" || samples[0].Thread != main.Thread || fork.Thread == "" || fork.Thread == main.Thread {
+					t.Fatal("fork did not get its own native thread identity")
+				}
+				if main.CachedTokens == 0 {
+					t.Fatal("Main did not establish a cached prefix before the fork")
+				}
+				assertLiveCachePrefix(t, main, fork)
+				prior := map[string]liveInference{"main": main, "fork": fork}
+				for i, branch := range sequence {
+					sample := samples[3+i]
+					if prior[branch].Thread != sample.Thread {
 						t.Fatalf("%s continuation changed native thread identity", branch)
 					}
+					assertLiveCachePrefix(t, prior[branch], sample)
 					for _, other := range []string{"SIDE_READY", "SIDE_NEXT", "MAIN_NEXT"} {
-						if branch == "main" && strings.HasPrefix(other, "SIDE_") || branch == "fork" && other == "MAIN_NEXT" {
-							if bytes.Contains(bodies[before], []byte(other)) {
-								t.Fatalf("%s continuation contains the other branch's %s", branch, other)
-							}
+						if (branch == "main" && strings.HasPrefix(other, "SIDE_") || branch == "fork" && other == "MAIN_NEXT") && sample.contains(other) {
+							t.Errorf("%s continuation contains the other branch's %s", branch, other)
 						}
 					}
-					usage := usages[before]
-					t.Logf("%s continuation: input=%d cached=%d", branch, usage.InputTokens, usage.InputTokens-usage.UncachedInputTokens)
-					if usage.InputTokens <= usage.UncachedInputTokens {
-						t.Errorf("%s continuation had no cached input tokens in %s order", branch, order)
+				}
+				for i, sample := range samples {
+					t.Logf("native request %d: input=%d cached=%d", i+1, sample.InputTokens, sample.CachedTokens)
+					if i >= 2 && sample.CachedTokens == 0 {
+						t.Errorf("request %d had no cached input in %s order", i+1, order)
 					}
 				}
-				terminal.stopCanceled()
 			})
 		}
 	}
 }
 
-func assertSideCachePrefix(t *testing.T, mainBody, sideBody []byte) {
+func assertLiveCachePrefix(t *testing.T, before, after liveInference) {
 	t.Helper()
-	main, err := codexresponses.ParseRequest(mainBody)
-	if err != nil {
-		t.Fatal(err)
-	}
-	side, err := codexresponses.ParseRequest(sideBody)
-	if err != nil {
-		t.Fatal(err)
+	if before.Provider != after.Provider {
+		t.Fatal("native inference changed providers")
 	}
 	for _, field := range []string{"instructions", "tools", "model", "reasoning", "prompt_cache_key"} {
-		if !bytes.Equal(main.Fields[field], side.Fields[field]) {
-			t.Fatalf("fork changed shared %s", field)
+		if !responses.SameJSONValue(before.Fields[field], after.Fields[field]) {
+			t.Errorf("native inference changed shared %s", field)
 		}
 	}
-	var mainItems, sideItems []jsontext.Value
-	if err := json.Unmarshal(main.Fields["input"], &mainItems); err != nil {
-		t.Fatal(err)
+	if len(before.Input) == 0 || len(after.Input) <= len(before.Input) {
+		t.Fatal("native inference lost retained context or its new input")
 	}
-	if err := json.Unmarshal(side.Fields["input"], &sideItems); err != nil {
-		t.Fatal(err)
-	}
-	if len(mainItems) == 0 || len(sideItems) <= len(mainItems) {
-		t.Fatal("fork lost inherited input history or its new question")
-	}
-	for i := range mainItems {
-		if !responses.SameJSONValue(mainItems[i], sideItems[i]) {
-			t.Fatalf("fork changed inherited input item %d", i)
+	for i, item := range before.Input {
+		if !responses.SameJSONValue(item, after.Input[i]) {
+			t.Errorf("native inference changed retained input item %d", i)
 		}
 	}
 }

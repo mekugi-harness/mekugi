@@ -12,8 +12,6 @@ type Registrar interface {
 	Observation(Observation) error
 	Rollout(func(RolloutSource) error) error
 	Frontend(command.Spec) error
-
-	SessionNaming(SessionNaming) error
 }
 
 // Registry validates and retains composition-ordered Codex connections.
@@ -21,8 +19,6 @@ type Registry struct {
 	mcp          []MCPServer
 	observations *Observation
 	commands     []command.Spec
-
-	naming *SessionNaming
 }
 
 func (r *Registry) Frontend(spec command.Spec) error {

@@ -14,14 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 
 	"github.com/creack/pty"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
 
 func TestAppServerSideSettingsNativeCodex(t *testing.T) {
@@ -31,7 +28,7 @@ func TestAppServerSideSettingsNativeCodex(t *testing.T) {
 	}
 	p := &appSettingsProvider{requests: make(chan []byte, 8), release: make(chan struct{})}
 	close(p.release)
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, p, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(p))
 	defer server.Close()
 	environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
 	terminal := startAppResumeTerminal(t, func(ctx context.Context) *exec.Cmd {
@@ -64,12 +61,12 @@ func TestAppServerSideSettingsNativeCodex(t *testing.T) {
 	terminal.send("Side settings request\r")
 	select {
 	case body := <-p.requests:
-		request, err := codexresponses.ParseRequest(body)
-		if err != nil {
+		var request appResumeInferenceSettings
+		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Model() != "gpt-6-sol" || request.ReasoningEffort() != "medium" {
-			t.Fatalf("side provider settings: model=%q effort=%q", request.Model(), request.ReasoningEffort())
+		if request.Model != "gpt-6-sol" || request.Reasoning.Effort != "medium" {
+			t.Fatalf("side provider settings: model=%q effort=%q", request.Model, request.Reasoning.Effort)
 		}
 	case <-terminal.ctx.Done():
 		t.Fatal(terminal.ctx.Err())
@@ -82,12 +79,12 @@ func TestAppServerSideSettingsNativeCodex(t *testing.T) {
 	terminal.send("Main settings request\r")
 	select {
 	case body := <-p.requests:
-		request, err := codexresponses.ParseRequest(body)
-		if err != nil {
+		var request appResumeInferenceSettings
+		if err := json.Unmarshal(body, &request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Model() != "gpt-6-astra" || request.ReasoningEffort() != "high" {
-			t.Fatalf("Main provider settings changed: model=%q effort=%q", request.Model(), request.ReasoningEffort())
+		if request.Model != "gpt-6-astra" || request.Reasoning.Effort != "high" {
+			t.Fatalf("Main provider settings changed: model=%q effort=%q", request.Model, request.Reasoning.Effort)
 		}
 	case <-terminal.ctx.Done():
 		t.Fatal(terminal.ctx.Err())
@@ -102,7 +99,7 @@ type appSettingsProvider struct {
 	once     sync.Once
 }
 
-func (p *appSettingsProvider) ForwardExecution(ctx, _ context.Context, body []byte, _ http.Header, _ string) (*inferencegateway.Response, error) {
+func (p *appSettingsProvider) respond(ctx context.Context, body []byte, _ http.Header) (*http.Response, error) {
 	p.requests <- append([]byte(nil), body...)
 	var err error
 	p.once.Do(func() {
@@ -115,7 +112,7 @@ func (p *appSettingsProvider) ForwardExecution(ctx, _ context.Context, body []by
 	if err != nil {
 		return nil, err
 	}
-	return testGatewayResponse(routerFaultCodexSuccessResponse(), nil)
+	return fixtureResponsesSuccess(), nil
 }
 
 // A captured inference stays blocked while real Codex accepts the live update.
@@ -126,7 +123,7 @@ func TestAppServerLiveSettingsNativeCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &appSettingsProvider{requests: make(chan []byte, 8), release: make(chan struct{})}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, p, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(p))
 	defer server.Close()
 	defer func() {
 		select {
@@ -245,7 +242,7 @@ func TestAppServerSettingsCatalogNativeCodex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, &appPreviewProvider{}, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(&appPreviewProvider{}))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()

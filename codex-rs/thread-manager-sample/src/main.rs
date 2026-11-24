@@ -478,6 +478,7 @@ async fn run_turn(thread: &CodexThread, thread_id: &str, prompt: String) -> anyh
             | EventMsg::ItemCompleted(_)
             | EventMsg::PatchApplyBegin(_)
             | EventMsg::PatchApplyUpdated(_)
+            | EventMsg::CodeModeInputDelta(_)
             | EventMsg::TerminalInteraction(_)
             | EventMsg::ExecCommandBegin(_)
             | EventMsg::ExecCommandOutputDelta(_)

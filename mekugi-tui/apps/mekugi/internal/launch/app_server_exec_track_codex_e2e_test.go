@@ -3,11 +3,13 @@
 package launch
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -40,14 +42,11 @@ func TestAppServerExecTrackNativeCodexDash(t *testing.T) {
 	if err := os.WriteFile(tracker, []byte(shellinstrumentation.ShTracker(helper, shell.transport.Endpoints().Requests, shell.transport.Endpoints().Directory)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	hook, state, _, err := shellhook.Config(helper, tracker, shellhook.Invocation{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	proxy := newManagedMekugiProxy(t)
 	attachTestReplayStore(t, proxy)
 	integration := testAppServerIntegration(proxy)
 	integration.execTrack = shell.hub.Observer
+	integration.trackingCommand = shellhook.TrackingCommand(helper, tracker)
 	gate := filepath.Join(shell.root, "continue")
 	command := "echo DASH_ONE; { sleep 1; while [ ! -f " + quoteShellWord(gate) + " ]; do sleep 0.05; done; }; echo DASH_TWO >&2; false && echo DASH_NEVER"
 	provider := &toolFrontendCodexProvider{
@@ -126,7 +125,7 @@ func TestAppServerExecTrackNativeCodexDash(t *testing.T) {
 	}
 	runAppServerPreviewWith(t, provider, proxy, appServerPreview{managedRuntime: true, integration: &integration,
 		environment: []string{"SHELL=/bin/sh", "PATH=" + execTrackPath(), shellinstrumentation.ShTrackerEnvironment + "=" + tracker},
-		codexArgs:   []string{"-c", hook, "-c", state, "-c", `approval_policy="never"`, "-c", `sandbox_mode="danger-full-access"`},
+		codexArgs:   []string{"-c", `approval_policy="never"`, "-c", `sandbox_mode="danger-full-access"`},
 		duringTurn:  during, afterPrompt: after,
 	})
 	names, err := filepath.Glob(filepath.Join(proxy.retained.Store.Directory(), "segments-*.json"))
@@ -206,30 +205,30 @@ func TestAppServerExecTrackNativeCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(userHome, "config.toml")
-	userConfig, userState, _, err := shellhook.Config(userHook, "", shellhook.Invocation{})
+	hookCommand := quoteShellWord(userHook)
+	identity := map[string]any{"event_name": "pre_tool_use", "matcher": "Bash",
+		"hooks": []map[string]any{{"type": "command", "command": hookCommand, "timeout": 5, "async": false, "statusMessage": "User hook"}}}
+	identityJSON, err := json.Marshal(identity, json.Deterministic(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	userState = strings.ReplaceAll(userState, "/<session-flags>/config.toml", configPath)
-	if err := os.WriteFile(configPath, []byte(userConfig+"\n"+userState+"\n"), 0600); err != nil {
+	userConfig := fmt.Sprintf("hooks.PreToolUse = [{matcher='Bash',hooks=[{type='command',command=%s,timeout=5,statusMessage='User hook'}]}]\nhooks.state.%s.trusted_hash='sha256:%x'\n", strconv.Quote(hookCommand), strconv.Quote(configPath+":pre_tool_use:0:0"), sha256.Sum256(identityJSON))
+	if err := os.WriteFile(configPath, []byte(userConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
 	environment = append(environment, "CODEX_HOME="+userHome)
-	args, _, err := optionalTrackingHookArgs([]string{"-c", "features.shell_guard=true"}, helper, filepath.Join(shell.root, "exec-track.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	proxy := newManagedMekugiProxy(t)
 	attachTestReplayStore(t, proxy)
 	integration := testAppServerIntegration(proxy)
 	integration.execTrack = shell.hub.Observer
+	integration.trackingCommand = shellhook.TrackingCommand(helper, filepath.Join(shell.root, "exec-track.sh"))
 	bash := execTrackShellExecutable(t, "bash")
 	environment = append(environment, "SHELL="+bash)
 	provider := &toolFrontendCodexProvider{
 		program:  `const result = await tools.exec_command({cmd:"echo MODEL_ORIGINAL",shell:` + string(responses.MustMarshalJSON(bash)) + `,yield_time_ms:30000}); text(result.output);`,
 		expected: []string{"SEG_ONE", "RECOVERED", "SEG_TWO"}, finalText: "Recovered after a retry.",
 	}
-	runAppServerPreviewWith(t, provider, proxy, appServerPreview{managedRuntime: true, integration: &integration, environment: environment, codexArgs: args,
+	runAppServerPreviewWith(t, provider, proxy, appServerPreview{managedRuntime: true, integration: &integration, environment: environment, codexArgs: []string{"-c", "features.shell_guard=true"},
 		duringTurn: func(t *testing.T, outer io.Writer, await func(string), _ func(func(string) bool), _ *vt.Emulator) {
 			await("Allow this remote write?")
 			if _, err := io.WriteString(outer, "fixture denial\r"); err != nil {
@@ -310,14 +309,11 @@ func TestAppServerExecTrackNativeCodexMovedWorkspace(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf 'hook\\n' >> "+quoteShellWord(marker)+"\nexec "+quoteShellWord(helper)+" \"$@\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	hook, state, _, err := shellhook.Config(wrapper, "", shellhook.Invocation{})
-	if err != nil {
-		t.Fatal(err)
-	}
 	proxy := newManagedMekugiProxy(t)
 	attachTestReplayStore(t, proxy)
 	integration := testAppServerIntegration(proxy)
 	integration.execTrack = shell.hub.Observer
+	integration.trackingCommand = shellhook.TrackingCommand(wrapper, "")
 	environment := []string{"SHELL=" + bash, "PATH=" + execTrackPath()}
 	for _, entry := range shell.env {
 		if strings.HasPrefix(entry, "BASH_ENV=") {
@@ -344,7 +340,7 @@ func TestAppServerExecTrackNativeCodexMovedWorkspace(t *testing.T) {
 		}
 	}
 	runAppServerPreviewWith(t, provider, proxy, appServerPreview{managedRuntime: true, integration: &integration,
-		environment: environment, afterPrompt: after, codexArgs: []string{"-c", hook, "-c", state},
+		environment: environment, afterPrompt: after,
 	})
 }
 

@@ -172,20 +172,12 @@ func TestCheckpointIntervalAbsentBoundary(t *testing.T) {
 			if len(before) != 1 || before[0].Content != scenario.wantText || (before[0].Error != "") != (scenario.wantGap && scenario.endpoint.Error == "") {
 				t.Fatalf("before=%+v", before)
 			}
-			reviews, boundaries := ReviewInterval(before, endpoints)
-			if len(boundaries) != 1 {
-				t.Fatal("lost continuation boundary")
-			}
+			wantClaims := 1
 			if scenario.wantGap {
-				if len(claims) != 0 || len(reviews) != 1 || reviews[0].Incomplete == "" {
-					t.Fatalf("unknown coverage accepted: claims=%d reviews=%+v", len(claims), reviews)
-				}
-			} else if scenario.wantText != "" {
-				if len(claims) != 1 || len(reviews) != 1 || reviews[0].BeforePath != scenario.endpoint.Path || reviews[0].AfterPath != "" || reviews[0].Incomplete != "" {
-					t.Fatalf("lost witnessed deletion: %+v", reviews)
-				}
-			} else if len(claims) != 1 || len(reviews) != 0 {
-				t.Fatalf("invented pre-creation effect: %+v", reviews)
+				wantClaims = 0
+			}
+			if len(claims) != wantClaims {
+				t.Fatalf("claims=%d, want %d", len(claims), wantClaims)
 			}
 		})
 	}
@@ -220,9 +212,8 @@ func TestCheckpointIntervalUnretainedDeletionBeforeCreation(t *testing.T) {
 	}
 	endpoints := []File{{Path: path}}
 	before, claims := snapshots.IntervalBefore(t.Context(), workspace, *observation, nil, endpoints, nil, nil)
-	reviews, _ := ReviewInterval(before, endpoints)
-	if len(before) != 1 || before[0].Error == "" || len(claims) != 0 || len(reviews) != 1 || reviews[0].Incomplete == "" {
-		t.Fatalf("unavailable before-state became complete: before=%+v claims=%d reviews=%+v", before, len(claims), reviews)
+	if len(before) != 1 || before[0].Error == "" || len(claims) != 0 {
+		t.Fatalf("unavailable before-state became complete: before=%+v claims=%d", before, len(claims))
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 )
 
@@ -147,93 +146,5 @@ func TestExecLnSfnCapturesReplacedSymlinkNotChild(t *testing.T) {
 	}
 	if child := filepath.Join(link, "new"); slices.Contains(observation.ScopePaths(), child) {
 		t.Errorf("pre-call scope captured phantom child %q instead of the destination link", child)
-	}
-}
-
-func TestNativeExecResultFinalizesAfterReplayProxyReconstruction(t *testing.T) {
-	storeDirectory := t.TempDir()
-	store, err := openMekugiReplayStore(storeDirectory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(store.snapshots.Close)
-	firstProxy := newManagedMekugiProxy(t)
-	setTestProxyStore(firstProxy, store)
-	workspace := t.TempDir()
-	target := filepath.Join(workspace, "a.txt")
-	writeTestFile(t, target, "gone\n")
-	transform := prepareNativeStockTransform(t, firstProxy, workspace, "exec-before-terminal")
-	command := "printf 'run\\n' >> host-run-count && rm a.txt"
-	arguments := string(responses.MustMarshalJSON(map[string]any{"cmd": command, "workdir": workspace, "yield_time_ms": 1000}))
-	retainCommandObservation(t, transform, "exec-call", arguments)
-	if history, found, err := store.lookup(t.Context(), workspace, "exec-call"); err != nil || !found || history.ExecObservation == nil {
-		t.Fatalf("native call was not durably captured before terminal result: history=%+v found=%v err=%v", history, found, err)
-	}
-	transform.Close()
-	if err := firstProxy.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store.snapshots.Close()
-
-	// Codex owns execution. Simulate its one host execution between the
-	// request that captured the call and the later terminal tool result.
-	bash := execProducerCommand(t, "bash")
-	execProducerRun(t, bash, workspace, command)
-
-	// A new router process has only durable history and the visible terminal
-	// result; it must finalize the earlier pre-call snapshot without rerunning
-	// the command.
-	freshProxy := newManagedMekugiProxy(t)
-	t.Cleanup(func() { _ = freshProxy.Close() })
-	freshStore, err := openMekugiReplayStore(storeDirectory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(freshStore.snapshots.Close)
-	setTestProxyStore(freshProxy, freshStore)
-	items := []any{
-		map[string]any{"type": "function_call", "call_id": "exec-call", "name": nativeExecCommandToolName, "arguments": arguments},
-		map[string]any{"type": "function_call_output", "call_id": "exec-call", "output": nativeExecOutput("Process exited with code 0")},
-	}
-	transform = reconcileExecItems(t, freshProxy, workspace, items)
-	history, found, err := freshStore.lookup(transform.ctx, workspace, "exec-call:exec:1")
-	if err != nil || !found || history.ChangeID == "" || history.ExecOutcome == nil ||
-		history.ExecOutcome.Status != changecapture.StatusCompleted || history.ExecOutcome.Coverage != changecapture.CoverageExact {
-		t.Fatalf("fresh proxy did not finalize exact captured effects: history=%+v found=%v err=%v", history, found, err)
-	}
-	got := make(map[string]struct {
-		title, diff, incomplete string
-	})
-	for _, review := range history.ReviewFiles {
-		path := review.AfterPath
-		if path == "" {
-			path = review.BeforePath
-		}
-		relative, err := filepath.Rel(workspace, path)
-		if err != nil {
-			t.Fatalf("review path %q outside workspace %q: %v", path, workspace, err)
-		}
-		got[filepath.ToSlash(relative)] = struct {
-			title, diff, incomplete string
-		}{review.Action().Title(), review.Diff, review.Incomplete}
-	}
-	if len(got) != 2 || got["a.txt"].title != "Delete" || !strings.Contains(got["a.txt"].diff, "-gone") ||
-		got["a.txt"].incomplete != "" || got["host-run-count"].title != "Create" ||
-		!strings.Contains(got["host-run-count"].diff, "+run") || got["host-run-count"].incomplete != "" {
-		t.Fatalf("finalized reviews = %+v, want exact delete and once-written marker", history.ReviewFiles)
-	}
-	if got, err := os.ReadFile(filepath.Join(workspace, "host-run-count")); err != nil || string(got) != "run\n" {
-		t.Fatalf("host command was rerun during finalization: count=%q err=%v", got, err)
-	}
-
-	// Replaying the same terminal input on the reconstructed proxy is
-	// idempotent and must not repeat the host command or allocate a new ID.
-	reconcileExecItems(t, freshProxy, workspace, items)
-	again, found, err := freshStore.lookup(t.Context(), workspace, "exec-call:exec:1")
-	if err != nil || !found || again.ChangeID != history.ChangeID {
-		t.Fatalf("replay changed derived evidence: history=%+v found=%v err=%v", again, found, err)
-	}
-	if got, err := os.ReadFile(filepath.Join(workspace, "host-run-count")); err != nil || string(got) != "run\n" {
-		t.Fatalf("replay reran host command: count=%q err=%v", got, err)
 	}
 }

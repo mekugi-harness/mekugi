@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -79,7 +80,7 @@ func TestNativePredictionForkPreservesInheritedConfiguration(t *testing.T) {
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(), "MEKUGI_TEST_PREDICTION_HOST=1")
 	// Production startup must install every request policy before prediction begins.
-	_, err := session.start(testPreferences(), cmd, false, "", nil, sessionapi.NewLive(), false, &threadExecution{setup: &threadSetup{}})
+	_, err := session.start(testPreferences(), cmd, false, "", nil, sessionapi.NewLive(), launchoptions.Config{}, &threadExecution{setup: &threadSetup{}})
 	if err != nil {
 		t.Fatal(err)
 	}

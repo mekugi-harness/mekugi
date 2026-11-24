@@ -6,7 +6,7 @@ import (
 
 func TestAppServerReplacementRetiresOnlyMainRequests(t *testing.T) {
 	u, wire := newAppServerTestUI()
-	persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Old title"})
+	renameSessionTitle(&u.Client, &u.attached.feedback, u.clock, "Old title")
 	title := btwTestRequest(t, wire, "thread/name/set", "main")
 	appServerTestKeys(t, u, "/btw question\r")
 	side := btwTestRequest(t, wire, "thread/fork", "main")
@@ -26,7 +26,7 @@ func TestAppServerReplacementRetiresOnlyMainRequests(t *testing.T) {
 	// save still settles its original owner without renaming the replacement.
 	btwTestReply(t, u, status, `{"account":{"type":"chatgpt"}}`)
 	btwTestReply(t, u, title, `{}`)
-	if wire.Len() != 0 || u.title != "Fresh title" || !u.Names.AllowsGenerated("main") {
+	if wire.Len() != 0 || u.title != "Fresh title" || u.Names.Pending("main") != "" {
 		t.Fatalf("late main responses affected replacement: title=%q wire=%s", u.title, wire.String())
 	}
 	// The in-flight side fork still needs its own cleanup. Retiring Main must

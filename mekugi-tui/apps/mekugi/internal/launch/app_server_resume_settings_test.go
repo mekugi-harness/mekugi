@@ -56,7 +56,7 @@ func TestAppServerResumeSettingsCompressedPreflight(t *testing.T) {
 	compressResumeSettingsRollout(t, info.Path)
 	fresh, w := appliedSettingsTestUI(t, "/workspace", "other")
 	params, _ := appliedSettingsTestResume(t, fresh, w, info)
-	if !reflect.DeepEqual(params["config"], map[string]any{"model": "saved-model", "model_reasoning_effort": "high"}) || params["serviceTier"] != nil {
+	if !reflect.DeepEqual(params["retainedSettings"], map[string]any{"model": "saved-model", "reasoningEffort": "high"}) {
 		t.Fatalf("compressed preflight lost newer settings: %#v", params)
 	}
 	if _, err := os.Stat(info.Path); !os.IsNotExist(err) {
@@ -121,20 +121,22 @@ func TestAppServerResumeSettingsOverridesPerField(t *testing.T) {
 				Params struct {
 					Config   map[string]any `json:"config"`
 					Tier     string         `json:"serviceTier"`
+					Saved    map[string]any `json:"retainedSettings"`
 					Provider string         `json:"modelProvider"`
 				} `json:"params"`
 			}
 			if err := json.Unmarshal(w.Bytes(), &request); err != nil {
 				t.Fatal(err)
 			}
-			want := map[string]any{"model": "saved-model", "model_reasoning_effort": "high", "model_provider": "routed"}
+			want := map[string]any{"model_provider": "routed"}
+			saved := map[string]any{"model": "saved-model", "reasoningEffort": "high"}
 			tier := ""
 			if field == "service_tier" {
 				tier = "explicit"
 			} else if field != "" {
 				want[field] = "explicit"
 			}
-			if request.Method != "thread/resume" || !reflect.DeepEqual(request.Params.Config, want) || request.Params.Tier != tier || request.Params.Provider != "routed" {
+			if request.Method != "thread/resume" || !reflect.DeepEqual(request.Params.Config, want) || request.Params.Tier != tier || request.Params.Provider != "routed" || !reflect.DeepEqual(request.Params.Saved, saved) {
 				t.Fatalf("resume intent: %+v", request)
 			}
 			wantLaunch := map[string]any{"model_provider": "routed"}
@@ -164,72 +166,8 @@ func TestAppServerResumeSettingsNullIntent(t *testing.T) {
 	if err := json.Unmarshal(w.Bytes(), &request); err != nil {
 		t.Fatal(err)
 	}
-	config := request.Params["config"].(map[string]any)
-	if _, present := request.Params["serviceTier"]; present {
-		t.Fatalf("observed default tier was forwarded as an override: %#v", request.Params)
-	}
-	if _, present := config["model_reasoning_effort"]; present || !u.ResumeEffort {
-		t.Fatalf("unset effort did not use nullable host settings path: %#v", config)
-	}
-}
-
-func TestAppServerResumeClearsSavedReasoningDefault(t *testing.T) {
-	for _, effort := range []string{"", "high"} {
-		t.Run("launch="+effort, func(t *testing.T) {
-			u, w := newAppServerTestUI()
-			resumeTestMembers(t, u, "saved")
-			u.Thread, u.Startup.Thread, u.ResumeEffort = "", "saved", true
-
-			appServerTestRequest(t, u, "1", "thread/resume")
-			savedEffort := "null"
-			if effort != "" {
-				savedEffort = fmt.Sprintf("%q", effort)
-			}
-			appServerTestMessage(t, u, fmt.Sprintf(`{"id":1,"result":{"model":"saved","reasoningEffort":%q,"collaborationMode":{"mode":"plan","settings":{"model":"saved","reasoning_effort":%s,"developer_instructions":"host instructions"}},"thread":{"id":"saved","cwd":"/workspace"}}}`, effort, savedEffort))
-			type request struct {
-				ID     int            `json:"id"`
-				Method string         `json:"method"`
-				Params map[string]any `json:"params"`
-			}
-			requests := appServerDrainRequests[request](t, w)
-			var update *request
-			for i := range requests {
-				if requests[i].Method == "thread/settings/update" {
-					update = &requests[i]
-				}
-			}
-			if effort == "" {
-				if update != nil || u.Settings.Pending() {
-					t.Fatal("unchanged null reasoning waited for a suppressed event")
-				}
-				return
-			}
-			if update == nil || !u.Settings.Pending() {
-				t.Fatal("did not clear saved default through Codex")
-			}
-			wantMode := map[string]any{"mode": "plan", "settings": map[string]any{"model": "saved", "reasoning_effort": nil, "developer_instructions": "host instructions"}}
-			if !reflect.DeepEqual(update.Params["collaborationMode"], wantMode) || len(update.Params) != 2 {
-				t.Fatalf("default reasoning changed other host settings: %#v", update.Params)
-			}
-			for _, request := range requests {
-				if request.Method != "thread/settings/update" {
-					appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{"data":[],"nextCursor":null}}`, request.ID))
-				}
-			}
-			resumeTestSettle(t, u, w)
-			appServerTestKeys(t, u, "held\r")
-			if w.Len() != 0 {
-				t.Fatal("submitted before reasoning restored")
-			}
-			appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, update.ID))
-			if !u.Settings.Pending() {
-				t.Fatal("acknowledgement claimed settings applied")
-			}
-			appServerTestNotify(t, u, "thread/settings/updated", map[string]any{"threadId": "saved", "threadSettings": map[string]any{"model": "saved", "effort": nil, "serviceTier": nil}})
-			if u.Settings.Pending() || u.settings.Effort != "" {
-				t.Fatal("saved default did not apply")
-			}
-		})
+	if want := map[string]any{"model": "saved-model"}; !reflect.DeepEqual(request.Params["retainedSettings"], want) || u.ResumeEffort {
+		t.Fatalf("nullable saved settings: %#v", request.Params)
 	}
 }
 
@@ -280,8 +218,8 @@ func TestAppServerResumeSwitchReasoningIsolation(t *testing.T) {
 					for _, request := range resumeTestRequests(t, w) {
 						correction = correction || request.Method == "thread/settings/update"
 					}
-					if u.Thread != "saved" || !u.Settings.RestoreEffort || !u.Settings.Pending() || !correction {
-						t.Fatal("source notification released target default restoration")
+					if u.Thread != "saved" || u.Settings.RestoreEffort || u.Settings.Pending() || correction {
+						t.Fatal("source settings affected the independently resumed target")
 					}
 					return
 				}

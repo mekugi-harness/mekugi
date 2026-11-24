@@ -49,6 +49,7 @@ type nativeConnection struct {
 type nativeAttachRequest struct {
 	ctx            context.Context
 	parent, thread string
+	profile        *sessionapi.ProfileIdentity
 	reply          chan error
 }
 
@@ -83,6 +84,10 @@ func (c *nativeConnection) add(endpoint *nativeEndpoint) {
 }
 
 func (c *nativeConnection) run() (runErr error) {
+	c.api.BindProfileVerifier(func(ctx context.Context, thread string, profile sessionapi.ProfileIdentity) error {
+		return c.admitAttach(ctx, nativeAttachRequest{thread: thread, profile: &profile})
+	})
+	defer c.api.BindProfileVerifier(nil)
 	host := c.root.Client.Host
 	defer func() {
 		if !c.exited {
@@ -150,6 +155,14 @@ func (c *nativeConnection) run() (runErr error) {
 	nativeOn(global, func() <-chan nativeAttachRequest { return c.attach }, func(request nativeAttachRequest, _ bool) error {
 		if err := request.ctx.Err(); err != nil {
 			request.reply <- err
+			return nil
+		}
+		if profile := request.profile; profile != nil {
+			params := map[string]any{"threadId": request.thread, "family": sessioncontrol.ThreadFamily{Environment: map[string]string{"CODEX_HOME": profile.Home}, Profile: profile.Name}}
+			_, err := c.root.Client.Requests.Send("thread/subtree/list", params, "main", appServerRequest{verifyProfile: request.reply})
+			if err != nil {
+				request.reply <- err
+			}
 			return nil
 		}
 		endpoint, err := c.attachEndpoint(request.parent, request.thread, true)
@@ -265,6 +278,28 @@ func nativeMessageThread(message appserver.Message) string {
 }
 
 func (c *nativeConnection) message(message appserver.Message) error {
+	switch message.Method {
+	case nativeCodeModeInputDelta:
+		// Live-only deltas cannot establish membership or consume hydration space.
+		if endpoint := c.byThread[nativeMessageThread(message)]; endpoint != nil && endpoint.session.restoring == nil {
+			return endpoint.session.previewInput(&endpoint.session.attached, message.Params)
+		}
+		return nil
+	case "rawResponse/completed":
+		if err := c.root.observeResponse(message.Params); err != nil {
+			return err
+		}
+	case "error":
+		if c.root.sessionCapture != nil {
+			var event binding.Notification
+			if err := json.Unmarshal(message.Params, &event); err != nil {
+				return err
+			}
+			if !event.WillRetry && event.ThreadID != "" && event.Error != nil {
+				c.root.sessionCapture.ObserveFailure(event.ThreadID, event.TurnID)
+			}
+		}
+	}
 	if c.threads != nil && c.threads.headless != nil && message.Method != "" && len(message.ID) != 0 {
 		err := fmt.Errorf("headless cannot answer host request %s; continue interactively", message.Method)
 		c.threads.headless.Fail(err)
@@ -282,6 +317,15 @@ func (c *nativeConnection) message(message appserver.Message) error {
 	if message.Method == "" {
 		request, ok := c.root.Client.Requests.Lookup(string(message.ID))
 		if !ok {
+			return nil
+		}
+		if reply := request.Owner.verifyProfile; reply != nil {
+			c.root.Client.Requests.Take(string(message.ID))
+			var err error
+			if message.Error != nil {
+				err = errors.New(message.Error.Message)
+			}
+			reply <- err
 			return nil
 		}
 		if request.Owner.nativeTree != "" {

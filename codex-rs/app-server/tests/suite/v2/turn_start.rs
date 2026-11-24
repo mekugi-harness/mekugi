@@ -1318,6 +1318,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
         "type": "response.completed",
         "response": {
             "id": "resp-1",
+            "service_tier": "priority",
             "usage": {
                 "input_tokens": 30,
                 "input_tokens_details": { "cached_tokens": 11 },
@@ -1392,13 +1393,18 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
     else {
         anyhow::bail!("expected rawResponse/completed notification");
     };
+    assert!(notification.request_duration_ms.is_some_and(|ms| ms > 0));
 
     assert_eq!(
         notification,
         RawResponseCompletedNotification {
+            request_duration_ms: notification.request_duration_ms,
             thread_id: thread.id,
             turn_id: turn.id,
             response_id: "resp-1".to_string(),
+            model: Some("mock-model".to_string()),
+            service_tier: Some("priority".to_string()),
+            openai_endpoint: false,
             usage_metadata: serde_json::from_value(expected_metadata)?,
             usage: Some(TokenUsageBreakdown {
                 total_tokens: 37,

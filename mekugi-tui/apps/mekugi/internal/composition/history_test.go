@@ -2,10 +2,7 @@ package composition
 
 import (
 	"context"
-	json "encoding/json/v2"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,8 +18,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessioninspection/query"
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
 func BenchmarkPeerAdmission(b *testing.B) {
@@ -150,58 +145,6 @@ func TestCompositionCollectsRecordKindsBeforeHostConstruction(t *testing.T) {
 	kind, found, err := host.Value().Kind("later.json")
 	if err != nil || !found || kind.ID != later.ID || kind.Keep != later.Keep {
 		t.Fatalf("collected later: kind=%+v found=%v err=%v", kind, found, err)
-	}
-}
-
-func TestFrontendsRetainedRequestTimingContribution(t *testing.T) {
-	runtime, err := Frontends(t.Context(), false, true, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := runtime.Close(context.WithoutCancel(t.Context())); err != nil {
-			t.Error(err)
-		}
-	})
-	store, err := runtime.History.Open(t.Context(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorder, err := runtime.TransportDiagnostics.Open(transportcapture.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer recorder.Close()
-	recorder.RetainTimings(store, history.Limits{}, func(_ string, err error) { t.Error(err) })
-	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"fixture"}`))
-	request.Header.Set("thread-id", "thread")
-	recorder.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		transportcapture.ObserveRequestOutcome(r.Context(), "completed")
-		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(httptest.NewRecorder(), request)
-	if err := recorder.Close(); err != nil {
-		t.Fatal(err)
-	}
-	rollout := filepath.Join(t.TempDir(), "rollout.jsonl")
-	if err := os.WriteFile(rollout, []byte(`{"type":"session_meta","payload":{"id":"thread"}}`+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	report, err := runtime.Inspection.Inspect(t.Context(), query.SingleOptions{Session: rollout, ReplayDirectory: store.Directory(), AX: true, Limit: 1, TextBytes: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ax struct {
-		Timing struct {
-			State    string                           `json:"state"`
-			Thread   string                           `json:"thread_id"`
-			Requests []transportcapture.RequestTiming `json:"requests"`
-		} `json:"request_timing"`
-	}
-	if err := json.Unmarshal(report.AX, &ax); err != nil {
-		t.Fatal(err)
-	}
-	if ax.Timing.State != "observed_window" || ax.Timing.Thread != "thread" || len(ax.Timing.Requests) != 1 || ax.Timing.Requests[0].Outcome != "completed" {
-		t.Fatalf("composed timing contribution: %s", report.AX)
 	}
 }
 

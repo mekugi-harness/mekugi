@@ -47,15 +47,6 @@ type execCompletion struct {
 	unknown bool                // The process joined, but no terminal native tool outcome was observed.
 }
 
-// execSiblingKey groups calls of one response. Siblings finalized in
-// the same request share one record, since their windows are the same.
-func execSiblingKey(history mekugiHistory) string {
-	if observation := history.ExecObservation; observation != nil && observation.Group != "" {
-		return observation.Group
-	}
-	return ""
-}
-
 func execTruncateReport(text string, limit int) string {
 	if len(text) <= limit {
 		return text
@@ -205,13 +196,6 @@ func finalizeExecObservations(selected changes.Scope, source changes.Service, sn
 	completions := make([]changecapture.Completion, 0, len(members))
 	for index, member := range members {
 		completion := changecapture.Completion{CodeMode: member.history.ExecObservation.CodeMode, Succeeded: member.result.Succeeded, Exit: member.result.ExitCode}
-		if results, confirmed := member.history.nativeCell.Commands(member.history.ExecObservation.Commands, workspace); confirmed {
-			completion.Confirmed = true
-			hostResults = append(hostResults, results...)
-			for _, result := range results {
-				completion.Commands = append(completion.Commands, changecapture.CommandOutcome{Completed: result.Status == "completed", Exit: result.ExitCode})
-			}
-		}
 		completions = append(completions, completion)
 		if member.host != nil {
 			hostResults = append(hostResults, *member.host)

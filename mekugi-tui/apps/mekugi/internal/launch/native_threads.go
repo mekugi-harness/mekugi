@@ -7,7 +7,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
@@ -23,12 +23,12 @@ type threadExecution struct {
 	workers      *frontends.WorkerImage
 	sourceSocket string
 	hub          *sessionapi.Hub
-	catalog      *inferencegateway.ReasoningCatalog
-	features     *sessioncontrol.NativeFeatureUse
-	retained     changes.Scope
-	windows      *executionobservation.Windows
-	tools        []binding.MCPServer
-	setup        *threadSetup
+
+	features *sessioncontrol.NativeFeatureUse
+	retained changes.Scope
+	windows  *executionobservation.Windows
+	tools    []binding.MCPServer
+	setup    *threadSetup
 }
 
 // The invoking runtime freezes configuration before child admission. Descendants

@@ -2,15 +2,9 @@
 package shellhook
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
@@ -34,63 +28,13 @@ type Input struct {
 	} `json:"tool_input"`
 }
 
-// Config uses the native session-layer hook and exact trust identity. It
-// neither changes user files nor grants sandbox permissions.
-func Config(helper, tracker string, prior Invocation) (config, state, identityHash string, err error) {
+// TrackingCommand builds the optional observer invoked after caller hooks.
+func TrackingCommand(helper, tracker string) string {
 	arguments := []string{helper, Flag, tracker}
-	// The native session layer runs this observer after ordinary Bash hooks
-	// so their effective input, including a replacement, is the source tracked.
-	matcher := "Bash|MekugiCommandTracking"
 	for i := range arguments {
 		arguments[i] = commandargs.Quote(arguments[i])
 	}
-	// Tracking is auxiliary, including when the helper is unavailable.
-	command := "/bin/sh -c " + commandargs.Quote(strings.Join(arguments, " ")+" || :")
-	identity := map[string]any{
-		"event_name": "pre_tool_use", "matcher": matcher,
-		"hooks": []map[string]any{{"type": "command", "command": command, "timeout": 5, "async": false, "statusMessage": "Tracking shell segments"}},
-	}
-	data, err := json.Marshal(identity, json.Deterministic(true))
-	if err != nil {
-		return "", "", "", err
-	}
-	hash := sha256.Sum256(data)
-	identityHash = "sha256:" + hex.EncodeToString(hash[:])
-	group, err := json.Marshal(map[string]any{"matcher": matcher, "hooks": identity["hooks"]})
-	if err != nil {
-		return "", "", "", err
-	}
-	groups := append(slices.Clone(prior.PreToolUse), group)
-	states := maps.Clone(prior.State)
-	if states == nil {
-		states = make(map[string]jsontext.Value)
-	}
-	key := fmt.Sprintf("/<session-flags>/config.toml:pre_tool_use:%d:0", len(prior.PreToolUse))
-	if _, exists := states[key]; exists {
-		return "", "", "", fmt.Errorf("explicit CLI state for tracking hook %q conflicts", key)
-	}
-	states[key], err = json.Marshal(map[string]any{"trusted_hash": identityHash, "enabled": true})
-	if err != nil {
-		return "", "", "", err
-	}
-	groupJSON, err := json.Marshal(&groups)
-	if err != nil {
-		return "", "", "", err
-	}
-	stateJSON, err := json.Marshal(&states)
-	if err != nil {
-		return "", "", "", err
-	}
-	config, err = inlineTOML(groupJSON)
-	if err != nil {
-		return "", "", "", err
-	}
-	state, err = inlineTOML(stateJSON)
-	if err != nil {
-		return "", "", "", err
-	}
-	config, state = "hooks.PreToolUse="+config, "hooks.state="+state
-	return config, state, identityHash, nil
+	return "/bin/sh -c " + commandargs.Quote(strings.Join(arguments, " ")+" || :")
 }
 
 // Rewrite instruments tracked sh commands.

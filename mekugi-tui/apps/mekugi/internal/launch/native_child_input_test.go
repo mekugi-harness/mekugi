@@ -58,12 +58,6 @@ func TestCanonicalChildCommandInThreadAndRoster(t *testing.T) {
 	first := binding.ThreadItem{ID: "before", Type: "reasoning", Summary: []string{"**Local reasoning before**"}}
 	last := binding.ThreadItem{ID: "after", Type: "reasoning", Summary: []string{"**Local reasoning after**"}}
 	notify(child, "item/completed", first)
-	child.controlObservations = new(sessioncontrol.Observations)
-	child.attached.session.ToolInput = child.controlObservations.ToolInput
-	var generation sessioncontrol.Generation
-	call := sessioncontrol.GenerationItem{ID: "exec"}
-	child.controlObservations.SetToolInput(&generation, workspace, "child", call, true)
-	child.controlObservations.IdentifyToolInput(&generation, call, "exec", true, `await tools.exec_command({cmd: "fixture-command`)
 	notify(child, "item/started", command)
 	roster := func() activity.Agent {
 		t.Helper()
@@ -76,10 +70,6 @@ func TestCanonicalChildCommandInThreadAndRoster(t *testing.T) {
 		t.Fatalf("active canonical child missing from roster: %+v", publication.Roster)
 		return activity.Agent{}
 	}
-	if agent := roster(); len(agent.Summary) != 1 || agent.Generating != "Executing a command" || agent.Summary[0].Kind != "progress" {
-		t.Fatalf("transient tool generation lost its roster label: %+v", agent)
-	}
-	child.controlObservations.EndGeneration(&generation)
 	command.Status, command.ExitCode, command.AggregatedOutput = "failed", new(7), new("LOCAL_CASE\n")
 	notify(child, "item/completed", command)
 	notify(parent, "item/completed", command)

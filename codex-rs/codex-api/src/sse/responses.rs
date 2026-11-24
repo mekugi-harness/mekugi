@@ -116,6 +116,7 @@ struct ResponseCompleted {
     #[serde(default)]
     usage: Option<ResponseCompletedUsage>,
     usage_metadata: Option<ResponseUsageMetadata>,
+    service_tier: Option<String>,
     #[serde(default)]
     end_turn: Option<bool>,
 }
@@ -534,6 +535,9 @@ pub fn process_responses_event(
                     Ok(mut resp) => {
                         if let Some(metadata) = metadata {
                             resp.usage_metadata.get_or_insert_default().metadata = Some(metadata);
+                        }
+                        if let Some(tier) = resp.service_tier {
+                            resp.usage_metadata.get_or_insert_default().service_tier = Some(tier);
                         }
                         return Ok(Some(ResponseEvent::Completed {
                             response_id: resp.id,

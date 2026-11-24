@@ -67,7 +67,7 @@ func TestCompactionSelectionUsesIntentInsteadOfMessageText(t *testing.T) {
 			input.Compact = new(conversationmodel.CompactIntent{})
 		}
 		conversation := &conversationmodel.Session{Unsent: []conversationmodel.Input{input}}
-		next := m.NextInput(&control, conversation, nil, "")
+		next := m.NextInput(&control, conversation)
 		if command {
 			if len(next.Batch.Parts) != 1 || next.Batch.Parts[0].Compact == nil {
 				t.Fatal("semantic compaction was not submitted to native admission")
@@ -98,7 +98,7 @@ func TestInputWorkflowWithoutRenderer(t *testing.T) {
 	requests := sessioncontrol.NewRequests[string](transport)
 	dispatch := func(id string) string {
 		t.Helper()
-		next := m.NextInput(&control, c, nil, "")
+		next := m.NextInput(&control, c)
 		if len(next.Batch.Parts) == 0 {
 			t.Fatal("eligible input was not selected")
 		}
@@ -124,7 +124,7 @@ func TestInputWorkflowWithoutRenderer(t *testing.T) {
 	if transport.method != "turn/start" || transport.params["clientUserMessageId"] != "first-input" {
 		t.Fatalf("start: %s %+v", transport.method, transport.params)
 	}
-	if next := m.NextInput(&control, c, nil, ""); len(next.Batch.Parts) != 0 {
+	if next := m.NextInput(&control, c); len(next.Batch.Parts) != 0 {
 		t.Fatal("pending acknowledgement admitted another dispatch")
 	}
 	control.Started("turn-1")
@@ -243,7 +243,7 @@ func TestInputStartInterruptedBeforeAcknowledgement(t *testing.T) {
 				}
 				return
 			}
-			next := m.NextInput(&control, c, nil, "")
+			next := m.NextInput(&control, c)
 			if len(next.Batch.Parts) != 1 || next.Batch.Parts[0].Text != "waiting" {
 				t.Fatal("waiting input was not selected")
 			}

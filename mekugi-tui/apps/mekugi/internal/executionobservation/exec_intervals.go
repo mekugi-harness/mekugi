@@ -5,14 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
@@ -34,79 +32,6 @@ type execInterval struct {
 
 func execIntervalID(call string, codeMode bool, number int) string {
 	return fmt.Sprintf("%s:interval:%d", legacycall.ExecCallID(call, codeMode), number)
-}
-
-// An intervening edit publishes the interrupted writer's continuation endpoint.
-// When both results first arrive together, host input order can put the yielded
-// writer first. Finish the edit before reconciling that writer, keeping sibling
-// groups together just as ordinary completion does.
-func orderExecCompletions(windows *Windows, members []execCompletion) []execCompletion {
-	if windows == nil || len(members) < 2 {
-		return members
-	}
-	// Most requests contain only already-completed history. Scan the bounded
-	// window registry once, without allocating per retained historical call.
-	type interruption struct{ writer, edit string }
-	var cuts []interruption
-	windows.state().mu.Lock()
-	for _, window := range windows.state().windows {
-		for _, cut := range window.cuts {
-			cuts = append(cuts, interruption{writer: cut.writer, edit: window.ref})
-		}
-	}
-	windows.state().mu.Unlock()
-	if len(cuts) == 0 {
-		return members
-	}
-	groups := make(map[string][]execCompletion)
-	callGroups := make(map[string]string)
-	var keys []string
-	for _, member := range members {
-		key := "group:" + execSiblingKey(member.history)
-		if key == "group:" {
-			key = "call:" + member.callID
-		}
-		if _, exists := groups[key]; !exists {
-			keys = append(keys, key)
-		}
-		groups[key] = append(groups[key], member)
-		callGroups[member.callID] = key
-	}
-	dependencies := make(map[string][]string)
-	for _, cut := range cuts {
-		edit, ready := callGroups[cut.edit]
-		if writer, writerReady := callGroups[cut.writer]; ready && writerReady && writer != edit {
-			dependencies[writer] = append(dependencies[writer], edit)
-		}
-	}
-	if len(dependencies) == 0 {
-		return members
-	}
-	var ordered []execCompletion
-	state := make(map[string]uint8)
-	var visit func(string) bool
-	visit = func(key string) bool {
-		if state[key] != 0 {
-			return state[key] == 2
-		}
-		state[key] = 1
-		for _, dependency := range dependencies[key] {
-			if !visit(dependency) {
-				return false
-			}
-		}
-		state[key] = 2
-		ordered = append(ordered, groups[key]...)
-		return true
-	}
-	for _, key := range keys {
-		if !visit(key) {
-			// Conflicting group order cannot establish an endpoint. Preserve
-			// the original incomplete-evidence behavior rather than invent it.
-			return members
-		}
-	}
-	return ordered
 }
 
 // Intervals are immutable observations under the original writer's correlation.
@@ -216,161 +141,6 @@ func rebaseExecIntervals(observation *changecapture.Observation, intervals []exe
 		}
 	}
 	return &copy
-}
-
-func (t *mekugiResponseTransform) splitExecIntervals(patchCall string, observation *changecapture.Observation, patches []changecapture.PatchObservation) error {
-	if t.owners.Windows == nil || t.owners.Retained.Store == nil {
-		return nil
-	}
-	var boundaries []changecapture.File
-	if observation != nil {
-		boundaries = append(boundaries, observation.Files...)
-	}
-	for _, files := range changecapture.PatchWindowFiles(patches) {
-		for _, file := range files {
-			add := func(path, content string, ref *evidence.Text, exists bool, reason string) {
-				if path == "" {
-					return
-				}
-				boundary := changecapture.File{Path: path, Content: content, ContentRef: ref, Size: int64(len(content)), Error: reason}
-				if exists {
-					boundary.Kind = changecapture.Text
-				}
-				boundaries = append(boundaries, boundary)
-			}
-			add(file.BeforePath, file.Before, file.BeforeRef, file.Exists, file.Error)
-			if file.AfterPath != file.BeforePath {
-				add(file.AfterPath, file.TargetBefore, file.TargetBeforeRef, file.TargetExists, file.TargetError)
-			}
-		}
-	}
-	if len(boundaries) == 0 {
-		return nil
-	}
-	identities := make(changecapture.PathIdentities)
-	physical := make(map[string]string, len(boundaries))
-	for _, boundary := range boundaries {
-		physical[boundary.Path] = identities.File(boundary.Path)
-	}
-	var candidates []execIntervalCut
-	t.owners.Windows.state().mu.Lock()
-	for _, window := range t.owners.Windows.state().windows {
-		if window.ref != patchCall && window.group != t.execGroup && window.closed.IsZero() && window.scope.Store != nil && slices.ContainsFunc(boundaries, func(file changecapture.File) bool {
-			return window.coversInterval(file.Path) || window.coversInterval(physical[file.Path])
-		}) {
-			candidates = append(candidates, execIntervalCut{writer: window.ref, workspace: window.workspace, scope: window.scope})
-		}
-	}
-	t.owners.Windows.state().mu.Unlock()
-	acquisition, cancel := context.WithTimeout(t.ctx, NativeBoundaryHold)
-	defer cancel()
-	for _, cut := range candidates {
-		unlock := t.owners.Windows.lockIntervals([]string{cut.writer})
-		err := t.owners.splitExecInterval(t.ctx, acquisition, t.directory, patchCall, boundaries, cut, false)
-		unlock()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (p *Preparer) splitExecInterval(ctx, acquisition context.Context, workspace, patchCall string, boundaries []changecapture.File, cut execIntervalCut, terminal bool) error {
-	p.Windows.state().mu.Lock()
-	window := p.Windows.find(cut.writer)
-	active := window != nil && window.closed.IsZero()
-	var directory *changecapture.Observation
-	fallback := active && !window.background
-	if active {
-		directory = window.nativeDirectory
-		// Physical scope can overlap another authored workspace. Retained
-		// identity always remains the interrupted writer's, not the edit's.
-		workspace = cmp.Or(cut.workspace, window.workspace, workspace)
-		cut.workspace = workspace
-	}
-	p.Windows.state().mu.Unlock()
-	if !active {
-		return nil
-	}
-	original, found, err := lookupObservation(ctx, cut.scope, workspace, cut.writer)
-	if err != nil {
-		return err
-	}
-	if !found || original.ExecObservation == nil {
-		return nil
-	}
-	if directory != nil {
-		merged := changecapture.Merge([]changecapture.Member{{Observation: *original.ExecObservation}, {Observation: *directory, Sequence: 1}})
-		original.ExecObservation = &merged
-	}
-	cut.codeMode = original.ExecObservation.CodeMode
-	intervals, err := readExecIntervals(ctx, cut.scope, p.Changes, workspace, cut.writer, cut.codeMode)
-	if err != nil {
-		return err
-	}
-	cut.number = len(intervals)
-	if cut.number == maxExecIntervals {
-		return nil
-	}
-	observation := rebaseExecIntervals(original.ExecObservation, intervals)
-	// Same-cell patches own these paths. Cutting the command's excluded
-	// baseline would record those already attributed patch effects again.
-	observation.Files = slices.DeleteFunc(observation.Files, func(file changecapture.File) bool {
-		return slices.Contains(observation.Excluded, file.Path)
-	})
-	var claimed changecapture.Claims
-	if fallback && p.Checkpoints != nil && slices.ContainsFunc(boundaries, func(boundary changecapture.File) bool {
-		return !slices.ContainsFunc(original.ExecObservation.Files, func(file changecapture.File) bool { return file.Path == boundary.Path })
-	}) {
-		// Prefix publication participates in the same first-finisher claims as
-		// terminal fallback, including concurrently interrupted opaque writers.
-		var claims changecapture.Claims
-		unlock, err := p.Windows.serializeContext(acquisition, workspace, observation.Roots...)
-		if err == nil {
-			defer unlock()
-			p.Windows.state().mu.Lock()
-			claims = maps.Clone(window.claims)
-			p.Windows.state().mu.Unlock()
-		}
-		// Expired acquisition retains explicit incomplete before-state without
-		// waiting on the busy workspace or claiming another writer's effect.
-		observation.Files, claimed = p.Checkpoints.IntervalBefore(acquisition, workspace, *observation, original.ExecObservation.Files, boundaries, claims, captureSource(cut.scope))
-	}
-	reviews, files := changecapture.ReviewInterval(observation.Files, boundaries, captureSource(cut.scope))
-	if len(files) == 0 {
-		return nil
-	}
-	correlation := cut.writer + "\x00exec"
-	id, err := p.Changes.Reserve(ctx, cut.scope, workspace, original.ExecutingThread, correlation)
-	if err != nil {
-		return err
-	}
-	prefix := mekugiHistory{legacy: original.legacy, ToolName: nativeExecCommandToolName, Script: execObservationScript(*observation), Root: workspace,
-		ExecutingThread: original.ExecutingThread, Caller: original.Caller, Source: observation.SourceLabel(),
-		ChangeID: id, CorrelationID: correlation, Attempt: cut.number + 1, reviewFiles: reviews,
-		ExecObservation: &changecapture.Observation{Files: files, CodeMode: cut.codeMode}}
-	if terminal {
-		for _, file := range files {
-			prefix.ExecObservation.Excluded = append(prefix.ExecObservation.Excluded, file.Path)
-		}
-	}
-	if err := cut.scope.Store.Transaction(ctx, cut.scope.Writes, func(tx *history.Transaction) error {
-		callID := execIntervalID(cut.writer, cut.codeMode, cut.number)
-		if err := publishCapturedObservation(tx, cut.scope, workspace, callID, prefix); err != nil {
-			return err
-		}
-		_, err := p.Changes.Publish(tx, cut.scope, workspace, map[string]changes.Publication{callID: {ChangeID: id, CorrelationID: correlation, Dependency: true}})
-		return err
-	}); err != nil {
-		return err
-	}
-	p.Windows.claim([]string{cut.writer}, claimed)
-	p.Windows.state().mu.Lock()
-	if window := p.Windows.find(patchCall); window != nil && !terminal {
-		window.cuts = append(window.cuts, cut)
-	}
-	p.Windows.state().mu.Unlock()
-	return nil
 }
 
 func (w *Windows) forgetIntervalClaims(cuts []execIntervalCut, endpoints []changecapture.File) {

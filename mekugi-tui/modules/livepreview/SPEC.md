@@ -10,13 +10,10 @@
 
 ## Current approach (replaceable)
 
-- Projects streaming source with producible hunks (stock `apply_patch`, literal `cat`/`tee`
-  heredocs, and statically bounded Python/JS/TS file writes) against bounded pre-edit baselines;
-  also surfaces observed differences for named/checkpointed writers while later commands run.
-  Moves, copies, removals, formatters, and binaries stay in saved Diff rather than predicted
-  previews.
-- Repeated writes to one path keep their observed preview until the writer settles; matching
-  an earlier predicted edit is not a completion boundary.
+- Projects native code-mode input events with producible hunks (stock
+  `apply_patch`, literal `cat`/`tee` heredocs, and statically bounded Python/JS/TS file writes)
+  against bounded pre-edit baselines. Native change capture owns actual tool results; moves,
+  copies, removals, formatters, and binaries do not have predictive cards.
 - Buffers incomplete syntax statements/lines before revealing hunks, collapses large deletion
   blocks to a hidden-line marker while following additions (keeping subsequent rows visible),
   withdraws unprojectable completed patches, and holds each completed card for a brief settling

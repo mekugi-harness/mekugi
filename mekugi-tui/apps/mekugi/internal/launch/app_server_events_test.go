@@ -18,8 +18,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 )
 
 func appServerTestNotify(t *testing.T, u *appServerUI, method string, params any) {
@@ -91,8 +91,7 @@ func TestAppServerRestoredAgentTimerUsesTurns(t *testing.T) {
 
 func TestAppServerSessionProjectsChildThreads(t *testing.T) {
 	u := newAppServerSessionTestUI(t, t.TempDir())
-	setTestAppServerIntegration(u, &observationFixture{usage: newTestUsage(t)})
-	u.usage.Observation("child", "child", "gpt-6-luna", "").Observe(inference.Usage{InputTokens: 1200, UncachedInputTokens: 1200, OutputTokens: 30})
+	setTestAppServerIntegration(u, &observationFixture{usage: accounting.New()})
 	appServerTestNotify(t, u, "thread/started", map[string]any{"thread": map[string]any{"id": "child", "agentRole": "explore",
 		"agentNickname": strings.TrimPrefix("/root/worker", "/root/")}})
 	u.attached.session.Agent("/root/worker").Settings.Model = "gpt-6-luna"
@@ -103,6 +102,7 @@ func TestAppServerSessionProjectsChildThreads(t *testing.T) {
 	appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": "child", "turnId": "c1", "item": map[string]any{"id": "read", "type": "commandExecution",
 		"command": "cat a.go", "exitCode": 0, "commandActions": []map[string]any{{"type": "read", "command": "cat", "path": "a.go"}}}})
 	appServerTestNotify(t, u, "thread/tokenUsage/updated", map[string]any{"threadId": "child", "turnId": "c1", "tokenUsage": map[string]any{"total": map[string]any{"inputTokens": 1200, "outputTokens": 30}}})
+	notifyTestProviderUsage(t, u, "child", "completion", "gpt-5.6-sol", true, 1200, 30)
 	agent := u.attached.session.Agent("/root/worker")
 	if agent == nil || agent.Role != "explore" || !agent.Responding || agent.InputTokens != 1200 || agent.OutputTokens != 30 {
 		t.Fatalf("roster did not follow the child thread: %+v", u.attached.session.Roster())

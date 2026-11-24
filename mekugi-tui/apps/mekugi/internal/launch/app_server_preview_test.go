@@ -19,8 +19,6 @@ import (
 
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
-
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -37,14 +35,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
 
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	responseevents "github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
 func TestNativeUIPreviewRenderedFrame(t *testing.T) {
@@ -323,7 +319,7 @@ type nativePreview struct {
 	proxy       *observationFixture
 	input       *appServerTestInput
 	store       *mekugiReplayStore
-	usage       *accounting.Service
+	rounds      map[string]uint64
 	workspace   string
 	message     int
 	calls       int
@@ -387,11 +383,8 @@ func newNativePreview(t *testing.T) *nativePreview {
 			t.Fatal(err)
 		}
 	}
-	usage := newTestUsage(t)
 	proxy := newManagedMekugiProxy(t)
 	setTestAppServerIntegration(u, proxy)
-	proxy.usage = usage
-	u.usage = usage
 	u.audience.Observe("main", "", "/root", false)
 	u.audience.Attach("main")
 	u.settings.Model, u.settings.Effort = "gpt-6-luna", "medium"
@@ -405,7 +398,7 @@ func newNativePreview(t *testing.T) *nativePreview {
 	terminalTest(u).AuxiliaryLabel, terminalTest(u).Auxiliary, u.preparePane = label, attachment.Pane, attachment.Prepare
 	u.review.Projection = sessionreview.Projection{Workspace: workspace, Changes: store.changes, Retained: store.changeScope(), Data: new(presentation.Snapshot), Coverage: "CONNECTING"}
 	u.startSession("main", workspace)
-	p := &nativePreview{t: t, ui: u, proxy: proxy, input: input, store: store, usage: usage, workspace: workspace, active: make(map[string]string), assignments: make(map[string]string), models: map[string]string{}}
+	p := &nativePreview{t: t, ui: u, proxy: proxy, input: input, store: store, rounds: make(map[string]uint64), workspace: workspace, active: make(map[string]string), assignments: make(map[string]string), models: map[string]string{}}
 	store.liveDiff = func(updates []changes.Update) {
 		var delivered []sessionreview.Change
 		for _, update := range updates {
@@ -700,65 +693,32 @@ const nativePreviewReasoning = "The pane blocks on its first frame, so Launch pr
 	"Returning pending is simpler and never blocks callers.\n\n" +
 	"I should read launch.go first to confirm where it waits."
 
-// responseThink delivers raw native Responses reasoning through the ordinary
-// response event consumer, without a retired provider translation fixture.
 func (p *nativePreview) responseThink(thread, reasoning string) {
-	id := "preview-reasoning"
-	var stream strings.Builder
-	emit := func(event map[string]any) { fmt.Fprintf(&stream, "data: %s\n\n", mustTestJSON(p.t, event)) }
-	emit(map[string]any{"type": "response.created", "response": map[string]any{"id": "preview", "status": "in_progress"}})
-	emit(map[string]any{"type": responseevents.OutputItemAdded, "output_index": 0,
-		"item": map[string]any{"type": "reasoning", "id": id, "summary": []any{map[string]any{"type": "summary_text", "text": ""}}}})
+	const id = "preview-reasoning"
+	item := func(summary string) map[string]any {
+		return map[string]any{"id": id, "type": "reasoning", "summary": []string{summary}, "content": []string{}}
+	}
+	p.add("stream explorer thinking", func() {
+		p.notify("item/started", map[string]any{"threadId": thread, "turnId": p.active[thread], "item": item("")})
+	})
 	words := strings.SplitAfter(reasoning, " ")
 	for len(words) > 0 {
 		n := min(3, len(words))
-		emit(map[string]any{"type": responseevents.ReasoningTextDelta, "item_id": id, "summary_index": 0, "delta": strings.Join(words[:n], "")})
+		delta := strings.Join(words[:n], "")
 		words = words[n:]
+		p.add("stream explorer thinking", func() {
+			p.notify("item/reasoning/summaryTextDelta", map[string]any{"threadId": thread, "turnId": p.active[thread], "itemId": id, "delta": delta, "summaryIndex": 0})
+		})
 	}
-	item := map[string]any{"type": "reasoning", "id": id, "summary": []any{map[string]any{"type": "summary_text", "text": reasoning}}}
-	emit(map[string]any{"type": responseevents.OutputItemDone, "output_index": 0, "item": item})
-	emit(map[string]any{"type": "response.completed", "response": map[string]any{"id": "preview", "status": "completed", "output": []any{item}}})
-	var events []map[string]any
-	if _, err := readResponseTestEvents(p.t, strings.NewReader(stream.String()), func(event map[string]any) error {
-		events = append(events, event)
-		return nil
-	}); err != nil {
-		p.t.Fatal(err)
-	}
-	for _, event := range events {
-		item, _ := event["item"].(map[string]any)
-		appServerItem := func() map[string]any {
-			var summary []string
-			for _, part := range item["summary"].([]any) {
-				summary = append(summary, part.(map[string]any)["text"].(string))
-			}
-			return map[string]any{"id": item["id"], "type": "reasoning", "summary": summary, "content": []string{}}
-		}
-		switch event["type"] {
-		case responseevents.OutputItemAdded:
-			if item["type"] == "reasoning" {
-				p.add("stream explorer thinking", func() {
-					p.notify("item/started", map[string]any{"threadId": thread, "turnId": p.active[thread], "item": appServerItem()})
-				})
-			}
-		case responseevents.ReasoningTextDelta:
-			p.add("stream explorer thinking", func() {
-				p.notify("item/reasoning/summaryTextDelta", map[string]any{"threadId": thread, "turnId": p.active[thread], "itemId": event["item_id"], "delta": event["delta"], "summaryIndex": event["summary_index"]})
-			})
-		case responseevents.OutputItemDone:
-			if item["type"] == "reasoning" {
-				p.add("stream explorer thinking", func() {
-					p.notify("item/completed", map[string]any{"threadId": thread, "turnId": p.active[thread], "item": appServerItem()})
-				})
-			}
-		}
-	}
+	p.add("stream explorer thinking", func() {
+		p.notify("item/completed", map[string]any{"threadId": thread, "turnId": p.active[thread], "item": item(reasoning)})
+	})
 }
 
-// usage reports a thread's cumulative tokens to app-server and to the
-// router's accounting, which prices them.
+// tokens reports cumulative provider usage separately from context occupancy.
 func (p *nativePreview) tokens(thread string, input, output uint64) {
-	p.usage.Observation(thread, thread, "gpt-6-luna", "").Observe(inference.Usage{InputTokens: input, UncachedInputTokens: input, OutputTokens: output})
+	p.rounds[thread]++
+	p.notify("rawResponse/completed", testProviderUsage(thread, fmt.Sprint(p.rounds[thread]), "gpt-6-luna", true, input, output))
 	p.notify("thread/tokenUsage/updated", map[string]any{"threadId": thread, "turnId": p.active[thread], "tokenUsage": map[string]any{
 		"last": map[string]any{"totalTokens": input/4 + output}, "modelContextWindow": 200000,
 		"total": map[string]any{"inputTokens": input, "outputTokens": output, "totalTokens": input + output}}})

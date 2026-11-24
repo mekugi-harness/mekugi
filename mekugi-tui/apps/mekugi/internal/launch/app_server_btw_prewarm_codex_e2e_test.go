@@ -8,8 +8,6 @@ import (
 	"context"
 	"io"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-
 	json "encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -19,12 +17,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/coder/websocket"
 	"github.com/creack/pty"
-
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
 type btwPrewarmRequest struct {
@@ -69,7 +64,7 @@ func (p *btwPrewarmProvider) serve(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		}
-		response := routerFaultCodexSuccessResponse()
+		response := fixtureResponsesSuccess()
 		defer response.Body.Close()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.Copy(w, response.Body)
@@ -81,7 +76,7 @@ func (p *btwPrewarmProvider) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 	for {
-		fields, err := providerSocketRead(r.Context(), conn)
+		fields, err := readFixtureResponseSocket(r.Context(), conn)
 		if err != nil {
 			return
 		}
@@ -90,10 +85,10 @@ func (p *btwPrewarmProvider) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		prewarm := string(fields["generate"]) == "false"
-		p.requests <- btwPrewarmRequest{prewarm: prewarm, body: body}
+		p.requests <- btwPrewarmRequest{headers: r.Header.Clone(), prewarm: prewarm, body: body}
 		if prewarm {
-			if providerSocketWrite(r.Context(), conn, socketEvent("response.created", "warm")) != nil ||
-				providerSocketWrite(r.Context(), conn, socketEvent("response.completed", "warm")) != nil {
+			if writeFixtureResponseSocket(r.Context(), conn, fixtureSocketEvent("response.created", "warm")) != nil ||
+				writeFixtureResponseSocket(r.Context(), conn, fixtureSocketEvent("response.completed", "warm")) != nil {
 				return
 			}
 			continue
@@ -103,7 +98,7 @@ func (p *btwPrewarmProvider) serve(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		}
-		response := routerFaultCodexSuccessResponse()
+		response := fixtureResponsesSuccess()
 		scanner := bufio.NewScanner(response.Body)
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -111,7 +106,7 @@ func (p *btwPrewarmProvider) serve(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			var event map[string]any
-			if json.Unmarshal(line[len("data: "):], &event) != nil || providerSocketWrite(r.Context(), conn, event) != nil {
+			if json.Unmarshal(line[len("data: "):], &event) != nil || writeFixtureResponseSocket(r.Context(), conn, event) != nil {
 				response.Body.Close()
 				return
 			}
@@ -135,69 +130,52 @@ func TestAppServerBuiltInOpenAINativeCodexE2E(t *testing.T) {
 
 func testAppServerBuiltInOpenAI(t *testing.T, fallback bool) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	codex, err := exec.LookPath("codex")
+	codex, err := exec.LookPath("mekugi-app-server")
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider := &btwPrewarmProvider{requests: make(chan btwPrewarmRequest, 32), release: make(chan struct{})}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transports := make(chan string, 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Originator") != "mekugi" || !strings.HasPrefix(r.Header.Get("User-Agent"), "mekugi/") ||
 			!strings.Contains(r.Header.Get("User-Agent"), "app-server-preview") {
 			t.Error("provider request lost the installed host's client identity")
 		}
-		if fallback && r.Header.Get("Upgrade") != "" {
-			t.Error("HTTP fallback attempted another upstream WebSocket")
-			http.Error(w, "fixture requires HTTP", http.StatusUpgradeRequired)
+		if r.URL.Path != "/v1/responses" {
+			http.NotFound(w, r)
 			return
 		}
-		provider.serve(w, r)
-	}))
-	defer upstream.Close()
-	capture, err := new(transportcapture.Service).Open(transportcapture.Config{Mode: "mekugi"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer capture.Close()
-	proxy := newManagedMekugiProxy(t)
-	// Use the same durable replay store as production.
-	attachTestReplayStore(t, proxy)
-	providerClient := newTestProviderClient(upstream.URL, upstream.Client())
-	ws := testWebSocketEndpoint(t.Context(), time.Minute, providerClient, nil, proxy)
-	defer ws.Close()
-	httpResponses := testResponsesHandler(t.Context(), time.Minute, providerClient, nil, proxy)
-	downstream := make(chan string, 32)
-	router := httptest.NewServer(capture.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Deterministic fixture credentials terminate at the local mock.
-		for key, values := range codexAuthHeaders() {
-			r.Header[key] = values
+		if r.Header.Get("Authorization") != "Bearer sk-local-openai-fixture" {
+			t.Error("provider request lost native API-key authentication")
 		}
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			downstream <- "ws"
+			transports <- "ws"
 			if fallback {
 				http.Error(w, "fixture requires HTTP", http.StatusUpgradeRequired)
 				return
 			}
-			ws.ServeHTTP(w, r)
 		} else {
-			downstream <- "http"
-			httpResponses.ServeHTTP(w, r)
+			transports <- "http"
 		}
-	})))
-	defer router.Close()
+		provider.serve(w, r)
+	}))
+	defer server.Close()
+	proxy := newManagedMekugiProxy(t)
+	attachTestReplayStore(t, proxy)
 	environment, workspace := builtInOpenAICodexEnvironment(t), t.TempDir()
 	if output, err := exec.Command("git", "init", "--quiet", workspace).CombinedOutput(); err != nil {
 		t.Fatalf("initialize fixture workspace: %v: %s", err, output)
 	}
 	command := func(ctx context.Context) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, codex, "app-server", "-c", `openai_base_url=`+strconv.Quote(router.URL+"/v1"), "-c", `model_provider="openai"`, "-c", `model_reasoning_effort="low"`, "-c", `web_search="live"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false")
+		cmd := exec.CommandContext(ctx, codex, "-c", `openai_base_url=`+strconv.Quote(server.URL+"/v1"), "-c", `model_provider="openai"`, "-c", `model_reasoning_effort="low"`, "-c", `web_search="live"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false")
 		cmd.Env, cmd.Dir = environment, workspace
 		return cmd
 	}
-	terminal := startAppResumeTerminalWithIntegration(t, command, "", testAppServerIntegration(proxy), capture)
+	terminal := startAppResumeTerminalWithIntegration(t, command, "", testAppServerIntegration(proxy))
 	if err := pty.Setsize(terminal.outer, &pty.Winsize{Cols: 200, Rows: 30}); err != nil {
 		t.Fatal(err)
 	}
-	// Release a blocked inference before closing either HTTP server on failure.
+	// Release a blocked inference before closing the provider on failure.
 	defer func() {
 		select {
 		case <-provider.release:
@@ -256,7 +234,7 @@ func testAppServerBuiltInOpenAI(t *testing.T, fallback bool) {
 	for key, value := range firstRequest.ClientMetadata {
 		headers.Set(key, value)
 	}
-	metadata, valid := codexresponses.DecodeTurnMetadata(headers)
+	metadata, valid := fixtureTurnMetadata(headers)
 	_, selected := metadata.Directories[workspace]
 	if !valid || !selected {
 		t.Fatalf("selected workspace metadata missing: valid=%t selected=%t want=%q", valid, selected, workspace)
@@ -302,7 +280,7 @@ func testAppServerBuiltInOpenAI(t *testing.T, fallback bool) {
 	terminal.await("completed")
 	if fallback {
 		select {
-		case transport := <-downstream:
+		case transport := <-transports:
 			if transport != "ws" {
 				t.Fatalf("first transport=%s", transport)
 			}
@@ -310,7 +288,7 @@ func testAppServerBuiltInOpenAI(t *testing.T, fallback bool) {
 			t.Fatal("missing WS attempt")
 		}
 		select {
-		case transport := <-downstream:
+		case transport := <-transports:
 			if transport != "http" {
 				t.Fatalf("fallback transport=%s", transport)
 			}
@@ -321,7 +299,7 @@ func testAppServerBuiltInOpenAI(t *testing.T, fallback bool) {
 		return
 	}
 	if prewarms == 0 {
-		t.Fatal("built-in OpenAI did not prewarm through router")
+		t.Fatal("built-in OpenAI did not prewarm the provider connection")
 	}
 	terminal.send("/btw Side question\r")
 	awaitPrompt("Side question")

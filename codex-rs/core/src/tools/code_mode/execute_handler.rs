@@ -1,10 +1,14 @@
 use crate::function_tool::FunctionCallError;
+use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolExecutor;
 use codex_prompts::ResolvedModelMessages;
+use codex_protocol::protocol::CodeModeInputDeltaEvent;
+use codex_protocol::protocol::EventMsg;
 use codex_tools::IndirectNamespacePrefixes;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -274,5 +278,40 @@ impl CodeModeExecuteHandler {
 impl CoreToolRuntime for CodeModeExecuteHandler {
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Custom { .. })
+    }
+
+    fn create_diff_consumer(&self) -> Option<Box<dyn ToolArgumentDiffConsumer>> {
+        Some(Box::<CodeModeInputPreview>::default())
+    }
+}
+
+#[derive(Default)]
+struct CodeModeInputPreview {
+    offset: u32,
+}
+
+impl ToolArgumentDiffConsumer for CodeModeInputPreview {
+    fn consume_diff(
+        &mut self,
+        _turn: &TurnContext,
+        call_id: String,
+        diff: &str,
+    ) -> Option<EventMsg> {
+        const MAX_PREVIEW_BYTES: u32 = 256 << 10;
+        let len = u32::try_from(diff.len()).unwrap_or(u32::MAX);
+        if len == 0 {
+            return None;
+        }
+        if len > MAX_PREVIEW_BYTES - self.offset {
+            self.offset = MAX_PREVIEW_BYTES;
+            return None;
+        }
+        let offset = self.offset;
+        self.offset += len;
+        Some(EventMsg::CodeModeInputDelta(CodeModeInputDeltaEvent {
+            call_id,
+            offset,
+            delta: diff.to_owned(),
+        }))
     }
 }

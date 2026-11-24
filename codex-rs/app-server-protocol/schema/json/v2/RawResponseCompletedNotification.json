@@ -54,8 +54,38 @@
   },
   "description": "Internal-only notification containing the exact usage from one upstream Responses API completion.",
   "properties": {
+    "model": {
+      "default": null,
+      "description": "Model applied to this individual response, if known.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "openaiEndpoint": {
+      "default": false,
+      "description": "Built-in OpenAI on a first-party endpoint, not a custom Responses route.",
+      "type": "boolean"
+    },
+    "requestDurationMs": {
+      "default": null,
+      "description": "Elapsed provider request time through the terminal response, when measured.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "responseId": {
       "type": "string"
+    },
+    "serviceTier": {
+      "default": null,
+      "description": "Provider-reported tier, or the applied request tier if it was not returned.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "threadId": {
       "type": "string"

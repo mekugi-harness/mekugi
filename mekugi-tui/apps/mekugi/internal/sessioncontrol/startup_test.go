@@ -51,7 +51,7 @@ func TestStartupResumeUsesPreflightAndCapturedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	params := transport.sends[4].params.(map[string]any)
-	if params["threadId"] != "saved" || params["serviceTier"] != "priority" || params["modelProvider"] != "routed" || !control.ResumeEffort || startup.Evidence != evidence || !reflect.DeepEqual(startup.Config, original) {
+	if params["threadId"] != "saved" || params["serviceTier"] != "priority" || params["modelProvider"] != "routed" || control.ResumeEffort || startup.Evidence != evidence || !reflect.DeepEqual(startup.Config, original) {
 		t.Fatalf("resume lost evidence/overrides: %+v %+v", params, startup)
 	}
 	if _, changed := params["config"].(map[string]any)["model_reasoning_effort"]; changed {
@@ -66,16 +66,10 @@ func TestStartupResumeUsesPreflightAndCapturedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	control.LeaveThread()
-	control.Settings.RestoreEffort = control.TakeResumeEffort()
-	repair, err := accepted.RepairDefaultEffort(&control)
-	if err != nil || repair == nil || !control.Settings.RestoreEffort {
-		t.Fatal("acceptance lost target-bound repair intent")
+	if accepted.ReasoningEffort != "high" {
+		t.Fatal("native resumed effort was not accepted")
 	}
-	settings := accepted.CollaborationMode["settings"].(map[string]any)
-	if settings["reasoning_effort"] != nil || settings["developer_instructions"] != "retained" || accepted.CollaborationMode["mode"] != "default" {
-		t.Fatalf("repair changed unrelated mode settings: %+v", repair)
-	}
+
 }
 
 func TestStartupPickerIsNotAnInSessionResumeFlag(t *testing.T) {

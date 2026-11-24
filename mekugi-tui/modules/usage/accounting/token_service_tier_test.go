@@ -71,29 +71,6 @@ func TestTokenCostServiceTiers(t *testing.T) {
 	}
 }
 
-func TestThreadCostsKeepResponseServiceTiers(t *testing.T) {
-	totals := newTestUsage(t)
-	counts := inference.Usage{InputTokens: 100_000, UncachedInputTokens: 60_000, OutputTokens: 10_000, ReasoningTokens: 5_000}
-	totals.Observation("thread", "", "gpt-6-astra", "priority").Observe(counts)
-	counts.ServiceTier = "default"
-	totals.Observation("thread", "", "gpt-5.6-sol", "fast").Observe(counts)
-	counts.ServiceTier = "priority"
-	totals.Observation("thread", "", "gpt-5.6-luna", "default").Observe(counts)
-	got, ok := totals.Snapshot("thread")
-	// Astra Fast 2.28 + Sol default .456 + Luna Fast .0496.
-	if !ok || !got.Cost.Known || got.InputTokens != 300_000 || math.Abs(got.Cost.UncachedInput+got.Cost.CachedInput+got.Cost.Output-2.7856) > 1e-10 {
-		t.Fatalf("report=%+v valid=%t", got, ok)
-	}
-	counts.ServiceTier = "unpriced"
-	totals.Observation("thread", "", "gpt-5.6-sol", "default").Observe(counts)
-	counts.ServiceTier = "default"
-	totals.Observation("thread", "", "gpt-5.6-sol", "default").Observe(counts)
-	got, ok = totals.Snapshot("thread")
-	if !ok || got.Cost.Known || got.InputTokens != 500_000 {
-		t.Fatalf("unpriced tier lost counts or revived partial costs: %+v", got)
-	}
-}
-
 func TestTokenCostCacheWrites(t *testing.T) {
 	for _, tc := range []struct {
 		model, tier             string
@@ -126,15 +103,6 @@ func TestTokenCostCacheWrites(t *testing.T) {
 			cost := estimateReferenceCost(tc.model, tc.tier, counts)
 			if !cost.Known || math.Abs(cost.UncachedInput-tc.wantUncached) > 1e-10 || math.Abs(cost.UncachedInput+cost.CachedInput+cost.Output-tc.wantTotal) > 1e-10 {
 				t.Fatalf("cost=%+v want=%+v", cost, tc)
-			}
-			totals := newTestUsage(t)
-			for range 2 {
-				totals.Observation("thread", "", tc.model, tc.tier).Observe(counts)
-			}
-			report, ok := totals.Snapshot("thread")
-			if !ok || report.InputTokens != 2*tc.input || report.CacheWriteTokens != 80_000 ||
-				!report.Cost.Known || math.Abs(report.Cost.Total()-2*tc.wantTotal) > 1e-10 {
-				t.Fatalf("report=%+v", report)
 			}
 		})
 	}

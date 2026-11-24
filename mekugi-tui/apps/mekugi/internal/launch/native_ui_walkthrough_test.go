@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
+
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 )
@@ -276,7 +278,7 @@ func (p *walkthroughProvider) serve(w http.ResponseWriter, request *http.Request
 	w.Header().Set("Content-Type", "text/event-stream")
 	stream := http.NewResponseController(w)
 	emit := func(event map[string]any) bool {
-		_, err := io.WriteString(w, routerFaultSSE(event))
+		_, err := io.WriteString(w, "data: "+string(responses.MustMarshalJSON(event))+"\n\n")
 		return err == nil && stream.Flush() == nil
 	}
 	if !emit(map[string]any{"type": "response.created", "response": map[string]any{

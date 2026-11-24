@@ -906,7 +906,11 @@ async fn drain_to_completed(
         .await??;
     let mut output = Vec::new();
     loop {
-        let Some(SamplingEvent { event, hook_output }) = stream.next_for_turn(cancellation).await
+        let Some(SamplingEvent {
+            event,
+            hook_output,
+            request_duration_ms,
+        }) = stream.next_for_turn(cancellation).await
         else {
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
@@ -945,9 +949,11 @@ async fn drain_to_completed(
                 }
                 sess.record_observed_response_completed(
                     turn_context,
+                    &turn_context.initial_settings,
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    request_duration_ms,
                 )
                 .await;
                 sess.update_token_usage_info(

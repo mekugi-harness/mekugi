@@ -40,8 +40,13 @@ mchanges revert|apply ID[..ID] ... [PATH ...]
 
 ### Saved review presentation
 
+The client pane reads the session's native capture store alongside legacy
+captures and client-side user shell edits so newly native-captured edits
+appear in Saved Diff (deduplicating overlapping client-side user shell
+captures and excluding diagnostic VCS records from authored totals).
+
 - Publishes an immutable composed review snapshot per attachment for the Diff pane, caller filters,
   and Activity exact-operation dialogs (omitting pure `/tmp` captures outside the workspace and
   net-empty files while keeping moves, empty-file ops, binaries, and incomplete evidence visible).
 - See [Terminal UI](../../../docs/guide/terminal-ui.md#live-diff-pane) and
-  [Agent tools](../../../docs/guide/agent-tools.md#captured-changes) for user controls and behavior.
+  [Agent tools](../../../docs/guide/agent-tools.md#wrapped-session-helpers).

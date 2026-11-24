@@ -184,7 +184,11 @@ func (c *nativeConnection) projectAgent(session *nativeSession) {
 }
 
 func (c *nativeConnection) attachChild(ctx context.Context, parent, thread string) error {
-	request := nativeAttachRequest{ctx: ctx, parent: parent, thread: thread, reply: make(chan error, 1)}
+	return c.admitAttach(ctx, nativeAttachRequest{parent: parent, thread: thread})
+}
+
+func (c *nativeConnection) admitAttach(ctx context.Context, request nativeAttachRequest) error {
+	request.ctx, request.reply = ctx, make(chan error, 1)
 	select {
 	case c.attach <- request:
 	case <-ctx.Done():

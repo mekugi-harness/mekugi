@@ -35,7 +35,7 @@ func TestInspectProviderUsage(t *testing.T) {
 	missing := record
 	missing.CaptureID = "two"
 	missing.Usage = nil
-	write(record, missing)
+	write(record, captureRecord{SchemaVersion: schemaVersion, Boundary: "native_turn", ThreadID: "thread", ResponseStatus: "completed", CapturedAt: at}, missing)
 	result, err := new(Service).InspectProviderUsage(t.Context(), path, filter)
 	if err != nil || result["thread"].State != "incomplete" || result["thread"].MissingRecords != 1 ||
 		result["thread"].Tokens.InputTokens != 100 {

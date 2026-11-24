@@ -4,21 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"maps"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessioninspection/query"
-
-	"github.com/coder/websocket"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
@@ -122,147 +112,5 @@ func TestDebugCanceledStartupReportsArtifacts(t *testing.T) {
 	}, func(artifacts []string) { paths = artifacts })
 	if err != nil || len(paths) != 6 {
 		t.Fatalf("canceled startup lost paths: %v, %v", paths, err)
-	}
-}
-
-func TestDebugWebSocketInheritedInstructions(t *testing.T) {
-	t.Parallel()
-	d, err := openDebugOutput(testDiagnostics(new(evidence.Service), new(transportcapture.Service)), true, "", os.Getenv(evidence.AXReadOutputEnvironment))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The plugin proxy fixture is shared until TestMain exits, so do not put
-	// its directory under this test's temporary TMPDIR.
-	t.Cleanup(func() { _ = d.Close(); _ = os.RemoveAll(filepath.Dir(d.Paths()[0])) })
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
-	var firstDevelopers []json.RawMessage
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer conn.CloseNow()
-		for _, id := range []string{"first", "second"} {
-			request, err := providerSocketRead(ctx, conn)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			var input []json.RawMessage
-			_ = json.Unmarshal(request["input"], &input)
-			if id == "first" {
-				for _, raw := range input {
-					var item map[string]json.RawMessage
-					_ = json.Unmarshal(raw, &item)
-					if responses.StringField(item, "role") == "developer" {
-						firstDevelopers = append(firstDevelopers, raw)
-					}
-				}
-			} else if len(input) != 1 || responses.StringField(request, "previous_response_id") != "first" {
-				t.Error("continuation did not use upstream cached input")
-			}
-			data, err := os.ReadFile(d.Paths()[3])
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
-			var record struct {
-				RequestID      string `json:"request_id"`
-				Cached         int    `json:"cached_input_items"`
-				WireParent     string `json:"wire_previous_response_id"`
-				ProjectedBytes int    `json:"projected_input_bytes"`
-				WireBytes      int    `json:"wire_input_bytes"`
-			}
-			if err := json.Unmarshal(lines[len(lines)-1], &record); err != nil {
-				t.Error(err)
-				return
-			}
-			report, failures := testDiagnostics(nil, nil).InspectBundle(ctx, diagnostic.InspectOptions{Directory: filepath.Dir(d.Paths()[3]), RequestID: record.RequestID, Field: "all", Limit: 50, TextBytes: 65536})
-			for _, failure := range failures {
-				if failure.Path == d.Paths()[3] {
-					t.Error(failure.Err)
-					return
-				}
-			}
-			var text map[string]query.Text
-			for _, entry := range report.Evidence {
-				if entry.Source == "instructions.jsonl" {
-					text = entry.Text
-				}
-			}
-			var developers, wireDevelopers, wireAdditional []json.RawMessage
-			for key, target := range map[string]*[]json.RawMessage{"developer_messages": &developers, "wire_developer_messages": &wireDevelopers, "wire_additional_tools": &wireAdditional} {
-				if err := json.Unmarshal([]byte(text[key].Text), target); err != nil {
-					t.Error(err)
-					return
-				}
-			}
-			if text["instructions"].Text != responses.StringField(request, "instructions") || len(developers) == 0 || !responses.SameJSONValue(responses.MustMarshalJSON(developers), responses.MustMarshalJSON(firstDevelopers)) {
-				t.Error("dump lost exact final or inherited instructions")
-			}
-			// The diagnostic measures native incremental input before WebSocket
-			// shaping applies JSON V1 HTML escaping. Compare the same encoding.
-			var wireInput any
-			if err := json.Unmarshal(request["input"], &wireInput); err != nil {
-				t.Error(err)
-				return
-			}
-			if record.WireBytes != len(responses.MustMarshalJSON(wireInput)) || record.ProjectedBytes < record.WireBytes || id == "second" && record.ProjectedBytes == record.WireBytes {
-				t.Errorf("incorrect projected/wire byte evidence: %d/%d", record.ProjectedBytes, record.WireBytes)
-			}
-			if id == "second" && record.Cached == 0 {
-				t.Error("dump lost cached-prefix provenance")
-			}
-			if id == "second" && (len(wireDevelopers) != 0 || len(wireAdditional) != 0 || record.WireParent != "first") {
-				t.Error("dump claims cached instructions were sent on continuation")
-			}
-			if err := providerSocketWrite(ctx, conn, socketEvent("response.created", id)); err != nil {
-				t.Error(err)
-				return
-			}
-			if err := providerSocketWrite(ctx, conn, socketEvent("response.completed", id)); err != nil {
-				t.Error(err)
-				return
-			}
-		}
-		_, _, _ = conn.Read(ctx)
-	}))
-	t.Cleanup(upstream.Close)
-	proxy := newManagedMekugiProxy(t)
-	endpoint := testWebSocketEndpoint(ctx, 10*time.Second, newTestProviderClient(upstream.URL, upstream.Client()), nil, proxy)
-	t.Cleanup(endpoint.Close)
-	server := httptest.NewServer(d.Handler(endpoint))
-	t.Cleanup(server.Close)
-	headers := codexAuthHeaders()
-	headers.Set(codexresponses.RoutingSessionHeader, "debug-session")
-	maps.Copy(headers, serverMetadataHeaders(t, "turn", map[string]json.RawMessage{t.TempDir(): nil}))
-	// The registry is shared with parallel fixtures, but mutable thread facts are not.
-	headers.Set(codexresponses.ThreadIDHeader, t.Name())
-	conn, _, err := websocket.Dial(ctx, server.URL, &websocket.DialOptions{HTTPHeader: headers})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.CloseNow() })
-	for _, id := range []string{"first", "second"} {
-		request := map[string]any{"type": "response.create", "model": "gpt-test", "instructions": "Follow the task.", "tools": []any{map[string]string{"type": "function", "name": "lookup"}}}
-		if id == "first" {
-			request["input"] = []any{testCodeModeAdditionalTools(testCodeModeDescription), map[string]string{"role": "developer", "content": "Preserve\n  exact spacing."}, map[string]string{"role": "user", "content": "first task"}}
-		} else {
-			request["previous_response_id"] = "first"
-			request["input"] = []any{map[string]string{"role": "user", "content": "next task"}}
-		}
-		socketWrite(t, ctx, conn, request)
-		for {
-			event := socketRead(t, ctx, conn)
-			if responses.StringField(event, "type") == "error" {
-				t.Fatalf("request failed: %s", responses.MustMarshalJSON(event))
-			}
-			if responses.StringField(event, "type") == "response.completed" {
-				break
-			}
-		}
 	}
 }

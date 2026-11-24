@@ -23,12 +23,11 @@ func (cost Cost) Total() float64 {
 
 type Report struct {
 	inference.Usage
-	Cost         Cost
-	Model        string
-	MissingUsage uint64
-	PriorUnknown bool
-	Roundtrips   uint64
-	RoundOutput  RoundOutput
+	Cost                     float64
+	CostKnown                bool
+	MissingUsage, Roundtrips uint64
+	PriorUnknown             bool
+	OutputThroughput         inference.OutputThroughput
 }
 
 type tokenPrice struct {

@@ -3,6 +3,7 @@ package sessionreview
 import (
 	"context"
 	"errors"
+	"maps"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 
@@ -18,6 +19,8 @@ import (
 type Projection struct {
 	Changes        changes.Service
 	Retained       changes.Scope
+	NativeDir      string
+	Callers        map[string]string
 	Data           *presentation.Snapshot
 	Scope          previewmodel.Scope
 	Workspace      string
@@ -27,6 +30,7 @@ type Projection struct {
 
 func (c *Projection) Reset() {
 	c.Data, c.Scope, c.Coverage = new(presentation.Snapshot), previewmodel.Scope{}, "CONNECTING"
+	c.NativeDir, c.Callers = "", nil
 	c.awaitingResync = true
 }
 
@@ -49,13 +53,36 @@ func (c *Projection) Apply(ctx context.Context, events ...Event) (bool, error) {
 		}
 		switch event.Kind {
 		case "scope":
-			if next.Retained.Store != nil {
-				if err := reconcileReview(ctx, next.Retained, next.Changes, builder, *event.Scope); err != nil {
+			if event.NativeDir != "" || event.Resync {
+				next.NativeDir = event.NativeDir
+			}
+			if event.Callers != nil {
+				next.Callers = maps.Clone(event.Callers)
+			}
+			if next.Retained.Store != nil || next.NativeDir != "" {
+				if err := reconcileReview(ctx, next.Retained, next.Changes, next.NativeDir, next.Callers, next.Data, builder, *event.Scope); err != nil {
 					return false, err
 				}
 			}
 			next.Scope, next.Coverage = *event.Scope, event.Status
 			changed, content = true, true
+		case "native":
+			if event.NativeDir != "" {
+				next.NativeDir = event.NativeDir
+			}
+			if event.Callers != nil {
+				next.Callers = maps.Clone(event.Callers)
+			}
+			if next.NativeDir != "" {
+				legacyCalls := collectLegacyCalls(next.Data)
+				added, err := reconcileNativeReview(ctx, next.NativeDir, next.Callers, builder, next.Scope, legacyCalls, nil)
+				if err != nil {
+					return false, err
+				}
+				if added {
+					changed, content = true, true
+				}
+			}
 		case "change":
 			for _, change := range event.Changes {
 				if !next.Scope.Workspaces[change.Workspace][change.Thread] {
@@ -64,7 +91,7 @@ func (c *Projection) Apply(ctx context.Context, events ...Event) (bool, error) {
 				if next.Retained.Store == nil {
 					return false, errors.New("saved change evidence is unavailable")
 				}
-				if err := hydrateReview(ctx, next.Retained, builder, change); err != nil {
+				if err := hydrateReview(ctx, next.Retained, builder, change, nil); err != nil {
 					return false, err
 				}
 			}

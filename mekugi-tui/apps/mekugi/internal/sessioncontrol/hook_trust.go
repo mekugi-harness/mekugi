@@ -20,7 +20,8 @@ type HookTrust struct {
 // dock. Disabled hooks may be reviewed without changing their enablement.
 func HookTrustApprovals(data []byte, cwd string) ([]*Approval, error) {
 	var result struct {
-		Data []struct {
+		Bypass bool `json:"bypassHookTrust"`
+		Data   []struct {
 			Cwd   string `json:"cwd"`
 			Hooks []struct {
 				Key         string `json:"key"`
@@ -39,6 +40,9 @@ func HookTrustApprovals(data []byte, cwd string) ([]*Approval, error) {
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return nil, err
+	}
+	if result.Bypass {
+		return nil, nil
 	}
 	var approvals []*Approval
 	for _, entry := range result.Data {

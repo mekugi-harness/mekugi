@@ -8,11 +8,13 @@ that never overrides manual names or blocks conversation work.
 
 ## Current approach (replaceable)
 
-- Observes the first user prompt (text + supplied file/directory snapshots, capped at 4,096 runes)
-  on a new untitled Main thread (children, side threads, and resumed/named threads are excluded)
-  and triggers at most one auxiliary naming request after the first successful upstream exchange.
-- Uses `gpt-6-luna` (medium reasoning, 1-minute deadline) with authentication captured from the
-  triggering exchange; usage counts toward session totals. Missing credentials, unavailable model,
-  or errors fail silently without retries or fallbacks.
-- Manual `/title` or host name updates take immediate precedence; candidates are rechecked before
-  calling `thread/name/set`. Removing the module disables auto-naming while keeping manual `/title`.
+- The module enables automatic naming for a new untitled Main thread. The
+  app server takes up to 4,096 characters of its first nonempty user message.
+  Children, side threads and resumed sessions do not trigger naming.
+- After a successful model response, the app server samples a title once
+  using the thread's provider and credentials. It requests `gpt-6-luna` at
+  medium effort with a one-minute deadline. Usage counts toward the thread's
+  total. Failure leaves the title unchanged; there is no fallback.
+- The app server rechecks the stored name before saving a generated title.
+  A manual name takes precedence. Removing the module disables automatic
+  naming but leaves `/title` available.

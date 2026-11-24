@@ -4,15 +4,12 @@ import (
 	"encoding/base64"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	terminalsession "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 
 	json "encoding/json/v2"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -183,59 +180,6 @@ func TestAppServerSessionMetricsSelectionSurvivesRetention(t *testing.T) {
 	}
 	m.Exchanges = nil
 	sessionMetricField(t, u, "Exchanges", "", "No completed exchanges yet. Active requests appear when they settle.")
-}
-
-func TestAppServerSessionMetricsRefreshAndBounds(t *testing.T) {
-	capture, err := new(transportcapture.Service).Open(transportcapture.Config{Mode: "mekugi"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { capture.Close() })
-	u, _ := newAppServerTestUI()
-	now := time.Unix(100, 0)
-	u.clock = func() time.Time { return now }
-	u.sessionCapture = capture
-	u.nativeSession.showSessionMetrics(&u.attached, &u.picker, &u.Editor, u.clock, &u.side, &u.statusPanel, &u.resumePicker)
-	handler := capture.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"r","object":"response","status":"completed","output":[]}`))
-	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test","input":[]}`)))
-	now = now.Add(500 * time.Millisecond)
-	u.dirty = refreshSessionMetrics(u.statusPanel, u.sessionCapture, presentationTime(u.clock), false) || u.dirty
-	sessionMetricField(t, u, "Requests", "Logical", "0")
-	now = now.Add(500 * time.Millisecond)
-	u.dirty = refreshSessionMetrics(u.statusPanel, u.sessionCapture, presentationTime(u.clock), false) || u.dirty
-	sessionMetricField(t, u, "Requests", "Logical", "1")
-	published := publishSessionView(&u.attached, &u.Client, &u.picker, "", preferences.Applied{}, "", "", false, nil, true)
-	logical := ""
-	for _, field := range published.Panel.Fields {
-		if field.Group == "Requests" && field.Label == "Logical" {
-			logical = field.Value
-		}
-	}
-	if logical != "1" {
-		t.Fatalf("published metrics did not include captured request: %q", logical)
-	}
-	for _, theme := range []diffrender.Theme{diffrender.DarkTheme, diffrender.LightTheme} {
-		u.shell.Transcript.Painter.Theme = theme
-		for tab := range 3 {
-			u.shell.Main.Panel.Tab = tab
-			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
-			for _, size := range [][2]int{{90, 25}, {30, 15}, {12, 8}, {1, 1}, {0, 0}} {
-				for _, row := range u.statusPanelFrame(size[0], size[1]) {
-					if ansi.StringWidth(row) > size[0] {
-						t.Fatalf("tab %d size %v overflow: %q", tab, size, row)
-					}
-				}
-			}
-		}
-	}
-	u.statusPanelKey("\x1b")
-	u.dirty = refreshSessionMetrics(u.statusPanel, u.sessionCapture, presentationTime(u.clock), true) || u.dirty
-	if u.statusPanel != nil {
-		t.Fatal("late refresh revived a closed dialog")
-	}
 }
 
 func TestUISnapshotAppServerSessionMetrics(t *testing.T) {

@@ -42,11 +42,6 @@ func TestBoundedCommandCaptureDoesNotWaitForPublication(t *testing.T) {
 	// when all six baselines fit the existing resident-text allowance.
 	command := "gofmt -w " + strings.Join(names, " ") + "; go test ./..."
 	observation, observed := Capture(t.Context(), []commandanalysis.Command{{Command: command, Workdir: workspace, Shell: "bash"}}, false, false, Options{Directory: workspace, Evidence: source})
-	var inputs []string
-	for _, name := range names[:2] {
-		inputs = append(inputs, "*** Begin Patch\n*** Update File: "+name+"\n@@\n-package fixture\n+package edited\n*** End Patch")
-	}
-	patches := Patches(inputs, workspace, source)
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
@@ -57,14 +52,6 @@ func TestBoundedCommandCaptureDoesNotWaitForPublication(t *testing.T) {
 	for _, file := range observation.Files {
 		if file.Error != "" || file.Content != value {
 			t.Fatalf("baseline unavailable: %s: %s", file.Path, file.Error)
-		}
-	}
-	if len(patches) != len(inputs) {
-		t.Fatalf("patch capture lost inputs: %d", len(patches))
-	}
-	for _, patch := range patches {
-		if len(patch.Files) != 1 || patch.Files[0].Error != "" || patch.Files[0].Before != value {
-			t.Fatalf("patch baseline blocked on publication: %+v", patch)
 		}
 	}
 	// Publication still converts resident acquisition text to durable chunks.
@@ -90,61 +77,6 @@ func TestBoundedCommandCaptureDoesNotWaitForPublication(t *testing.T) {
 		if text, err := file.Text(); err != nil || text != value || file.ContentRef == nil {
 			t.Fatalf("cold baseline is not retained chunked evidence: %s, %v", file.Path, err)
 		}
-	}
-}
-
-func TestRetainedPatchBatchPreservesLargeBaselines(t *testing.T) {
-	for _, test := range []struct {
-		name        string
-		count, size int
-	}{{"combined-over-envelope", 4, 7 << 20}, {"shared-inline-budget", 280, evidence.InlineBytes}} {
-		t.Run(test.name, func(t *testing.T) {
-			service, err := history.NewService(evidence.RecordKinds())
-			if err != nil {
-				t.Fatal(err)
-			}
-			store, err := service.Open(t.Context(), t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			source := &evidence.Source{Store: store, Thread: "patches"}
-			workspace := t.TempDir()
-			var inputs []string
-			value := strings.Repeat("x", test.size)
-			for i := range test.count {
-				name := fmt.Sprintf("file-%03d", i)
-				writeTestFile(t, filepath.Join(workspace, name), value)
-				inputs = append(inputs, "*** Begin Patch\n*** Update File: "+name+"\n@@\n-x\n+y\n*** End Patch")
-			}
-			// Exercise the acquisition implementation without conflating the
-			// independent native forwarding deadline with resident-byte bounds.
-			patches := patchesWithin(t.Context(), inputs, workspace, source)
-			if len(patches) != test.count {
-				t.Fatalf("lost patches: %d", len(patches))
-			}
-			inline, spilled := 0, 0
-			for _, patch := range patches {
-				if len(patch.Files) != 1 || patch.Files[0].Error != "" {
-					t.Fatalf("lost patch baseline: %+v", patch)
-				}
-				file := patch.Files[0]
-				inline += len(file.Before)
-				got := file.Before
-				if file.BeforeRef != nil {
-					spilled++
-					got, err = file.BeforeRef.Read()
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
-				if got != value {
-					t.Fatal("retained baseline changed")
-				}
-			}
-			if inline > MaxContentBytes || spilled == 0 {
-				t.Fatalf("batch resident text escaped bound: inline=%d spilled=%d", inline, spilled)
-			}
-		})
 	}
 }
 

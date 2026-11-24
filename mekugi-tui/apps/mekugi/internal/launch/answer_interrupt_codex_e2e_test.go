@@ -10,8 +10,6 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
@@ -41,11 +39,12 @@ type answerInterruptCodexProvider struct {
 	socket           bool
 	anonymous        bool
 	streamedIdentity bool
+	inputSplit       int
 	gate             chan struct{}
 	requests         chan []byte
 }
 
-func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, body []byte, _ http.Header, _ string) (*inferencegateway.Response, error) {
+func (p *answerInterruptCodexProvider) respond(ctx context.Context, body []byte, _ http.Header) (*http.Response, error) {
 	p.mu.Lock()
 	p.turn++
 	turn := p.turn
@@ -57,7 +56,7 @@ func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, 
 	}
 	if turn == 1 && p.mode != "steer" {
 		question := &questionCodexProvider{mode: "async", requests: make(chan []byte, 1)}
-		return question.ForwardExecution(ctx, ctx, body, nil, "")
+		return question.respond(ctx, body, nil)
 	}
 	if turn == 2 && p.mode == "message" || turn == 1 && p.mode == "steer" {
 		reader, writer := io.Pipe()
@@ -73,7 +72,7 @@ func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, 
 			item["status"] = "in_progress"
 			item["content"] = []any{}
 			emit := func(events ...any) bool {
-				_, err := io.WriteString(writer, routerFaultSSE(events...))
+				_, err := io.WriteString(writer, fixtureResponsesSSE(events...))
 				return err == nil
 			}
 			added := map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item}
@@ -133,10 +132,10 @@ func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, 
 			// Neither transport completes its response or native turn at this gate.
 			<-ctx.Done()
 		}()
-		return testGatewayResponse(&http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader}, nil)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader}, nil
 	}
 	if turn == 2 && p.mode == "steer" {
-		return testGatewayResponse(mchangesNestedCodexResponse(turn, instantInterruptAnswer("Answer emission acceptance complete")), nil)
+		return mchangesNestedCodexResponse(turn, instantInterruptAnswer("Answer emission acceptance complete")), nil
 	}
 	if turn == 2 {
 		reader, writer := io.Pipe()
@@ -144,12 +143,15 @@ func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, 
 		go func() {
 			defer stop()
 			defer writer.Close()
-			item := map[string]any{"type": "custom_tool_call", "id": "answer-tool-item", "call_id": "answer-tool", "name": p.mode, "status": "in_progress", "input": ""}
+			item := map[string]any{"type": "custom_tool_call", "id": "answer-tool-item", "call_id": "answer-tool", "name": "exec", "status": "in_progress", "input": ""}
 			emit := func(events ...any) bool {
-				_, err := io.WriteString(writer, routerFaultSSE(events...))
+				_, err := io.WriteString(writer, fixtureResponsesSSE(events...))
 				return err == nil
 			}
-			split := len(p.input) / 2
+			split := p.inputSplit
+			if split == 0 {
+				split = len(p.input) / 2
+			}
 			if !emit(
 				map[string]any{"type": "response.created", "response": map[string]any{"id": "answer-emission", "status": "in_progress", "output": []any{}}},
 				map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item},
@@ -172,7 +174,7 @@ func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, 
 				map[string]any{"type": "response.completed", "response": map[string]any{"id": "answer-emission", "status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}},
 			)
 		}()
-		return testGatewayResponse(&http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader}, nil)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader}, nil
 	}
 	if turn == 3 && p.mode == "exec" {
 		var request struct {
@@ -187,9 +189,9 @@ func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, 
 		}
 		for _, item := range request.Input {
 			if item.Type == "custom_tool_call_output" && item.CallID == "answer-tool" {
-				cell := strings.TrimPrefix(binding.DecodeExecutionResult("exec", []byte(item.Output)).ResumeHandle, "cell:")
+				_, cell, _ := binding.CodeModeExecutionHeader(strings.Join(binding.ExecutionOutputTexts(item.Output), "\n"))
 				if cell != "" {
-					return testGatewayResponse(mchangesNestedCodexResponse(turn, map[string]any{"type": "function_call", "id": "answer-wait-item", "call_id": "answer-wait", "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": cell, "yield_time_ms": 10000}))}), nil)
+					return mchangesNestedCodexResponse(turn, map[string]any{"type": "function_call", "id": "answer-wait-item", "call_id": "answer-wait", "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": cell, "yield_time_ms": 10000}))}), nil
 				}
 			}
 		}
@@ -218,7 +220,7 @@ func (p *answerInterruptCodexProvider) ForwardExecution(_, ctx context.Context, 
 		}
 	}
 	if turn == 3 || turn == 4 && p.mode == "exec" {
-		return testGatewayResponse(mchangesNestedCodexResponse(turn, instantInterruptAnswer("Answer emission acceptance complete")), nil)
+		return mchangesNestedCodexResponse(turn, instantInterruptAnswer("Answer emission acceptance complete")), nil
 	}
 	return nil, fmt.Errorf("unexpected provider request %d", turn)
 }
@@ -241,10 +243,6 @@ func (w *answerInterruptResponseWriter) Write(body []byte) (int, error) {
 }
 
 func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
-	codex, err := exec.LookPath("codex")
-	if err != nil {
-		t.Fatal("installed Codex is required for answer interruption acceptance")
-	}
 	for _, tc := range []struct {
 		mode             string
 		socket           bool
@@ -253,6 +251,14 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 	}{{"apply_patch", false, false, false}, {"exec", false, false, false}, {"message", false, false, false}, {"steer", false, false, false}, {"message", true, false, false}, {"steer", true, false, false}, {"message", false, true, false}, {"steer", true, true, false}, {"message", false, false, true}, {"steer", false, false, true}, {"message", true, false, true}, {"steer", true, false, true}} {
 		mode := tc.mode
 		t.Run(fmt.Sprintf("%s/socket=%v/anonymous=%v/streamedIdentity=%v", mode, tc.socket, tc.anonymous, tc.streamedIdentity), func(t *testing.T) {
+			binary, subcommand := "codex", []string{"app-server"}
+			if mode == "apply_patch" || mode == "exec" {
+				binary, subcommand = "mekugi-app-server", nil
+			}
+			codex, err := exec.LookPath(binary)
+			if err != nil {
+				t.Fatalf("%s is required for answer interruption acceptance: %v", binary, err)
+			}
 			t.Setenv("XDG_STATE_HOME", t.TempDir())
 			workspace := t.TempDir()
 			gatePath := filepath.Join(workspace, "release")
@@ -261,27 +267,25 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 			patchPath := filepath.Join(workspace, "answer-patch.txt")
 			provider := &answerInterruptCodexProvider{t: t, mode: mode, socket: tc.socket, anonymous: tc.anonymous, streamedIdentity: tc.streamedIdentity, gate: make(chan struct{}), requests: make(chan []byte, 8)}
 			if mode == "apply_patch" {
-				provider.input = "*** Begin Patch\n*** Add File: " + patchPath + "\n+input-survived\n*** End Patch"
+				patch := "*** Begin Patch\n*** Add File: answer-patch.txt\n+input-survived\n+after-release\n*** End Patch"
+				provider.input = "await tools.apply_patch(" + string(responses.MustMarshalJSON(patch)) + ");"
+				provider.inputSplit = strings.Index(provider.input, "+after-release")
 			} else {
 				shell := "echo run >> " + strconv.Quote(countPath) + "; touch " + strconv.Quote(startedPath) + "; while test ! -f " + strconv.Quote(gatePath) + "; do sleep 0.1; done; echo input-survived"
 				provider.input = "// @exec: {\"yield_time_ms\": 60000}\nconst result = await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(shell)) + ", workdir: " + string(responses.MustMarshalJSON(workspace)) + ", yield_time_ms: 30000}); text(result.output);"
 			}
 			proxy := newManagedMekugiProxy(t)
 			attachTestReplayStore(t, proxy)
-			issues := testCriticalErrors()
+			if mode == "apply_patch" {
+				preview := newLivePreview(t.Context())
+				proxy.review = testReview(preview)
+				t.Cleanup(preview.Close)
+			}
 			emitted := make(chan struct{}, 2)
-			upstream := httptest.NewServer(http.HandlerFunc(provider.serve))
-			defer upstream.Close()
-			client := newTestProviderClient(upstream.URL, upstream.Client())
-			handler := testResponsesHandler(t.Context(), time.Minute, client, issues, proxy)
-			endpoint := testWebSocketEndpoint(t.Context(), time.Minute, client, issues, proxy)
-			defer endpoint.Close()
+			handler := fixtureResponsesHandler(provider)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				for key, values := range codexAuthHeaders() {
-					r.Header[key] = values
-				}
 				if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-					endpoint.ServeHTTP(w, r)
+					provider.serveSocket(w, r)
 					return
 				}
 				handler(&answerInterruptResponseWriter{ResponseWriter: w, emitted: emitted}, r)
@@ -296,7 +300,8 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 			}()
 			environment := routerFaultCodexEnvironment(t)
 			terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {
-				cmd := exec.CommandContext(ctx, codex, "app-server", "--enable", "instant_interrupt", "-c", `model_providers.answer_fixture={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false,supports_websockets=`+strconv.FormatBool(tc.socket)+`}`, "-c", `model_provider="answer_fixture"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false", "-c", "features.code_mode=true", "-c", "features.code_mode_host=true", "-c", "features.default_mode_request_user_input=true")
+				args := append(subcommand, "-c", "features.instant_interrupt=true", "-c", `model_providers.answer_fixture={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false,supports_websockets=`+strconv.FormatBool(tc.socket)+`}`, "-c", `model_provider="answer_fixture"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false", "-c", "features.code_mode=true", "-c", "features.code_mode_host=true", "-c", "features.default_mode_request_user_input=true")
+				cmd := exec.CommandContext(ctx, codex, args...)
 				cmd.Env, cmd.Dir = environment, workspace
 				return cmd
 			}, "", testAppServerIntegration(proxy))
@@ -307,7 +312,7 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 				case request := <-provider.requests:
 					return request
 				case <-terminal.ctx.Done():
-					t.Fatalf("provider request missing: notices=%v\n%s", issues.Notices.Pending(), terminal.screen.String())
+					t.Fatalf("provider request missing:\n%s", terminal.screen.String())
 					return nil
 				}
 			}
@@ -329,6 +334,18 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 					t.Fatal("input delta was not delivered")
 				}
 			}
+			var toolStatus string
+			switch mode {
+			case "apply_patch":
+				toolStatus = "Emitting a patch"
+			case "exec":
+				toolStatus = "Executing a command"
+			}
+			if toolStatus != "" {
+				// The question overlay replaces the composer activity label.
+				terminal.send("\x1b")
+				terminal.await(toolStatus)
+			}
 			if mode == "steer" {
 				terminal.send("Change direction now\r")
 			} else {
@@ -337,11 +354,21 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 				terminal.send("1\r")
 			}
 			terminal.awaitMatch("accepted queued answer", func(screen string) bool {
-				queued := strings.Contains(screen, "Steering pending") && strings.Contains(screen, "Working") && !strings.Contains(screen, "Sending…")
+				working := strings.Contains(screen, "Working") || toolStatus != "" && strings.Contains(screen, toolStatus)
+				queued := strings.Contains(screen, "Steering pending") && working && !strings.Contains(screen, "Sending…")
 				// Let a broken early-send path reach the request assertion below.
 				answered := strings.Contains(screen, "Who should receive the update?") && strings.Contains(screen, "Customers") && !strings.Contains(screen, "1 of 1")
 				return queued || answered || mode == "steer" && strings.Contains(screen, "Change direction now")
 			})
+			if mode == "apply_patch" {
+				// The question dock has priority until the answer is queued.
+				terminal.awaitMatch("live patch source", func(screen string) bool {
+					return strings.Contains(screen, "LIVE") && strings.Contains(screen, "input-survived")
+				})
+				if _, err := os.Stat(patchPath); !os.IsNotExist(err) {
+					t.Fatalf("preview did not precede tool execution: %v", err)
+				}
+			}
 			select {
 			case <-provider.requests:
 				t.Fatalf("answer interrupted unfinished %s input", mode)
@@ -366,8 +393,24 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 				if bytes.Count(input, []byte("Change direction now")) != 1 {
 					t.Fatalf("steer was not delivered exactly once: %.4000s", input)
 				}
-			} else if strings.Count(string(input), "<question_answers>") != 1 || !bytes.Contains(input, []byte(`\"choice\":1`)) {
-				t.Fatalf("answer was not delivered exactly once after input completed: %.4000s", input)
+			} else {
+				// Native developer guidance also mentions the answer delimiter.
+				var answers []binding.QuestionAnswer
+				for _, value := range parsed.Input {
+					item, ok := value.(map[string]any)
+					if !ok || item["role"] != "user" {
+						continue
+					}
+					content, _ := item["content"].([]any)
+					for _, value := range content {
+						block, _ := value.(map[string]any)
+						text, _ := block["text"].(string)
+						answers = append(answers, binding.QuestionReplies(text)...)
+					}
+				}
+				if len(answers) != 1 || answers[0].ID != "q1" || answers[0].Choice != 1 {
+					t.Fatalf("answer was not delivered exactly once after input completed: %+v", answers)
+				}
 			}
 			if mode == "message" || mode == "steer" {
 				if !tc.socket && !bytes.Contains(input, []byte("The latest trace is complete.")) {
@@ -375,15 +418,6 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 				}
 			}
 			if mode == "exec" {
-				if _, err := os.Stat(startedPath); err != nil {
-					var outputs []any
-					for _, value := range parsed.Input {
-						if item, ok := value.(map[string]any); ok && strings.HasSuffix(fmt.Sprint(item["type"]), "_output") {
-							outputs = append(outputs, item)
-						}
-					}
-					t.Fatalf("host command did not start: %v; outputs: %s", err, responses.MustMarshalJSON(outputs))
-				}
 				if _, err := os.Stat(gatePath); !os.IsNotExist(err) {
 					t.Fatalf("answer waited for command gate: %v", err)
 				}
@@ -391,13 +425,16 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 					t.Fatal(err)
 				}
 				_ = next()
+				if _, err := os.Stat(startedPath); err != nil {
+					t.Fatalf("host command did not start: %v", err)
+				}
 				count, err := os.ReadFile(countPath)
 				if err != nil || string(count) != "run\n" {
 					t.Fatalf("host command execution count %q, %v", count, err)
 				}
 			} else if mode == "apply_patch" {
 				data, err := os.ReadFile(patchPath)
-				if err != nil || string(data) != "input-survived\n" {
+				if err != nil || string(data) != "input-survived\nafter-release\n" {
 					t.Fatalf("streamed patch did not execute intact: %q, %v", data, err)
 				}
 			}
@@ -407,19 +444,12 @@ func TestAnswerInterruptNativeCodexE2E(t *testing.T) {
 			terminal.await("Answer emission acceptance complete")
 			terminal.await("completed")
 			terminal.quit()
-			if pending := issues.Notices.Pending(); len(pending) != 0 {
-				t.Fatalf("answer interruption produced router failures: %v", pending)
-			}
 		})
 	}
 }
 
 // Serve the same deterministic stream through the real provider WebSocket path.
-func (p *answerInterruptCodexProvider) serve(w http.ResponseWriter, r *http.Request) {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		serveHTTPTestProvider(w, r, p)
-		return
-	}
+func (p *answerInterruptCodexProvider) serveSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -428,7 +458,7 @@ func (p *answerInterruptCodexProvider) serve(w http.ResponseWriter, r *http.Requ
 	cancelResponse := func() {}
 	defer func() { cancelResponse() }()
 	for {
-		fields, err := providerSocketRead(r.Context(), conn)
+		fields, err := readFixtureResponseSocket(r.Context(), conn)
 		if err != nil {
 			return
 		}
@@ -436,14 +466,14 @@ func (p *answerInterruptCodexProvider) serve(w http.ResponseWriter, r *http.Requ
 			cancelResponse()
 			item := instantInterruptAnswer("The latest trace is complete.")
 			item["id"] = "streaming-message"
-			if providerSocketWrite(r.Context(), conn, map[string]any{"type": "response.interrupt.accepted", "response_id": "message-emission"}) != nil ||
-				providerSocketWrite(r.Context(), conn, map[string]any{"type": "response.incomplete", "response": map[string]any{"id": "message-emission", "status": "incomplete", "incomplete_details": map[string]string{"reason": "interrupted"}, "output": []any{item}}}) != nil {
+			if writeFixtureResponseSocket(r.Context(), conn, map[string]any{"type": "response.interrupt.accepted", "response_id": "message-emission"}) != nil ||
+				writeFixtureResponseSocket(r.Context(), conn, map[string]any{"type": "response.incomplete", "response": map[string]any{"id": "message-emission", "status": "incomplete", "incomplete_details": map[string]string{"reason": "interrupted"}, "output": []any{item}}}) != nil {
 				return
 			}
 			continue
 		}
 		if string(fields["generate"]) == "false" {
-			if providerSocketWrite(r.Context(), conn, socketEvent("response.created", "warm")) != nil || providerSocketWrite(r.Context(), conn, socketEvent("response.completed", "warm")) != nil {
+			if writeFixtureResponseSocket(r.Context(), conn, fixtureSocketEvent("response.created", "warm")) != nil || writeFixtureResponseSocket(r.Context(), conn, fixtureSocketEvent("response.completed", "warm")) != nil {
 				return
 			}
 			continue
@@ -455,7 +485,7 @@ func (p *answerInterruptCodexProvider) serve(w http.ResponseWriter, r *http.Requ
 		cancelResponse()
 		responseCtx, cancel := context.WithCancel(r.Context())
 		cancelResponse = cancel
-		response, err := p.ForwardExecution(responseCtx, responseCtx, body, r.Header, "")
+		response, err := p.respond(responseCtx, body, r.Header)
 		if err != nil {
 			return
 		}

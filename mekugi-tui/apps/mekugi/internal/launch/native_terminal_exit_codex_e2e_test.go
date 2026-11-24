@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
@@ -38,9 +38,9 @@ type terminalExitProvider struct {
 	finish   chan struct{}
 }
 
-func (p *terminalExitProvider) ForwardExecution(_, ctx context.Context, _ []byte, headers http.Header, _ string) (*inferencegateway.Response, error) {
-	metadata, _ := codexresponses.DecodeTurnMetadata(headers)
-	thread := headers.Get(codexresponses.ThreadIDHeader)
+func (p *terminalExitProvider) respond(ctx context.Context, _ []byte, headers http.Header) (*http.Response, error) {
+	metadata, _ := fixtureTurnMetadata(headers)
+	thread := headers.Get(fixtureThreadIDHeader)
 	if thread == "" {
 		thread = metadata.ThreadID
 	}
@@ -85,7 +85,7 @@ func TestNativeTerminalExitCodexE2E(t *testing.T) {
 			}
 			proxy := newManagedMekugiProxy(t)
 			attachTestReplayStore(t, proxy)
-			provider := httptest.NewServer(testResponsesHandler(ctx, time.Minute, p, nil, proxy))
+			provider := httptest.NewServer(fixtureResponsesHandler(p))
 			defer provider.Close()
 			defer cancel()
 			client, workspace, owners, view := newTerminalExitTestServer(t, ctx, codex, provider.URL, testAppServerIntegration(proxy))
@@ -278,7 +278,7 @@ func newTerminalExitTestServer(t *testing.T, ctx context.Context, codex, provide
 			activity: new(activitymodel.Service), history: history, segments: testReports(), observations: &observations, changeSource: integration.changeSource,
 			preparer: integration.preparer, controlObservations: integration.controlObservations, audience: integration.audience, execWindows: integration.execWindows,
 			execTrack: integration.execTrack, nativeTrace: integration.nativeTrace, retained: integration.retained}
-		wait, err := session.start(testPreferences(), cmd, false, resume, nil, api, false, &threadExecution{hub: hub, setup: &threadSetup{}})
+		wait, err := session.start(testPreferences(), cmd, false, resume, nil, api, launchoptions.Config{}, &threadExecution{hub: hub, setup: &threadSetup{}})
 		if err != nil {
 			return err
 		}

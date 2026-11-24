@@ -1,31 +1,22 @@
 package launch
 
 import (
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
-	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 
-	jsonv1 "encoding/json"
 	"fmt"
-	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -504,150 +495,6 @@ func TestAppServerGroupedReceiptOmitsBookkeeping(t *testing.T) {
 	if strings.Contains(feed, "included in grouped") || strings.Contains(feed, "PRIVATE_GROUPED_BODY") || !strings.Contains(feed, "PRIVATE_FAILED_BODY") ||
 		!strings.Contains(feed, "go test") || !strings.Contains(feed, "exit 2") || !strings.Contains(feed, "exit 1") {
 		t.Fatalf("grouped receipt hid work/failures or exposed bookkeeping: %q", feed)
-	}
-}
-
-// A cell that edits through an interpreter and
-// reads in the same cell still yields host identities for its confirmed edit,
-// live and after history is restored into a new UI.
-func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
-	const edit = "python3 - <<'PY'\nopen('file.txt','w').write('new\\n')\nPY\ncat file.txt"
-	testCodeModeCellEditReceipt(t, edit, 0, "supplement-edit-receipt")
-}
-
-func TestCodeModeCellEditReceiptKeepsCapturedStatsAndExit(t *testing.T) {
-	t.Run("failed post-edit check", func(t *testing.T) {
-		testCodeModeCellEditReceipt(t, "cat file.txt; sed -i s/old/new/ file.txt; exit 7", 7, "")
-	})
-	t.Run("successful opaque writer", func(t *testing.T) {
-		testCodeModeCellEditReceipt(t, "python3 -c \"import os; open(os.getenv('TARGET', 'file.txt'), 'w').write('new\\n')\"; cat file.txt", 0, "")
-	})
-}
-
-func testCodeModeCellEditReceipt(t *testing.T, edit string, exit int, snapshotName string) {
-	t.Helper()
-	proxy := newManagedMekugiProxy(t)
-	attachTestReplayStore(t, proxy)
-	trace := newNativeTraceFixture(t)
-	proxy.nativeTrace = nativetrace.NewWithNotice(trace.root, nil)
-	transform, _, _, workspace := newMekugiTestTransformWithProxy(t, proxy)
-	target := filepath.Join(workspace, "file.txt")
-	if err := os.WriteFile(target, []byte("old\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	const read = "git diff --stat"
-	source := `text(await tools.exec_command({cmd: ` + string(responses.MustMarshalJSON(edit)) + `}));` +
-		`text(await tools.exec_command({cmd: ` + string(responses.MustMarshalJSON(read)) + `}));`
-	call := map[string]any{"type": "custom_tool_call", "id": "cell-item", "call_id": "cell", "name": "exec", "input": source, "status": "completed"}
-	if _, err := transform.TransformJSON(mustTestJSON(t, map[string]any{"id": "response", "status": "completed", "output": []any{call}})); err != nil {
-		t.Fatal(err)
-	}
-	retained, found, err := testProxyStore(proxy).lookup(t.Context(), workspace, "cell")
-	if err != nil || !found || retained.CarrierPayload != source {
-		t.Fatal("stock exec source changed")
-	}
-	trace.start("thread-1", "runtime", "cell", source)
-	for _, tool := range []struct {
-		id, cmd string
-		exit    int
-	}{{"edit-exec", edit, exit}, {"read-exec", read, 0}} {
-		trace.tool("thread-1", "runtime", tool.id, "exec_command", string(responses.MustMarshalJSON(map[string]any{"cmd": tool.cmd})))
-		trace.result("thread-1", tool.id, "completed", map[string]any{"exit_code": tool.exit})
-	}
-	trace.end("thread-1", "runtime")
-	if err := os.WriteFile(target, []byte("new\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	visible := maps.Clone(call)
-	visible["input"] = source
-	request := codexresponses.Request{Fields: map[string]jsonv1.RawMessage{"input": mustTestJSON(t, []any{visible, map[string]any{
-		"type": "custom_tool_call_output", "call_id": "cell", "output": "Script completed\nWall time 0.1 seconds\nOutput:\n",
-	}})}}
-	request.Fields["tools"] = mustTestJSON(t, testExecResponsesTools())
-	next, err := proxy.prepareRequest(t.Context(), &request, "session-1", "thread-1", codexresponses.TurnMetadata{RequestKind: "turn", Directories: map[string]jsonv1.RawMessage{workspace: nil}}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer next.Close()
-	record, found, err := testProxyStore(proxy).lookup(t.Context(), workspace, legacycall.ExecCallID("cell", true))
-	wantStatus := changecapture.StatusCompleted
-	if exit != 0 {
-		wantStatus = changecapture.StatusFailed
-	}
-	if err != nil || !found || record.ChangeID == "" || record.ExecOutcome.Status != wantStatus {
-		t.Fatalf("exec record: found=%v err=%v record=%+v", found, err, record)
-	}
-	var calls []string
-	for _, result := range record.HostResults {
-		calls = append(calls, result.CallID)
-	}
-	if !slices.Equal(calls, []string{"edit-exec", "read-exec"}) {
-		t.Fatalf("host results = %+v", record.HostResults)
-	}
-
-	store := testReplayStore(mekugiReplayStore{directory: testProxyStore(proxy).directory})
-	snapshot, err := store.liveDiffSnapshot(t.Context(), previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {"thread-1": true}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	item := binding.ThreadItem{ID: "edit-exec", Type: "commandExecution", Command: edit, ExitCode: &exit}
-	assertActivity := func(view *activityAdapter) {
-		t.Helper()
-		assertCapturedCommand(t, view, "thread-1", item.ID, "Edit", exit)
-		if !slices.ContainsFunc(view.blocks(0), func(b activityui.Block) bool {
-			return b.Verb == "Edit" && b.EditPath() == "file.txt" && b.ExitCode == 0 && strings.Contains(b.Label, "+1 -1")
-		}) {
-			t.Fatalf("captured line counts missing from Activity: %+v", view.blocks(0))
-		}
-	}
-	live := newAppServerSessionTestUI(t, workspace)
-	live.Thread = "thread-1"
-	live.startSession(live.Thread, workspace)
-	live.audience = proxy.activity
-	live.audience.Attach(live.Thread)
-	// Deliver the real producer's annotation before the host item, with no
-	// saved-review publication available to mask a dropped supplement.
-	applyObservedActivity(&live.attached, &live.Client, live.usage, live.review, &live.approvals, &live.pendingEditReceipts, live.clock, live.restoring, live.audience)
-	if len(live.pendingEditReceipts) != 1 || !slices.Equal(live.pendingEditReceipts[0].Calls, calls) {
-		t.Fatalf("receipt did not retain nested host identities: %+v", live.pendingEditReceipts)
-	}
-	observedReceipt := live.pendingEditReceipts[0]
-	appServerTestNotify(t, live, "item/completed", map[string]any{"threadId": "thread-1", "turnId": "turn", "item": item})
-	assertActivity(live.testActivity(live.shell.Transcript))
-	sibling := binding.ThreadItem{ID: "read-exec", Type: "commandExecution", Command: read, ExitCode: new(0)}
-	appServerTestNotify(t, live, "item/completed", map[string]any{"threadId": "thread-1", "turnId": "turn", "item": sibling})
-	if len(live.pendingEditReceipts) != 0 || len(live.attached.source.Entries) != 2 {
-		t.Fatalf("receipt duplicated host rows or remained pending: entries=%+v pending=%+v", live.attached.source.Entries, live.pendingEditReceipts)
-	}
-	if snapshotName != "" {
-		assertNativeUISnapshot(t, snapshotName, live.testActivity(live.shell.Transcript).RenderFeed(100, 30).Lines)
-	}
-	// A later retained publication reconciles the same identity, not another row.
-	live.review.Projection.Data = snapshot
-	applyCapturedEdits(&live.attached, live.review, &live.pendingEditReceipts)
-	assertActivity(live.testActivity(live.shell.Transcript))
-	if len(live.attached.source.Entries) != 2 {
-		t.Fatal("retained publication duplicated receipt")
-	}
-	restored := newAppServerSessionTestUI(t, workspace)
-	restored.Thread = "thread-1"
-	restored.startSession(restored.Thread, workspace)
-	restored.review.Projection.Data = snapshot
-	publishFixtureReview(t, restored)
-	restored.restoreHistory([]binding.HistoryTurn{{ID: "turn", Status: "completed", Items: []binding.ThreadItem{item}}})
-	assertActivity(restored.testActivity(restored.shell.Transcript))
-	// An annotation queued while history was loading must enrich that restored
-	// invocation without replacing its identity or adding an independent row.
-	restored.audience = sessioncontrol.NewAudience(nil)
-	restored.audience.Attach(restored.Thread)
-	event := activitypresentation.Supplement{Thread: restored.Thread, Source: "late-receipt", Kind: activitypresentation.SupplementEditReceipt, Text: observedReceipt.Text, Calls: observedReceipt.Calls}
-	for range 2 {
-		restored.audience.Collect(event)
-		applyObservedActivity(&restored.attached, &restored.Client, restored.usage, restored.review, &restored.approvals, &restored.pendingEditReceipts, restored.clock, nil, restored.audience)
-	}
-	assertActivity(restored.testActivity(restored.shell.Transcript))
-	if len(restored.attached.source.Entries) != 1 {
-		t.Fatalf("late receipt duplicated restored invocation: %+v", restored.attached.source.Entries)
 	}
 }
 

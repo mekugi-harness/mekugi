@@ -1,9 +1,8 @@
 package usage_test
 
 import (
+	"bytes"
 	"crypto/sha256"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,98 +36,67 @@ func usageRecordName(thread string) string {
 	return fmt.Sprintf("usage-%x.json", sha256.Sum256([]byte(thread)))
 }
 
-func composedUsage(t *testing.T, directory string) (*accounting.Service, *history.Service) {
+func composedUsage(t *testing.T, directory string, notice func(string, error)) (*accounting.Service, *history.Service) {
 	t.Helper()
 	owner := moduletest.New(t, sessionhistory.Module, sessionhistory.Deps{}, module.Slots{RecordKinds: usage.Module.Contributes.RecordKinds}, nil)
 	service := moduletest.New(t, usage.Module, usage.Deps{}, module.Slots{}, nil)
-	service.Configure(owner.Attach(directory), nil, history.Limits{}, func(thread string, err error) {
-		t.Errorf("retaining %q: %v", thread, err)
-	})
+	service.Configure(owner.Attach(directory), nil, history.Limits{Total: history.DefaultStorageBytes}, notice)
 	return service, owner
 }
 
-func TestModuleHistoricalUsageV1Roundtrip(t *testing.T) {
+func TestModuleReadsHistoricalUsageWithoutWriting(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, usageRecordName("historical-thread"))
 	if err := os.WriteFile(path, []byte(historicalUsageV1), 0600); err != nil {
 		t.Fatal(err)
 	}
-	want := accounting.Report{
-		InputTokens: 100, UncachedInputTokens: 70, CacheWriteTokens: 5, OutputTokens: 20, ReasoningTokens: 8,
-		Cost:  accounting.Cost{UncachedInput: 1.25, CachedInput: 0.5, Output: 2.75, Known: true},
-		Model: "historical-model", MissingUsage: 1, Roundtrips: 3, PriorUnknown: true,
-		RoundOutput: accounting.RoundOutput{StartedUnixNano: 123456789, Throughput: inference.OutputThroughput{OutputTokens: 20, DurationNanos: 2000000000, MeasuredRequests: 1}},
-	}
-	t.Run("read-and-append", func(t *testing.T) {
-		service, owner := composedUsage(t, directory)
-		kind, found, err := owner.Kind(filepath.Base(path))
-		if err != nil || !found || kind.ID != "usage" {
-			t.Fatalf("historical record registration: kind=%+v found=%v err=%v", kind, found, err)
-		}
-		assertUsageReport(t, service, "historical-thread", want)
-		observation := service.Observation("historical-thread", "historical-thread", "new-model", "priority")
-		observation.Price = func(tier string, counts inference.Usage) accounting.Cost {
-			if tier != "default" || counts.InputTokens != 10 {
-				t.Errorf("completed exchange pricing: tier=%q counts=%+v", tier, counts)
-			}
-			return accounting.Cost{UncachedInput: 0.25, CachedInput: 0.125, Output: 0.5, Known: true}
-		}
-		observation.Observe(inference.Usage{TotalsKnown: true, InputTokens: 10, UncachedInputTokens: 6, CacheWriteTokens: 2, OutputTokens: 4, ReasoningTokens: 1, ServiceTier: "default"})
-		want.InputTokens, want.UncachedInputTokens, want.CacheWriteTokens = 110, 76, 7
-		want.OutputTokens, want.ReasoningTokens = 24, 9
-		want.Cost = accounting.Cost{UncachedInput: 1.5, CachedInput: 0.625, Output: 3.25, Known: true}
-		want.Model, want.Roundtrips = "historical-model, new-model", 4
-		assertUsageReport(t, service, "historical-thread", want)
-		// Descriptor shutdown retains the pending observation before the wire check.
+	service, owner := composedUsage(t, directory, func(thread string, err error) {
+		t.Errorf("reading %q: %v", thread, err)
 	})
+	kind, found, err := owner.Kind(filepath.Base(path))
+	if err != nil || !found || kind.ID != "usage" {
+		t.Fatalf("historical record registration: kind=%+v found=%v err=%v", kind, found, err)
+	}
+	want := accounting.Report{
+		Usage: inference.Usage{TotalsKnown: true, InputTokens: 100, UncachedInputTokens: 70, CacheWriteTokens: 5, OutputTokens: 20, ReasoningTokens: 8},
+		Cost:  4.5, CostKnown: true, MissingUsage: 1, Roundtrips: 3, PriorUnknown: true,
+		OutputThroughput: inference.OutputThroughput{OutputTokens: 20, DurationNanos: 2000000000, MeasuredRequests: 1},
+	}
+	service.Restore("historical-thread", true)
+	if got := service.Snapshot("historical-thread"); got != want {
+		t.Fatalf("restored legacy usage: got %+v, want %+v", got, want)
+	}
+	service.Restore("no-record", true)
+	if got := service.Snapshot("no-record"); got != (accounting.Report{PriorUnknown: true}) {
+		t.Fatalf("absent legacy usage: %+v", got)
+	}
+	if got := service.Snapshot("fresh"); got != (accounting.Report{}) {
+		t.Fatalf("fresh thread inherited consumption: %+v", got)
+	}
 	data, err := history.ReadRecord(path)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !bytes.Equal(data, []byte(historicalUsageV1)) {
+		t.Fatalf("legacy usage changed: %s (%v)", data, err)
 	}
-	// Compare exact member spelling at each historical object boundary. Values
-	// are checked through the public reader, without depending on member order.
-	var old, current map[string]jsontext.Value
-	if err := json.Unmarshal([]byte(historicalUsageV1), &old); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(data, &current); err != nil {
-		t.Fatal(err)
-	}
-	assertUsageWireKeys(t, old, current)
-	if string(current["Version"]) != "1" || string(current["Thread"]) != `"historical-thread"` {
-		t.Fatalf("changed record identity: %s", data)
-	}
-	service, _ := composedUsage(t, directory)
-	assertUsageReport(t, service, "historical-thread", want)
-}
-
-func assertUsageWireKeys(t *testing.T, old, current map[string]jsontext.Value) {
-	t.Helper()
-	if len(old) != len(current) {
-		t.Fatalf("record fields differ: old=%v current=%v", old, current)
-	}
-	for key, value := range old {
-		actual, ok := current[key]
-		if !ok {
-			t.Fatalf("missing historical field %q", key)
-		}
-		if value.Kind() == '{' {
-			var a, b map[string]jsontext.Value
-			if err := json.Unmarshal(value, &a); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(actual, &b); err != nil {
-				t.Fatal(err)
-			}
-			assertUsageWireKeys(t, a, b)
-		}
+	if _, err := os.Stat(filepath.Join(directory, usageRecordName("no-record"))); !os.IsNotExist(err) {
+		t.Fatalf("restoring missing usage created a legacy record or could not check it: %v", err)
 	}
 }
 
-func assertUsageReport(t *testing.T, service *accounting.Service, thread string, want accounting.Report) {
-	t.Helper()
-	got, observed := service.Snapshot(thread)
-	if !observed || got != want {
-		t.Fatalf("%q: observed=%v got=%+v want=%+v", thread, observed, got, want)
+func TestModuleRejectsLegacyUsageForAnotherThread(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, usageRecordName("wrong-thread")), []byte(historicalUsageV1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var notices []string
+	service, _ := composedUsage(t, directory, func(thread string, _ error) {
+		notices = append(notices, thread)
+	})
+	for range 2 {
+		if got := service.Snapshot("wrong-thread"); got != (accounting.Report{PriorUnknown: true}) {
+			t.Fatalf("foreign usage admitted: %+v", got)
+		}
+	}
+	if len(notices) != 1 || notices[0] != "wrong-thread" {
+		t.Fatalf("historical usage notices: %v", notices)
 	}
 }

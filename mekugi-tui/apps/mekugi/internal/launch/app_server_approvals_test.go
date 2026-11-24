@@ -1,8 +1,6 @@
 package launch
 
 import (
-	"context"
-	"encoding/json/jsontext"
 	"maps"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
@@ -14,12 +12,7 @@ import (
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
-
-	json "encoding/json/v2"
 	"fmt"
-	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -29,7 +22,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/coder/websocket"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
@@ -468,37 +460,6 @@ func TestNativeApprovalTypedDenialReachesCommand(t *testing.T) {
 	}
 }
 
-func TestNativeApprovalDenialProjectsFeedbackInSameTurn(t *testing.T) {
-	for _, tc := range [][2]string{{"main", "cancel"}, {"child", "decline"}} {
-		thread, decision := tc[0], tc[1]
-		t.Run(thread+"/"+decision, func(t *testing.T) {
-			u, wire := newAppServerTestUI()
-			u.Turn = "turn"
-			approvalTestCommand(t, u, 7, map[string]any{"threadId": thread, "availableDecisions": []string{"accept", decision}})
-			questionTestPaint(t, u, 80)
-			appServerTestKeys(t, u, "wait for review\r")
-			if strings.Count(strings.TrimSpace(wire.String()), "\n") != 0 || !strings.Contains(wire.String(), `"decision":"decline"`) {
-				t.Fatalf("denial steered or started a turn: %s", wire.String())
-			}
-			for _, scope := range [][2]string{{thread, "other"}, {"other", "turn"}, {thread, "turn"}, {thread, "turn"}} {
-				request := &codexresponses.Request{Fields: map[string]jsontext.Value{"input": jsontext.Value(`[{"type":"custom_tool_call_output","call_id":"call","output":"exec command rejected by user"}]`)}}
-				if err := request.AppendApprovalFeedback(u.controlObservations.Feedback(scope[0], scope[1])); err != nil {
-					t.Fatal(err)
-				}
-				got := string(request.Fields["input"])
-				want := scope == [2]string{thread, "turn"}
-				if strings.Contains(got, "user denied this command with a reason: wait for review") != want || !strings.Contains(got, "exec command rejected by user") {
-					t.Fatalf("feedback scope %v: %s", scope, got)
-				}
-			}
-			questionTestMessage(t, u, nil, "turn/completed", map[string]any{"threadId": thread, "turn": map[string]any{"id": "turn", "status": "completed"}})
-			if u.controlObservations.Feedback(thread, "turn") != "" {
-				t.Fatal("completed-turn feedback retained")
-			}
-		})
-	}
-}
-
 func TestNativeApprovalQuestionEditorOwnership(t *testing.T) {
 	u, wire := newAppServerTestUI()
 	u.startSession("main", t.TempDir())
@@ -569,70 +530,6 @@ func TestNativeApprovalWithoutProxyKeepsHostDecisions(t *testing.T) {
 	appServerTestKeys(t, u, "ignored reason2\r")
 	if !strings.Contains(wire.String(), `"decision":"cancel"`) || len(u.approvals.calls()) != 0 || u.Text != "" {
 		t.Fatalf("proxy-free native denial did not complete: %s", wire.String())
-	}
-}
-
-func TestNativeApprovalFeedbackWebSocketContinuation(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	proxy := newManagedMekugiProxy(t)
-	const feedback = "user denied this command with a reason: keep the existing result"
-	if err := proxy.control.AnswerWithFeedback("thread-1", "turn", feedback, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	headers := codexAuthHeaders()
-	headers.Set(codexresponses.RoutingSessionHeader, "approval-session")
-	headers.Set(codexresponses.ThreadIDHeader, "thread-1")
-	headers.Set(codexresponses.TurnMetadataHeader, string(responses.MustMarshalJSON(codexresponses.TurnMetadata{
-		RequestKind: "turn", TurnID: "turn", Directories: map[string]jsontext.Value{t.TempDir(): nil},
-	})))
-	conn := testResponsesSocket(t, ctx, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstream, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer upstream.CloseNow()
-		for _, id := range []string{"first", "second", "third"} {
-			request, err := providerSocketRead(ctx, upstream)
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			// Provider projections are not native WebSocket history. The next
-			// request must rebase, retaining exactly one denial and feedback.
-			var input []map[string]jsontext.Value
-			if err := json.Unmarshal(request["input"], &input); err != nil {
-				t.Error(err)
-				return
-			}
-			denials, reasons := 0, 0
-			for _, item := range input {
-				if responses.StringField(item, "call_id") == "denied" && responses.StringField(item, "output") == "exec command rejected by user" {
-					denials++
-				}
-				if responses.StringField(item, "role") == "user" && strings.Contains(string(item["content"]), feedback) {
-					reasons++
-				}
-			}
-			if denials != 1 || reasons != 1 || responses.StringField(request, "previous_response_id") != "" {
-				t.Errorf("%s: denial=%d feedback=%d parent=%s", id, denials, reasons, request["previous_response_id"])
-			}
-			if err := providerSocketWrite(ctx, upstream, socketEvent("response.completed", id)); err != nil {
-				t.Error(err)
-				return
-			}
-		}
-	}), proxy, headers)
-	input := []any{map[string]any{"type": "custom_tool_call_output", "call_id": "denied", "output": "exec command rejected by user"}}
-	for _, parent := range []string{"", "first", "second"} {
-		socketWrite(t, ctx, conn, map[string]any{
-			"type": "response.create", "model": "gpt-test", "tools": testExecResponsesTools(), "input": input, "previous_response_id": parent,
-		})
-		if got := socketRead(t, ctx, conn); responses.StringField(got, "type") != "response.completed" {
-			t.Fatalf("continuation failed: %s", responses.MustMarshalJSON(got))
-		}
-		input = []any{map[string]string{"role": "user", "content": "continue"}}
 	}
 }
 

@@ -1,8 +1,6 @@
 package launch
 
 import (
-	"context"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
@@ -10,12 +8,10 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	previewbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/codexbinding"
@@ -43,20 +39,12 @@ type observationFixture struct {
 	noticeSink     func(string, string, string, string)
 }
 
-func (p *observationFixture) Prepare(ctx context.Context, request *codexresponses.Request, input requestexecution.Preparation) (requestexecution.Prepared, error) {
-	return p.preparer().Prepare(ctx, request, input)
-}
-
 func (p *observationFixture) preparer() *executionobservation.Preparer {
 	return executionobservation.New(executionobservation.Config{
-		Usage:          p.usage,
 		Review:         p.review,
 		Audience:       p.activity,
 		Windows:        p.execWindows,
 		NativeTrace:    p.nativeTrace,
-		Control:        p.control,
-		PreviewTiming:  p.previewTiming,
-		Calls:          p.calls,
 		Retained:       p.retained,
 		Changes:        p.changeSource,
 		Checkpoints:    p.snapshots,

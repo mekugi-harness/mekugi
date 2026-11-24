@@ -3,6 +3,7 @@ package launch
 import (
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -34,7 +36,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/providers/openai"
 )
 
-func (session *nativeSession) start(prefs *preferences.Service, cmd *exec.Cmd, skillsManager bool, resumeThread string, predictionProvider *openai.Client, api *sessionapi.Server, childSummary bool, threads *threadExecution) (func() error, error) {
+func (session *nativeSession) start(prefs *preferences.Service, cmd *exec.Cmd, skillsManager bool, resumeThread string, predictionProvider *openai.Client, api *sessionapi.Server, options launchoptions.Config, threads *threadExecution) (func() error, error) {
 	session.reviewHooks = threads.headless == nil
 	if api == nil {
 		return nil, errors.New("server session requires a control API")
@@ -57,16 +59,21 @@ func (session *nativeSession) start(prefs *preferences.Service, cmd *exec.Cmd, s
 		return nil, err
 	}
 	session.Client.Startup.Thread, session.Client.Startup.Workspace = resumeThread, processCwd
-	session.resumeArgv = slices.Clone(session.resumeArgv)
-	if session.profile != nil {
-		session.Client.Startup.Config = profileResumeConfig(cmd.Args, session.resumeArgv, session.profile)
-	} else {
-		session.Client.Startup.Config = appServerResumeConfig(cmd.Args, session.resumeArgv)
+	family := &sessioncontrol.ThreadFamily{TrackingCommand: session.trackingCommand, Environment: make(map[string]string, len(cmd.Env))}
+	family.RequireCustomProvider = options.RequireCustomProvider
+	for _, entry := range cmd.Environ() {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			family.Environment[key] = value
+		}
 	}
-	connection := newNativeConnection(session, api, threads, prefs, cmd.Environ(), processCwd, skillsManager, childSummary)
+	family.Profile = options.Profile
+	session.Client.Startup.Family = family
+	session.resumeArgv = slices.Clone(session.resumeArgv)
+	session.Client.Startup.Config = appServerResumeConfig(cmd.Args, session.resumeArgv)
+	connection := newNativeConnection(session, api, threads, prefs, cmd.Environ(), processCwd, skillsManager, options.ChildReplySummary)
 	session.connection = connection
 	threads.native = connection
-	endpoint, err := session.prepareEndpoint(prefs, cmd.Environ(), processCwd, skillsManager, predictionProvider, api, childSummary, threads)
+	endpoint, err := session.prepareEndpoint(prefs, cmd.Environ(), processCwd, skillsManager, predictionProvider, api, options.ChildReplySummary, threads)
 	if err == nil {
 		connection.add(endpoint)
 		err = session.Client.Request("initialize", nil)
@@ -89,7 +96,6 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 	session.hydrationResults = make(chan *nativeHydration)
 	nativeOn(endpoint, func() <-chan *nativeHydration { return session.hydrationResults }, func(result *nativeHydration, _ bool) error { return session.acceptNativeHydration(result) })
 	hooks := new(executionHooks)
-	hooks.toolInput = session.controlObservations.ToolInput
 	session.attached = newAttachedPresentation(session.ctx, session.presentationState, session.conversationState, session.observations, hooks)
 	session.attached.threadInput = &threadInput{}
 	session.attached.cwd = processCwd
@@ -101,18 +107,11 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 	session.Client.Startup.History = session.retained.Store
 	attachPresentation(&session.attached, &session.picker, &session.Editor, &session.questions, &session.approvals, session.Client.Thread, &session.review, &session.commits, session.ctx, session.retained, session.changeSource, session.activity != nil)
 	session.attached.presentation.Status.Set("Connecting…", false)
-	if session.titleGenerator != nil {
-		session.titleUpdates = session.titleGenerator.updates
-	}
 	if skillsManager {
 		session.skillEnvironment = environment
 	}
 	if threads.features == nil {
 		threads.features = sessioncontrol.NewNativeFeatureUse(session.Client.Requests)
-	}
-	if threads.catalog != nil {
-		session.Client.Requests.InheritedEffort = threads.catalog.InheritedEffort
-		session.Client.Requests.CaptureConfiguredCatalog = threads.catalog.CaptureConfigured
 	}
 	api.BindRequests(session.Client.Requests)
 	if session.preparer != nil {
@@ -693,10 +692,6 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 		commandSegmentRetained(&session.commandSegmentPending, session.issues, result)
 		return nil
 	})
-	nativeOn(endpoint, func() <-chan sessionTitleUpdate { return session.titleUpdates }, func(update sessionTitleUpdate, _ bool) error {
-		persistSessionTitle(&session.Client, session.titleGenerator, &session.attached.feedback, session.clock, update)
-		return nil
-	})
 	nativeOn(endpoint, func() <-chan *sessioncontrol.HostCall { return session.Client.Calls() }, func(call *sessioncontrol.HostCall, _ bool) error {
 		session.Client.Dispatch(call)
 		return nil
@@ -856,6 +851,10 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 	}
 	endpoint.finish = func(runErr error) error {
 		endpoint.cancel()
+		if stream := session.inputPreview.stream; stream != nil {
+			session.inputPreview.stop()
+			<-stream.Done()
+		}
 		session.audience.DetachEndpoint(session.Client.Thread)
 		session.Client.Requests.Close()
 		_ = predictions.clear(&session.Client, session.attached.conversation)
@@ -896,20 +895,24 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 // Main's lifecycle scope retires on confirmed replacement. Side conversations
 // and title saves retain their own completion and cleanup across that boundary.
 type appServerRequest struct {
-	nativeTree string
-	nativeEnd  *nativeEndRequest
-	nativeIdle *nativeEndpoint
-	history    *appServerHistoryRead
-	view       string
-	metadata   string
-	menu       uint64
-	label      string
-	title      *sessioncontrol.NameSave
-	status     *appServerStatusReport
-	hook       *sessioncontrol.Approval
+	verifyProfile chan<- error
+	nativeTree    string
+	nativeEnd     *nativeEndRequest
+	nativeIdle    *nativeEndpoint
+	history       *appServerHistoryRead
+	view          string
+	metadata      string
+	menu          uint64
+	label         string
+	title         *sessioncontrol.NameSave
+	status        *appServerStatusReport
+	hook          *sessioncontrol.Approval
 }
 
 func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, side **sessioncontrol.Side, panel **appServerStatusReport, resumePicker **appServerResumePicker, parent context.Context, m appserver.Message) (err error) {
+	if m.Method == nativeCodeModeInputDelta {
+		return session.previewInput(attached, m.Params)
+	}
 	if m.Method == "thread/contextReset" {
 		var receipt sessioncontrol.ContextReset
 		if err := json.Unmarshal(m.Params, &receipt, json.RejectUnknownMembers(true)); err != nil {
@@ -927,7 +930,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 		var event struct {
 			Thread            string                            `json:"threadId"`
 			Turn              string                            `json:"turnId"`
-			Item              sessioncontrol.NativeMessage      `json:"item"`
+			Item              jsontext.Value                    `json:"item"`
 			Coordination      *appserver.CoordinationProjection `json:"coordination"`
 			SourceAcquisition *appserver.SourceAcquisition      `json:"sourceAcquisition"`
 		}
@@ -935,13 +938,20 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 			return err
 		}
 		if event.Thread == session.Client.Thread {
-			for i, kind := range event.Item.Metadata.Kinds {
-				if strings.HasPrefix(kind, "context_usage.notice.") && event.Item.Role == "developer" && i < len(event.Item.Content) {
-					text := event.Item.Content[i].Text
-					session.issues.AddThreadEvent("", event.Thread, "context-usage:"+event.Item.ID+":"+event.Turn+":"+kind, text)
+			if err := session.inputPreview.finish(event.Turn, event.Item); err != nil {
+				return err
+			}
+			var item sessioncontrol.NativeMessage
+			if err := json.Unmarshal(event.Item, &item); err != nil {
+				return err
+			}
+			for i, kind := range item.Metadata.Kinds {
+				if strings.HasPrefix(kind, "context_usage.notice.") && item.Role == "developer" && i < len(item.Content) {
+					text := item.Content[i].Text
+					session.issues.AddThreadEvent("", event.Thread, "context-usage:"+item.ID+":"+event.Turn+":"+kind, text)
 				}
 			}
-			publishNativeCoordination(attached, event.Thread, event.Turn, event.Item, event.Coordination, presentationTime(clock))
+			publishNativeCoordination(attached, event.Thread, event.Turn, item, event.Coordination, presentationTime(clock))
 			if entry, ok := sessionpresentation.NativeSourceAcquisitionEntry(attached.cwd, event.Thread, event.Turn, event.SourceAcquisition, presentationTime(clock)); ok {
 				entry.Seq = attached.session.Activity().NextSequence()
 				sessionpresentation.ApplyActivity(session.Client.Thread, attached.source, attached.childSource, []sessionpresentation.ActivityEntry{entry}, nil)
@@ -977,6 +987,11 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 		finishRewindRevert(attached, &session.Client, clock)
 		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
 	}()
+	if session.connection == nil && m.Method == "rawResponse/completed" {
+		if err := session.observeResponse(m.Params); err != nil {
+			return err
+		}
+	}
 	session.issues.ObserveTurnCompletion(m.Method, m.Params)
 	observeShellMessage(&session.shellEdits, attached, clock, m)
 	var response sessioncontrol.Request[appServerRequest]
@@ -998,7 +1013,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 	if handled, err := session.Client.ObservePrediction(m, response); handled {
 		return err
 	}
-	if sessionTitleMessage(&session.Client, session.titleGenerator, &attached.feedback, clock, &session.title, m, response.Owner.title) {
+	if sessionTitleMessage(&session.Client, &attached.feedback, clock, &session.title, m, response.Owner.title) {
 		return nil
 	}
 	defer func() {
@@ -1089,11 +1104,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 		if method == "config/read" {
 			session.notifications.notificationConfig(&attached.feedback, clock, m)
 			attached.inputHistory.configure(m)
-			if m.Error == nil && session.Client.Requests.CaptureConfiguredCatalog != nil {
-				session.Client.Requests.CaptureConfiguredCatalog(m.Result)
-			}
-			session.Client.Requests.CatalogPending = false
-			return flushBTW(attached, &session.Client, picker, &session.questions, &session.approvals, clock, session.settings, side, &session.ownedImages, session.skillEnvironment, session.controlObservations)
+			return nil
 		}
 		if method == "thread/list" && session.Client.Startup.Thread == "--last" {
 			return resumeLastResponse(attached, &session.Client, picker, clock, resumePicker, session.approvalMode, m)
@@ -1117,7 +1128,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 					} `json:"shell"`
 				}
 				if json.Unmarshal(m.Result, &info) == nil {
-					session.shellEdits.shell = info.Shell.Path
+					session.preparer.SetLocalShell(info.Shell.Path)
 				}
 			}
 			return nil
@@ -1287,6 +1298,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 				session.questions.carryLocal(attached.conversation, retainedQuestions, session.Client.Thread)
 				session.commits = attachCommitReader(&attached.session, session.commits, parent, session.activity != nil)
 				attached.presentation.Attach(sessionpresentation.Thread{ID: cmp.Or(session.Client.Thread, "/root"), Caller: "/root"}, false)
+				session.inputPreview.stop()
 				session.Client.LeaveThread()
 				session.Client.Startup.Thread = ""
 				session.Client.Readmit(result.Thread.ID)
@@ -1328,9 +1340,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 			attachPresentation(attached, picker, editor, &session.questions, &session.approvals, session.Client.Thread, &session.review, &session.commits, parent, session.retained, session.changeSource, session.activity != nil)
 			attached.presentation.Status.SetText("Ready")
 			session.title = result.Thread.Name
-			session.titleGenerator.register(result.Thread)
 			if name := session.Client.Names.Attach(session.Client.Thread); name != "" && !inspection {
-				session.titleGenerator.nameChanged(session.Client.Thread, name)
 				requestSessionTitle(&session.Client, &attached.feedback, clock, session.Client.Names.Next(session.Client.Thread))
 			}
 			session.settings.Model, session.settings.Effort, session.settings.Tier = result.Model, result.ReasoningEffort, result.ServiceTier
@@ -1339,14 +1349,11 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 			}
 			if method == "thread/start" {
 				session.Client.Settings.RestoredEffort()
-				if session.usage != nil {
-					session.usage.MarkNew(result.Thread.ID)
-				}
 			}
 			session.nativeRosterRoot = ""
 			if !inspection {
 				session.models, session.modelsLoading = nil, true // A cleared or switched session lists them again.
-				if err := session.Client.Request("model/list", map[string]any{"includeHidden": true}); err != nil {
+				if err := session.Client.Request("model/list", map[string]any{"threadId": session.Client.Thread, "includeHidden": true}); err != nil {
 					return err
 				}
 				if session.shouldReviewHooks() {
@@ -1361,8 +1368,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 			session.retainedSession.Close()
 			session.retainedSession = history.Session{}
 			if !inspection && session.notifications != nil {
-				session.Client.Requests.CatalogPending = true
-				if err := session.Client.Request("config/read", map[string]any{"cwd": result.Thread.Cwd, "includeLayers": false}); err != nil {
+				if err := session.Client.Request("config/read", map[string]any{"threadId": session.Client.Thread, "includeLayers": false}); err != nil {
 					return err
 				}
 			}
@@ -1393,6 +1399,9 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 			session.controlObservations.RefreshContext(result.Thread.ID)
 			if method == "thread/fork" && session.preparer != nil {
 				session.preparer.AdmitFork(forkSource, result.Thread.ID, result.Thread.Cwd)
+			}
+			if method == "thread/start" || method == "thread/fork" {
+				session.usage.MarkNew(result.Thread.ID)
 			}
 			if session.connection == nil {
 				restoreCompactionMetrics(&attached.session, result.Thread)
@@ -1504,7 +1513,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 		return nil
 	}
 	switch m.Method {
-	case "error", "thread/started", "thread/status/changed", "thread/tokenUsage/updated", "item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded",
+	case "error", "thread/started", "thread/status/changed", "thread/tokenUsage/updated", "rawResponse/completed", "item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded",
 		"turn/started", "turn/completed", "item/started", "item/completed", "item/agentMessage/delta", "item/commandExecution/terminalInteraction",
 		"item/commandExecution/outputDelta", "hook/started", "hook/completed":
 	default:
@@ -1520,6 +1529,11 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 // observedEvent retains application lifecycle and control handling for decoded
 // host facts. Offline transcript observations bypass it through their reducer.
 func (session *nativeSession) observedEvent(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, panel **appServerStatusReport, resumePicker **appServerResumePicker, method string, p binding.Notification) error {
+	if p.ThreadID == session.Client.Thread &&
+		(method == "turn/completed" && p.Turn.ID == session.inputPreview.turn ||
+			method == "error" && p.TurnID == session.inputPreview.turn) {
+		session.inputPreview.stop()
+	}
 	if p.ThreadID == session.Client.Thread && (method == "item/agentMessage/delta" || p.Item.Type == "agentMessage" || p.Item.Type == "reasoning") {
 		session.Client.Shell.ModelTurn(p.TurnID)
 	}
@@ -1554,6 +1568,17 @@ func (session *nativeSession) observedEvent(attached *attachedPresentation, pick
 		p.Thread.Path = sessionpresentation.SideCaller + strings.TrimPrefix(p.Thread.Path, "/root")
 		attached.session.Caller(p.Thread.ID)
 		attached.session.Activity().Agent(p.Thread.ID).Isolated = true
+	}
+	if method == "thread/started" && session.review != nil && p.Thread.ID != "" {
+		if p.Thread.SessionID != "" {
+			session.review.SetSession(p.Thread.SessionID)
+		}
+		session.review.SetCaller(p.Thread.ID, attached.session.Caller(p.Thread.ID))
+		session.review.Observe(cmp.Or(p.Thread.Cwd, attached.cwd), p.Thread.ID, p.Thread.ParentThreadID, false)
+	}
+	if session.review != nil && (method == "turn/completed" ||
+		method == "item/completed" && p.Item.Type != "" && p.Item.Type != "userMessage" && p.Item.Type != "agentMessage" && p.Item.Type != "reasoning") {
+		session.review.RefreshNative()
 	}
 	if handled, err := session.sessionEvent(attached, clock, method, p); handled || err != nil {
 		return err
@@ -1663,8 +1688,8 @@ func applyObservedActivity(attached *attachedPresentation, control *sessioncontr
 	if restoring != nil && !restoring.rendered {
 		return
 	}
-	// Provider rounds can start within one host turn, before another usage
-	// notification. Refresh from the owner so a prior round's TPS is not stale.
+	// Native sockets can deliver the usage checkpoint to another attachment.
+	// Refresh this roster from the shared projection.
 	usageChanged := false
 	for _, observed := range attached.session.Roster() {
 		if agent := attached.session.Activity().Agent(observed.Thread); agent != nil {

@@ -32,6 +32,42 @@ type UsageInspectionFilter struct {
 	Threads             map[string]bool
 }
 
+func (f UsageInspectionFilter) accepts(thread, model string, at time.Time) bool {
+	match, _ := filepath.Match(f.Model, model)
+	exclude, _ := filepath.Match(f.ExcludeModel, model)
+	return f.Threads[thread] && !at.Before(f.Since) && at.Before(f.Until) && match && !exclude
+}
+
+func (entry *UsageInspection) add(valid bool, usage *ProviderUsage) error {
+	if !valid {
+		entry.MissingRecords++
+	} else {
+		if usage.CachedTokens > usage.InputTokens || usage.ReasoningTokens > usage.OutputTokens {
+			return errors.New("invalid provider usage totals")
+		}
+		if entry.Tokens == nil {
+			entry.Tokens = &ProviderUsage{EvidenceComplete: true}
+		}
+		for _, pair := range [][2]*uint64{
+			{&entry.Tokens.InputTokens, &usage.InputTokens},
+			{&entry.Tokens.CachedTokens, &usage.CachedTokens},
+			{&entry.Tokens.OutputTokens, &usage.OutputTokens},
+			{&entry.Tokens.ReasoningTokens, &usage.ReasoningTokens},
+		} {
+			if math.MaxUint64-*pair[0] < *pair[1] {
+				return errors.New("provider usage overflow")
+			}
+			*pair[0] += *pair[1]
+		}
+		entry.ObservedRecords++
+	}
+	entry.State = "observed"
+	if entry.MissingRecords > 0 {
+		entry.State = "incomplete"
+	}
+	return nil
+}
+
 // InspectProviderUsage reads sanitized capture JSONL, never executable history.
 func (*Service) InspectProviderUsage(ctx context.Context, path string, filter UsageInspectionFilter) (map[string]UsageInspection, error) {
 	result := make(map[string]UsageInspection)
@@ -49,24 +85,24 @@ func (*Service) InspectProviderUsage(ctx context.Context, path string, filter Us
 			return nil, err
 		}
 		var record captureRecord
-		if !utf8.Valid(scanner.Bytes()) || json.Unmarshal(scanner.Bytes(), &record, jsonv1.DefaultOptionsV1()) != nil ||
-			record.SchemaVersion != schemaVersion || record.CapturedAt.IsZero() {
+		if !utf8.Valid(scanner.Bytes()) || json.Unmarshal(scanner.Bytes(), &record, jsonv1.DefaultOptionsV1()) != nil {
+			return nil, fmt.Errorf("capture line %d: invalid record", line)
+		}
+		if record.SchemaVersion != schemaVersion || record.CapturedAt.IsZero() {
 			return nil, fmt.Errorf("capture line %d: invalid record or unsupported schema", line)
 		}
-		if record.Boundary != "provider" {
+		if record.Boundary != "provider" && record.Boundary != "native_response" {
 			continue
 		}
-		if record.CaptureID == "" || record.ProviderAttempt == 0 {
+		if record.CaptureID == "" || record.Boundary == "provider" && record.ProviderAttempt == 0 {
 			return nil, fmt.Errorf("capture line %d: missing provider identity", line)
 		}
-		key := fmt.Sprintf("%s/%d", record.CaptureID, record.ProviderAttempt)
+		key := fmt.Sprintf("%s/%s/%d", record.ThreadID, record.CaptureID, record.ProviderAttempt)
 		if seen[key] {
 			return nil, fmt.Errorf("capture line %d: duplicate provider attempt", line)
 		}
 		seen[key] = true
-		modelOK, _ := filepath.Match(filter.Model, record.RequestModel)
-		excluded, _ := filepath.Match(filter.ExcludeModel, record.RequestModel)
-		if !filter.Threads[record.ThreadID] || record.CapturedAt.Before(filter.Since) || !record.CapturedAt.Before(filter.Until) || !modelOK || excluded {
+		if !filter.accepts(record.ThreadID, record.RequestModel, record.CapturedAt) {
 			continue
 		}
 		entry := result[record.ThreadID]
@@ -82,31 +118,8 @@ func (*Service) InspectProviderUsage(ctx context.Context, path string, filter Us
 				valid = false
 			}
 		}
-		if !valid {
-			entry.MissingRecords++
-		} else {
-			if record.Usage.CachedTokens > record.Usage.InputTokens || record.Usage.ReasoningTokens > record.Usage.OutputTokens {
-				return nil, errors.New("invalid provider usage totals")
-			}
-			if entry.Tokens == nil {
-				entry.Tokens = &ProviderUsage{EvidenceComplete: true}
-			}
-			for _, pair := range [][2]*uint64{
-				{&entry.Tokens.InputTokens, &record.Usage.InputTokens},
-				{&entry.Tokens.CachedTokens, &record.Usage.CachedTokens},
-				{&entry.Tokens.OutputTokens, &record.Usage.OutputTokens},
-				{&entry.Tokens.ReasoningTokens, &record.Usage.ReasoningTokens},
-			} {
-				if math.MaxUint64-*pair[0] < *pair[1] {
-					return nil, errors.New("provider usage overflow")
-				}
-				*pair[0] += *pair[1]
-			}
-			entry.ObservedRecords++
-		}
-		entry.State = "observed"
-		if entry.MissingRecords > 0 {
-			entry.State = "incomplete"
+		if err := entry.add(valid, record.Usage); err != nil {
+			return nil, err
 		}
 		result[record.ThreadID] = entry
 	}

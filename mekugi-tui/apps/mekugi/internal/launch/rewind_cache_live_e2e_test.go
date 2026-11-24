@@ -3,23 +3,12 @@
 package launch
 
 import (
-	"bytes"
 	"context"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/providers/openai"
 )
 
 // Verify the first request after native same-thread history replacement, not a follow-up hit.
@@ -28,49 +17,17 @@ func TestRewindCacheEligibilityLiveOpenAI(t *testing.T) {
 	if model == "" {
 		t.Fatal("MEKUGI_E2E_MODEL must be set")
 	}
-	configRoot := os.Getenv("CODEX_HOME")
-	if configRoot == "" {
-		user, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		configRoot = filepath.Join(user, ".codex")
-	}
-	auth, err := os.ReadFile(filepath.Join(configRoot, "auth.json"))
-	if err != nil {
-		t.Fatal("live Codex authentication required")
-	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	upstream := http.DefaultTransport.(*http.Transport).Clone()
-	defer upstream.CloseIdleConnections()
-	transport := &cacheAffinityE2ETransport{delegate: upstream}
-	proxy := newManagedMekugiProxy(t)
-	handler := testResponsesHandler(t.Context(), 3*time.Minute,
-		newTestProviderClient(openai.BaseURL, &http.Client{Transport: transport}), nil, proxy)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			http.Error(w, "use HTTP", http.StatusUpgradeRequired)
-			return
-		}
-		handler(w, r)
-	}))
-	defer server.Close()
-	environment := builtInOpenAICodexEnvironment(t)
-	for _, entry := range environment {
-		if path, ok := strings.CutPrefix(entry, "CODEX_HOME="); ok {
-			if err := os.WriteFile(filepath.Join(path, "auth.json"), auth, 0600); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
+	traceRoot := t.TempDir()
+	environment := liveOpenAIEnvironment(t, traceRoot)
 	workspace := t.TempDir()
-	terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {
-		args := nativeAppServerArgs(codexArgs(server.URL+"/v1", []string{"-c", fmt.Sprintf("model=%q", model),
-			"-c", "features.plugins=false", "-c", `model_reasoning_effort="low"`}, nil))
+	terminal := startAppResumeTerminal(t, func(ctx context.Context) *exec.Cmd {
+		args := []string{"-c", fmt.Sprintf("model=%q", model), "-c", `model_provider="openai"`,
+			"-c", "features.plugins=false", "-c", `model_reasoning_effort="low"`}
 		cmd := exec.CommandContext(ctx, "mekugi-app-server", args...)
 		cmd.Env, cmd.Dir = environment, workspace
 		return cmd
-	}, "", testAppServerIntegration(proxy))
+	}, "")
 
 	terminal.await("Ready")
 	for _, parts := range []string{"KEEP, _, READY", "KEEP, _, WARM", "DROP, _, ANSWER"} {
@@ -78,17 +35,6 @@ func TestRewindCacheEligibilityLiveOpenAI(t *testing.T) {
 		terminal.await(strings.ReplaceAll(parts, ", ", ""))
 		terminal.awaitStatus("Completed")
 	}
-	seed, _, headers := transport.snapshot()
-	if len(seed) != 3 {
-		t.Fatalf("want three seed requests, got %d", len(seed))
-	}
-	for i, usage := range seed {
-		t.Logf("seed request %d: input=%d cached=%d", i+1, usage.InputTokens, usage.InputTokens-usage.UncachedInputTokens)
-	}
-	if seed[1].InputTokens <= seed[1].UncachedInputTokens {
-		t.Fatal("Main did not establish a cached prefix before rewind")
-	}
-	thread := codexresponses.ThreadID(headers[1])
 	terminal.send("/rewind\r")
 	terminal.awaitMatch("loaded rewind choices", func(frame string) bool {
 		return strings.Contains(frame, "Rewind before a user turn") && strings.Contains(frame, "❯ KEEP, _, READY.")
@@ -102,57 +48,26 @@ func TestRewindCacheEligibilityLiveOpenAI(t *testing.T) {
 	terminal.send("Without using tools, join these parts with no spaces and reply with only the result: AFTER, _, REWIND.\r")
 	terminal.await("AFTER_REWIND")
 	terminal.awaitStatus("Completed")
-	usages, _, headers := transport.snapshot()
-	bodies := transport.requestBodies()
-	if len(usages) != 4 || len(bodies) != 4 {
-		t.Fatalf("want one first post-rewind request: usages=%d bodies=%d", len(usages), len(bodies))
+	terminal.quit()
+	samples := readLiveInferences(t, traceRoot)
+	if len(samples) != 4 {
+		t.Fatalf("want three seed calls and one post-rewind call, got %d", len(samples))
 	}
-	first := usages[3]
-	t.Logf("first post-rewind request: input=%d cached=%d", first.InputTokens, first.InputTokens-first.UncachedInputTokens)
-	if thread == "" || codexresponses.ThreadID(headers[3]) != thread {
+	for i, sample := range samples {
+		t.Logf("native request %d: input=%d cached=%d", i+1, sample.InputTokens, sample.CachedTokens)
+	}
+	before, after := samples[1], samples[3]
+	if before.CachedTokens == 0 {
+		t.Fatal("Main did not establish a cached prefix before rewind")
+	}
+	if before.Thread == "" || after.Thread != before.Thread {
 		t.Error("rewind changed native thread identity")
 	}
-	if bytes.Contains(bodies[3], []byte("DROP")) || !bytes.Contains(bodies[3], []byte("KEEP_WARM")) {
+	if after.contains("DROP") || !after.contains("KEEP_WARM") {
 		t.Error("first post-rewind request lost retained history or included excluded history")
 	}
-
-	before, err := codexresponses.ParseRequest(bodies[1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	after, err := codexresponses.ParseRequest(bodies[3])
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{"instructions", "tools", "model", "reasoning", "prompt_cache_key"} {
-		equal := responses.SameJSONValue(before.Fields[field], after.Fields[field])
-		t.Logf("post-rewind %s unchanged=%t", field, equal)
-		if !equal {
-			t.Errorf("rewind changed shared %s", field)
-		}
-	}
-	if headers[1].Get(codexresponses.SessionIDHeader) != headers[3].Get(codexresponses.SessionIDHeader) {
-		t.Error("rewind changed provider session affinity")
-	}
-	var oldItems, newItems []jsontext.Value
-	if err := json.Unmarshal(before.Fields["input"], &oldItems); err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(after.Fields["input"], &newItems); err != nil {
-		t.Fatal(err)
-	}
-	if len(oldItems) == 0 || len(newItems) <= len(oldItems) {
-		t.Fatal("rewind lost retained input or its new question")
-	}
-	for i := range oldItems {
-		if !responses.SameJSONValue(oldItems[i], newItems[i]) {
-			t.Errorf("rewind changed retained input item %d", i)
-		}
-	}
-	t.Logf("checked %d retained input items; post-rewind items=%d", len(oldItems), len(newItems))
-
-	if first.InputTokens <= first.UncachedInputTokens {
+	assertLiveCachePrefix(t, before, after)
+	if after.CachedTokens == 0 {
 		t.Error("first post-rewind request had no cached input despite warmed prefix")
 	}
-	terminal.stopCanceled()
 }

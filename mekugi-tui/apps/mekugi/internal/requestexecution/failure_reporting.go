@@ -1,11 +1,16 @@
 package requestexecution
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+
 	responseevents "github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/notifications/notice"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
 // FailureStorage borrows the composed publication and diagnostic owners.
@@ -29,20 +34,34 @@ func (c *Failures) Configure(storage FailureStorage) {
 type Diagnostic struct{ Code, Reference, Error, Message string }
 
 // Failure is an already-failed operation, detached from an attempt.
-// A models-phase failure retains diagnostics without interrupting model turns.
 type Failure struct {
 	Session, Thread, Turn, Phase string
 	UpstreamStatus               int
 	Terminal                     responseevents.TerminalState
-	Stream                       *transportcapture.Stream
 }
 
 func (c *Failures) Report(failure Failure, err error) Diagnostic {
-	f := requestFinalization{sessionID: failure.Session, threadID: failure.Thread, turnID: failure.Turn,
-		failurePhase: requestFailurePhase(failure.Phase), upstreamStatusCode: failure.UpstreamStatus,
-		upstreamTerminalState: failure.Terminal, streamDiagnostics: failure.Stream,
-		outcome: requestOutcomeFailed}
-	c.record(&f, err)
-	c.persistFailure(&f)
-	return Diagnostic{f.diagnosticCode, f.diagnosticReference, f.diagnosticError, f.diagnosticMessage}
+	if c == nil || err == nil {
+		return Diagnostic{}
+	}
+	mac := hmac.New(sha256.New, []byte(c.diagnosticSalt))
+	fmt.Fprintf(mac, "%s|%d|%s|%s", failure.Phase, failure.UpstreamStatus, failure.Terminal, err)
+	reference := fmt.Sprintf("%x", mac.Sum(nil)[:6])
+	code, message := "unclassified", err.Error()
+	if d, ok := errors.AsType[*DiagnosticError](err); ok {
+		code = d.Code
+	}
+	message += " Diagnostic reference: " + reference + "."
+	category := failure.Phase + ":" + code + ":" + reference
+	if failure.Turn != "" {
+		category += ":" + failure.Thread + ":" + failure.Turn
+	}
+	c.Notices.Submit(notice.Input{
+		ID:      noticeID("critical:" + failure.Session + ":" + category),
+		Session: failure.Session, Thread: failure.Thread, Turn: failure.Turn,
+		Category: category, Reference: reference, Text: message, Request: true,
+	})
+	detail := Diagnostic{Code: code, Reference: reference, Error: err.Error(), Message: message}
+	c.persistFailure(failure, detail)
+	return detail
 }

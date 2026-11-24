@@ -18,7 +18,6 @@ import (
 // Only locally submitted commands own observation windows. History restoration
 // never captures a new baseline or revives an unfinished command.
 type appServerShellEdits struct {
-	shell   string
 	pending *executionobservation.ShellOperation
 	running map[[2]string]*executionobservation.ShellOperation
 }
@@ -45,7 +44,7 @@ func (session *nativeSession) captureShellEdit(attached *attachedPresentation, p
 	}
 	edit := executionobservation.PrepareShell(ctx, session.retained, session.changeSource, session.snapshots, session.publishChanges, session.execWindows, session.audience, session.captureNotice, executionobservation.ShellInput{
 		Thread: session.Client.Thread, Turn: session.Client.Turn, Namespace: namespace,
-		Workspace: attached.cwd, Caller: attached.session.Caller(session.Client.Thread), Command: command, Shell: session.shellEdits.shell,
+		Workspace: attached.cwd, Caller: attached.session.Caller(session.Client.Thread), Command: command, Shell: session.preparer.LocalShell(),
 	})
 	if edit == nil {
 		return nil

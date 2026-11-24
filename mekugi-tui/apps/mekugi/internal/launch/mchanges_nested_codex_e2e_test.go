@@ -9,15 +9,12 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 
@@ -62,18 +59,16 @@ type mchangesNestedCodexProvider struct {
 	processSession            int
 }
 
-func (p *mchangesNestedCodexProvider) ForwardExecution(
+func (p *mchangesNestedCodexProvider) respond(
 	ctx context.Context,
-	_ context.Context,
 	body []byte,
 	headers http.Header,
-	_ string,
-) (*inferencegateway.Response, error) {
+) (*http.Response, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.turns++
-	metadata, _ := codexresponses.DecodeTurnMetadata(headers)
-	thread := headers.Get(codexresponses.ThreadIDHeader)
+	metadata, _ := fixtureTurnMetadata(headers)
+	thread := headers.Get(fixtureThreadIDHeader)
 	if thread == "" {
 		thread = metadata.ThreadID
 	}
@@ -90,10 +85,10 @@ func (p *mchangesNestedCodexProvider) ForwardExecution(
 		if !bytes.Contains(body, []byte(applyPatchToolName)) || !bytes.Contains(body, []byte(nativeExecCommandToolName)) {
 			return nil, fmt.Errorf("Codex request does not advertise both nested stock tools")
 		}
-		return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{
+		return mchangesNestedCodexResponse(p.turns, map[string]any{
 			"type": "custom_tool_call", "id": p.callID + "-item", "call_id": p.callID,
 			"name": "exec", "status": "completed", "input": p.program,
-		}), nil)
+		}), nil
 	}
 	if p.turns > 8 {
 		return nil, fmt.Errorf("unexpected provider turn %d", p.turns)
@@ -116,25 +111,26 @@ func (p *mchangesNestedCodexProvider) ForwardExecution(
 		if (item.Type != "custom_tool_call_output" && item.Type != "function_call_output") || item.CallID != expected {
 			continue
 		}
+		output := strings.Join(binding.ExecutionOutputTexts(item.Output), "\n")
 		if p.processWait {
-			result := binding.DecodeExecutionResult("write_stdin", item.Output)
-			if !result.Terminal || result.ExitCode == nil || *result.ExitCode != 0 {
+			if state, _ := binding.NativeExecutionHeader(output); state != "Process exited with code 0" {
 				return nil, fmt.Errorf("native process continuation did not finish successfully")
 			}
 			p.resultSeen = true
 			break
 		}
-		result := binding.DecodeExecutionResult("exec", item.Output)
-		if p.laterProgram != "" && p.waitCall == p.callID+"-overlap" && result.Terminal {
+		state, cell, _ := binding.CodeModeExecutionHeader(output)
+		terminal := state != "" && state != "running"
+		if p.laterProgram != "" && p.waitCall == p.callID+"-overlap" && terminal {
 			p.waitCall = p.callID + "-later"
 			program := strings.ReplaceAll(p.laterProgram, "SESSION", strconv.Itoa(p.processSession))
-			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": program}), nil)
+			return mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": program}), nil
 		}
-		if p.overlapCell != "" && p.waitCall == p.callID+"-overlap" && result.Terminal {
+		if p.overlapCell != "" && p.waitCall == p.callID+"-overlap" && terminal {
 			p.waitCall = "nested-overlap-wait"
-			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": p.overlapCell, "yield_time_ms": 10000}))}), nil)
+			return mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": p.overlapCell, "yield_time_ms": 10000}))}), nil
 		}
-		if result.Terminal && p.expectProcess && !p.sawPending {
+		if terminal && p.expectProcess && !p.sawPending {
 			evidence := p.trace.ReadCell(p.threadID, p.callID, p.program)
 			calls := evidence.Calls()
 			if !evidence.Ended() || !evidence.Pending() || len(calls) != 1 {
@@ -157,13 +153,13 @@ func (p *mchangesNestedCodexProvider) ForwardExecution(
 			if p.laterProgram != "" {
 				p.processSession = session
 				p.waitCall = p.callID + "-overlap"
-				return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": p.overlapProgram}), nil)
+				return mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": p.overlapProgram}), nil
 			}
 			p.processWait = true
 			p.waitCall = "nested-process-wait"
-			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "write_stdin", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"session_id": session, "chars": "", "yield_time_ms": 10000}))}), nil)
+			return mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "write_stdin", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"session_id": session, "chars": "", "yield_time_ms": 10000}))}), nil
 		}
-		if cell := strings.TrimPrefix(result.ResumeHandle, "cell:"); cell != "" {
+		if cell != "" {
 			if p.expectPending {
 				pendingCtx, release, err := p.store.beginSession(ctx, p.threadID, "")
 				if err != nil {
@@ -177,17 +173,17 @@ func (p *mchangesNestedCodexProvider) ForwardExecution(
 				p.sawPending = true
 			}
 			if p.overlapProgram != "" && p.overlapCell == "" && p.laterProgram == "" {
-				if !strings.Contains(result.Text, "runner-ready") {
-					return nil, fmt.Errorf("runner did not reach the overlap boundary: %s", result.Text)
+				if !strings.Contains(output, "runner-ready") {
+					return nil, fmt.Errorf("runner did not reach the overlap boundary: %s", output)
 				}
 				p.overlapCell = cell
 				p.waitCall = p.callID + "-overlap"
-				return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": p.overlapProgram}), nil)
+				return mchangesNestedCodexResponse(p.turns, map[string]any{"type": "custom_tool_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "exec", "status": "completed", "input": p.overlapProgram}), nil
 			}
 			p.waitCall = fmt.Sprintf("nested-wait-%d", p.turns)
-			return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": cell, "yield_time_ms": 10000}))}), nil)
+			return mchangesNestedCodexResponse(p.turns, map[string]any{"type": "function_call", "id": p.waitCall + "-item", "call_id": p.waitCall, "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": cell, "yield_time_ms": 10000}))}), nil
 		}
-		p.resultSeen = result.Terminal
+		p.resultSeen = terminal
 		p.terminalOutput = string(item.Output)
 		break
 	}
@@ -195,10 +191,10 @@ func (p *mchangesNestedCodexProvider) ForwardExecution(
 		return nil, fmt.Errorf("Codex did not return the completed exec cell result: %.3000s", body)
 	}
 	p.observedCalls = p.trace.ReadCell(p.threadID, p.callID, p.program).Calls()
-	return testGatewayResponse(mchangesNestedCodexResponse(p.turns, map[string]any{
+	return mchangesNestedCodexResponse(p.turns, map[string]any{
 		"type": "message", "id": p.callID + "-final", "role": "assistant", "status": "completed",
 		"content": []any{map[string]any{"type": "output_text", "text": p.finalMessage}},
-	}), nil)
+	}), nil
 }
 
 func mchangesNestedCodexResponse(turn int, item map[string]any) *http.Response {
@@ -221,8 +217,7 @@ func mchangesNestedCodexResponse(turn int, item map[string]any) *http.Response {
 		wire.Write(responses.MustMarshalJSON(event))
 		wire.WriteString("\n\n")
 	}
-	result := serverHTTPResponse(wire.String())
-	result.Header.Set("Content-Type", "text/event-stream")
+	result := fixtureResponsesStream(wire.String())
 	return result
 }
 
@@ -709,7 +704,7 @@ func runMChangesNestedCodexCell(
 	setTestProxyStore(proxy, store)
 	proxy.nativeTrace = nativetrace.NewWithNotice(traceRoot, nil)
 	provider.trace = proxy.nativeTrace
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, testCriticalErrors(), proxy))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	config := `model_providers.mchanges_fixture={name="mchanges_fixture",base_url=` +
 		strconv.Quote(server.URL+"/v1") + `,wire_api="responses",requires_openai_auth=false}`

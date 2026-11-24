@@ -333,6 +333,10 @@ impl CodexThread {
             .is_ok()
     }
 
+    pub async fn generate_title(&self, turn: &str, prompt: &str) -> Option<String> {
+        self.session.generate_title(turn, prompt).await
+    }
+
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
         self.submit_with_trace(op, /*trace*/ None).await
     }

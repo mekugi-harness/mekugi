@@ -133,7 +133,7 @@ func TestLiveDiffScopeReconciliationUsesCachedAttempts(t *testing.T) {
 
 func TestLiveDiffJSONBatchKeepsFollowAndRecency(t *testing.T) {
 	var viewPublication presentation.Publication
-	_, proxy, _, workspace := newMekugiTestTransform(t)
+	proxy, workspace := newManagedMekugiProxy(t), t.TempDir()
 	store, err := openMekugiReplayStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
