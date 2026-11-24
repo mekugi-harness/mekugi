@@ -2281,6 +2281,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-change-history"
+version = "0.171.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "similar",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "codex-client"
 version = "0.171.0"
 dependencies = [
@@ -2533,6 +2546,7 @@ dependencies = [
  "codex-async-utils",
  "codex-attachment-store",
  "codex-backend-client",
+ "codex-change-history",
  "codex-client",
  "codex-code-mode",
  "codex-config",
@@ -3488,6 +3502,7 @@ dependencies = [
 name = "codex-mekugi-tools"
 version = "0.171.0"
 dependencies = [
+ "codex-change-history",
  "libc",
  "pretty_assertions",
  "pulldown-cmark",

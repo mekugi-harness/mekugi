@@ -21,12 +21,13 @@ use tempfile::TempDir;
 const APPLY_PATCH_ARG0: &str = "apply_patch";
 const MISSPELLED_APPLY_PATCH_ARG0: &str = "applypatch";
 const MCAT_ARG0: &str = "mcat";
+const MCHANGES_ARG0: &str = "mchanges";
 const MFINSPECT_ARG0: &str = "mfinspect";
 const MSYMBOL_ARG0: &str = "msymbol";
 const MRUN_ARG0: &str = "mrun";
 const LOCK_FILENAME: &str = ".lock";
 /// Active per-session arg0 alias directory prepended onto `PATH` so login shells can
-/// restore `mcat`, `mfinspect`, `msymbol`, `mrun`, and `apply_patch` if startup resets `PATH`.
+/// restore `mcat`, `mchanges`, `mfinspect`, `msymbol`, `mrun`, and `apply_patch` if startup resets `PATH`.
 pub const CODEX_ARG0_PATH_DIR_ENV_VAR: &str = "CODEX_ARG0_PATH_DIR";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -93,6 +94,8 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         codex_apply_patch::main();
     } else if exe_name == MCAT_ARG0 {
         std::process::exit(codex_mekugi_tools::run_mcat_main());
+    } else if exe_name == MCHANGES_ARG0 {
+        std::process::exit(codex_mekugi_tools::run_mchanges_main());
     } else if exe_name == MFINSPECT_ARG0 {
         std::process::exit(codex_mekugi_tools::run_mfinspect_main());
     } else if exe_name == MSYMBOL_ARG0 {
@@ -420,6 +423,8 @@ fn prepare_aliases_in_home(
         MISSPELLED_APPLY_PATCH_ARG0,
         #[cfg(unix)]
         MCAT_ARG0,
+        #[cfg(unix)]
+        MCHANGES_ARG0,
         #[cfg(unix)]
         MFINSPECT_ARG0,
         #[cfg(unix)]
@@ -932,6 +937,7 @@ mod tests {
             super::APPLY_PATCH_ARG0,
             super::MISSPELLED_APPLY_PATCH_ARG0,
             super::MCAT_ARG0,
+            super::MCHANGES_ARG0,
             super::MFINSPECT_ARG0,
             super::MSYMBOL_ARG0,
             super::MRUN_ARG0,

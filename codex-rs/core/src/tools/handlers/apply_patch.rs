@@ -26,6 +26,7 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::handlers::apply_granted_turn_permissions;
+use crate::tools::handlers::apply_patch_capture::ApplyPatchCapture;
 use crate::tools::handlers::apply_patch_spec::create_apply_patch_freeform_tool;
 use crate::tools::handlers::file_system_sandbox_policy_context_for_cwd;
 use crate::tools::handlers::resolve_tool_environment;
@@ -603,16 +604,25 @@ async fn execute_prepared_patch(
     );
     emitter.begin(event_ctx).await;
 
+    let fs = request.turn_environment.environment().get_filesystem();
+    let capture = ApplyPatchCapture::capture_baselines(fs.as_ref(), &request.file_paths).await;
+
     let mut orchestrator = ToolOrchestrator::new();
     let mut runtime = ApplyPatchRuntime::new();
     let result = orchestrator
         .run(&mut runtime, &request, &tool_ctx)
         .await
         .map(|result| result.output);
-    let (result, delta) = match result {
-        Ok(output) => (Ok(output.exec_output), Some(output.delta)),
-        Err(error) => (Err(error), Some(runtime.committed_delta().clone())),
+    let (result, delta, exit_code) = match result {
+        Ok(output) => {
+            let exit_code = Some(output.exec_output.exit_code);
+            (Ok(output.exec_output), Some(output.delta), exit_code)
+        }
+        Err(error) => (Err(error), Some(runtime.committed_delta().clone()), Some(1)),
     };
+    let persist_result = capture
+        .persist_for_request(fs.as_ref(), &request, delta.as_ref(), exit_code, &tool_ctx)
+        .await;
     let event_ctx = ToolEventCtx::new(
         tool_ctx.session.as_ref(),
         tool_ctx.step_context.turn.as_ref(),
@@ -620,7 +630,13 @@ async fn execute_prepared_patch(
         &tool_ctx.call_id,
         tracker,
     );
-    emitter.finish(event_ctx, result, delta.as_ref()).await
+    let finish_result = emitter.finish(event_ctx, result, delta.as_ref()).await;
+    if let Err(err) = persist_result {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "failed to persist change evidence: {err}"
+        )));
+    }
+    finish_result
 }
 
 fn require_environment_id(

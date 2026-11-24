@@ -20,8 +20,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   SDKs remain in the source tree but are not shipped or maintained as part of
   Mekugi. The [Cargo workspace](codex-rs/Cargo.toml) and lockfile cover the
   native build; the fork uses Mekugi's release process, not upstream release CI.
-- `codex-arg0` dispatches the native Rust `mcat`, `mfinspect`, `msymbol`, and
-  `mrun` CLIs (`codex-mekugi-tools`) through stock PATH symlinks and exports
+- `codex-arg0` dispatches the native Rust `mcat`, `mchanges`, `mfinspect`,
+  `msymbol`, and `mrun` CLIs (`codex-mekugi-tools`) through stock PATH symlinks
+  and exports
   `CODEX_ARG0_PATH_DIR` so login shells retain those aliases on `PATH`. It also
   stages per-session `vcs-guard/` (`git`, `gh`, `hg`, `svn`, `jj`) and
   `sudo-guard/` (`sudo`, `gpg`, `gpg2`, `mekugi-sudo-askpass`) symlinks
@@ -48,6 +49,17 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   fail-open timeout so slow, disconnected, or failing observers never block or
   alter native tool execution, while headless and unobserved runs incur zero
   barrier wait.
+- Native change-evidence capture (`codex-change-history`, `MEKUGI-806`):
+  `codex-core` captures pre-edit baseline bytes and post-edit observed bytes at
+  the `apply_patch` tool boundary (covering direct calls, intercepted shell
+  patches, partial writes before failing exits, and JavaScript code-mode `exec`
+  cells), persists immutable content-addressed blobs and monotonic stream-scoped
+  change records (`amber1`, ...) before publishing tool receipts (surfacing
+  storage failures explicitly), exports `MEKUGI_CHANGE_HISTORY_DIR` to child
+  shells, and backs the native `mchanges` CLI (`--list`, composed diff review,
+  `--summary`, `--history`, and path-scoped `revert`/`apply` preserving
+  unrelated edits and failing explicitly on drift or corrupt/missing evidence
+  without conflict markers).
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
   runtime, including the exec-server fixture's Linux sandbox helper so it can

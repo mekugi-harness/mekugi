@@ -14,6 +14,10 @@ fn session_tmp_is_prepared_private_and_reused() -> std::io::Result<()> {
     let mut env = HashMap::from([("SESSION_TMP".to_string(), "stale".to_string())]);
     inject_session_env(&mut env, session_id);
     assert_eq!(env["SESSION_TMP"], path.to_string_lossy());
+    assert_eq!(
+        env[MEKUGI_CHANGE_HISTORY_DIR_ENV_VAR],
+        change_history_dir(session_id).to_string_lossy()
+    );
     assert_eq!(std::fs::read_to_string(path.join("retained"))?, "scratch");
     assert_ne!(path, session_tmp_path(SessionId::from(ThreadId::new())));
     #[cfg(unix)]
