@@ -67,12 +67,17 @@ func TestV3LiveShardConfirmsNestedCalls(t *testing.T) {
 		t.Fatalf("authored timeout = %d, %t", timeout, ok)
 	}
 
-	yielded := appendPayload("raw_payload:2", `{"type":"code_mode_response","value":{"session_id":123}}`)
-	appendEvent(`{"type":"tool_call_ended","tool_call_id":"shell","status":"completed","result_payload":` + yielded + `}`)
-	if cell := reader.ReadCell("thread", "call", "source"); !cell.Pending() {
-		t.Fatal("yielded command is not pending")
+	// A large output string may be omitted from capture. The parent layout
+	// still contains the dispatch session ID and the runtime's exit code.
+	split := func(ref string) string {
+		return ref[:len(ref)-1] + `,"parts":[{"raw_payload_id":"omitted-output","kind":{"type":"content_value"},"capture":{"status":"omitted","original_bytes":70000}}]}`
 	}
-	runtimeResult := appendPayload("raw_payload:3", `{"exit_code":3}`)
+	yielded := split(appendPayload("raw_payload:2", `["{\"type\":\"code_mode_response\",\"value\":{\"session_id\":123,\"output\":","}}"]`))
+	appendEvent(`{"type":"tool_call_ended","tool_call_id":"shell","status":"completed","result_payload":` + yielded + `}`)
+	if cell := reader.ReadCell("thread", "call", "source"); !cell.Pending() || cell.Calls()[0].Session != "123" {
+		t.Fatal("split dispatch outcome lost the yielded session")
+	}
+	runtimeResult := split(appendPayload("raw_payload:3", `["{\"aggregated_output\":",",\"exit_code\":3}"]`))
 	appendEvent(`{"type":"tool_call_runtime_ended","tool_call_id":"shell","status":"failed","runtime_payload":` + runtimeResult + `}`)
 	const patchInvocation = `{"tool_name":"apply_patch","tool_namespace":"functions","payload":{"type":"custom","input":"patch body"}}`
 	patch := appendPayload("raw_payload:4", patchInvocation)
@@ -95,7 +100,7 @@ func TestV3LiveShardConfirmsNestedCalls(t *testing.T) {
 		t.Fatalf("aborted patch status not retained: %+v, %t", patch, ok)
 	}
 	commands, ok := cell.Commands([]commandanalysis.Command{{Command: "exit 3"}}, "/work")
-	if !ok || len(commands) != 1 || commands[0].ExitCode == nil || *commands[0].ExitCode != 3 {
+	if !ok || len(commands) != 1 || commands[0].CallID != "shell" || commands[0].Status != "failed" || commands[0].ExitCode == nil || *commands[0].ExitCode != 3 {
 		t.Fatalf("nested command exit not confirmed: %+v, %t", commands, ok)
 	}
 

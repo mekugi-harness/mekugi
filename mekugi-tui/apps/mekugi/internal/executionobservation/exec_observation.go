@@ -269,6 +269,11 @@ func finalizeExecObservations(selected changes.Scope, source changes.Service, sn
 		}
 		record.ChangeID = changeID
 	}
+	const attributionUnavailable = "shell edit Activity attribution unavailable"
+	unattributed := record.ChangeID != "" && observation.CodeMode && len(hostResults) == 0
+	if unattributed {
+		outcome.ScopeReason = strings.TrimPrefix(outcome.ScopeReason+"; "+attributionUnavailable, "; ")
+	}
 	if !complete && record.Report != "" {
 		record.Report += "\nMekugi could not capture complete file evidence."
 	}
@@ -303,7 +308,11 @@ func finalizeExecObservations(selected changes.Scope, source changes.Service, sn
 		return err
 	}
 	windows.forgetIntervalClaims(cuts, result.Endpoints)
-	if record.ChangeID != "" {
+	if unattributed {
+		if notice != nil {
+			notice("", thread, "shell_edit_attribution", fmt.Sprintf("Could not attach captured shell edits (%s) to Activity. The diff is still saved.", record.ChangeID))
+		}
+	} else if record.ChangeID != "" {
 		_ = publishEditReceipt(context.WithoutCancel(ctx), selected, source, workspace, thread, derivedCallID, activity, responses.StringField(first.history.UpstreamItem, "id"))
 	}
 	return nil

@@ -78,13 +78,16 @@ type tool struct {
 }
 
 type payloadRef struct {
-	Path    string `json:"path"`
-	RawID   string `json:"raw_payload_id"`
-	Shard   uint64 `json:"shard"`
+	Path  string `json:"path"`
+	RawID string `json:"raw_payload_id"`
+	Shard uint64 `json:"shard"`
+	Kind  struct {
+		Type string `json:"type"`
+	} `json:"kind"`
 	Capture struct {
 		Status string `json:"status"`
 	} `json:"capture"`
-	Parts []jsontext.Value `json:"parts"`
+	Parts []payloadRef `json:"parts"`
 }
 type event struct {
 	Version int    `json:"schema_version"`
@@ -316,7 +319,7 @@ func (b *bundle) event(payloads *payloadReader, event event) error {
 				Session jsontext.Value `json:"session_id"`
 			} `json:"value"`
 		}
-		if err := payloads.read(event.Version, p.Result, &result); err != nil {
+		if err := payloads.readOutcome(event.Version, p.Result, &result); err != nil {
 			if errors.Is(err, errPayloadNotCaptured) {
 				return nil
 			}
@@ -354,7 +357,7 @@ func (b *bundle) event(payloads *payloadReader, event event) error {
 		var result struct {
 			Exit *int `json:"exit_code"`
 		}
-		if err := payloads.read(event.Version, p.Runtime, &result); err != nil {
+		if err := payloads.readOutcome(event.Version, p.Runtime, &result); err != nil {
 			if errors.Is(err, errPayloadNotCaptured) {
 				return nil
 			}

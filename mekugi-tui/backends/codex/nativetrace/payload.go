@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
@@ -28,31 +29,66 @@ func (p *payloadReader) read(version int, ref payloadRef, value any) error {
 	if version < 3 {
 		return readPayloadFile(p.directory, ref, value)
 	}
-	// The runtime only splits model-facing bodies. Invocation, dispatch
-	// result and runtime result evidence must be a complete single record.
-	if ref.RawID == "" || len(ref.Parts) != 0 {
-		return errors.New("invalid native trace shard reference")
+	if len(ref.Parts) != 0 {
+		return errors.New("unexpected split native trace payload")
+	}
+	body, err := p.shardRecord(ref)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, value)
+}
+
+// readOutcome reads the small lifecycle fields without loading large output
+// strings. The native writer splits these strings into separate records; it
+// leaves exit codes and the surrounding JSON in the parent layout.
+func (p *payloadReader) readOutcome(version int, ref payloadRef, value any) error {
+	if version < 3 || len(ref.Parts) == 0 {
+		return p.read(version, ref, value)
+	}
+	for _, part := range ref.Parts {
+		if part.Kind.Type != "content_value" || len(part.Parts) != 0 {
+			return errors.New("invalid native trace tool outcome part")
+		}
+	}
+	body, err := p.shardRecord(ref)
+	if err != nil {
+		return err
+	}
+	var fragments []string
+	if err := json.Unmarshal(body, &fragments); err != nil {
+		return err
+	}
+	if len(fragments) != len(ref.Parts)+1 {
+		return errors.New("invalid native trace tool outcome layout")
+	}
+	return json.Unmarshal([]byte(strings.Join(fragments, "null")), value)
+}
+
+func (p *payloadReader) shardRecord(ref payloadRef) ([]byte, error) {
+	if ref.RawID == "" {
+		return nil, errors.New("invalid native trace shard reference")
 	}
 	status := ref.Capture.Status
 	if (status == "omitted" && ref.Shard == 0) || (status == "truncated" && ref.Shard != 0) {
-		return errPayloadNotCaptured
+		return nil, errPayloadNotCaptured
 	}
 	if status != "" || ref.Shard == 0 {
-		return errors.New("invalid native trace shard capture status")
+		return nil, errors.New("invalid native trace shard capture status")
 	}
 	if p.shard == ref.Shard {
 		if body, ok := p.records[ref.RawID]; ok {
-			return json.Unmarshal(body, value)
+			return body, nil
 		}
 	}
 	if err := p.loadShard(ref.Shard); err != nil {
-		return err
+		return nil, err
 	}
 	body, ok := p.records[ref.RawID]
 	if !ok {
-		return errors.New("native trace payload absent from shard")
+		return nil, errors.New("native trace payload absent from shard")
 	}
-	return json.Unmarshal(body, value)
+	return body, nil
 }
 
 // Source: codex-rs/rollout-trace/src/shard.rs@[f6e03d1891].

@@ -511,6 +511,21 @@ func TestAppServerGroupedReceiptOmitsBookkeeping(t *testing.T) {
 // reads in the same cell still yields host identities for its confirmed edit,
 // live and after history is restored into a new UI.
 func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
+	const edit = "python3 - <<'PY'\nopen('file.txt','w').write('new\\n')\nPY\ncat file.txt"
+	testCodeModeCellEditReceipt(t, edit, 0, "supplement-edit-receipt")
+}
+
+func TestCodeModeCellEditReceiptKeepsCapturedStatsAndExit(t *testing.T) {
+	t.Run("failed post-edit check", func(t *testing.T) {
+		testCodeModeCellEditReceipt(t, "cat file.txt; sed -i s/old/new/ file.txt; exit 7", 7, "")
+	})
+	t.Run("successful opaque writer", func(t *testing.T) {
+		testCodeModeCellEditReceipt(t, "python3 -c \"import os; open(os.getenv('TARGET', 'file.txt'), 'w').write('new\\n')\"; cat file.txt", 0, "")
+	})
+}
+
+func testCodeModeCellEditReceipt(t *testing.T, edit string, exit int, snapshotName string) {
+	t.Helper()
 	proxy := newManagedMekugiProxy(t)
 	attachTestReplayStore(t, proxy)
 	trace := newNativeTraceFixture(t)
@@ -520,7 +535,6 @@ func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	const edit = "python3 - <<'PY'\nopen('file.txt','w').write('new\\n')\nPY\ncat file.txt"
 	const read = "git diff --stat"
 	source := `text(await tools.exec_command({cmd: ` + string(responses.MustMarshalJSON(edit)) + `}));` +
 		`text(await tools.exec_command({cmd: ` + string(responses.MustMarshalJSON(read)) + `}));`
@@ -533,9 +547,12 @@ func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
 		t.Fatal("stock exec source changed")
 	}
 	trace.start("thread-1", "runtime", "cell", source)
-	for _, tool := range []struct{ id, cmd string }{{"edit-exec", edit}, {"read-exec", read}} {
+	for _, tool := range []struct {
+		id, cmd string
+		exit    int
+	}{{"edit-exec", edit, exit}, {"read-exec", read, 0}} {
 		trace.tool("thread-1", "runtime", tool.id, "exec_command", string(responses.MustMarshalJSON(map[string]any{"cmd": tool.cmd})))
-		trace.result("thread-1", tool.id, "completed", map[string]any{"exit_code": 0})
+		trace.result("thread-1", tool.id, "completed", map[string]any{"exit_code": tool.exit})
 	}
 	trace.end("thread-1", "runtime")
 	if err := os.WriteFile(target, []byte("new\n"), 0o600); err != nil {
@@ -553,7 +570,11 @@ func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
 	}
 	defer next.Close()
 	record, found, err := testProxyStore(proxy).lookup(t.Context(), workspace, legacycall.ExecCallID("cell", true))
-	if err != nil || !found || record.ChangeID == "" || record.ExecOutcome.Status != changecapture.StatusCompleted {
+	wantStatus := changecapture.StatusCompleted
+	if exit != 0 {
+		wantStatus = changecapture.StatusFailed
+	}
+	if err != nil || !found || record.ChangeID == "" || record.ExecOutcome.Status != wantStatus {
 		t.Fatalf("exec record: found=%v err=%v record=%+v", found, err, record)
 	}
 	var calls []string
@@ -569,7 +590,16 @@ func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := binding.ThreadItem{ID: "edit-exec", Type: "commandExecution", Command: edit, ExitCode: new(0)}
+	item := binding.ThreadItem{ID: "edit-exec", Type: "commandExecution", Command: edit, ExitCode: &exit}
+	assertActivity := func(view *activityAdapter) {
+		t.Helper()
+		assertCapturedCommand(t, view, "thread-1", item.ID, "Edit", exit)
+		if !slices.ContainsFunc(view.blocks(0), func(b activityui.Block) bool {
+			return b.Verb == "Edit" && b.EditPath() == "file.txt" && b.ExitCode == 0 && strings.Contains(b.Label, "+1 -1")
+		}) {
+			t.Fatalf("captured line counts missing from Activity: %+v", view.blocks(0))
+		}
+	}
 	live := newAppServerSessionTestUI(t, workspace)
 	live.Thread = "thread-1"
 	live.startSession(live.Thread, workspace)
@@ -583,17 +613,19 @@ func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
 	}
 	observedReceipt := live.pendingEditReceipts[0]
 	appServerTestNotify(t, live, "item/completed", map[string]any{"threadId": "thread-1", "turnId": "turn", "item": item})
-	assertCapturedCommand(t, live.testActivity(live.shell.Transcript), "thread-1", "edit-exec", "Edit", 0)
+	assertActivity(live.testActivity(live.shell.Transcript))
 	sibling := binding.ThreadItem{ID: "read-exec", Type: "commandExecution", Command: read, ExitCode: new(0)}
 	appServerTestNotify(t, live, "item/completed", map[string]any{"threadId": "thread-1", "turnId": "turn", "item": sibling})
 	if len(live.pendingEditReceipts) != 0 || len(live.attached.source.Entries) != 2 {
 		t.Fatalf("receipt duplicated host rows or remained pending: entries=%+v pending=%+v", live.attached.source.Entries, live.pendingEditReceipts)
 	}
-	assertNativeUISnapshot(t, "supplement-edit-receipt", live.testActivity(live.shell.Transcript).RenderFeed(100, 30).Lines)
+	if snapshotName != "" {
+		assertNativeUISnapshot(t, snapshotName, live.testActivity(live.shell.Transcript).RenderFeed(100, 30).Lines)
+	}
 	// A later retained publication reconciles the same identity, not another row.
 	live.review.Projection.Data = snapshot
 	applyCapturedEdits(&live.attached, live.review, &live.pendingEditReceipts)
-	assertCapturedCommand(t, live.testActivity(live.shell.Transcript), "thread-1", "edit-exec", "Edit", 0)
+	assertActivity(live.testActivity(live.shell.Transcript))
 	if len(live.attached.source.Entries) != 2 {
 		t.Fatal("retained publication duplicated receipt")
 	}
@@ -603,7 +635,7 @@ func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
 	restored.review.Projection.Data = snapshot
 	publishFixtureReview(t, restored)
 	restored.restoreHistory([]binding.HistoryTurn{{ID: "turn", Status: "completed", Items: []binding.ThreadItem{item}}})
-	assertCapturedCommand(t, restored.testActivity(restored.shell.Transcript), "thread-1", "edit-exec", "Edit", 0)
+	assertActivity(restored.testActivity(restored.shell.Transcript))
 	// An annotation queued while history was loading must enrich that restored
 	// invocation without replacing its identity or adding an independent row.
 	restored.audience = sessioncontrol.NewAudience(nil)
@@ -613,7 +645,7 @@ func TestUISnapshotCodeModeCellEditReceipt(t *testing.T) {
 		restored.audience.Collect(event)
 		applyObservedActivity(&restored.attached, &restored.Client, restored.usage, restored.review, &restored.approvals, &restored.pendingEditReceipts, restored.clock, nil, restored.audience)
 	}
-	assertCapturedCommand(t, restored.testActivity(restored.shell.Transcript), "thread-1", "edit-exec", "Edit", 0)
+	assertActivity(restored.testActivity(restored.shell.Transcript))
 	if len(restored.attached.source.Entries) != 1 {
 		t.Fatalf("late receipt duplicated restored invocation: %+v", restored.attached.source.Entries)
 	}

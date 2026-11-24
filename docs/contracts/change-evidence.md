@@ -25,6 +25,10 @@
 - **Delivery**: change IDs are appended only after persistence without modifying original host text;
   output deduplication runs only after observation/retention consume originals. Provisional live
   previews never establish durable evidence.
+- **Activity attribution**: code-mode shell receipts join exact native command
+  items, independently of command exit status. If those identities are
+  unavailable, the diff remains saved and capture history reports the missing
+  attribution.
 
 ## Current approach (replaceable)
 

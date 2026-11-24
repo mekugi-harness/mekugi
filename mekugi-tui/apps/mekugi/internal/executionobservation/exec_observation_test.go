@@ -489,6 +489,12 @@ func TestReadCommandFormsAllocateNoChanges(t *testing.T) {
 
 func TestCodeModeExecCommandRecordsUnconfirmedEffects(t *testing.T) {
 	proxy := newManagedMekugiProxy(t)
+	var attributionNotice string
+	proxy.Notice = func(_, _, category, message string) {
+		if category == "shell_edit_attribution" {
+			attributionNotice = message
+		}
+	}
 	attachTestReplayStore(t, proxy)
 	transform, _, _, workspace := newMekugiTestTransformWithProxy(t, proxy)
 	transform.sessionShell = "bash"
@@ -516,8 +522,10 @@ func TestCodeModeExecCommandRecordsUnconfirmedEffects(t *testing.T) {
 	if err != nil || !found || history.ChangeID == "" || len(history.ReviewFiles) != 1 {
 		t.Fatalf("exec record = %+v found=%v err=%v", history, found, err)
 	}
-	if history.ExecOutcome == nil || history.ExecOutcome.Status != "" {
-		t.Fatalf("missing host exit must not claim a command result: %+v", history.ExecOutcome)
+	if history.ExecOutcome == nil || history.ExecOutcome.Status != "" || len(history.HostResults) != 0 ||
+		!strings.Contains(history.ExecOutcome.ScopeReason, "Activity attribution unavailable") ||
+		!strings.Contains(attributionNotice, history.ChangeID) {
+		t.Fatalf("missing host identity or exit was not reported: outcome=%+v notice=%q", history.ExecOutcome, attributionNotice)
 	}
 	// Consume the actual producer's retained record through the offline CLI.
 	rollout := filepath.Join(t.TempDir(), "rollout.jsonl")
