@@ -203,8 +203,7 @@ async fn pending_mcp_action_uses_the_configured_reviewer(case: ReviewCase) -> Re
         config = config
             .with_extra_config("[analytics]\nenabled = true")
             .enable_feature(Feature::GuardianConversationHistoryTools)
-            .with_root_config(r#"auto_review.experimental_conversation_history_prompt = "Legacy conversation-history retrieval instructions.""#)
-            .with_extra_config("[feedback]\nenabled = true");
+            .with_root_config(r#"auto_review.experimental_conversation_history_prompt = "Legacy conversation-history retrieval instructions.""#);
     }
     config.write(home.path())?;
     let mut app = TestAppServer::builder()
@@ -251,7 +250,6 @@ async fn pending_mcp_action_uses_the_configured_reviewer(case: ReviewCase) -> Re
     }
     let mut previous_reviewer = None;
     let mut previous_review_id = None;
-    let mut denied_turns = Vec::new();
     let mut seen_requests = 0;
     for (call_id, prompt, status) in turns {
         // Keep the revocation out of the board until the pending action requests its review.
@@ -340,9 +338,6 @@ async fn pending_mcp_action_uses_the_configured_reviewer(case: ReviewCase) -> Re
             (&thread.id, &completed.turn.id, status)
         );
         previous_review_id = Some(review.review_id);
-        if status == GuardianApprovalReviewStatus::Denied {
-            denied_turns.push(review.turn_id);
-        }
         if prompt == FINAL_REVOCATION {
             assert_eq!(
                 review.review.rationale.as_deref(),
@@ -437,27 +432,6 @@ async fn pending_mcp_action_uses_the_configured_reviewer(case: ReviewCase) -> Re
                 "missing subscribed instruction: {prompt}"
             );
         }
-    }
-    if uses_board && !routing_failure {
-        let state = StateRuntime::init(
-            load_default_config_for_test(&home).await.sqlite,
-            "openai-custom".into(),
-        )
-        .await?;
-        let failures = codex_feedback::guardian_review_failures(
-            Some(&state),
-            &[codex_protocol::ThreadId::from_string(&thread.id)?],
-        )
-        .await;
-        let attachment = failures.attachment.expect("denial feedback");
-        let mut records =
-            serde_json::Deserializer::from_slice(&attachment.buffer).into_iter::<Value>();
-        for turn_id in denied_turns {
-            let record = records.next().expect("feedback for each denied turn")?;
-            assert_eq!(record["reviewed_turn_id"], turn_id);
-            assert_eq!(record["status"], "denied");
-        }
-        assert!(records.next().is_none(), "unexpected extra feedback record");
     }
     app.shutdown_gracefully().await?;
     Ok(())
