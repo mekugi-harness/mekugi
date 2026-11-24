@@ -5619,6 +5619,26 @@
           "type": "object"
         },
         {
+          "properties": {
+            "method": {
+              "enum": [
+                "item/codeMode/inputDelta"
+              ],
+              "title": "Item/codeMode/inputDeltaNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/CodeModeInputDeltaNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Item/codeMode/inputDeltaNotification",
+          "type": "object"
+        },
+        {
           "description": "EXPERIMENTAL - proposed plan streaming deltas for plan items.",
           "properties": {
             "method": {
@@ -9611,6 +9631,39 @@
           "ephemeral"
         ],
         "type": "string"
+      },
+      "CodeModeInputDeltaNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Provisional JavaScript input. This is not a completed or executed tool call.",
+        "properties": {
+          "callId": {
+            "type": "string"
+          },
+          "delta": {
+            "type": "string"
+          },
+          "offset": {
+            "description": "Byte offset within the call's streamed input.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "callId",
+          "delta",
+          "offset",
+          "threadId",
+          "turnId"
+        ],
+        "title": "CodeModeInputDeltaNotification",
+        "type": "object"
       },
       "CodexErrorInfo": {
         "anyOf": [
@@ -20759,8 +20812,38 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "Internal-only notification containing the exact usage from one upstream Responses API completion.",
         "properties": {
+          "model": {
+            "default": null,
+            "description": "Model applied to this individual response, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "openaiEndpoint": {
+            "default": false,
+            "description": "Built-in OpenAI on a first-party endpoint, not a custom Responses route.",
+            "type": "boolean"
+          },
+          "requestDurationMs": {
+            "default": null,
+            "description": "Elapsed provider request time through the terminal response, when measured.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "responseId": {
             "type": "string"
+          },
+          "serviceTier": {
+            "default": null,
+            "description": "Provider-reported tier, or the applied request tier if it was not returned.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "threadId": {
             "type": "string"

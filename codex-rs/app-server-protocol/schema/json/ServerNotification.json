@@ -954,6 +954,37 @@
       ],
       "type": "object"
     },
+    "CodeModeInputDeltaNotification": {
+      "description": "Provisional JavaScript input. This is not a completed or executed tool call.",
+      "properties": {
+        "callId": {
+          "type": "string"
+        },
+        "delta": {
+          "type": "string"
+        },
+        "offset": {
+          "description": "Byte offset within the call's streamed input.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "callId",
+        "delta",
+        "offset",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
     "CodexErrorInfo": {
       "anyOf": [
         {
@@ -8796,6 +8827,26 @@
         "params"
       ],
       "title": "Item/agentMessage/deltaNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "item/codeMode/inputDelta"
+          ],
+          "title": "Item/codeMode/inputDeltaNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/CodeModeInputDeltaNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Item/codeMode/inputDeltaNotification",
       "type": "object"
     },
     {
