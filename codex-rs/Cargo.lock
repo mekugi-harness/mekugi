@@ -2557,6 +2557,7 @@ dependencies = [
  "codex-direct-tool-timing",
  "codex-exec-server",
  "codex-exec-server-test-support",
+ "codex-exec-track",
  "codex-execpolicy",
  "codex-extension-api",
  "codex-extension-items",
@@ -2875,6 +2876,22 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "wiremock",
+]
+
+[[package]]
+name = "codex-exec-track"
+version = "0.171.0"
+dependencies = [
+ "codex-change-history",
+ "codex-shell-guard",
+ "libc",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tree-sitter",
 ]
 
 [[package]]

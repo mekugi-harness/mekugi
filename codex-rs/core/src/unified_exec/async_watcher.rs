@@ -193,6 +193,7 @@ pub(crate) fn spawn_exit_watcher(
             .and_then(take_plugin_metrics_sidecar);
         if let Some(message) = process.failure_message() {
             drop(plugin_metrics_sidecar);
+            process.settle_exec_track(None);
             emit_failed_exec_end_for_unified_exec(
                 process.sandbox_type(),
                 session_ref,
@@ -212,6 +213,7 @@ pub(crate) fn spawn_exit_watcher(
         } else {
             let exit_code = process.exit_code().unwrap_or(-1);
             let timed_out = process.timed_out();
+            process.settle_exec_track(Some(exit_code));
             finish_and_track_measurements(
                 plugin_metrics_sidecar,
                 exit_code,

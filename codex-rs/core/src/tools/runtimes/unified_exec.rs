@@ -480,20 +480,53 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
         // `base_command` already carries the requested login mode; keep it if setup is unavailable.
         // `hook_command` is the raw script the helper needs to prepend setup inside that same shell.
         let mut command = base_command.to_vec();
+        let prepared_exec_track = if !environment_is_remote
+            && let [_, flag, _, ..] = command.as_slice()
+            && matches!(flag.as_str(), "-c" | "-lc")
+            && let Ok(native_cwd) = prepared.cwd.to_abs_path()
+        {
+            Some(
+                crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
+                    &prepared.hook_command,
+                    native_cwd.as_path(),
+                    &prepared.resolved.shell.shell.shell_type,
+                    prepared.tty,
+                    crate::exec_env::change_history_dir(ctx.session.session_id()),
+                    ctx.session.thread_id.to_string(),
+                    ctx.session.session_id().to_string(),
+                    ctx.step_context.turn.sub_id.clone(),
+                    ctx.call_id.clone(),
+                ),
+            )
+        } else {
+            None
+        };
+        let tracked_script = prepared_exec_track
+            .as_ref()
+            .and_then(|t| t.instrumented_script.as_deref())
+            .unwrap_or(&prepared.hook_command);
         #[cfg(unix)]
         let effective_hook_command = if let (Some(guard), [_, flag, script, ..]) =
             (&guard, command.as_mut_slice())
             && matches!(flag.as_str(), "-c" | "-lc")
         {
             *script = guard.rewrite(
-                &prepared.hook_command,
+                tracked_script,
                 &ctx.session.thread_id.to_string(),
                 &ctx.call_id,
                 prepared.resolved.shell.is_posix_login(),
             );
             script.clone()
+        } else if let [_, flag, script, ..] = command.as_mut_slice()
+            && matches!(flag.as_str(), "-c" | "-lc")
+            && prepared_exec_track
+                .as_ref()
+                .is_some_and(|t| t.instrumented_script.is_some())
+        {
+            *script = tracked_script.to_owned();
+            script.clone()
         } else {
-            prepared.hook_command.clone()
+            tracked_script.to_owned()
         };
         #[cfg(not(unix))]
         let effective_hook_command = prepared.hook_command.clone();
@@ -639,6 +672,13 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             });
         let internal_permissions =
             merge_permission_profiles(sidecar_permissions.as_ref(), snapshot_permissions.as_ref());
+        let exec_track_permissions = prepared_exec_track
+            .as_ref()
+            .and_then(|t| t.attachment.additional_permissions());
+        let internal_permissions = merge_permission_profiles(
+            internal_permissions.as_ref(),
+            exec_track_permissions.as_ref(),
+        );
         let additional_permissions = merge_permission_profiles(
             prepared.permissions.additional_permissions.as_ref(),
             internal_permissions.as_ref(),
@@ -723,6 +763,10 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 .await
                 .map_err(ToolError::Codex)?
         };
+        #[cfg(unix)]
+        let exec_track_handles = prepared_exec_track.map(|t| (t.attachment, t.drain_rx));
+        #[cfg(not(unix))]
+        let exec_track_handles = prepared_exec_track.map(|t| t.attachment);
         let process = self
             .manager
             .open_session_with_exec_env(
@@ -736,6 +780,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 prepared.tty,
                 prepared.turn_environment.environment().as_ref(),
                 req.large_capture,
+                exec_track_handles,
             )
             .await;
         let mut process = with_launch_failure_events(process, prepared, ctx).await?;

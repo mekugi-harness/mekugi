@@ -63,6 +63,7 @@ use crate::unified_exec::async_watcher::emit_failed_exec_end_for_unified_exec;
 use crate::unified_exec::async_watcher::spawn_exit_watcher;
 use crate::unified_exec::async_watcher::start_streaming_output;
 use crate::unified_exec::clamp_yield_time;
+use crate::unified_exec::exec_track::ExecTrackAttachment;
 use crate::unified_exec::generate_chunk_id;
 use crate::unified_exec::process::OutputBuffers;
 use crate::unified_exec::process::OutputHandles;
@@ -860,6 +861,7 @@ impl UnifiedExecProcessManager {
                         .plugin_metrics_sidecar
                         .as_ref()
                         .and_then(take_plugin_metrics_sidecar);
+                    entry.process.settle_exec_track(exit_code);
                     finish_and_track_measurements(
                         metrics_sidecar,
                         exit_code.unwrap_or(-1),
@@ -902,6 +904,7 @@ impl UnifiedExecProcessManager {
             }
             let exit_code = process.exit_code();
             let exit = exit_code.unwrap_or(-1);
+            process.settle_exec_track(exit_code);
             initial_exec_command_guard
                 .finish_plugin_metrics(context, exit)
                 .await;
@@ -1195,6 +1198,7 @@ impl UnifiedExecProcessManager {
                     .unwrap_or(usize::MAX);
                     collected = CapturedStream::from(&collected_output);
                 }
+                entry.process.settle_exec_track(exit_code);
                 let call_id = entry.call_id.clone();
                 if let Err(message) =
                     finish_network_approval_after_process_exit_for_entry(&entry).await
@@ -1205,6 +1209,7 @@ impl UnifiedExecProcessManager {
             }
             ProcessStatus::Unknown => {
                 if process.has_exited() {
+                    process.settle_exec_track(process.exit_code());
                     (None, process.exit_code(), call_id)
                 } else {
                     return Err(UnifiedExecError::UnknownProcessId { process_id });
@@ -1415,6 +1420,11 @@ impl UnifiedExecProcessManager {
         tty: bool,
         environment: &codex_exec_server::Environment,
         large_capture: bool,
+        #[cfg(unix)] exec_track: Option<(
+            Arc<ExecTrackAttachment>,
+            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
+        )>,
+        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<UnifiedExecProcess, ToolError> {
         let network_policy_decider = request
             .exec_server_network_proxy
@@ -1426,7 +1436,7 @@ impl UnifiedExecProcessManager {
             exec_server_shell_snapshot: shell_snapshot,
             ..request
         };
-        self.open_session_with_prepared_exec_env_with_capture(
+        self.open_session_with_prepared_exec_env_tracked(
             process_id,
             &request,
             Some(tool_ctx),
@@ -1435,6 +1445,7 @@ impl UnifiedExecProcessManager {
             tty,
             environment,
             large_capture,
+            exec_track,
         )
         .await
         .map_err(|err| match err {
@@ -1460,7 +1471,7 @@ impl UnifiedExecProcessManager {
         tty: bool,
         environment: &codex_exec_server::Environment,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
-        self.open_session_with_prepared_exec_env_with_capture(
+        self.open_session_with_prepared_exec_env_tracked(
             process_id,
             request,
             tool_ctx,
@@ -1469,12 +1480,13 @@ impl UnifiedExecProcessManager {
             tty,
             environment,
             /*large_capture*/ false,
+            None,
         )
         .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn open_session_with_prepared_exec_env_with_capture(
+    async fn open_session_with_prepared_exec_env_tracked(
         &self,
         process_id: i32,
         request: &ExecRequest,
@@ -1484,6 +1496,11 @@ impl UnifiedExecProcessManager {
         tty: bool,
         environment: &codex_exec_server::Environment,
         large_capture: bool,
+        #[cfg(unix)] exec_track: Option<(
+            Arc<ExecTrackAttachment>,
+            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
+        )>,
+        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
         if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
             let backend = environment.get_exec_backend();
@@ -1517,10 +1534,11 @@ impl UnifiedExecProcessManager {
             } else {
                 OutputDrainPolicy::BoundedAfterExit
             };
-            return UnifiedExecProcess::from_exec_server_started_with_capture(
+            return UnifiedExecProcess::from_exec_server_started_with_exec_track(
                 started,
                 output_drain_policy,
                 large_capture,
+                exec_track,
             )
             .await;
         }
@@ -1594,7 +1612,13 @@ impl UnifiedExecProcessManager {
         .await;
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned_with_capture(spawned, request.sandbox, large_capture).await
+        UnifiedExecProcess::from_spawned_with_exec_track(
+            spawned,
+            request.sandbox,
+            large_capture,
+            exec_track,
+        )
+        .await
     }
 
     #[tracing::instrument(

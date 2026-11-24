@@ -46,6 +46,7 @@ use codex_core_plugins::PluginMetricsSidecar;
 mod async_watcher;
 mod command_sessions;
 mod errors;
+pub(crate) mod exec_track;
 mod oneshot;
 pub(crate) mod output;
 mod process;

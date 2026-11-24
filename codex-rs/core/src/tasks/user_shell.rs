@@ -183,6 +183,17 @@ pub(crate) async fn execute_user_shell_command(
 
     let call_id = Uuid::new_v4().to_string();
     let raw_command = command;
+    let user_shell_track = crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
+        &raw_command,
+        cwd.as_path(),
+        &environment_shell.shell_type,
+        /*tty*/ false,
+        crate::exec_env::change_history_dir(session.session_id()),
+        session.thread_id.to_string(),
+        session.session_id().to_string(),
+        turn_context.sub_id.clone(),
+        call_id.clone(),
+    );
 
     let parsed_cmd = parse_command(&display_command);
     session
@@ -247,6 +258,7 @@ pub(crate) async fn execute_user_shell_command(
 
     match exec_result {
         Err(CancelErr::Cancelled) => {
+            user_shell_track.attachment.settle_once(Some(-1));
             let aborted_message = "command aborted by user".to_string();
             let exec_output = ExecToolCallOutput {
                 exit_code: -1,
@@ -288,6 +300,9 @@ pub(crate) async fn execute_user_shell_command(
                 .await;
         }
         Ok(Ok(output)) => {
+            user_shell_track
+                .attachment
+                .settle_once(Some(output.exit_code));
             session
                 .emit_turn_item_completed(
                     turn_context.as_ref(),

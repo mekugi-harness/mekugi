@@ -60,6 +60,17 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `--summary`, `--history`, and path-scoped `revert`/`apply` preserving
   unrelated edits and failing explicitly on drift or corrupt/missing evidence
   without conflict markers).
+- Native exec tracking and shell-write / `mktemp` observation (`codex-exec-track`,
+  `MEKUGI-801`): `codex-core` selects authored command spans with
+  `codex-shell-guard::parse_bash` for supported Bash and Linux `dash`-backed
+  `sh` lists, instruments segment boundaries inside one real shell without
+  fixed inherited caller FDs (3/4/7/8) or held tracking FDs across detached
+  descendants, preserves TTYs intact (status/timing only), falls back cleanly
+  to stock combined output on unsupported syntax or lost observation, captures
+  actual successful `mktemp` files and directory trees independently of
+  printable output (ignoring dry runs and failures), and persists observed
+  shell writes (including writes before nonzero exits) to `codex-change-history`
+  under `ChangeSourceKind::ShellWrite` with shared `claim_key` deduplication.
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
   runtime, including the exec-server fixture's Linux sandbox helper so it can
