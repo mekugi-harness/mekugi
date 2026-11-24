@@ -130,7 +130,14 @@ fn render_composed_change_source(
             if let Some((last_seq, last_after, run)) = runs.last_mut() {
                 if *last_seq == record.sequence {
                     run.push(single_file);
-                } else if *last_after == file.before {
+                } else if file.moved_from.is_none()
+                    && run.last().is_none_or(|prev| {
+                        prev.files
+                            .iter()
+                            .all(|prev_file| prev_file.moved_from.is_none())
+                    })
+                    && *last_after == file.before
+                {
                     *last_seq = record.sequence;
                     *last_after = file.after.clone();
                     run.push(single_file);
