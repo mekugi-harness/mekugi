@@ -176,9 +176,9 @@ type RunKey struct {
 	Lead        uint64             // Main item a transcript tool group continues, or 0.
 	Flash       uint64             // Flashed Activity entry in this run, or 0.
 	Excerpt     bool               // Main sent message or batch shortened out of view.
-	Tail       int // Tail lines open output shows; 0 shows the whole tail.
-	VerbColumn int // Shared verb column across adjacent non-separated tool items, or 0.
-	Expansion  uint8
+	Tail        int                // Tail lines open output shows; 0 shows the whole tail.
+	VerbColumn  int                // Shared verb column across adjacent non-separated tool items, or 0.
+	Expansion   uint8
 }
 
 // trackPace starts pacing new live invocations that report several
@@ -1422,7 +1422,24 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 	}
 	blocks = AlignVerbs(blocks)
 	run.Blocks = blocks
+	workdirs := workdirGroups(blocks)
+	dir := ""
 	for index, block := range blocks {
+		next := groupedWorkdir(workdirs, index)
+		directoryBoundary := next != dir
+		if directoryBoundary {
+			dir, rail = next, ""
+			if len(run.Lines) > 1 {
+				run.Lines = append(run.Lines, gutter)
+				run.Snippets = append(run.Snippets, Snippet{})
+				run.Questions = append(run.Questions, 0)
+			}
+			if dir != "" {
+				run.Lines = append(run.Lines, gutter+workdirHeading(dir, width-2))
+				run.Snippets = append(run.Snippets, Snippet{})
+				run.Questions = append(run.Questions, 0)
+			}
+		}
 		block = v.discloseBlock(block)
 		v.Painter.CopyScope = first + uint64(index)
 		// Native Activity joins consecutive operations into one tree.
@@ -1437,7 +1454,7 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 		message := slices.Contains([]string{"text", "message", "final", "summary", "start"}, block.Kind)
 		// Reasoning heads the operations after it, so no gap parts them.
 		headed := previousSummary && operation(block)
-		gap := len(run.Lines) > 1 && (message || previousMessage) && !headed
+		gap := !directoryBoundary && len(run.Lines) > 1 && (message || previousMessage) && !headed
 		start := len(run.Lines)
 		if gap {
 			start++
@@ -1447,7 +1464,7 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 			limit = 0
 		} // Source and output have separate budgets.
 		part := v.paintBlock(start, limit, func() []string {
-			block := v.outputContext(block)
+			block := v.outputContext(paintInWorkdir(block, dir))
 			switch {
 			case tree:
 				return v.Painter.Event(block, width-4)
@@ -1490,7 +1507,8 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 		switch {
 		case tree:
 			last := true
-			for _, next := range blocks[index+1:] {
+			for nextIndex := index + 1; nextIndex < len(blocks) && groupedWorkdir(workdirs, nextIndex) == dir; nextIndex++ {
+				next := blocks[nextIndex]
 				if !continued(next) {
 					last = !operation(next)
 					break

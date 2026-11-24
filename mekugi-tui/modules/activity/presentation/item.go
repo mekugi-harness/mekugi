@@ -396,7 +396,10 @@ func CommandExit(blocks []Value, source string, code int, tail []string, omitted
 	if count > 1 || batch >= 0 {
 		if batch < 0 {
 			batch = len(blocks)
-			blocks = append(blocks, Value{Kind: "op", Verb: "Run", Label: "combined output", BatchExit: true, SourceOmitted: source != ""})
+			blocks = append(blocks, Value{
+				Kind: "op", Verb: "Run", Label: "combined output", BatchExit: true,
+				SourceOmitted: source != "", Workdir: blocks[last].Workdir,
+			})
 		}
 		// Any streamed tail was combined too; move it to the batch result.
 		for i := range blocks {

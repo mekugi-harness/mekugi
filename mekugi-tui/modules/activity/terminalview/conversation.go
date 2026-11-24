@@ -162,16 +162,19 @@ func (v *View) RenderConversation(width int) Feed {
 				latestAside = k
 			}
 		}
-		if latestAside >= 0 {
-			kept := items[:0]
-			for k, it := range items {
-				if it.aside && k != latestAside {
-					continue
-				}
-				kept = append(kept, it)
+		kept := items[:0]
+		for k, it := range items {
+			if it.aside && k != latestAside {
+				continue
 			}
-			items = kept
+			// Hidden reasoning must not split what is now one visible tool run.
+			if n := len(kept); n > 0 && tools(v.entries[kept[n-1].first]) && tools(v.entries[it.first]) {
+				kept[n-1].last = it.last
+				continue
+			}
+			kept = append(kept, it)
 		}
+		items = kept
 	}
 	traffic := func(it conversationItem) bool {
 		entry := v.entries[it.first]
@@ -343,7 +346,7 @@ func (v *View) conversationItemVerbColumn(it conversationItem) int {
 		hasPrev = false
 	}
 	for idx := it.first; idx <= it.last; idx++ {
-		if !v.Visible(v.entries[idx]) {
+		if !v.Visible(v.entries[idx]) || !v.conversationTool(v.entries[idx]) {
 			continue
 		}
 		for _, val := range v.shownValues(idx) {
@@ -624,7 +627,7 @@ func (v *View) conversationItem(first, last, width int, thread ConversationThrea
 	case v.conversationTool(entry):
 		var group []Block
 		for k := first; k <= last; k++ {
-			if v.Visible(v.entries[k]) {
+			if v.Visible(v.entries[k]) && v.conversationTool(v.entries[k]) {
 				for _, block := range v.shownBlocks(k) {
 					block.Source = v.entries[k].Seq
 					block.TailRows = v.tailRows()
@@ -654,7 +657,26 @@ func (v *View) conversationItem(first, last, width int, thread ConversationThrea
 				}
 			}
 		}
+		workdirs := workdirGroups(laid)
+		dir := ""
+		flush := func() {
+			for i, row := range Tree(parts) {
+				out.add(0, row)
+				out.snippets[len(out.snippets)-1] = toggles[i]
+			}
+			parts, toggles = parts[:0], toggles[:0]
+		}
 		for index, block := range laid {
+			if next := groupedWorkdir(workdirs, index); next != dir {
+				flush()
+				dir = next
+				if len(out.lines) > 0 {
+					out.add(0, "")
+				}
+				if dir != "" {
+					out.add(0, workdirHeading(dir, width))
+				}
+			}
 			block = v.discloseBlock(block)
 			block.Compact = v.Expansion == 0
 			snippet := Snippet{Run: entry.Seq, Block: index}
@@ -669,9 +691,11 @@ func (v *View) conversationItem(first, last, width int, thread ConversationThrea
 			} else if toggle {
 				target = snippet
 			}
-			rows := v.paintBlock(len(toggles), 0, func() []string { return p.Block(v.outputContext(block), width-2) })
+			block = paintInWorkdir(block, dir)
+			row := len(out.lines) + len(toggles)
+			rows := v.paintBlock(row, 0, func() []string { return p.Block(v.outputContext(block), width-2) })
 			if len(block.Questions) > 0 {
-				entryRows[block.Source] = len(toggles)
+				entryRows[block.Source] = row
 			}
 			if len(parts) > 0 && (block.Effect || block.Kind == "filter" || block.GroupHeader != "" && !block.GroupStart) {
 				parts[len(parts)-1] = append(parts[len(parts)-1], rows...)
@@ -682,10 +706,7 @@ func (v *View) conversationItem(first, last, width int, thread ConversationThrea
 				toggles = append(toggles, target)
 			}
 		}
-		for i, row := range Tree(parts) {
-			out.add(0, row)
-			out.snippets[len(out.snippets)-1] = toggles[i]
-		}
+		flush()
 	case entry.Agent == v.conversationSpeaker() && (entry.Kind == "text" || v.ChildrenOnly && entry.Kind == "final"):
 		out.add(0, mainHeading(v.Painter.Theme, p, entry, width))
 		gutter := mainGutter(v.Painter.Theme, p, entry.Agent)

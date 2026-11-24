@@ -14,13 +14,13 @@ import (
 )
 
 // TestCompactDefaultViewRevamp verifies the compact default view (Expansion == 0):
-// 1. No Action x N batch folding representation.
-// 2. Earlier reasoning summaries are replaced once a newer reasoning summary arrives.
-// 3. Every successful event renders on one line (Search: results count only;
-//    Diff: git --shortstat numbers; Status: combined with Diff for the same
-//    worktree), while failed commands keep their failure output clearly visible.
-// 4. Double newline gaps appear only around messages (user-to-agent,
-//    agent-to-user, agent-to-agent), not between adjacent tool/event rows.
+//  1. No Action x N batch folding representation.
+//  2. Earlier reasoning summaries are replaced once a newer reasoning summary arrives.
+//  3. Every successful event renders on one line (Search: results count only;
+//     Diff: git --shortstat numbers; Status: combined with Diff for the same
+//     worktree), while failed commands keep their failure output clearly visible.
+//  4. Double newline gaps appear only around messages (user-to-agent,
+//     agent-to-user, agent-to-agent), not between adjacent tool/event rows.
 func TestUISnapshotCompactDefaultViewRevamp(t *testing.T) {
 	now := time.Date(2026, 11, 23, 11, 15, 0, 0, time.Local)
 	v := NewView()
@@ -364,6 +364,7 @@ func TestUISnapshotCompactDefaultViewAlignsAdjacentEventLabels(t *testing.T) {
 
 	// Default compact view: earlier reasoning summaries are omitted, so all tool
 	// items above the latest reasoning sit directly adjacent and share column 8.
+	// The ordinary operations now also share a tree; the image stays separate.
 	v.Expansion = 0
 	compactFeed := v.RenderConversation(100)
 	var compactLines []string
@@ -371,11 +372,11 @@ func TestUISnapshotCompactDefaultViewAlignsAdjacentEventLabels(t *testing.T) {
 		compactLines = append(compactLines, ansi.Strip(line))
 	}
 	wantPrefixes := []string{
-		"└ Edited  setup.sh",
-		"          setup.json",
+		"├ Edited  setup.sh",
+		"│         setup.json",
 		"├ Search  PM in setup.sh",
 		"├ Read    setup_config_test.sh",
-		"└ Ran     rg -n PM setup.sh",
+		"├ Ran     rg -n PM setup.sh",
 		"└ Edited  setup.sh +5 -5",
 		"└ View    /tmp/shot.png",
 	}

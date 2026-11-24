@@ -34,6 +34,10 @@ A notice above the composer offers `[details]` when it hides text and `[×]` to 
 | Resize Diff navigator | `Ctrl-B`, then `[` / `]` |
 | Browse displayed transcript | `Ctrl-B`, then PageUp / PageDown |
 
+Consecutive transcript events in the same non-default working directory share
+an `In <directory>` heading. Edit paths under that heading are shown relative
+to it.
+
 The wheel scrolls under the pointer. Markdown supports colored code, responsive tables,
 and terminal Mermaid flowcharts; unsupported diagrams remain source. `/title TITLE`
 saves a manual title and skips automatic naming. Otherwise a new session may make a

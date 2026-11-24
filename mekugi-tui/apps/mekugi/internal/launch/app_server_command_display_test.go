@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -376,6 +377,57 @@ func TestAppServerCommandWorkdirDisplay(t *testing.T) {
 			restored.restoreHistory([]binding.HistoryTurn{{ID: "t", Status: "completed", Items: []binding.ThreadItem{item}}})
 			check(restored)
 		})
+	}
+}
+
+func TestUISnapshotActivityWorkdirRuns(t *testing.T) {
+	workspace := t.TempDir()
+	dir := filepath.Join(".worktrees", "topic")
+	editPath := filepath.Join(dir, "internal", "edit.go")
+	workdir := filepath.Join(workspace, dir)
+	edit := binding.ThreadItem{ID: "edit", Type: "fileChange", Status: "completed",
+		Changes: []binding.FileChange{{Path: filepath.Join(workspace, editPath), Diff: "@@ -1 +1 @@\n-before\n+after\n"}}}
+	command := func(id, code, cwd string) binding.ThreadItem {
+		return binding.ThreadItem{ID: id, Type: "commandExecution", Command: code, Cwd: cwd, Status: "completed", ExitCode: new(0)}
+	}
+	failed := command("test", "go test ./...", workdir)
+	failed.Status, failed.ExitCode, failed.AggregatedOutput = "failed", new(1), new("test failed\n")
+	items := []binding.ThreadItem{
+		edit,
+		failed,
+		{ID: "older-reasoning", Type: "reasoning", Summary: []string{"Hidden reasoning."}},
+		command("search", "rg package internal", workdir),
+		command("root", "go version", workspace),
+		command("one", "go env GOROOT", workdir),
+		command("two", "go env GOPATH", workdir),
+		{ID: "latest-reasoning", Type: "reasoning", Summary: []string{"Visible reasoning."}},
+		command("separate", "go env GOOS", filepath.Join(workspace, "sub")),
+	}
+	live, restored := newAppServerSessionTestUI(t, workspace), newAppServerSessionTestUI(t, workspace)
+	notify := func(method string, params map[string]any) {
+		reasoningTestNotify(t, live, method, params)
+	}
+	notify("turn/started", map[string]any{"threadId": "main", "turn": map[string]any{"id": "t"}})
+	for _, item := range items {
+		notify("item/completed", map[string]any{"threadId": "main", "turnId": "t", "item": item})
+	}
+	notify("turn/completed", map[string]any{"threadId": "main", "turn": map[string]any{"id": "t", "status": "completed"}})
+	restored.restoreHistory([]binding.HistoryTurn{{ID: "t", Status: "completed", Items: items}})
+	for _, ui := range []*appServerUI{live, restored} {
+		view := ui.testActivity(ui.shell.Transcript)
+		view.Conversation = true
+		feed := view.testRenderConversation(100)
+		if !slices.ContainsFunc(feed.Snippets, func(s activityui.Snippet) bool {
+			return s.Block == activityui.EditNavigationSnippet && s.Path == editPath
+		}) {
+			t.Fatal("the compact edit label lost its original navigation path")
+		}
+		assertNativeUISnapshot(t, "activity-workdir-runs", feed.Lines)
+		view.Conversation = false
+		rows := ansi.Strip(strings.Join(view.RenderFeed(100, 40).Lines, "\n"))
+		if strings.Count(rows, "In "+dir) != 2 || strings.Contains(rows, "· in "+dir) || !strings.Contains(rows, "internal"+string(filepath.Separator)+"edit.go") {
+			t.Fatalf("the activity feed did not preserve the directory groups:\n%s", rows)
+		}
 	}
 }
 

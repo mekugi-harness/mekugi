@@ -68,12 +68,16 @@ func TestAppServerBatchFailureDoesNotFailEachOperation(t *testing.T) {
 }
 
 func TestCommandExitBlocksKeepsBatchIdentity(t *testing.T) {
-	blocks := []activityui.Block{{Kind: "op", Verb: "Run", Code: "true"}, {Kind: "op", Verb: "Skill", Label: "example"}, {Kind: "filter"}}
+	blocks := []activityui.Block{
+		{Kind: "op", Verb: "Run", Code: "true", Workdir: "sub"},
+		{Kind: "op", Verb: "Skill", Label: "example", Workdir: "sub"},
+		{Kind: "filter"},
+	}
 	for range 2 {
 		blocks = commandExitBlocks(blocks, 1, []string{"failure"}, 3)
 	}
 	if len(blocks) != 4 || !blocks[3].BatchExit || blocks[3].Code != "" || blocks[3].Label != "combined output" ||
-		blocks[3].ExitCode != 1 || blocks[3].TailOmitted != 3 || blocks[0].ExitCode != 0 || blocks[1].ExitCode != 0 {
+		blocks[3].Workdir != "sub" || blocks[3].ExitCode != 1 || blocks[3].TailOmitted != 3 || blocks[0].ExitCode != 0 || blocks[1].ExitCode != 0 {
 		t.Fatalf("batch status duplicated or attributed to operations: %+v", blocks)
 	}
 	tracked := []activityui.Block{{Kind: "op", Verb: "Run", Segment: true}, {Kind: "op", Verb: "Run", Segment: true, ExitCode: 2}}
