@@ -1851,7 +1851,6 @@ export type cacheDiagnosis = {
 };
 
 export type providerAttemptMetrics = {
-  "prefix"?: (PrefixComparison | null);
   "duration_ms": number;
   "status_code": number;
   "capture_error"?: string;
@@ -1955,12 +1954,6 @@ export type prefixComparison = {
   "status": string;
   "common_items": number;
   "changed_fields": Array<string>;
-};
-
-export type PrefixComparison = {
-  "status": string;
-  "commonItems": number;
-  "changedFields": Array<string>;
 };
 
 export type providerResponseEvidence = {
