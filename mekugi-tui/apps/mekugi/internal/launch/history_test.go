@@ -10,7 +10,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
@@ -29,7 +28,6 @@ func testHistory() *history.Service {
 	service, err := history.NewService(slices.Concat(
 		sessionhistory.Module.Contributes.RecordKinds,
 		activity.Module.Contributes.RecordKinds,
-		agentguidance.Module.Contributes.RecordKinds,
 		diagnostic.RecordKinds(),
 		accounting.RecordKinds(),
 		changehistory.Module.Contributes.RecordKinds,

@@ -12,7 +12,7 @@ import (
 
 func TestToolRegistryExposesOnlyExecutableFrontends(t *testing.T) {
 	registry := sharedTestRegistry(t)
-	want := []string{"mchanges", "mreload"}
+	want := []string{"mchanges"}
 	var got []string
 	entries, err := os.ReadDir(registry.FrontendDirectory)
 	if err != nil {

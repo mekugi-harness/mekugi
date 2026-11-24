@@ -9,7 +9,8 @@ import (
 	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
 
@@ -27,9 +28,9 @@ type nativeFinalResource struct {
 }
 
 // nativeCaptureScope borrows existing resource owners, never a logical tree.
-func (p *Preparer) nativeCaptureScope(root, recipient string) (compact.ChangeReader, error) {
+func (p *Preparer) nativeCaptureScope(root, recipient string) (changeReader, error) {
 	if p == nil || p.Retained.Store == nil {
-		return compact.ChangeReader{}, errors.New("native capture storage is unavailable")
+		return changeReader{}, errors.New("native capture storage is unavailable")
 	}
 	reader, err := p.completionReader(recipient)
 	if err != nil {
@@ -115,27 +116,19 @@ func (p *Preparer) PrepareNativeFinalCapture(ctx context.Context, input appserve
 	if reader.Service == nil {
 		return fail(errors.New("completion capture reader is unavailable"))
 	}
-	selection, err := json.Marshal(&struct {
-		Sources []string `json:"sources"`
-	}{input.Sources})
-	if err != nil {
-		return fail(err)
-	}
-	if err := compact.CompletionSources(string(selection)); err != nil {
-		return fail(err)
-	}
-	sources, err := compact.ReloadSources(string(selection))
-	if err != nil {
-		return fail(err)
-	}
-	commands, err := compact.ReadCommands(string(selection))
-	if err != nil {
-		return fail(err)
-	}
 	resource := nativeFinalResource{Version: 2, Root: input.RootThreadID, Thread: input.ThreadID, Operation: input.OperationID, Recipient: input.RecipientThreadID, Workspace: *input.RecipientCwd}
-	for i, source := range sources {
-		frozen := nativeFrozenSource{Command: commands[i]}
-		query, err := reader.Service.Parse(source.Changes, resource.Workspace)
+	for _, raw := range input.Sources {
+		ref, err := attachments.ParseReference(raw)
+		if err != nil || len(ref.Changes) == 0 || ref.Path != "" || ref.Skill != "" || len(ref.Ranges) != 0 {
+			return fail(errors.New("completion reload requires explicit captured-change IDs/ranges"))
+		}
+		args := make([]string, 0, 1+len(ref.Changes))
+		args = append(args, commandargs.Quote("mchanges"))
+		for _, arg := range ref.Changes {
+			args = append(args, commandargs.Quote(arg))
+		}
+		frozen := nativeFrozenSource{Command: strings.Join(args, " ")}
+		query, err := reader.Service.Parse(ref.Changes, resource.Workspace)
 		if err == nil {
 			query.OmitOwn = true
 			var capture changes.FrozenRead
@@ -226,10 +219,10 @@ func (p *Preparer) renderNativeFinal(ctx context.Context, selected changes.Scope
 	if len(seen) != 0 {
 		body.WriteString("Captures already reported by yield summaries omitted; explicit mchanges reads retain full diffs.\n")
 	}
-	result := compact.CapturedSource{}
+	result := capturedSource{}
 	var sources []completionSource
 	for _, source := range resource.Sources {
-		output := compact.CapturedSource{Command: source.Command}
+		output := capturedSource{command: source.Command}
 		var projection changes.ProjectedCapture
 		var err error
 		if source.Capture != nil || source.Legacy != nil {
@@ -245,17 +238,17 @@ func (p *Preparer) renderNativeFinal(ctx context.Context, selected changes.Scope
 			err = errors.New(source.Error)
 		}
 		if err != nil {
-			output.ExitCode, output.Stderr = 1, "mchanges: "+err.Error()+"\n"
+			output.exitCode, output.stderr = 1, "mchanges: "+err.Error()+"\n"
 		}
-		output.Stdout = projection.Text
+		output.stdout = projection.Text
 		if projection.Diff {
-			start := body.Len() + len((compact.CapturedSource{Command: output.Command, ExitCode: output.ExitCode}).Text())
-			sources = append(sources, completionSource{command: source.Command, start: start, end: start + len(output.Stdout)})
+			start := body.Len() + len((capturedSource{command: output.command, exitCode: output.exitCode}).text())
+			sources = append(sources, completionSource{command: source.Command, start: start, end: start + len(output.stdout)})
 		}
-		body.WriteString(output.Text())
+		body.WriteString(output.text())
 		body.WriteByte('\n')
-		result.ExitCode = max(result.ExitCode, output.ExitCode)
+		result.exitCode = max(result.exitCode, output.exitCode)
 	}
-	result.Stdout = body.String()
+	result.stdout = body.String()
 	return boundCompletion(ctx, result, sources, selected)
 }

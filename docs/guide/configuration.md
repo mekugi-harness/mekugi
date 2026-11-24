@@ -168,7 +168,7 @@ Captures exclude prompts, patches, and credentials.
   You can disable the `skills-mgr` catalog injection hook for Mekugi and remove
   the old `skills.include_instructions = false` workaround. Set it to `false`
   only if you want to hide the automatic catalog.
-  See [guidance](../../mekugi-tui/modules/agentguidance/SPEC.md).
+  See [guidance](../reference/agent-guidance.md).
 - **Recovery:** see [compaction](sessions.md#compaction-and-recovery) and [storage](sessions.md#replay-storage).
 - **Frontend commands:** [compiled helpers](../../mekugi-tui/apps/mekugi/internal/frontends/SPEC.md) run through stock
   execution. JavaScript plugin loading has been removed; existing plugin files

@@ -4,7 +4,6 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"iter"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -20,15 +19,6 @@ type Reference struct {
 	Path, Skill string
 	Ranges      [][2]int
 	Changes     []string
-}
-
-// ReadPath resolves an internally supplied native skill anchor. Public skill
-// references have no path; their acquisition owner supplies this metadata.
-func (r Reference) ReadPath() string {
-	if _, reference, ok := strings.Cut(r.Skill, "/"); ok && filepath.Base(r.Path) == "SKILL.md" {
-		return filepath.Join(filepath.Dir(r.Path), reference)
-	}
-	return r.Path
 }
 
 // ParseReference is shared by explicit selections and references in selected
@@ -191,16 +181,6 @@ func ValidSkillReference(skill string) bool {
 type ReferenceToken struct {
 	Text       string
 	Start, End int
-}
-
-func References(text string) iter.Seq[string] {
-	return func(yield func(string) bool) {
-		for token := range ReferenceTokens(text) {
-			if !yield(token.Text) {
-				return
-			}
-		}
-	}
 }
 
 // In scanned text, reserve shell-style uppercase names without changing explicit selections.

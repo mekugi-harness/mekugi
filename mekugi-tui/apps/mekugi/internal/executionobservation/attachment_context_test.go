@@ -149,7 +149,7 @@ func TestAttachmentContextPreservesSubmittedImagePath(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer transform.Close()
-				if len(transform.CompactReload()) != 0 || bytes.Contains(request.Fields["input"], []byte(imagePath)) || bytes.Contains(request.Fields["input"], []byte("ORIGINAL_SELECTION")) {
+				if bytes.Contains(request.Fields["input"], []byte(imagePath)) || bytes.Contains(request.Fields["input"], []byte("ORIGINAL_SELECTION")) {
 					t.Fatalf("attachment content forced into provider input: %s", request.Fields["input"])
 				}
 				pattern := `^Optional attachment recall \(read with mcat\): images: .*/frozen-images-[0-9a-f]{64}\.txt$`

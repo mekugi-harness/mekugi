@@ -7,7 +7,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
@@ -21,7 +20,7 @@ func compactionSummaryReader(retained history.Session, path, thread, item string
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		summary, _, err := compact.ReadSummary(retained.Store, thread, reference)
+		summary, _, err := history.ReadCompactSummary(retained.Store, thread, reference)
 		return summary, err
 	}
 }

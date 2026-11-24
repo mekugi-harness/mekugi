@@ -21,7 +21,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/moduletest"
@@ -46,15 +45,6 @@ var testThreadSequence atomic.Uint64
 // earlier -count run's handles and fork points.
 func uniqueTestThread(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, testThreadSequence.Add(1))
-}
-
-// Ordinary proxy tests borrow the real, immutable built-in frontend catalog.
-func usePreloadTestFrontend(t *testing.T) {
-	t.Helper()
-	registry := sharedProxyTestRegistry(t)
-	t.Setenv("PATH", registry.FrontendDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv(routerTestWorkerEnvironment, "1")
-	t.Setenv("CODEX_THREAD_ID", "")
 }
 
 func sharedProxyTestRegistry(t *testing.T) *frontends.Registry {
@@ -97,15 +87,7 @@ func testCommands() []command.Contribution {
 	if err != nil {
 		panic(err)
 	}
-	commands := []command.Contribution{moduletest.BindCommand(changehistory.Module.Contributes.Commands[0], chg)}
-	guidance, err := agentguidance.Module.New(agentguidance.Deps{History: hist, Changes: chg}, module.Slots{})
-	if err != nil {
-		panic(err)
-	}
-	for _, definition := range agentguidance.Module.Contributes.Commands {
-		commands = append(commands, moduletest.BindCommand(definition, guidance))
-	}
-	return commands
+	return []command.Contribution{moduletest.BindCommand(changehistory.Module.Contributes.Commands[0], chg)}
 }
 
 func runToolPluginWorkerInHostProcess(service *history.Service, commands []command.Contribution, ctx context.Context, argv0 string, args []string, stdin *os.File, stdout, stderr io.Writer) (bool, int) {

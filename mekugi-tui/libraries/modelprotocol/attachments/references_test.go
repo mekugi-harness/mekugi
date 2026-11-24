@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+func collectReferences(text string) []string {
+	var refs []string
+	for token := range ReferenceTokens(text) {
+		refs = append(refs, token.Text)
+	}
+	return refs
+}
+
 func TestReferenceProsePunctuation(t *testing.T) {
 	for _, ref := range []string{
 		"@file.md", "@file.md#L2-L4,L8-L10", `@"with spaces"#L2-L4,L8-L10`,
@@ -25,12 +33,12 @@ func TestReferenceProsePunctuation(t *testing.T) {
 		}
 	}
 	for _, ref := range []string{`@"file.md."`, "@'file?!'", `@"with spaces."#L2-L4`} {
-		if got := slices.Collect(References("Read " + ref + ".")); !slices.Equal(got, []string{ref}) {
+		if got := collectReferences("Read " + ref + "."); !slices.Equal(got, []string{ref}) {
 			t.Fatalf("quoted reference %q: %q", ref, got)
 		}
 	}
 	for _, ref := range []string{"@missing#L1-L2junk", "mchanges:blue1.."} {
-		got := slices.Collect(References("Read " + ref + "!"))
+		got := collectReferences("Read " + ref + "!")
 		if !slices.Equal(got, []string{ref}) {
 			t.Fatalf("malformed reference %q: %q", ref, got)
 		}
@@ -50,7 +58,7 @@ func TestReferenceExactSelectionsAndCanonicalPaths(t *testing.T) {
 		}
 		canonical := got.String()
 		for _, text := range []string{canonical, "Read " + canonical + "."} {
-			tokens := slices.Collect(References(text))
+			tokens := collectReferences(text)
 			if !slices.Equal(tokens, []string{canonical}) {
 				t.Fatalf("canonical scan %q: %q", text, tokens)
 			}
@@ -65,7 +73,7 @@ func TestReferenceExactSelectionsAndCanonicalPaths(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := slices.Collect(References(string(encoded))); !slices.Equal(got, []string{ref}) {
+		if got := collectReferences(string(encoded)); !slices.Equal(got, []string{ref}) {
 			t.Fatalf("exact JSON reference %q: %q", encoded, got)
 		}
 	}
@@ -74,7 +82,7 @@ func TestReferenceExactSelectionsAndCanonicalPaths(t *testing.T) {
 func TestReferences(t *testing.T) {
 	text := "@plain\n{\"sources\":[\"@sub/file.go\",\"@日本語\"]} (`@quoted`) @\"with spaces\" @'single space' user@example.com prefix@literal @"
 	want := []string{"@plain", "@sub/file.go", "@日本語", "@quoted", `@"with spaces"`, "@'single space'"}
-	if got := slices.Collect(References(text)); !slices.Equal(got, want) {
+	if got := collectReferences(text); !slices.Equal(got, want) {
 		t.Fatalf("references = %q, want %q", got, want)
 	}
 }
@@ -82,7 +90,7 @@ func TestReferences(t *testing.T) {
 func TestReferencesLiteralMarkers(t *testing.T) {
 	text := "@ @@ @@@ @@name\n@@ -1,2 +3,4 @@\n`@` `@@` (@) [@@] {\"marker\":\"@@\"} \\@escaped @missing @./@ @\"@\" @'@name'"
 	want := []string{"@missing", "@./@", `@"@"`, "@'@name'"}
-	if got := slices.Collect(References(text)); !slices.Equal(got, want) {
+	if got := collectReferences(text); !slices.Equal(got, want) {
 		t.Fatalf("references = %q, want %q", got, want)
 	}
 }
@@ -108,7 +116,7 @@ func TestReferenceGrammarAcrossSelectionsAndText(t *testing.T) {
 				t.Fatalf("parse: %+v %v", got, err)
 			}
 			for _, surrounding := range []string{tc.text, "Use `" + tc.text + "` now", `{"source":"` + tc.text + `"}`} {
-				refs := slices.Collect(References(surrounding))
+				refs := collectReferences(surrounding)
 				if len(refs) != 1 || refs[0] != tc.text {
 					t.Fatalf("scan %q: %q", surrounding, refs)
 				}
@@ -129,7 +137,7 @@ func TestReferenceMalformedAndLiteralNeighbors(t *testing.T) {
 	}
 	text := `\@literal \$literal \mchanges:amber1 email@example.com prefix$skill @@patch ${var} $(cmd) $skill @file#L1-L2 mchanges:amber1`
 	want := []string{"$skill", "@file#L1-L2", "mchanges:amber1"}
-	if got := slices.Collect(References(text)); !slices.Equal(got, want) {
+	if got := collectReferences(text); !slices.Equal(got, want) {
 		t.Fatalf("literal neighbors: %q", got)
 	}
 }

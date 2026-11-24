@@ -21,7 +21,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
@@ -269,9 +268,9 @@ func TestApprovalReviewCompactionAuthority(t *testing.T) {
 				metadata["parent_thread_id"] = "unrelated"
 			case "unknown":
 				// Validate every reference before publishing any projection.
-				references = append(references, compact.Prefix+"parent:amber999")
+				references = append(references, history.CompactSummaryPrefix+"parent:amber999")
 			case "missing", "corrupt":
-				path := filepath.Join(proxy.Retained.Store.Directory(), compact.Name(ref))
+				path := filepath.Join(proxy.Retained.Store.Directory(), history.CompactSummaryName(ref))
 				if scenario == "missing" {
 					err = os.Remove(path)
 				} else {

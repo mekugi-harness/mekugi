@@ -12,7 +12,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentguidance/compact"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
@@ -48,7 +47,7 @@ func readRetainedActivity(ctx context.Context, retained history.Session, root bi
 			if item.Type != "contextCompaction" {
 				continue
 			}
-			summary, _, err := compact.ReadSummary(retained.Store, root.ID, references[item.ID])
+			summary, _, err := history.ReadCompactSummary(retained.Store, root.ID, references[item.ID])
 			if err != nil {
 				summary = "Compaction summary unavailable: " + err.Error()
 			}

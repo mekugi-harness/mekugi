@@ -20,7 +20,6 @@ use (
 	./libraries/terminalui
 	./libraries/textsanitize
 	./modules/activity
-	./modules/agentguidance
 	./modules/agentmetrics
 	./modules/changehistory
 	./modules/commandsegments

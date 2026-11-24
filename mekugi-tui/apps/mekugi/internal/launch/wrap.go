@@ -173,7 +173,7 @@ func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *ses
 	if threads.setup == nil {
 		threads.setup = &threadSetup{options: options, settings: settings, executable: executable, args: slices.Clone(args), environment: slices.Clone(environment), approvals: approvals}
 	}
-	frontends, err := composition.Frontends(ctx, true, options.ChildReplySummary, captureDirectory, sessionapi.ReadNativeSkillCatalog)
+	frontends, err := composition.Frontends(ctx, true, options.ChildReplySummary, captureDirectory)
 	if err != nil {
 		return 1, err
 	}

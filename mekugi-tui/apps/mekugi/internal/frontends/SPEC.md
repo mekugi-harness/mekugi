@@ -12,7 +12,7 @@
 
 ### Catalog, pinning, and isolation
 
-- Exposes compiled Go helpers (`mchanges` and internal `mreload`) on an invocation-private `PATH`
+- Exposes compiled Go helpers (`mchanges`) on an invocation-private `PATH`
   entry (restored across Bash login startup without modifying user config). Native runtime helpers
   (`mcat`, `mfinspect`, `msymbol`, `mrun`) are served by `mekugi-app-server` via `codex-arg0`.
   Legacy JS plugin loading is removed; existing plugin files stay untouched.
@@ -28,5 +28,5 @@
 ### Session storage
 
 - Go workers hold a [Session history](../../../../modules/sessionhistory/SPEC.md) session lease
-  through command execution and stdout/stderr delivery so `mchanges` reads and `mreload` frozen
-  snapshot writes stay protected from concurrent retention sweeps.
+  through command execution and stdout/stderr delivery so `mchanges` reads stay protected from
+  concurrent retention sweeps.

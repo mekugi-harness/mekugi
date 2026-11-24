@@ -13,7 +13,7 @@ import (
 
 func testComposition(t *testing.T) *composition.Runtime {
 	t.Helper()
-	runtime, err := composition.Frontends(t.Context(), false, true, "", nil)
+	runtime, err := composition.Frontends(t.Context(), false, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestCompositionFrontendCatalog(t *testing.T) {
 		names = append(names, entry.Name())
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"mchanges", "mreload"}) {
+	if !slices.Equal(names, []string{"mchanges"}) {
 		t.Fatalf("composed frontend catalog: %v", names)
 	}
 }

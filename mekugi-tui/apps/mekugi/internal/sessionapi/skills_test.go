@@ -4,11 +4,6 @@ import (
 	"context"
 	json "encoding/json/v2"
 	"errors"
-	"net"
-	"net/http"
-	"os"
-	"path/filepath"
-	"reflect"
 	"sync/atomic"
 	"testing"
 )
@@ -52,30 +47,5 @@ func TestNativeSkillCatalogRPCAdmissionAndWorkerSocket(t *testing.T) {
 		if reply := controlRead(t, conn); reply.Error == nil || reply.Error.Data.Status != 409 || runtime.calls.Load() != 1 {
 			t.Fatalf("unknown thread reached a runtime: %+v", reply)
 		}
-	}
-	// Exercise the actual worker client on a nondefault private Unix socket.
-	path := filepath.Join(shortTempDir(t), "control.sock")
-	if err := os.Chmod(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	httpServer := &http.Server{Handler: Versioned(hub.Handler())}
-	go func() { _ = httpServer.Serve(listener) }()
-	t.Cleanup(func() { _ = httpServer.Close() })
-	t.Setenv(NativeSkillsSocketEnvironment, path)
-	paths, err := ReadNativeSkillCatalog(t.Context(), "child")
-	if !reflect.DeepEqual(paths, map[string][]string{"native": {"/native/SKILL.md"}}) || err == nil || err.Error() != "partial catalog failure" {
-		t.Fatalf("worker catalog transport: %+v %v", paths, err)
-	}
-	if _, err := ReadNativeSkillCatalog(t.Context(), ""); err == nil {
-		t.Fatal("worker accepted an unselected thread")
-	}
-	server.BindRequests(struct{ NativeRuntime }{})
-	paths, err = ReadNativeSkillCatalog(t.Context(), "child")
-	if err != nil || len(paths) != 0 {
-		t.Fatalf("backend without native skills lost managed fallback: %+v %v", paths, err)
 	}
 }
