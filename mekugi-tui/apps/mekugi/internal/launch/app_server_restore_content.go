@@ -75,6 +75,12 @@ func restoreDiffThread(attached *attachedPresentation, review *sessionreview.Rev
 	if review == nil {
 		return
 	}
+	if info.SessionID != "" {
+		review.SetSession(info.SessionID)
+	}
+	if info.ID != "" && attached != nil {
+		review.SetCaller(info.ID, attached.session.Caller(info.ID))
+	}
 	review.IncludeThread(info.Cwd, info.ID, true)
 	review.Projection.Workspace = info.Cwd
 	publishReview(attached, review, source)

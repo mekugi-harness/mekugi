@@ -105,7 +105,7 @@ func applyReview(attached *attachedPresentation, review *sessionreview.Review, s
 	if published {
 		publishReview(attached, review, source)
 	}
-	if review.Loader == nil && (event.Kind == "scope" || event.Kind == "change") {
+	if review.Loader == nil && (event.Kind == "scope" || event.Kind == "change" || event.Kind == "native") {
 		applyCapturedEdits(attached, review, pending)
 	}
 }
