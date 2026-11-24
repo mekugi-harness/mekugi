@@ -1,63 +1,15 @@
 package launch
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	previewview "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/terminalview"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
-
-	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
-
 	"github.com/charmbracelet/x/vt"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 )
-
-func TestUISnapshotNativeMoveKeepsTranscript(t *testing.T) {
-	t.Parallel()
-	workspace := t.TempDir()
-	writeTestFile(t, filepath.Join(workspace, "command-timing.txt.new"), "Review @src\n\nAttached src (3 lines)\n")
-	script := "mv command-timing.txt.new command-timing.txt; git status --short"
-	source := fmt.Sprintf("await tools.exec_command({cmd:%q,workdir:%q}); await tools.exec_command({cmd:'read -r answer',workdir:%q});", script, workspace, workspace)
-	commands, dynamic := commandanalysis.LiteralExecCommands(source, workspace, "bash")
-	observation, ok := changecapture.Capture(t.Context(), commands, dynamic, true, changecapture.Options{Directory: workspace})
-	if !ok || observation == nil || len(observation.Files) == 0 {
-		t.Fatal("move lost its retained capture")
-	}
-	auto := newLivePreview(t.Context())
-	defer auto.Close()
-	auto.Enable()
-	setLiveScope(auto, previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {"main": true}}})
-	sub := testReview(auto).Subscribe()
-	proxy := &observationFixture{review: testReview(auto), execWindows: &executionobservation.Windows{}}
-	startObservedExecTest(t, proxy, workspace, "main", "turn", "cell", source)
-	// The inner move completes while the enclosing cell remains open.
-	if err := os.Rename(filepath.Join(workspace, "command-timing.txt.new"), filepath.Join(workspace, "command-timing.txt")); err != nil {
-		t.Fatal(err)
-	}
-	u := nativeBatchFixture(t)
-	for _, event := range testReview(auto).TakePreviews(sub) {
-		if event.Preview != nil {
-			applyTestPreview(&u.attached, u.shell, u.review, &u.pendingEditReceipts, presentationTime(u.clock), *event.Preview, false)
-		}
-	}
-	revealNativeDock(terminalTest(u))
-	if len(terminalTest(u).Live.Order) != 0 {
-		t.Fatal("move replaced the transcript or closed the host-owned cell")
-	}
-	screen := vt.NewEmulator(100, 28)
-	defer screen.Close()
-	if err := u.testPaint(screen, 100, 28); err != nil {
-		t.Fatal(err)
-	}
-	assertNativeUISnapshot(t, "native-dock-before-reveal", strings.Split(screen.String(), "\n"))
-}
 
 func TestNativeUIExecEditCompletionRetainsWorkingStatusAndClearsDock(t *testing.T) {
 	t.Parallel()

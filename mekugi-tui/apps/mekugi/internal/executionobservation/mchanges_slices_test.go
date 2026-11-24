@@ -34,7 +34,7 @@ func newMChangesSliceFixture(t *testing.T, thread string) *mchangesSliceFixture 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), thread, "mchanges-slices")
+	ctx, release, err := store.beginSession(t.Context(), thread)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestMChangesSlicesMineListForkAndResume(t *testing.T) {
 	}
 
 	fork := uniqueTestThread("slice-fork")
-	child, releaseChild, err := f.store.beginSession(f.ctx, fork, "fork-routing")
+	child, releaseChild, err := f.store.beginSession(f.ctx, fork)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestMChangesSlicesMineListForkAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumeCtx, releaseResume, err := resumed.beginSession(t.Context(), f.thread, "fresh-routing-process")
+	resumeCtx, releaseResume, err := resumed.beginSession(t.Context(), f.thread)
 	if err != nil {
 		t.Fatal(err)
 	}

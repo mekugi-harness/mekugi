@@ -1562,9 +1562,20 @@ impl ThreadRequestProcessor {
         let initial_config_warnings = Arc::clone(&self.initial_config_warnings);
         let outgoing = Arc::clone(&listener_task_context.outgoing);
         let error_request_id = request_id.clone();
+        let title_permit = (codex_protocol::config_types::CallerEnvironment::lookup(
+            typesafe_overrides
+                .family
+                .as_ref()
+                .map(|family| &family.environment),
+            "MEKUGI_AUTO_TITLE",
+        )
+        .as_deref()
+            == Some("1"))
+        .then(|| Arc::clone(&self.thread_list_state_permit));
         let thread_start_task = async move {
             if let Err(error) = Self::thread_start_task(
                 listener_task_context,
+                title_permit,
                 thread_store,
                 config_manager,
                 request_id,
@@ -1648,6 +1659,7 @@ impl ThreadRequestProcessor {
     #[allow(clippy::too_many_arguments)]
     async fn thread_start_task(
         listener_task_context: ListenerTaskContext,
+        title_permit: Option<Arc<ThreadListState>>,
         thread_store: Arc<dyn ThreadStore>,
         config_manager: ConfigManager,
         request_id: ConnectionRequestId,
@@ -1831,6 +1843,15 @@ impl ThreadRequestProcessor {
         let thread_id = reserved_thread_id
             .unwrap_or_else(|| listener_task_context.thread_manager.reserve_thread_id());
         start_options.reserved_thread_id = Some(thread_id);
+        if !start_options.config.ephemeral
+            && matches!(
+                thread_source,
+                None | Some(codex_protocol::protocol::ThreadSource::User)
+            )
+            && let Some(permit) = title_permit
+        {
+            thread_extension_init.insert(super::thread_lifecycle::AutoTitle { thread_id, permit });
+        }
         // Startup can prewarm the Responses socket before start_thread returns.
         // Register the creating client first so that handshake can request attestation.
         listener_task_context

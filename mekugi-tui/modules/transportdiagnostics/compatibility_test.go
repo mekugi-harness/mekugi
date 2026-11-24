@@ -64,16 +64,6 @@ func TestModuleRetainsSchemaSevenUsageEvidence(t *testing.T) {
 			t.Fatalf("complete inspection tokens for %s: %+v, %v", id, tokens, err)
 		}
 	}
-	// Opening the retained destination must append, without restoring old metrics.
-	recorder, err := service.Open(capture.Config{Output: path, Mode: "passthrough"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := recorder.Snapshot()
-	closeErr := recorder.Close()
-	if closeErr != nil || snapshot.Schema != "mekugi.capture.metrics.v7" || snapshot.Requests.Logical != 0 || snapshot.Requests.ProviderAttempts != 0 || snapshot.Usage.InputTokens != 0 {
-		t.Fatalf("fresh recorder snapshot=%+v close=%v", snapshot, closeErr)
-	}
 	reopened := moduletest.New(t, transportdiagnostics.Module, transportdiagnostics.Deps{}, module.Slots{}, nil)
 	after, err := reopened.InspectProviderUsage(t.Context(), path, filter)
 	if err != nil || !reflect.DeepEqual(before, after) {

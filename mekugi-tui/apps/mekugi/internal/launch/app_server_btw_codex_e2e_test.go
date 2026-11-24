@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"sync"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-
 	json "encoding/json/v2"
 	"io"
 	"net/http"
@@ -19,9 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 )
 
 type btwCodexRequest struct {
@@ -48,7 +43,7 @@ func TestAgentQuestionNativeCodex(t *testing.T) {
 	}()
 	proxy := newManagedMekugiProxy(t)
 	agentProvider := &agentQuestionCodexProvider{btwCodexProvider: p, gate: make(chan struct{}), done: make(chan error, 1)}
-	server := httptest.NewServer(inferencegateway.ResponsesHandler(t.Context(), time.Minute, testRequestExecutor(agentProvider, nil, proxy).ExecuteHTTP))
+	server := httptest.NewServer(fixtureResponsesHandler(agentProvider))
 	defer server.Close()
 	environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
 	integration := testAppServerIntegration(proxy)
@@ -82,8 +77,8 @@ func TestAgentQuestionNativeCodex(t *testing.T) {
 	if !bytes.Contains(agent.body, []byte("Main seed")) || !bytes.Contains(agent.body, []byte("Main running")) || bytes.Contains(agent.body, []byte("Side streaming answer")) {
 		t.Fatal("agent question captured the wrong primary context")
 	}
-	agentMetadata, _ := codexresponses.DecodeTurnMetadata(agent.headers)
-	humanMetadata, _ := codexresponses.DecodeTurnMetadata(human.headers)
+	agentMetadata, _ := fixtureTurnMetadata(agent.headers)
+	humanMetadata, _ := fixtureTurnMetadata(human.headers)
 	if agentMetadata.ThreadID == humanMetadata.ThreadID {
 		t.Fatal("agent question occupied the human BTW slot")
 	}
@@ -121,14 +116,14 @@ type agentQuestionCodexProvider struct {
 	done                  chan error
 }
 
-func (p *agentQuestionCodexProvider) ForwardExecution(ctx, responseCtx context.Context, body []byte, headers http.Header, key string) (*inferencegateway.Response, error) {
+func (p *agentQuestionCodexProvider) respond(ctx context.Context, body []byte, headers http.Header) (*http.Response, error) {
 	prompt := btwLastUserPrompt(body)
 	// Side answers retain the parent's context, so classify by their actual new
 	// user question before looking for the copied worker assignment.
 	if strings.Contains(prompt, "Side question") || strings.Contains(prompt, "Side followup") {
-		return p.btwCodexProvider.ForwardExecution(ctx, responseCtx, body, headers, key)
+		return p.btwCodexProvider.respond(ctx, body, headers)
 	}
-	metadata, _ := codexresponses.DecodeTurnMetadata(headers)
+	metadata, _ := fixtureTurnMetadata(headers)
 	p.mu.Lock()
 	if p.root == "" {
 		p.root = metadata.ThreadID
@@ -163,7 +158,7 @@ func (p *agentQuestionCodexProvider) ForwardExecution(ctx, responseCtx context.C
 		p.done <- err
 		return nativeCollabResponse("", "Worker question complete.")
 	}
-	return p.btwCodexProvider.ForwardExecution(ctx, responseCtx, body, headers, key)
+	return p.btwCodexProvider.respond(ctx, body, headers)
 }
 
 func btwLastUserPrompt(body []byte) string {
@@ -196,8 +191,8 @@ type btwCodexProvider struct {
 	canceled                       chan struct{}
 }
 
-func (p *btwCodexProvider) ForwardExecution(ctx, responseCtx context.Context, body []byte, headers http.Header, key string) (*inferencegateway.Response, error) {
-	p.requests <- btwCodexRequest{bytes.Clone(body), key, headers.Clone()}
+func (p *btwCodexProvider) respond(ctx context.Context, body []byte, headers http.Header) (*http.Response, error) {
+	p.requests <- btwCodexRequest{bytes.Clone(body), fixturePromptCacheKey(body), headers.Clone()}
 	prompt := btwLastUserPrompt(body)
 	if strings.Contains(prompt, "Main running") {
 		select {
@@ -206,7 +201,7 @@ func (p *btwCodexProvider) ForwardExecution(ctx, responseCtx context.Context, bo
 			return nil, ctx.Err()
 		}
 	}
-	response := routerFaultCodexSuccessResponse()
+	response := fixtureResponsesSuccess()
 	wire, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
@@ -226,7 +221,7 @@ func (p *btwCodexProvider) ForwardExecution(ctx, responseCtx context.Context, bo
 	wire = bytes.ReplaceAll(wire, []byte("Recovered after a retry."), []byte(answer))
 	if gate == nil {
 		response.Body = io.NopCloser(bytes.NewReader(wire))
-		return testGatewayResponse(response, nil)
+		return response, nil
 	}
 	// Deliver a real streamed delta, then withhold finalization until the test
 	// has inspected the rendered terminal or canceled only this side answer.
@@ -245,14 +240,14 @@ func (p *btwCodexProvider) ForwardExecution(ctx, responseCtx context.Context, bo
 		select {
 		case <-gate:
 			_, _ = writer.Write(wire[cut:])
-		case <-responseCtx.Done():
+		case <-ctx.Done():
 			if strings.Contains(prompt, "Side cancel") {
 				close(p.canceled)
 			}
-			_ = writer.CloseWithError(responseCtx.Err())
+			_ = writer.CloseWithError(ctx.Err())
 		}
 	}()
-	return testGatewayResponse(response, nil)
+	return response, nil
 }
 
 func TestAppServerBTWNativeCodexE2E(t *testing.T) {
@@ -266,8 +261,7 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 			}
 			p := &btwCodexProvider{requests: make(chan btwCodexRequest, 12), mainGate: make(chan struct{}), sideGate: make(chan struct{}), cancelGate: make(chan struct{}), canceled: make(chan struct{})}
 			proxy := newManagedMekugiProxy(t)
-			executor := testRequestExecutor(p, nil, proxy)
-			server := httptest.NewServer(inferencegateway.ResponsesHandler(t.Context(), time.Minute, executor.ExecuteHTTP))
+			server := httptest.NewServer(fixtureResponsesHandler(p))
 			defer server.Close()
 			defer func() {
 				for _, gate := range []chan struct{}{p.mainGate, p.sideGate, p.cancelGate} {
@@ -304,7 +298,7 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 			main := next()
 			terminal.await("completed")
 			if scenario == "resumed" {
-				metadata, _ := codexresponses.DecodeTurnMetadata(main.headers)
+				metadata, _ := fixtureTurnMetadata(main.headers)
 				terminal.stopCanceled()
 				terminal = startAppResumeTerminalWithIntegration(t, command, metadata.ThreadID, testAppServerIntegration(proxy))
 				terminal.await("Ready")
@@ -322,8 +316,8 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 			}
 			terminal.send("/btw Side question\r")
 			side := next()
-			mainMetadata, _ := codexresponses.DecodeTurnMetadata(main.headers)
-			sideMetadata, _ := codexresponses.DecodeTurnMetadata(side.headers)
+			mainMetadata, _ := fixtureTurnMetadata(main.headers)
+			sideMetadata, _ := fixtureTurnMetadata(side.headers)
 			if side.key == "" || main.key == "" || sideMetadata.ThreadID == "" || sideMetadata.ThreadID == mainMetadata.ThreadID {
 				t.Fatalf("fork identities: main=%q side=%q", mainMetadata.ThreadID, sideMetadata.ThreadID)
 			}
@@ -345,7 +339,7 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 			if err := json.Unmarshal(side.body, &sideSettings); err != nil {
 				t.Fatal(err)
 			}
-			if mainSettings.Model != sideSettings.Model || mainSettings.Reasoning.Effort != "high" || sideSettings.Reasoning.Effort != "high" {
+			if mainSettings.Model != sideSettings.Model || mainSettings.Reasoning.Effort != "high" {
 				t.Fatalf("side reasoning isolation: main=%+v side=%+v", mainSettings, sideSettings)
 			}
 			effective := sideSettings.Reasoning.Effort
@@ -355,7 +349,7 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 				}
 			}
 			if effective != "low" {
-				t.Fatalf("BTW effective effort = %q", effective)
+				t.Fatalf("BTW effective native effort = %q", effective)
 			}
 			if !bytes.Contains(side.body, []byte("Main seed")) || active && !bytes.Contains(side.body, []byte("Main running")) {
 				t.Fatal("branch omitted the current conversation")

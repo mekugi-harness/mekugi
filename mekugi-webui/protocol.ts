@@ -1580,6 +1580,8 @@ export type requestTotals = {
 };
 
 export type usageMetrics = {
+  "cached_observed"?: boolean;
+  "reasoning_observed"?: boolean;
   "output_throughput"?: OutputThroughput;
   "complete_attempts": number;
   "incomplete_attempts": number;
@@ -1597,14 +1599,14 @@ export type cacheMetrics = {
 };
 
 export type transportMetrics = {
-  "client_control_requests": payloadTotals;
-  "client_requests": payloadTotals;
-  "provider_attempt_requests": payloadTotals;
-  "provider_control_requests": payloadTotals;
-  "provider_control_responses": payloadTotals;
-  "provider_responses": payloadTotals;
-  "client_control_responses": payloadTotals;
-  "client_responses": payloadTotals;
+  "client_control_requests"?: payloadTotals;
+  "client_requests"?: payloadTotals;
+  "provider_attempt_requests"?: payloadTotals;
+  "provider_control_requests"?: payloadTotals;
+  "provider_control_responses"?: payloadTotals;
+  "provider_responses"?: payloadTotals;
+  "client_control_responses"?: payloadTotals;
+  "client_responses"?: payloadTotals;
 };
 
 export type exchangeMetrics = {
@@ -1622,8 +1624,8 @@ export type exchangeMetrics = {
   "provider_attempts": Array<providerAttemptMetrics>;
   "status": string;
   "usage"?: (usageMetrics | null);
-  "client_request": payloadMetrics;
-  "client_response": payloadMetrics;
+  "client_request"?: payloadMetrics;
+  "client_response"?: payloadMetrics;
 };
 
 export type captureHealth = {
@@ -1849,6 +1851,7 @@ export type cacheDiagnosis = {
 };
 
 export type providerAttemptMetrics = {
+  "prefix"?: (PrefixComparison | null);
   "duration_ms": number;
   "status_code": number;
   "capture_error"?: string;
@@ -1952,6 +1955,12 @@ export type prefixComparison = {
   "status": string;
   "common_items": number;
   "changed_fields": Array<string>;
+};
+
+export type PrefixComparison = {
+  "status": string;
+  "commonItems": number;
+  "changedFields": Array<string>;
 };
 
 export type providerResponseEvidence = {

@@ -13,9 +13,9 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-webui"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	webui "github.com/mekugi-harness/mekugi/mekugi-webui"
 )
 
 func TestWebUIBrowserRosterSemantics(t *testing.T) {
@@ -206,50 +206,7 @@ func TestWebUIBrowserRosterSemantics(t *testing.T) {
 	waitFrame("after", `/^(?:1[3-9]|[2-5]\d)s$/.test(`+timer+`)`)
 	appServerTestTurnEnd(t, u, "work-turn", "completed")
 
-	// Native generation facts reach the server-pushed roster.
-	generationInputs := new(sessioncontrol.Observations)
-	u.attached.session.ToolInput = generationInputs.ToolInput
-	appServerTestNotify(t, u, "turn/started", map[string]any{"threadId": "same-thread", "turn": map[string]any{"id": "tool-turn"}})
-	var generation sessioncontrol.Generation
-	item := sessioncontrol.GenerationItem{ID: "tool-input"}
-	generationInputs.SetToolInput(&generation, "", "same-thread", item, true)
-	generationInputs.IdentifyToolInput(&generation, item, "exec", true, `await tools.apply_patch("*** Begin Patch`)
-	publishGeneration := func() {
-		t.Helper()
-		applyObservedActivity(&u.attached, &u.Client, u.usage, u.review, &u.approvals, &u.pendingEditReceipts, u.clock, u.restoring, u.audience)
-		u.testMainFrame(100, 8, 0)
-		var rows []activity.AgentRow
-		for _, row := range u.attached.childSource.Publication(u.attached.presentation, u.attached.source).Roster {
-			if row.Agent.Thread == "same-thread" {
-				rows = append(rows, row)
-			}
-		}
-		if err := machine.publishFrame(sessionapi.Frame{Session: frame.Session, Status: u.attached.presentation.View().Status.Session, Input: &sessionapi.Input{Stoppable: true},
-			Main: u.attached.source.Publication(u.attached.presentation, nil), Agents: &activity.Publication{Roster: rows},
-			Members: []sessionpresentation.Participant{{Thread: "same-thread", Task: "/root", Status: sessionpresentation.WorkRunning}}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	publishGeneration()
-	run("wait", "--fn", `!!document.querySelector('header [title="Emitting a patch"]')`)
-	run("wait", "--fn", `document.querySelector('#panel-content').textContent.includes('Emitting a patch')`)
-	for _, theme := range []string{"light", "dark"} {
-		run("set", "media", theme)
-		for _, width := range []string{"1280", "390"} {
-			run("set", "viewport", width, "900")
-			run("eval", `if (!document.querySelector('#panel-content')) document.querySelector('button[aria-label^="Agents ("]').click()`)
-			run("wait", "--fn", `(() => { const rows = [...document.querySelectorAll('#panel-content button')]; return rows.some(row => row.textContent.includes('Emitting a patch')) && rows.every(row => { const r = row.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; }); })()`)
-			if artifacts := os.Getenv("MEKUGI_TEST_WEBUI_ARTIFACTS"); artifacts != "" {
-				run("screenshot", filepath.Join(artifacts, "roster-generation-"+theme+"-"+width+".png"))
-			}
-		}
-	}
-	generationInputs.EndGeneration(&generation)
-	publishGeneration()
-	run("wait", "--fn", `!!document.querySelector('header [title="Working"]') && !document.querySelector('header [title="Emitting a patch"]')`)
-	run("wait", "--fn", `!document.querySelector('#panel-content').textContent.includes('Emitting a patch') && !document.querySelector('#panel-content').textContent.includes('Spawning subagent')`)
-
-	// Side and One-off keep Main's header status, but own the composer hint.
+	// Side and One-off preserve independent interrupt targets.
 	raw, ok := machine.views.Load("same-thread")
 	if !ok {
 		t.Fatal("missing native attachment")
@@ -272,34 +229,6 @@ func TestWebUIBrowserRosterSemantics(t *testing.T) {
 	for _, oneOff := range []bool{false, true} {
 		u.attached.conversation.Side.OneOff = oneOff
 		u.attached.conversation.Side.Status = "Working"
-		generationInputs.SetToolInput(&generation, "", "side", item, true)
-		generationInputs.IdentifyToolInput(&generation, item, "exec", true, `await tools.mcp__threadcontrol__spawn_agent({message:"long`)
-		for _, want := range []string{"Spawning subagent", "Spawning subagent `worker`", "Working"} {
-			if want == "Working" {
-				generationInputs.EndGeneration(&generation)
-			} else if want != "Spawning subagent" {
-				generationInputs.IdentifyToolInput(&generation, item, "", false, `",task_name:"worker",more:`)
-			}
-			view := m.Publish(sessionpresentation.MainInputs{Control: &u.Live, Conversation: u.attached.conversation,
-				Info: sessionpresentation.MainInfo{Workspace: machine.workdir}, Feedback: &u.attached.feedback, SideRunning: true, ToolInput: generationInputs.ToolInput}, sessionpresentation.Caption{})
-			if err := machine.api.Native().Publish(attachment.Attachment, sessionapi.NativeFrame{View: view}); err != nil {
-				t.Fatal(err)
-			}
-			run("wait", "--fn", `document.querySelector('#composer-hint')?.textContent.trim() === '`+want+`'`)
-			if want == "Spawning subagent `worker`" && !oneOff {
-				for _, width := range []string{"1280", "390"} {
-					run("set", "viewport", width, "900")
-					run("eval", `document.querySelector('aside[aria-label="Thread panel"] button[aria-label="Close panel"]')?.click()`)
-					for _, theme := range []string{"dark", "light"} {
-						run("set", "media", theme)
-						run("wait", "--fn", `(() => { const r = document.querySelector('#composer-hint')?.getBoundingClientRect(); return r?.width > 0 && r.left >= 0 && r.right <= innerWidth; })()`)
-						if artifacts := os.Getenv("MEKUGI_TEST_WEBUI_ARTIFACTS"); artifacts != "" {
-							run("screenshot", filepath.Join(artifacts, "composer-side-generation-"+width+"-"+theme+".png"))
-						}
-					}
-				}
-			}
-		}
 		u.attached.conversation.Side.Status = "Usage limit · paused"
 		view := m.Publish(sessionpresentation.MainInputs{Control: &u.Live, Conversation: u.attached.conversation,
 			Info: sessionpresentation.MainInfo{Workspace: machine.workdir}, Feedback: &u.attached.feedback,

@@ -27,13 +27,9 @@ import (
 
 	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
 	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
-
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
@@ -56,21 +52,21 @@ type appResumeInferenceSettings struct {
 	} `json:"reasoning"`
 }
 
-func (p *appResumeProvider) ForwardExecution(_, _ context.Context, body []byte, headers http.Header, _ string) (*inferencegateway.Response, error) {
+func (p *appResumeProvider) respond(_ context.Context, body []byte, headers http.Header) (*http.Response, error) {
 	var settings appResumeInferenceSettings
 	if err := json.Unmarshal(body, &settings); err != nil {
 		return nil, err
 	}
-	thread := headers.Get(codexresponses.ThreadIDHeader)
+	thread := headers.Get(fixtureThreadIDHeader)
 	if thread == "" {
-		metadata, _ := codexresponses.DecodeTurnMetadata(headers)
+		metadata, _ := fixtureTurnMetadata(headers)
 		thread = metadata.ThreadID
 	}
 	p.mu.Lock()
 	p.threads = append(p.threads, thread)
 	p.settings = append(p.settings, settings)
 	p.mu.Unlock()
-	return testGatewayResponse(routerFaultCodexSuccessResponse(), nil)
+	return fixtureResponsesSuccess(), nil
 }
 
 func (p *appResumeProvider) assertSettings(t *testing.T, index int, model, effort, tier string) {
@@ -100,7 +96,7 @@ func TestAppServerResumeNativeCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &appResumeProvider{}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // State belongs to the parent UI, not just its Codex child.
 	environment := routerFaultCodexEnvironment(t)
@@ -270,7 +266,7 @@ func startAppResumeTerminalWithIntegration(t *testing.T, newCommand func(context
 	conversation := new(conversationmodel.Service)
 	observations := conversationbinding.Codex.Observation(conversation)
 	reviewSource := new(changecapture.Service)
-	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, newCommand(ctx), inner, inner, integration, nil, resumeThread, true, recorder, nil, "", nil, &observations, false)
+	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, newCommand(ctx), inner, inner, integration, nil, resumeThread, true, recorder, nil, "", &observations, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +400,7 @@ func TestAppServerOptionWordNavigationNativeCodex(t *testing.T) {
 	environment := routerFaultCodexEnvironment(t)
 	workspace := t.TempDir()
 	provider := &appResumeProvider{}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	terminal := startAppResumeTerminal(t, func(ctx context.Context) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, codex, "app-server",
@@ -435,7 +431,7 @@ func TestAppServerResumePickerNativeCodex(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &appResumeProvider{}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	environment := routerFaultCodexEnvironment(t)

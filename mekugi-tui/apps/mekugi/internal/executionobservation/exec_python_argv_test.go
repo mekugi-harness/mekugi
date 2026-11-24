@@ -13,7 +13,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
@@ -187,7 +186,7 @@ p.write_text(json.dumps(state,indent=2)+"\n")
 	}
 	proxy := testProxyWithStore(f.store)
 	history := mekugiHistory{ToolName: nativeExecCommandToolName, ExecutingThread: f.thread, ExecObservation: observation}
-	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "argv-write", history: history, result: binding.DecodeExecutionResult(history.ToolName, responses.MustMarshalJSON(map[string]any{"exit_code": 0}))}}); err != nil {
+	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "argv-write", history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0)}}}); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := openMekugiReplayStore(f.store.directory)

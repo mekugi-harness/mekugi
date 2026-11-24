@@ -105,11 +105,12 @@ impl ThreadTraceContext {
     pub fn start_root(
         metadata: ThreadStartedTraceMetadata,
         limits: TraceCaptureLimits,
+        root: Option<PathBuf>,
     ) -> anyhow::Result<Self> {
-        let Some(root) = std::env::var_os(CODEX_ROLLOUT_TRACE_ROOT_ENV) else {
+        let Some(root) = root else {
             return Ok(Self::disabled());
         };
-        start_root_in_root(&PathBuf::from(root), metadata, limits)
+        start_root_in_root(&root, metadata, limits)
     }
 
     /// Starts a root trace in a known directory.

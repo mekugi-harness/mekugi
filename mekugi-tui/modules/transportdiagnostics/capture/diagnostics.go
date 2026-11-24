@@ -19,7 +19,7 @@ func DiagnosticRecord(row map[string]jsontext.Value) diagnosticsection.Record {
 	case "failed", "incomplete", "cancelled", "error", "http_error":
 		failed = true
 	}
-	keys := []string{"timestamp", "request_id", "capture_id", "thread_id", "session_id", "captured_at", "boundary", "control_direction", "request_sequence", "provider_attempt", "request_model", "status_code", "response_complete", "response_status", "capture_error", "duration_ms", "provider_response", "usage", "tool_calls"}
+	keys := []string{"timestamp", "request_id", "capture_id", "thread_id", "turn_id", "session_id", "captured_at", "boundary", "control_direction", "request_sequence", "provider_attempt", "request_model", "status_code", "response_complete", "response_status", "capture_error", "duration_ms", "provider_response", "usage", "tool_calls"}
 	metadata := make(map[string]jsontext.Value)
 	for _, key := range keys {
 		if value, exists := row[key]; exists {

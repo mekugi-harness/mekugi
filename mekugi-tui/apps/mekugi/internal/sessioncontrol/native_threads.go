@@ -23,7 +23,13 @@ func (r *Requests[T]) Thread(ctx context.Context, thread string) (binding.Thread
 }
 
 func (r *Requests[T]) Configuration(ctx context.Context, thread, workspace string) (jsontext.Value, error) {
-	return r.call(ctx, thread, "config/read", map[string]any{"cwd": workspace, "includeLayers": true})
+	params := map[string]any{"includeLayers": true}
+	if thread != "" {
+		params["threadId"] = thread
+	} else {
+		params["cwd"] = workspace
+	}
+	return r.call(ctx, thread, "config/read", params)
 }
 
 // NativeDelivery is a passive, identity-validated native response item. It has

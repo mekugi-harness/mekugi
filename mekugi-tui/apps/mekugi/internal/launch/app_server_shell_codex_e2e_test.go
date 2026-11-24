@@ -13,8 +13,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -23,10 +21,10 @@ type shellPreviewProvider struct {
 	sawOutput atomic.Bool
 }
 
-func (p *shellPreviewProvider) ForwardExecution(_, _ context.Context, body []byte, _ http.Header, _ string) (*inferencegateway.Response, error) {
+func (p *shellPreviewProvider) respond(_ context.Context, body []byte, _ http.Header) (*http.Response, error) {
 	p.calls.Add(1)
 	p.sawOutput.Store(bytes.Contains(body, []byte("SHELL_MODE_OK")))
-	return testGatewayResponse(routerFaultCodexSuccessResponse(), nil)
+	return fixtureResponsesSuccess(), nil
 }
 
 func TestAppServerShellNativeCodex(t *testing.T) {

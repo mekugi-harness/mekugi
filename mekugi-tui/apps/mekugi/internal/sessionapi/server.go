@@ -125,7 +125,7 @@ type Server struct {
 	questionOwner   func(string) *Server
 
 	mu              sync.Mutex
-	profileIdentity ProfileIdentity
+	verifyProfile   func(context.Context, string, ProfileIdentity) error
 	requests        NativeRuntime
 	sideThreads     func(string) bool
 	childAttachment func(context.Context, string, string) error

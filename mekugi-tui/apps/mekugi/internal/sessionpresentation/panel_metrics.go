@@ -107,6 +107,27 @@ func MetricFields(body *PanelView, tab, exchange int) (fields []StatusField) {
 		return
 	}
 	s := *body.Metrics
+	native := s.Mode == "native"
+	measuredUsage := func(group string, input, cached, uncached, output, reasoning uint64, seen, cachedSeen, reasoningSeen bool) {
+		if !native {
+			usage(group, input, cached, uncached, output, reasoning)
+			return
+		}
+		for _, f := range []struct {
+			label string
+			value uint64
+			known bool
+		}{
+			{"Input", input, seen}, {"Cached input", cached, cachedSeen}, {"Uncached input", uncached, cachedSeen},
+			{"Output", output, seen}, {"Reasoning", reasoning, reasoningSeen},
+		} {
+			if f.known {
+				add(group, f.label, f.value)
+			} else {
+				add(group, f.label, "unavailable")
+			}
+		}
+	}
 	if tab == 0 && body.DebugDirectory != "" {
 		add("Debug", "Directory", pathdisplay.ForWorkspace(body.Workspace, body.DebugDirectory))
 		fields[len(fields)-1].Path = true
@@ -119,6 +140,38 @@ func MetricFields(body *PanelView, tab, exchange int) (fields []StatusField) {
 		add("Capture", "", "Metrics are unavailable for this frontend. Live launch metrics are not restored from saved sessions.")
 		return
 	}
+	if native {
+		switch tab {
+		case 0:
+			add("Responses", "Scope", "All threads in this launch")
+			add("Responses", "Completed", s.Requests.Completed)
+			add("Responses", "Terminal errors", s.Requests.Failed)
+			measuredUsage("Usage", s.Usage.InputTokens, s.Usage.CachedInputTokens, s.Usage.UncachedInputTokens, s.Usage.OutputTokens, s.Usage.ReasoningTokens,
+				s.Usage.CompleteAttempts+s.Usage.IncompleteAttempts > 0, s.Usage.CachedObserved, s.Usage.ReasoningObserved)
+			add("Usage evidence", "Partial", s.Usage.IncompleteAttempts)
+			add("Usage evidence", "Missing", s.Usage.MissingAttempts)
+			add("Capture", "Write errors", s.Capture.WriteErrors)
+		case 1:
+			add("Transport", "", "Native responses do not report transport measurements.")
+		case 2:
+			if len(s.Exchanges) == 0 {
+				add("Responses", "", "No response completions or terminal errors observed.")
+				break
+			}
+			index := max(0, min(exchange, len(s.Exchanges)-1))
+			e := s.Exchanges[index]
+			add("Response", "Retained", fmt.Sprintf("%d / %d", index+1, len(s.Exchanges)))
+			add("Response", "Thread", e.ThreadID)
+			add("Response", "Model", e.Model)
+			add("Response", "Status", e.Status)
+			if e.Usage == nil {
+				add("Response", "Usage", "unavailable")
+			} else {
+				measuredUsage("Response", e.Usage.InputTokens, e.Usage.CachedInputTokens, e.Usage.UncachedInputTokens, e.Usage.OutputTokens, e.Usage.ReasoningTokens, true, e.Usage.CachedObserved, e.Usage.ReasoningObserved)
+			}
+		}
+		return
+	}
 	switch tab {
 	case 0:
 		add("Requests", "Scope", "All threads in this launch · "+s.Mode)
@@ -128,7 +181,7 @@ func MetricFields(body *PanelView, tab, exchange int) (fields []StatusField) {
 		add("Requests", "Completed", s.Requests.Completed)
 		add("Requests", "Failed", s.Requests.Failed)
 		add("Usage", "", "Provider-reported consumption, not local estimates. Missing normalized telemetry may default to zero; inspect Exchanges for explicit evidence.")
-		usage("Usage", s.Usage.InputTokens, s.Usage.CachedInputTokens, s.Usage.UncachedInputTokens, s.Usage.OutputTokens, s.Usage.ReasoningTokens)
+		measuredUsage("Usage", s.Usage.InputTokens, s.Usage.CachedInputTokens, s.Usage.UncachedInputTokens, s.Usage.OutputTokens, s.Usage.ReasoningTokens, s.Usage.CompleteAttempts+s.Usage.IncompleteAttempts > 0, s.Usage.CachedObserved, s.Usage.ReasoningObserved)
 		if throughput := usagepresentation.OutputThroughputLabel(s.Usage.OutputThroughput); throughput != "" {
 			add("Usage", "Average output", throughput)
 			add("Usage", "Measured requests", s.Usage.OutputThroughput.MeasuredRequests)
@@ -198,7 +251,7 @@ func MetricFields(body *PanelView, tab, exchange int) (fields []StatusField) {
 		if e.Usage == nil {
 			add("Exchange", "Usage", "unavailable")
 		} else {
-			usage("Exchange", e.Usage.InputTokens, e.Usage.CachedInputTokens, e.Usage.UncachedInputTokens, e.Usage.OutputTokens, e.Usage.ReasoningTokens)
+			measuredUsage("Exchange", e.Usage.InputTokens, e.Usage.CachedInputTokens, e.Usage.UncachedInputTokens, e.Usage.OutputTokens, e.Usage.ReasoningTokens, e.Usage.CompleteAttempts+e.Usage.IncompleteAttempts > 0, e.Usage.CachedObserved, e.Usage.ReasoningObserved)
 		}
 		if d := e.CacheDiagnosis; d != nil {
 			add("Cache diagnostics", "Previous", d.PreviousSequence)
@@ -238,12 +291,18 @@ func MetricFields(body *PanelView, tab, exchange int) (fields []StatusField) {
 			if a.Usage == nil {
 				add(group, "Usage", "unavailable")
 			} else {
-				usage(group, a.Usage.InputTokens, a.Usage.CachedInputTokens, a.Usage.UncachedInputTokens, a.Usage.OutputTokens, a.Usage.ReasoningTokens)
+				measuredUsage(group, a.Usage.InputTokens, a.Usage.CachedInputTokens, a.Usage.UncachedInputTokens, a.Usage.OutputTokens, a.Usage.ReasoningTokens, a.Usage.CompleteAttempts+a.Usage.IncompleteAttempts > 0, a.Usage.CachedObserved, a.Usage.ReasoningObserved)
 				if a.Usage.CompleteAttempts != 0 {
 					add(group, "Usage evidence", "complete")
 				} else {
 					add(group, "Usage evidence", "partial")
 				}
+			}
+			if native {
+				if a.ProviderResponse != nil {
+					add(group, "Service tier", a.ProviderResponse.ServiceTier)
+				}
+				continue
 			}
 			if evidence := a.ProviderResponse; evidence != nil {
 				add(group, "Service tier", cmp.Or(evidence.ServiceTier, "unavailable"))

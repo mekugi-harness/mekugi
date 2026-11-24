@@ -74,7 +74,7 @@ func (session *nativeSession) flushInput(attached *attachedPresentation, picker 
 	if session.restoring != nil || !session.Client.AcceptsInput() {
 		return nil
 	}
-	next := attached.presentation.NextInput(&session.Client.Live, attached.conversation, session.controlObservations, attached.cwd)
+	next := attached.presentation.NextInput(&session.Client.Live, attached.conversation)
 	if len(next.Batch.Parts) == 0 && !next.Continue {
 		return nil
 	}

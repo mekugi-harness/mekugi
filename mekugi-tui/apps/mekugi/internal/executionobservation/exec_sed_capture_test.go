@@ -1,6 +1,7 @@
 package executionobservation
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,8 +11,6 @@ import (
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
 func TestNativeExecSedInPlaceCapturesEdit(t *testing.T) {
@@ -24,33 +23,22 @@ func TestNativeExecSedInPlaceCapturesEdit(t *testing.T) {
 	command := sedInPlace() + ` 's/Answers\[0\]\.Id/Answers[0].ID/' internal/router/live_activity_view_test.go`
 	target := filepath.Join(workspace, relativePath)
 	writeTestFile(t, target, before)
-	transform := prepareNativeStockTransform(t, proxy, workspace, "sed-session")
-	arguments := string(responses.MustMarshalJSON(map[string]any{"cmd": command, "workdir": workspace}))
-	retainCommandObservation(t, transform, "sed-call", arguments)
-	if history := transform.local["sed-call"]; history.ExecObservation == nil || history.CarrierPayload != arguments {
-		t.Fatalf("sed input was not retained before execution: %+v", history)
+	history, ctx := runSnapshotExec(t, proxy, workspace, "sed-call", command, func(context.Context) {
+		cmd := exec.CommandContext(t.Context(), execTrackShellExecutable(t, "bash"), "--noprofile", "--norc", "-c", command)
+		cmd.Dir = workspace
+		cmd.Env = append(os.Environ(), "BASH_ENV=")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("sed: %v\n%s", err, output)
+		}
+		if content, err := os.ReadFile(target); err != nil || string(content) != after {
+			t.Fatalf("edited content = %q, err = %v", content, err)
+		}
+	})
+	if history.ChangeID == "" || len(history.ReviewFiles) != 1 {
+		t.Fatalf("persisted sed edit = %+v", history)
 	}
-
-	// Execute the exact reported shell shape once, between capture and reconciliation.
-	cmd := exec.CommandContext(t.Context(), "bash", "--noprofile", "--norc", "-c", command)
-	cmd.Dir = workspace
-	cmd.Env = append(os.Environ(), "BASH_ENV=")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("sed: %v\n%s", err, output)
-	}
-	if content, err := os.ReadFile(target); err != nil || string(content) != after {
-		t.Fatalf("edited content = %q, err = %v", content, err)
-	}
-	items := []any{
-		map[string]any{"type": "function_call", "id": "sed-call-item", "call_id": "sed-call", "name": nativeExecCommandToolName, "arguments": arguments},
-		map[string]any{"type": "function_call_output", "call_id": "sed-call", "output": nativeExecOutput("Process exited with code 0")},
-	}
-	next := reconcileExecItems(t, proxy, workspace, items)
-	history, found, err := testProxyStore(proxy).lookup(t.Context(), workspace, "sed-call:exec:1")
-	if err != nil || !found || history.ChangeID == "" || len(history.ReviewFiles) != 1 {
-		t.Fatalf("persisted sed edit = %+v, found = %v, err = %v", history, found, err)
-	}
-	changes, err := testProxyStore(proxy).changes.Read(next.ctx, testProxyStore(proxy).scoped(next.ctx).changeScope(), changes.Query{
+	scoped := testProxyStore(proxy).scoped(ctx)
+	changes, err := scoped.changes.Read(ctx, scoped.changeScope(), changes.Query{
 		Workspace: workspace, IDs: []string{history.ChangeID}, View: "history",
 	})
 	if err != nil {

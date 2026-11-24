@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Enter must interrupt blocked Main before compaction, regardless of the host's
@@ -22,7 +21,7 @@ func TestAppServerCompactEnterInterruptsNativeCodex(t *testing.T) {
 	for _, instant := range []bool{true, false} {
 		t.Run(strconv.FormatBool(instant), func(t *testing.T) {
 			provider := &appQueueProvider{requests: make(chan []byte, 8), gates: []chan struct{}{make(chan struct{})}}
-			server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+			server := httptest.NewServer(fixtureResponsesHandler(provider))
 			defer server.Close()
 			defer close(provider.gates[0])
 			environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()

@@ -32,7 +32,7 @@ func TestAppServerRewindBoundaryNativeCodex(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		item := map[string]any{"type": "message", "id": "answer", "role": "assistant", "status": "completed", "phase": "final_answer", "content": []any{map[string]any{"type": "output_text", "text": "Fixture answer", "annotations": []any{}}}}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, routerFaultSSE(
+		fmt.Fprint(w, fixtureResponsesSSE(
 			map[string]any{"type": "response.created", "response": map[string]any{"id": "fixture", "status": "in_progress", "output": []any{}}},
 			map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item},
 			map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item},

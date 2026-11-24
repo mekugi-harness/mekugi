@@ -18,7 +18,7 @@ type InputSelection struct {
 // NextInput runs after application restoration and guard admission. Acquisition
 // may defer the returned batch through Conversation.ReturnBatch.
 // Source: apps/mekugi/internal/router/app_server_input_queue.go:114:155@25e285b1.
-func (m *Model) NextInput(control *sessioncontrol.Live, conversation *conversationmodel.Session, observations *sessioncontrol.Observations, workspace string) InputSelection {
+func (m *Model) NextInput(control *sessioncontrol.Live, conversation *conversationmodel.Session) InputSelection {
 	var next InputSelection
 	if m.replay || !control.AcceptsInput() {
 		return next
@@ -32,9 +32,6 @@ func (m *Model) NextInput(control *sessioncontrol.Live, conversation *conversati
 	}
 	next.Steer = control.Turn != ""
 	if len(conversation.Unsent) > 0 && next.Steer {
-		if conversation.Unsent[0].Question != nil && observations.EmittingToolInput(workspace, control.Thread) && !conversation.AdvancePrompt() {
-			return next
-		}
 		if conversation.Unsent[0].Compact != nil {
 			// Native reset admission must run before any destructive interrupt:
 			// a nested compound registration may still be in flight.

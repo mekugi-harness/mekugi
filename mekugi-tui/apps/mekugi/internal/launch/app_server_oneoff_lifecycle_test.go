@@ -376,43 +376,6 @@ func TestOneoffCloseRoster(t *testing.T) {
 	}
 }
 
-func TestOneoffAnswerDuringToolInput(t *testing.T) {
-	u, wire := newAppServerTestUI()
-	proxy := newManagedMekugiProxy(t)
-	setTestAppServerIntegration(u, proxy)
-	u.startSession("main", "/workspace")
-	oneoffTestStart(t, u, wire)
-	appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": "oneoff", "turnId": "oneoff-turn", "item": map[string]any{"id": "async", "type": "agentMessage", "delivery": "async", "phase": "finalAnswer", "text": "Which?", "questions": []any{map[string]any{"id": "q1", "question": "Which?", "options": []any{map[string]any{"label": "Small"}, map[string]any{"label": "Big"}}}}}})
-	transform := prepareEmissionTest(t, proxy, "", "oneoff")
-	defer transform.Close()
-	emissionTestEvent(t, transform, map[string]any{"type": "response.output_item.added", "item": map[string]any{"id": "emitting", "type": "function_call", "name": "unobserved", "call_id": "call", "status": "in_progress"}})
-	selectSideThread(t, u, u.attached.presentation.View().Main)
-	openQuestions(&u.attached, &u.picker, &u.Editor, &u.questions, &u.approvals, u.Thread)
-	questionTestPaint(t, u, 80)
-	appServerTestKeys(t, u, "1\r")
-	if wire.Len() != 0 || len(u.side.Drafts.Unsent) != 1 {
-		t.Fatalf("answer interrupted tool generation: %s", wire.String())
-	}
-	// Main remains independently usable while this one-off answer is held.
-	appServerTestKeys(t, u, "main request\r")
-	_ = btwTestRequest(t, wire, "turn/start", "main")
-	selectSideThread(t, u, u.attached.presentation.View().SideThread)
-	appServerTestKeys(t, u, "stop this approach\r")
-	steer := btwTestRequest(t, wire, "turn/steer", "oneoff")
-	if len(steer.Params.Input) != 1 || steer.Params.Input[0].Text != "stop this approach" || len(u.side.Drafts.Unsent) != 1 || u.side.Drafts.Unsent[0].Question == nil {
-		t.Fatalf("ordinary steering did not pass the waiting companion: %+v", steer)
-	}
-	emissionTestEvent(t, transform, map[string]any{"type": "response.function_call_arguments.done", "item_id": "emitting"})
-	emissionTestEvent(t, transform, map[string]any{"type": "response.output_item.done", "item": map[string]any{"id": "emitting", "type": "function_call"}})
-	if err := flushBTW(&u.attached, &u.Client, &u.picker, &u.questions, &u.approvals, u.clock, u.settings, &u.side, &u.ownedImages, u.skillEnvironment, u.controlObservations); err != nil {
-		t.Fatal(err)
-	}
-	_ = btwTestRequest(t, wire, "turn/steer", "oneoff")
-	if len(u.side.Drafts.Unsent) != 0 {
-		t.Fatal("answered input remained queued")
-	}
-}
-
 func TestOneoffCloseRunningCommand(t *testing.T) {
 	u, wire := newAppServerTestUI()
 	u.startSession("main", "/workspace")

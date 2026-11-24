@@ -61,7 +61,6 @@ func TestWorkspaceImportBoundaries(t *testing.T) {
 		{"mekugi-tui/apps/mekugi", "internal/sessionapi", "mekugi-tui/modules/activity/terminalview", false},
 		{"mekugi-webui", ".", "mekugi-tui/apps/mekugi/internal/terminalsession", false},
 		{"mekugi-webui", ".", "mekugi-tui/modules/activity/terminalview", false},
-		{"mekugi-tui/apps/mekugi", "internal/inspectioncli", "mekugi-tui/apps/mekugi/internal/inferencegateway", false},
 		{"mekugi-tui/apps/mekugi", "internal/inspectioncli", "mekugi-tui/libraries/terminalui", false},
 		{"mekugi-tui/apps/mekugi", "internal/inspectioncli", "mekugi-tui/modules/activity/terminalview", false},
 		{"mekugi-tui/apps/mekugi", "internal/inspectioncli", "mekugi-tui/modules/sessionhistory/history", true},

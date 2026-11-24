@@ -5,7 +5,6 @@ package sessioncontrol
 // NameSave is semantic response context. The request ledger owns its wire ID.
 type NameSave struct {
 	Thread, Name string
-	manual       bool
 }
 
 type nameState struct {
@@ -56,23 +55,7 @@ func (n *Names) Next(thread string) *NameSave {
 	}
 	state.saving = true
 	n.threads[thread] = state
-	return &NameSave{Thread: thread, Name: state.queued, manual: true}
-}
-
-func (n *Names) AllowsGenerated(thread string) bool {
-	state := n.threads[thread]
-	return !state.saving && state.queued == ""
-}
-
-func (n *Names) Generated(thread, name string) *NameSave {
-	if !n.AllowsGenerated(thread) {
-		return nil
-	}
-	if n.threads == nil {
-		n.threads = make(map[string]nameState)
-	}
-	n.threads[thread] = nameState{saving: true}
-	return &NameSave{Thread: thread, Name: name}
+	return &NameSave{Thread: thread, Name: state.queued}
 }
 
 // Complete settles an acknowledged or failed save. Its caller has consumed the
@@ -80,7 +63,7 @@ func (n *Names) Generated(thread, name string) *NameSave {
 func (n *Names) Complete(save NameSave) bool {
 	state := n.threads[save.Thread]
 	state.saving = false
-	if save.manual && state.queued == save.Name {
+	if state.queued == save.Name {
 		state.queued = ""
 	}
 	if state.queued == "" {

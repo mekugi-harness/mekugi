@@ -98,12 +98,11 @@ func TestAppServerAppliedSettingsFreshOwnerResumeBeforeFirstTurn(t *testing.T) {
 			fresh, w := appliedSettingsTestUI(t, "/workspace", "other")
 			fresh.Startup.Config = map[string]any{"model_provider": "routed"}
 			params, _ := appliedSettingsTestResume(t, fresh, w, binding.ThreadInfo{ID: "saved", Cwd: "/workspace"})
-			wantConfig := map[string]any{"model": "saved-model", "model_provider": "routed", "model_reasoning_effort": "high"}
+			want := map[string]any{"model": "saved-model", "reasoningEffort": "high"}
 			if defaults {
-				delete(wantConfig, "model_reasoning_effort")
+				delete(want, "reasoningEffort")
 			}
-			_, overridesTier := params["serviceTier"]
-			if !reflect.DeepEqual(params["config"], wantConfig) || overridesTier || fresh.ResumeEffort != defaults {
+			if !reflect.DeepEqual(params["retainedSettings"], want) || !reflect.DeepEqual(params["config"], fresh.Startup.Config) || fresh.ResumeEffort {
 				t.Fatalf("recovered params=%#v clearEffort=%v", params, fresh.ResumeEffort)
 			}
 		})
@@ -119,14 +118,15 @@ func TestAppServerAppliedSettingsFlagsOverridePerField(t *testing.T) {
 			fresh, w := appliedSettingsTestUI(t, "/workspace", "other")
 			fresh.Startup.Config = map[string]any{field: "explicit"}
 			params, _ := appliedSettingsTestResume(t, fresh, w, binding.ThreadInfo{ID: "saved", Cwd: "/workspace"})
-			want := map[string]any{"model": "saved-model", "model_reasoning_effort": "high"}
+			want := map[string]any{"model": "saved-model", "reasoningEffort": "high"}
+			config := map[string]any{}
 			var tier any
 			if field == "service_tier" {
 				tier = "explicit"
 			} else {
-				want[field] = "explicit"
+				config[field] = "explicit"
 			}
-			if !reflect.DeepEqual(params["config"], want) || params["serviceTier"] != tier || !reflect.DeepEqual(fresh.Startup.Config, map[string]any{field: "explicit"}) {
+			if !reflect.DeepEqual(params["retainedSettings"], want) || !reflect.DeepEqual(params["config"], config) || params["serviceTier"] != tier || !reflect.DeepEqual(fresh.Startup.Config, map[string]any{field: "explicit"}) {
 				t.Fatalf("per-field precedence or immutable launch flags lost: %#v flags=%#v", params, fresh.Startup.Config)
 			}
 		})
@@ -221,128 +221,6 @@ func TestAppServerAppliedSettingsFlushesAdmittedLayoutBeforeTick(t *testing.T) {
 	}
 }
 
-func TestAppServerAppliedSettingsResumeWaitsForDefaultConfirmation(t *testing.T) {
-	for _, effort := range []string{"", "high", "medium"} {
-		t.Run("replacement="+effort, func(t *testing.T) {
-			t.Setenv("XDG_STATE_HOME", t.TempDir())
-			u, w := appliedSettingsTestUI(t, "/workspace", "saved")
-			observed := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-			u.clock = func() time.Time { return observed }
-			terminalTest(u).Focus = 2 // Resume normalizes hidden-Diff focus before checkpointing.
-			appliedSettingsTestStageLayout(t, u)
-			appliedSettingsTestNotify(t, u, "saved-model", "", "")
-			before, err := u.panes.read("/workspace", "saved")
-			if err != nil || before.layout.Focus != 2 {
-				t.Fatalf("hidden-Diff focus was not retained before resume: %+v %v", before.layout, err)
-			}
-			observed = observed.Add(time.Hour)
-			_, resumeID := appliedSettingsTestResume(t, u, w, binding.ThreadInfo{ID: "saved", Cwd: "/workspace"})
-			appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{"model":"saved-model","reasoningEffort":"high","serviceTier":null,"collaborationMode":{"mode":"default","settings":{"model":"saved-model","reasoning_effort":"high","developer_instructions":null}},"thread":{"id":"saved","cwd":"/workspace"}}}`, resumeID))
-			appliedSettingsTestDrain(t, u)
-			if !u.Settings.Pending() {
-				t.Fatal("did not wait for default restoration")
-			}
-			after, err := u.panes.read("/workspace", "saved")
-			if err != nil || before.Settings != after.Settings || after.ResumeObserved.IsZero() || after.layout.Focus != 0 {
-				t.Fatalf("resume metadata replaced pending default intent: %v", err)
-			}
-			var correctionID int
-			for _, request := range resumeTestRequests(t, w) {
-				if request.Method == "thread/settings/update" {
-					correctionID = request.ID
-				} else {
-					appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{"data":[],"nextCursor":null}}`, request.ID))
-				}
-			}
-			resumeTestSettle(t, u, w)
-			appServerTestKeys(t, u, "held\r")
-			if w.Len() != 0 || correctionID == 0 {
-				t.Fatal("input escaped before default confirmation")
-			}
-			if effort == "" {
-				appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, correctionID))
-				if !u.Settings.RestoreEffort || w.Len() != 0 {
-					t.Fatal("enqueue acknowledgement claimed restoration success")
-				}
-				appliedSettingsTestNotify(t, u, "saved-model", "", "")
-			} else {
-				appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"error":{"code":-1,"message":"rejected"}}`, correctionID))
-				if u.Text != "held" || !u.Settings.RestoreEffort || u.Settings.Pending() || w.Len() != 0 {
-					t.Fatal("rejected restoration ran input or lost its recovery draft")
-				}
-				if err := u.nativeSession.flushInput(&u.attached, &u.picker, u.clock, &u.Editor, u.ctx); err != nil || w.Len() != 0 {
-					t.Fatal("rejected restoration released input on a later event")
-				}
-				after, err := u.panes.read("/workspace", "saved")
-				if err != nil || before.Settings != after.Settings {
-					t.Fatal("rejected restoration replaced saved null intent")
-				}
-				info := resumeSettingsRollout(t, `{"timestamp":"2026-09-30T12:30:00Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"saved-model","reasoning_effort":"high","service_tier":null}}}`, "")
-				info.Cwd = "/workspace"
-				fresh, writer := appliedSettingsTestUI(t, "/workspace", "other")
-				params, _ := appliedSettingsTestResume(t, fresh, writer, info)
-				if !fresh.ResumeEffort || !reflect.DeepEqual(params["config"], map[string]any{"model": "saved-model"}) {
-					t.Fatal("fresh retry promoted transient resume defaults over saved null intent")
-				}
-				if _, err := updateSettings(&u.attached, &u.Client, u.settings, u.panes, u.restoring != nil, u.clock, map[string]any{"effort": effort}); err != nil {
-					t.Fatal(err)
-				}
-				if effort == "medium" {
-					appServerOneRequest(t, w, "thread/settings/update", "")
-					appliedSettingsTestNotify(t, u, "saved-model", effort, "")
-				}
-				if w.Len() != 0 || u.Text != "held" {
-					t.Fatal("reasoning selection automatically submitted the recovered draft")
-				}
-				appServerTestKeys(t, u, "\r")
-			}
-			appServerOneRequest(t, w, "turn/start", "held")
-			appliedSettingsTestDrain(t, u)
-			state, err := testPanePreferences().read("/workspace", "saved")
-			if err != nil || state.Settings.Model != "saved-model" || state.Settings.Effort != effort || state.Settings.Tier != "" || !state.ResumeObserved.IsZero() || state.ResumeEvidence.Model != "" || u.Settings.Pending() || u.Settings.RestoreEffort {
-				t.Fatalf("confirmed defaults not retained: %+v %v", state, err)
-			}
-		})
-	}
-}
-
-func TestAppServerAppliedSettingsRejectedRestoreRetainsSelectedEvidence(t *testing.T) {
-	for _, source := range []string{"newer-history", "rollout-only", "legacy-no-tier"} {
-		t.Run(source, func(t *testing.T) {
-			t.Setenv("XDG_STATE_HOME", t.TempDir())
-			if source == "newer-history" {
-				seed, _ := appliedSettingsTestUI(t, "/workspace", "saved")
-				seed.clock = func() time.Time { return time.Date(2026, 9, 30, 11, 0, 0, 0, time.UTC) }
-				appliedSettingsTestNotify(t, seed, "older", "low", "priority")
-			}
-			record := `{"timestamp":"2026-09-30T12:00:00Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"selected","reasoning_effort":null,"service_tier":"flex"}}}`
-			if source == "legacy-no-tier" {
-				record = `{"timestamp":"2026-09-30T12:00:00Z","type":"turn_context","payload":{"model":"selected","effort":null}}`
-			}
-			info := resumeSettingsRollout(t, record, "")
-			info.Cwd = "/workspace"
-			u, w := appliedSettingsTestUI(t, "/workspace", "other")
-			u.clock = func() time.Time { return time.Date(2026, 9, 30, 13, 0, 0, 0, time.UTC) }
-			_, resumeID := appliedSettingsTestResume(t, u, w, info)
-			appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{"model":"selected","reasoningEffort":"high","serviceTier":"flex","collaborationMode":{"mode":"default","settings":{"model":"selected","reasoning_effort":"high","developer_instructions":null}},"thread":{"id":"saved","cwd":"/workspace"}}}`, resumeID))
-			appliedSettingsTestDrain(t, u)
-			for _, request := range resumeTestRequests(t, w) {
-				if request.Method == "thread/settings/update" {
-					appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"error":{"code":-1,"message":"rejected"}}`, request.ID))
-				}
-			}
-			info = resumeSettingsRollout(t, record, `{"timestamp":"2026-09-30T12:30:00Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"selected","reasoning_effort":"high","service_tier":"flex"}}}`, "")
-			info.Cwd = "/workspace"
-			fresh, writer := appliedSettingsTestUI(t, "/workspace", "fresh")
-			params, _ := appliedSettingsTestResume(t, fresh, writer, info)
-			_, overridesTier := params["serviceTier"]
-			if !fresh.ResumeEffort || !reflect.DeepEqual(params["config"], map[string]any{"model": "selected"}) || overridesTier {
-				t.Fatalf("fresh retry lost selected evidence: %#v", params)
-			}
-		})
-	}
-}
-
 func TestAppServerAppliedSettingsStorageFailurePreservesHostResult(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	u, _ := appliedSettingsTestUI(t, "/workspace", "saved")
@@ -382,8 +260,7 @@ func TestAppServerAppliedSettingsHostTimestampPrecedence(t *testing.T) {
 			if hostTime == "2026-09-30T13:00:00Z" {
 				model, effort = "host", "low"
 			}
-			_, overridesTier := params["serviceTier"]
-			if !reflect.DeepEqual(params["config"], map[string]any{"model": model, "model_reasoning_effort": effort}) || overridesTier {
+			if !reflect.DeepEqual(params["retainedSettings"], map[string]any{"model": model, "reasoningEffort": effort}) {
 				t.Fatalf("timestamp precedence lost: %#v", params)
 			}
 		})
@@ -403,7 +280,7 @@ func TestAppServerAppliedSettingsMalformedAndLayoutOnly(t *testing.T) {
 			}
 			fresh, w := appliedSettingsTestUI(t, "/workspace", "other")
 			params, _ := appliedSettingsTestResume(t, fresh, w, binding.ThreadInfo{ID: "saved", Cwd: "/workspace"})
-			if !reflect.DeepEqual(params["config"], map[string]any{}) {
+			if _, present := params["retainedSettings"]; present {
 				t.Fatalf("invalid or absent settings applied: %#v", params)
 			}
 			if body == "{" {

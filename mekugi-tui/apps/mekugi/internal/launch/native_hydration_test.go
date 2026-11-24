@@ -158,3 +158,51 @@ func TestNativeHydrationTransfersReadySnapshotOnlyOnEventLoop(t *testing.T) {
 		t.Fatal("snapshot fence discarded live completion or retained duplicate lifecycle events")
 	}
 }
+
+func TestNativeColdChildReadProjectsUsageBeforePublication(t *testing.T) {
+	u, input := newAppServerTestUI()
+	u.ctx = t.Context()
+	directory := t.TempDir()
+	store, err := u.history.Open(u.ctx, directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.retained.Store = store
+	u.retained.Limits = history.Limits{Total: history.DefaultStorageBytes}
+	u.Client.Thread, u.Client.Startup.Thread = "", "child"
+	u.nativeReadOnly = true
+	u.nativeAgent = &binding.ThreadInfo{ID: "child", ParentThreadID: "root"}
+	writeLegacyUsageFixture(t, directory, "child", `"Counts":{"TotalsKnown":true,"InputTokens":120,"OutputTokens":30},
+		"Complete":true,"Roundtrips":2,"RoundOutput":{"Throughput":{"output_tokens":30,"duration_ns":2000000000,"measured_requests":1}}`)
+	u.usage = storedUsageFixture(t, usageStoreFixture(t, directory))
+	u.hydrationResults = make(chan *nativeHydration)
+	u.connection = &nativeConnection{}
+	t.Cleanup(u.connection.workers.Wait)
+
+	id, err := u.Client.Requests.Send("thread/read", nil, "main", appServerRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := appserver.Message{ID: []byte(id), Result: []byte(`{"thread":{"id":"child","cwd":"/workspace","turns":[{"id":"old","status":"completed"}]}}`)}
+	if held, err := u.beginNativeHydration(message); !held || err != nil {
+		t.Fatal(held, err)
+	}
+	if err := u.acceptNativeHydration(<-u.hydrationResults); err != nil {
+		t.Fatal(err)
+	}
+	if u.Client.Thread != "child" || !u.nativeReadOnly || strings.Contains(input.String(), `"thread/resume"`) {
+		t.Fatal("passive child inspection started or joined execution")
+	}
+	publication := u.attached.childSource.Publication(u.attached.presentation, u.attached.source)
+	for _, row := range publication.Roster {
+		if agent := row.Agent; agent.Thread == "child" {
+			rate, known := agent.OutputThroughput.Rate()
+			if agent.Roundtrips != 2 || !agent.TokensKnown || agent.InputTokens != 120 || agent.OutputTokens != 30 ||
+				agent.CostKnown || !agent.UsagePartial || !known || rate != 15 {
+				t.Fatalf("cold child usage was missing or repriced: %+v", agent)
+			}
+			return
+		}
+	}
+	t.Fatal("child did not reach roster")
+}

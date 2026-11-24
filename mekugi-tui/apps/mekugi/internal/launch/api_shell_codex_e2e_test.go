@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
@@ -42,7 +43,7 @@ func TestAPIShellServerOwnedNativeCodex(t *testing.T) {
 	f.store.liveDiff = testReview(auto).Publish
 	proxy.review = testReview(auto)
 	setTestProxyStore(proxy, f.store)
-	provider := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, p, nil, proxy))
+	provider := httptest.NewServer(fixtureResponsesHandler(p))
 	defer provider.Close()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
@@ -68,7 +69,7 @@ func TestAPIShellServerOwnedNativeCodex(t *testing.T) {
 	launcher := &nativeFixtureLauncher{run: func(ctx context.Context, api *sessionapi.Server, threads *threadExecution) error {
 		cmd = exec.CommandContext(ctx, codex, commandArgs...)
 		cmd.Dir, cmd.Env = workspace, environment
-		wait, err := (&nativeSession{reviewSource: reviewSource, presentationState: testPresentation(), conversationState: conversation, activity: new(activitymodel.Service), history: testHistory(), segments: testReports(), ctx: ctx, controlObservations: integration.controlObservations, usage: integration.usage, audience: integration.audience, review: integration.review, execWindows: integration.execWindows, nativeTrace: integration.nativeTrace, retained: integration.retained, changeSource: integration.changeSource, snapshots: integration.snapshots, publishChanges: integration.publishChanges, captureNotice: integration.captureNotice, execTrack: integration.execTrack, issues: nil, sessionCapture: nil, resumeArgv: nil, replayDebugDirectory: "", titleGenerator: nil, observations: &observations, approvalMode: false}).start(testPreferences(), cmd, integration.skillsManager, "", nil, api, false, threads)
+		wait, err := (&nativeSession{reviewSource: reviewSource, presentationState: testPresentation(), conversationState: conversation, activity: new(activitymodel.Service), history: testHistory(), segments: testReports(), ctx: ctx, controlObservations: integration.controlObservations, usage: integration.usage, audience: integration.audience, review: integration.review, execWindows: integration.execWindows, nativeTrace: integration.nativeTrace, retained: integration.retained, changeSource: integration.changeSource, snapshots: integration.snapshots, publishChanges: integration.publishChanges, captureNotice: integration.captureNotice, execTrack: integration.execTrack, issues: nil, sessionCapture: nil, resumeArgv: nil, replayDebugDirectory: "", observations: &observations, approvalMode: false}).start(testPreferences(), cmd, integration.skillsManager, "", nil, api, launchoptions.Config{}, threads)
 		if err == nil {
 			err = wait()
 		}

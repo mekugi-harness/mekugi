@@ -81,11 +81,11 @@ func TestPresetsNativeConfiguration(t *testing.T) {
 						var responseError *appserver.Error
 						if call.method == "config/read" {
 							var params struct {
-								Cwd    string `json:"cwd"`
+								Thread string `json:"threadId"`
 								Layers bool   `json:"includeLayers"`
 							}
-							if err := json.Unmarshal(call.params, &params); err != nil || params.Cwd != "/workspace" || !params.Layers {
-								t.Fatal("configuration read lost workspace/layers")
+							if err := json.Unmarshal(call.params, &params); err != nil || params.Thread != "main" || !params.Layers {
+								t.Fatal("configuration read lost thread/layers")
 							}
 							result, _ = json.Marshal(snapshot)
 						} else {

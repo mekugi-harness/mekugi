@@ -1582,6 +1582,19 @@ pub struct RawResponseItemCompletedNotification {
 }
 
 // Item-specific progress notifications
+/// Provisional JavaScript input. This is not a completed or executed tool call.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CodeModeInputDeltaNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub call_id: String,
+    /// Byte offset within the call's streamed input.
+    pub offset: u32,
+    pub delta: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

@@ -165,6 +165,7 @@ func mergeThreadUsageTotal(total, delta *threadUsageTotal) {
 	}
 	total.missingUsage += delta.missingUsage
 	sum.Inconsistent = sum.Inconsistent || delta.counts.Inconsistent
+	sum.Incomplete = sum.Incomplete || delta.counts.Incomplete
 	total.counts = sum
 	total.cost.add(delta.cost)
 }
@@ -346,8 +347,8 @@ func (u *Service) Restore(thread string, history bool) {
 	}
 	u.loadLocked(thread)
 	if history && !u.fresh[thread] && u.threads[thread] == nil {
-		delta := newThreadUsageTotal()
-		delta.priorUnknown = true
-		u.updateLocked(thread, delta)
+		total := newThreadUsageTotal()
+		total.priorUnknown = true
+		u.threads[thread] = total
 	}
 }

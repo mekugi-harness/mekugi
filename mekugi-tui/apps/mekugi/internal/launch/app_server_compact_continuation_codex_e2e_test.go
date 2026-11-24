@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The pinned native host owns the active turn, manual compaction and next turn.
@@ -21,7 +20,7 @@ func TestAppServerQueuedCompactContinuesNativeCodex(t *testing.T) {
 		t.Fatal("managed native app-server is required:", err)
 	}
 	provider := &appQueueProvider{requests: make(chan []byte, 8), gates: []chan struct{}{make(chan struct{})}}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	defer func() {
 		select {

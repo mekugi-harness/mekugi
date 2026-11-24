@@ -76,7 +76,7 @@ func TestAppServerUserInputProvenanceNativeCodexE2E(t *testing.T) {
 								return
 							}
 						}
-						response := routerFaultCodexSuccessResponse()
+						response := fixtureResponsesSuccess()
 						defer response.Body.Close()
 						w.Header().Set("Content-Type", "text/event-stream")
 						_, _ = io.Copy(w, response.Body)

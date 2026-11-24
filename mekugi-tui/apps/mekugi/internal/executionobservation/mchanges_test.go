@@ -25,7 +25,7 @@ func TestMChangesFrontendReadsAcrossAgentsAndPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "reviewer-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "reviewer-thread")
 	if err != nil {
 		t.Fatal(err)
 	}

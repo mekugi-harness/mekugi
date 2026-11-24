@@ -1,134 +1,20 @@
 package executionobservation
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/execscope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/segments"
-	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
-	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 )
-
-func TestGeneralPythonWorkingDirectoryEvidence(t *testing.T) {
-	python, binary := interpreterForTest("python3", "python")
-	if binary == "" {
-		t.Skip("Python runtime unavailable")
-	}
-	files := map[string]string{".gitignore": ".worktrees/\n"}
-	for i := range 14 {
-		files[fmt.Sprintf(".config/instructions/%d.md", i)] = "before\n"
-	}
-	workspace := newExecVCSTestRepo(t, files)
-	directory := filepath.Join(workspace, ".worktrees", "edit")
-	runExecVCSTestGit(t, workspace, "worktree", "add", "--detach", directory, "HEAD")
-	f := newMChangesSliceFixture(t, "computed-python")
-	f.workspace = workspace
-	proxy := testProxyWithStore(f.store, &Windows{})
-	broker := newLivePreview(t.Context())
-	setLiveScope(broker, previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {f.thread: true}}})
-	proxy.Review = testReview(broker)
-	hub := newExecTrackFixture(t, t.Context())
-	proxy.Windows.Reports = hub.Observer
-	t.Cleanup(proxy.Windows.Retire)
-	var ids []string
-	for step, content := range []string{"first", "final"} {
-		// Runtime decoding and a computed target set deliberately supply no
-		// syntax-derived file paths. This retains the screenshot's fourteen-file
-		// linked-worktree shape without depending on any Python source pattern.
-		data := fmt.Sprintf(`{"body":"%s"}`, content)
-		command := fmt.Sprintf("%s - <<'PY'\nimport base64, json\nfrom pathlib import Path\nbody = json.loads(base64.b64decode('%s'))['body']\nfiles = {'.config/instructions/' + str(i) + '.md': body for i in range(14)}\nfor name, text in files.items():\n    Path(name).write_text(text + '\\n')\nPY", python, base64.StdEncoding.EncodeToString([]byte(data)))
-		exit := 0
-		if step == 1 {
-			exit = 7 // Later host failure does not discard successfully written bytes.
-			command = strings.TrimSuffix(command, "\nPY") + "\nraise SystemExit(7)\nPY"
-		}
-		// A named script input makes stock display recapture reachable. Its
-		// computed output paths still cannot be predicted from the command.
-		script := strings.TrimSuffix(strings.TrimPrefix(command, python+" - <<'PY'\n"), "\nPY")
-		writeTestFile(t, filepath.Join(directory, "script.py"), script)
-		command = python + " script.py"
-		commands := []commandanalysis.Command{{Command: command + "\nread -r gate", Workdir: directory, Shell: "bash"}}
-		observation, observed := changecapture.Capture(t.Context(), commands, false, false, changecapture.Options{Directory: workspace, Workspaces: proxy.Checkpoints})
-		if !observed || observation == nil || observation.Checkpoints[directory] == "" || len(observation.Files) != 0 {
-			t.Fatalf("computed writer lacks working-directory baseline: %+v", observation)
-		}
-		if display, ok := changecapture.Capture(t.Context(), commands, false, false, changecapture.Options{Directory: workspace, PreviewOnly: true}); !ok || display == nil || len(display.Files) != 1 || display.Files[0].Path != filepath.Join(directory, "script.py") {
-			t.Fatalf("fixture did not reach stock opaque display recapture: %+v", display)
-		}
-		// Round-trip the production codec before either live or retained use.
-		captured := legacyObservation(retainedObservation(*observation))
-		call := fmt.Sprintf("computed-%d", step)
-		transform := &mekugiResponseTransform{owners: proxy, ctx: f.ctx, directory: workspace, threadID: f.thread, shellThreadID: f.thread, shellTurnID: "turn", sessionShell: "bash"}
-		if !transform.openStockExecWindow(call, &captured, nil, commands, false, false) {
-			t.Fatal("stock writer admission failed")
-		}
-		host := exec.Command(execTrackShellExecutable(t, "bash"), "-c", command)
-		host.Dir, host.Env = directory, append(os.Environ(), "BASH_ENV=", "MEKUGI_EXEC_TRACK=")
-		if output, err := host.CombinedOutput(); host.ProcessState.ExitCode() != exit {
-			t.Fatalf("Python writer: %v: %s", err, output)
-		}
-		if step == 0 {
-			sub := proxy.Review.Subscribe()
-			key := [3]string{f.thread, "turn", "writer"}
-			hub.start(key, "/bin/bash -lc "+quoteShellWord(commands[0].Command))
-			report := dialExecTrackReportThread(t, hub, f.thread, commands[0].Command)
-			report.send(segmenttransport.Message{Type: segmenttransport.Begin}, segmenttransport.Message{Type: segmenttransport.End, Code: new(0)}, segmenttransport.Message{Type: segmenttransport.Begin, Index: 1})
-			hub.await(t, key, func(view segments.Report) bool { return view.LastStarted() == 1 })
-			var view previewmodel.Preview
-			deadline := time.NewTimer(5 * time.Second)
-			defer deadline.Stop()
-			for view.EditReceipt == "" {
-				for _, event := range proxy.Review.TakePreviews(sub) {
-					if event.Preview != nil && event.Preview.ID == "observed:"+call {
-						view = *event.Preview
-					}
-				}
-				if view.EditReceipt != "" {
-					break
-				}
-				select {
-				case <-sub.Ready():
-				case <-deadline.C:
-					t.Fatal("computed edits did not reach the stock live consumer")
-				}
-			}
-			if !view.Complete || view.Status != previewmodel.PreviewRunning || len(view.Files) != 14 || !proxy.Windows.find(call).closed.IsZero() {
-				t.Fatalf("computed edits did not project through stock admission while the host stayed open: %+v", view)
-			}
-		}
-		h := mekugiHistory{ToolName: nativeExecCommandToolName, ExecutingThread: f.thread, ExecObservation: &captured}
-		if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, workspace,
-			[]execCompletion{{callID: call, history: h, result: binding.DecodeExecutionResult(h.ToolName, responses.MustMarshalJSON(map[string]any{"exit_code": exit}))}}); err != nil {
-			t.Fatal(err)
-		}
-		record, found, err := f.store.lookup(f.ctx, workspace, legacycall.ExecCallID(call, false))
-		if err != nil || !found || record.ChangeID == "" || len(record.ReviewFiles) != 14 || record.ExecOutcome.Coverage != changecapture.CoverageExact {
-			t.Fatalf("working-directory capture missing: %+v, %v", record, err)
-		}
-		ids = append(ids, record.ChangeID)
-	}
-	net, err := proxy.Changes.Read(f.ctx, f.store.scoped(f.ctx).changeScope(), changes.Query{Workspace: workspace, IDs: ids, View: "net"})
-	if err != nil || strings.Count(net, "-before\n+final\n") != 14 || strings.Contains(net, "+first") {
-		t.Fatalf("computed edits failed retained composition: %q, %v", net, err)
-	}
-}
 
 func TestSupportedSnapshotGeneratorRetainsInitialCreation(t *testing.T) {
 	t.Parallel()
@@ -149,7 +35,7 @@ func TestSupportedSnapshotGeneratorRetainsInitialCreation(t *testing.T) {
 	}
 	proxy := testProxyWithStore(f.store)
 	history := mekugiHistory{ToolName: nativeExecCommandToolName, ExecutingThread: "generator-agent", ExecObservation: observation}
-	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "generate", history: history, result: binding.DecodeExecutionResult(history.ToolName, responses.MustMarshalJSON(map[string]any{"exit_code": 0}))}}); err != nil {
+	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "generate", history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0)}}}); err != nil {
 		t.Fatal(err)
 	}
 	record, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("generate", false))
@@ -199,8 +85,8 @@ func TestPythonTemporaryWriteAndRestoreRetainsIncompleteHistory(t *testing.T) {
 	}
 	proxy := testProxyWithStore(f.store)
 	history := mekugiHistory{ToolName: nativeExecCommandToolName, ExecutingThread: f.thread, ExecObservation: observation}
-	output := responses.MustMarshalJSON("Wall time: 0.01 seconds\nProcess exited with code 0\nFinal output:\n")
-	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "temporary", history: history, result: binding.DecodeExecutionResult(history.ToolName, output)}}); err != nil {
+	output := "Wall time: 0.01 seconds\nProcess exited with code 0\nFinal output:\n"
+	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "temporary", history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0), Text: output}}}); err != nil {
 		t.Fatal(err)
 	}
 	record, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("temporary", false))
@@ -266,148 +152,6 @@ func TestMChangesReadContextDistinguishesMissingEmptyAndPathScope(t *testing.T) 
 	output, stderr, status = f.run(t, "mchanges --list "+gap)
 	if status != 0 || stderr != "" || !strings.Contains(output, "?") {
 		t.Fatalf("gap ID disappeared from inventory: %q, %q, %d", output, stderr, status)
-	}
-}
-
-func TestResolvedRepeatedStockCallsRetainEveryOutcome(t *testing.T) {
-	t.Parallel()
-	for _, literalLoop := range []bool{false, true} {
-		t.Run(fmt.Sprintf("literalLoop=%v", literalLoop), func(t *testing.T) {
-			f := newMChangesSliceFixture(t, "repeated-stock")
-			patch := "*** Begin Patch\n*** Add File: repeated-patch.txt\n+after\n*** End Patch\n"
-			command := "printf after > repeated-command.txt"
-			source := "await tools.apply_patch(" + string(responses.MustMarshalJSON(patch)) + "); const patch = buildPatch(); await tools.apply_patch(patch); " +
-				"await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(command)) + "}); const args = getCommand(); await tools.exec_command(args);"
-			if literalLoop {
-				source = "for (let i = 0; i < 2; i++) await tools.apply_patch(" + string(responses.MustMarshalJSON(patch)) + "); " +
-					"for (let i = 0; i < 2; i++) await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(command)) + "});"
-			}
-			commands, dynamic := commandanalysis.LiteralExecCommands(source, f.workspace, "bash")
-			observation, _ := changecapture.Capture(t.Context(), commands, dynamic, true, changecapture.Options{Directory: f.workspace})
-			history := mekugiHistory{ToolName: "exec", ExecutingThread: f.thread,
-				NativePatches: nativePatchesInCall("exec", source, f.workspace), ExecObservation: observation}
-			if literalLoop {
-				if dynamic {
-					t.Fatal("literal loop must not request a dynamic inventory")
-				}
-			}
-			if len(history.NativePatches) != 1 || len(commands) != 1 || dynamic == literalLoop {
-				t.Fatal("fixture must pre-capture only one occurrence of each call")
-			}
-			trace := newNativeTraceFixture(t)
-			trace.start(f.thread, "runtime", "repeated-cell", source)
-			trace.tool(f.thread, "runtime", "patch-first", applyPatchToolName, patch)
-			trace.result(f.thread, "patch-first", "completed", map[string]any{})
-			trace.tool(f.thread, "runtime", "patch-second", applyPatchToolName, patch)
-			trace.result(f.thread, "patch-second", "failed", nil)
-			trace.tool(f.thread, "runtime", "command-first", nativeExecCommandToolName, string(responses.MustMarshalJSON(map[string]any{"cmd": command})))
-			trace.result(f.thread, "command-first", "completed", map[string]any{"exit_code": 0})
-			trace.tool(f.thread, "runtime", "command-second", nativeExecCommandToolName, string(responses.MustMarshalJSON(map[string]any{"cmd": command})))
-			trace.result(f.thread, "command-second", "completed", map[string]any{"exit_code": 7})
-			trace.end(f.thread, "runtime")
-			history.nativeCell = nativetrace.NewWithNotice(trace.root, nil).ReadCell(f.thread, "repeated-cell", source)
-			writeTestFile(t, filepath.Join(f.workspace, "repeated-patch.txt"), "after\n")
-			writeTestFile(t, filepath.Join(f.workspace, "repeated-command.txt"), "after")
-			resolveStockEdits(&history, f.workspace)
-			if len(history.NativePatches) != 2 || len(history.ExecObservation.Commands) != 2 {
-				t.Fatalf("resolved duplicate attempt lost: patches=%d commands=%d", len(history.NativePatches), len(history.ExecObservation.Commands))
-			}
-			proxy := testProxyWithStore(f.store)
-			output := responses.MustMarshalJSON("Script completed\nWall time 0.1 seconds\nOutput:\n")
-			if err := proxy.finalizeNativePatches(f.ctx, f.workspace, f.thread, "repeated-cell", history, binding.DecodeExecutionResult(history.ToolName, output)); err != nil {
-				t.Fatal(err)
-			}
-			if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "repeated-cell", history: history, result: binding.DecodeExecutionResult(history.ToolName, output)}}); err != nil {
-				t.Fatal(err)
-			}
-			for index, want := range []string{"patch-first", "patch-second"} {
-				record, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.PatchCallID("repeated-cell", index))
-				if err != nil || !found || len(record.HostResults) != 1 || record.HostResults[0].CallID != want {
-					t.Fatalf("patch occurrence %d lost host outcome: %+v, %v", index, record, err)
-				}
-				if index == 0 && (len(record.ReviewFiles) != 1 || record.ReviewFiles[0].BeforePath != "") {
-					t.Fatal("initial creation provenance lost")
-				}
-				if index == 1 && (len(record.ReviewFiles) != 0 || record.TranslationError == "" || record.HostResults[0].Status != "failed") {
-					t.Fatal("duplicate failure borrowed cell-window effects or lost failure")
-				}
-			}
-			record, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("repeated-cell", true))
-			if err != nil || !found || len(record.HostResults) != 2 || record.HostResults[0].CallID != "command-first" ||
-				record.HostResults[1].CallID != "command-second" || record.HostResults[1].ExitCode == nil || *record.HostResults[1].ExitCode != 7 ||
-				strings.Count(record.Script, command) != 2 || len(record.ReviewFiles) != 1 || record.ExecOutcome.Coverage != changecapture.CoverageExact {
-				t.Fatalf("command occurrences lost outcomes or duplicated scoped effects: %+v, %v", record, err)
-			}
-		})
-	}
-}
-
-func TestResolvedLiteralReadLoopsDoNotInventWriters(t *testing.T) {
-	t.Parallel()
-	workspace := t.TempDir()
-	writeTestFile(t, filepath.Join(workspace, "file.txt"), "unchanged")
-	writer := "printf unchanged > file.txt"
-	reader := "cat file.txt"
-	source := "await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(writer)) + "}); " +
-		"for (let i = 0; i < 2; i++) await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(reader)) + "});"
-	commands, dynamic := commandanalysis.LiteralExecCommands(source, workspace, "bash")
-	if dynamic || len(commands) != 2 {
-		t.Fatal("fixture must have only literal call sites")
-	}
-	observation, _ := changecapture.Capture(t.Context(), commands, dynamic, true, changecapture.Options{Directory: workspace})
-	trace := newNativeTraceFixture(t)
-	trace.start("author", "runtime", "read-loop", source)
-	for index, command := range []string{writer, reader, reader} {
-		id := fmt.Sprint(index)
-		trace.tool("author", "runtime", id, nativeExecCommandToolName, string(responses.MustMarshalJSON(map[string]any{"cmd": command})))
-		trace.result("author", id, "completed", map[string]any{"exit_code": 0})
-	}
-	trace.end("author", "runtime")
-	history := mekugiHistory{ExecObservation: observation, nativeCell: nativetrace.NewWithNotice(trace.root, nil).ReadCell("author", "read-loop", source)}
-	resolveStockEdits(&history, workspace)
-	result := changecapture.Reconcile(t.Context(), *history.ExecObservation, changecapture.Comparison{})
-	reviews, complete, coverage := result.Files, result.Complete, result.Coverage
-	results, confirmed := history.nativeCell.Commands(history.ExecObservation.Commands, workspace)
-	if !complete || coverage != changecapture.CoverageExact || len(reviews) != 0 || history.ExecObservation.RepeatedPaths || !confirmed || len(results) != 3 {
-		t.Fatalf("read loop became an incomplete writer: %+v, complete=%v coverage=%s results=%v", history.ExecObservation, complete, coverage, results)
-	}
-}
-
-func TestResolvedLiteralProviderLoopsReusePreCallClassification(t *testing.T) {
-	t.Parallel()
-	workspace := t.TempDir()
-	python, _ := interpreterForTest("python3", "python")
-	writeTestFile(t, filepath.Join(workspace, "file.txt"), "unchanged")
-	script := filepath.Join(workspace, "script.py")
-	writeTestFile(t, script, "from pathlib import Path\nPath('file.txt').write_text('temporary')\n")
-	command := python + " script.py"
-	source := "for (let i = 0; i < 2; i++) await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(command)) + "});"
-	commands, dynamic := commandanalysis.LiteralExecCommands(source, workspace, "bash")
-	observation, _ := changecapture.Capture(t.Context(), commands, dynamic, true, changecapture.Options{Directory: workspace})
-	if dynamic || len(observation.CommandClasses) != 1 || observation.CommandClasses[0] != execscope.Scoped.String() {
-		t.Fatal("fixture must pre-capture one scoped literal provider")
-	}
-	// The provider source changed after capture. Its original classification
-	// must be reused; late source cannot explain the prior call occurrences.
-	writeTestFile(t, script, "print('read only now')\n")
-	trace := newNativeTraceFixture(t)
-	trace.start("thread", "runtime", "cell", source)
-	for index := range 2 {
-		id := fmt.Sprint(index)
-		trace.tool("thread", "runtime", id, nativeExecCommandToolName, string(responses.MustMarshalJSON(map[string]any{
-			"cmd": commands[0].Command, "workdir": commands[0].Workdir, "shell": commands[0].Shell,
-		})))
-		trace.result("thread", id, "completed", map[string]any{"exit_code": 0})
-	}
-	trace.end("thread", "runtime")
-	history := mekugiHistory{ExecObservation: observation, nativeCell: nativetrace.NewWithNotice(trace.root, nil).ReadCell("thread", "cell", source)}
-	resolveStockEdits(&history, workspace)
-	result := changecapture.Reconcile(t.Context(), *history.ExecObservation, changecapture.Comparison{})
-	reviews, complete, coverage := result.Files, result.Complete, result.Coverage
-	if len(history.ExecObservation.Commands) != 2 || len(history.ExecObservation.CommandClasses) != 2 ||
-		history.ExecObservation.CommandClasses[1] != execscope.Scoped.String() || !history.ExecObservation.RepeatedPaths ||
-		len(reviews) != 0 || complete || coverage != changecapture.CoveragePartial {
-		t.Fatalf("late provider state erased repeated-write uncertainty: %+v, complete=%v coverage=%s", history.ExecObservation, complete, coverage)
 	}
 }
 

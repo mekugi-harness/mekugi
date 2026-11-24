@@ -17,8 +17,8 @@ func TestCompositionSessionNamingRemoval(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if (runtime.Naming != nil) != enabled {
-			t.Fatalf("enabled=%v, registered=%v", enabled, runtime.Naming != nil)
+		if runtime.AutoTitle != enabled {
+			t.Fatalf("enabled=%v, registered=%v", enabled, runtime.AutoTitle)
 		}
 		if err := runtime.Close(t.Context()); err != nil {
 			t.Fatal(err)

@@ -71,11 +71,3 @@ func (f *nativeTraceFixture) tool(thread, cell, id, name string, input any) {
 	ref := f.ref(map[string]any{"tool_name": name, "tool_namespace": nil, "payload": map[string]any{"type": kind, key: input}})
 	f.event(thread, map[string]any{"type": "tool_call_started", "tool_call_id": id, "requester": map[string]string{"type": "code_cell", "runtime_cell_id": cell}, "invocation_payload": ref})
 }
-
-func (f *nativeTraceFixture) result(thread, id, status string, value any) {
-	f.event(thread, map[string]any{"type": "tool_call_ended", "tool_call_id": id, "status": status, "result_payload": f.ref(map[string]any{"type": "code_mode_response", "value": value})})
-}
-
-func (f *nativeTraceFixture) end(thread, cell string) {
-	f.event(thread, map[string]any{"type": "code_cell_ended", "runtime_cell_id": cell, "status": "completed"})
-}

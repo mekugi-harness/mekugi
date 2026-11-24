@@ -101,7 +101,7 @@ func TestMChangesWorkspaceStreamIDsSurviveRestartAndBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resume, release, err := reopened.beginSession(t.Context(), f.thread, "resumed")
+	resume, release, err := reopened.beginSession(t.Context(), f.thread)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestMChangesWorkspaceStreamIDsSurviveRestartAndBranch(t *testing.T) {
 	}
 
 	forkThread := uniqueTestThread("workspace-stream-fork")
-	forkCtx, releaseFork, err := reopened.beginSession(t.Context(), forkThread, "forked")
+	forkCtx, releaseFork, err := reopened.beginSession(t.Context(), forkThread)
 	if err != nil {
 		t.Fatal(err)
 	}

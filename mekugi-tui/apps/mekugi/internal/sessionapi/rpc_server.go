@@ -780,11 +780,18 @@ func (c *rpcConnection) dispatch(ctx context.Context, method string, params RPCP
 			if err := decodeBody(params.Body, &identity); err != nil {
 				return nil, err, nil
 			}
-			selected.server.mu.Lock()
-			matches := selected.server.profileIdentity == identity
-			selected.server.mu.Unlock()
-			if !matches {
-				return nil, rpcFailure(409, "The supplied profile differs from the running configuration."), nil
+			owner := selected.server
+			if selected.runtime != nil {
+				owner = selected.runtime.server
+			}
+			owner.mu.Lock()
+			verify := owner.verifyProfile
+			owner.mu.Unlock()
+			if verify == nil {
+				return nil, rpcFailure(503, "Native family admission is unavailable."), nil
+			}
+			if err := verify(ctx, target.thread, identity); err != nil {
+				return nil, rpcFailure(409, err.Error()), nil
 			}
 		}
 		return c.subscribe(ctx, params.Subscription, func(viewContext context.Context) (*rpcSubscription, *RPCError) {
@@ -793,7 +800,7 @@ func (c *rpcConnection) dispatch(ctx context.Context, method string, params RPCP
 				return subscription, failure
 			}
 			joined := selected.server.Native().ReleaseDone()
-			if selected.server == selected.runtime.server {
+			if selected.runtime != nil && selected.server == selected.runtime.server {
 				joined = selected.runtime.done
 			}
 			if joined != nil {
@@ -803,7 +810,7 @@ func (c *rpcConnection) dispatch(ctx context.Context, method string, params RPCP
 					return nil, rpcFailure(503, "The selected native runtime is still finishing.")
 				}
 			}
-			if selected.server != selected.runtime.server {
+			if selected.runtime != nil && selected.server != selected.runtime.server {
 				if failure = h.attachThread(ctx, params.Thread, c.authority); failure == nil {
 					if current, denied := h.lookup(params.Thread, "", c.authority); denied == nil {
 						return current.server.Native().attach(ctx, viewContext, requestTarget{current.entry.Thread, current.entry.Workspace}, "", c.authority)

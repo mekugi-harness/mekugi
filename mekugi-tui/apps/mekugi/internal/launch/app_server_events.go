@@ -3,23 +3,20 @@ package launch
 import (
 	"cmp"
 	"context"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-
+	json "encoding/json/v2"
 	"fmt"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 )
 
 func restoreThreadSettings(session *sessionpresentation.Attachment, info binding.ThreadInfo) {
@@ -100,6 +97,13 @@ func (session *nativeSession) sessionEvent(attached *attachedPresentation, clock
 	if method == "turn/completed" {
 		endTurnPreviews(session.execWindows, session.review, attached.cwd, p.ThreadID, p.Turn.ID)
 	}
+	if method == "rawResponse/completed" || method == "thread/tokenUsage/updated" || method == "turn/completed" {
+		if method == "thread/tokenUsage/updated" && p.ThreadID == session.Client.Thread {
+			session.exitUsage = p.TokenUsage.Total
+		}
+		s.Caller(p.ThreadID)
+		observeCost(session.usage, p.ThreadID, s.Activity().Agent(p.ThreadID))
+	}
 	result := sessionpresentation.ReduceObservation(s, attached.presentation, attached.source, attached.childSource, attached.transcript, session.activity.Outputs(s.Scope()), facts)
 	if result.Compaction != nil {
 		if err := retainCompaction(session.retainedSession, *result.Compaction); err != nil {
@@ -111,13 +115,6 @@ func (session *nativeSession) sessionEvent(attached *attachedPresentation, clock
 	}
 	if method == "thread/started" && p.Thread.ID != "" && p.Thread.ID != session.Client.Thread {
 		restoreThreadSettings(&attached.session, p.Thread)
-	}
-	if method == "thread/tokenUsage/updated" || method == "turn/completed" {
-		if method == "thread/tokenUsage/updated" && p.ThreadID == session.Client.Thread {
-			session.exitUsage = p.TokenUsage.Total
-		}
-		s.Caller(p.ThreadID)
-		observeCost(session.usage, p.ThreadID, s.Activity().Agent(p.ThreadID))
 	}
 	if result.Publish {
 		attached.hooks.deliverActivity(attached.executionPresentation, result.Deliveries)
@@ -147,26 +144,57 @@ func (session *nativeSession) flushStreamOutput(attached *attachedPresentation, 
 	applyActivity(attached, &session.approvals, session.review, &session.pendingEditReceipts, session.Client.Thread, clock, entries, nil)
 }
 
+// observeResponse uses only fields present in the native completion. Native
+// normalized counters default absent categories to zero; verify the corresponding
+// upstream usage fields before pricing them.
+func (session *nativeSession) observeResponse(params []byte) error {
+	var event binding.ResponseCompleted
+	if err := json.Unmarshal(params, &event); err != nil {
+		return err
+	}
+	if event.ThreadID == "" || event.ResponseID == "" {
+		return nil
+	}
+	var counts inference.Usage
+	if u := event.Usage; u != nil {
+		counts = inference.Usage{TotalsKnown: true, InputTokens: u.InputTokens,
+			UncachedInputTokens: u.InputTokens - min(u.CachedInputTokens, u.InputTokens),
+			CacheWriteTokens:    u.CacheWriteInputTokens, OutputTokens: u.OutputTokens,
+			ReasoningTokens: u.ReasoningOutputTokens,
+			Incomplete: event.UsageMetadata == nil || event.UsageMetadata.Metadata.Input.Cached == nil ||
+				event.UsageMetadata.Metadata.Output.Reasoning == nil,
+			Inconsistent: u.CachedInputTokens > u.InputTokens || u.ReasoningOutputTokens > u.OutputTokens,
+		}
+	}
+	duration := time.Duration(event.RequestDurationMS) * time.Millisecond
+	session.usage.ObserveResponse(event.ThreadID, event.Model, event.ServiceTier, event.OpenAIEndpoint, counts, duration)
+	capture := session.sessionCapture
+	if capture != nil {
+		capture.ObserveResponse(event.ThreadID, event.TurnID, event.Model, counts, duration)
+	}
+	return nil
+}
+
 // observeCost reads all consumption metrics from the same canonical owner.
 // App-server context and exit usage are separate, never priced or added here.
 func observeCost(usage *accounting.Service, thread string, agent *sessionpresentation.ActivityAgent) {
 	if usage == nil {
 		return
 	}
-	report, observed := usage.Snapshot(thread)
+	report := usage.Snapshot(thread)
 	agent.Roundtrips = report.Roundtrips
-	agent.OutputThroughput = report.RoundOutput.Throughput
+	agent.OutputThroughput = report.OutputThroughput
 	agent.InputTokens, agent.OutputTokens = report.InputTokens, report.OutputTokens
-	agent.TokensKnown = observed && agent.Roundtrips > report.MissingUsage
-	agent.Cost = report.Cost.Total()
-	agent.CostKnown = agent.TokensKnown && report.Cost.Known
-	agent.CostPartial = report.MissingUsage != 0 || report.PriorUnknown
+	agent.TokensKnown = report.TotalsKnown
+	agent.Cost = report.Cost
+	agent.CostKnown = agent.TokensKnown && report.CostKnown
+	agent.CostPartial = report.MissingUsage != 0 || report.PriorUnknown || report.Incomplete
 	agent.UsagePartial = agent.CostPartial
 	agent.RoundtripsPartial = report.PriorUnknown
 }
 
 func restoreUsage(usage *accounting.Service, info binding.ThreadInfo) {
-	if usage != nil {
-		usage.Restore(info.ID, len(info.Turns) > 0)
+	if len(info.Turns) > 0 {
+		usage.Restore(info.ID, true)
 	}
 }

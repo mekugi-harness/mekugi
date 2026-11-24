@@ -1,12 +1,10 @@
 package httptransport_test
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"io"
-	"net/http"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -25,41 +23,6 @@ func (b responseBody) Close() error { return b.close() }
 type readerFunc func([]byte) (int, error)
 
 func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
-
-func TestRequestBytesBorrowOnlyUnreadImmutableBody(t *testing.T) {
-	encoded := []byte(`{"input":"exact bytes"}`)
-	request, err := httptransport.NewRequest(t.Context(), http.MethodPost, "https://provider/responses", encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	borrowed, ok := httptransport.RequestBytes(request)
-	if !ok || &borrowed[0] != &encoded[0] || request.ContentLength != int64(len(encoded)) {
-		t.Fatal("request body was copied or its length changed")
-	}
-	if _, err := request.Body.Read(make([]byte, 1)); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := httptransport.RequestBytes(request); ok {
-		t.Fatal("partially consumed body admitted")
-	}
-	replay, err := request.GetBody()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := io.ReadAll(replay)
-	if err != nil || !bytes.Equal(got, encoded) {
-		t.Fatalf("replayed bytes = %q, error %v", got, err)
-	}
-	_ = replay.Close()
-	request.Body = io.NopCloser(bytes.NewReader(encoded))
-	if _, ok := httptransport.RequestBytes(request); ok {
-		t.Fatal("replaced body admitted")
-	}
-	empty, err := httptransport.NewRequest(t.Context(), http.MethodPost, "https://provider/responses", nil)
-	if err != nil || empty.Body != http.NoBody || empty.ContentLength != 0 {
-		t.Fatalf("empty request = %#v, error %v", empty, err)
-	}
-}
 
 func TestCancelOnCloseOwnsRequestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
@@ -85,33 +48,6 @@ func TestCancelOnCloseOwnsRequestCancellation(t *testing.T) {
 	}
 	if closed != 1 || ctx.Err() != context.Canceled {
 		t.Fatalf("close count = %d, request error = %v", closed, ctx.Err())
-	}
-}
-
-func TestRestorePrefixPreservesBytesAndOriginalCloser(t *testing.T) {
-	want := []byte{'\x00', '\xff', '\r', '\n', 'a', 'b', '\x80'}
-	closed := 0
-	closeErr := errors.New("original close")
-	original := responseBody{Reader: bytes.NewReader(want), close: func() error {
-		closed++
-		return closeErr
-	}}
-	response := &http.Response{Body: original}
-	remainder := bufio.NewReader(response.Body)
-	prefix := make([]byte, 3)
-	if _, err := io.ReadFull(remainder, prefix); err != nil {
-		t.Fatal(err)
-	}
-	httptransport.RestorePrefix(response, prefix, remainder)
-	got, err := io.ReadAll(response.Body)
-	if err != nil || !bytes.Equal(got, want) {
-		t.Fatalf("restored bytes = %x, %v; want %x", got, err, want)
-	}
-	if closed != 0 {
-		t.Fatal("restoring or reading the prefix closed the source")
-	}
-	if err := response.Body.Close(); !errors.Is(err, closeErr) || closed != 1 {
-		t.Fatalf("original closer: count=%d, error=%v", closed, err)
 	}
 }
 

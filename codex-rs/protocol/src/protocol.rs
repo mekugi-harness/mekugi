@@ -1823,6 +1823,9 @@ pub enum EventMsg {
     /// Latest model-generated structured changes for an `apply_patch` call.
     PatchApplyUpdated(PatchApplyUpdatedEvent),
 
+    /// Provisional JavaScript input for client-side edit previews.
+    CodeModeInputDelta(CodeModeInputDeltaEvent),
+
     /// Notification that a patch application has finished.
     PatchApplyEnd(PatchApplyEndEvent),
 
@@ -2346,6 +2349,14 @@ pub struct RawResponseCompletedEvent {
     pub response_id: String,
     pub token_usage: Option<TokenUsage>,
     pub usage_metadata: Option<crate::ResponseUsageMetadata>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    #[serde(default)]
+    pub openai_endpoint: bool,
+    #[serde(default)]
+    pub request_duration_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -4337,6 +4348,13 @@ pub struct PatchApplyUpdatedEvent {
     pub call_id: String,
     /// Structured file changes parsed from the model-generated patch input so far.
     pub changes: HashMap<PathBuf, FileChange>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct CodeModeInputDeltaEvent {
+    pub call_id: String,
+    pub offset: u32,
+    pub delta: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

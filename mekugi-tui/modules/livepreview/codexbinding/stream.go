@@ -56,11 +56,6 @@ func Start(ctx context.Context, broker *previewmodel.Session, id Identity, timin
 	return worker
 }
 
-// Prime supplies a captured baseline without replacing an earlier successful read.
-func (w *Stream) Prime(path, content string, exists bool) {
-	projection.Prime(w.ctx, w.readPatch, path, content, exists)
-}
-
 func (w *Stream) Done() <-chan struct{} { return w.done }
 
 func (worker *Stream) Append(delta string) {

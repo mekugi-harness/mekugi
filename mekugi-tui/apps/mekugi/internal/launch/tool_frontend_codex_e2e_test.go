@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
+
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/mcptransport"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
@@ -70,13 +70,11 @@ type toolFrontendCodexProvider struct {
 	observeRequest func([]byte, http.Header) error // Optional consuming-boundary assertion.
 }
 
-func (p *toolFrontendCodexProvider) ForwardExecution(
-	_ context.Context,
+func (p *toolFrontendCodexProvider) respond(
 	_ context.Context,
 	body []byte,
 	headers http.Header,
-	_ string,
-) (*inferencegateway.Response, error) {
+) (*http.Response, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.turns++
@@ -150,9 +148,8 @@ func (p *toolFrontendCodexProvider) ForwardExecution(
 		wire.Write(responses.MustMarshalJSON(event))
 		wire.WriteString("\n\n")
 	}
-	result := serverHTTPResponse(wire.String())
-	result.Header.Set("Content-Type", "text/event-stream")
-	return testGatewayResponse(result, nil)
+	result := fixtureResponsesStream(wire.String())
+	return result, nil
 }
 
 // Check bundled mrun's process inputs and the stock PTY input path.

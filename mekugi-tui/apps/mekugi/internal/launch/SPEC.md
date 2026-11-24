@@ -28,9 +28,10 @@
 
 ### Codex profile overrides
 
-- `-p NAME` / `--profile NAME` reads `NAME.config.toml` from `$CODEX_HOME` once and applies its
-  typed TOML values as initial invocation-local `-c` overrides (CLI flags > profile > base/project
-  config; managed host policy remains authoritative). Configuration files are never rewritten.
+- With `-p NAME` / `--profile NAME`, the app server reads `NAME.config.toml`
+  from the admitted caller's `$CODEX_HOME`. Explicit CLI overrides take
+  precedence over the profile, which overrides base and project settings.
+  Managed policy remains authoritative. Launch does not rewrite these files.
 - The family freezes the admitted profile and caller environment (including `PATH` and auth-command
   dependencies); children, Side, One-off, and forked/rewound roots inherit them. Fresh resume
   reloads the profile; live reattachment keeps running settings and rejects a mismatched profile.

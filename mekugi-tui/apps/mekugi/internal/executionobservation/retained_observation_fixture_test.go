@@ -2,7 +2,6 @@ package executionobservation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -10,7 +9,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
@@ -77,12 +75,6 @@ func (s *mekugiReplayStore) write(r replayRecord) error {
 		return publishCapturedObservation(s.transaction, s.changeScope(), r.Workspace, r.CallID, r.History)
 	}
 	return publishObservation(s.transaction, s.changeScope(), legacycall.Record{Version: r.Version, Workspace: r.Workspace, CallID: r.CallID, Commentary: r.Commentary, CaptureOrder: r.CaptureOrder, History: retainedHistory(r.History), Snapshots: r.Snapshots})
-}
-func (s *mekugiReplayStore) prepareHandleScope(ctx context.Context, metadata codexresponses.TurnMetadata) (context.Context, error) {
-	if s == nil {
-		return ctx, nil
-	}
-	return prepareHandleScope(ctx, s.publication, s.writes, metadata)
 }
 
 // Readers acquire this lease before store.lock; cleanup only tries it without
@@ -172,26 +164,6 @@ func (s *mekugiReplayStore) put(ctx context.Context, workspace string, histories
 	}
 	return publishObservations(ctx, s.changeScope(), s.changes, s.liveDiff, workspace, histories)
 }
-func (s *mekugiReplayStore) retainInput(ctx context.Context, workspace string, raw json.RawMessage, histories map[string]mekugiHistory, release func()) error {
-	if s == nil {
-		return nil
-	}
-	if s.transaction != nil {
-		return errors.New("nested replay publication transaction")
-	}
-	var items []map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &items)
-	return retainObservationInput(ctx, s.changeScope(), s.changes, observationRetentionInput(workspace, raw, items, release), histories)
-}
-func (s *mekugiReplayStore) putAfterMaintenance(ctx context.Context, workspace string, histories map[string]mekugiHistory) error {
-	if s == nil {
-		return nil
-	}
-	return publishAfterMaintenance(ctx, s.changeScope(), s.changes, s.liveDiff, workspace, histories)
-}
-func (s *mekugiReplayStore) agentEditNotice(ctx context.Context, workspace, call string, value mekugiHistory) (string, error) {
-	return agentEditNotice(ctx, s.changeScope(), s.changes, workspace, call, value)
-}
 
 // Fixture composition supplies production owners before preparing an operation.
 func setTestProxyStore(p *Preparer, store *mekugiReplayStore) {
@@ -214,9 +186,6 @@ func observationTestStore(selected changes.Scope, source changes.Service, snapsh
 }
 func testProxyStore(p *Preparer) *mekugiReplayStore {
 	return observationTestStore(p.Retained, p.Changes, p.Checkpoints, p.PublishChanges)
-}
-func testResponseStore(t *mekugiResponseTransform) *mekugiReplayStore {
-	return observationTestStore(t.owners.Retained, t.owners.Changes, t.owners.Checkpoints, t.owners.PublishChanges)
 }
 
 const maxReplayRecordBytes = history.MaxRecordBytes

@@ -109,9 +109,9 @@ Query retained calls, outcomes and static corpus findings
 
 Generate optional thread names while preserving manual authority
 
-- Composition: selected; lifetime: `host-operation`.
+- Composition: selected; lifetime: `stateless`.
 - Requires: none.
-- Codex connections: `thread-naming`.
+- Codex connections: none.
 
 ## [sessionpreferences](../../mekugi-tui/modules/sessionpreferences/SPEC.md)
 
@@ -131,7 +131,7 @@ Schedule retained observations with synthetic streaming and read-only playback c
 
 ## [transportdiagnostics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md)
 
-Observe transport bytes, timing, capture health and provider-response evidence
+Measure native inference exchanges and inspect private transport evidence
 
 - Composition: selected; lifetime: `invocation`.
 - Requires: `sessionhistory`.
@@ -141,11 +141,10 @@ Observe transport bytes, timing, capture health and provider-response evidence
 
 ## [usage](../../mekugi-tui/modules/usage/SPEC.md)
 
-Retain provider-authoritative thread usage, reference costs and throughput
+Project provider-authoritative thread usage, reference costs and throughput
 
 - Composition: selected; lifetime: `invocation`.
 - Requires: `sessionhistory`.
-- Resources: on-demand retained-usage publication worker.
 - Contributes: `record-kinds`, `presentation`.
 - Records: `usage`.
 - Codex connections: none.

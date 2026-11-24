@@ -14,6 +14,7 @@ use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::plaintext_agent_message_content;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
+use futures::FutureExt;
 use std::borrow::Cow;
 
 #[cfg(test)]
@@ -30,6 +31,60 @@ pub(super) struct ListenerTaskContext {
     pub(super) codex_home: PathBuf,
     pub(super) skills_watcher: Arc<SkillsWatcher>,
     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
+}
+
+/// Only new, persistent Main starts register an auto-title source.
+pub(super) struct AutoTitle {
+    pub(super) thread_id: ThreadId,
+    pub(super) permit: Arc<ThreadListState>,
+}
+
+impl AutoTitle {
+    async fn generate(
+        &self,
+        thread: &CodexThread,
+        manager: &ThreadManager,
+        outgoing: &OutgoingMessageSender,
+        turn: &str,
+        prompt: &str,
+    ) -> Option<()> {
+        let store = manager.thread_store();
+        let read = || {
+            store.read_thread(StoreReadThreadParams {
+                thread_id: self.thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+        };
+        if read().await.ok()?.name.is_some() {
+            return None;
+        }
+        let name = thread.generate_title(turn, prompt).await?;
+        let _permit = self.permit.acquire_exclusive().await.ok()?;
+        if read().await.ok()?.name.is_some() {
+            return None;
+        }
+        manager
+            .update_thread_metadata(
+                self.thread_id,
+                StoreThreadMetadataPatch {
+                    name: Some(Some(name.clone())),
+                    ..Default::default()
+                },
+                false,
+            )
+            .await
+            .ok()?;
+        outgoing
+            .send_server_notification(ServerNotification::ThreadNameUpdated(
+                ThreadNameUpdatedNotification {
+                    thread_id: self.thread_id.to_string(),
+                    thread_name: Some(name),
+                },
+            ))
+            .await;
+        Some(())
+    }
 }
 
 struct UnloadingState {
@@ -524,12 +579,21 @@ async fn start_listener(
     } = listener_task_context;
     let outgoing_for_task = Arc::clone(&outgoing);
     tokio::spawn(async move {
+        let mut can_auto_title = conversation
+            .thread_extension_data()
+            .get::<AutoTitle>()
+            .is_some_and(|title| title.thread_id == conversation_id);
+        let mut title_prompt = None;
+        let mut title_task = std::future::pending::<()>().boxed();
         let shutdown_complete = loop {
             tokio::select! {
                 biased;
                 _ = &mut cancel_rx => {
                     // Listener was superseded or the thread is being torn down.
                     break false;
+                }
+                () = &mut title_task => {
+                    title_task = std::future::pending().boxed();
                 }
                 listener_command = listener_command_rx.recv() => {
                     let Some(listener_command) = listener_command else {
@@ -557,6 +621,26 @@ async fn start_listener(
                         }
                     };
 
+                    if can_auto_title {
+                        match &event.msg {
+                            EventMsg::UserMessage(user) if title_prompt.is_none() && !user.message.trim().is_empty() => {
+                                title_prompt = Some(user.message.chars().take(4096).collect::<String>());
+                            }
+                            EventMsg::RawResponseCompleted(_) if title_prompt.is_some() => {
+                                can_auto_title = false;
+                                if let (Some(title), Some(prompt)) = (conversation.thread_extension_data().remove::<AutoTitle>(), title_prompt.take()) {
+                                    let thread = Arc::clone(&conversation);
+                                    let manager = Arc::clone(&thread_manager);
+                                    let outgoing = Arc::clone(&outgoing_for_task);
+                                    let turn = event.id.clone();
+                                    title_task = async move {
+                                        title.generate(&thread, &manager, &outgoing, &turn, &prompt).await;
+                                    }.boxed();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                     if let Some(worker) = &turn_cost_worker {
                         worker.observe_event(
                             conversation_id,
@@ -578,10 +662,12 @@ async fn start_listener(
                     };
                     // Plaintext agent mail is part of the standard transcript,
                     // not a request for the rest of the raw provider stream.
+                    // Mekugi family consumers also project provider usage from completed responses.
                     if !raw_events_enabled && matches!(
                         &event.msg,
                         EventMsg::RawResponseItem(_) | EventMsg::RawResponseCompleted(_) | EventMsg::PrivateSessionEvent(_)
-                    ) && !matches!(
+                    ) && !(config.family.is_some() && matches!(&event.msg, EventMsg::RawResponseCompleted(_)))
+                      && !matches!(
                         &event.msg,
                         EventMsg::RawResponseItem(raw)
                             if matches!(&raw.item, ResponseItem::AgentMessage { content, .. }

@@ -62,12 +62,11 @@ The current product implements these requirements through:
 
 - **Native runtime (`codex-rs`)** owning execution, V2 collaboration/waits, summary-free reset
   (`new_context`), source/skill acquisition, OS/Git environment facts, context-usage notices,
-  model-input output deduplication, and native helper commands (`mcat`, `mrun`, `msymbol`,
-  `mfinspect`).
-- **Go server and clients (`mekugi-tui/apps/mekugi`, `modules/`)** owning server-managed thread lifetimes,
-  terminal and Svelte browser UIs, authenticated session helpers (`mchanges`),
-  passive capture and 3-way merge revert/apply, shell guards, custom Responses routing, retained
-  session history, and offline inspection/replay.
+  model-input output deduplication, provider routing, captured changes and
+  `mchanges`, and native helper commands (`mcat`, `mrun`, `msymbol`, `mfinspect`).
+- **Go server and clients (`mekugi-tui/apps/mekugi`, `modules/`)** owning client attachments,
+  terminal and Svelte browser UIs, live edit presentation, shell guards, and offline
+  inspection and replay.
 - **Single-generation model structure**: compaction selections and child reply summaries ride
   existing replies rather than adding separate summarization calls (except opt-in wait progress
   summaries for changed developers).

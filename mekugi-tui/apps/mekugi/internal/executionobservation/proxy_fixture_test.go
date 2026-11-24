@@ -14,9 +14,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
-	previewbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/codexbinding"
-	previewview "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/terminalview"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 
 	"github.com/dlclark/regexp2/v2"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
@@ -49,15 +46,6 @@ func uniqueTestThread(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, testThreadSequence.Add(1))
 }
 
-// Ordinary proxy tests borrow the real, immutable built-in frontend catalog.
-func usePreloadTestFrontend(t *testing.T) {
-	t.Helper()
-	registry := sharedProxyTestRegistry(t)
-	t.Setenv("PATH", registry.FrontendDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv(routerTestWorkerEnvironment, "1")
-	t.Setenv("CODEX_THREAD_ID", "")
-}
-
 func sharedProxyTestRegistry(t *testing.T) *frontends.Registry {
 	t.Helper()
 	return proxyTestFixture.get(t)
@@ -83,7 +71,7 @@ func (fixture *proxyRegistryFixture) get(t *testing.T) *frontends.Registry {
 
 func newManagedMekugiProxy(t *testing.T) *Preparer {
 	t.Helper()
-	proxy := newMekugiProxy(newTestUsage(t), testHistory())
+	proxy := newMekugiProxy()
 	t.Cleanup(func() {
 		if err := proxy.Close(); err != nil {
 			t.Error(err)
@@ -179,19 +167,17 @@ func runToolPluginWorker(service *history.Service, commands []command.Contributi
 	return true, invocation.Run(service, commands, processScope, ctx, args, stdin, stdout, stderr)
 }
 
-// Close releases the actual owners created by request fixtures.
+// Close releases the actual owners created by observation fixtures.
 func (p *Preparer) Close() error {
 	if p == nil {
 		return nil
 	}
-	p.Calls.StopAdmission()
-	p.Calls.Close()
 	p.Audience.Close()
 	return nil
 }
 
-func newMekugiProxy(usage *accounting.Service, service *history.Service) *Preparer {
-	proxy := &Preparer{Config: Config{Calls: service.Calls(), Review: sessionreview.New(context.Background(), nil, nil), Usage: usage, Control: new(sessioncontrol.Observations), PreviewTiming: previewbinding.Timing{Frame: previewview.PreviewFrameDelay, Unit: previewview.PreviewUnitDelay, Finish: previewview.PreviewFinishDrain}, Windows: &Windows{}}}
-	proxy.Audience = sessioncontrol.NewAudience(func(category, message string) { proxy.notice("", "", category, message) })
+func newMekugiProxy() *Preparer {
+	proxy := &Preparer{Config: Config{Review: sessionreview.New(context.Background(), nil, nil), Windows: &Windows{}}}
+	proxy.Audience = sessioncontrol.NewAudience(nil)
 	return proxy
 }

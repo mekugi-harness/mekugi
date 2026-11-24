@@ -240,7 +240,7 @@ func TestAppServerSettingsModelListPagination(t *testing.T) {
 	u, w := newAppServerTestUI()
 	appServerTestRequest(t, u, "1", "model/list")
 	appServerTestMessage(t, u, `{"id":1,"result":{"data":[{"model":"one"}],"nextCursor":"next"}}`)
-	assertAppServerSettingsRequest(t, w, "model/list", map[string]any{"cursor": "next", "includeHidden": true})
+	assertAppServerSettingsRequest(t, w, "model/list", map[string]any{"threadId": u.Client.Thread, "cursor": "next", "includeHidden": true})
 	appServerTestMessage(t, u, `{"id":1,"result":{"data":[{"model":"two"}],"nextCursor":null}}`)
 	if len(u.models) != 2 || u.models[0].Model != "one" || u.models[1].Model != "two" {
 		t.Fatalf("catalog=%+v", u.models)

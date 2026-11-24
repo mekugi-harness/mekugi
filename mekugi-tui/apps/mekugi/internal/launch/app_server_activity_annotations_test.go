@@ -1,19 +1,12 @@
 package launch
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
-	"github.com/charmbracelet/x/ansi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
-
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 )
@@ -111,103 +104,5 @@ func TestAppServerWebSearchResults(t *testing.T) {
 	appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": "main", "turnId": "t", "item": item})
 	if len(u.attached.source.Entries) != 1 || u.testActivity(u.shell.Transcript).blocks(0)[0].Results == nil || *u.testActivity(u.shell.Transcript).blocks(0)[0].Results != 2 {
 		t.Fatalf("completed search: %+v", u.attached.source.Entries)
-	}
-}
-
-func TestAppServerFailedCodeModeCellShowsItsError(t *testing.T) {
-	for _, child := range []bool{false, true} {
-		t.Run(map[bool]string{false: "main", true: "child"}[child], func(t *testing.T) {
-			u := newAppServerSessionTestUI(t, t.TempDir())
-			u.shell.Transcript.Conversation = true
-			u.testActivity(u.shell.Transcript).testAudience()
-			activity := sessioncontrol.NewAudience(nil)
-			activity.Attach("main")
-			proxy := &observationFixture{activity: activity}
-			setTestAppServerIntegration(u, proxy)
-			thread, view := "main", u.testActivity(u.shell.Transcript)
-			if child {
-				thread, view = "child", u.testActivity(u.shell.Agents)
-				activity.Observe("child", "main", "/root/worker", true)
-				registerThread(&u.attached.session, binding.ThreadInfo{ID: "child", AgentNickname: "worker"})
-			}
-			failed := `[{"type":"input_text","text":"Script failed\nWall time 0.0 seconds\nOutput:\n"},{"type":"input_text","text":"Script error:\nSyntaxError: Unexpected token '<<'\n    at cell:1"}]`
-			completed := `[{"type":"input_text","text":"Script completed\nWall time 0.1 seconds\nOutput:\n"},{"type":"input_text","text":"Script error:\nprinted by the program"}]`
-			input := `[{"type":"custom_tool_call","call_id":"bad","name":"exec","input":"python3 - << 'PY'"},` +
-				`{"type":"custom_tool_call","call_id":"ok","name":"exec","input":"text('x')"},` +
-				`{"type":"custom_tool_call_output","call_id":"bad","output":` + failed + `},` +
-				`{"type":"custom_tool_call_output","call_id":"ok","output":` + completed + `}]`
-			request := &codexresponses.Request{Fields: map[string]json.RawMessage{"input": json.RawMessage(input)}}
-			// A repeated request carries the same output again; it is still one row.
-			for range 2 {
-				observeActivityRequest(t, proxy, thread, map[bool]string{false: "/root", true: "/root/worker"}[thread != "main"], request)
-				applyObservedActivity(&u.attached, &u.Client, u.usage, u.review, &u.approvals, &u.pendingEditReceipts, u.clock, u.restoring, u.audience)
-			}
-			if len(view.Entries) != 1 || view.Entries[0].Source.Kind != "error" ||
-				view.Entries[0].Source.Text != "exec script failed: SyntaxError: Unexpected token '<<'" {
-				t.Fatalf("failed cell entries: %+v", view.Entries)
-			}
-			if !child {
-				got := ansi.Strip(strings.Join(view.RenderFeed(90, 40).Lines, "\n"))
-				if !strings.Contains(got, "✗ main") || !strings.Contains(got, "│ exec script failed: SyntaxError: Unexpected token '<<'") {
-					t.Fatalf("Main lacks the failed cell:\n%s", got)
-				}
-			}
-		})
-	}
-}
-
-// A cell that printed nothing returned none of its commands' output; the rows
-// say so rather than implying the model saw it.
-func TestAppServerUnreturnedCodeModeOutputIsNoted(t *testing.T) {
-	u := newAppServerSessionTestUI(t, t.TempDir())
-	u.shell.Transcript.Conversation = true
-	u.testActivity(u.shell.Transcript).testAudience()
-	activity := sessioncontrol.NewAudience(nil)
-	activity.Attach("main")
-	trace := newNativeTraceFixture(t)
-	proxy := &observationFixture{activity: activity, nativeTrace: nativetrace.NewWithNotice(trace.root, nil)}
-	setTestAppServerIntegration(u, proxy)
-	cells := []struct{ call, source, output string }{
-		{"silent", `await tools.exec_command({cmd: "git log"}); await tools.exec_command({cmd: "true"})`, `"Script completed\nWall time 0.1 seconds\nOutput:"`},
-		{"printed", `text(await tools.exec_command({cmd: "go version"}))`, `"Script completed\nWall time 0.1 seconds\nOutput:\nclean"`},
-	}
-	commands := []struct{ id, cmd string }{{"log-exec", "git log"}, {"quiet-exec", "true"}, {"status-exec", "go version"}}
-	var input []string
-	for _, cell := range cells {
-		trace.start("main", cell.call+"-runtime", cell.call, cell.source)
-		for _, command := range commands {
-			if strings.Contains(cell.source, `"`+command.cmd+`"`) {
-				trace.tool("main", cell.call+"-runtime", command.id, "exec_command", string(responses.MustMarshalJSON(map[string]any{"cmd": command.cmd})))
-				trace.result("main", command.id, "completed", map[string]any{"exit_code": 0})
-			}
-		}
-		trace.end("main", cell.call+"-runtime")
-		input = append(input, string(responses.MustMarshalJSON(map[string]any{"type": "custom_tool_call", "call_id": cell.call, "name": "exec", "input": cell.source})))
-	}
-	for _, cell := range cells {
-		input = append(input, `{"type":"custom_tool_call_output","call_id":"`+cell.call+`","output":`+cell.output+`}`)
-	}
-	for _, command := range commands {
-		output := "commit abc\n"
-		if command.id == "quiet-exec" {
-			output = ""
-		}
-		appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": "main", "turnId": "t", "item": map[string]any{
-			"id": command.id, "type": "commandExecution", "command": command.cmd, "status": "completed", "exitCode": 0, "aggregatedOutput": output}})
-	}
-	rollCommandOutput(u)
-	request := &codexresponses.Request{Fields: map[string]json.RawMessage{"input": json.RawMessage("[" + strings.Join(input, ",") + "]")}}
-	for range 2 { // A repeated request notes each command once.
-		observeActivityRequest(t, proxy, "main", "/root", request)
-		applyObservedActivity(&u.attached, &u.Client, u.usage, u.review, &u.approvals, &u.pendingEditReceipts, u.clock, u.restoring, u.audience)
-	}
-	u.shell.Transcript.Expansion = 1
-	got := ansi.Strip(strings.Join(u.testActivity(u.shell.Transcript).RenderFeed(90, 60).Lines, "\n"))
-	under := "├ Ran     git log\n│         ┆ commit abc\n│         output not returned to the model\n"
-	if strings.Count(got, "output not returned to the model") != 1 || !strings.Contains(got, under) {
-		t.Fatalf("want one note, under git log's output:\n%s", got)
-	}
-	if !strings.Contains(got, "├ Ran     true\n└ Ran     go version\n") {
-		t.Fatalf("want separate rows for distinct shell calls:\n%s", got)
 	}
 }

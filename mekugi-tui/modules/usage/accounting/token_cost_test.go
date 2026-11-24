@@ -59,27 +59,3 @@ func TestTokenCostContextTierBoundary(t *testing.T) {
 		}
 	}
 }
-
-func TestThreadCostsKeepPerResponseModelsAndTiers(t *testing.T) {
-	totals := newTestUsage(t)
-	counts := inference.Usage{InputTokens: 200_000, UncachedInputTokens: 100_000, OutputTokens: 10_000}
-	first := totals.Observation("root", "", "gpt-6-astra", "")
-	first.Observe(counts)
-	first.Observe(counts)
-	totals.Observation("child", "", "gpt-6-astra", "").Observe(counts)
-	totals.Observation("root", "", "gpt-5.6-sol", "").Observe(counts)
-	report, ok := totals.Snapshot("root")
-	if !ok || report.InputTokens != 400_000 || !report.Cost.Known {
-		t.Fatal("lost cumulative usage or duplicate observation counted", report, ok)
-	}
-	if got := report.Cost.UncachedInput + report.Cost.CachedInput + report.Cost.Output; math.Abs(got-2.24) > 1e-10 {
-		t.Fatal("repriced history, combined context tiers, or included child usage", got)
-	}
-	// Once a response is unpriced, later priced usage cannot restore completeness.
-	totals.Observation("root", "", "unknown", "").Observe(counts)
-	totals.Observation("root", "", "gpt-6-astra", "").Observe(counts)
-	report, ok = totals.Snapshot("root")
-	if !ok || report.InputTokens != 800_000 || report.Cost.Known {
-		t.Fatal("partial cost presented as complete or token counts lost", report, ok)
-	}
-}

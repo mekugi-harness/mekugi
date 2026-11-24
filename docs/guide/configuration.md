@@ -86,9 +86,9 @@ mekugi codex -p work
 mekugi headless --yolo -p work < prompt.txt
 ```
 
-Imported values become initial invocation-local `-c` overrides. Explicit CLI
+The app server reads the selected file when it admits the family. Explicit CLI
 settings win; managed host policy remains authoritative. Relative paths use the
-invocation workspace. This is not native profile layering or profile writeback.
+invocation workspace. The selected file is never a write target.
 Source configuration, credentials and catalogs are never rewritten. Existing
 configuration writes still target Codex's ordinary user layer; imported presets
 are protected from ineffective lower-layer writes.
@@ -109,12 +109,11 @@ sessions. Fresh stopped-session resume reloads the selected file; imported field
 beat saved settings, and explicit CLI fields beat the import. Live attachment
 keeps the running settings and reports this for a matching selector; a different
 profile identity fails. Continuation hints retain the selector, not expanded
-profile contents. Literal secrets in imported argv have normal process-inspection
-exposure; prefer environment or command-backed authentication.
+profile contents. Profile values are not expanded into process arguments.
 
-Custom routes require the Responses wire protocol and endpoint substitution;
-AWS signing, gateway OAuth, incompatible managed policy and built-in OpenAI remote
-catalog overrides are unsupported. Stock execution integration remains required.
+Custom routes use the configured Responses endpoint directly. AWS signing,
+gateway OAuth, incompatible managed policy and built-in OpenAI remote catalog
+overrides are unsupported. Stock execution integration remains required.
 `mekugi codex` without a profile retains stock tools, including web search, on
 the normal Codex route.
 See the
@@ -126,8 +125,6 @@ See the
 | --- | --- | --- |
 | `--ansi-faint` | `auto` | Detect mosh; `on` uses ANSI faint, `off` fixed muted colors |
 | `--child-reply-summary` | `true` | Show child-authored summaries in Main, with the original behind Open reply |
-| `--timeout` | `10m` | Wait for response start |
-| `--stream-idle-timeout` | `4m` | Limit provider-message or HTTP-byte gaps |
 | `--capture-output PATH` | Disabled | Append sanitized JSONL metrics |
 | `--debug` | `false` | Record private [diagnostic evidence](../contributing/development.md#diagnostics) |
 
@@ -140,20 +137,19 @@ history and the UI. See the [projection contract](../../mekugi-tui/backends/code
 
 ## Metrics
 
-`/session` shows launch-wide usage/retries/coverage/throughput/cache/transport.
+`/session` shows launch-wide observed usage, coverage, and request timing.
 Its Features tab compares the displayed thread's use of model-facing features with the
 sum over all of its descendant agents. Each family lists its total beside the uses and
 failed attempts within it: compactions, spawns and their preloads, delegate final-answer
 edit ranges, `send_message` and `btw`, `wait_agent` all mode and output deduplication.
 Left/Right or Tab switches tabs; Up/Down/PgUp/PgDn scrolls, `[`/`]` selects exchanges,
 `r` refreshes, Esc closes. Launch totals do not restore; the roster retains thread
-usage. Throughput divides authoritative output tokens (including reasoning) by measured
-request seconds, including latency/retries, excluding tools/idle time. Missing
-measurements are unavailable; costs are API estimates, not subscription charges. Local
-estimates are not billing figures. See [metrics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md).
+usage. Throughput divides reported output tokens by measured provider request
+time, excluding tools and idle time. Missing measurements stay unavailable.
+Costs are reference API estimates, not subscription charges or billing figures.
+See [metrics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md).
 
 ```sh
-curl -sS "${MEKUGI_BASE_URL%/v1}/api/metrics"
 mekugi --capture-output capture.jsonl codex
 ```
 

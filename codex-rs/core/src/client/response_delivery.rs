@@ -63,14 +63,14 @@ impl ResponseDelivery {
     /// Return false when the turn has stopped receiving this attempt's output.
     pub(super) async fn send_or_hold(
         &mut self,
-        event: Result<ResponseEvent>,
+        mut terminal: SamplingEvent,
         tx: &mpsc::Sender<SamplingEvent>,
     ) -> bool {
         let passthrough = self.attempt.is_none() && self.settlement.is_none();
         if passthrough {
-            return tx.send(event.into()).await.is_ok();
+            return tx.send(terminal).await.is_ok();
         }
-        let report = match &event {
+        let report = match &terminal.event {
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
@@ -78,12 +78,12 @@ impl ResponseDelivery {
             }) => ModelRequestHookEvent::completed(response_id, token_usage.as_ref()),
             Err(error) => ModelRequestHookEvent::failed(error),
             Ok(item) if self.holds(item) => {
-                if let Ok(item) = event {
+                if let Ok(item) = terminal.event {
                     self.held.push(item);
                 }
                 return true;
             }
-            Ok(_) => return tx.send(event.into()).await.is_ok(),
+            Ok(_) => return tx.send(terminal).await.is_ok(),
         };
         let hooks = self.attempt.as_mut().and_then(|attempt| {
             let owner = attempt.owner_cancellation.clone();
@@ -100,13 +100,7 @@ impl ResponseDelivery {
             Default::default()
         };
         self.attempt = None;
-        let terminal = SamplingEvent {
-            event,
-            hook_output: crate::client_common::SamplingCharge {
-                hooks: hook_output,
-                ..Default::default()
-            },
-        };
+        terminal.hook_output.hooks = hook_output;
         let released = self.release(terminal, tx).await;
         match released {
             Ok(delivered) => delivered,

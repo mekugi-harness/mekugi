@@ -7,17 +7,20 @@ transport, timing, cache-prefix, and provider-stream diagnostics alongside execu
 altering routed payloads, adding network hops, exposing credentials/prompts/raw errors in sanitized
 artifacts, or affecting request outcomes.
 
-## Current approach (replaceable)
+## Live measurements
 
-- Observes HTTP, SSE, and WebSocket traffic at client/provider boundaries to power `/session`
-  metrics, `/api/metrics`, opt-in `--capture-output PATH` (`mekugi.capture.metrics.v7` sanitized
-  JSONL), and offline corpus/replay timing.
-- **Sanitized metrics & privacy**: records authoritative provider usage/tiers, exact byte counts,
-  retries, bounded stream-termination causes, and HMAC-256 prefix-comparison digests (key discarded
-  at shutdown), never prompts, credentials, patches, or raw error text.
-- **Retained request timing**: always-on per-thread record via
-  [Session history](../sessionhistory/SPEC.md) retains the latest 64 completed requests' transport
-  phase timestamps (64 MiB ceiling, 14-day expiry; published asynchronously off the delivery path)
-  for `inspect-session --ax` without requiring `--debug`.
-- **Optionality**: removing the module disables capture/metrics while keeping execution, usage,
-  and AX working (missing metrics stay explicitly unavailable, never zero).
+`/session` counts native completed responses and terminal turn errors in this
+launch. It retains the latest 64 rows without resetting totals. Usage comes
+from the provider. Throughput pairs observed output with measured provider
+time. Native rows do not include individual retries, wire sizes or cache
+prefix comparisons.
+
+## Private and retained evidence
+
+`--capture-output PATH` appends private JSONL with thread, turn, model, status,
+and any measured time and reported usage. The log excludes prompts, headers,
+provider response IDs and raw errors. Live measurements need no capture file.
+
+Inspect and replay can still read historical gateway captures. A native
+capture has no loopback boundary. Removing the module disables these
+diagnostics without changing inference.

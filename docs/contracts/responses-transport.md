@@ -10,31 +10,20 @@
 
 ## Boundary contract
 
-- **Endpoints & admission**: accepts Codex Responses WebSockets (`GET /v1/responses`), HTTP
-  SSE/JSON (`POST /v1/responses`), catalog forwarding (`GET /v1/models`), and authenticated
-  auxiliary routes (standalone search, native image edit/gen, history notes). Rejects multi-lane
-  `stream_id`, unsupported/malformed tool catalogs, and unsupported local context references with
-  actionable HTTP/WS 400 errors (never retryable 502s).
-- **Prewarm & execution-free turns**: `request_kind="prewarm"` with `generate=false` admits
-  non-generating handshakes without creating replay/agent state; execution-free turns pass through
-  without tool/guidance rewriting.
+- **Endpoints**: The native model client connects directly to the selected
+  provider for Responses, model catalogs and supported auxiliary requests.
+  See [provider routing](provider-routing.md) for endpoint and auth rules.
+- **Prewarm**: A non-generating WebSocket handshake prepares a connection;
+  it does not complete a turn or contribute provider usage.
 - **Projection boundary**: projection never mutates original tool arguments, host history, or
   retained evidence. Native [output deduplication](../../mekugi-tui/backends/codex/SPEC.md#output-deduplication)
   runs before transport; growing input preserves projected prefixes.
-- **Connection & failure semantics**: dedicated WebSocket connections forward concurrent steering
-  and `response.interrupt` unchanged; no request or steer is silently replayed after send failure or
-  disconnect. Downstream disconnects are recorded as cancellation, not translation faults. A
-  deterministic translation fault after `response.created` emits `response.failed` (`invalid_prompt`)
-  with a diagnostic reference; pre-stream provider errors stay retryable by Codex.
-
-## Current approach (replaceable)
-
-- `inferencegateway` owns admission, catalog/auxiliary forwarding, and WebSocket lifetimes;
-  `backends/codex/responses` owns envelopes and connection-local history; `providers/openai` owns
-  native OpenAI credentials/transport; `requestexecution` owns shared attempt execution, accounting,
-  and diagnostics.
-- `/v1/models` bounds responses to 8 MiB and preserves upstream ETags; WebSocket frames cap at 32
-  MiB client / 64 MiB provider; provider error bodies cap at 8 KiB.
-- ChatGPT requests force `access_programs.cyber="standard"` (not applied to custom providers).
-- `--timeout` bounds first non-control event; `--stream-idle-timeout` bounds active-response gaps.
-- `x-codex-turn-state` upgrade headers bridge once as `response.metadata`.
+- **Continuations**: A WebSocket continuation extends the projected prefix already
+  sent. Context reset rebuilds the selected model input without shortening
+  retained review outputs.
+- **Failures**: Cancellation, provider errors and usage belong to the native
+  request and its thread. A failed send or disconnect must not silently
+  replay a request or steer. Detaching a renderer does not cancel inference.
+- **Deadlines**: Codex owns provider timeouts. Custom providers can set
+  `stream_idle_timeout_ms` and `websocket_connect_timeout_ms` in their
+  provider configuration.

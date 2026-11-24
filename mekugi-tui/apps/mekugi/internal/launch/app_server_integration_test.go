@@ -12,10 +12,11 @@ func testAppServerIntegration(p *observationFixture) appServerIntegration {
 	return integration
 }
 func setTestAppServerIntegration(u *appServerUI, p *observationFixture) {
-	if p != nil {
-		u.Requests.AdmitSideFork = p.preparer().AdmitFork
-	}
 	integration := testAppServerIntegration(p)
+	if integration.preparer != nil {
+		u.Requests.AdmitSideFork = integration.preparer.AdmitFork
+	}
+	u.preparer = integration.preparer
 	u.controlObservations = integration.controlObservations
 	u.usage = integration.usage
 	u.audience = integration.audience

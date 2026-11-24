@@ -32,23 +32,14 @@
 
 ## Current approach (replaceable)
 
-- **Named pre-execution capture** reads bounded baselines for stock patches (literal or via
-  synchronous native pre-tool hooks for dynamic patches in `exec` cells) and statically recognized
-  shell writers (`cat`/`tee`/redirections, `mv`/`rm`, `sed -i`/`perl`, named formatters, literal
-  Python/JS writes, `mchanges apply`/`revert`, plus tracked `mktemp` paths), including named ignored
-  files. The `git clean -X` diagnostic does not expand ignored directories when no custom excludes
-  are supplied. `sed` arguments follow the dialect of the sed binary that runs: GNU, or BSD, where
-  `-i` always takes a suffix.
-- The local shell boundary can resolve direct output redirections through
-  `SESSION_TMP` using the runtime's scratch path before execution. These edits
-  retain normal Activity stats and details; saved Diff filtering is unchanged.
-- **Bounded workspace fallback** snapshots non-read-only commands using private Git state (never
-  touching user Git config/hooks/filters) with ignore rules, per-directory checkpoints for
-  `cd`/worktrees/symlinks, a 1s acquisition/comparison budget, 20k-file cap without Git ignore, and
-  512 MiB private object reset.
-- **Overlap & interval tracking**: parent/child runtimes share claim tables so an unnamed diff is
-  claimed once; intervening named edits split open writers into ordered intervals under one change
-  ID. Per-file chunked evidence spills past an 8 MiB inline-text budget; synchronous pre-tool
-  acquisition shares a 500 ms deadline.
-- See [Change history](../../mekugi-tui/modules/changehistory/SPEC.md) for `mchanges` and saved review, and
-  [Live preview](../../mekugi-tui/modules/livepreview/SPEC.md) for provisional streaming diffs.
+- Native capture reads patch baselines and shell write targets at their tool
+  boundaries, including dynamic patches inside `exec` cells. Shell targets
+  include tracked `mktemp` files and direct redirects through `SESSION_TMP`.
+  Evidence is written to the native store before an ID is exposed.
+- Native `mchanges`, preload, context reset and agent handoffs consume that
+  store. Legacy saved Diff still opens retained client records but does not
+  include newly native-captured edits. Activity shows native patch details.
+- The client still captures explicit user shell actions for saved review.
+  It does not reconstruct model tool execution from inference traffic.
+- See [Change history](../../mekugi-tui/modules/changehistory/SPEC.md) for
+  `mchanges` and saved review.

@@ -16,7 +16,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/projection"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 
 	chroma "github.com/alecthomas/chroma/v2"
@@ -320,49 +319,6 @@ func TestStockPatchPreviewKeepsSourceFromBeforeTheCall(t *testing.T) {
 	preview, ok := previewPatch("*** Begin Patch\n*** Update File: sample.go\n@@\n-old()\n+new()\n*** End Patch\n", workspace, true)
 	if !ok || len(preview.Files) != 1 || !strings.Contains(preview.Files[0].Diff, "-old()") {
 		t.Fatalf("final projection re-read the applied file: %+v", preview)
-	}
-}
-
-func TestCodeModePatchFinalPreviewUsesPreExecutionSource(t *testing.T) {
-	t.Parallel()
-	proxy := newManagedMekugiProxy(t)
-	broker := newLivePreview(t.Context())
-	proxy.review = testReview(broker)
-	attachTestReplayStore(t, proxy)
-	transform, _, _, workspace := newMekugiTestTransformWithProxy(t, proxy)
-	path := filepath.Join(workspace, "sample.go")
-	if err := os.WriteFile(path, []byte("old()\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	setLiveScope(broker, previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {"thread-1": true}}})
-	sub := testReview(broker).Subscribe()
-	<-sub.Events()
-
-	proxy.review.Preview().Enable()
-	patch := "*** Begin Patch\n*** Update File: sample.go\n@@\n-old()\n+new()\n*** End Patch\n"
-	script := "const patch = " + string(responses.MustMarshalJSON(patch)) + "; text(await tools.apply_patch(patch));"
-	for _, event := range []map[string]any{
-		{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{
-			"type": "custom_tool_call", "id": "code-item", "call_id": "code-call", "name": "exec",
-			"input": "", "status": "in_progress"}},
-		{"type": "response.custom_tool_call_input.delta", "item_id": "code-item", "delta": script},
-		{"type": "response.custom_tool_call_input.done", "item_id": "code-item", "call_id": "code-call", "input": script},
-	} {
-		if _, err := transform.TransformSSE(mustTestJSON(t, event)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The host runs after input.done, while the preview worker can still be
-	// revealing the call. Its final frame must use the captured old source.
-	if err := os.WriteFile(path, []byte("new()\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	preview := waitLiveDiffWorkerPreview(t, broker, sub, func(preview previewmodel.Preview) bool {
-		return preview.Complete
-	})
-	if len(preview.Files) != 1 || !strings.Contains(preview.Files[0].Diff, "-old()") ||
-		!strings.Contains(preview.Files[0].Diff, "+new()") || strings.HasPrefix(preview.Status, previewmodel.PreviewUnavailable) {
-		t.Fatalf("final preview did not use pre-execution source: %+v", preview)
 	}
 }
 

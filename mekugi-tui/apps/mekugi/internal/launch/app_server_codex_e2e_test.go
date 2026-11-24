@@ -7,24 +7,22 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-
-	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
-
-	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
-	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
-
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
+	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
+	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
@@ -33,8 +31,8 @@ import (
 
 type appPreviewProvider struct{}
 
-func (*appPreviewProvider) ForwardExecution(_, _ context.Context, _ []byte, _ http.Header, _ string) (*inferencegateway.Response, error) {
-	return testGatewayResponse(routerFaultCodexSuccessResponse(), nil)
+func (*appPreviewProvider) respond(_ context.Context, _ []byte, _ http.Header) (*http.Response, error) {
+	return fixtureResponsesSuccess(), nil
 }
 
 // Real Codex, real stdio and terminal rendering, deterministic local provider.
@@ -57,11 +55,86 @@ func TestAppServerPreviewCodeMode(t *testing.T) {
 	}
 }
 
-func runAppServerPreview(t *testing.T, provider inferencegateway.Forwarder) {
+type liveEditProvider struct {
+	started atomic.Bool
+	input   string
+	release <-chan struct{}
+}
+
+func (p *liveEditProvider) respond(ctx context.Context, _ []byte, _ http.Header) (*http.Response, error) {
+	if p.started.Swap(true) {
+		return fixtureResponsesSuccess(), nil
+	}
+	item := map[string]any{"id": "edit-item", "type": "custom_tool_call", "call_id": "edit-call", "name": "exec", "input": "", "status": "in_progress"}
+	reader, writer := io.Pipe()
+	go func() {
+		defer writer.Close()
+		if _, err := io.WriteString(writer, fixtureResponsesSSE(
+			fixtureSocketEvent("response.created", "preview-response"),
+			map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item},
+			map[string]any{"type": "response.custom_tool_call_input.delta", "item_id": "edit-item", "call_id": "edit-call", "output_index": 0, "delta": p.input},
+		)); err != nil {
+			return
+		}
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return
+		}
+		item["input"], item["status"] = p.input, "completed"
+		_, _ = io.WriteString(writer, fixtureResponsesSSE(
+			map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item},
+			fixtureSocketEvent("response.completed", "preview-response"),
+		))
+	}()
+	resp := fixtureResponsesStream("")
+	resp.Body = reader
+	return resp, nil
+}
+
+func TestAppServerStreamsLiveEditBeforeNativeToolExecution(t *testing.T) {
+	binary, err := exec.LookPath("mekugi-app-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "live.txt")
+	if err := os.WriteFile(path, []byte("original\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	write := "cat > live.txt <<'EOF'\nprovisional edit\nEOF\n"
+	release := make(chan struct{})
+	provider := &liveEditProvider{input: "const result = await tools.exec_command({cmd:" + strconv.Quote(write) + "}); text(result.output);", release: release}
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
+	defer server.Close()
+	review := sessionreview.New(t.Context(), previewmodel.New(changecapture.ReadFile), nil)
+	terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {
+		provider := `model_providers.preview={name="preview",base_url=` + strconv.Quote(server.URL+"/v1") + `,wire_api="responses",requires_openai_auth=false}`
+		cmd := exec.CommandContext(ctx, binary, "-c", provider, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false")
+		cmd.Env, cmd.Dir = routerFaultCodexEnvironment(t), workspace
+		return cmd
+	}, "", appServerIntegration{review: review})
+	defer terminal.cancel()
+	terminal.await("Ready")
+	terminal.send("Write a file.\r")
+	terminal.await("provisional edit")
+	if content, err := os.ReadFile(path); err != nil || string(content) != "original\n" {
+		t.Fatalf("workspace changed before the streamed input finished: %q, %v", content, err)
+	}
+	close(release)
+	terminal.await("Recovered after a retry.")
+	terminal.await("completed")
+	if content, err := os.ReadFile(path); err != nil || string(content) != "provisional edit\n" {
+		t.Fatalf("native tool did not apply the edit: %q, %v", content, err)
+	}
+	terminal.quit()
+}
+
+func runAppServerPreview(t *testing.T, provider fixtureResponsesProvider) {
 	runAppServerPreviewWithProxy(t, provider, nil)
 }
 
-func runAppServerPreviewWithProxy(t *testing.T, provider inferencegateway.Forwarder, proxy *observationFixture) {
+func runAppServerPreviewWithProxy(t *testing.T, provider fixtureResponsesProvider, proxy *observationFixture) {
 	runAppServerPreviewWithProxyAndHooks(t, provider, proxy, nil, nil)
 }
 
@@ -109,7 +182,7 @@ func TestAppServerPreviewQuickSwitch(t *testing.T) {
 	runAppServerPreviewWithProxyAndHooks(t, &appPreviewProvider{}, nil, before, after)
 }
 
-func runAppServerPreviewWithProxyAndHooks(t *testing.T, provider inferencegateway.Forwarder, proxy *observationFixture, beforePrompt, afterPrompt func(*testing.T, io.Writer, func(string), func(func(string) bool), *vt.Emulator)) {
+func runAppServerPreviewWithProxyAndHooks(t *testing.T, provider fixtureResponsesProvider, proxy *observationFixture, beforePrompt, afterPrompt func(*testing.T, io.Writer, func(string), func(func(string) bool), *vt.Emulator)) {
 	t.Helper()
 	runAppServerPreviewWithEnvironment(t, provider, proxy, nil, beforePrompt, afterPrompt)
 }
@@ -119,7 +192,6 @@ type appServerPreviewHook func(*testing.T, io.Writer, func(string), func(func(st
 // appServerPreview configures a preview run beyond its provider and proxy.
 type appServerPreview struct {
 	managedRuntime            bool
-	issues                    *requestexecution.Failures
 	integration               *appServerIntegration
 	environment               []string // Appended to Codex's isolated environment.
 	codexArgs                 []string // Appended to the app-server invocation.
@@ -130,12 +202,12 @@ type appServerPreview struct {
 
 // runAppServerPreviewWithEnvironment appends environment to Codex's isolated
 // environment.
-func runAppServerPreviewWithEnvironment(t *testing.T, provider inferencegateway.Forwarder, proxy *observationFixture, environment []string, beforePrompt, afterPrompt func(*testing.T, io.Writer, func(string), func(func(string) bool), *vt.Emulator)) {
+func runAppServerPreviewWithEnvironment(t *testing.T, provider fixtureResponsesProvider, proxy *observationFixture, environment []string, beforePrompt, afterPrompt func(*testing.T, io.Writer, func(string), func(func(string) bool), *vt.Emulator)) {
 	t.Helper()
 	runAppServerPreviewWith(t, provider, proxy, appServerPreview{environment: environment, beforePrompt: beforePrompt, afterPrompt: afterPrompt})
 }
 
-func runAppServerPreviewWith(t *testing.T, provider inferencegateway.Forwarder, proxy *observationFixture, options appServerPreview) {
+func runAppServerPreviewWith(t *testing.T, provider fixtureResponsesProvider, proxy *observationFixture, options appServerPreview) {
 	t.Helper()
 	environment, beforePrompt, afterPrompt := options.environment, options.beforePrompt, options.afterPrompt
 	binary := "codex"
@@ -146,7 +218,7 @@ func runAppServerPreviewWith(t *testing.T, provider inferencegateway.Forwarder, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, options.issues, proxy))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
@@ -178,7 +250,7 @@ func runAppServerPreviewWith(t *testing.T, provider inferencegateway.Forwarder, 
 	if options.integration != nil {
 		integration = *options.integration
 	}
-	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, cmd, terminal, terminal, integration, options.issues, "", true, nil, nil, "", nil, &observations, options.approvals)
+	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, cmd, terminal, terminal, integration, nil, "", true, nil, nil, "", &observations, options.approvals)
 	if err != nil {
 		t.Fatal(err)
 	}

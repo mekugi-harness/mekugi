@@ -3,14 +3,15 @@ package launch
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 )
@@ -131,34 +132,34 @@ func TestConnectedChildCanonicalIdentityAndMetrics(t *testing.T) {
 	if view := u.attached.presentation.View(); view.Main.Caller != "/root/worker" || view.Displayed != view.Main {
 		t.Fatalf("child startup selected another identity: %+v", view.Main)
 	}
-	c := &nativeConnection{families: map[string]*nativeFamily{"parent": {response: "1", threads: []binding.ThreadInfo{parent, child}}}}
-	c.projectAgent(&u.nativeSession)
-	usage := accounting.New()
-	t.Cleanup(usage.Close)
-	u.usage = usage
-	for range 8 {
-		usage.Observation("parent", "parent", "gpt-6-sol", "").Observe(inference.Usage{})
+	u.usage = accounting.New()
+	notifyTestProviderUsage(t, u, "child", "child-response", "gpt-6.2-sol", true, 1234, 56)
+	notifyTestProviderUsage(t, u, "parent", "parent-response", "gpt-6.2-sol", true, 319800, 1900)
+	c := &nativeConnection{root: &u.nativeSession, families: map[string]*nativeFamily{"parent": {observed: true}}}
+	result, err := json.Marshal(struct {
+		Data []binding.ThreadInfo `json:"data"`
+	}{Data: []binding.ThreadInfo{parent, child}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	usage.Observation("parent", "parent", "gpt-6-sol", "").Observe(inference.Usage{InputTokens: 319800, UncachedInputTokens: 319800, OutputTokens: 1900})
-	usage.Observation("child", "child", "gpt-6-sol", "").Observe(inference.Usage{InputTokens: 1234, UncachedInputTokens: 1234, OutputTokens: 56})
-	applyObservedActivity(&u.attached, &u.Client, usage, nil, nil, nil, u.clock, nil, nil)
+	if err := c.treeResponse("parent", appserver.Message{ID: []byte("1"), Result: result}); err != nil {
+		t.Fatal(err)
+	}
+	c.projectAgent(&u.nativeSession)
+	applyObservedActivity(&u.attached, &u.Client, u.usage, nil, nil, nil, u.clock, nil, nil)
 	publication := u.attached.childSource.Publication(u.attached.presentation, u.attached.source)
 	if len(publication.Roster) != 2 {
 		t.Fatalf("native family roster = %+v", publication.Roster)
 	}
 	for _, row := range publication.Roster {
 		agent := row.Agent
-		report, _ := usage.Snapshot(agent.Thread)
-		if agent.InputTokens != report.InputTokens || agent.OutputTokens != report.OutputTokens || agent.Roundtrips != report.Roundtrips || agent.Cost != report.Cost.Total() {
-			t.Fatalf("%s borrowed another thread's usage: %+v, own report: %+v", agent.Thread, agent, report)
-		}
 		switch agent.Thread {
 		case "parent":
-			if agent.Name != "/root" || agent.ContextTokens != 9000 {
+			if agent.Name != "/root" || agent.ContextTokens != 9000 || agent.InputTokens != 319800 || agent.OutputTokens != 1900 || agent.Roundtrips != 1 || math.Abs(agent.Cost-1.3077) > 1e-10 {
 				t.Fatalf("parent metrics = %+v", agent)
 			}
 		case "child":
-			if agent.Name != "/root/worker" || agent.ContextTokens != 1000 {
+			if agent.Name != "/root/worker" || agent.ContextTokens != 1000 || agent.InputTokens != 1234 || agent.OutputTokens != 56 || agent.Roundtrips != 1 || math.Abs(agent.Cost-0.003028) > 1e-10 {
 				t.Fatalf("child metrics = %+v", agent)
 			}
 		}

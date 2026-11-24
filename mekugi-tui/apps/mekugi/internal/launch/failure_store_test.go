@@ -47,14 +47,10 @@ func TestFailureReferencePersistsWithoutDebugAndResolvesAfterReopen(t *testing.T
 	const secret = "Authorization Bearer failure-store-secret"
 	const prompt = "private request body retained in the error"
 	wrapped := fmt.Errorf("translate prompt %q: %w", prompt,
-		requestexecution.Classify(errors.New(secret), "mekugi_sse:invalid_json", "the response could not be translated", false))
+		requestexecution.Classify(errors.New(secret), "mekugi_sse:invalid_json", "the response could not be translated"))
 	failure := requestexecution.Failure{
 		Session: "routing-session", Thread: "thread-failure-store",
 		Phase: "transform",
-		Stream: &transportcapture.Stream{
-			Transport: "http", BodyBytes: 128, Events: 2, LastEvent: "response.created",
-			CopyStop: "translation_error",
-		},
 	}
 	result := issues.Report(failure, wrapped)
 	if result.Reference == "" {
@@ -78,14 +74,6 @@ func TestFailureReferencePersistsWithoutDebugAndResolvesAfterReopen(t *testing.T
 		record.Error != wrapped.Error() || !strings.Contains(record.Error, secret) || !strings.Contains(record.Error, prompt) {
 		t.Fatalf("persisted failure metadata = %+v", record)
 	}
-	var stream map[string]any
-	if err := json.Unmarshal(record.Stream, &stream); err != nil {
-		t.Fatal(err)
-	}
-	if stream["transport"] != "http" || stream["last_event"] != "response.created" {
-		t.Fatalf("safe stream diagnostics were not retained: %s", record.Stream)
-	}
-
 	// Reopening the directory models a fresh router/store instance: lookup must
 	// rely on retained files, not the original requestexecution.Failures or store object.
 	if _, err := openMekugiReplayStore(directory); err != nil {
@@ -201,7 +189,7 @@ func TestFailurePersistenceLazilyOpensStateDirectory(t *testing.T) {
 	issues.Configure(requestexecution.FailureStorage{Diagnostics: testDiagnostics(nil, nil)})
 	failure := failureStoreTestFailure()
 
-	result := issues.Report(failure, requestexecution.ForwardError(errors.New("retained test failure")))
+	result := issues.Report(failure, errors.New("retained test failure"))
 
 	directory, err := history.ReplayDirectory()
 	if err != nil {
@@ -233,7 +221,7 @@ func TestFailurePersistenceOpenFailureRetainsOnlyNotice(t *testing.T) {
 	issues.Configure(requestexecution.FailureStorage{Diagnostics: testDiagnostics(nil, nil)})
 	failure := failureStoreTestFailure()
 
-	issues.Report(failure, requestexecution.ForwardError(errors.New("retained test failure")))
+	issues.Report(failure, errors.New("retained test failure"))
 
 	if pending := strings.Join(issues.Notices.Pending(), "\n"); !strings.Contains(pending, "could not retain the failure reference") {
 		t.Fatalf("failure-store notice missing: %s", pending)
@@ -267,7 +255,7 @@ func TestFailureStoreLockTimeoutDoesNotBlockCriticalNoticeAccess(t *testing.T) {
 		started := time.Now()
 		persistDeadline := time.After(5 * time.Second)
 		go func() {
-			issues.Report(failure, requestexecution.ForwardError(errors.New("retained test failure")))
+			issues.Report(failure, errors.New("retained test failure"))
 			close(done)
 		}()
 		defer func() {

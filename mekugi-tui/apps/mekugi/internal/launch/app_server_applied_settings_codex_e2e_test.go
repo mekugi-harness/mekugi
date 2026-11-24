@@ -33,7 +33,7 @@ func testAppServerAppliedSettingsFreshProcessNativeCodex(t *testing.T, commandRe
 	for _, tier := range []string{"priority", "default"} {
 		t.Run(tier, func(t *testing.T) {
 			provider := &appResumeProvider{}
-			server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+			server := httptest.NewServer(fixtureResponsesHandler(provider))
 			defer server.Close()
 			environment := routerFaultCodexEnvironment(t)
 			var codexHome string

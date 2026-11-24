@@ -46,7 +46,7 @@ func TestComposerPredictionNativeCodex(t *testing.T) {
 		if count > 1 {
 			answer = `{"suggestion":"Show tests"}`
 		}
-		response := routerFaultCodexSuccessResponse()
+		response := fixtureResponsesSuccess()
 		defer response.Body.Close()
 		wire, _ := io.ReadAll(response.Body)
 		w.Header().Set("Content-Type", "text/event-stream")

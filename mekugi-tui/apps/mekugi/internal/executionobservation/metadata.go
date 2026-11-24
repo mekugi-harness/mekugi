@@ -37,3 +37,16 @@ func usableRoutingDirectory(declared map[string]json.RawMessage) (string, bool) 
 	}
 	return "", false
 }
+
+// AdmitFork receives only confirmed host identity and cwd, before a child
+// turn starts. Review membership supplies workspace identity, not permissions.
+func (p *Preparer) AdmitFork(source, thread, workspace string) {
+	if source == "" || thread == "" || source == thread || workspace == "" {
+		return
+	}
+	directory := p.observationDirectory(map[string]json.RawMessage{workspace: nil}, source)
+	if directory == "" {
+		return
+	}
+	p.Review.IncludeThread(directory, thread, false)
+}

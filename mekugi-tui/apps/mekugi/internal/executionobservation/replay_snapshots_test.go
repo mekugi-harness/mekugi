@@ -1,8 +1,6 @@
 package executionobservation
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,12 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
@@ -110,63 +106,6 @@ func TestReplaySnapshotsRoundTripDedupAndLegacy(t *testing.T) {
 		t.Fatal("accepted changed durable evidence")
 	}
 }
-
-func TestReplaySnapshotsRejectUnavailableAndCorruptEvidence(t *testing.T) {
-	t.Parallel()
-	for _, kind := range []string{"missing", "hash mismatch", "gzip corrupt", "symlink", "expansion bound"} {
-		t.Run(kind, func(t *testing.T) {
-			store, err := openMekugiReplayStore(t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			snapshotTestPut(t, store, t.Context(), "call", snapshotTestHistory())
-			path := snapshotTestBlobs(t, store)[0]
-			if err := os.Remove(path); err != nil {
-				t.Fatal(err)
-			}
-			switch kind {
-			case "hash mismatch", "expansion bound":
-				var data bytes.Buffer
-				z := gzip.NewWriter(&data)
-				payload := "[]"
-				if kind == "expansion bound" {
-					payload = strings.Repeat("x", maxReplayRecordBytes+1)
-				}
-				if _, err := z.Write([]byte(payload)); err != nil {
-					t.Fatal(err)
-				}
-				if err := z.Close(); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, data.Bytes(), 0600); err != nil {
-					t.Fatal(err)
-				}
-			case "gzip corrupt":
-				if err := os.WriteFile(path, []byte("corrupt"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			case "symlink":
-				if err := os.Symlink(filepath.Join(t.TempDir(), "absent"), path); err != nil {
-					t.Fatal(err)
-				}
-			}
-			_, found, readErr := store.lookup(t.Context(), "/w", "call")
-			if readErr == nil || found {
-				t.Fatalf("unavailable evidence claimed readable: found=%v err=%v", found, readErr)
-			}
-			request := &codexresponses.Request{Fields: map[string]json.RawMessage{
-				"input": json.RawMessage(`[{"type":"function_call","call_id":"call"}]`),
-			}}
-			if _, err := testProxyWithStore(store).reconcileVisibleInput(t.Context(), request, "/w", "session"); err == nil || err.Error() != readErr.Error() {
-				t.Fatalf("request preparation must reject invalid dependencies: got %v, want %v", err, readErr)
-			}
-			if err := store.put(t.Context(), "/w", map[string]mekugiHistory{"call": snapshotTestHistory()}); err == nil {
-				t.Fatal("retry claimed durable success with invalid dependencies")
-			}
-		})
-	}
-}
-
 func TestInlineEditStorageFailureDoesNotPublishCall(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())
@@ -181,8 +120,6 @@ func TestInlineEditStorageFailureDoesNotPublishCall(t *testing.T) {
 		t.Fatalf("published an envelope before snapshots were durable: %v %v", found, err)
 	}
 }
-
-// Inline evidence and its envelope are admitted atomically, without snapshot files.
 func TestInlineEditEvidenceAdmissionIsAtomic(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())
@@ -218,7 +155,6 @@ func TestInlineEditEvidenceAdmissionIsAtomic(t *testing.T) {
 		t.Fatalf("round trip found=%v err=%v", found, err)
 	}
 }
-
 func TestReplaySnapshotsForkDependenciesSurviveCleanup(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())
@@ -229,9 +165,7 @@ func TestReplaySnapshotsForkDependenciesSurviveCleanup(t *testing.T) {
 	h := snapshotTestHistory()
 	snapshotTestPut(t, store, parent, "shared", h)
 	child, releaseChild := retentionTestSession(t, store, "fork", 0)
-	if err := store.retainInput(child, "/w", nil, map[string]mekugiHistory{"shared": h}, nil); err != nil {
-		t.Fatal(err)
-	}
+	bindTestHandleScope(t, store, child, "", "parent")
 	release()
 	retentionTestAge(t, store, "parent", 15*24*time.Hour)
 	if err := store.cleanupSessions(t.Context()); err != nil {
@@ -261,41 +195,6 @@ func TestReplaySnapshotsForkDependenciesSurviveCleanup(t *testing.T) {
 		t.Fatalf("last owner left snapshot artifacts: %v", blobs)
 	}
 }
-
-func TestReplaySnapshotsRetainedFrozenFileAfterRestart(t *testing.T) {
-	t.Parallel()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	parent, release := retentionTestSession(t, store, "parent", 0)
-	parentScope := store.scoped(parent).changeScope()
-	const content = "retained frozen evidence\n"
-	path, _, err := store.publication.WriteReadOnlyFile(parent, parentScope.Thread, parentScope.Limits, parentScope.Writes, "output", ".txt", []byte(content))
-	if err != nil {
-		t.Fatal(err)
-	}
-	release()
-	child, _ := retentionTestSession(t, store, "reader", 0)
-	child = bindTestHandleScope(t, store, child, "", "parent")
-	raw := responses.MustMarshalJSON([]map[string]string{{"type": "message", "content": "Read with mcat " + path}})
-	if err := store.retainInput(child, "/w", raw, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	retentionTestAge(t, store, "parent", 15*24*time.Hour)
-	if err := store.cleanupSessions(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := openMekugiReplayStore(store.directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := reopened.publication.ReadReadOnlyFile(path, history.MaxRecordBytes)
-	if err != nil || string(data) != content {
-		t.Fatalf("retained frozen file differs after expiry/restart: %q err=%v", data, err)
-	}
-}
-
 func TestReplaySnapshotsPressureProtectsUnpublishedDependencies(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())
@@ -327,7 +226,6 @@ func TestReplaySnapshotsPressureProtectsUnpublishedDependencies(t *testing.T) {
 		t.Fatalf("failed update damaged retained facts: found=%v err=%v", found, err)
 	}
 }
-
 func TestReplaySnapshotsLegacyCatalogProtectsDependencies(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())

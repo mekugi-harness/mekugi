@@ -85,6 +85,9 @@ func (session *nativeSession) sessionCommand(attached *attachedPresentation, pic
 	session.Client.Replacement.Clear()
 	attached.presentation.Status.SetText("Starting new session…")
 	params := sessioncontrol.ThreadPermissions(map[string]any{"sessionStartSource": "clear"}, session.approvalMode)
+	if family := session.Client.Startup.Family; family != nil {
+		params["family"] = family
+	}
 	if attached.cwd != "" {
 		params["cwd"] = attached.cwd
 	}
