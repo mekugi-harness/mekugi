@@ -117,11 +117,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 - Native request construction expands submitted attachment snapshots and
   attributes standalone tool context without rewriting retained review items.
-  Context resets publish optional read-only attachment recall. Side forks
-  reuse parent cache routing. Answer-only forks reject compaction before
-  making a provider request; BTW caps supported effort at low. Exact-model
-  service tier defaults and thread choices are applied before HTTP and
-  WebSocket delivery.
+  Side forks reuse parent cache routing; answer-only forks stop when auto
+  reset is required. UI BTW caps supported effort at low. Native exact-model
+  tier defaults and thread choices use provider capability checks. Resuming
+  a stopped session keeps explicit choices and uses current defaults otherwise.
 
 - Context resets rebuild from current sources without a generated summary.
   `new_context` can reload selected files, skills, and captured changes. Manual

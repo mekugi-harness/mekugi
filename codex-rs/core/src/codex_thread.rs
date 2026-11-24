@@ -93,6 +93,7 @@ use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use rmcp::model::ReadResourceRequestParams;
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -189,6 +190,7 @@ pub struct CodexThreadSettingsOverrides {
     pub effort: Option<Option<ReasoningEffort>>,
     pub summary: Option<ReasoningSummary>,
     pub service_tier: Option<Option<String>>,
+    pub service_tier_choices: Option<Arc<BTreeMap<String, String>>>,
     pub collaboration_mode: Option<CollaborationMode>,
     pub personality: Option<Personality>,
     pub disabled_plugin_ids: Option<Vec<String>>,
@@ -1039,6 +1041,7 @@ impl CodexThread {
             effort,
             summary,
             service_tier,
+            service_tier_choices,
             collaboration_mode,
             personality,
             disabled_plugin_ids,
@@ -1053,6 +1056,7 @@ impl CodexThread {
                 collaboration_mode,
                 reasoning_summary: summary,
                 service_tier,
+                service_tier_choices,
                 personality,
                 approval_policy,
                 approvals_reviewer,

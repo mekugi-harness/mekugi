@@ -66,7 +66,6 @@ impl SessionTask for CompactTask {
         );
         // Preparation errors must reach the task runner, which reports them to the client.
         session.emit_turn_started(&ctx, TaskKind::Compact).await;
-        session.services.model_client.check_compaction()?;
         session.check_rollout_budget()?;
         let step_context = session
             .capture_step_context(Arc::clone(&ctx), &cancellation_token)

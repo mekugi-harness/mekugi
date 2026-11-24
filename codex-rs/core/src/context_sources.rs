@@ -548,7 +548,7 @@ fn is_environment_reference(reference: &str) -> bool {
 }
 
 /// Recognize source references in text, not bare paths, escaped markers, email addresses or shell vars.
-pub(crate) fn references(text: &str) -> Vec<String> {
+fn references(text: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut index = 0;
     while index < text.len() {

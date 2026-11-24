@@ -150,6 +150,8 @@ pub(crate) fn build_agent_resume_config(turn: &TurnContext) -> Result<Config, St
 fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
+    config.service_tier_choice = None;
+    config.retained_service_tier_choices = Default::default();
     if config
         .features
         .enabled(Feature::SubagentDefaultContextLimits)

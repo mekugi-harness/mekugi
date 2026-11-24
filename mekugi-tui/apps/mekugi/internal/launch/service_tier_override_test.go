@@ -127,24 +127,19 @@ func TestServiceTierPickerSelectionUpdatesEffectiveTier(t *testing.T) {
 	for _, tc := range []struct {
 		name, initial, keys string
 		want                any
-		applied             string
 	}{
-		{"flex", "", "\x1b[F\r", "flex", "flex"},
-		{"default", "flex", "\x1b[H\r", nil, ""},
-		{"default-noop", "", "\x1b[H\r", nil, ""},
+		{"flex", "", "\x1b[F\r", "flex"},
+		{"default", "flex", "\x1b[H\r", nil},
+		{"pin-default", "", "\x1b[H\r", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u, input := newServiceTierPickerTestUI(t, "gpt-6.1-sol", tc.initial)
 			appServerTestKeys(t, u, "/tier\r"+tc.keys)
-			if tc.initial != tc.applied {
-				assertAppServerSettingsRequest(t, input, "thread/settings/update", map[string]any{"threadId": "main", "serviceTier": tc.want})
-				if u.picker.Open || !u.Settings.Pending() || u.settings.Tier != tc.initial {
-					t.Fatal("selection replaced host settings before confirmation")
-				}
-				appServerTestNotify(t, u, "thread/settings/updated", map[string]any{"threadId": "main", "threadSettings": map[string]any{"model": "gpt-6.1-sol", "effort": "high", "serviceTier": tc.want}})
-			} else if input.Len() != 0 || u.Settings.Pending() {
-				t.Fatal("unchanged host value waited for a notification")
+			assertAppServerSettingsRequest(t, input, "thread/settings/update", map[string]any{"threadId": "main", "serviceTier": tc.want})
+			if u.picker.Open || !u.Settings.Pending() || u.settings.Tier != tc.initial {
+				t.Fatal("selection replaced host settings before confirmation")
 			}
+			appServerTestNotify(t, u, "thread/settings/updated", map[string]any{"threadId": "main", "threadSettings": map[string]any{"model": "gpt-6.1-sol", "effort": "high", "serviceTier": tc.want}})
 		})
 	}
 }

@@ -4,25 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 )
-
-func (s *Server) forkClassifier() sessioncontrol.ForkClassifier {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	forks, _ := s.requests.(sessioncontrol.ForkClassifier)
-	return forks
-}
-
-// IsSideThread borrows classification from this runtime's admitted request owner.
-func (s *Server) IsSideThread(thread string) bool {
-	forks := s.forkClassifier()
-	return forks != nil && forks.IsSideThread(thread)
-}
 
 type NativeRuntime interface {
 	Inspect(context.Context, string) (observation.SessionDetails, error)

@@ -98,7 +98,6 @@ type nativeSession struct {
 	rewindExecutable      string
 	profile               *launchoptions.Profile
 	replayDebugDirectory  string
-
 	models            []appServerModel
 	modelsLoading     bool
 	ownedImages       map[string]bool

@@ -754,6 +754,7 @@ mod tests {
                     model: "gpt-5.2-codex".to_string(),
                     model_provider_id: "updated-provider".to_string(),
                     service_tier: None,
+                    service_tier_choices: None,
                     approval_policy: AskForApproval::Never,
                     approvals_reviewer: ApprovalsReviewer::User,
                     requested_approvals_reviewer: None,

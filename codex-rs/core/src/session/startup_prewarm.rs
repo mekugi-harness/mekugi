@@ -391,8 +391,7 @@ async fn schedule_startup_prewarm_inner(
         && !startup_turn_context
             .initial_settings
             .selected()
-            .model_tiers
-            .contains_key(&preconnect_model_info.slug);
+            .has_model_tier(&preconnect_model_info.slug);
     let preconnect_service_tier = if inherits_root_service_tier {
         crate::session::get_service_tier(
             crate::agent::host::service_tier(

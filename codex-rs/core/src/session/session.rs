@@ -333,6 +333,7 @@ impl SessionConfiguration {
             model: self.step_settings.collaboration_mode.model().to_string(),
             model_provider_id: self.original_config_do_not_use.model_provider_id.clone(),
             service_tier: self.step_settings.service_tier.clone(),
+            service_tier_choices: Some(self.step_settings.service_tier_choices.as_ref().clone()),
             approval_policy: self.step_settings.approval_policy.value(),
             approvals_reviewer: self.step_settings.approvals_reviewer,
             requested_approvals_reviewer: self
@@ -378,7 +379,7 @@ impl SessionConfiguration {
             active_permission_profile: self.active_permission_profile(),
             windows_sandbox_level: Some(self.windows_sandbox_level),
             summary: self.step_settings.reasoning_summary,
-            service_tier: Some(self.step_settings.service_tier.clone()),
+            service_tier_choices: Some(Arc::clone(&self.step_settings.service_tier_choices)),
             collaboration_mode: Some(self.step_settings.collaboration_mode.clone()),
             personality: self.step_settings.personality,
             disabled_plugin_ids: Some(self.disabled_plugin_ids.clone()),
@@ -657,7 +658,8 @@ impl Session {
             &configuration.model_info_overrides,
         ))
         .await;
-        snapshot.service_tier = configuration.step_settings.effective_service_tier(
+        snapshot.service_tier = get_service_tier(
+            snapshot.service_tier.take(),
             &configuration.original_config_do_not_use.features,
             &model_info,
         );
@@ -1900,7 +1902,7 @@ impl Session {
                 workspace_routing.as_ref().clone(),
                 extensions.model_request_contributors().to_vec(),
             )
-            .with_request_shaping(session_configuration.thread_source.as_ref(), &config)
+            .with_side_fork(session_configuration.thread_source.as_ref())
             .with_child_reply_summary(config.features.enabled(Feature::ChildReplySummary))
             .with_budget_policy(budget_policy.clone())
             .with_executed_tool_calls(executed_tool_calls.clone())
