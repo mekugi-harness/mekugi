@@ -639,9 +639,19 @@ impl ExecCommandToolOutput {
 
     fn response_text(&self) -> String {
         let header = self.response_header();
+        let spill_suffix_reserve = if self.truncated_output_dir.is_some() {
+            " (id: 00000000)".len()
+        } else {
+            0
+        };
         let output_budget = with_serialization_allowance(self.truncation_policy)
             .byte_budget()
-            .saturating_sub(header.len().saturating_add(/*rhs*/ 1));
+            .saturating_sub(
+                header
+                    .len()
+                    .saturating_add(/*rhs*/ 1)
+                    .saturating_add(spill_suffix_reserve),
+            );
         let mut policy = self.model_output_policy();
         let mut output = self.truncated_output_with_policy(policy);
 
