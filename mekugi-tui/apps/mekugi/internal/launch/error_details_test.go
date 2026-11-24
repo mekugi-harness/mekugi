@@ -162,7 +162,7 @@ func TestErrorDetailsKeyboardPaginationAndFiltering(t *testing.T) {
 	if terminalTest(u).Dialog.Document.Text != "new error" {
 		t.Fatal("keyboard did not open newest error")
 	}
-	terminalTest(u).outputKey("\x1b[D")
+	terminalTest(u).outputKey("\x1b[Z")
 	drawOutputDialog(terminalTest(u))
 	if terminalTest(u).Dialog.Document.Text != "old error" {
 		t.Fatal("could not navigate to earlier error")

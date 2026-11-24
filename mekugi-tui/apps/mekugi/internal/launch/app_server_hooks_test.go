@@ -93,6 +93,27 @@ func TestAppServerHookOutcomesInChildFeed(t *testing.T) {
 	}
 }
 
+func TestAppServerHookDoesNotReplaceAgentRosterSummary(t *testing.T) {
+	u := newAppServerSessionTestUI(t, t.TempDir())
+	waitTargetTestStore(t, u, waitTargetTestOpenStore(t))
+	registerThread(&u.attached.session, binding.ThreadInfo{ID: "child", AgentNickname: "worker"})
+	u.attached.session.Lifecycle("child").Responding = true
+	appServerTestNotify(t, u, "item/completed", map[string]any{
+		"threadId": "child", "turnId": "turn",
+		"item": binding.ThreadItem{ID: "command", Type: "commandExecution", Command: "echo roster-marker", ExitCode: new(0)},
+	})
+	terminalTest(u).selectNativePane(3)
+	start := hookTestRun(u.attached.cwd, "running")
+	start["completedAt"], start["durationMs"], start["entries"] = nil, nil, nil
+	appServerTestNotify(t, u, "hook/started", map[string]any{"threadId": "child", "turnId": "turn", "run": start})
+	for _, row := range u.sideFrame(120, 24) {
+		if strings.Contains(row, "worker") && strings.Contains(row, "roster-marker") && !strings.Contains(row, "Hook") {
+			return
+		}
+	}
+	t.Fatal("the roster did not retain the agent's command summary after a hook started")
+}
+
 func TestAppServerHookRetentionFailureKeepsLiveOutput(t *testing.T) {
 	u := newAppServerSessionTestUI(t, t.TempDir())
 	store := waitTargetTestOpenStore(t)

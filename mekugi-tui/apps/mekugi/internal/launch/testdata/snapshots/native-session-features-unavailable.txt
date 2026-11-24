@@ -7,7 +7,7 @@
     Feature use is unavailable for this frontend. Live launch counts are not
     restored from saved sessions.                                           
 
-    ←→ views · ↑↓ scroll · r refresh · esc close
+    tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close
 
 
 

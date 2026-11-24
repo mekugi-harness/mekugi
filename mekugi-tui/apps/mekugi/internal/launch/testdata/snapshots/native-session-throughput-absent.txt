@@ -22,4 +22,4 @@
                                                                                     
       Capture  ─────────────────────────────────────────────────────────────────────
 
-      ←→ views · ↑↓ scroll · r refresh · esc close · 15–35 / 43
+      tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close · 15–35 / 43

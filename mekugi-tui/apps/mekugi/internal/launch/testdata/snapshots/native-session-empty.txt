@@ -7,7 +7,7 @@
     Exchanges  ─────────────────────────────────────────────────────────────
     No completed exchanges yet. Active requests appear when they settle.    
 
-    ←→ views · [ older / ] newer · ↑↓ scroll · esc close
+    tab/⇧tab views · [ older / ] newer · ↑↓ scroll · ← back · esc close
 
 
 

@@ -258,12 +258,9 @@ func (d *ContentDialog) layoutProcess(width int) {
 	if !d.ProcessDetail {
 		empty := page.Source == 0
 		if d.process.stopArmed == nil {
-			d.Footer = "↑↓ select · enter view" + stop + " · esc close"
-			if width < 44 {
-				d.Footer = "enter view" + stop + " · esc close"
-			}
-			if empty {
-				d.Footer = "esc close"
+			d.Footer = sheetExit
+			if !empty {
+				d.Footer = sheetControls(width-6, "↑↓ select · enter view"+stop, "enter view"+stop, "enter view")
 			}
 		}
 		document := terminalui.DialogPage{Title: "Background"}
@@ -314,7 +311,7 @@ func (d *ContentDialog) layoutProcess(width int) {
 	if d.process.stopArmed == nil {
 		d.Footer = "← back · ↑↓ scroll · / find · v invocation · y copy" + stop + " · esc close"
 		if d.process.invocation {
-			d.Footer = "←/v output · ↑↓ scroll · y copy invocation · esc close"
+			d.Footer = sheetControls(width-6, "↑↓ scroll · v output · y copy invocation", "v output")
 		} else {
 			for _, shorter := range []string{"← back · ↑↓ scroll · v invocation", "← back · v invocation", "← back"} {
 				if width-6 >= ansi.StringWidth(d.Footer) {
@@ -322,6 +319,9 @@ func (d *ContentDialog) layoutProcess(width int) {
 				}
 				d.Footer = shorter + stop + " · esc close"
 			}
+		}
+		if ansi.StringWidth(d.Footer) > width-6 {
+			d.Footer = sheetExit
 		}
 	}
 	width -= 2 // The two output-frame edges are not selectable text.
@@ -428,7 +428,7 @@ func (d *ContentDialog) processKey(key string) DialogIntent {
 		case "v":
 			d.toggleProcessInvocation()
 			return DialogIntent{}
-		case "\x1b[D", "h":
+		case keyLeft, keyLeftApplication, "h":
 			if d.process.invocation {
 				d.toggleProcessInvocation()
 				return DialogIntent{}
@@ -451,7 +451,7 @@ func (d *ContentDialog) processKey(key string) DialogIntent {
 		return intent
 	}
 	switch key {
-	case "\x1b", "q", "\x03", "\x1b[D", "h":
+	case "\x1b", "q", "\x03", keyLeft, keyLeftApplication, "h":
 		return DialogIntent{Action: DialogClose}
 	case "\x1b[A", "k":
 		d.ShowPage(d.Page - 1)

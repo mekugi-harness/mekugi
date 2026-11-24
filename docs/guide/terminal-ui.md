@@ -24,7 +24,9 @@ A notice above the composer offers `[details]` when it hides text and `[×]` to 
 | Action | Shortcut |
 | --- | --- |
 | Open the Agents sheet (with subagents) | Down on an empty composer |
+| Move between agents | Up / Down in the Agents sheet |
 | Confirm the selected thread and close the Agents sheet | Enter in the sheet |
+| Back one level / close a sheet | Left / Esc in the sheet |
 | Return from a child to its parent | Up on an empty composer |
 | Open Diff / return to Main | Right / Left on an empty composer |
 | Show Main / toggle Diff / focus Agents | `Ctrl-B`, then `1` / `2` / `3` |
@@ -84,6 +86,7 @@ silently skip it. Notifications follow Codex's `tui.notifications`. See
   keeps completed results available. Main stays usable and receives no one-off
   transcript; file edits and other external effects still affect the shared
   workspace. Only one One-off is open; creating another offers Replace or Cancel.
+  Up on its empty composer returns to Main without closing One-off.
   Esc interrupts active work without closing the conversation or clearing its draft.
   While idle, Esc closes it. One-off and BTW retain native history in
   internal threads hidden from normal session selection, archived when their
@@ -142,7 +145,8 @@ Down on an empty composer opens the Agents sheet at the bottom of Main when the
 session has subagents. Its heading shows the subagent counts and a color legend
 for their roles. Up/Down switch the displayed thread without closing the sheet.
 Up from the first subagent displays Main. `a` toggles between Main and the last
-child; Esc closes the sheet. Click an attachable child to read its full transcript.
+child; Esc closes the sheet without switching threads. Click an
+attachable child to read its full transcript.
 With the sheet closed, Up on an empty child composer returns to its parent.
 Each runtime keeps its own composer draft, prompts and settings. The child stat line
 shows its model, reasoning effort and service tier. Historical views remain
@@ -160,8 +164,11 @@ Click output/errors/excerpts for retained content; `Ctrl-B !` opens the newest e
 With `mekugi-exec`, supported Bash and Linux dash-backed sh command lists show each
 command's streamed output, exit status and timing; missing boundaries are labeled
 combined. Supported single commands and pipelines, including Bash timed commands,
-show measured command time excluding startup and matching. Host-omitted text cannot be recovered. Left/Right switches tabs;
-`/` searches, `n`/`N` moves matches, `y` copies, Esc/`q` closes. Select text to copy portions.
+show measured command time excluding startup and matching. Host-omitted text
+cannot be recovered. Tab and Shift+Tab switch views; `/` searches, `n`/`N`
+moves matches, and `y` copies. Left returns from Model-visible output to the
+original view. Esc or `q` closes the sheet.
+Select text to copy portions.
 Local links read current UTF-8 files up to 8 MiB; relative paths use the workspace,
 `:line` scrolls, reopening rereads. See [activity](../../mekugi-tui/modules/activity/SPEC.md)
 and [command tracking](../../mekugi-tui/modules/commandsegments/SPEC.md).

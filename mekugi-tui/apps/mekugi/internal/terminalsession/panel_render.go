@@ -248,21 +248,14 @@ func (p *StatusPanel) Render(painter *terminalui.Painter, width, height int) []s
 			put(start+i, " "+text)
 		}
 	}
-	controls := "↑↓ scroll · pgup/pgdn page · esc close"
+	actions := "↑↓ scroll · pgup/pgdn page"
 	if panelWidth >= 70 {
-		controls = "↑↓ scroll · pgup/pgdn page · drag to select · esc close"
+		actions += " · drag to select"
 	}
-	if panelWidth < 44 {
-		controls = "↑↓ scroll · esc close"
-	}
+	controls := sheetControls(panelWidth-4, actions, "↑↓ scroll")
 	if p.Controls != "" {
-		controls = p.Controls
-		if panelWidth < 54 {
-			controls = "←→ views · ↑↓ scroll · esc close"
-		}
-		if panelWidth < 36 {
-			controls = "←→ · ↑↓ · esc close"
-		}
+		controls = sheetControls(panelWidth-4, p.Controls,
+			"tab/⇧tab views · ↑↓ scroll", "tab/⇧tab")
 	}
 	if len(lines) > p.Rows && panelWidth >= 54 {
 		controls += fmt.Sprintf(" · %d–%d / %d", p.Top+1, p.Top+len(visible), len(lines))
@@ -270,7 +263,7 @@ func (p *StatusPanel) Render(painter *terminalui.Painter, width, height int) []s
 	if boxed {
 		put(y+panelHeight-1, "  "+dim+ansi.Truncate(controls, panelWidth-4, "…")+reset)
 	} else if panelHeight > 1 {
-		put(y+panelHeight-1, dim+"esc close"+reset)
+		put(y+panelHeight-1, dim+sheetExit+reset)
 	}
 	return frame
 }

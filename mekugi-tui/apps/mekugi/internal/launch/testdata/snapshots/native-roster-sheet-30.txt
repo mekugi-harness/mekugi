@@ -25,6 +25,6 @@
    ◐ work-e  working                                                                           0%
    ✓ done-a  done                                                                              0%
    ✓ done-b  done                                                                              0%
-  ↑↓ agent · a child · esc close
+  ↑↓ agent · a child · ← back · esc close
   snapshot-model (high)
   Main • ◐ 5 • ✓ 3

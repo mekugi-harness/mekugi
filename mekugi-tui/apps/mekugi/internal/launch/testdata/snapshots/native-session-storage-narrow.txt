@@ -15,4 +15,4 @@
   mekugi                         
   Logical                        
 
-  ←→ · ↑↓ · esc close
+  tab/⇧tab · ← back · esc close

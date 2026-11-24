@@ -31,7 +31,7 @@
       Provider control requests   33 bytes                                          
       Provider control responses  44 bytes                                          
 
-      ←→ views · ↑↓ scroll · r refresh · esc close
+      tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close
 
 
 

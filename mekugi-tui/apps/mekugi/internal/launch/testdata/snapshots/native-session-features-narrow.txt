@@ -47,4 +47,4 @@
   btw failed                     
      0            1              
 
-  ←→ · ↑↓ · esc close
+  tab/⇧tab · ← back · esc close

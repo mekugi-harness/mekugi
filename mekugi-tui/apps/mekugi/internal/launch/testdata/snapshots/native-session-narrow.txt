@@ -15,4 +15,4 @@
   Client control requests   
   11 bytes                  
 
-  ←→ · ↑↓ · esc close
+  ← back · esc close

@@ -22,4 +22,4 @@
       Cached telemetry  present                                                     
       Explicit cached   0                                                           
 
-      ←→ views · [ older / ] newer · ↑↓ scroll · esc close · 33–53 / 53
+      tab/⇧tab views · [ older / ] newer · ↑↓ scroll · ← back · esc close · 33–53 /…

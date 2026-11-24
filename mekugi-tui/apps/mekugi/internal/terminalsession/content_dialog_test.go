@@ -53,7 +53,13 @@ func TestUISnapshotModelVisibleControlOutput(t *testing.T) {
 					} else if copied := d.Key("y"); copied.Text != "original" {
 						t.Fatal("toggle did not restore original copy")
 					}
-					d.Key("o")
+					if variant == "model" {
+						if back := d.Key(keyLeft); back.Action != 0 {
+							t.Fatalf("Left closed the sheet from model-visible output: %+v", back)
+						}
+					} else {
+						d.Key("o")
+					}
 				}
 			})
 		}
@@ -96,16 +102,19 @@ func TestContentDialogQueuedNavigation(t *testing.T) {
 					t.Fatalf("queued pointer selection copied %q", copied)
 				}
 			} else {
-				feed("\x1b[C")
+				feed("\t")
 			}
 			feed("y/BRAVO\rG") // No intervening paint or publication.
 			if copied != d.Pages[1].Code || d.query != "bravo" || d.match < 0 || d.top != d.bottom() {
 				t.Fatalf("queued input used stale content: copy=%q query=%q match=%d top=%d", copied, d.query, d.match, d.top)
 			}
 			d.Output = nil
-			feed("\x1b[Dy")
+			feed("\x1b[Zy")
 			if copied != d.Pages[0].Code || d.top != 2 || d.query != "" {
 				t.Fatal("returning without paint lost the original page's content or navigation")
+			}
+			if intent := d.Key(keyLeft); intent.Action != DialogClose {
+				t.Fatalf("Left at the sheet root did not close it: %+v", intent)
 			}
 		})
 	}

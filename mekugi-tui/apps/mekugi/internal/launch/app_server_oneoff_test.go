@@ -80,11 +80,18 @@ func TestOneoffNativeEventsAndMainIsolation(t *testing.T) {
 		}
 	}
 	frame := strings.Join(u.sideFrame(100, 24), "\n")
-	for _, want := range []string{"One-off", "printf oneoff", "Isolated result"} {
+	for _, want := range []string{"One-off", "printf oneoff", "Isolated result", "↑ back to parent Main"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("missing %q:\n%s", want, frame)
 		}
 	}
+	if err := terminalTest(u).send("\x1b[A"); err != nil {
+		t.Fatal(err)
+	}
+	if u.attached.presentation.DisplayingSide() || u.side == nil {
+		t.Fatal("Up did not return to Main while keeping One-off open")
+	}
+	selectSideThread(t, u, u.attached.presentation.View().SideThread)
 	appServerTestKeys(t, u, "/copy\r")
 	if len(u.picker.CopyTexts) == 0 || u.picker.CopyTexts[0] != "Isolated result" {
 		t.Fatalf("oneoff copy = %v", u.picker.CopyTexts)

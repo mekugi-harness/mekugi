@@ -229,15 +229,19 @@ func (d *ContentDialog) Images() terminalui.ImageFrame {
 // Invalidate discards geometry derived from replaced detached content.
 func (d *ContentDialog) Invalidate() { d.laidKey = contentDialogKey{} }
 
-// Key toggles the selected output without changing the application's page identity.
+// Key navigates content views without changing the application's page identity.
 func (d *ContentDialog) Key(key string) DialogIntent {
+	left := key == keyLeft || key == keyLeftApplication
+	if left && !d.Typing {
+		d.Selection = nil
+	}
 	if d.Selection == nil && len(d.Pages) > 0 && d.width > 0 {
 		d.Layout(d.width + d.bodyInset*2)
 	}
 	if d.Processes && d.Selection == nil && !d.Typing {
 		return d.processKey(key)
 	}
-	if key == "o" && !d.Typing {
+	if !d.Typing && (key == "o" || left && len(d.Pages) > 0 && d.modelVisible[d.Pages[d.Page].ID]) {
 		if d.Selection == nil && len(d.Pages) > 0 {
 			page := d.Pages[d.Page]
 			if page.Prepared != nil {

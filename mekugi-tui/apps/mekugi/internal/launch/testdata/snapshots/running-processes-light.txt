@@ -11,5 +11,5 @@
 "                                            "
 "                                            "
 "                                            "
-"  \x1b[2menter view · \x1b[38;2;207;34;46mx stop\x1b[39m · esc close\x1b[m           "
+"  \x1b[2menter view · ← back · esc close\x1b[m           "
 "plain                                       "

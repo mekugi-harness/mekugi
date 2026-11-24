@@ -47,7 +47,7 @@
     requests. Tokens use a local 4-byte estimate, not provider billing      
     savings.                                                                
 
-    ←→ views · ↑↓ scroll · r refresh · esc close
+    tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close
 
 
 

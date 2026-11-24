@@ -85,6 +85,10 @@ func (m *Model[S, A]) PublishedEntries() []Entry {
 			entry = record.Publish()
 		}
 		entries[i] = entry
+		// Hook runs belong to the transcript, not the agent's roster state.
+		if entry.Kind == "hook" {
+			continue
+		}
 		if previous, exists := m.latest[entry.Agent]; exists && entry.Kind == "reasoning" && entries[previous].Kind == "reasoning" {
 			m.reasoningPrevious[i] = previous
 		}

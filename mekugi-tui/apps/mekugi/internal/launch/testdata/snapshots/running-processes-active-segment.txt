@@ -21,4 +21,4 @@
 "  \x1b[36m│\x1b[39;2m 3 │\x1b[m \x1b[32mprint('editing')\x1b[m                                                                                     \x1b[36m│\x1b[m  "
 "  \x1b[36m│\x1b[39;2m 4 │\x1b[m \x1b[32mprint('editing')\x1b[m                                                                                     \x1b[36m│\x1b[m  "
 "  \x1b[36m╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯\x1b[m  "
-"  \x1b[2m←/v output · ↑↓ scroll · y copy invocation · esc close\x1b[m                                                        "
+"  \x1b[2m↑↓ scroll · v output · y copy invocation · ← back · esc close\x1b[m                                                 "

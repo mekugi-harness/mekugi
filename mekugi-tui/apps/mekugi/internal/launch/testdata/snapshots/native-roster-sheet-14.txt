@@ -9,6 +9,6 @@
    ◐ └ worker  working                                                                         0%
    ◐ work-b  working                                                                           0%
      +5 more
-  ↑↓ agent · a child · esc close
+  ↑↓ agent · a child · ← back · esc close
   snapshot-model (high)
   Main • ◐ 5 • ✓ 3

@@ -147,7 +147,7 @@ func (in FrameInput) Dispatch(state *Interaction, event Input) iter.Seq[InputEff
 			in.send(state, key, yield)
 			return
 		}
-		if (key == "\x1b[D" || key == "\x1b[C") && (state.Prefix || !state.resizeUntil.IsZero()) {
+		if (key == keyLeft || key == "\x1b[C") && (state.Prefix || !state.resizeUntil.IsZero()) {
 			state.Prefix = false
 			state.resizeUntil = in.Now.Add(500 * time.Millisecond)
 			in.Resize(key)
@@ -233,6 +233,21 @@ func (in FrameInput) send(state *Interaction, key string, yield func(InputEffect
 		yield(InputEffect{Dialog: &intent})
 		return
 	}
+	main, shell := in.Main, in.Shell
+	if shell.Focus == 3 {
+		// The roster owns navigation even if the transcript has a frozen selection.
+		state.Selection = nil
+		if key == "\x1b" || key == keyLeft || key == keyLeftApplication {
+			shell.Focus = 0
+			return
+		}
+		child, selected := main.session.Displayed.ID != main.session.Main.ID, in.Agents.Selected
+		quit := in.Agents.HandleRosterKey(key)
+		if in.rosterPick(state, child, selected, yield) && quit {
+			shell.Focus = 0
+		}
+		return
+	}
 	if in.Main != nil && in.Main.Menu.capturesInput() && in.Main.session.ReadOnly == sessionpresentation.Editable {
 		result := in.Main.Menu.Key(key)
 		yield(InputEffect{Menu: &result})
@@ -241,7 +256,6 @@ func (in FrameInput) send(state *Interaction, key string, yield func(InputEffect
 	if key != "\x1b" && in.selectionKey(state, key, yield) {
 		return
 	}
-	main, shell := in.Main, in.Shell
 	if action := in.arrowAction(key); action != 0 {
 		in.statAction(state, action, yield)
 		return
@@ -326,10 +340,6 @@ func (in FrameInput) send(state *Interaction, key string, yield func(InputEffect
 		}
 		state.Selection = nil
 	}
-	if key == "\x1b" && shell.Focus == 3 {
-		shell.Focus = 0
-		return
-	}
 	if key == "\x1b" && shell.Focus == 0 && main != nil {
 		v := main.session
 		if v.InterruptAvailable {
@@ -355,19 +365,14 @@ func (in FrameInput) send(state *Interaction, key string, yield func(InputEffect
 		if shell.Auxiliary.Key(key) {
 			shell.DiffOpen, shell.Focus = false, 0
 		}
-	default:
-		child, selected := main.session.Displayed.ID != main.session.Main.ID, in.Agents.Selected
-		quit := in.Agents.HandleRosterKey(key)
-		if !in.rosterPick(state, child, selected, yield) {
-			return
-		}
-		if quit {
-			shell.Focus = 0
-		}
 	}
 }
 
-const keyUp = "\x1b[A"
+const (
+	keyUp              = "\x1b[A"
+	keyLeft            = "\x1b[D"
+	keyLeftApplication = "\x1bOD"
+)
 
 // arrowAction matches the navigation hints shown on the second stat line.
 func (in FrameInput) arrowAction(key string) byte {
@@ -389,7 +394,7 @@ func (in FrameInput) arrowAction(key string) byte {
 		if shell.Focus == 0 && shell.Auxiliary != nil {
 			return StatDiff
 		}
-	case "\x1b[D", "\x1bOD":
+	case keyLeft, keyLeftApplication:
 		if shell.Focus == 1 {
 			return StatMain
 		}

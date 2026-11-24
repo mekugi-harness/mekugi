@@ -37,4 +37,4 @@
   local 4-byte estimate, not     
   provider billing savings.      
 
-  ←→ · ↑↓ · esc close
+  tab/⇧tab · ← back · esc close

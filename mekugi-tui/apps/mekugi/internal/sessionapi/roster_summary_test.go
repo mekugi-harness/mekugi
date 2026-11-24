@@ -10,7 +10,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 )
 
-func TestFailedHookReachesRosterConsumers(t *testing.T) {
+func TestFailedHookRemainsInTranscriptButNotRoster(t *testing.T) {
 	source := &sessionpresentation.ActivitySource{Model: new(activity.Model[sessionpresentation.ActivityEntry, sessionpresentation.ActivityAgent])}
 	source.Apply(sessionpresentation.ActivityEvent{
 		Agents: []sessionpresentation.ActivityAgent{{Name: "/root/worker", AgentLifecycle: activity.AgentLifecycle{Responding: true}}},
@@ -19,18 +19,11 @@ func TestFailedHookReachesRosterConsumers(t *testing.T) {
 	})
 	publication := source.Publication(new(sessionpresentation.Model), nil)
 	row := projectRoster(publication, "/root").Agents[0]
-	if row.Activity == nil || len(row.Activity.Values) != 1 {
-		t.Fatalf("hook summary absent: %+v", row.Activity)
+	if row.Activity != nil {
+		t.Fatalf("hook was published as roster activity: %+v", row.Activity)
 	}
-	summary := row.Activity.Values[0]
-	canonical := source.Entries[0].Values[0]
-	if summary.Verb != canonical.RowVerb() || !summary.Failed {
-		t.Fatalf("hook outcome lost at API boundary: summary=%+v", summary)
-	}
-	painter := terminalview.Painter{}
-	painted := ansi.Strip(painter.Summary([]terminalview.Block{{Value: canonical}}, 80))
-	if !strings.Contains(painted, summary.Verb) || !strings.Contains(painted, summary.Label) {
-		t.Fatalf("terminal and browser roster semantics diverged: %q / %+v", painted, summary)
+	if len(publication.Entries) != 1 || publication.Entries[0].Values[0].RowVerb() != "Hook Failed" {
+		t.Fatalf("transcript lost the hook outcome: %+v", publication.Entries)
 	}
 }
 

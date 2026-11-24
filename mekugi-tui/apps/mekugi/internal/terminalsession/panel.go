@@ -41,9 +41,9 @@ func (p *StatusPanel) Key(key string) (action sessionpresentation.PanelAction, c
 	if p.body.Metrics != nil {
 		switched := true
 		switch key {
-		case "\x1b[C", "\t":
+		case "\x1b[C", "\x1bOC", "\t":
 			p.Tab = (p.Tab + 1) % len(sessionpresentation.MetricViews)
-		case "\x1b[D", "\x1b[Z":
+		case "\x1b[Z":
 			p.Tab = (p.Tab + len(sessionpresentation.MetricViews) - 1) % len(sessionpresentation.MetricViews)
 		case "[", "]":
 			exchanges := p.body.Metrics.Exchanges
@@ -74,7 +74,7 @@ func (p *StatusPanel) Key(key string) (action sessionpresentation.PanelAction, c
 		}
 	}
 	switch key {
-	case "\x1b", "q", "\r", "\x03":
+	case "\x1b", keyLeft, keyLeftApplication, "q", "\r", "\x03":
 		action.Kind = sessionpresentation.PanelClose
 		clearSelection = true
 	case "\x1b[A":

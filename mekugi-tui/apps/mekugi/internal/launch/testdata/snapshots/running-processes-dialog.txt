@@ -13,5 +13,5 @@
 "                                                                                "
 "                                                                                "
 "                                                                                "
-"  \x1b[2m↑↓ select · enter view · \x1b[38;5;203mx stop\x1b[39m · esc close\x1b[m                                   "
+"  \x1b[2m↑↓ select · enter view · \x1b[38;5;203mx stop\x1b[39m · ← back · esc close\x1b[m                          "
 "plain                                                                           "

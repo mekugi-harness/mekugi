@@ -23,6 +23,6 @@
   Fourth detail.
   Fifth detail.
   End of evidence.
-  ↑↓ PgUp/PgDn g/G scroll · / find · y copy · esc close
+  ↑↓ PgUp/PgDn g/G scroll · / find · y copy · ← back · esc close
 
   Main • /workspace • ↓ roster • → diff • ctrl+e view

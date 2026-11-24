@@ -15,4 +15,4 @@
       Provider-reported consumption, not local estimates. Missing normalized        
       telemetry may default to zero; inspect Exchanges for explicit evidence.       
 
-      ←→ views · ↑↓ scroll · r refresh · esc close · 1–14 / 48
+      tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close · 1–14 / 48

@@ -123,34 +123,46 @@ func TestNativeClientRosterArrowNavigation(t *testing.T) {
 	for _, step := range []struct {
 		key, thread, parent string
 		open                bool
+		frozenTranscript    bool
 	}{
-		{"\x1b[B", "main", "", true},
-		{"\x1b[A", "main", "", true},
-		{"\x1b[B", "parent", "", true},
-		{"\x1bOB", "peer", "", true},
-		{"\x1bOA", "parent", "", true},
-		{"\x1b[A", "main", "", true},
-		{"\x1b[B", "parent", "", true},
-		{"\x1b[B", "peer", "", true},
-		{"\x1b[B", "nested", "", true},
-		{"\x1b[B", "nested", "", true},
-		{"\r", "nested", "parent", false},
-		{"\x1b[A", "parent", "Main", false},
-		{"\x1bOA", "main", "", false},
-		{"\x1b[B", "main", "", true},
-		{"\x1b[B", "parent", "", true},
-		{"\x1b", "parent", "Main", false},
-		{"keep this draft", "parent", "", false},
-		{"\x1b[A", "parent", "", false},
-		{"\x023", "parent", "", true},
-		{"\r", "parent", "", false},
+		{key: "\x1b[B", thread: "main", open: true},
+		{key: "\x1b[A", thread: "main", open: true},
+		{key: "\x1b[B", thread: "parent", open: true, frozenTranscript: true},
+		{key: "\x1bOB", thread: "peer", open: true},
+		{key: "\x1bOA", thread: "parent", open: true},
+		{key: "\x1b[A", thread: "main", open: true, frozenTranscript: true},
+		{key: "\x1b[B", thread: "parent", open: true},
+		{key: "\x1b[B", thread: "peer", open: true},
+		{key: "\x1b[B", thread: "nested", open: true},
+		{key: "\x1b[B", thread: "nested", open: true},
+		{key: "\r", thread: "nested", parent: "parent"},
+		{key: "\x1b[A", thread: "parent", parent: "Main"},
+		{key: "\x1bOA", thread: "main"},
+		{key: "\x1b[B", thread: "main", open: true},
+		{key: "\x1b[B", thread: "parent", open: true},
+		{key: "\x1b[D", thread: "parent", parent: "Main"},
+		{key: "\x1b[B", thread: "parent", open: true},
+		{key: "\x1b", thread: "parent", parent: "Main"},
+		{key: "keep this draft", thread: "parent"},
+		{key: "\x1b[A", thread: "parent"},
+		{key: "\x023", thread: "parent", open: true},
+		{key: "\r", thread: "parent"},
 	} {
+		if step.frozenTranscript {
+			surface := terminalsession.Surface{Rect: terminalsession.Rect{W: 20, H: 1}, Rows: []string{"first"}}
+			selection := terminalsession.NewSelection(surface, 0, 0)
+			selection.Document([]string{"first", "second"}, 0, 0)
+			r.active.renderer.terminal.Selection = &terminalsession.SourceSelection{Selection: selection}
+		}
 		pending := len(r.active.calls)
 		for i := range len(step.key) {
 			r.decode(step.key[i], now)
 		}
 		r.drainKeys(nil, now.Add(time.Second)) // Flush a lone Escape.
 		r.active.drainInput()
+		if step.frozenTranscript && r.active.renderer.terminal.Selection != nil {
+			t.Fatalf("key %q went to the frozen transcript instead of the roster", step.key)
+		}
 		if step.key == "\r" && (len(r.active.calls) != pending || r.active.reattach != "") {
 			t.Fatal("confirming the roster should not submit input or select the thread again")
 		}

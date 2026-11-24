@@ -27,7 +27,7 @@
     Session  ───────────────────────────────────────────────────────────────
     Session        main                                                     
 
-    ↑↓ scroll · pgup/pgdn page · drag to select · esc close
+    ↑↓ scroll · pgup/pgdn page · drag to select · ← back · esc close
 
 
 

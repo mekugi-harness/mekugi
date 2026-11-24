@@ -288,7 +288,7 @@ func TestMarkdownFileDialogViews(t *testing.T) {
 	if u.Dialog.Page != 1 || !strings.Contains(fileFrame, "source target") || strings.Contains(fileFrame, "**bold**") || strings.Contains(fileFrame, "/ n N find") {
 		t.Fatal("File tab did not reveal the source location with separate search state")
 	}
-	for _, key := range []string{"y", "\x1b[D", "y"} {
+	for _, key := range []string{"y", "\x1b[Z", "y"} {
 		u.outputKey(key)
 		drawOutputDialog(u)
 		if key == "y" && u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(content))+"\x07" {

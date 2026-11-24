@@ -21,4 +21,4 @@
       Uncached input     120                                                        
       Output             12                                                         
 
-      ←→ views · ↑↓ scroll · r refresh · esc close · 1–20 / 50
+      tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close · 1–20 / 50

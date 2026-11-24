@@ -22,4 +22,4 @@
       Usage evidence  complete                                                      
       Service tier    priority                                                      
 
-      ←→ views · [ older / ] newer · ↑↓ scroll · esc close · 28–48 / 53
+      tab/⇧tab views · [ older / ] newer · ↑↓ scroll · ← back · esc close · 28–48 /…

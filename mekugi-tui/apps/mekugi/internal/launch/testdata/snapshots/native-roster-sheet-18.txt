@@ -13,6 +13,6 @@
    ◐ work-c  working                         0%   │
    ◐ work-d  working                         0%   │
      +3 more                                      │
-  ↑↓ agent · a child · esc close                  │
+  ↑↓ agent · a child · ← back · esc close         │
   snapshot-model (high)
   Main • ◐ 5 • ✓ 3

@@ -9,9 +9,9 @@ import (
 // Source: apps/mekugi/internal/router/app_server_session_metrics.go:97:299@630ce384.
 func (p *StatusPanel) renderMetrics() {
 	p.Title = "Session · " + sessionpresentation.MetricViews[p.Tab]
-	p.Controls = "←→ views · ↑↓ scroll · r refresh · esc close"
+	p.Controls = "tab/⇧tab views · ↑↓ scroll · r refresh"
 	if p.Tab == 2 {
-		p.Controls = "←→ views · [ older / ] newer · ↑↓ scroll · esc close"
+		p.Controls = "tab/⇧tab views · [ older / ] newer · ↑↓ scroll"
 	}
 	p.Fields, p.Groups = nil, nil
 	p.Fields = sessionpresentation.MetricFields(p.body, p.Tab, p.exchangeIndex())

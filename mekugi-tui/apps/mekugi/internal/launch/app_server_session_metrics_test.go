@@ -161,7 +161,7 @@ func TestAppServerSessionMetricsLocalNavigation(t *testing.T) {
 		t.Fatal("reverse tab did not select transport")
 	}
 	u.statusPanelKey("r")
-	u.statusPanelKey("\x1b")
+	u.statusPanelKey("\x1b[D")
 	if u.statusPanel != nil || wire.Len() != 0 || len(u.attached.source.Entries) != 0 || u.Turn != "active" || u.attached.presentation.Status.Text != "Working" {
 		t.Fatalf("local dialog disturbed active session: wire=%q turn=%q status=%q", wire.String(), u.Turn, u.attached.presentation.Status.Text)
 	}

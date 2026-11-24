@@ -54,7 +54,7 @@
       Skipped            0                                                          
       Dropped detail     7                                                          
 
-      ←→ views · ↑↓ scroll · r refresh · esc close
+      tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close
 
 
 

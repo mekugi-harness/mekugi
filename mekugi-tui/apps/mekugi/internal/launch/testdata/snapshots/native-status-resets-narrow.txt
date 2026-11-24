@@ -33,7 +33,7 @@
     Session                             
     main                                
 
-    ↑↓ scroll · esc close
+    ↑↓ scroll · ← back · esc close
 
 
 

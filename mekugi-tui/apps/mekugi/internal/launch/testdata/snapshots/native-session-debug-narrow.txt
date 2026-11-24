@@ -15,4 +15,4 @@
   Retries                   
   1                         
 
-  ←→ · ↑↓ · esc close
+  ← back · esc close

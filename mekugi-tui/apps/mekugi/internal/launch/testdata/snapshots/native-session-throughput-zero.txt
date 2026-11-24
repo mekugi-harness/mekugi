@@ -22,4 +22,4 @@
       Cached / input from observed usage. Partial or missing telemetry is not       
       evidence of zero consumption or cache misses.                                 
 
-      ←→ views · ↑↓ scroll · r refresh · esc close · 15–35 / 45
+      tab/⇧tab views · ↑↓ scroll · r refresh · ← back · esc close · 15–35 / 45

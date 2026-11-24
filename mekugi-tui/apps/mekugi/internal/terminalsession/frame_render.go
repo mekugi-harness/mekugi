@@ -117,9 +117,8 @@ func (in FrameInput) Status() ShellStatus {
 }
 
 func (in FrameInput) parentHint() string {
-	v := in.Main.session
 	// A scrollable selection owns the normal Up key.
-	if v.Displayed == v.SideThread || in.Prefix || in.Dialog != nil ||
+	if in.Prefix || in.Dialog != nil ||
 		in.Selection != nil && in.Selection.screenRows > 0 || in.arrowAction(keyUp) != statParent {
 		return ""
 	}
@@ -251,7 +250,8 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 				if caller := in.Agents.Display.Caller; caller != "" && caller != "/root" {
 					next = "a main"
 				}
-				roster = append(roster, terminalui.Dim+"↑↓ agent · "+next+" · esc close"+terminalui.Undim)
+				controls := sheetControls(iw-4, "↑↓ agent · "+next, "↑↓ agent", "↑↓")
+				roster = append(roster, terminalui.Dim+controls+terminalui.Undim)
 				counts := strings.Join(summary.Counts, terminalui.Dim+" · "+terminalui.Undim)
 				legend := in.Agents.RoleLegend(max(0, iw-4-ansi.StringWidth(shell.RosterLabel+" · "+counts)-10))
 				roster[0] = terminalui.PanelHeading(shell.Theme.Accent(), shell.RosterLabel, counts, legend, iw-4)

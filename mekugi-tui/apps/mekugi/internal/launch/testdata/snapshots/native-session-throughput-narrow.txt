@@ -19,4 +19,4 @@
   2                               
   Measured duration               
 
-  ←→ views · ↑↓ scroll · esc close
+  tab/⇧tab · ← back · esc close
