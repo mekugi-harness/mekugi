@@ -30,6 +30,13 @@
         "string",
         "null"
       ]
+    },
+    "threadId": {
+      "description": "Use the loaded thread's catalog and credentials instead of app-server defaults.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "ModelListParams",

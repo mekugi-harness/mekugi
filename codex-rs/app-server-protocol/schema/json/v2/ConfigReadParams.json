@@ -10,6 +10,13 @@
     },
     "includeLayers": {
       "type": "boolean"
+    },
+    "threadId": {
+      "description": "Read the effective layers for this loaded thread instead of resolving from cwd.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "ConfigReadParams",

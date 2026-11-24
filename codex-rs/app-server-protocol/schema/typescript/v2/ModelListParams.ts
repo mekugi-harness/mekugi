@@ -4,6 +4,10 @@
 
 export type ModelListParams = {
 /**
+ * Use the loaded thread's catalog and credentials instead of app-server defaults.
+ */
+threadId?: string | null,
+/**
  * List models for this configured provider instead of the app-server default.
  */
 modelProvider?: string | null,
