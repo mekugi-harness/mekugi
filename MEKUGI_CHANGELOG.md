@@ -45,7 +45,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `codex-core` emits an optional, owner-only `execution/beforeTool` v2 server
   request (`threadId`, `turnId`, `itemId`, `tool`, `cwd`, `input`) immediately
   before dispatching local `exec_command` (`Bash`) or `apply_patch` calls,
-  after user `PreToolUse` hooks run. The barrier uses a strict 500 ms
+  after user `PreToolUse` hooks run. A valid host acknowledgment, including an
+  empty result object, releases the barrier immediately. It uses a strict 500 ms
   fail-open timeout so slow, disconnected, or failing observers never block or
   alter native tool execution, while headless and unobserved runs incur zero
   barrier wait.

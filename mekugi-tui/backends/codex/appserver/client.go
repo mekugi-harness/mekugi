@@ -20,7 +20,7 @@ type Message struct {
 	ID     jsontext.Value `json:"id,omitempty"`
 	Method string         `json:"method,omitempty"`
 	Params jsontext.Value `json:"params,omitzero"`
-	Result jsontext.Value `json:"result,omitempty"`
+	Result jsontext.Value `json:"result,omitzero"`
 	Error  *Error         `json:"error,omitempty"`
 }
 
