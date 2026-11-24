@@ -3884,7 +3884,6 @@ async fn reset_publishes_and_retains_selected_file_receipt() {
     assert_reset_publishes_and_retains_source_receipt(/*partial_changes*/ false).await;
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn reset_failed_capture_excludes_partial_diff_from_receipt() {
     assert_reset_publishes_and_retains_source_receipt(/*partial_changes*/ true).await;
@@ -3894,41 +3893,52 @@ async fn assert_reset_publishes_and_retains_source_receipt(partial_changes: bool
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("selected.txt");
     std::fs::write(&path, "SELECTED_FILE_BODY").unwrap();
-    let sources = if partial_changes {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let reader = directory.path().join("mchanges");
-            std::fs::write(
-                &reader,
-                b"#!/bin/sh\nprintf 'PRIVATE_PARTIAL_DIFF\\n'\nprintf 'unavailable change ID\\n' >&2\nexit 42\n",
-            )
-            .unwrap();
-            std::fs::set_permissions(reader, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        vec!["@selected.txt".into(), "mchanges:fixture1,missing2".into()]
-    } else {
-        vec!["@selected.txt".into()]
-    };
     let (mut session, turn, events) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("test"),
         Vec::new(),
         |config| {
             config.cwd = AbsolutePathBuf::from_absolute_path(directory.path()).unwrap();
-            if partial_changes {
-                // The fixture executable is local and does not need the packaged sandbox.
-                config
-                    .permissions
-                    .set_permission_profile(PermissionProfile::Disabled)
-                    .unwrap();
-                config.permissions.shell_environment_policy.r#set.insert(
-                    "PATH".to_string(),
-                    directory.path().to_string_lossy().into_owned(),
-                );
-            }
         },
     )
     .await;
+    let mut recorded_id = None;
+    let sources = if partial_changes {
+        let store = codex_change_history::ChangeHistoryStore::open(
+            crate::exec_env::change_history_dir(session.session_id()),
+        )
+        .unwrap();
+        let record = store
+            .record_change(
+                codex_change_history::ChangeMetadata {
+                    thread_id: session.thread_id.to_string(),
+                    session_id: session.session_id().to_string(),
+                    turn_id: turn.sub_id.clone(),
+                    call_id: "partial-fixture".into(),
+                    source_kind: codex_change_history::ChangeSourceKind::ApplyPatch,
+                    workspace_root: directory.path().to_path_buf(),
+                    created_at: 1,
+                    exit_code: Some(0),
+                    summary: None,
+                    claim_key: None,
+                },
+                vec![codex_change_history::PendingFileChange {
+                    rel_path: "partial.txt".into(),
+                    abs_path: directory.path().join("partial.txt"),
+                    moved_from: None,
+                    before: codex_change_history::FileSnapshot::Missing,
+                    after: codex_change_history::FileSnapshot::Present(
+                        b"PRIVATE_PARTIAL_DIFF\n".to_vec(),
+                    ),
+                    coverage: codex_change_history::CoverageStatus::Complete,
+                }],
+            )
+            .unwrap();
+        let id = record.id.to_string();
+        recorded_id = Some(id.clone());
+        vec!["@selected.txt".into(), format!("mchanges:{id},amber9999")]
+    } else {
+        vec!["@selected.txt".into()]
+    };
     let rollout = attach_thread_persistence(Arc::get_mut(&mut session).unwrap()).await;
     session
         .record_retained_context(codex_history::RetainedContextEvent::ReloadSelection {
@@ -3978,14 +3988,14 @@ async fn assert_reset_publishes_and_retains_source_receipt(partial_changes: bool
         success: true,
         diagnostic: None,
     }];
-    if partial_changes {
+    if let Some(id) = recorded_id {
         expected.push(SourceAcquisitionResult {
-            reference: "mchanges:fixture1,missing2".into(),
+            reference: format!("mchanges:{id},amber9999"),
             target: AcquiredSource::Changes {
-                selection: vec!["fixture1".into(), "missing2".into()],
+                selection: vec![id, "amber9999".into()],
             },
             success: false,
-            diagnostic: Some("source reader exited with code 42".into()),
+            diagnostic: Some("unknown change ID `amber9999`".into()),
         });
     }
     assert_eq!(receipt.sources, expected);
