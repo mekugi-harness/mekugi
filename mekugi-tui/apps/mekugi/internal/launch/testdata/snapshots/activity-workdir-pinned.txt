@@ -1,0 +1,15 @@
+In .worktrees/topic
+├ Ran     go test ./... · exit 1
+│         ┆ test failed
+└ Search  package in internal
+
+└ Search  package in internal
+
+└ Ran     go version
+
+
+In .worktrees/topic
+└ Ran     go env GOPATH
+• Visible reasoning.
+└ Ran     go env GOOS · in sub
+

@@ -175,8 +175,8 @@ func (s *SourceSelection) captureDocument(main *Main, composer composerDocument)
 				return demands
 			}
 			top, fixed := view.Offset, 0
-			if !view.Conversation && top+1 < len(feed.Heads) && feed.Heads[top] != top && feed.Heads[top+1] == feed.Heads[top] {
-				feed.Lines = append([]string{feed.Lines[feed.Heads[top]]}, feed.Lines...)
+			if heading, ok := view.PinnedHeading(feed, s.Rect.H); ok {
+				feed.Lines = append([]string{feed.Lines[heading]}, feed.Lines...)
 				feed.Questions = append([]uint64{0}, feed.Questions...)
 				feed.Snippets = append([]activityui.Snippet{{}}, feed.Snippets...)
 				top, fixed = top+1, 1

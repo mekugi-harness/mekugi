@@ -65,6 +65,7 @@ func TestSessionUIReplayNormalizesItemsAndRecordedTiming(t *testing.T) {
 		{"type": "AgentMessage", "id": "message", "content": []map[string]any{{"type": "text", "text": "hello "}, {"type": "text", "text": "世界"}}, "phase": "final_answer"},
 		{"type": "Reasoning", "id": "reasoning", "summary_text": []string{"first", "second"}},
 		{"type": "CommandExecution", "id": "command", "command": []string{"sh", "-c", command}, "aggregated_output": "retained output", "exit_code": 0, "status": "completed", "cwd": "/workspace/replay"},
+		{"type": "CommandExecution", "id": "worktree", "command": []string{"sh", "-c", command}, "status": "completed", "cwd": "file:///workspace/replay/.worktrees/my%20branch"},
 		{"type": "FileChange", "id": "files", "changes": map[string]any{"z.go": map[string]any{"type": "update", "unified_diff": "z diff"}, "a.go": map[string]any{"type": "add", "unified_diff": "a diff"}}},
 		{"type": "ContextCompaction", "id": "compact"},
 	}
@@ -143,6 +144,11 @@ func TestSessionUIReplayNormalizesItemsAndRecordedTiming(t *testing.T) {
 	cmd := completed["command"]
 	if cmd.Command != command || cmd.AggregatedOutput == nil || *cmd.AggregatedOutput != "retained output" || cmd.ExitCode == nil || *cmd.ExitCode != 0 {
 		t.Fatalf("command evidence changed: %+v", cmd)
+	}
+	for id, cwd := range map[string]string{"command": "/workspace/replay", "worktree": "/workspace/replay/.worktrees/my branch"} {
+		if started[id].Cwd != cwd || completed[id].Cwd != cwd {
+			t.Errorf("%s replay cwd: start %q, completed %q; want %q", id, started[id].Cwd, completed[id].Cwd, cwd)
+		}
 	}
 	if started["command"].AggregatedOutput != nil || started["command"].ExitCode != nil || started["command"].Status != "inProgress" || started["message"].Text != "" || len(started["reasoning"].Summary) != 0 {
 		t.Fatal("item start exposes completed content")

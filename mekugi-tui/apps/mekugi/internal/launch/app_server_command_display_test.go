@@ -423,10 +423,30 @@ func TestUISnapshotActivityWorkdirRuns(t *testing.T) {
 			t.Fatal("the compact edit label lost its original navigation path")
 		}
 		assertNativeUISnapshot(t, "activity-workdir-runs", feed.Lines)
+		var scrolled []string
+		view.Following = false
+		for _, label := range []string{"Edited", "Search", "go env GOROOT"} {
+			view.Offset = slices.IndexFunc(feed.Lines, func(line string) bool {
+				return strings.Contains(ansi.Strip(line), label)
+			})
+			if view.Offset < 0 {
+				t.Fatalf("missing scroll position for %q", label)
+			}
+			scrolled = append(scrolled, view.Viewport(feed, 4)...)
+			scrolled = append(scrolled, "")
+		}
+		assertNativeUISnapshot(t, "activity-workdir-pinned", scrolled)
 		view.Conversation = false
-		rows := ansi.Strip(strings.Join(view.RenderFeed(100, 40).Lines, "\n"))
+		activity := view.RenderFeed(100, 40)
+		rows := ansi.Strip(strings.Join(activity.Lines, "\n"))
 		if strings.Count(rows, "In "+dir) != 2 || strings.Contains(rows, "· in "+dir) || !strings.Contains(rows, "internal"+string(filepath.Separator)+"edit.go") {
 			t.Fatalf("the activity feed did not preserve the directory groups:\n%s", rows)
+		}
+		view.Offset = slices.IndexFunc(activity.Lines, func(line string) bool {
+			return strings.Contains(ansi.Strip(line), "Edited")
+		})
+		if visible := view.Viewport(activity, 4); !strings.Contains(ansi.Strip(visible[0]), "In "+dir) {
+			t.Fatalf("activity pinned the wrong heading:\n%s", strings.Join(visible, "\n"))
 		}
 	}
 }

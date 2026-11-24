@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -431,6 +432,13 @@ func replayItem(raw jsontext.Value) (observation.Item, bool, error) {
 			i.Text += block.Text
 		}
 	case "commandExecution":
+		// Native rollouts encode command directories as local file URIs,
+		// unlike older rollouts and the app-server's legacy path strings.
+		if strings.HasPrefix(i.Cwd, "file:///") {
+			if cwd, err := url.Parse(i.Cwd); err == nil {
+				i.Cwd = cwd.Path
+			}
+		}
 		i.UserShell = p.Source == "user_shell"
 		var args []string
 		if err := json.Unmarshal(p.Command, &args); err != nil {

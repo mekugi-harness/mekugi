@@ -140,6 +140,7 @@ type Run struct {
 	generation uint64 // Last layout pass that used this exact run.
 	Colored    bool   // Syntax decoration has been materialized.
 	painted    []bool // Decorated rows in a partially visible run.
+	workdirs   workdirSpans
 	Lines      []string
 	Blocks     []Block        // Laid-out blocks, indexed by the snippets naming them.
 	Snippets   []Snippet      // Aligned with lines.
@@ -1164,6 +1165,7 @@ type Feed struct {
 	images    []feedImage
 	Spans     []Span
 	paints    []liveActivityPaint // Cold runs to decorate if they enter the viewport.
+	workdirs  workdirSpans
 	Lines     []string
 	Heads     []int     // Index of the heading that owns each line.
 	Snippets  []Snippet // Snippet that owns each line, if any.
@@ -1218,6 +1220,10 @@ func (feed *Feed) separator() {
 
 // appendRows keeps row content and metadata aligned; each renderer owns heads.
 func (feed *Feed) appendRows(run Run) {
+	head := len(feed.Lines)
+	for _, span := range run.workdirs {
+		feed.workdirs = append(feed.workdirs, workdirSpan{head + span.start, head + span.end})
+	}
 	feed.Lines = append(feed.Lines, run.Lines...)
 	feed.Snippets = append(feed.Snippets, run.Snippets...)
 	feed.Questions = append(feed.Questions, run.Questions...)
@@ -1428,6 +1434,7 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 		next := groupedWorkdir(workdirs, index)
 		directoryBoundary := next != dir
 		if directoryBoundary {
+			run.workdirs.finish(len(run.Lines))
 			dir, rail = next, ""
 			if len(run.Lines) > 1 {
 				run.Lines = append(run.Lines, gutter)
@@ -1435,6 +1442,7 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 				run.Questions = append(run.Questions, 0)
 			}
 			if dir != "" {
+				run.workdirs = append(run.workdirs, workdirSpan{start: len(run.Lines)})
 				run.Lines = append(run.Lines, gutter+workdirHeading(dir, width-2))
 				run.Snippets = append(run.Snippets, Snippet{})
 				run.Questions = append(run.Questions, 0)
@@ -1535,6 +1543,7 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 			run.Questions = append(run.Questions, 0)
 		}
 	}
+	run.workdirs.finish(len(run.Lines))
 	return run
 }
 
@@ -1585,10 +1594,8 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 			}
 		}
 	}
-	// Pin only when the run keeps a visible line under its heading. Main's
-	// transcript items do not always start with a heading, so it never pins.
-	if !v.Conversation && rows > 1 && v.Offset+1 < len(feed.Heads) && feed.Heads[v.Offset] != v.Offset && feed.Heads[v.Offset+1] == feed.Heads[v.Offset] {
-		lines[0], v.FeedSnippets[0] = feed.Lines[feed.Heads[v.Offset]], Snippet{}
+	if heading, ok := v.PinnedHeading(feed, rows); ok {
+		lines[0], v.FeedSnippets[0] = feed.Lines[heading], Snippet{}
 		v.FeedQuestions[0] = 0
 	}
 	// Activity's painter flashes its own entries; Main flashes whole items.

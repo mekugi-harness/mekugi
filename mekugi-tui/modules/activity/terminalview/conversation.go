@@ -384,6 +384,10 @@ func (v *View) renderConversationRun(it conversationPaint, key RunKey) Run {
 		run.Lines = append(continuation, run.Lines...)
 		run.Snippets = append([]Snippet{{}}, run.Snippets...)
 		run.Questions = append([]uint64{0}, run.Questions...)
+		for i := range run.workdirs {
+			run.workdirs[i].start++
+			run.workdirs[i].end++
+		}
 		for seq, row := range run.EntryRows {
 			run.EntryRows[seq] = row + 1
 		}
@@ -527,6 +531,7 @@ type conversationLines struct {
 	lines     []string
 	questions []uint64
 	snippets  []Snippet
+	workdirs  workdirSpans
 }
 
 func (c *conversationLines) add(target uint64, lines ...string) {
@@ -669,11 +674,13 @@ func (v *View) conversationItem(first, last, width int, thread ConversationThrea
 		for index, block := range laid {
 			if next := groupedWorkdir(workdirs, index); next != dir {
 				flush()
+				out.workdirs.finish(len(out.lines))
 				dir = next
 				if len(out.lines) > 0 {
 					out.add(0, "")
 				}
 				if dir != "" {
+					out.workdirs = append(out.workdirs, workdirSpan{start: len(out.lines)})
 					out.add(0, workdirHeading(dir, width))
 				}
 			}
@@ -707,6 +714,7 @@ func (v *View) conversationItem(first, last, width int, thread ConversationThrea
 			}
 		}
 		flush()
+		out.workdirs.finish(len(out.lines))
 	case entry.Agent == v.conversationSpeaker() && (entry.Kind == "text" || v.ChildrenOnly && entry.Kind == "final"):
 		out.add(0, mainHeading(v.Painter.Theme, p, entry, width))
 		gutter := mainGutter(v.Painter.Theme, p, entry.Agent)
@@ -729,7 +737,7 @@ func (v *View) conversationItem(first, last, width int, thread ConversationThrea
 			}
 		}
 	}
-	return Run{Lines: out.lines, Blocks: laid, Snippets: out.snippets, Questions: out.questions, EntryRows: entryRows}
+	return Run{Lines: out.lines, Blocks: laid, Snippets: out.snippets, Questions: out.questions, EntryRows: entryRows, workdirs: out.workdirs}
 }
 
 // conversationHeading is one item heading: a glyph, a name, optional dim

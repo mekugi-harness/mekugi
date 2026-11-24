@@ -3,12 +3,41 @@ package terminalview
 import (
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 
 	pathterminal "github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay/terminal"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/markdownsyntax"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
 )
+
+// workdirSpan covers a heading and its body, excluding the next separator.
+type workdirSpan struct{ start, end int }
+
+type workdirSpans []workdirSpan
+
+func (s workdirSpans) finish(end int) {
+	if n := len(s); n > 0 && s[n-1].end == 0 {
+		s[n-1].end = end
+	}
+}
+
+// PinnedHeading returns the feed row to show in place of the first viewport
+// row. Its body must still have a visible row below the replacement.
+func (v *View) PinnedHeading(feed Feed, rows int) (int, bool) {
+	top := v.Offset
+	if rows < 2 || top+1 >= len(feed.Lines) {
+		return 0, false
+	}
+	i := sort.Search(len(feed.workdirs), func(i int) bool { return feed.workdirs[i].end > top+1 })
+	if i < len(feed.workdirs) && feed.workdirs[i].start <= top {
+		return feed.workdirs[i].start, feed.workdirs[i].start < top
+	}
+	if !v.Conversation && top+1 < len(feed.Heads) && feed.Heads[top] < top && feed.Heads[top+1] == feed.Heads[top] {
+		return feed.Heads[top], true
+	}
+	return 0, false
+}
 
 // workdirGroups labels runs of at least two visible events with the same
 // non-default directory. A neighboring edit can join when its target is
