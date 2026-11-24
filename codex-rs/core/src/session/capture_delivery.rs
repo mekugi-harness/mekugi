@@ -4,13 +4,15 @@
 use super::Session;
 use crate::agent_communication::FinalCaptureAttachment;
 use codex_change_history::{
-    ChangeHistoryStore, ChangeId, ChangeIndexEntry, ChangeRecord, compose_diff, expand_id_spec,
+    ChangeHistoryStore, ChangeId, ChangeIndexEntry, ChangeRecord, FileState, compose_diff,
+    expand_id_spec,
 };
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::agent_capture::{CaptureCursor, CaptureInterval};
 use codex_protocol::{SessionId, ThreadId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone)]
 pub(crate) struct ProgressActor {
@@ -60,7 +62,11 @@ pub(crate) async fn read_change_source(
                 record.metadata.thread_id != recipient && record.metadata.source_kind.is_authored()
             });
         }
-        render_change_source(&store, &records, crate::context_sources::MAX_SOURCE_BYTES)?
+        render_composed_change_source(
+            &store,
+            &records,
+            crate::context_sources::MAX_SOURCE_BYTES,
+        )?
             .ok_or_else(|| anyhow::anyhow!("source exceeded the retained change attachment budget"))
     })
     .await
@@ -68,30 +74,106 @@ pub(crate) async fn read_change_source(
     .map_err(|error| error.to_string())
 }
 
-fn render_change_source(
+fn normalize_abs_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(comp.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                out.push(comp.as_os_str());
+            }
+        }
+    }
+    out
+}
+
+fn render_composed_change_source(
     store: &ChangeHistoryStore,
     records: &[ChangeRecord],
     limit: usize,
 ) -> anyhow::Result<Option<String>> {
+    let mut ordered: Vec<&ChangeRecord> = records.iter().collect();
+    ordered.sort_by_key(|record| record.sequence);
+
     let mut body = String::new();
-    // These IDs can omit intervening edits from other threads. Rendering their own
-    // transitions never attributes a skipped transition to a selected author.
-    for record in records {
-        if records.len() > 1 {
-            writeln!(body, "Change {}", record.id)?;
-        }
-        if record.files.iter().any(|file| !file.coverage.is_complete()) {
-            body.push_str("Incomplete capture coverage.\n");
-        }
-        for diff in compose_diff(store, std::slice::from_ref(record), &[])? {
-            if body.len().saturating_add(diff.unified_diff.len()) > limit {
-                return Ok(None);
-            }
-            body.push_str(&diff.unified_diff);
-        }
-        if body.len() > limit {
+    if ordered
+        .iter()
+        .any(|record| record.files.iter().any(|file| !file.coverage.is_complete()))
+    {
+        let notice = "Incomplete capture coverage.\n";
+        if notice.len() > limit {
             return Ok(None);
         }
+        body.push_str(notice);
+    }
+
+    // Compose consecutive per-file transitions whose retained endpoints match so
+    // superseded intermediate text is omitted, without folding gaps from skipped
+    // records into the selected edits.
+    let mut by_path: BTreeMap<PathBuf, Vec<(u64, FileState, Vec<ChangeRecord>)>> = BTreeMap::new();
+    for record in ordered {
+        for file in &record.files {
+            let key = normalize_abs_path(&file.abs_path);
+            let single_file = ChangeRecord {
+                schema_version: record.schema_version,
+                id: record.id.clone(),
+                sequence: record.sequence,
+                metadata: record.metadata.clone(),
+                files: vec![file.clone()],
+            };
+            let runs = by_path.entry(key).or_default();
+            if let Some((last_seq, last_after, run)) = runs.last_mut() {
+                if *last_seq == record.sequence {
+                    run.push(single_file);
+                } else if *last_after == file.before {
+                    *last_seq = record.sequence;
+                    *last_after = file.after.clone();
+                    run.push(single_file);
+                } else {
+                    runs.push((record.sequence, file.after.clone(), vec![single_file]));
+                }
+            } else {
+                runs.push((record.sequence, file.after.clone(), vec![single_file]));
+            }
+        }
+    }
+
+    for runs in by_path.into_values() {
+        for (_, _, run) in runs {
+            for diff in compose_diff(store, &run, &[])? {
+                if body.len().saturating_add(diff.unified_diff.len()) > limit {
+                    return Ok(None);
+                }
+                body.push_str(&diff.unified_diff);
+            }
+        }
+    }
+    Ok(Some(body))
+}
+
+fn render_change_record(
+    store: &ChangeHistoryStore,
+    record: &ChangeRecord,
+    limit: usize,
+) -> anyhow::Result<Option<String>> {
+    let mut body = String::new();
+    if record.files.iter().any(|file| !file.coverage.is_complete()) {
+        let notice = "Incomplete capture coverage.\n";
+        if notice.len() > limit {
+            return Ok(None);
+        }
+        body.push_str(notice);
+    }
+    for diff in compose_diff(store, std::slice::from_ref(record), &[])? {
+        if body.len().saturating_add(diff.unified_diff.len()) > limit {
+            return Ok(None);
+        }
+        body.push_str(&diff.unified_diff);
     }
     Ok(Some(body))
 }
@@ -174,11 +256,8 @@ impl FinalCaptureAttachment {
             let records = store.load_records(&ids?)?;
             let mut text = String::new();
             for record in &records {
-                let Some(body) = render_change_source(
-                    &store,
-                    std::slice::from_ref(record),
-                    16_000 - text.len(),
-                )?
+                let Some(body) =
+                    render_change_record(&store, record, 16_000usize.saturating_sub(text.len()))?
                 else {
                     return Ok(None);
                 };
@@ -425,5 +504,108 @@ mod tests {
             facts[0].event,
             codex_protocol::feature_use::FeatureUseEvent::ProgressDelivered
         );
+    }
+
+    #[test]
+    fn composed_change_source_merges_consecutive_edits_and_preserves_gaps() -> anyhow::Result<()> {
+        use codex_change_history::{
+            ChangeMetadata, ChangeSourceKind, CoverageStatus, FileSnapshot, PendingFileChange,
+        };
+
+        let workspace = tempfile::tempdir()?;
+        let store = ChangeHistoryStore::open(workspace.path().join("changes"))?;
+        let path = workspace.path().join("notes.txt");
+        let record = |call_id: &str,
+                      before: FileSnapshot,
+                      after: FileSnapshot,
+                      coverage: CoverageStatus| {
+            store.record_change(
+                ChangeMetadata {
+                    thread_id: "worker".into(),
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    call_id: call_id.into(),
+                    source_kind: ChangeSourceKind::ApplyPatch,
+                    workspace_root: workspace.path().to_path_buf(),
+                    created_at: 1,
+                    exit_code: Some(0),
+                    summary: None,
+                    claim_key: None,
+                },
+                vec![PendingFileChange {
+                    rel_path: "notes.txt".into(),
+                    abs_path: path.clone(),
+                    moved_from: None,
+                    before,
+                    after,
+                    coverage,
+                }],
+            )
+        };
+
+        let first = record(
+            "c1",
+            FileSnapshot::Missing,
+            FileSnapshot::Present(b"superseded draft\n".to_vec()),
+            CoverageStatus::Complete,
+        )?;
+        let second = record(
+            "c2",
+            FileSnapshot::Present(b"superseded draft\n".to_vec()),
+            FileSnapshot::Present(b"final text\n".to_vec()),
+            CoverageStatus::Complete,
+        )?;
+        let _skipped = record(
+            "c3",
+            FileSnapshot::Present(b"final text\n".to_vec()),
+            FileSnapshot::Present(b"final text\nskipped edit\n".to_vec()),
+            CoverageStatus::Complete,
+        )?;
+        let after_gap = record(
+            "c4",
+            FileSnapshot::Present(b"final text\nskipped edit\n".to_vec()),
+            FileSnapshot::Present(b"final text\nskipped edit\nafter gap\n".to_vec()),
+            CoverageStatus::Partial {
+                reason: "size cap".into(),
+            },
+        )?;
+
+        // Consecutive edits compose into one cumulative diff without intermediate text.
+        let consecutive = render_composed_change_source(
+            &store,
+            &[first.clone(), second.clone()],
+            16_000,
+        )?
+        .expect("within budget");
+        assert!(consecutive.contains("+final text"), "{consecutive}");
+        assert!(!consecutive.contains("superseded draft"), "{consecutive}");
+        assert!(
+            !consecutive.contains("Incomplete capture coverage."),
+            "{consecutive}"
+        );
+
+        // Consecutive edits before a gap compose, while the skipped edit is not folded in.
+        let with_gap = render_composed_change_source(
+            &store,
+            &[first.clone(), second.clone(), after_gap.clone()],
+            16_000,
+        )?
+        .expect("within budget");
+        assert!(with_gap.contains("Incomplete capture coverage.\n"), "{with_gap}");
+        assert!(with_gap.contains("+final text"), "{with_gap}");
+        assert!(with_gap.contains("+after gap"), "{with_gap}");
+        assert!(!with_gap.contains("superseded draft"), "{with_gap}");
+        assert!(!with_gap.contains("+skipped edit"), "{with_gap}");
+        assert!(with_gap.contains("# coverage:"), "{with_gap}");
+
+        // Per-record final handoff rendering keeps coverage diagnostics and budget enforcement.
+        let single = render_change_record(&store, &after_gap, 16_000)?.expect("within budget");
+        assert!(single.contains("Incomplete capture coverage.\n"), "{single}");
+        assert!(single.contains("+after gap"), "{single}");
+        assert!(render_change_record(&store, &after_gap, 10)?.is_none());
+
+        // Output budget is enforced for composed reads too.
+        assert!(render_composed_change_source(&store, &[first, second], 10)?.is_none());
+        Ok(())
     }
 }
