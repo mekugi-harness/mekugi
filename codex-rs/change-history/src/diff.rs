@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::path::Component;
+use std::path::Path;
 use std::path::PathBuf;
 
 use similar::ChangeTag;
@@ -71,22 +73,80 @@ pub(crate) fn path_matches_filters(rel_path: &str, filters: &[String]) -> bool {
     })
 }
 
+fn normalize_abs_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(comp.as_os_str());
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                out.push(comp.as_os_str());
+            }
+        }
+    }
+    out
+}
+
+fn expand_rename_filters(records: &[&ChangeRecord], path_filters: &[String]) -> Vec<String> {
+    if path_filters.is_empty() {
+        return Vec::new();
+    }
+    let mut expanded: Vec<String> = path_filters.to_vec();
+    loop {
+        let mut added = false;
+        for record in records {
+            for file in &record.files {
+                let Some(from) = file.moved_from.as_deref() else {
+                    continue;
+                };
+                let rel_matched = path_matches_filters(&file.rel_path, &expanded);
+                let from_matched = path_matches_filters(from, &expanded);
+                if rel_matched && !from_matched {
+                    expanded.push(from.to_string());
+                    added = true;
+                } else if from_matched && !rel_matched {
+                    expanded.push(file.rel_path.clone());
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    expanded
+}
+
 pub(crate) fn compose_transitions(
     store: &ChangeHistoryStore,
     records: &[ChangeRecord],
     path_filters: &[String],
 ) -> Result<Vec<ComposedFileTransition>, ChangeHistoryError> {
+    compose_transitions_with_continuity(store, records, path_filters, false)
+}
+
+pub(crate) fn compose_transitions_with_continuity(
+    store: &ChangeHistoryStore,
+    records: &[ChangeRecord],
+    path_filters: &[String],
+    require_continuity: bool,
+) -> Result<Vec<ComposedFileTransition>, ChangeHistoryError> {
     let mut ordered: Vec<&ChangeRecord> = records.iter().collect();
     ordered.sort_by_key(|r| r.sequence);
+    let effective_filters = expand_rename_filters(&ordered, path_filters);
 
-    let mut by_path: BTreeMap<String, ComposedFileTransition> = BTreeMap::new();
+    let mut by_path: BTreeMap<PathBuf, ComposedFileTransition> = BTreeMap::new();
     for record in ordered {
         for file in &record.files {
-            if !path_matches_filters(&file.rel_path, path_filters)
+            if !path_matches_filters(&file.rel_path, &effective_filters)
                 && !file
                     .moved_from
                     .as_deref()
-                    .is_some_and(|from| path_matches_filters(from, path_filters))
+                    .is_some_and(|from| path_matches_filters(from, &effective_filters))
             {
                 continue;
             }
@@ -101,8 +161,19 @@ pub(crate) fn compose_transitions(
                     Some(format!("{}: missing baseline ({reason})", record.id))
                 }
             };
-            if let Some(existing) = by_path.get_mut(&file.rel_path) {
+            let key = normalize_abs_path(&file.abs_path);
+            if let Some(existing) = by_path.get_mut(&key) {
+                if require_continuity && existing.after != before {
+                    return Err(ChangeHistoryError::DriftConflict {
+                        path: file.abs_path.clone(),
+                        reason: format!(
+                            "discontinuous selection for `{}`: skipped intermediate edits before `{}`",
+                            file.rel_path, record.id
+                        ),
+                    });
+                }
                 existing.after = after;
+                existing.rel_path = file.rel_path.clone();
                 existing.abs_path = file.abs_path.clone();
                 if existing.moved_from.is_none() {
                     existing.moved_from = file.moved_from.clone();
@@ -116,7 +187,7 @@ pub(crate) fn compose_transitions(
                     coverage_notes.push(note);
                 }
                 by_path.insert(
-                    file.rel_path.clone(),
+                    key,
                     ComposedFileTransition {
                         rel_path: file.rel_path.clone(),
                         abs_path: file.abs_path.clone(),
@@ -176,13 +247,19 @@ pub fn compose_summary(
 pub fn render_history(records: &[ChangeRecord], path_filters: &[String]) -> String {
     let mut ordered: Vec<&ChangeRecord> = records.iter().collect();
     ordered.sort_by_key(|r| r.sequence);
+    let effective_filters = expand_rename_filters(&ordered, path_filters);
 
     let mut out = String::new();
     for record in ordered {
         let matched_files: Vec<_> = record
             .files
             .iter()
-            .filter(|f| path_matches_filters(&f.rel_path, path_filters))
+            .filter(|f| {
+                path_matches_filters(&f.rel_path, &effective_filters)
+                    || f.moved_from
+                        .as_deref()
+                        .is_some_and(|from| path_matches_filters(from, &effective_filters))
+            })
             .collect();
         if !path_filters.is_empty() && matched_files.is_empty() {
             continue;

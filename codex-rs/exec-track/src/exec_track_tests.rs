@@ -640,3 +640,164 @@ fn static_write_path_extraction_covers_redirs_tee_mv_rm_sed() {
         .collect();
     assert_eq!(paths, expected);
 }
+
+#[tokio::test]
+async fn delayed_final_ack_reader_does_not_hang_after_control_loop_exits() {
+    use std::io::BufRead;
+    use std::io::BufReader;
+    use std::io::Write;
+
+    let split = split_segments("echo ok", ShellDialect::Bash).expect("trackable");
+    let (session, _drain_rx) =
+        ExecTrackSession::start(split.segments, TrackingMode::Pipe).expect("start session");
+    let ctl_path = session.ctl_path().to_path_buf();
+    let ack_path = session.ack_path().to_path_buf();
+
+    // Handshake open + immediate ack.
+    {
+        let mut ctl = fs::OpenOptions::new().write(true).open(&ctl_path).expect("open ctl");
+        writeln!(ctl, "o").expect("write o");
+        ctl.flush().expect("flush o");
+    }
+    let ack_open = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking({
+            let ack_path = ack_path.clone();
+            move || {
+                let file = fs::File::open(&ack_path).expect("open ack");
+                let mut line = String::new();
+                BufReader::new(file).read_line(&mut line).expect("read ack");
+                line
+            }
+        }),
+    )
+    .await
+    .expect("open ack timed out")
+    .expect("join open ack");
+    assert_eq!(ack_open, "k\n");
+
+    // Send final done message and deliberately wait so run_control_loop exits before Bash opens ack.
+    {
+        let mut ctl = fs::OpenOptions::new().write(true).open(&ctl_path).expect("open ctl");
+        writeln!(ctl, "d 0").expect("write d");
+        ctl.flush().expect("flush d");
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Delayed final ack reader must still receive "k\n" without hanging.
+    let ack_done = tokio::time::timeout(
+        Duration::from_secs(2),
+        tokio::task::spawn_blocking(move || {
+            let file = fs::File::open(&ack_path).expect("open delayed ack");
+            let mut line = String::new();
+            BufReader::new(file)
+                .read_line(&mut line)
+                .expect("read delayed ack");
+            line
+        }),
+    )
+    .await
+    .expect("delayed final ack reader hung")
+    .expect("join delayed ack");
+    assert_eq!(ack_done, "k\n");
+
+    let report = session.finalize(Some(0));
+    assert!(report.tracked, "report={report:?}");
+    assert_eq!(report.exit_code, Some(0));
+}
+
+#[test]
+fn mktemp_log_rejects_forged_paths_and_symlink_escapes() {
+    use crate::MktempCreation;
+
+    let dir = TempDir::new().expect("tempdir");
+    let store_dir = TempDir::new().expect("store dir");
+
+    let legit = dir.path().join("legit.txt");
+    fs::write(&legit, b"legit content").expect("write legit");
+
+    let escape_link = dir.path().join("escape_hosts");
+    std::os::unix::fs::symlink("/etc/hosts", &escape_link).expect("symlink /etc/hosts");
+
+    let capture = ShellWriteCapture::prepare("true", dir.path());
+    let mktemp_creations = vec![
+        MktempCreation {
+            path: PathBuf::from("/etc/hosts"),
+            is_dir: false,
+            segment_index: 0,
+        },
+        MktempCreation {
+            path: escape_link,
+            is_dir: false,
+            segment_index: 0,
+        },
+        MktempCreation {
+            path: legit,
+            is_dir: false,
+            segment_index: 0,
+        },
+    ];
+
+    let record = capture
+        .finalize_and_persist(
+            store_dir.path(),
+            ChangeMetadata {
+                thread_id: "thread-sec".to_string(),
+                session_id: "sess-sec".to_string(),
+                turn_id: "turn-sec".to_string(),
+                call_id: "call-sec".to_string(),
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: dir.path().to_path_buf(),
+                created_at: 1_700_000_020,
+                exit_code: Some(0),
+                summary: Some("forged mktemp test".to_string()),
+                claim_key: Some(shell_write_claim_key("thread-sec", "call-sec")),
+            },
+            &mktemp_creations,
+        )
+        .expect("persist")
+        .expect("legit file should still be recorded");
+
+    assert_eq!(record.files.len(), 1, "files={:?}", record.files);
+    assert_eq!(record.files[0].rel_path, "legit.txt");
+}
+
+#[test]
+fn oversized_before_and_after_preserves_partial_coverage_record() {
+    let dir = TempDir::new().expect("tempdir");
+    let store_dir = TempDir::new().expect("store dir");
+    let big = dir.path().join("big.bin");
+    // Exceeds 8 MiB per-file capture cap both before and after.
+    fs::write(&big, vec![b'a'; 8 * 1024 * 1024 + 16]).expect("write big before");
+
+    let capture = ShellWriteCapture::prepare("echo x >> big.bin", dir.path());
+    fs::write(&big, vec![b'b'; 8 * 1024 * 1024 + 32]).expect("write big after");
+
+    let record = capture
+        .finalize_and_persist(
+            store_dir.path(),
+            ChangeMetadata {
+                thread_id: "thread-big".to_string(),
+                session_id: "sess-big".to_string(),
+                turn_id: "turn-big".to_string(),
+                call_id: "call-big".to_string(),
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: dir.path().to_path_buf(),
+                created_at: 1_700_000_021,
+                exit_code: Some(0),
+                summary: Some("oversized edit".to_string()),
+                claim_key: Some(shell_write_claim_key("thread-big", "call-big")),
+            },
+            &[],
+        )
+        .expect("persist")
+        .expect("oversized edit must not vanish from history");
+
+    assert_eq!(record.files.len(), 1);
+    assert_eq!(record.files[0].rel_path, "big.bin");
+    assert!(
+        matches!(record.files[0].coverage, CoverageStatus::Partial { .. }),
+        "expected Partial coverage, got {:?}",
+        record.files[0].coverage
+    );
+}

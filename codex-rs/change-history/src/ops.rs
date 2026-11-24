@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 use similar::DiffOp;
 use similar::TextDiff;
 
-use crate::diff::compose_transitions;
+use crate::diff::compose_transitions_with_continuity;
 use crate::error::ChangeHistoryError;
 use crate::identity::ChangeId;
 use crate::model::ChangeMetadata;
@@ -59,7 +59,7 @@ impl ChangeHistoryStore {
         actor_session_id: &str,
     ) -> Result<MutationOutcome, ChangeHistoryError> {
         let records = self.load_records(ids)?;
-        let transitions = compose_transitions(self, &records, path_filters)?;
+        let transitions = compose_transitions_with_continuity(self, &records, path_filters, true)?;
         if transitions.is_empty() {
             return Err(ChangeHistoryError::NoMatchingPaths);
         }

@@ -221,6 +221,7 @@ pub struct ExecTrackSession {
     ack_path: PathBuf,
     mktemp_path: PathBuf,
     state: Arc<Mutex<SharedState>>,
+    ack_fd: Mutex<Option<Arc<OwnedFd>>>,
     ctl_task: Mutex<Option<JoinHandle<()>>>,
     settled: OnceLock<ExecTrackReport>,
 }
@@ -259,13 +260,14 @@ impl ExecTrackSession {
         fs::set_permissions(&mktemp_path, fs::Permissions::from_mode(0o600))?;
 
         let ctl_fd = open_fifo_rdwr_nonblock(&ctl_path)?;
-        let ack_fd = open_fifo_rdwr_nonblock(&ack_path)?;
+        let ack_fd = Arc::new(open_fifo_rdwr_nonblock(&ack_path)?);
 
         let state = Arc::new(Mutex::new(SharedState::new(&segments, mode)));
         let (drain_tx, drain_rx) = mpsc::unbounded_channel();
 
         let ctl_state = Arc::clone(&state);
-        let ctl_task = tokio::spawn(run_control_loop(ctl_fd, ack_fd, ctl_state, drain_tx));
+        let ctl_ack_fd = Arc::clone(&ack_fd);
+        let ctl_task = tokio::spawn(run_control_loop(ctl_fd, ctl_ack_fd, ctl_state, drain_tx));
 
         Ok((
             Self {
@@ -274,6 +276,7 @@ impl ExecTrackSession {
                 ack_path,
                 mktemp_path,
                 state,
+                ack_fd: Mutex::new(Some(ack_fd)),
                 ctl_task: Mutex::new(Some(ctl_task)),
                 settled: OnceLock::new(),
             },
@@ -342,6 +345,10 @@ impl ExecTrackSession {
         {
             handle.abort();
         }
+        self.ack_fd
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         let _ = fs::remove_file(&self.ctl_path);
         let _ = fs::remove_file(&self.ack_path);
     }
@@ -402,7 +409,7 @@ impl Drop for ExecTrackSession {
 
 async fn run_control_loop(
     ctl_fd: OwnedFd,
-    ack_fd: OwnedFd,
+    ack_fd: Arc<OwnedFd>,
     state: Arc<Mutex<SharedState>>,
     drain_tx: mpsc::UnboundedSender<DrainRequest>,
 ) {

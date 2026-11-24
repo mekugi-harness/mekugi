@@ -16,6 +16,9 @@ pub struct ExecutionBeforeToolParams {
     pub tool: String,
     pub cwd: String,
     pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_tmp: Option<String>,
 }
 
 /// Empty acknowledgement releasing the pre-execution observation barrier early.

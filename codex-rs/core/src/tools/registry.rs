@@ -1261,6 +1261,11 @@ fn before_tool_barrier_params(
         },
         PathUri::inferred_native_path_string,
     );
+    let session_tmp = (tool_name == "Bash").then(|| {
+        crate::exec_env::session_tmp_path(invocation.session.session_id())
+            .to_string_lossy()
+            .into_owned()
+    });
     Some(codex_app_server_protocol::ExecutionBeforeToolParams {
         thread_id: invocation.session.thread_id.to_string(),
         turn_id: invocation.turn.sub_id.clone(),
@@ -1268,6 +1273,7 @@ fn before_tool_barrier_params(
         tool: tool_name.to_string(),
         cwd,
         input,
+        session_tmp,
     })
 }
 

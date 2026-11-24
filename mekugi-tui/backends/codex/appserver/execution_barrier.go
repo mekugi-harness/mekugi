@@ -10,6 +10,7 @@ type ExecutionBeforeToolParams struct {
 	Tool     string `json:"tool"`
 	CWD      string `json:"cwd"`
 	Input    string `json:"input"`
+	SessionTmp string `json:"sessionTmp,omitempty"`
 }
 
 // ExecutionBeforeToolResponse acknowledges a pre-tool observation barrier.

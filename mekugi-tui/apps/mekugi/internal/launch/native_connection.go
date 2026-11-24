@@ -107,6 +107,7 @@ func (c *nativeConnection) run() (runErr error) {
 			c.root.preparer.ObserveNativeBoundary(ctx, executionobservation.NativeBoundary{
 				Thread: request.ThreadID, Turn: request.TurnID, Item: request.ItemID,
 				Tool: request.Tool, CWD: request.CWD, Input: request.Input, Deadline: deadline,
+				SessionTmp: request.SessionTmp,
 			})
 		}
 	}

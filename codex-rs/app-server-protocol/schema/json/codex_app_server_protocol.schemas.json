@@ -3876,6 +3876,12 @@
         "itemId": {
           "type": "string"
         },
+        "sessionTmp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadId": {
           "type": "string"
         },

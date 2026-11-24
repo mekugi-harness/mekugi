@@ -394,6 +394,7 @@ mod tests {
                 tool: "Bash".into(),
                 cwd: "/tmp".into(),
                 input: "echo hi".into(),
+                session_tmp: None,
             },
             CancellationToken::new(),
         ));

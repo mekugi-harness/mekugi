@@ -400,3 +400,168 @@ fn persist_before_publish_leaves_index_clean_on_storage_failure() {
     // Nothing was published to index.json.
     assert!(store.list_entries().expect("list").is_empty());
 }
+
+#[test]
+fn mutate_rejects_discontinuous_non_contiguous_selection() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let file = ws.join("a.txt");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![PendingFileChange {
+                rel_path: "a.txt".to_string(),
+                abs_path: file.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"v0\n".to_vec()),
+                after: FileSnapshot::Present(b"v1\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r1");
+    let _r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::ApplyPatch),
+            vec![PendingFileChange {
+                rel_path: "a.txt".to_string(),
+                abs_path: file.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"v1\n".to_vec()),
+                after: FileSnapshot::Present(b"v2\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r2");
+    let r3 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c3", ChangeSourceKind::ApplyPatch),
+            vec![PendingFileChange {
+                rel_path: "a.txt".to_string(),
+                abs_path: file.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"v2\n".to_vec()),
+                after: FileSnapshot::Present(b"v3\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r3");
+
+    fs::write(&file, b"v3\n").expect("write live v3");
+
+    let err = store
+        .mutate_workspace(MutationDirection::Revert, &[r1.id, r3.id], &[], "t1", "s1")
+        .expect_err("non-contiguous selection must be rejected");
+    assert!(
+        matches!(err, ChangeHistoryError::DriftConflict { .. }),
+        "expected DriftConflict, got {err:?}"
+    );
+    assert_eq!(fs::read(&file).expect("read"), b"v3\n");
+}
+
+#[test]
+fn same_rel_path_different_abs_paths_do_not_collide() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    let a_dir = ws.join("pkg/a");
+    let b_dir = ws.join("pkg/b");
+    fs::create_dir_all(&a_dir).expect("mkdir a");
+    fs::create_dir_all(&b_dir).expect("mkdir b");
+    let a_readme = a_dir.join("README.md");
+    let b_readme = b_dir.join("README.md");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ShellWrite),
+            vec![PendingFileChange {
+                rel_path: "README.md".to_string(),
+                abs_path: a_readme.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"a-old\n".to_vec()),
+                after: FileSnapshot::Present(b"a-new\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r1");
+    let r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::ShellWrite),
+            vec![PendingFileChange {
+                rel_path: "README.md".to_string(),
+                abs_path: b_readme.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"b-old\n".to_vec()),
+                after: FileSnapshot::Present(b"b-new\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r2");
+
+    let diffs = compose_diff(&store, &[r1.clone(), r2.clone()], &[]).expect("diff");
+    assert_eq!(diffs.len(), 2, "both README.md files must be preserved");
+
+    fs::write(&a_readme, b"a-new\n").expect("write a");
+    fs::write(&b_readme, b"b-new\n").expect("write b");
+
+    store
+        .mutate_workspace(MutationDirection::Revert, &[r1.id, r2.id], &[], "t1", "s1")
+        .expect("revert both");
+    assert_eq!(fs::read(&a_readme).expect("read a"), b"a-old\n");
+    assert_eq!(fs::read(&b_readme).expect("read b"), b"b-old\n");
+}
+
+#[test]
+fn revert_rename_filtered_by_destination_restores_source() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let old_path = ws.join("old.txt");
+    let new_path = ws.join("new.txt");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let rec = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![
+                PendingFileChange {
+                    rel_path: "old.txt".to_string(),
+                    abs_path: old_path.clone(),
+                    moved_from: None,
+                    before: FileSnapshot::Present(b"original\n".to_vec()),
+                    after: FileSnapshot::Missing,
+                    coverage: CoverageStatus::Complete,
+                },
+                PendingFileChange {
+                    rel_path: "new.txt".to_string(),
+                    abs_path: new_path.clone(),
+                    moved_from: Some("old.txt".to_string()),
+                    before: FileSnapshot::Missing,
+                    after: FileSnapshot::Present(b"renamed\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+            ],
+        )
+        .expect("record rename");
+
+    fs::write(&new_path, b"renamed\n").expect("write new");
+    assert!(!old_path.exists());
+
+    store
+        .mutate_workspace(
+            MutationDirection::Revert,
+            &[rec.id],
+            &["new.txt".to_string()],
+            "t1",
+            "s1",
+        )
+        .expect("revert rename by destination");
+
+    assert!(!new_path.exists(), "destination should be removed");
+    assert_eq!(
+        fs::read(&old_path).expect("source must be restored"),
+        b"original\n"
+    );
+}

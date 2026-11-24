@@ -459,14 +459,14 @@ fn run_mutate(
 ) -> ToolOutput {
     match store.mutate_workspace(direction, ids, paths, actor_thread_id, actor_session_id) {
         Ok(outcome) => {
-            let (verb, undo_verb) = match direction {
-                MutationDirection::Revert => ("Reverted", "apply"),
-                MutationDirection::Apply => ("Applied", "revert"),
+            let verb = match direction {
+                MutationDirection::Revert => "Reverted",
+                MutationDirection::Apply => "Applied",
             };
             let mut stdout = String::new();
             let _ = writeln!(
                 &mut stdout,
-                "{verb} {} file(s) as {}:\n  {}\nundo: mchanges {undo_verb} {}",
+                "{verb} {} file(s) as {}:\n  {}\nundo: mchanges revert {}",
                 outcome.affected_paths.len(),
                 outcome.recorded.id,
                 outcome.affected_paths.join("\n  "),

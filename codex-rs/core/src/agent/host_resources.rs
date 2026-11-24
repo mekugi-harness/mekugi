@@ -161,6 +161,7 @@ pub(crate) mod tests {
                     tool: "Bash".into(),
                     cwd: "/tmp".into(),
                     input: "echo hi".into(),
+                    session_tmp: None,
                 },
                 CancellationToken::new(),
             )
@@ -199,6 +200,7 @@ pub(crate) mod tests {
                         tool: "apply_patch".into(),
                         cwd: "/tmp".into(),
                         input: "*** Begin Patch".into(),
+                        session_tmp: None,
                     },
                     CancellationToken::new(),
                 )
@@ -234,6 +236,7 @@ pub(crate) mod tests {
                     tool: "Bash".into(),
                     cwd: "/tmp".into(),
                     input: "sleep 1".into(),
+                    session_tmp: None,
                 },
                 CancellationToken::new(),
             )

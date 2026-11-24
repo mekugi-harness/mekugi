@@ -7,4 +7,4 @@
  * dispatching local `exec_command` (`Bash`) or `apply_patch` calls when a
  * capture observer is registered for the session.
  */
-export type ExecutionBeforeToolParams = { threadId: string, turnId: string, itemId: string, tool: string, cwd: string, input: string, };
+export type ExecutionBeforeToolParams = { threadId: string, turnId: string, itemId: string, tool: string, cwd: string, input: string, sessionTmp?: string, };

@@ -97,7 +97,7 @@ fn list_summary_diff_history_and_path_scoped_revert_apply() {
         "revert", "--store", &store_str, "--thread", "thread-1", "amber1", "b.txt",
     ]));
     assert_eq!(rev_b.exit_code, 0, "stderr: {}", rev_b.stderr);
-    assert!(rev_b.stdout.contains("undo: mchanges apply amber2"));
+    assert!(rev_b.stdout.contains("undo: mchanges revert amber2"));
     assert!(!b_path.exists());
     assert_eq!(
         fs::read_to_string(&a_path).expect("read a"),

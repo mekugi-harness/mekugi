@@ -74,22 +74,29 @@ impl ShellWriteCapture {
         mktemp_creations: &[MktempCreation],
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
         let workspace_root = metadata.workspace_root.clone();
+        let allowed_roots = allowed_mktemp_roots(&workspace_root);
         let mut all_paths: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus)> =
             self.baselines.clone();
 
         for created in mktemp_creations {
             let abs = resolve_path(&self.cwd, &created.path);
+            let Some(canonical) = admit_mktemp_path(&abs, &allowed_roots) else {
+                continue;
+            };
             if created.is_dir {
                 let mut tree_files = Vec::new();
-                collect_dir_files(&abs, &mut tree_files, MAX_MKTEMP_TREE_FILES);
+                collect_dir_files(&canonical, &mut tree_files, MAX_MKTEMP_TREE_FILES);
                 for file_path in tree_files {
+                    let Some(canonical_file) = admit_mktemp_path(&file_path, &allowed_roots) else {
+                        continue;
+                    };
                     all_paths
-                        .entry(file_path)
+                        .entry(canonical_file)
                         .or_insert((FileSnapshot::Missing, CoverageStatus::Complete));
                 }
             } else {
                 all_paths
-                    .entry(abs)
+                    .entry(canonical)
                     .or_insert((FileSnapshot::Missing, CoverageStatus::Complete));
             }
         }
@@ -97,10 +104,10 @@ impl ShellWriteCapture {
         let mut pending_files = Vec::new();
         for (abs_path, (before, before_cov)) in all_paths {
             let (after, after_cov) = read_bounded_snapshot(&abs_path);
-            if before == after {
+            let coverage = merge_coverage(before_cov, after_cov);
+            if before == after && coverage == CoverageStatus::Complete {
                 continue;
             }
-            let coverage = merge_coverage(before_cov, after_cov);
             let rel_path = display_rel_path(&workspace_root, &abs_path);
             pending_files.push(PendingFileChange {
                 rel_path,
@@ -304,6 +311,36 @@ fn resolve_path(cwd: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn allowed_mktemp_roots(workspace_root: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![workspace_root.to_path_buf()];
+    if let Some(session_tmp) = std::env::var_os("SESSION_TMP") {
+        candidates.push(PathBuf::from(session_tmp));
+    }
+    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
+        candidates.push(PathBuf::from(tmpdir));
+    }
+    candidates.push(std::env::temp_dir());
+    candidates.push(PathBuf::from("/tmp"));
+
+    let mut roots = Vec::new();
+    for candidate in candidates {
+        if let Ok(canonical) = fs::canonicalize(&candidate)
+            && !roots.contains(&canonical)
+        {
+            roots.push(canonical);
+        }
+    }
+    roots
+}
+
+fn admit_mktemp_path(path: &Path, allowed_roots: &[PathBuf]) -> Option<PathBuf> {
+    let canonical = fs::canonicalize(path).ok()?;
+    allowed_roots
+        .iter()
+        .any(|root| canonical.starts_with(root))
+        .then_some(canonical)
+}
+
 fn collect_dir_files(dir: &Path, out: &mut Vec<PathBuf>, limit: usize) {
     if out.len() >= limit {
         return;
@@ -385,6 +422,12 @@ fn merge_coverage(before: CoverageStatus, after: CoverageStatus) -> CoverageStat
 }
 
 fn display_rel_path(workspace_root: &Path, abs: &Path) -> String {
-    let rel = abs.strip_prefix(workspace_root).unwrap_or(abs);
+    let rel = abs.strip_prefix(workspace_root).unwrap_or_else(|_| {
+        if let Ok(canonical_root) = fs::canonicalize(workspace_root) {
+            abs.strip_prefix(&canonical_root).unwrap_or(abs)
+        } else {
+            abs
+        }
+    });
     rel.to_string_lossy().replace('\\', "/")
 }
