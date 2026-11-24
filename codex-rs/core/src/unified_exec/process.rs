@@ -33,6 +33,7 @@ use codex_utils_pty::SpawnedPty;
 
 use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
+use super::UNIFIED_EXEC_SOURCE_CAPTURE_MAX_BYTES;
 use super::UnifiedExecError;
 use super::process_state::ProcessState;
 use crate::shell_snapshot::ShellSnapshotFile;
@@ -46,11 +47,24 @@ const REMOTE_OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) struct OutputBuffers<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
     pub(super) pending: HeadTailBuffer<MAX_BYTES>,
     pub(super) transcript: HeadTailBuffer<MAX_BYTES>,
+    pub(super) large_capture: Option<HeadTailBuffer<UNIFIED_EXEC_SOURCE_CAPTURE_MAX_BYTES>>,
 }
 
 impl<const MAX_BYTES: usize> OutputBuffers<MAX_BYTES> {
+    pub(crate) fn with_large_capture() -> Self {
+        Self {
+            pending: HeadTailBuffer::default(),
+            transcript: HeadTailBuffer::default(),
+            large_capture: Some(HeadTailBuffer::default()),
+        }
+    }
+
     pub(super) fn push_chunk(&mut self, _stream: ExecOutputStream, chunk: &[u8]) {
-        self.pending.push_chunk(chunk);
+        if let Some(large_capture) = &mut self.large_capture {
+            large_capture.push_chunk(chunk);
+        } else {
+            self.pending.push_chunk(chunk);
+        }
         self.transcript.push_chunk(chunk);
     }
 }
@@ -129,9 +143,15 @@ impl UnifiedExecProcess {
         process_handle: ProcessHandle,
         sandbox_type: Option<SandboxType>,
         drain_policy: OutputDrainPolicy,
+        large_capture: bool,
     ) -> Self {
+        let buffers = if large_capture {
+            OutputBuffers::with_large_capture()
+        } else {
+            OutputBuffers::default()
+        };
         let output = OutputHandles {
-            output_buffer: Arc::new(Mutex::new(OutputBuffers::default())),
+            output_buffer: Arc::new(Mutex::new(buffers)),
             output_notify: Arc::new(Notify::new()),
             output_closed: Arc::new(AtomicBool::new(false)),
             output_closed_notify: Arc::new(Notify::new()),
@@ -296,7 +316,10 @@ impl UnifiedExecProcess {
 
     async fn snapshot_output(&self) -> Vec<u8> {
         let guard = self.output.output_buffer.lock().await;
-        guard.pending.to_bytes()
+        guard
+            .large_capture
+            .as_ref()
+            .map_or_else(|| guard.pending.to_bytes(), HeadTailBuffer::to_bytes)
     }
 
     pub(crate) fn sandbox_type(&self) -> Option<SandboxType> {
@@ -358,9 +381,18 @@ impl UnifiedExecProcess {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) async fn from_spawned(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
+    ) -> Result<Self, UnifiedExecError> {
+        Self::from_spawned_with_capture(spawned, sandbox_type, /*large_capture*/ false).await
+    }
+
+    pub(super) async fn from_spawned_with_capture(
+        spawned: SpawnedPty,
+        sandbox_type: SandboxType,
+        large_capture: bool,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
@@ -372,6 +404,7 @@ impl UnifiedExecProcess {
             ProcessHandle::Local(Box::new(process_handle)),
             Some(sandbox_type),
             OutputDrainPolicy::BoundedAfterExit,
+            large_capture,
         );
         managed.output_task = Some(Self::spawn_local_output_task(
             stdout_rx,
@@ -414,15 +447,34 @@ impl UnifiedExecProcess {
         Ok(managed)
     }
 
+    #[cfg(test)]
     pub(super) async fn from_exec_server_started(
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
+    ) -> Result<Self, UnifiedExecError> {
+        Self::from_exec_server_started_with_capture(
+            started,
+            output_drain_policy,
+            /*large_capture*/ false,
+        )
+        .await
+    }
+
+    pub(super) async fn from_exec_server_started_with_capture(
+        started: StartedExecProcess,
+        output_drain_policy: OutputDrainPolicy,
+        large_capture: bool,
     ) -> Result<Self, UnifiedExecError> {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
         // Older peers do not report this field. In that case, skip local
         // classification rather than attributing a violation to a guessed backend.
         let sandbox_type = started.sandbox_type;
-        let mut managed = Self::new(process_handle, sandbox_type, output_drain_policy);
+        let mut managed = Self::new(
+            process_handle,
+            sandbox_type,
+            output_drain_policy,
+            large_capture,
+        );
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
+use super::clamp_code_mode_max_output_tokens;
 use super::handle_runtime_response;
 use super::is_exec_tool_name;
 use super::output::CodeModeToolOutput;
@@ -82,6 +83,11 @@ impl CodeModeExecuteHandler {
         .map_err(|error| FunctionCallError::Fatal(error.to_string()))?
         .apply_code_mode(&mut enabled_tools);
         let started_at = std::time::Instant::now();
+        let max_output_tokens = clamp_code_mode_max_output_tokens(
+            &step_context.settings.model_info,
+            args.max_output_tokens,
+            exec.turn.config.code_mode.experimental_show_cell_overhead,
+        );
         let started_cell = exec
             .session
             .services
@@ -92,7 +98,7 @@ impl CodeModeExecuteHandler {
                     enabled_tools,
                     source: args.code.clone(),
                     yield_time_ms: args.yield_time_ms,
-                    max_output_tokens: args.max_output_tokens,
+                    max_output_tokens,
                 },
                 Arc::clone(&step_context),
             )
@@ -173,7 +179,7 @@ impl CodeModeExecuteHandler {
         Ok(handle_runtime_response(
             &step_context.settings.model_info,
             response,
-            args.max_output_tokens,
+            max_output_tokens,
             exec.session.services.code_mode_service.output_truncation(),
             wall_time,
             exec.turn.config.code_mode.experimental_show_cell_overhead,

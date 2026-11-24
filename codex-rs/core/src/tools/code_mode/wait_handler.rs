@@ -17,6 +17,7 @@ use codex_tools::ToolSpec;
 use super::DEFAULT_WAIT_YIELD_TIME_MS;
 use super::ExecContext;
 use super::WAIT_TOOL_NAME;
+use super::clamp_code_mode_max_output_tokens;
 use super::handle_runtime_response;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
@@ -126,13 +127,18 @@ impl CodeModeWaitHandler {
                 let started_at = std::time::Instant::now();
                 telemetry.cell_id = Some(args.cell_id.clone());
                 let cell_id = codex_code_mode::CellId::new(args.cell_id);
+                let max_output_tokens = clamp_code_mode_max_output_tokens(
+                    &step_context.settings.model_info,
+                    args.max_tokens,
+                    exec.turn.config.code_mode.experimental_show_cell_overhead,
+                );
                 let wait_response = if args.terminate {
                     exec.session
                         .services
                         .code_mode_service
                         .terminate(codex_code_mode::TerminateRequest {
                             cell_id: cell_id.clone(),
-                            max_output_tokens: args.max_tokens,
+                            max_output_tokens,
                         })
                         .await
                 } else {
@@ -143,7 +149,7 @@ impl CodeModeWaitHandler {
                             codex_code_mode::WaitRequest {
                                 cell_id: cell_id.clone(),
                                 yield_time_ms: args.yield_time_ms,
-                                max_output_tokens: args.max_tokens,
+                                max_output_tokens,
                             },
                             step_context.preempt.clone(),
                         )
@@ -219,7 +225,7 @@ impl CodeModeWaitHandler {
                 Ok(boxed_tool_output(handle_runtime_response(
                     &step_context.settings.model_info,
                     wait_response.into(),
-                    args.max_tokens,
+                    max_output_tokens,
                     exec.session.services.code_mode_service.output_truncation(),
                     wall_time,
                     exec.turn.config.code_mode.experimental_show_cell_overhead,

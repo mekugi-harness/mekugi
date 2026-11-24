@@ -4439,7 +4439,7 @@ const result = await tools.exec_command({
   cmd: "python3 -c \"import sys; sys.stdout.write('A' * 90000)\"",
   max_output_tokens: 20000
 });
-const resultVariableWasTruncated = result.output.includes("…2500 tokens truncated…");
+const resultVariableWasTruncated = /…2500 tokens truncated(?: \(id: [0-9a-f]{8}\))?…/.test(result.output);
 text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Variable: ${result.output}`);
 "#,
         TOKEN_POLICY_TEST_MODEL,
@@ -4459,7 +4459,7 @@ text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Vari
     // The boolean describes the nested result; the marker below comes from
     // history truncating the value emitted with `text` afterward.
     assert_regex_match(
-        r"(?s)^Variable truncated: True\. Variable: .*…\d+ tokens truncated…A+$",
+        r"(?s)^(?:Warning: truncated output[^\n]*\nTotal output lines: \d+\n\n)?Variable truncated: True\. Variable: .*…\d+ tokens truncated(?: \(id: [0-9a-f]{8}\))?…A+$",
         output,
     );
 

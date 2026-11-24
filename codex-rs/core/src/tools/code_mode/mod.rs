@@ -51,6 +51,7 @@ use codex_tools::ToolName;
 use codex_utils_audio::estimate_tool_audio_tokens_without_cache;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::formatted_truncate_function_output_items_with_spill;
+use codex_utils_output_truncation::with_serialization_allowance;
 
 use delegate::CodeModeCellDelegate;
 use delegate::CodeModeDispatchBroker;
@@ -64,6 +65,11 @@ pub(crate) use wait_handler::CodeModeWaitHandler;
 pub(crate) const PUBLIC_TOOL_NAME: &str = codex_code_mode::PUBLIC_TOOL_NAME;
 pub(crate) const WAIT_TOOL_NAME: &str = codex_code_mode::WAIT_TOOL_NAME;
 pub(crate) const DEFAULT_WAIT_YIELD_TIME_MS: u64 = codex_code_mode::DEFAULT_WAIT_YIELD_TIME_MS;
+/// Headroom reserved for the code-mode response header, truncation warning header,
+/// and truncation marker + 15-byte spill ID suffix (" (id: 00000000)") so
+/// history recording does not truncate a spilled code-mode response a second time.
+const CODE_MODE_HISTORY_OVERHEAD_TOKENS: usize = 64;
+const CODE_MODE_HISTORY_OVERHEAD_WITH_TIMING_TOKENS: usize = 80;
 
 /// Returns true for the code-mode `exec` tool in the default namespace.
 pub(crate) fn is_exec_tool_name(tool_name: &ToolName) -> bool {
@@ -288,6 +294,26 @@ impl CodeModeService {
             })
             .await
             .map(Arc::clone)
+    }
+}
+
+pub(super) fn clamp_code_mode_max_output_tokens(
+    model_info: &codex_protocol::openai_models::ModelInfo,
+    requested_max_output_tokens: Option<usize>,
+    experimental_show_cell_overhead: bool,
+) -> Option<usize> {
+    let history_token_budget =
+        with_serialization_allowance(model_info.truncation_policy.into()).token_budget();
+    let overhead_tokens = if experimental_show_cell_overhead {
+        CODE_MODE_HISTORY_OVERHEAD_WITH_TIMING_TOKENS
+    } else {
+        CODE_MODE_HISTORY_OVERHEAD_TOKENS
+    };
+    let max_body_tokens = history_token_budget.saturating_sub(overhead_tokens);
+    if resolve_max_tokens(requested_max_output_tokens) > max_body_tokens {
+        Some(max_body_tokens)
+    } else {
+        requested_max_output_tokens
     }
 }
 
