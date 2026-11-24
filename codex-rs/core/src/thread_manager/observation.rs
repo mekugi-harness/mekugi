@@ -28,8 +28,14 @@ impl ThreadManager {
     pub async fn read_thread_subtree(&self, root: ThreadId) -> CodexResult<Vec<Thread>> {
         let mut threads = vec![self.state.read_thread_view(root, false).await?];
         for target in self.list_agent_subtree_thread_ids(root).await? {
-            if target != root {
-                threads.push(self.state.read_thread_view(target, false).await?);
+            if target == root {
+                continue;
+            }
+            match self.state.read_thread_view(target, false).await {
+                Ok(thread) => threads.push(thread),
+                // The deletion edge is durable before the child is readable.
+                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
+                Err(err) => return Err(err),
             }
         }
         Ok(threads)

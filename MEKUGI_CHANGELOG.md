@@ -162,6 +162,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   on `thread/revert`, and feature-use reads. Host callbacks cover child
   admission and retained capture. Native observation also supplies assignment,
   usage, and progress facts to Mekugi without a second agent registry.
+  A subtree read during child startup returns its readable members without
+  waiting for the child or reporting the parent missing.
 
 ## Upstream imports
 
