@@ -2,6 +2,7 @@ mod history;
 mod media_availability;
 mod normalize;
 mod output_deduplication;
+mod request_input;
 mod sampling;
 pub(crate) mod updates;
 

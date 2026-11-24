@@ -17,10 +17,8 @@ func (session *nativeSession) observeInspection(inspection *sessioncontrol.Inspe
 	}
 	ownedNative := native != nil && native.IsLoaded()
 	switch {
-	case inspection.ContextWindow() != "" && (target == session.Client.Thread || session.Client.Requests.HasSideThread(target) || ownedNative):
-		inspection.CompleteAttachments(target, session.conversationState.Attachments(session.attached.session.Thread(target)))
 	case target == session.Client.Thread:
-		inspection.Complete(target, threadInspection(&session.attached.session, target, session.settings, session.serviceTiers))
+		inspection.Complete(target, threadInspection(&session.attached.session, target, session.settings))
 	case session.Client.Requests.HasSideThread(target):
 		inspection.Complete(target, observation.SessionDetails{SessionMetrics: session.attached.session.InspectionMetrics(target)})
 	case ownedNative:

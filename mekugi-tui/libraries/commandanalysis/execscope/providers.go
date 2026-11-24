@@ -15,7 +15,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-const Budget = 200 * time.Millisecond
+const Budget = 400 * time.Millisecond
 const SourceLimit = 1 << 20
 
 type execProviderInput struct {

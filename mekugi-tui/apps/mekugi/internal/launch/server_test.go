@@ -295,8 +295,8 @@ func TestExecuteRequestPassesThroughOriginalRequestAndRecordsUsage(t *testing.T)
 	if len(provider.forwarded) != 1 || !bytes.Equal(provider.forwarded[0], originalBody) {
 		t.Fatalf("forwarded request = %q, want original %q", provider.forwarded, originalBody)
 	}
-	if got := provider.forwardedCacheKey[0]; got != "control-cache" {
-		t.Fatalf("upstream cache key = %q, want control-cache", got)
+	if got := provider.forwardedCacheKey[0]; got != "session" {
+		t.Fatalf("upstream cache key = %q, want session", got)
 	}
 	if output.String() != responseBody {
 		t.Fatalf("visible response = %q, want %q", output.String(), responseBody)

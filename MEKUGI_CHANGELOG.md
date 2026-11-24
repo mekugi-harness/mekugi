@@ -115,6 +115,13 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 ## Context and retained sessions
 
+- Native request construction expands submitted attachment snapshots and
+  attributes standalone tool context without rewriting retained review items.
+  Side forks reuse parent cache routing; answer-only forks stop when auto
+  reset is required. UI BTW caps supported effort at low. Native exact-model
+  tier defaults and thread choices use provider capability checks. Resuming
+  a stopped session keeps explicit choices and uses current defaults otherwise.
+
 - Context resets rebuild from current sources without a generated summary.
   `new_context` can reload selected files, skills, and captured changes. Manual
   resets are cancellable and report settlement; reset receipts retain which

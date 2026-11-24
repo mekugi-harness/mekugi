@@ -364,15 +364,15 @@ func TestComposerPickerDoesNotMarkCoveredTranscriptPainted(t *testing.T) {
 
 // These fixtures publish the source transition before consuming terminal state.
 func (u *appServerUI) pickerKey(key string) bool {
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	return u.nativeSession.applyTestMenuResult(&u.attached, u.shell, &u.picker, &u.Editor, &u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, u.ctx, u.shell.Main.Menu.Key(key))
 }
 func (u *appServerUI) pickerHeight(width int) int {
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	return u.shell.Main.Menu.Height(width)
 }
 func (u *appServerUI) renderPicker(width, height int) []string {
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	return u.shell.Main.Menu.Render(&u.shell.Transcript.Painter.Painter, terminalsession.SelectionStyle(&u.shell.Transcript.Painter.Painter), width, height)
 }
 

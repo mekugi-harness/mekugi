@@ -6,22 +6,19 @@ import (
 	"strings"
 
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
 
 // ObservePreparedContent receives the final semantic input before transport
-// history compression. Attachment indices come from the projection that emitted
-// those messages; subsequent skill rewriting preserves message membership.
-func (t *mekugiResponseTransform) ObservePreparedContent(request *codexresponses.Request, attachmentIDs map[int]string) {
+// history compression. Attachments are retained with their submitted user input.
+func (t *mekugiResponseTransform) ObservePreparedContent(request *codexresponses.Request) {
 	var items []map[string]jsontext.Value
 	if t.owners.Audience == nil || t.threadID == "" || json.Unmarshal(request.Fields["input"], &items) != nil {
 		return
 	}
 	sources := make(map[string]string)
 	originalOutputs := make(map[string]string)
-	originalAttachments := make(map[string][]string)
 	var originals []map[string]jsontext.Value
 	_ = json.Unmarshal(request.OriginalField("input"), &originals)
 	for _, item := range originals {
@@ -31,41 +28,11 @@ func (t *mekugiResponseTransform) ObservePreparedContent(request *codexresponses
 				originalOutputs[kind+"\x00"+responses.StringField(item, "call_id")] = text
 			}
 		}
-		if responses.StringField(item, "role") == "user" {
-			var parts []map[string]jsontext.Value
-			if json.Unmarshal(item["content"], &parts) == nil {
-				for _, part := range parts {
-					if responses.StringField(part, "type") != "input_text" {
-						continue
-					}
-					if snapshot, ok := attachments.DecodeSnapshot(responses.StringField(part, "text")); ok {
-						for _, frame := range snapshot.Frames {
-							id := snapshot.ReceiptID(frame)
-							originalAttachments[id] = append(originalAttachments[id], frame)
-						}
-					}
-				}
-			}
-		}
 		if responses.StringField(item, "type") == "custom_tool_call" && responses.StringField(item, "name") == t.codeModeToolName {
 			sources[responses.StringField(item, "call_id")] = responses.StringField(item, "input")
 		}
 	}
-	attached := make(map[string][]string)
-	for i, item := range items {
-		if id := attachmentIDs[i]; id != "" {
-			var parts []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			}
-			if json.Unmarshal(item["content"], &parts) == nil {
-				for _, part := range parts {
-					if part.Type == "input_text" {
-						attached[id] = append(attached[id], part.Text)
-					}
-				}
-			}
-		}
+	for _, item := range items {
 		kind := responses.StringField(item, "type")
 		if kind != "custom_tool_call_output" && kind != "function_call_output" {
 			continue
@@ -86,11 +53,6 @@ func (t *mekugiResponseTransform) ObservePreparedContent(request *codexresponses
 			content.Calls = t.owners.NativeTrace.ReadCell(t.threadID, id, source).ToolCalls()
 		}
 		t.owners.Audience.ObservePrepared(t.threadID, content)
-	}
-	for id, frames := range attached {
-		text := strings.Join(frames, "\n\n")
-		original, known := originalAttachments[id]
-		t.owners.Audience.ObservePrepared(t.threadID, activity.PreparedContent{ID: id, Text: text, Altered: known && text != strings.Join(original, "\n\n")})
 	}
 }
 

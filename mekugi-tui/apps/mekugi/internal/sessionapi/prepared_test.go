@@ -5,28 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
-	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 )
-
-func TestServerBorrowsForkClassificationFromRequests(t *testing.T) {
-	server := NewLive()
-	if server.IsSideThread("side") || server.IsBTWThread("side") {
-		t.Fatal("unbound server classified a fork")
-	}
-	requests := sessioncontrol.NewRequests[struct{}](nil)
-	server.BindRequests(requests)
-	requests.TrackSide("side", &sessioncontrol.Side{Thread: "side", SideAnswer: new(conversation.SideAnswer), LowReasoning: true})
-	if !server.IsSideThread("side") || !server.IsBTWThread("side") || server.IsSideThread("main") {
-		t.Fatal("server did not borrow the bound request ledger")
-	}
-	requests.CloseSide("side")
-	if server.IsSideThread("side") || server.IsBTWThread("side") {
-		t.Fatal("server retained classification after owner cleanup")
-	}
-}
 
 type preparedRequestOwner struct {
 	ctx    context.Context

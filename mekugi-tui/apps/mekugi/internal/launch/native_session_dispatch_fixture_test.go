@@ -9,7 +9,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
@@ -107,16 +106,16 @@ type appServerUI struct {
 // applyMainKey settles typed Main effects before resuming terminal interpretation.
 func (session *nativeSession) applyMainKey(attached *attachedPresentation, terminal *terminalsession.Attachment, picker *composerPicker, editor **composer.Editor, clock func() time.Time, side **sessioncontrol.Side, panel **appServerStatusReport, resumePicker **appServerResumePicker, parent context.Context, dirty *bool, files *detailFiles, next terminalsession.KeyContinuation) (bool, error) {
 	defer func() {
-		settleTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
+		settleTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
 	}()
-	if !prepareComposerInput(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals) {
+	if !prepareComposerInput(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals) {
 		return false, nil
 	}
 	// Acquisition stays application-owned; interpretation consumes its publication.
 	if picker.Open && picker.Kind == "" && picker.completionTarget((*editor).Draft, attached.conversation.ShellMode()) != picker.Target {
 		picker.refreshPicker(attached, clock, session.Client.Requests, (*editor), parent, session.skillEnvironment)
 	}
-	publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side))
+	publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side))
 	refresh := false
 	defer func() {
 		if refresh {
@@ -150,7 +149,7 @@ func (session *nativeSession) applyMainKey(attached *attachedPresentation, termi
 		if input.Next == nil {
 			return false, nil
 		}
-		publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side))
+		publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side))
 		input = terminal.Main.ContinueKey(*input.Next, terminal.Prompts, transcriptView(attached.presentation, terminal), focused)
 	}
 }
@@ -175,9 +174,9 @@ func (session *nativeSession) applyApprovalInput(attached *attachedPresentation,
 	return true, nil
 }
 
-func applyCloseSide(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, questions *nativeQuestionDock, approvals *nativeApprovalDock, clock func() time.Time, settings preferences.Applied, tiers *inferencegateway.Tiers, title string, backend string, restoring bool, side **sessioncontrol.Side, overlay bool, owned *map[string]bool, in sessionpresentation.CloseSideIntent) error {
+func applyCloseSide(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, questions *nativeQuestionDock, approvals *nativeApprovalDock, clock func() time.Time, settings preferences.Applied, title string, backend string, restoring bool, side **sessioncontrol.Side, overlay bool, owned *map[string]bool, in sessionpresentation.CloseSideIntent) error {
 	defer func() {
-		settleTestPresentation(attached, terminal, control, picker, editor, settings, tiers, title, backend, restoring, (*side), clock, questions, approvals, overlay)
+		settleTestPresentation(attached, terminal, control, picker, editor, settings, title, backend, restoring, (*side), clock, questions, approvals, overlay)
 	}()
 	if err := attached.presentation.AdmitCloseSide(in); err != nil {
 		setNotice(&attached.feedback, presentationTime(clock), err.Error(), true)
@@ -444,9 +443,9 @@ func (session *nativeSession) applyPromptInput(attached *attachedPresentation, t
 }
 
 // displaySession accepts detached targets without consulting terminal state.
-func displaySession(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, tiers *inferencegateway.Tiers, title string, backend string, restoring bool, side *sessioncontrol.Side, clock func() time.Time, questions *nativeQuestionDock, approvals *nativeApprovalDock, overlay bool, intent sessionpresentation.DisplayIntent) bool {
+func displaySession(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, title string, backend string, restoring bool, side *sessioncontrol.Side, clock func() time.Time, questions *nativeQuestionDock, approvals *nativeApprovalDock, overlay bool, intent sessionpresentation.DisplayIntent) bool {
 	defer func() {
-		settleTestPresentation(attached, terminal, control, picker, editor, settings, tiers, title, backend, restoring, side, clock, questions, approvals, overlay)
+		settleTestPresentation(attached, terminal, control, picker, editor, settings, title, backend, restoring, side, clock, questions, approvals, overlay)
 	}()
 	m := attached.presentation
 	if intent.Thread != m.View().Main && intent.Thread != m.View().SideThread && attached.session.KnownCaller(intent.Thread.ID) != intent.Thread.Caller {

@@ -8,7 +8,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -162,13 +161,13 @@ func (n *nativeViews) allowsApproval(request *binding.ShellGuardApprovalParams) 
 	return false
 }
 
-func (n *nativeViews) refreshSettings(models []appServerModel, applied preferences.Applied, tiers *inferencegateway.Tiers, problem string) {
+func (n *nativeViews) refreshSettings(models []appServerModel, applied preferences.Applied, problem string) {
 	for _, view := range n.views {
 		if view.ctx.Err() != nil {
 			continue
 		}
 		_, current := selectedSettings(&view.attached, n.requests, applied)
-		refreshSettingsPicker(&view.picker, view.attached.presentation.View().Input.ID, models, current, tiers, problem)
+		refreshSettingsPicker(&view.picker, view.attached.presentation.View().Input.ID, models, current, problem)
 		view.projected = time.Time{}
 	}
 }
@@ -315,7 +314,7 @@ func (n *nativeViews) predictionEligibility(execution *attachedPresentation) (fo
 	return focused, disabled, available
 }
 
-func (n *nativeViews) publish(execution *attachedPresentation, control *sessioncontrol.Client[appServerRequest], settings preferences.Applied, tiers *inferencegateway.Tiers, title, backend string, restoring bool, side *sessioncontrol.Side, review *sessionreview.Review, reviewSource *changecapture.Service, facts sessionapi.NativeSessionFacts, now time.Time) {
+func (n *nativeViews) publish(execution *attachedPresentation, control *sessioncontrol.Client[appServerRequest], settings preferences.Applied, title, backend string, restoring bool, side *sessioncontrol.Side, review *sessionreview.Review, reviewSource *changecapture.Service, facts sessionapi.NativeSessionFacts, now time.Time) {
 	for id, v := range n.views {
 		v.changes = reviewSource
 		if v.ctx.Err() != nil || v.attached.executionPresentation != execution.executionPresentation && v.thread != control.Thread && id != n.replacing {
@@ -382,7 +381,7 @@ func (n *nativeViews) publish(execution *attachedPresentation, control *sessionc
 		}
 		v.attached.presentation.BorrowExecutionStatus(execution.presentation)
 		v.notices.refreshProgress(&v.attached, now)
-		view := publishSessionView(&v.attached, control, &v.picker, "", settings, tiers, title, backend, restoring, side, true)
+		view := publishSessionView(&v.attached, control, &v.picker, "", settings, title, backend, restoring, side, true)
 		facts.Busy = view.Status.Session.Running || control.Busy(false)
 		reviewView := reviewSource.DiffReviewView(execution.session.Scope())
 		frame := sessionapi.NativeFrame{Processes: v.attached.session.Processes(), View: view, Facts: facts, CompletionTarget: v.completionTarget, CompletionCatalog: v.picker.skillsRevision,

@@ -36,10 +36,10 @@ const (
 )
 
 type SettingsPlan struct {
-	Action                     SettingsAction
-	Change                     map[string]any
-	Turn                       string
-	ChooseTier, RestoreDefault bool
+	Action         SettingsAction
+	Change         map[string]any
+	Turn           string
+	RestoreDefault bool
 }
 
 // PrepareSettings decides admission without changing operation state. The caller
@@ -76,18 +76,14 @@ func (o *Settings) prepare(current preferences.Applied, change map[string]any, t
 				return plan
 			}
 		case "serviceTier":
-			// Codex normalizes the legacy fast spelling to priority.
-			// Source: codex-rs/core/src/session/step_settings.rs:274:283@86be5320.
-			if value != current.Tier && !(value == "fast" && current.Tier == "priority") && !(value == nil && (current.Tier == "" || current.Tier == "default")) {
-				return plan
-			}
+			// Choosing the current tier still pins it over future defaults.
+			return plan
 		default:
 			if !o.Permissions.matches(field, value) {
 				return plan
 			}
 		}
 	}
-	_, plan.ChooseTier = change["serviceTier"]
 	if turn != "" {
 		plan.Action = SettingsTurn
 	} else {
@@ -120,8 +116,8 @@ func (o *Settings) Finish()         { o.phase, o.change, o.turn = settingsIdle, 
 func (o *Settings) RestoredEffort() { o.RestoreEffort = false }
 
 type SettingsConfirmation struct {
-	Requested, ChooseTier bool
-	Update                SettingsPlan
+	Requested bool
+	Update    SettingsPlan
 }
 
 // ApplySettings admits an already prepared plan only after successful dispatch.
@@ -183,7 +179,6 @@ func (o *Settings) Acknowledge(method string, result jsontext.Value, failed bool
 // turn captured by the original intent, never a later turn.
 func (o *Settings) Confirmed(turn, effort string) SettingsConfirmation {
 	var result SettingsConfirmation
-	_, result.ChooseTier = o.change["serviceTier"]
 	if _, explicit := o.change["effort"]; explicit || effort == "" {
 		o.RestoredEffort()
 	}

@@ -18,6 +18,7 @@ use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::CatalogModel;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Model and execution settings selected for an individual model step within
@@ -31,6 +32,10 @@ pub(crate) struct StepSettings {
     pub(crate) reasoning_summary: Option<ReasoningSummary>,
     /// Normalized requested tier; resolution filters it against the pinned model.
     pub(crate) service_tier: Option<String>,
+    pub(crate) model_tiers: Arc<BTreeMap<String, String>>,
+    /// Explicit selections travel with this thread's immutable settings version.
+    pub(crate) service_tier_choices: Arc<BTreeMap<String, String>>,
+    pub(crate) fallback_tier: Option<String>,
     pub(crate) personality: Option<Personality>,
     pub(crate) approval_policy: Constrained<AskForApproval>,
     pub(crate) approvals_reviewer: ApprovalsReviewer,
@@ -230,6 +235,7 @@ pub(crate) struct StepSettingsUpdate {
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummary>,
     pub(crate) service_tier: Option<Option<String>>,
+    pub(crate) service_tier_choices: Option<Arc<BTreeMap<String, String>>>,
     pub(crate) personality: Option<Personality>,
     pub(crate) approval_policy: Option<AskForApproval>,
     pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
@@ -245,6 +251,10 @@ pub(crate) struct StepSettingsConstraints<'a> {
 }
 
 impl StepSettings {
+    pub(super) fn has_model_tier(&self, model: &str) -> bool {
+        self.service_tier_choices.contains_key(model) || self.model_tiers.contains_key(model)
+    }
+
     /// Resolves the selected model using the session's explicit startup overrides.
     pub(super) async fn resolve_model_info(
         &self,
@@ -278,16 +288,30 @@ impl StepSettings {
         if let Some(summary) = update.reasoning_summary {
             next.reasoning_summary = Some(summary);
         }
+        if let Some(choices) = &update.service_tier_choices {
+            next.service_tier_choices = Arc::clone(choices);
+        }
+        let model = next.collaboration_mode.model();
         if let Some(service_tier) = update.service_tier.clone() {
             // TODO(aibrahim): Remove once v2 clients no longer send the legacy
             // "fast" service tier value.
-            next.service_tier = Some(match service_tier {
+            let tier = match service_tier {
                 Some(service_tier) => ServiceTier::from_request_value(&service_tier)
                     .map_or(service_tier, |service_tier| {
                         service_tier.request_value().to_string()
                     }),
                 None => SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string(),
-            });
+            };
+            Arc::make_mut(&mut next.service_tier_choices).insert(model.to_owned(), tier.clone());
+            next.service_tier = Some(tier);
+        } else if self.collaboration_mode.model() != model || update.service_tier_choices.is_some()
+        {
+            next.service_tier = next
+                .service_tier_choices
+                .get(model)
+                .or_else(|| next.model_tiers.get(model))
+                .cloned()
+                .or_else(|| next.fallback_tier.clone());
         }
         if let Some(personality) = update.personality {
             next.personality = Some(personality);

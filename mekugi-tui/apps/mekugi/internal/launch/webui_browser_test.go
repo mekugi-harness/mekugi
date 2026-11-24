@@ -21,7 +21,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-webui"
+	webui "github.com/mekugi-harness/mekugi/mekugi-webui"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -1140,7 +1140,7 @@ func TestWebUIBrowserMachines(t *testing.T) {
 	defer terminalTest(warningUI).Diff.Close()
 	queueContextWarning(t, warningUI, "child")
 	publishNotice := func() *nativeCriticalNoticeDelivery {
-		delivery := applyCriticalNotices(&warningUI.attached, &warningUI.Client, &warningUI.picker, &warningUI.Editor, warningUI.clock, preferences.Applied{}, warningUI.serviceTiers, "", "", &warningUI.restoring, &warningUI.side, warningUI.audience, warningUI.issues)
+		delivery := applyCriticalNotices(&warningUI.attached, &warningUI.Client, &warningUI.picker, &warningUI.Editor, warningUI.clock, preferences.Applied{}, "", "", &warningUI.restoring, &warningUI.side, warningUI.audience, warningUI.issues)
 		if delivery == nil {
 			t.Fatal("notice did not reach the browser's thread")
 		}

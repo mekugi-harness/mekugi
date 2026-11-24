@@ -6,7 +6,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
@@ -66,7 +65,7 @@ func (d *nativeCriticalNoticeDelivery) finish(receipt terminalsession.NoticeRece
 	d.progress.Finish(attached && receipt.Content)
 }
 
-func applyCriticalNotices(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, clock func() time.Time, settings preferences.Applied, tiers *inferencegateway.Tiers, title string, backend string, restoring **appServerActivityRestore, side **sessioncontrol.Side, audience *sessioncontrol.Audience, issues *requestexecution.Failures) (delivery *nativeCriticalNoticeDelivery) {
+func applyCriticalNotices(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, clock func() time.Time, settings preferences.Applied, title string, backend string, restoring **appServerActivityRestore, side **sessioncontrol.Side, audience *sessioncontrol.Audience, issues *requestexecution.Failures) (delivery *nativeCriticalNoticeDelivery) {
 	if issues != nil {
 		thread := control.Thread
 		if attached.presentation.DisplayingSide() && *side != nil {
@@ -75,7 +74,7 @@ func applyCriticalNotices(attached *attachedPresentation, control *sessioncontro
 		attached.feedback.ClearSucceeded(issues.Notices, thread)
 	}
 	defer func() {
-		view := publishPresentation(attached, control, picker, editor, settings, tiers, title, backend, (*restoring) != nil, (*side))
+		view := publishPresentation(attached, control, picker, editor, settings, title, backend, (*restoring) != nil, (*side))
 		if delivery != nil {
 			delivery.attachment, delivery.feedback = view.Version.Attachment, attached.feedback.Revision
 		}

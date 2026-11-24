@@ -101,7 +101,7 @@ func TestNativeViewUsesSelectedDelegateCanonicalIdentity(t *testing.T) {
 	}
 	u.attached.presentation.RenameCaller("/root/worker", "/root/renamed")
 	u.attached.session.Activity().Agent("child").Name = "/root/renamed"
-	h.views.publish(&u.attached, &u.Client, u.settings, u.serviceTiers, "", "", false, nil, nil, u.reviewSource, sessionapi.NativeSessionFacts{}, time.Now().Add(time.Second))
+	h.views.publish(&u.attached, &u.Client, u.settings, "", "", false, nil, nil, u.reviewSource, sessionapi.NativeSessionFacts{}, time.Now().Add(time.Second))
 	if view := h.view.attached.presentation.View(); view.Main.Caller != "/root/renamed" || view.Displayed != view.Main || view.Caption.ContextTokens != 1000 {
 		t.Fatalf("native child view did not follow canonical rename: %+v", view)
 	}
@@ -111,7 +111,7 @@ func TestNativeViewUsesSelectedDelegateCanonicalIdentity(t *testing.T) {
 	u.attached.session.RegisterThread(observation.Thread{ID: "child", Path: "/root/renamed"})
 	u.startSession("child", workspace)
 	u.attached.presentation.Attach(sessionpresentation.Thread{ID: "child", Caller: "/root/renamed"}, false)
-	h.views.publish(&u.attached, &u.Client, u.settings, u.serviceTiers, "", "", false, nil, nil, u.reviewSource, sessionapi.NativeSessionFacts{}, time.Now().Add(2*time.Second))
+	h.views.publish(&u.attached, &u.Client, u.settings, "", "", false, nil, nil, u.reviewSource, sessionapi.NativeSessionFacts{}, time.Now().Add(2*time.Second))
 	if view := h.view.attached.presentation.View(); view.Main.Caller != "/root/renamed" || view.Displayed != view.Main {
 		t.Fatalf("replacement child attachment changed canonical identity: %+v", view.Main)
 	}

@@ -108,7 +108,7 @@ func TestInputWorkflowWithoutRenderer(t *testing.T) {
 		if next.Steer {
 			turn = control.Turn
 		}
-		requestID, err := requests.SendInput(sessioncontrol.InputRequest{Thread: control.Thread, Turn: turn, ID: id, Tier: "priority", Input: conversationbinding.Input(submission.Draft)}, "input")
+		requestID, err := requests.SendInput(sessioncontrol.InputRequest{Thread: control.Thread, Turn: turn, ID: id, Input: conversationbinding.Input(submission.Draft)}, "input")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +121,7 @@ func TestInputWorkflowWithoutRenderer(t *testing.T) {
 	}
 	c.QueueInput(conversationmodel.Input{Draft: draft}, plan.Queued)
 	requestID := dispatch("first-input")
-	if transport.method != "turn/start" || transport.params["serviceTier"] != "priority" || transport.params["clientUserMessageId"] != "first-input" {
+	if transport.method != "turn/start" || transport.params["clientUserMessageId"] != "first-input" {
 		t.Fatalf("start: %s %+v", transport.method, transport.params)
 	}
 	if next := m.NextInput(&control, c, nil, ""); len(next.Batch.Parts) != 0 {

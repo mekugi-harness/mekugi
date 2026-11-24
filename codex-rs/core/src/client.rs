@@ -356,6 +356,7 @@ pub struct ModelClient {
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
     restored_history: bool,
+    side_fork: Option<SideFork>,
     child_reply_summary: bool,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     budget_policy: Option<crate::rollout_budget::ThreadBudgetPolicy>,
@@ -363,6 +364,44 @@ pub struct ModelClient {
     // Resolved once when the session is created, like other session feature flags.
     api_key_cyber_access_programs: cyber_access_program::ApiKeyCyberAccessPrograms,
     required_cyber_access_programs: Option<Arc<cyber_access_program::RequiredCyberAccessPrograms>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SideFork {
+    OneOff,
+    Question,
+    Btw,
+}
+
+impl SideFork {
+    pub(crate) fn from_source(source: &codex_protocol::protocol::ThreadSource) -> Option<Self> {
+        match source.as_str() {
+            "mekugi_side" => Some(Self::OneOff),
+            "mekugi_side_question" => Some(Self::Question),
+            "mekugi_btw" => Some(Self::Btw),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn downgrade_ultra_effort(
+    model: &ModelInfo,
+    effort: ReasoningEffortConfig,
+) -> ReasoningEffortConfig {
+    if effort == ReasoningEffortConfig::Ultra {
+        if model.supported_reasoning_levels.is_empty()
+            || model
+                .supported_reasoning_levels
+                .iter()
+                .any(|level| level.effort == ReasoningEffortConfig::Max)
+        {
+            ReasoningEffortConfig::Max
+        } else {
+            model.resolve_reasoning_effort(effort)
+        }
+    } else {
+        effort
+    }
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -699,6 +738,7 @@ impl ModelClient {
             event_sender: None,
             http_client_factory,
             restored_history: false,
+            side_fork: None,
             child_reply_summary: false,
             request_contributors,
             budget_policy: None,
@@ -707,6 +747,47 @@ impl ModelClient {
                 cyber_access_program::ApiKeyCyberAccessPrograms::UnsupportedProvider,
             required_cyber_access_programs: None,
         }
+    }
+
+    pub(crate) fn with_side_fork(
+        mut self,
+        thread_source: Option<&codex_protocol::protocol::ThreadSource>,
+    ) -> Self {
+        self.side_fork = thread_source.and_then(SideFork::from_source);
+        self
+    }
+
+    pub(crate) fn cap_side_fork_effort(
+        &self,
+        model: &ModelInfo,
+        effort: ReasoningEffortConfig,
+    ) -> ReasoningEffortConfig {
+        match self.side_fork {
+            Some(SideFork::Btw) => {
+                if matches!(
+                    effort,
+                    ReasoningEffortConfig::Medium
+                        | ReasoningEffortConfig::High
+                        | ReasoningEffortConfig::XHigh
+                        | ReasoningEffortConfig::Max
+                        | ReasoningEffortConfig::Ultra
+                ) && model
+                    .supported_reasoning_levels
+                    .iter()
+                    .any(|level| level.effort == ReasoningEffortConfig::Low)
+                {
+                    ReasoningEffortConfig::Low
+                } else {
+                    downgrade_ultra_effort(model, effort)
+                }
+            }
+            Some(SideFork::OneOff | SideFork::Question) => downgrade_ultra_effort(model, effort),
+            None => effort,
+        }
+    }
+
+    pub(crate) fn answer_only(&self) -> bool {
+        matches!(self.side_fork, Some(SideFork::Question | SideFork::Btw))
     }
 
     pub(crate) fn with_child_reply_summary(mut self, enabled: bool) -> Self {
@@ -1256,11 +1337,14 @@ impl ModelClient {
         }
         let is_openai = self.state.provider.info().is_openai();
         // These prompt-only items are rebuilt on every request. Hash their visible payloads
-        // within the thread so retries and resumed sessions preserve their identity.
-        let prefix_namespace = Uuid::new_v5(
-            &Uuid::NAMESPACE_OID,
-            self.state.thread_id.to_string().as_bytes(),
-        );
+        // within the thread, or share the source namespace for Mekugi's UI forks.
+        let thread_id = self.state.thread_id.to_string();
+        let prefix_identity = self
+            .session_id_override
+            .as_deref()
+            .filter(|_| self.side_fork.is_some())
+            .unwrap_or(&thread_id);
+        let prefix_namespace = Uuid::new_v5(&Uuid::NAMESPACE_OID, prefix_identity.as_bytes());
         let mut prefix = Vec::new();
         let tools = if model_info.use_responses_lite {
             if !prompt.tools.is_empty() {
@@ -1332,7 +1416,14 @@ impl ModelClient {
                 }
             }
         }
-        let reasoning = self.build_reasoning(model_info, effort, summary);
+        let effective_effort = if !self.reasoning_effort_override_enabled(model_info) {
+            effort
+                .or_else(|| model_info.default_reasoning_level.clone())
+                .map(|effort| self.cap_side_fork_effort(model_info, effort))
+        } else {
+            effort
+        };
+        let reasoning = self.build_reasoning(model_info, effective_effort, summary);
         let stream_options = (self.state.concurrent_reasoning_summaries_enabled
             && is_openai
             && reasoning.summary.is_some())

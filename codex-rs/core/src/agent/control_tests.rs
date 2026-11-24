@@ -2500,6 +2500,7 @@ async fn spawn_agent_fork_from_paginated_parent_uses_model_context_prefix(
                         model: "parent-only-model".to_string(),
                         model_provider_id: "parent-only-provider".to_string(),
                         service_tier: None,
+                        service_tier_choices: None,
                         approval_policy: AskForApproval::Never,
                         approvals_reviewer: ApprovalsReviewer::User,
                         requested_approvals_reviewer: None,

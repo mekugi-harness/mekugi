@@ -27,7 +27,7 @@ func TestNativeViewSurvivesSameThreadRewind(t *testing.T) {
 	rewind := resumeTestOne(t, wire, "thread/revert")
 	appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{"thread":{"id":"main","cwd":%q}}}`, rewind.ID, u.attached.cwd))
 	resumeTestSettle(t, u, wire)
-	h.views.publish(&u.attached, &u.Client, preferences.Applied{}, nil, "", "", false, nil, nil, nil, sessionapi.NativeSessionFacts{}, time.Now())
+	h.views.publish(&u.attached, &u.Client, preferences.Applied{}, "", "", false, nil, nil, nil, sessionapi.NativeSessionFacts{}, time.Now())
 	if h.views.views[h.event.Attachment] != h.view || h.view.attached.executionPresentation != u.attached.executionPresentation {
 		t.Fatal("rewind disconnected another renderer of the same thread")
 	}
@@ -53,7 +53,7 @@ func TestNativeViewsBorrowExecutionAndDisposeIndependently(t *testing.T) {
 		}
 		view := n.views[id]
 		view.attached.presentation.BorrowExecutionStatus(u.attached.presentation)
-		publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+		publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{}, "", "", false, nil, true)
 	}
 	first, second := n.views["first"], n.views["second"]
 	if first.attached.presentation.View().Draft.Draft.Text != "" || second.attached.presentation.View().Draft.Draft.Text != "" || u.Text != "private local draft" {
@@ -127,7 +127,7 @@ func TestNativeStartupViewHasNoFabricatedThread(t *testing.T) {
 		t.Fatal(refusal)
 	}
 	v := n.views["startup"]
-	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, "", "", false, nil, true)
 	if view.Main.ID != "" || view.Info.Workspace != "/workspace" || view.Version.Attachment == 0 {
 		t.Fatalf("startup publication fabricated a confirmed thread: %+v", view)
 	}
@@ -150,7 +150,7 @@ func nativeSideSettingsTest(t *testing.T) (*appServerUI, *appServerTestInput, *n
 		t.Fatal(refusal)
 	}
 	view := n.views["view"]
-	publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{Model: u.settings.Model, Effort: u.settings.Effort}, u.serviceTiers, "", "", false, u.side, true)
+	publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{Model: u.settings.Model, Effort: u.settings.Effort}, "", "", false, u.side, true)
 	display := sessionpresentation.DisplayIntent{Version: view.attached.presentation.View().Version, Thread: view.attached.presentation.View().SideThread}
 	if refusal := view.applyView(sessionapi.NativeOperation{Display: &display}); refusal != "" {
 		t.Fatal(refusal)
@@ -165,7 +165,7 @@ func TestNativeSideReasoningWaitsForCatalog(t *testing.T) {
 	u, wire, view := nativeSideSettingsTest(t)
 	u.modelsLoading = true
 	appServerTestRequest(t, u, "99", "model/list")
-	if err := stepReasoning(&view.attached, &u.Client, preferences.Applied{Model: u.settings.Model, Effort: u.settings.Effort}, &u.serviceTiers, u.panes, false, u.clock, u.models, u.modelsLoading, true); err != nil {
+	if err := stepReasoning(&view.attached, &u.Client, preferences.Applied{Model: u.settings.Model, Effort: u.settings.Effort}, u.panes, false, u.clock, u.models, u.modelsLoading, true); err != nil {
 		t.Fatal(err)
 	}
 	appServerTestMessage(t, u, `{"id":99,"result":{"data":[{"model":"test","defaultReasoningEffort":"low","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]}]}}`)

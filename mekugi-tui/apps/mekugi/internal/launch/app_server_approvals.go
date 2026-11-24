@@ -299,7 +299,7 @@ func approvalRecord(attached *attachedPresentation, approvals *nativeApprovalDoc
 
 func (session *nativeSession) decideApproval(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, side *sessioncontrol.Side, clock func() time.Time, overlay bool, intent sessionpresentation.ApprovalIntent) error {
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
 	}()
 	record, choice, err := attached.presentation.Approval(intent, session.approvals.Approvals)
 	if err != nil {

@@ -655,7 +655,8 @@ async fn responses_websocket_resume_prewarm_reuses_and_repairs_connection() -> a
         .with_user_instructions_provider(instructions.clone())
         .build_with_websocket_server(&server)
         .await?;
-    test.submit_text_turn("hello").await?;
+    let envelope = "<mekugi-file-attachments-v1>\n[\"Attached file x: frozen bytes\"]\n</mekugi-file-attachments-v1>";
+    test.submit_text_turn(envelope).await?;
     ThreadIdle::wait(&test.codex).await;
 
     // A healthy warm resume skips preparation; only the user turn reloads instructions.
@@ -676,6 +677,15 @@ async fn responses_websocket_resume_prewarm_reuses_and_repairs_connection() -> a
     );
     let connection = server.single_connection();
     assert_eq!(connection.len(), 3);
+    let projected = &connection[1].body_json()["input"];
+    assert!(
+        projected
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["content"][0]["text"] == "Attached file x: frozen bytes")
+    );
+    assert!(!projected.to_string().contains("mekugi-file-attachments"));
     let prewarm = connection[0].body_json();
     assert_eq!(prewarm["input"].as_array().unwrap().len(), 1);
     assert_eq!(prewarm["input"][0]["role"], "developer");

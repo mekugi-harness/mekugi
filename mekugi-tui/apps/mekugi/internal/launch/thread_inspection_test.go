@@ -4,7 +4,6 @@ import (
 	json "encoding/json/v2"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
@@ -13,24 +12,24 @@ import (
 func TestThreadInspectionUsesLiveAndRestoredSessionMetrics(t *testing.T) {
 	u := newAppServerSessionTestUI(t, t.TempDir())
 	appServerTestRequest(t, u, "1", "thread/start")
-	appServerTestMessage(t, u, `{"id":1,"result":{"model":"applied","reasoningEffort":"high","serviceTier":"fast","thread":{"id":"main"}}}`)
-	applied := preferences.Applied{Model: "applied", Effort: "high", Tier: "fast"}
-	tiers := inferencegateway.NewTiers(nil)
+	appServerTestMessage(t, u, `{"id":1,"result":{"model":"applied","reasoningEffort":"high","serviceTier":"priority","thread":{"id":"main"}}}`)
+	applied := preferences.Applied{Model: "applied", Effort: "high", Tier: "priority"}
+
 	read := func() {
 		t.Helper()
-		got := threadInspection(&u.attached.session, "main", applied, tiers)
+		got := threadInspection(&u.attached.session, "main", applied)
 		if (got.Model == nil || *got.Model != "applied") || *got.ReasoningEffort != "high" || *got.ServiceTier != "priority" || got.Compactions == nil {
 			t.Fatalf("applied snapshot = %+v", got)
 		}
 	}
 	read()
-	initial := threadInspection(&u.attached.session, "main", applied, tiers)
+	initial := threadInspection(&u.attached.session, "main", applied)
 	if initial.ContextTokens != nil || initial.Compactions == nil || *initial.Compactions != 0 {
 		t.Fatalf("fresh metrics = %+v", initial)
 	}
 	checkWire := func(want string) {
 		t.Helper()
-		data, err := json.Marshal(threadInspection(&u.attached.session, "main", applied, tiers).SessionMetrics)
+		data, err := json.Marshal(threadInspection(&u.attached.session, "main", applied).SessionMetrics)
 		if err != nil || string(data) != want {
 			t.Fatalf("metrics = %s, err=%v, want %s", data, err, want)
 		}
@@ -42,7 +41,7 @@ func TestThreadInspectionUsesLiveAndRestoredSessionMetrics(t *testing.T) {
 	for _, item := range []string{"compact-1", "compact-1", "compact-2"} {
 		appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": "main", "turnId": "turn", "item": map[string]any{"id": item, "type": "contextCompaction"}})
 	}
-	got := threadInspection(&u.attached.session, "main", applied, tiers)
+	got := threadInspection(&u.attached.session, "main", applied)
 	if got.ContextTokens == nil || *got.ContextTokens != 1234 || got.ContextWindow == nil || *got.ContextWindow != 10000 || got.Compactions == nil || *got.Compactions != 2 {
 		t.Fatalf("live metrics = %+v", got)
 	}

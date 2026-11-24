@@ -99,12 +99,11 @@ func TestAppServerAppliedSettingsFreshOwnerResumeBeforeFirstTurn(t *testing.T) {
 			fresh.Startup.Config = map[string]any{"model_provider": "routed"}
 			params, _ := appliedSettingsTestResume(t, fresh, w, binding.ThreadInfo{ID: "saved", Cwd: "/workspace"})
 			wantConfig := map[string]any{"model": "saved-model", "model_provider": "routed", "model_reasoning_effort": "high"}
-			var wantTier any = "priority"
 			if defaults {
 				delete(wantConfig, "model_reasoning_effort")
-				wantTier = nil
 			}
-			if !reflect.DeepEqual(params["config"], wantConfig) || params["serviceTier"] != wantTier || fresh.ResumeEffort != defaults {
+			_, overridesTier := params["serviceTier"]
+			if !reflect.DeepEqual(params["config"], wantConfig) || overridesTier || fresh.ResumeEffort != defaults {
 				t.Fatalf("recovered params=%#v clearEffort=%v", params, fresh.ResumeEffort)
 			}
 		})
@@ -121,7 +120,7 @@ func TestAppServerAppliedSettingsFlagsOverridePerField(t *testing.T) {
 			fresh.Startup.Config = map[string]any{field: "explicit"}
 			params, _ := appliedSettingsTestResume(t, fresh, w, binding.ThreadInfo{ID: "saved", Cwd: "/workspace"})
 			want := map[string]any{"model": "saved-model", "model_reasoning_effort": "high"}
-			var tier any = "priority"
+			var tier any
 			if field == "service_tier" {
 				tier = "explicit"
 			} else {
@@ -285,7 +284,7 @@ func TestAppServerAppliedSettingsResumeWaitsForDefaultConfirmation(t *testing.T)
 				if !fresh.ResumeEffort || !reflect.DeepEqual(params["config"], map[string]any{"model": "saved-model"}) {
 					t.Fatal("fresh retry promoted transient resume defaults over saved null intent")
 				}
-				if _, err := updateSettings(&u.attached, &u.Client, u.settings, &u.serviceTiers, u.panes, u.restoring != nil, u.clock, map[string]any{"effort": effort}); err != nil {
+				if _, err := updateSettings(&u.attached, &u.Client, u.settings, u.panes, u.restoring != nil, u.clock, map[string]any{"effort": effort}); err != nil {
 					t.Fatal(err)
 				}
 				if effort == "medium" {
@@ -336,8 +335,8 @@ func TestAppServerAppliedSettingsRejectedRestoreRetainsSelectedEvidence(t *testi
 			info.Cwd = "/workspace"
 			fresh, writer := appliedSettingsTestUI(t, "/workspace", "fresh")
 			params, _ := appliedSettingsTestResume(t, fresh, writer, info)
-			tier, tierKnown := params["serviceTier"]
-			if !fresh.ResumeEffort || !reflect.DeepEqual(params["config"], map[string]any{"model": "selected"}) || tierKnown != (source != "legacy-no-tier") || tierKnown && tier != "flex" {
+			_, overridesTier := params["serviceTier"]
+			if !fresh.ResumeEffort || !reflect.DeepEqual(params["config"], map[string]any{"model": "selected"}) || overridesTier {
 				t.Fatalf("fresh retry lost selected evidence: %#v", params)
 			}
 		})
@@ -379,11 +378,12 @@ func TestAppServerAppliedSettingsHostTimestampPrecedence(t *testing.T) {
 			info.Cwd = "/workspace"
 			fresh, w := appliedSettingsTestUI(t, "/workspace", "other")
 			params, _ := appliedSettingsTestResume(t, fresh, w, info)
-			model, effort, tier := "retained", "high", "priority"
+			model, effort := "retained", "high"
 			if hostTime == "2026-09-30T13:00:00Z" {
-				model, effort, tier = "host", "low", "flex"
+				model, effort = "host", "low"
 			}
-			if !reflect.DeepEqual(params["config"], map[string]any{"model": model, "model_reasoning_effort": effort}) || params["serviceTier"] != tier {
+			_, overridesTier := params["serviceTier"]
+			if !reflect.DeepEqual(params["config"], map[string]any{"model": model, "model_reasoning_effort": effort}) || overridesTier {
 				t.Fatalf("timestamp precedence lost: %#v", params)
 			}
 		})

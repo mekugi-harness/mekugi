@@ -106,6 +106,11 @@ impl PromptHistory {
             .map(ResponseItemEnvelope::into_item)
             .collect()
     }
+
+    /// Prepare provider input only after all consumers of native metadata.
+    pub(crate) fn into_request_items(self) -> Vec<ResponseItem> {
+        super::request_input::project(self.items)
+    }
 }
 
 static GUARDIAN_REVIEW_CONTEXT_REVISION: AtomicU64 = AtomicU64::new(/*v*/ 1);
@@ -785,6 +790,7 @@ impl ContextManager {
     /// normalization and drops un-suited items. Unsupported image and audio content
     /// is stripped from messages and tool outputs according to `input_modalities`.
     /// Unavailable file images and tool audio are replaced with text placeholders.
+    #[cfg(test)]
     pub(crate) async fn for_prompt(
         self,
         input_modalities: &[InputModality],

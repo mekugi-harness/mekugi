@@ -177,7 +177,7 @@ func TestHookTrustStartupSharedApprovalConsumer(t *testing.T) {
 		t.Fatal(refusal)
 	}
 	v := n.views["startup"]
-	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, "", "", false, nil, true)
 	approvals := nativePendingApprovals(u.attached.conversation)
 	if len(approvals) != 1 || approvals[0].Title != "Trust this hook?" || view.Main.ID != "main" {
 		t.Fatalf("startup shared projection: %+v %+v", view, approvals)

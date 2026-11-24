@@ -20,9 +20,7 @@ type ReasoningCatalog struct {
 
 type reasoningModel struct {
 	Name       string  `json:"slug"`
-	Default    string  `json:"default_reasoning_level"`
 	MultiAgent *string `json:"multi_agent_reasoning_effort"`
-	Updates    bool    `json:"supports_reasoning_effort_updates"`
 	Levels     []struct {
 		Effort string `json:"effort"`
 	} `json:"supported_reasoning_levels"`
@@ -42,21 +40,6 @@ func (c *ReasoningCatalog) Capture(raw []byte) {
 	c.mu.Lock()
 	c.models, c.err = catalog.Models, err
 	c.mu.Unlock()
-}
-
-func (c *ReasoningCatalog) Choices(name string) (string, []string, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	for _, model := range c.models {
-		if model.Name == name {
-			levels := make([]string, len(model.Levels))
-			for i, level := range model.Levels {
-				levels[i] = level.Effort
-			}
-			return model.Default, levels, model.Updates
-		}
-	}
-	return "", nil, false
 }
 
 // CaptureConfigured reads an explicitly configured catalog that bypasses /models.

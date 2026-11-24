@@ -3382,3 +3382,210 @@ async fn inheriting_fork_rejects_configuration_overrides() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mekugi_side_forks_share_provider_affinity_and_cap_only_btw_effort() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        [
+            ("parent", 20),
+            ("one-off", 20),
+            ("side", 150_000),
+            ("btw", 150_000),
+        ]
+        .into_iter()
+        .map(|(id, tokens)| responses::sse(vec![responses::ev_completed_with_tokens(id, tokens)]))
+        .collect(),
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    let model = all_model_presets()
+        .iter()
+        .find(|model| {
+            model.show_in_picker
+                && [ReasoningEffort::Low, ReasoningEffort::High]
+                    .iter()
+                    .all(|effort| {
+                        model
+                            .supported_reasoning_efforts
+                            .iter()
+                            .any(|preset| &preset.effort == effort)
+                    })
+        })
+        .expect("bundled model with low and high effort");
+    MockResponsesConfig::new(&server.uri())
+        .with_model(&model.id)
+        .with_root_config("model_auto_compact_token_limit = 100000")
+        .with_extra_config(&format!("[service_tiers]\n{:?} = \"fast\"", model.id))
+        .write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = mcp
+        .start_thread(ThreadStartParams {
+            model: Some(model.id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let parent_id = parent.thread.id;
+    for kind in [
+        None,
+        Some("mekugi_side"),
+        Some("mekugi_side_question"),
+        Some("mekugi_btw"),
+    ] {
+        let thread_id = match kind {
+            Some(kind) => {
+                let id = mcp
+                    .send_thread_fork_request(ThreadForkParams {
+                        thread_id: parent_id.clone(),
+                        thread_source: Some(ThreadSource::Feature(kind.to_owned())),
+                        exclude_turns: true,
+                        ..Default::default()
+                    })
+                    .await?;
+                let response: ThreadForkResponse =
+                    timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+                assert_ne!(response.thread.id, parent_id);
+                response.thread.id
+            }
+            None => parent_id.clone(),
+        };
+        let turn = TurnStartParams {
+            thread_id,
+            effort: Some(ReasoningEffort::High),
+            input: vec![UserInput::Text {
+                text: "Continue".to_owned(),
+                text_elements: vec![],
+            }],
+            ..Default::default()
+        };
+        let completed = mcp.start_turn_and_wait_for_completion(turn.clone()).await?;
+        assert_eq!(completed.turn.status, TurnStatus::Completed);
+        if matches!(kind, Some("mekugi_side_question" | "mekugi_btw")) {
+            let rejected = mcp.start_turn_and_wait_for_completion(turn).await?;
+            assert_eq!(rejected.turn.status, TurnStatus::Failed);
+            assert!(
+                rejected
+                    .turn
+                    .error
+                    .unwrap()
+                    .message
+                    .contains("Side question requires compaction.")
+            );
+        }
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4);
+    let parent_body = requests[0].body_json();
+    for (index, request) in requests.iter().enumerate() {
+        let body = request.body_json();
+        assert_eq!(body["service_tier"], "priority");
+        assert_eq!(body["prompt_cache_key"], parent_id);
+        assert_eq!(
+            request.header("session-id"),
+            requests[0].header("session-id")
+        );
+        assert_eq!(body["input"][0], parent_body["input"][0]);
+        let effort = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|item| item["type"] == "configuration_update")
+            .map_or(
+                &body["reasoning"]["effort"],
+                |item| &item["reasoning"]["effort"],
+            );
+        assert_eq!(effort, if index == 3 { "low" } else { "high" });
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prediction_fork_inherits_updated_service_tier_after_typed_startup_override() -> Result<()>
+{
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        [("parent", 20), ("prediction", 20)]
+            .into_iter()
+            .map(|(id, tokens)| {
+                responses::sse(vec![responses::ev_completed_with_tokens(id, tokens)])
+            })
+            .collect(),
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_model("gpt-5.5")
+        .enable_feature(Feature::FastMode)
+        .write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("gpt-5.5".to_string()),
+            service_tier: Some(Some("priority".to_string())),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(parent.service_tier.as_deref(), Some("priority"));
+    let parent_id = parent.thread.id;
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: parent_id.clone(),
+        input: vec![UserInput::Text {
+            text: "Hello".to_owned(),
+            text_elements: vec![],
+        }],
+        ..Default::default()
+    })
+    .await?;
+
+    // Change tier via /tier (thread/settings/update) from typed startup "priority" to "flex".
+    let update_id = mcp
+        .send_thread_settings_update_request(
+            codex_app_server_protocol::ThreadSettingsUpdateParams {
+            thread_id: parent_id.clone(),
+            service_tier: Some(Some("flex".to_string())),
+            ..Default::default()
+            },
+        )
+        .await?;
+    let _: codex_app_server_protocol::ThreadSettingsUpdateResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(update_id)).await??;
+
+    // Fork a prediction thread and verify it inherits "flex", not the stale startup "priority".
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: parent_id,
+            ephemeral: true,
+            exclude_turns: true,
+            experimental_prediction_mode: true,
+            ..Default::default()
+        })
+        .await?;
+    let forked: ThreadForkResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(fork_id)).await??;
+    assert_eq!(forked.service_tier.as_deref(), Some("flex"));
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: forked.thread.id,
+        input: vec![UserInput::Text {
+            text: "Predict next".to_owned(),
+            text_elements: vec![],
+        }],
+        ..Default::default()
+    })
+    .await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body_json()["service_tier"], json!("priority"));
+    assert_eq!(requests[1].body_json()["service_tier"], json!("flex"));
+    Ok(())
+}

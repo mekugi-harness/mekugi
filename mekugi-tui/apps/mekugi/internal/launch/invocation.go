@@ -2,8 +2,10 @@ package launch
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +25,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/shellhook"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
@@ -200,7 +201,6 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 			options.Timeout = max(options.Timeout, route.ConnectTimeout)
 		}
 	}
-	serviceTiers := inferencegateway.NewTiers(config.ServiceTiers)
 	var frontendDirectory string
 	titleCtx, cancelTitles := context.WithCancel(ctx)
 	defer cancelTitles()
@@ -258,19 +258,7 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 	}
 	review = sessionreview.New(ctx, live, func(category, message string) { issues.AddNotice("", category, message) })
 	defer review.Close()
-	contextAttachments := func(ctx context.Context, thread, window string) (composer.AttachmentSnapshot, error) {
-		runtime, err := threads.Runtime(thread)
-		if err != nil {
-			return composer.AttachmentSnapshot{}, err
-		}
-		reader, ok := runtime.(sessioncontrol.AttachmentReader)
-		if !ok {
-			return composer.AttachmentSnapshot{}, errors.New("runtime attachment history is unavailable")
-		}
-		return reader.ContextAttachments(ctx, thread, window)
-	}
 	mekugiCalls = executionobservation.New(executionobservation.Config{ProgressSnapshot: threads.hub.ProgressSnapshot, Usage: usage, Review: review, Audience: audience, Windows: windows, NativeTrace: nativeTrace, Control: &control, Calls: calls, Retained: retained, Changes: changeSource, Checkpoints: checkpoints, PublishChanges: review.Publish, Notice: issues.AddThreadNotice, PreviewTiming: previewbinding.Timing{Frame: previewview.PreviewFrameDelay, Unit: previewview.PreviewUnitDelay, Finish: previewview.PreviewFinishDrain}})
-	mekugiCalls.ContextAttachments = contextAttachments
 	usage.Configure(retained.Store, retained.Writes, retained.Limits, func(thread string, err error) {
 		issues.AddThreadNotice("", thread, "usage_storage", "Provider usage could not be retained or restored: "+err.Error())
 	})
@@ -319,16 +307,14 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 	mux.HandleFunc("GET /v1/models", inferencegateway.ModelsHandler(provider, issues.ReportCatalog, catalog.Capture))
 	inferencegateway.RegisterCodexAuxiliaryRoutes(mux, ctx, options.Timeout, provider)
 
-	executor := requestexecution.Executor{Provider: provider, Issues: issues, ServiceTiers: serviceTiers, Naming: titleGenerator}
-	executor.ReasoningChoices = catalog.Choices
+	executor := requestexecution.Executor{Provider: provider, Issues: issues, Naming: titleGenerator}
 	executor.Observations = mekugiCalls
-	executor.SideThreads, executor.Usage = api, usage
+	executor.Usage = usage
 	if diagnosis != nil {
 		executor.Instructions = diagnosis.RetainInstructions(retained.Store, retained.Writes, retained.Limits)
 	}
 
 	webSocketEndpoint := inferencegateway.NewWebSocketEndpoint(ctx, options.Timeout, provider, executor.ExecuteWebSocket)
-	webSocketEndpoint.ForkCacheKey = api.ForkCacheKey
 	defer webSocketEndpoint.Close()
 	mux.Handle("GET /v1/responses", webSocketEndpoint)
 	mux.HandleFunc("POST /v1/responses", inferencegateway.ResponsesHandler(ctx, options.Timeout, executor.ExecuteHTTP))
@@ -372,6 +358,17 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 		return 1, err
 	}
 
+	if len(config.ServiceTiers) != 0 {
+		var entries []string
+		for _, model := range slices.Sorted(maps.Keys(config.ServiceTiers)) {
+			key, err := json.Marshal(model)
+			if err != nil {
+				return 1, fmt.Errorf("invalid model ID in service tiers: %w", err)
+			}
+			entries = append(entries, string(key)+"="+strconv.Quote(config.ServiceTiers[model]))
+		}
+		args = append([]string{"-c", "service_tiers={" + strings.Join(entries, ",") + "}"}, args...)
+	}
 	cmd := exec.CommandContext(ctx, executable, nativeAppServerArgs(codexArgs(baseURL, args, route))...)
 	if summary, ok := options.ChildReplySummaryOverride(config.Features); ok {
 		cmd.Args = append(cmd.Args, "-c", "features.child_reply_summary="+strconv.FormatBool(summary))
@@ -455,7 +452,7 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 		if debug != nil {
 			debugDirectory = filepath.Dir(debug.Paths()[0])
 		}
-		waitCodex, err = (&nativeSession{preparer: mekugiCalls, reviewSource: changes, presentationState: views, conversationState: conversation, activity: activity, history: service, segments: segments.Reports, ctx: ctx, controlObservations: &control, usage: usage, audience: audience, review: review, execWindows: windows, nativeTrace: nativeTrace, retained: retained, changeSource: changeSource, snapshots: checkpoints, publishChanges: review.Publish, captureNotice: issues.AddThreadNotice, execTrack: reportObserver, issues: issues, serviceTiers: serviceTiers, sessionCapture: capture, resumeArgv: resumeArgv, rewindExecutable: filepath.Join(frontendDirectory, "mchanges"), profile: options.Profile, replayDebugDirectory: debugDirectory, titleGenerator: titleGenerator, observations: observations, approvalMode: approvals}).start(prefs, cmd, skillsManagerAvailable, resumeThread, provider.OpenAI, api, options.ChildReplySummary, threads)
+		waitCodex, err = (&nativeSession{preparer: mekugiCalls, reviewSource: changes, presentationState: views, conversationState: conversation, activity: activity, history: service, segments: segments.Reports, ctx: ctx, controlObservations: &control, usage: usage, audience: audience, review: review, execWindows: windows, nativeTrace: nativeTrace, retained: retained, changeSource: changeSource, snapshots: checkpoints, publishChanges: review.Publish, captureNotice: issues.AddThreadNotice, execTrack: reportObserver, issues: issues, sessionCapture: capture, resumeArgv: resumeArgv, rewindExecutable: filepath.Join(frontendDirectory, "mchanges"), profile: options.Profile, replayDebugDirectory: debugDirectory, titleGenerator: titleGenerator, observations: observations, approvalMode: approvals}).start(prefs, cmd, skillsManagerAvailable, resumeThread, provider.OpenAI, api, options.ChildReplySummary, threads)
 
 	}
 	if err != nil {

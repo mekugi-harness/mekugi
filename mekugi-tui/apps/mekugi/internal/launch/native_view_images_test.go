@@ -122,7 +122,7 @@ func TestNativeSideImageAdmissionAndPendingReplacementClaims(t *testing.T) {
 	if _, err := os.Stat(copy); err != nil {
 		t.Fatal("pending replacement image was reclaimed:", err)
 	}
-	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, u.side, true)
+	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, "", "", false, u.side, true)
 	action := sessionpresentation.MenuAction{Version: view.Version, Menu: view.Menu.ID, Kind: sessionpresentation.MenuAccept, Choice: view.Menu.Choices[0].Identity()}
 	u.nativeSession.applyMenuResult(&v.attached, &v.picker, &editor, &u.side, u.clock, false, t.Context(), terminalsession.MenuResult{Action: action, Handled: true})
 	pruneDraftImages(u.ownedImages, u.Editor, u.attached.conversation, &u.questions, &u.approvals, u.side, n.imageClaims)
@@ -138,7 +138,7 @@ func TestNativeSideImageAdmissionAndPendingReplacementClaims(t *testing.T) {
 	confirmed := prepare(oneoff)
 	editor = submit(confirmed)
 	previous := u.side
-	view = publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, u.side, true)
+	view = publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, "", "", false, u.side, true)
 	action = sessionpresentation.MenuAction{Version: view.Version, Menu: view.Menu.ID, Kind: sessionpresentation.MenuAccept, Choice: view.Menu.Choices[1].Identity()}
 	u.nativeSession.applyMenuResult(&v.attached, &v.picker, &editor, &u.side, u.clock, false, t.Context(), terminalsession.MenuResult{Action: action, Handled: true})
 	pruneDraftImages(u.ownedImages, u.Editor, u.attached.conversation, &u.questions, &u.approvals, u.side, n.imageClaims)

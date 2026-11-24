@@ -270,7 +270,7 @@ func startAppResumeTerminalWithIntegration(t *testing.T, newCommand func(context
 	conversation := new(conversationmodel.Service)
 	observations := conversationbinding.Codex.Observation(conversation)
 	reviewSource := new(changecapture.Service)
-	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, newCommand(ctx), inner, inner, integration, nil, resumeThread, true, nil, recorder, nil, "", nil, &observations, false)
+	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, newCommand(ctx), inner, inner, integration, nil, resumeThread, true, recorder, nil, "", nil, &observations, false)
 	if err != nil {
 		t.Fatal(err)
 	}

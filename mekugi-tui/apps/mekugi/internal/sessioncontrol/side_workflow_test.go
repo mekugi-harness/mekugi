@@ -52,7 +52,6 @@ func TestAnswerOnlyClassificationUsesLiveForkLedger(t *testing.T) {
 			t.Run(fmt.Sprintf("oneoff=%t/btw=%t", oneoff, btw), func(t *testing.T) {
 				transport := &requestTransport{id: "fork"}
 				r := NewRequests[struct{}](transport)
-				r.ObserveCacheKey("main", "source-custom-key")
 				admitted := false
 				r.AdmitSideFork = func(source, thread, workspace string) {
 					if source != "main" || thread != "side" || workspace != "" {
@@ -65,26 +64,17 @@ func TestAnswerOnlyClassificationUsesLiveForkLedger(t *testing.T) {
 					t.Fatal(err)
 				}
 				request, _ := r.Take("fork")
-				if r.ForkCacheKey("side") != "" {
-					t.Fatal("unconfirmed fork acquired cache affinity")
-				}
-				r.ObserveCacheKey("main", "new-source-key")
 				if _, err := r.ObserveSide(appserver.Message{Result: []byte(`{"thread":{"id":"side"}}`)}, request, "main"); err != nil {
 					t.Fatal(err)
 				}
 				r.AdmitSideChild("child", "side")
-				r.ObserveCacheKey("side", "native-side-key")
-				if !admitted || r.ForkCacheKey("side") != "source-custom-key" || r.ForkCacheKey("child") != "" || r.cacheKey != "new-source-key" {
-					t.Fatal("side cache affinity lost fork-time ownership or changed source routing")
-				}
-				if r.IsSideThread("side") != !oneoff || r.IsBTWThread("side") != btw || r.IsSideThread("child") || r.IsBTWThread("child") {
+				if !admitted || r.IsSideThread("side") != !oneoff || r.IsSideThread("child") {
 					t.Fatal("classification confused root kind or descendant admission")
 				}
 				var workers sync.WaitGroup
 				workers.Go(func() {
 					for range 1000 {
 						r.IsSideThread("side")
-						r.IsBTWThread("side")
 					}
 				})
 				for range 100 {
@@ -94,7 +84,7 @@ func TestAnswerOnlyClassificationUsesLiveForkLedger(t *testing.T) {
 					t.Fatal(err)
 				}
 				workers.Wait()
-				if r.IsSideThread("side") || r.IsBTWThread("side") || r.Side("side") != side {
+				if r.IsSideThread("side") || r.Side("side") != side {
 					t.Fatal("archived open dock retained classification or lost correlation")
 				}
 			})

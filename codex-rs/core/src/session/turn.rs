@@ -865,7 +865,10 @@ pub(crate) async fn run_turn(
                         }
                         Ok(false) => {}
                         Err(err) => {
-                            if crate::tasks::ends_turn_as_interrupted(&err) {
+                            if (turn_context.config.features.enabled(Feature::TokenBudget)
+                                && sess.services.model_client.answer_only())
+                                || crate::tasks::ends_turn_as_interrupted(&err)
+                            {
                                 return Err(err);
                             }
                             let error = err.to_codex_protocol_error();
@@ -1925,6 +1928,13 @@ async fn run_auto_compact(
     cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
+    let resets_without_summary = turn_context.config.features.enabled(Feature::TokenBudget);
+    if resets_without_summary && sess.services.model_client.answer_only() {
+        return Err(CodexErr::InvalidRequest(
+            "Side question requires compaction. Close this answer, compact Main, then retry."
+                .into(),
+        ));
+    }
     if !sess.inline_compaction_allowed(turn_context)? {
         return Ok(false);
     }
@@ -1945,7 +1955,7 @@ async fn run_auto_compact(
         conversation.id = %sess.thread_id,
         turn.id = %turn_context.sub_id,
     );
-    if turn_context.config.features.enabled(Feature::TokenBudget) {
+    if resets_without_summary {
         // This reset has no provider send. Recheck after preparing its world state.
         if !sess.inline_compaction_allowed(turn_context)? {
             return Ok(false);
@@ -2196,7 +2206,7 @@ async fn run_sampling_request(
             )
             .await;
         let savings = projected.savings;
-        let mut prompt_input = projected.into_items();
+        let mut prompt_input = projected.into_request_items();
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);

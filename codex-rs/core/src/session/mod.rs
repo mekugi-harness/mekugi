@@ -1017,8 +1017,42 @@ impl Session {
                 /*developer_instructions*/ None,
             )
         });
+        let mut collaboration_mode = collaboration_mode;
+        if matches!(
+            thread_source
+                .as_ref()
+                .and_then(crate::client::SideFork::from_source),
+            Some(crate::client::SideFork::OneOff | crate::client::SideFork::Question)
+        ) {
+            match collaboration_mode.settings.reasoning_effort.take() {
+                Some(effort) => {
+                    collaboration_mode.settings.reasoning_effort =
+                        Some(crate::client::downgrade_ultra_effort(&model_info, effort));
+                }
+                None if model_info.default_reasoning_level
+                    == Some(codex_protocol::openai_models::ReasoningEffort::Ultra) =>
+                {
+                    collaboration_mode.settings.reasoning_effort = Some(
+                        crate::client::downgrade_ultra_effort(
+                            &model_info,
+                            codex_protocol::openai_models::ReasoningEffort::Ultra,
+                        ),
+                    );
+                }
+                None => {}
+            }
+        }
+        let mut service_tier_choices = Arc::clone(&config.retained_service_tier_choices);
+        if let Some(tier) = &config.service_tier_choice {
+            Arc::make_mut(&mut service_tier_choices).insert(model_info.slug.clone(), tier.clone());
+        }
+        let service_tier = service_tier_choices
+            .get(&model_info.slug)
+            .or_else(|| config.service_tiers.get(&model_info.slug))
+            .cloned()
+            .or_else(|| config.service_tier.clone());
         let initial_service_tier_warning = unsupported_service_tier_warning(
-            config.service_tier.as_deref(),
+            service_tier.as_deref(),
             &config.features,
             &model_info,
         );
@@ -1043,7 +1077,10 @@ impl Session {
                 request_country,
                 collaboration_mode,
                 reasoning_summary: config.model_reasoning_summary,
-                service_tier: config.service_tier.clone(),
+                service_tier,
+                model_tiers: Arc::clone(&config.service_tiers),
+                service_tier_choices,
+                fallback_tier: config.service_tier.clone(),
                 personality: config.personality,
                 approval_policy: config.permissions.approval_policy.clone(),
                 approvals_reviewer: config.approvals_reviewer,
@@ -4615,7 +4652,11 @@ impl Session {
                     .then(|| self.services.turn_environments.configured_snapshot_now()),
             )
         };
-        if self.inherits_root_service_tier(&turn_context.session_source) {
+        if self.inherits_root_service_tier(&turn_context.session_source)
+            && !settings
+                .selected()
+                .has_model_tier(&settings.model_info.slug)
+        {
             let root_service_tier = tokio::select! {
                 biased;
                 tier = crate::agent::host::service_tier(self, settings.selected().service_tier.clone()) => tier,

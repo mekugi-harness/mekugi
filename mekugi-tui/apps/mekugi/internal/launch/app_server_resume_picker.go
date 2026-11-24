@@ -117,7 +117,7 @@ func (session *nativeSession) resumePickerResponse(clock func() time.Time, resum
 	}
 	var rows []sessionpresentation.ResumeRow
 	for _, thread := range result.Data {
-		if thread.ThreadSource == sessioncontrol.SideThreadSource {
+		if sessioncontrol.IsSideSource(thread.ThreadSource) {
 			continue
 		}
 		found, err := session.Client.Startup.History.ContainsSession(thread.ID)
@@ -218,7 +218,7 @@ func (session *nativeSession) applyResumeAction(attached *attachedPresentation, 
 		return nil
 	}
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
 	}()
 	if err := attached.presentation.AdmitResume(action); err != nil {
 		setNotice(&attached.feedback, presentationTime(clock), err.Error(), true)

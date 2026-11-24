@@ -29,7 +29,7 @@ func testRequestExecutor(provider inferencegateway.Forwarder, issues *requestexe
 	executor := requestexecution.Executor{Provider: provider, Issues: issues}
 	if proxy != nil {
 		executor.Observations = proxy
-		executor.SideThreads, executor.Usage = proxy, proxy.usage
+		executor.Usage = proxy.usage
 	}
 	executor.Exchange, _ = provider.(*inferencegateway.Exchange)
 	return executor
@@ -41,9 +41,6 @@ func testResponsesHandler(ctx context.Context, timeout time.Duration, provider i
 
 func testWebSocketEndpoint(ctx context.Context, timeout time.Duration, provider *inferencegateway.Client, issues *requestexecution.Failures, proxy *observationFixture) *inferencegateway.WebSocketEndpoint {
 	endpoint := inferencegateway.NewWebSocketEndpoint(ctx, timeout, provider, testRequestExecutor(provider, issues, proxy).ExecuteWebSocket)
-	if proxy != nil {
-		endpoint.ForkCacheKey = proxy.ForkCacheKey
-	}
 	return endpoint
 }
 

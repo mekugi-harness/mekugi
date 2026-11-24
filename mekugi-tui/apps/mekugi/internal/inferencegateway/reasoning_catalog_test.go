@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 )
 
@@ -23,19 +22,10 @@ func TestAuxiliaryReasoningUsesSelectedForwardedCatalog(t *testing.T) {
 	if output.Code != http.StatusOK || output.Body.String() != body {
 		t.Fatalf("catalog forwarding changed: %d %s", output.Code, output.Body.String())
 	}
-	fallback, choices, updates := catalog.Choices("selected")
-	if fallback != "high" || !slices.Equal(choices, []string{"low", "medium", "high", "ultra"}) || !updates {
-		t.Fatalf("selected reasoning=%q %v %v", fallback, choices, updates)
-	}
-	choices[0] = "mutated"
-	_, fresh, _ := catalog.Choices("selected")
-	if fresh[0] != "low" {
-		t.Fatal("borrower mutated selected catalog")
-	}
 	if effort, err := catalog.InheritedEffort("selected", "ultra"); err != nil || effort != "medium" {
 		t.Fatalf("inherited effort=%q err=%v", effort, err)
 	}
-	if fallback, choices, updates := catalog.Choices("unknown"); fallback != "" || len(choices) != 0 || updates {
+	if _, err := catalog.InheritedEffort("unknown", "ultra"); err == nil {
 		t.Fatal("unknown model inherited another model's policy")
 	}
 }
@@ -64,9 +54,6 @@ func TestConfiguredReasoningCatalogRefreshAndFailure(t *testing.T) {
 	catalog.Capture([]byte(`malformed`))
 	if _, err := catalog.InheritedEffort("replacement", "ultra"); err == nil {
 		t.Fatal("failed acquisition retained stale policy")
-	}
-	if fallback, choices, updates := catalog.Choices("replacement"); fallback != "" || len(choices) != 0 || updates {
-		t.Fatal("failed acquisition retained auxiliary policy")
 	}
 	custom := ReasoningCatalog{NativeModels: true}
 	if effort, err := custom.InheritedEffort("custom", "ultra"); err != nil || effort != "ultra" {

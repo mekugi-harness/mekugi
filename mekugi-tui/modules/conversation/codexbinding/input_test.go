@@ -3,11 +3,9 @@ package codexbinding
 import (
 	"encoding/json/v2"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 )
 
@@ -65,40 +63,5 @@ func TestInputSelectionFencesAndUploadedBytes(t *testing.T) {
 	text := input[len(input)-1]["text"].(string)
 	if !strings.Contains(text, "  ````\n  first\r\n  ```\n  last\n  ````") || !strings.HasSuffix(text, "- Uploaded notes.txt: uploaded text") {
 		t.Fatalf("plain supplied text lost bytes or fence boundaries: %q", text)
-	}
-}
-
-func TestOrdinarySelectionHeadingDoesNotBecomeAttachmentRecall(t *testing.T) {
-	draft := composer.Draft{Text: composer.UserSelectionsPrefix + "- message: ordinary typed text"}
-	content, err := json.Marshal(Input(draft))
-	if err != nil {
-		t.Fatal(err)
-	}
-	values := CompactedAttachments([]binding.HistoryTurn{{Items: []binding.ThreadItem{{Type: "userMessage", Content: content}, {Type: "contextCompaction", Status: "completed"}}}})
-	if len(values) != 0 {
-		t.Fatalf("ordinary user text became attachment recall: %+v", values)
-	}
-}
-
-func TestCompactedImagesFollowAdmittedHistoryPrefix(t *testing.T) {
-	image := func(id, source string) binding.ThreadItem {
-		return binding.ThreadItem{ID: id, Type: "userMessage", Content: []byte(`[{"type":"image","url":` + strconv.Quote(source) + `}]`)}
-	}
-	before := image("before", "https://example.test/submitted.png")
-	embedded := image("embedded", "data:image/png,PRIVATE_PIXELS")
-	boundary := binding.ThreadItem{ID: "boundary", Type: "contextCompaction", Status: "completed"}
-	after := image("after", "https://example.test/later.png")
-	tool := binding.ThreadItem{ID: "tool", Type: "imageGeneration", Content: []byte(`[{"type":"localImage","path":"/tool/generated.png"}]`)}
-	for _, items := range [][]binding.ThreadItem{{before, embedded, tool, boundary, after}, {before, embedded, boundary}} {
-		values := CompactedAttachments([]binding.HistoryTurn{{Items: items}})
-		if len(values) != 2 || values[0].Images[0].Path != "https://example.test/submitted.png" || strings.Contains(values[1].Images[0].Path, "PRIVATE_PIXELS") || values[1].Images[0].Name != "[Image 1]" {
-			t.Fatalf("native image prefix lost or pixel/tool evidence retained: %+v", values)
-		}
-	}
-	if got := CompactedAttachments([]binding.HistoryTurn{{Items: []binding.ThreadItem{before, {Type: "contextCompaction", Status: "failed"}}}}); len(got) != 0 {
-		t.Fatalf("failed boundary admitted recall: %+v", got)
-	}
-	if got := CompactedAttachments([]binding.HistoryTurn{{Items: []binding.ThreadItem{boundary, after}}}); len(got) != 0 {
-		t.Fatalf("rewound prefix admitted later image: %+v", got)
 	}
 }

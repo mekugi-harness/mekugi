@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
 
@@ -167,7 +166,7 @@ func TestAppServerRewindPreservesExecutionReaders(t *testing.T) {
 	u, w := newResumeSessionTestUI(t)
 	models, summaries := 0, 0
 	hooks := u.attached.hooks
-	u.attached.hooks.modelsReady = func([]appServerModel, preferences.Applied, *inferencegateway.Tiers, string) { models++ }
+	u.attached.hooks.modelsReady = func([]appServerModel, preferences.Applied, string) { models++ }
 	u.attached.hooks.compaction = func(string, string) func(context.Context) (string, error) {
 		return func(context.Context) (string, error) { summaries++; return "retained summary", nil }
 	}

@@ -16,10 +16,10 @@ import (
 )
 
 func (u *appServerUI) sessionLabel(now time.Time) string {
-	return terminalsession.PaintSessionStatus(diffrender.TerminalTheme, publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Session, now, u.shell.Transcript.Painter.Colors)
+	return terminalsession.PaintSessionStatus(diffrender.TerminalTheme, publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Session, now, u.shell.Transcript.Painter.Colors)
 }
 func (u *appServerUI) stateLabel(now time.Time) string {
-	view := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	view := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	return paintedComposerStatus(view, &u.shell.Transcript.Painter, now)
 }
 
@@ -32,18 +32,18 @@ func paintedComposerStatus(view sessionpresentation.View, painter *activityui.Pa
 	return frame.Rows[main.ComposerRect.Y-1]
 }
 func (u *appServerUI) composerErrorText() string {
-	return terminalsession.MainStatusDetails(publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Status)
+	return terminalsession.MainStatusDetails(publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Status)
 }
 
 // testMainFrame settles directly configured fixture state before rendering.
 func (u *appServerUI) testMainFrame(width, height, dock int) ([]string, terminalsession.Rect) {
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	return u.mainFrame(width, height, dock)
 }
 
 // testPaint delivers an explicitly settled fixture through the real renderer.
 func (u *appServerUI) testPaint(out io.Writer, width, height int) error {
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	return paintSession(&u.attached, u.shell, &u.detailFiles, u.ctx, presentationTime(u.clock), out, width, height)
 }
 
@@ -113,7 +113,7 @@ func (u *terminalUI) paintSelection(rows []string) {
 
 func (u *appServerUI) testDeliveredMainFrame(t *testing.T, width, height, dock int) ([]string, terminalsession.NoticeReceipt) {
 	t.Helper()
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	frame := u.renderMainFrame(width, height, dock)
 	var delivered terminalsession.Frame
 	if err := delivered.Write(io.Discard, terminalsession.RenderedFrame{Rows: frame.Rows, Notices: frame.Notices}, width, true); err != nil {
@@ -123,11 +123,11 @@ func (u *appServerUI) testDeliveredMainFrame(t *testing.T, width, height, dock i
 }
 
 func (u *appServerUI) applyComposerKey(key string) (bool, error) {
-	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	return u.applyComposerInput(u.shell.Main.ComposerKey(key, u.shell.Prompts, transcriptView(u.attached.presentation, u.shell)))
 }
 func (u *appServerUI) approvalKey(key string) (bool, error) {
-	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	input := u.shell.Main.PromptKey(key, u.shell.Prompts)
 	if input == nil {
 		return false, nil
@@ -135,7 +135,7 @@ func (u *appServerUI) approvalKey(key string) (bool, error) {
 	return u.nativeSession.applyApprovalInput(&u.attached, u.shell, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, *input)
 }
 func (u *appServerUI) questionKey(key string) (bool, error) {
-	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	input := u.shell.Main.PromptKey(key, u.shell.Prompts)
 	if input == nil {
 		return false, nil

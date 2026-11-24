@@ -94,7 +94,7 @@ func TestUISnapshotNativeResumePagingPTY(t *testing.T) {
 				}
 				reply = request.Reply
 			}
-			settlePresentation(&u.attached, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, false, u.side, u.clock, &u.questions, &u.approvals, true)
+			settlePresentation(&u.attached, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, false, u.side, u.clock, &u.questions, &u.approvals, true)
 			frame := sessionapi.NativeFrame{View: u.attached.presentation.View(), Main: u.attached.source.Publication(u.attached.presentation, nil)}
 			if err := api.Native().Publish(attachment, frame); err != nil {
 				return err

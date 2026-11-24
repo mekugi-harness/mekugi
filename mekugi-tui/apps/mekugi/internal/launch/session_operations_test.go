@@ -12,7 +12,7 @@ func TestNonTerminalInterruptionIdentityAndDisposition(t *testing.T) {
 	for _, mode := range []sessioncontrol.InterruptMode{sessioncontrol.RestoreWaiting, sessioncontrol.ExpediteSteers} {
 		u, wire := newAppServerTestUI()
 		appServerTestTurn(t, u, "old")
-		v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+		v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 		intent := sessionpresentation.InterruptIntent{Version: v.Version, Target: v.Interrupt, Mode: mode}
 		appServerTestTurn(t, u, "current")
 		if err := u.nativeSession.interruptSession(&u.attached, &u.picker, &u.Editor, u.clock, &u.side, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil {
@@ -22,7 +22,7 @@ func TestNonTerminalInterruptionIdentityAndDisposition(t *testing.T) {
 			t.Fatal("retired turn intent interrupted newer work")
 		}
 		u.attached.conversation.Unsent = []conversationmodel.Input{{Text: "waiting"}}
-		v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+		v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 		intent.Version, intent.Target = v.Version, v.Interrupt
 		if err := u.nativeSession.interruptSession(&u.attached, &u.picker, &u.Editor, u.clock, &u.side, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil {
 			t.Fatal(err)
@@ -40,14 +40,14 @@ func TestNonTerminalInterruptionIdentityAndDisposition(t *testing.T) {
 func TestNonTerminalInterruptionPendingStartAndReplay(t *testing.T) {
 	u, wire := newAppServerTestUI()
 	u.Submit("first", "")
-	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	intent := sessionpresentation.InterruptIntent{Version: v.Version, Target: v.Interrupt}
 	u.SubmissionFailed()
 	u.Submit("second", "")
 	if err := u.nativeSession.interruptSession(&u.attached, &u.picker, &u.Editor, u.clock, &u.side, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil || u.Interruption.BeforeStart {
 		t.Fatal("retired start intent cancelled its replacement")
 	}
-	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	intent.Version, intent.Target = v.Version, v.Interrupt
 	if err := u.nativeSession.interruptSession(&u.attached, &u.picker, &u.Editor, u.clock, &u.side, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil || !u.Interruption.BeforeStart || wire.Len() != 0 {
 		t.Fatal("pending start did not defer to its host turn")
@@ -56,7 +56,7 @@ func TestNonTerminalInterruptionPendingStartAndReplay(t *testing.T) {
 	appServerOneRequest(t, wire, "turn/interrupt", "")
 	u.Interruption.Finish()
 	u.attached.presentation.Attach(sessionpresentation.Thread{ID: u.Thread, Caller: "/root"}, true)
-	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	intent.Version, intent.Target = v.Version, v.Interrupt
 	if err := u.nativeSession.interruptSession(&u.attached, &u.picker, &u.Editor, u.clock, &u.side, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil || wire.Len() != 0 || u.Interruption.Target != "" || u.attached.feedback.Text != sessionpresentation.ErrReplayIntent.Error() {
 		t.Fatal("replay interruption reached the host")

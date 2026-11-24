@@ -1,19 +1,18 @@
 package launch
 
 import (
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
 )
 
-func threadInspection(session *sessionpresentation.Attachment, thread string, applied preferences.Applied, tiers *inferencegateway.Tiers) observation.SessionDetails {
+func threadInspection(session *sessionpresentation.Attachment, thread string, applied preferences.Applied) observation.SessionDetails {
 	details := observation.SessionDetails{SessionMetrics: session.InspectionMetrics(thread)}
 	if applied.Model != "" {
 		details.Model = new(applied.Model)
 		details.ReasoningEffort = new(applied.Effort)
-		details.ServiceTier = new(tiers.Effective(applied.Model, applied.Tier, thread))
+		details.ServiceTier = new(applied.Tier)
 	}
 	return details
 }

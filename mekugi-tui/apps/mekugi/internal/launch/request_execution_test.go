@@ -3,7 +3,6 @@ package launch
 import (
 	"bytes"
 	"context"
-	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,92 +11,12 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
-	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
 
-func TestAuxiliaryRequestsUseLowReasoning(t *testing.T) {
-	for _, tc := range []struct{ kind, effort, choices, fallback, want string }{
-		{"main", "high", "low", "high", "high"},
-		{"side", "high", "low", "high", "high"},
-		{"btw", "high", "low", "high", "low"},
-		{"custom-http-btw", "high", "low", "high", "low"},
-		{"compaction", "xhigh", "low", "high", "low"},
-		{"btw", "none", "low", "high", "none"},
-		{"compaction", "minimal", "low", "high", "minimal"},
-		{"btw", "high", "medium", "high", "high"},
-		{"btw", "", "low", "high", "low"},
-		{"compaction", "", "low", "", ""},
-	} {
-		for _, updates := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/%s/%s/%s/updates=%t", tc.kind, tc.effort, tc.choices, tc.fallback, updates), func(t *testing.T) {
-				model := "test-model"
-				if tc.kind == "custom-http-btw" {
-					model = "custom-test"
-				}
-				catalog := new(inferencegateway.ReasoningCatalog)
-				catalog.Capture(mustTestJSON(t, map[string]any{"models": []any{map[string]any{"slug": model, "supports_reasoning_effort_updates": updates, "default_reasoning_level": tc.fallback, "supported_reasoning_levels": []any{map[string]any{"effort": tc.choices}}}}}))
-				proxy := newManagedMekugiProxy(t)
-				requests := sessioncontrol.NewRequests[appServerRequest](nil)
-				proxy.bindForkRequests(requests)
-				if tc.kind == "btw" || tc.kind == "custom-http-btw" {
-					requests.TrackSide("auxiliary", &sessioncontrol.Side{Thread: "auxiliary", SideAnswer: new(conversationmodel.SideAnswer), LowReasoning: true})
-				} else if tc.kind == "side" {
-					requests.TrackSide("auxiliary", &sessioncontrol.Side{Thread: "auxiliary", SideAnswer: new(conversationmodel.SideAnswer)})
-				}
-				request := modelTestRequest(t, model)
-				request.Fields["reasoning"] = mustTestJSON(t, map[string]any{"effort": tc.effort, "summary": "auto"})
-				headers := serverMetadataHeaders(t, "turn", nil)
-				if tc.kind == "compaction" {
-					headers = serverCompactionMetadataHeaders(t)
-				}
-				headers.Set(codexresponses.ThreadIDHeader, "auxiliary")
-				provider := &serverFakeProvider{results: []serverForwardResult{{response: serverHTTPResponse(`{"status":"completed","output":[]}`)}}}
-				executor := requestexecution.Executor{Provider: provider, SideThreads: proxy, ReasoningChoices: catalog.Choices, Output: io.Discard}
-				if tc.kind == "custom-http-btw" {
-					executor.Provider = httpOnlyTestProvider{provider}
-				}
-				if err := executor.Execute(t.Context(), t.Context(), request, headers, "auxiliary"); err != nil {
-					t.Fatal(err)
-				}
-				forwarded, err := codexresponses.ParseRequest(provider.forwarded[0])
-				if err != nil {
-					t.Fatal(err)
-				}
-				effort := forwarded.ReasoningEffort()
-				if updates && tc.kind != "custom-http-btw" {
-					if effort != tc.effort {
-						t.Fatalf("request baseline changed: %s", forwarded.Fields["reasoning"])
-					}
-					var input []struct {
-						Type      string `json:"type"`
-						Reasoning struct {
-							Effort string `json:"effort"`
-						} `json:"reasoning"`
-					}
-					if err := json.Unmarshal(forwarded.Fields["input"], &input); err != nil {
-						t.Fatal(err)
-					}
-					for _, item := range input {
-						if item.Type == "configuration_update" {
-							effort = item.Reasoning.Effort
-						}
-					}
-				}
-				if effort != tc.want || !bytes.Contains(forwarded.Fields["reasoning"], []byte(`"summary":"auto"`)) {
-					t.Fatalf("reasoning = %s; want effort %q with original summary", forwarded.Fields["reasoning"], tc.want)
-				}
-			})
-		}
-	}
-}
-
-// executeRequest preserves the direct attempt setup used throughout the package
-// tests while production code owns stable services through requestexecution.Executor.
 func executeRequest(
 	ctx context.Context,
 	executionCtx context.Context,
@@ -191,7 +110,3 @@ func TestResponsesPreserveConfiguredModelAndReasoning(t *testing.T) {
 }
 
 // Route capabilities, not model-name prefixes, select full-history requests.
-type httpOnlyTestProvider struct{ *serverFakeProvider }
-
-func (httpOnlyTestProvider) NativeContinuations() bool { return false }
-func (httpOnlyTestProvider) ApplyOpenAIPolicy() bool   { return false }

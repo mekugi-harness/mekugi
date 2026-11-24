@@ -37,7 +37,7 @@ func TestPreparedContentReadableComparison(t *testing.T) {
 			}
 			request.Fields["input"] = []byte(`[{"type":"function_call_output","call_id":"call","output":` + tc.prepared + `}]`)
 			transform := mekugiResponseTransform{owners: &Preparer{Config: Config{Audience: audience}}, threadID: "thread"}
-			transform.ObservePreparedContent(&request, nil)
+			transform.ObservePreparedContent(&request)
 			got, ok := audience.Prepared("thread", "thread", "call")
 			if !ok || got.Text != tc.want || got.Altered != tc.altered {
 				t.Fatalf("got %+v, want text %q altered %v", got, tc.want, tc.altered)

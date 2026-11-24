@@ -15,8 +15,8 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
   (`codex-shell-guard`, `features.shell_guard`, `codex-arg0` guard shims, v2 `shellGuard/*`),
   context usage milestones (`token_budget.rs`), source acquisition & reload
   (`context_sources*.rs`, `compact_token_budget.rs`, `ext/skills`), OS/Git environment facts
-  (`environment_facts.rs`), `SESSION_TMP` (`exec_env.rs`), and model-input output deduplication
-  (`output_deduplication.rs`).
+  (`environment_facts.rs`), `SESSION_TMP` (`exec_env.rs`), and detached model-input projection
+  (`context_manager/{output_deduplication,request_input}.rs`).
 - **Go (`mekugi-tui/`)**: server/session lifetime, terminal UI,
   inference gateway & custom Responses routing, passive edit capture & `mchanges`, authenticated
   Go frontends (`mchanges`), approval dock, attachment-scoped session grants &
@@ -32,7 +32,7 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 | `launch` | CLI dispatch, profile imports, invocation/server/connector startup, native attachment & host wiring |
 | `frontends` | Authenticated executable catalog/PATH, worker pinning, and leases |
 | `headless` | Noninteractive automation client and JSONL host evidence |
-| `inferencegateway` | Responses HTTP/WS admission, pinned custom routing, catalog/auxiliary forwarding, service tier |
+| `inferencegateway` | Responses HTTP/WS admission, pinned custom routing, catalog/auxiliary forwarding |
 | `requestexecution` | Shared inference attempt, delivery, cancellation, failure handling, and instruction retention |
 | `executionobservation` | Legacy Go change evidence from the inference relay |
 | `sessioncontrol` | Sole host app-server connection/request ledger; submission, compaction, approvals, prompts, presets, side threads |

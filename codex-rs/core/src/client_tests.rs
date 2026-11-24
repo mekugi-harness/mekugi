@@ -1436,6 +1436,71 @@ fn reasoning_effort_for_requests_preserves_non_ultra_and_persistent_behavior() {
     );
 }
 
+#[test]
+fn side_fork_effort_caps_btw_to_low_and_downgrades_ultra_to_max() {
+    let mut model_info = test_model_info();
+    model_info.supported_reasoning_levels = vec![
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Low,
+            description: "low".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::High,
+            description: "high".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Max,
+            description: "max".to_string(),
+        },
+        ReasoningEffortPreset {
+            effort: ReasoningEffort::Ultra,
+            description: "ultra".to_string(),
+        },
+    ];
+    let base_client = test_model_client(SessionSource::Cli);
+
+    let btw = base_client
+        .clone()
+        .with_side_fork(Some(&codex_protocol::protocol::ThreadSource::Feature(
+            "mekugi_btw".to_owned(),
+        )));
+    assert_eq!(
+        btw.cap_side_fork_effort(&model_info, ReasoningEffort::Ultra),
+        ReasoningEffort::Low
+    );
+    assert_eq!(
+        btw.cap_side_fork_effort(&model_info, ReasoningEffort::High),
+        ReasoningEffort::Low
+    );
+    assert_eq!(
+        btw.cap_side_fork_effort(&model_info, ReasoningEffort::Minimal),
+        ReasoningEffort::Minimal
+    );
+
+    for source in ["mekugi_side", "mekugi_side_question"] {
+        let side = base_client.clone().with_side_fork(Some(
+            &codex_protocol::protocol::ThreadSource::Feature(source.to_owned()),
+        ));
+        assert_eq!(
+            side.cap_side_fork_effort(&model_info, ReasoningEffort::Ultra),
+            ReasoningEffort::Max
+        );
+        assert_eq!(
+            side.cap_side_fork_effort(&model_info, ReasoningEffort::High),
+            ReasoningEffort::High
+        );
+    }
+
+    // When low is unsupported, /btw still downgrades Ultra to Max.
+    model_info
+        .supported_reasoning_levels
+        .retain(|preset| preset.effort != ReasoningEffort::Low);
+    assert_eq!(
+        btw.cap_side_fork_effort(&model_info, ReasoningEffort::Ultra),
+        ReasoningEffort::Max
+    );
+}
+
 #[derive(Default)]
 struct TagCollectorVisitor {
     tags: BTreeMap<String, String>,

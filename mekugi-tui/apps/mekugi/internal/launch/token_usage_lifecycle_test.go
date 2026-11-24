@@ -334,9 +334,6 @@ func testTokenUsageAutomaticSuccessor(t *testing.T, configured, leader, requeste
 			t.Errorf("successful successor ordinary final ID=%q, want answer", finalAnswerID)
 		}
 		wantTier := requestedTier
-		if wantTier == "fast" {
-			wantTier = "priority"
-		}
 		wantModel := "gpt-6-astra"
 		if configured == "gpt-6-sol" {
 			wantModel = "gpt-6-sol"

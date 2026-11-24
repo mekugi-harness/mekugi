@@ -56,7 +56,7 @@ func TestAppServerResumeSettingsCompressedPreflight(t *testing.T) {
 	compressResumeSettingsRollout(t, info.Path)
 	fresh, w := appliedSettingsTestUI(t, "/workspace", "other")
 	params, _ := appliedSettingsTestResume(t, fresh, w, info)
-	if !reflect.DeepEqual(params["config"], map[string]any{"model": "saved-model", "model_reasoning_effort": "high"}) || params["serviceTier"] != "priority" {
+	if !reflect.DeepEqual(params["config"], map[string]any{"model": "saved-model", "model_reasoning_effort": "high"}) || params["serviceTier"] != nil {
 		t.Fatalf("compressed preflight lost newer settings: %#v", params)
 	}
 	if _, err := os.Stat(info.Path); !os.IsNotExist(err) {
@@ -128,7 +128,7 @@ func TestAppServerResumeSettingsOverridesPerField(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := map[string]any{"model": "saved-model", "model_reasoning_effort": "high", "model_provider": "routed"}
-			tier := "priority"
+			tier := ""
 			if field == "service_tier" {
 				tier = "explicit"
 			} else if field != "" {
@@ -165,8 +165,8 @@ func TestAppServerResumeSettingsNullIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := request.Params["config"].(map[string]any)
-	if tier, present := request.Params["serviceTier"]; !present || tier != nil {
-		t.Fatalf("saved default tier not forwarded: %#v", request.Params)
+	if _, present := request.Params["serviceTier"]; present {
+		t.Fatalf("observed default tier was forwarded as an override: %#v", request.Params)
 	}
 	if _, present := config["model_reasoning_effort"]; present || !u.ResumeEffort {
 		t.Fatalf("unset effort did not use nullable host settings path: %#v", config)

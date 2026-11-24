@@ -304,6 +304,9 @@ fn configured_settings() -> StepSettings {
         },
         reasoning_summary: Some(ReasoningSummary::Concise),
         service_tier: None,
+        model_tiers: Default::default(),
+        service_tier_choices: Default::default(),
+        fallback_tier: None,
         personality: Some(Personality::Friendly),
         approval_policy: Constrained::allow_any(AskForApproval::OnRequest),
         approvals_reviewer: ApprovalsReviewer::User,
@@ -346,6 +349,9 @@ fn sparse_patch_uses_the_settings_version_being_updated() {
     let expected = StepSettings {
         request_country: RequestCountry::from_iso_code("US").unwrap(),
         service_tier: Some(ServiceTier::Fast.request_value().to_string()),
+        service_tier_choices: Arc::new(
+            [(String::from("model-b"), String::from("priority"))].into(),
+        ),
         ..latest
     };
     assert_eq!(updated, expected);

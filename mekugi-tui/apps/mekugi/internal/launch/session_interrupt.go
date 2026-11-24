@@ -13,7 +13,7 @@ import (
 
 func (session *nativeSession) interruptSession(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, side **sessioncontrol.Side, overlay bool, intent sessionpresentation.InterruptIntent) error {
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, overlay)
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, overlay)
 	}()
 	if intent.Target.Thread != session.Client.Thread {
 		if err := attached.presentation.ResolveSideInterrupt(intent, *side); err != nil {

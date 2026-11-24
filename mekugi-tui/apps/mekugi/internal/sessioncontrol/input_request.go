@@ -10,8 +10,8 @@ import (
 
 // InputRequest is fully prepared native input with its admitted control identity.
 type InputRequest struct {
-	Thread, Turn, ID, Tier string
-	Input                  []map[string]any
+	Thread, Turn, ID string
+	Input            []map[string]any
 	// Settled receives the correlated host outcome without owning another ledger.
 	// The callback must not block the host event loop.
 	Settled func(turn string, err error)
@@ -25,8 +25,6 @@ func (r *Requests[T]) SendInput(input InputRequest, owner T) (string, error) {
 	if input.Turn != "" {
 		method = "turn/steer"
 		params["expectedTurnId"] = input.Turn
-	} else if input.Tier != "" {
-		params["serviceTier"] = input.Tier
 	}
 	id, err := r.Send(method, params, "main", owner)
 	if input.Settled != nil {

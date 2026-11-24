@@ -259,11 +259,7 @@ func (p *nativeThreadsProvider) serve(t *testing.T, w http.ResponseWriter, r *ht
 		return
 	}
 	p.mu.Lock()
-	resumeStep := 5
-	if p.attachments {
-		resumeStep++
-	}
-	resumedParent := !p.earlyCompletion && metadata.ThreadID == p.parent && p.calls[p.parent]-p.recoveryRetries >= resumeStep
+	resumedParent := !p.earlyCompletion && metadata.ThreadID == p.parent && p.calls[p.parent]-p.recoveryRetries >= 5
 	p.mu.Unlock()
 	wantEffort := "low"
 	if resumedParent {
@@ -437,6 +433,16 @@ func (p *nativeThreadsProvider) serve(t *testing.T, w http.ResponseWriter, r *ht
 		answer = "MANAGED_PARENT_RESUMED"
 	case parent && step == 1:
 		p.users = users
+		if p.attachments {
+			for _, text := range []string{"ORIGINAL_ATTACHED_FILE", "ORIGINAL_ATTACHED_SKILL", "SELECTED_SCREEN_BYTES"} {
+				if strings.Count(string(body), text) != 1 {
+					failure = "initial request lost or repeated submitted attachment: " + text
+				}
+			}
+			if strings.Contains(string(body), "mekugi-file-attachments-v") {
+				failure = "initial request exposed the attachment transport envelope"
+			}
+		}
 		program = `text(Object.keys(tools).filter(name => name.includes("collaboration"))); text(await tools.collaboration__list_agents({path_prefix:"/root"})); text(await tools.collaboration__inspect_agent({target:"/root"}));`
 	case parent && step == 2:
 		if !strings.Contains(string(body), "completedCompactions") || !strings.Contains(string(body), "contextWindow") || !strings.Contains(string(body), "reasoningEffort") {
@@ -540,7 +546,8 @@ func (p *nativeThreadsProvider) serve(t *testing.T, w http.ResponseWriter, r *ht
 		}
 
 		if p.attachments {
-			if strings.Count(string(body), "CURRENT_ATTACHED_SKILL") != map[bool]int{true: 1, false: 0}[p.attachmentReload] || strings.Contains(string(body), "SELECTED_SCREEN_BYTES") {
+			if strings.Count(string(body), "CURRENT_ATTACHED_SKILL") != map[bool]int{true: 1, false: 0}[p.attachmentReload] ||
+				strings.Contains(string(body), "SELECTED_SCREEN_BYTES") || strings.Contains(string(body), "Optional attachment recall") {
 				failure = "reset forced attachment bodies or lost explicit reload"
 			}
 			for _, excluded := range []string{"ORIGINAL_ATTACHED_SKILL", "ORIGINAL_ATTACHED_FILE", "CHANGED_ATTACHED_FILE"} {
@@ -580,50 +587,6 @@ func (p *nativeThreadsProvider) serve(t *testing.T, w http.ResponseWriter, r *ht
 		if p.multipleAnswers && (strings.Count(string(body), "MANAGED_CHILD_FINAL") != 1 || strings.Count(string(body), "LATER_CHILD_FINAL") != 1) {
 			failure = "first awakened request omitted or repeated completed child answers"
 		}
-		if p.attachments {
-			var paths []string
-			for _, item := range request.Input {
-				if string(item["role"]) != `"user"` {
-					continue
-				}
-				var parts []struct {
-					Text string `json:"text"`
-				}
-				_ = json.Unmarshal(item["content"], &parts)
-				for _, part := range parts {
-					rest, ok := strings.CutPrefix(part.Text, "Optional attachment recall (read with mcat): ")
-					if !ok {
-						continue
-					}
-					for entry := range strings.SplitSeq(rest, "; ") {
-						if _, path, ok := strings.Cut(entry, ": "); ok && path != "" {
-							paths = append(paths, path)
-						}
-					}
-				}
-			}
-			if len(paths) != 3 {
-				failure = fmt.Sprintf("reset did not expose kind-separated recall: %v", paths)
-			}
-			answer = ""
-			program = `const r = await tools.exec_command({cmd:` + strconv.Quote("mcat "+strings.Join(paths, " ")) + `}); text(r.output);`
-		}
-	case parent && step == 6 && p.attachments:
-		for _, expected := range []string{"CURRENT_ATTACHED_SKILL", "SELECTED_SCREEN_BYTES", "@attachment.txt", "$guide"} {
-			count := 1
-			if expected == "CURRENT_ATTACHED_SKILL" && p.attachmentReload && request.PreviousResponse != "" {
-				count = 0
-			} // Explicit source is already cached upstream.
-			if strings.Count(string(body), expected) != count {
-				failure = "mcat did not recover attachment context exactly once: " + expected
-			}
-		}
-		for _, excluded := range []string{"ORIGINAL_ATTACHED_SKILL", "ORIGINAL_ATTACHED_FILE", "CHANGED_ATTACHED_FILE"} {
-			if strings.Contains(string(body), excluded) {
-				failure = "mcat recovered stale or unselected file content: " + excluded
-			}
-		}
-		answer = "MANAGED_PARENT_RESUMED"
 	case parent && step == 6:
 		program = `text(await tools.collaboration__list_agents({path_prefix:"/root"})); text(await tools.collaboration__followup_task({target:"/root/worker",message:"COLD_CHILD_FOLLOWUP"}));`
 		if p.messageSources {
@@ -2034,9 +1997,6 @@ func testNativeThreadsServerOwnedCodex(t *testing.T, scenario nativeThreadsScena
 	wantParentCalls := 5 + recoveryRetries
 	if scenario.childActivity {
 		wantParentCalls = 3
-	}
-	if scenario.attachments {
-		wantParentCalls++
 	}
 	wantThreads := 2
 	if fullHistory {

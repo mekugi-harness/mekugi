@@ -7,7 +7,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
@@ -99,15 +98,14 @@ type nativeSession struct {
 	rewindExecutable      string
 	profile               *launchoptions.Profile
 	replayDebugDirectory  string
-	serviceTiers          *inferencegateway.Tiers
-	models                []appServerModel
-	modelsLoading         bool
-	ownedImages           map[string]bool
-	panes                 *nativePreferences
-	restoring             *appServerActivityRestore
-	presentationState     *sessionpresentation.Service
-	settings              preferences.Applied
-	dispatch              func(appserver.Message) error
+	models            []appServerModel
+	modelsLoading     bool
+	ownedImages       map[string]bool
+	panes             *nativePreferences
+	restoring         *appServerActivityRestore
+	presentationState *sessionpresentation.Service
+	settings          preferences.Applied
+	dispatch          func(appserver.Message) error
 }
 
 // Freeze the current retained session when a detail read is admitted, even after replacement.
