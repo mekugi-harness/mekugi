@@ -123,6 +123,10 @@ impl GrpcCodeModeHost {
             CodeModeSessionOptions {
                 cell_execution_limits: limits,
                 output_truncation,
+                truncated_output_dir: request
+                    .truncated_output_dir
+                    .filter(|value| !value.is_empty())
+                    .map(std::path::PathBuf::from),
                 ..Default::default()
             },
             max_pending_delegate_calls,
@@ -227,7 +231,6 @@ impl GrpcCodeModeHost {
         let mut admission = ExecutionAdmission {
             session: Arc::clone(&session),
             execution_id: Some(execution_id.clone()),
-            cell_id: None,
         };
         let started = tokio::select! {
             _ = session.closed.cancelled() => {
@@ -244,7 +247,6 @@ impl GrpcCodeModeHost {
             }
         };
         let cell_id = started.cell_id.clone();
-        admission.cell_id = Some(cell_id.clone());
         session.admit_execution(
             execution_id.clone(),
             cell_id.to_string(),
@@ -394,7 +396,6 @@ impl GrpcCodeModeHost {
             .terminate(TerminateRequest {
                 cell_id: CellId::new(request.cell_id),
                 max_output_tokens,
-                discard_output: request.discard_output,
             })
             .await?;
         let outcome = outcome.with_code_mode_host_duration(received_at.elapsed());
@@ -570,7 +571,6 @@ impl CodeModeHost for GrpcCodeModeHost {
 struct ExecutionAdmission {
     session: Arc<GrpcSession>,
     execution_id: Option<String>,
-    cell_id: Option<CellId>,
 }
 
 impl ExecutionAdmission {
@@ -584,8 +584,7 @@ impl ExecutionAdmission {
 impl Drop for ExecutionAdmission {
     fn drop(&mut self) {
         if let Some(execution_id) = self.execution_id.take() {
-            self.session
-                .abandon_execution(&execution_id, self.cell_id.take());
+            self.session.abandon_execution(&execution_id);
         }
     }
 }

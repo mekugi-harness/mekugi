@@ -25,12 +25,10 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Weak;
 
 use codex_network_proxy::NetworkProxy;
-use codex_protocol::ThreadId;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_path_uri::PathUri;
 use rand::Rng;
@@ -54,7 +52,6 @@ mod process;
 mod process_manager;
 pub(crate) use process_manager::exec_env_policy_from_shell_policy;
 mod process_state;
-pub(crate) mod retained;
 mod shell_snapshot;
 mod stdin_approval;
 
@@ -64,7 +61,6 @@ pub(crate) fn set_deterministic_process_ids_for_tests(enabled: bool) {
 
 pub(crate) use command_sessions::command_sessions_state;
 pub(crate) use errors::UnifiedExecError;
-pub(crate) use output::MAX_RETAINED_OUTPUT_BYTES;
 pub(crate) use process::UnifiedExecProcess;
 pub(crate) use stdin_approval::TerminalPermissions;
 pub(crate) use stdin_approval::TerminalSandboxSource;
@@ -76,6 +72,9 @@ pub(crate) const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
 pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;
 pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
 pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
+pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
+pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
+pub(crate) const UNIFIED_EXEC_SOURCE_CAPTURE_MAX_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
 pub(crate) const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
 
 const MAX_TRACE_ID_BYTES: usize = 256;
@@ -114,18 +113,11 @@ pub(crate) struct ExecCommandRequest {
     pub network: Option<NetworkProxy>,
 }
 
-/// Target backing a resolved terminal session ID.
-#[derive(Clone, Debug)]
-pub(crate) enum TerminalTarget {
-    Live(Arc<UnifiedExecProcess>),
-    Retained { interaction_lock: Arc<Mutex<()>> },
-}
-
-/// The process or retained output and environment behind a terminal session ID at lookup time.
+/// The process and environment behind a terminal session ID at the time of lookup.
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalSession {
     pub(crate) process_id: i32,
-    pub(crate) target: TerminalTarget,
+    process: Arc<UnifiedExecProcess>,
     call_id: String,
     pub(crate) environment_id: String,
 }
@@ -151,119 +143,32 @@ impl std::fmt::Debug for WriteStdinInteractionEvent<'_> {
     }
 }
 
-struct RetainedEntry {
-    meta: retained::RetainedExecMeta,
-    bin_path: PathBuf,
-    bytes: Option<Arc<Vec<u8>>>,
-    interaction_lock: Arc<Mutex<()>>,
-    /// True when the process exited asynchronously and the caller has not yet
-    /// observed the exit (so the next `write_stdin` emits `PostToolUse` once).
-    post_tool_use_pending: bool,
-}
-
 #[derive(Default)]
 pub(crate) struct ProcessStore {
     processes: HashMap<i32, ProcessEntry>,
-    retained: HashMap<i32, RetainedEntry>,
     reserved_process_ids: HashSet<i32>,
 }
 
 impl ProcessStore {
     fn remove(&mut self, process_id: i32) -> Option<ProcessEntry> {
-        let removed = self.processes.remove(&process_id);
-        let keep_reserved = self.retained.contains_key(&process_id)
-            || removed.as_ref().is_some_and(|entry| entry.persisted);
-        if !keep_reserved && !process_manager::should_use_deterministic_process_ids() {
+        if !process_manager::should_use_deterministic_process_ids() {
             self.reserved_process_ids.remove(&process_id);
         }
-        removed
-    }
-
-    fn transition_live_to_retained(
-        &mut self,
-        process_id: i32,
-        expected_process: Option<&Arc<UnifiedExecProcess>>,
-        retained: RetainedEntry,
-    ) -> Option<ProcessEntry> {
-        let removed = match expected_process {
-            Some(expected)
-                if self
-                    .processes
-                    .get(&process_id)
-                    .is_some_and(|entry| Arc::ptr_eq(&entry.process, expected)) =>
-            {
-                self.processes.remove(&process_id)
-            }
-            Some(_) => None,
-            None => self.processes.remove(&process_id),
-        };
-        self.reserved_process_ids.insert(process_id);
-        self.retained.insert(process_id, retained);
-        removed
+        self.processes.remove(&process_id)
     }
 }
 
 pub(crate) struct UnifiedExecProcessManager {
-    process_store: Arc<Mutex<ProcessStore>>,
+    process_store: Mutex<ProcessStore>,
     max_write_stdin_yield_time_ms: u64,
-    storage: Option<retained::RetainedExecStorage>,
 }
 
 impl UnifiedExecProcessManager {
     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
         Self {
-            process_store: Arc::new(Mutex::new(ProcessStore::default())),
+            process_store: Mutex::new(ProcessStore::default()),
             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
                 .max(MIN_EMPTY_YIELD_TIME_MS),
-            storage: None,
-        }
-    }
-
-    pub(crate) fn for_thread(
-        max_write_stdin_yield_time_ms: u64,
-        codex_home: PathBuf,
-        thread_id: ThreadId,
-        ephemeral: bool,
-        forked_from_thread_id: Option<ThreadId>,
-    ) -> Self {
-        let storage = retained::RetainedExecStorage::new(codex_home, thread_id, ephemeral);
-        let mut store = ProcessStore::default();
-        let (own_reserved, own_entries) = storage.load_own_entries();
-        store.reserved_process_ids.extend(own_reserved);
-        for loaded in own_entries {
-            store.retained.insert(
-                loaded.meta.process_id,
-                RetainedEntry {
-                    meta: loaded.meta,
-                    bin_path: loaded.bin_path,
-                    bytes: None,
-                    interaction_lock: Arc::new(Mutex::new(())),
-                    post_tool_use_pending: false,
-                },
-            );
-        }
-        if let Some(source_thread_id) = forked_from_thread_id {
-            let (fork_reserved, fork_entries) =
-                storage.load_fork_snapshot(source_thread_id, &store.reserved_process_ids);
-            store.reserved_process_ids.extend(fork_reserved);
-            for loaded in fork_entries {
-                store.retained.insert(
-                    loaded.meta.process_id,
-                    RetainedEntry {
-                        meta: loaded.meta,
-                        bin_path: loaded.bin_path,
-                        bytes: None,
-                        interaction_lock: Arc::new(Mutex::new(())),
-                        post_tool_use_pending: false,
-                    },
-                );
-            }
-        }
-        Self {
-            process_store: Arc::new(Mutex::new(store)),
-            max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
-                .max(MIN_EMPTY_YIELD_TIME_MS),
-            storage: Some(storage),
         }
     }
 }
@@ -288,8 +193,6 @@ struct ProcessEntry {
     network_approval: Option<DeferredNetworkApproval>,
     session: Weak<Session>,
     last_used: tokio::time::Instant,
-    persisted_bytes: usize,
-    persisted: bool,
 }
 
 type SharedPluginMetricsSidecar = Arc<std::sync::Mutex<Option<PluginMetricsSidecar>>>;

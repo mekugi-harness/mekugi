@@ -419,17 +419,11 @@ impl Connection {
                 return Err(err);
             }
         };
-        let claim_tx = self.execute_claim_tx.clone();
-        let failure = Arc::clone(&self.failure);
-        let cell_id = delivered.started.cell_id.clone();
-        Ok(StartedCell::from_future(cell_id, async move {
-            let response = delivered.started.initial_response().await;
-            claim_tx
-                .send(delivered.request_id)
-                .map_err(|_| failure_message(&failure))?;
-            cancellation.disarm();
-            response
-        }))
+        self.execute_claim_tx
+            .send(delivered.request_id)
+            .map_err(|_| self.failure_message())?;
+        cancellation.disarm();
+        Ok(delivered.started)
     }
 
     pub(super) async fn wait(

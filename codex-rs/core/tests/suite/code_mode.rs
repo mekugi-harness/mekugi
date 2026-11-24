@@ -3,9 +3,6 @@
 #[path = "code_mode_dynamic_tools_tests.rs"]
 mod dynamic_tools;
 
-#[path = "code_mode_pagination_tests.rs"]
-mod pagination;
-
 #[cfg(unix)]
 #[path = "code_mode_host_recovery_tests.rs"]
 mod host_recovery;
@@ -4349,18 +4346,46 @@ text(JSON.stringify([results[0].output.includes("code-alpha-ready"), results[1].
     Ok(())
 }
 
+// This model uses token-based tool-output truncation, giving the downstream
+// history assertions a stable `…N tokens truncated…` marker.
 const TOKEN_POLICY_TEST_MODEL: &str = "gpt-5.5";
 
+// A nested `exec_command` limit applies to `result.output` inside JavaScript.
+// The outer code-mode and history budgets apply after the script calls `text`.
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
-#[test_case(Some(20_000), None; "with_nested_limit_default_tool_limit")]
-#[test_case(Some(20_000), Some(50); "with_nested_limit_configured_tool_limit")]
-#[test_case(None, None; "without_nested_limit_default_tool_limit")]
-#[test_case(None, Some(50); "without_nested_limit_configured_tool_limit")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_nested_exec_command_delivers_complete_output_to_script(
-    nested_max_output_tokens: Option<usize>,
-    tool_output_token_limit: Option<usize>,
-) -> Result<()> {
+async fn code_mode_exec_nested_limit_formats_truncated_result_with_warning() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "use exec_command from code mode",
+        r#"
+const result = await tools.exec_command({
+  cmd: "printf '0123456789012345678901234567890123456789'",
+  max_output_tokens: 5
+});
+text(result.output);
+"#,
+    )
+    .await?;
+
+    assert_eq!(
+        text_item(
+            &custom_tool_output_items(&second_mock.single_request(), "call-1"),
+            /*index*/ 1
+        ),
+        "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789"
+    );
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exec_nested_limit_preserves_result_variable_before_default_history_truncation()
+-> Result<()> {
     // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
     skip_if_wine_exec!(
         Ok(()),
@@ -4368,41 +4393,242 @@ async fn code_mode_nested_exec_command_delivers_complete_output_to_script(
     );
     skip_if_no_network!(Ok(()));
 
-    let nested_limit = nested_max_output_tokens
-        .map(|limit| format!(",\n  max_output_tokens: {limit}"))
-        .unwrap_or_default();
-    let script = format!(
-        r#"let result = await tools.exec_command({{
-  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""{nested_limit}
-}});
-let assembled = result.output;
-while (result.session_id != null) {{
-  result = await tools.write_stdin({{
-    session_id: result.session_id,
-    chars: ""{nested_limit}
-  }});
-  assembled += result.output;
-}}
-text(assembled === "x".repeat(50000) ? "complete nested output" : `incomplete nested output: ${{assembled.length}}`);
-"#
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
+        &server,
+        "use exec_command from code mode",
+        r#"// @exec: {"max_output_tokens": 20000}
+const result = await tools.exec_command({
+  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\"",
+  max_output_tokens: 20000
+});
+const resultVariableWasTruncated = result.output.length !== 50000;
+text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Variable: ${result.output}`);
+"#,
+        TOKEN_POLICY_TEST_MODEL,
+        |_| {},
+    )
+    .await?;
+
+    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+    let output = text_item(&items, /*index*/ 1);
+    assert_regex_match(
+        r"^Variable truncated: False\. Variable: x+…\d+ tokens truncated…x+$",
+        output,
     );
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exec_nested_limit_truncates_result_variable_when_exceeded() -> Result<()> {
+    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
+    skip_if_wine_exec!(
+        Ok(()),
+        "only part of nested exec_command stdout reaches the code-mode result"
+    );
+    skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
         &server,
         "use exec_command from code mode",
-        &script,
+        r#"// @exec: {"max_output_tokens": 25000}
+const result = await tools.exec_command({
+  cmd: "python3 -c \"import sys; sys.stdout.write('A' * 90000)\"",
+  max_output_tokens: 20000
+});
+const resultVariableWasTruncated = /…2500 tokens truncated(?: \(id: [0-9a-f]{8}\))?…/.test(result.output);
+text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Variable: ${result.output}`);
+"#,
         TOKEN_POLICY_TEST_MODEL,
-        move |config| {
-            if let Some(limit) = tool_output_token_limit {
-                config.tool_output_token_limit = Some(limit);
-            }
+        |_| {},
+    )
+    .await?;
+
+    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+    let output = text_item(&items, /*index*/ 1);
+    // The nested 20,000-token budget leaves about 80,000 characters. This
+    // ceiling independently proves that history applied its smaller cap.
+    assert!(
+        output.len() < 60_000,
+        "expected history to truncate the emitted value, got {} bytes",
+        output.len()
+    );
+    // The boolean describes the nested result; the marker below comes from
+    // history truncating the value emitted with `text` afterward.
+    assert_regex_match(
+        r"(?s)^(?:Warning: truncated output[^\n]*\nTotal output lines: \d+\n\n)?Variable truncated: True\. Variable: .*…\d+ tokens truncated(?: \(id: [0-9a-f]{8}\))?…A+$",
+        output,
+    );
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exec_nested_limit_preserves_result_variable_before_configured_history_truncation()
+-> Result<()> {
+    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
+    skip_if_wine_exec!(
+        Ok(()),
+        "only part of nested exec_command stdout reaches the code-mode result"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
+        &server,
+        "use exec_command from code mode",
+        r#"// @exec: {"max_output_tokens": 20000}
+const result = await tools.exec_command({
+  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\"",
+  max_output_tokens: 20000
+});
+const resultVariableWasTruncated = result.output.length !== 50000;
+text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Variable: ${result.output}`);
+"#,
+        TOKEN_POLICY_TEST_MODEL,
+        |config| {
+            config.tool_output_token_limit = Some(50);
         },
     )
     .await?;
 
     let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
-    assert_eq!(text_item(&items, /*index*/ 1), "complete nested output");
+    let output = text_item(&items, /*index*/ 1);
+    // The 50-token override must shrink this 50,000-character value far below
+    // what the default 10,000-token history cap would retain.
+    assert!(
+        output.len() < 1_000,
+        "expected configured history cap to truncate the emitted value, got {} bytes",
+        output.len()
+    );
+    assert_regex_match(
+        r"^Variable truncated: False\. Variable: x+…\d+ tokens truncated…x+$",
+        output,
+    );
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exec_without_nested_limit_preserves_result_variable_before_default_history_truncation()
+-> Result<()> {
+    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
+    skip_if_wine_exec!(
+        Ok(()),
+        "only part of nested exec_command stdout reaches the code-mode result"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
+        &server,
+        "use exec_command from code mode",
+        r#"// @exec: {"max_output_tokens": 20000}
+const result = await tools.exec_command({
+  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""
+});
+const resultVariableWasTruncated = result.output.length !== 50000;
+text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Variable: ${result.output}`);
+"#,
+        TOKEN_POLICY_TEST_MODEL,
+        |_| {},
+    )
+    .await?;
+
+    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+    let output = text_item(&items, /*index*/ 1);
+    assert_regex_match(
+        r"^Variable truncated: False\. Variable: x+…\d+ tokens truncated…x+$",
+        output,
+    );
+
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exec_without_nested_limit_preserves_result_variable_before_configured_history_truncation()
+-> Result<()> {
+    // TODO(anp): Remove after Wine exec returns complete nested-tool output to code mode.
+    skip_if_wine_exec!(
+        Ok(()),
+        "only part of nested exec_command stdout reaches the code-mode result"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn_with_model_and_config(
+        &server,
+        "use exec_command from code mode",
+        r#"// @exec: {"max_output_tokens": 20000}
+const result = await tools.exec_command({
+  cmd: "python3 -c \"import sys; sys.stdout.write('x' * 50000)\""
+});
+const resultVariableWasTruncated = result.output.length !== 50000;
+text(`Variable truncated: ${resultVariableWasTruncated ? "True" : "False"}. Variable: ${result.output}`);
+"#,
+        TOKEN_POLICY_TEST_MODEL,
+        |config| {
+            config.tool_output_token_limit = Some(50);
+        },
+    )
+    .await?;
+
+    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+    let output = text_item(&items, /*index*/ 1);
+    // The 50-token override must shrink this 50,000-character value far below
+    // what the default 10,000-token history cap would retain.
+    assert!(
+        output.len() < 1_000,
+        "expected configured history cap to truncate the emitted value, got {} bytes",
+        output.len()
+    );
+    assert_regex_match(
+        r"^Variable truncated: False\. Variable: x+…\d+ tokens truncated…x+$",
+        output,
+    );
+
+    Ok(())
+}
+
+// The outer directive limits output after JavaScript emits it; it does not
+// limit `result.output` returned by the nested command.
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[test_case(&[]; "default_grpc")]
+#[test_case(&[Feature::CodeModeHostGrpc]; "server_stdio")]
+#[test_case(&[Feature::CodeModeHostGrpc, Feature::CodeModeHostOutputTruncation]; "client_stdio")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_exec_outer_limit_truncates_emitted_output(
+    disabled_features: &'static [Feature],
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn_with_builder(
+        &server,
+        "use exec_command from code mode",
+        r#"// @exec: {"max_output_tokens": 5}
+const result = await tools.exec_command({
+  cmd: "printf '0123456789012345678901234567890123456789'"
+});
+text(result.output);
+"#,
+        code_mode_test_builder(disabled_features),
+    )
+    .await?;
+
+    assert_eq!(
+        text_item(
+            &custom_tool_output_items(&second_mock.single_request(), "call-1"),
+            /*index*/ 1
+        ),
+        "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789"
+    );
 
     Ok(())
 }
@@ -4446,6 +4672,51 @@ Error:\ boom\n
         text_item(&items, /*index*/ 3),
     );
 
+    Ok(())
+}
+
+// An overflow notice is outside the observation budget. This distinguishes
+// actual server formatting from Core silently repeating client truncation.
+#[test_case(None; "default")]
+#[test_case(Some(Feature::CodeModeHostGrpc); "server_stdio")]
+#[test_case(Some(Feature::CodeModeHostOutputTruncation); "client_grpc")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_zero_budget_reports_host_truncation(
+    disabled_feature: Option<Feature>,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let (_test, follow_up) = run_code_mode_turn_with_config(
+        &server,
+        "emit enough text to overflow the collector",
+        r#"// @exec: {"max_output_tokens": 0}
+text("begin");
+text("x".repeat(2 * 1024 * 1024));
+text("end");
+"#,
+        move |config| {
+            if let Some(feature) = disabled_feature {
+                config.features.disable(feature).unwrap();
+            }
+        },
+    )
+    .await?;
+    let (output, success) =
+        custom_tool_output_body_and_success(&follow_up.single_request(), "call-1");
+    assert_ne!(success, Some(false), "{output}");
+    if disabled_feature == Some(Feature::CodeModeHostOutputTruncation) {
+        assert!(
+            !output.contains("Code Mode session output limit reached"),
+            "{output}"
+        );
+    } else {
+        assert!(
+            output.contains("Code Mode session output limit reached")
+                && output.contains("text segments, 0 images, 0 audio items"),
+            "host omission notice must survive Core's zero-token exec budget: {output}"
+        );
+    }
     Ok(())
 }
 
@@ -4984,8 +5255,9 @@ for (let index = 0; index < 256; index++) {{
     let second_items = function_tool_output_items(&second_request, "call-2");
     assert!(!second_items.is_empty());
     assert_regex_match(
-        &format!(
-            r"(?s)\AScript terminated(?: \(more output: wait with cell ID {cell_id}\))?\nWall time \d+\.\d seconds\nOutput:\n\z"
+        concat!(
+            r"(?s)\A",
+            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
         text_item(&second_items, /*index*/ 0),
     );
@@ -5378,6 +5650,7 @@ impl ToolLifecycleContributor for TerminationOutputReady {
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
 #[test_case(&[]; "default_grpc")]
 #[test_case(&[Feature::CodeModeHostGrpc]; "server_stdio")]
+#[test_case(&[Feature::CodeModeHostGrpc, Feature::CodeModeHostOutputTruncation]; "client_stdio")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_wait_can_terminate_and_continue(
     disabled_features: &'static [Feature],
@@ -5463,13 +5736,13 @@ text("phase 2");
     assert_regex_match(
         concat!(
             r"(?s)\A",
-            r"Script terminated \(more output: wait with cell ID \d+\)\nWall time \d+\.\d seconds\nOutput:\n\z"
+            r"Script terminated\nWall time \d+\.\d seconds\nOutput:\n\z"
         ),
         text_item(&second_items, /*index*/ 0),
     );
     assert_eq!(
         text_item(&second_items, /*index*/ 1),
-        "01234567890123456789"
+        "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789"
     );
 
     responses::mount_sse_once(
@@ -6106,6 +6379,98 @@ async fn code_mode_interrupt_terminates_active_cells_and_nested_tools() -> Resul
     Ok(())
 }
 
+#[test_case(&[]; "default_grpc")]
+#[test_case(&[Feature::CodeModeHostGrpc]; "server_stdio")]
+#[test_case(&[Feature::CodeModeHostGrpc, Feature::CodeModeHostOutputTruncation]; "client_stdio")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_wait_uses_its_own_max_tokens_budget(
+    disabled_features: &'static [Feature],
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = code_mode_test_builder(disabled_features);
+    let test = builder.build_with_auto_env(&server).await?;
+
+    // Both transports accept exec budgets above i32::MAX. The wait uses its own budget.
+    let code = r#"// @exec: {"max_output_tokens": 2147483648}
+text("phase 1");
+yield_control();
+text("token one token two token three token four token five token six token seven");
+"#;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "exec", code),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let first_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "waiting"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("start the long exec").await?;
+
+    let first_request = first_completion.single_request();
+    let first_items = custom_tool_output_items(&first_request, "call-1");
+    assert_eq!(first_items.len(), 2, "exec output: {first_items:?}");
+    assert_eq!(text_item(&first_items, /*index*/ 1), "phase 1");
+    let cell_id = extract_running_cell_id(text_item(&first_items, /*index*/ 0));
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-3"),
+            responses::ev_function_call(
+                "call-2",
+                "wait",
+                &serde_json::to_string(&serde_json::json!({
+                    "cell_id": cell_id.clone(),
+                    "yield_time_ms": 1_000,
+                    "max_tokens": 6,
+                }))?,
+            ),
+            ev_completed("resp-3"),
+        ]),
+    )
+    .await;
+    let second_completion = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-2", "done"),
+            ev_completed("resp-4"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("wait for completion").await?;
+
+    let second_request = second_completion.single_request();
+    let second_items = function_tool_output_items(&second_request, "call-2");
+    assert_eq!(second_items.len(), 2, "wait output: {second_items:?}");
+    assert_regex_match(
+        concat!(
+            r"(?s)\A",
+            r"Script completed\nWall time \d+\.\d seconds\nOutput:\n\z"
+        ),
+        text_item(&second_items, /*index*/ 0),
+    );
+    assert_eq!(
+        text_item(&second_items, /*index*/ 1),
+        "Warning: truncated output (original token count: 19)\nTotal output lines: 1\n\ntoken one to…13 tokens truncated… token seven"
+    );
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_can_resume_after_set_timeout() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -6207,30 +6572,28 @@ text("after");
     Ok(())
 }
 
-fn pcm16_audio_data_url(frames: u32) -> String {
-    let sample_rate = 24_000_u32;
-    let data_size = frames * 2;
-    let mut wav = b"RIFF".to_vec();
-    wav.extend_from_slice(&(36 + data_size).to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16_u32.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&1_u16.to_le_bytes());
-    wav.extend_from_slice(&sample_rate.to_le_bytes());
-    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
-    wav.extend_from_slice(&2_u16.to_le_bytes());
-    wav.extend_from_slice(&16_u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_size.to_le_bytes());
-    wav.resize(44 + data_size as usize, /*value*/ 0);
-    format!("data:audio/wav;base64,{}", BASE64_STANDARD.encode(wav))
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_omits_short_audio_and_preserves_other_output() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let [short_audio_url, valid_audio_url] = [120_u32, 600].map(pcm16_audio_data_url);
+    let [short_audio_url, valid_audio_url] = [120_u32, 600].map(|frames| {
+        let sample_rate = 24_000_u32;
+        let data_size = frames * 2;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        wav.resize(44 + data_size as usize, /*value*/ 0);
+        format!("data:audio/wav;base64,{}", BASE64_STANDARD.encode(wav))
+    });
     let code = format!(
         r#"
 text("before");

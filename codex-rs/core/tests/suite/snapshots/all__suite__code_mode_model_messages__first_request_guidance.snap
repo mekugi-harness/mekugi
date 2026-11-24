@@ -190,7 +190,7 @@ Run JavaScript code to orchestrate/compose tool calls
   If the default cell wait is too short, headroom over the shell wait can
   avoid a cell-only yield.
 - Select the fields, lines or diff hunks needed before printing large results.
-  Print each shell result once, keeping `exit_code` and `session_id` when present. Fit
+  Print each shell result once with its exit code or running session ID. Fit
   output and handles within each shell budget and the total within the cell
   budget. Keep short commands inline; edit and run substantial reusable
   scripts in `SESSION_TMP` in one call.
@@ -308,9 +308,9 @@ Runs a command in a PTY, returning output or a session ID for ongoing interactio
 ### Session shell helpers
 
 These are shell commands on PATH. Use ordinary pipes. Options apply only to
-commands whose usage lists them. Oversized output returns the first page with a
-`session_id`; call `write_stdin` with that `session_id` and empty `chars` for
-remaining pages, even after the command exits.
+commands whose usage lists them. When tool or command output is truncated, the
+omitted portion is saved to `$SESSION_TMP/truncated_output/{id}` using the ID
+shown in the truncation notice (read with `mcat`).
 
 #### `mfinspect`
 
@@ -358,9 +358,9 @@ declare const tools: { exec_command(args: {
   exit_code?: number;
   // Approximate token count before output truncation.
   original_token_count?: number;
-  // Command output text for this page.
+  // Command output text, possibly truncated.
   output: string;
-  // Session identifier to pass to write_stdin while running or while more output pages remain.
+  // Session identifier to pass to write_stdin when the process is still running.
   session_id?: number;
   // Elapsed wall time spent waiting for output in seconds.
   wall_time_seconds: number;
@@ -432,16 +432,16 @@ declare const tools: { view_image(args: {
 ```
 
 ### `write_stdin`
-Writes characters to an existing unified exec session, or polls with empty chars for remaining output pages.
+Writes characters to an existing unified exec session and returns recent output.
 
 exec tool declaration:
 ```ts
 declare const tools: { write_stdin(args: {
-  // Bytes to write to stdin. Defaults to empty, which polls or fetches the next output page without writing.
+  // Bytes to write to stdin. Defaults to empty, which polls without writing.
   chars?: string;
   // Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.
   max_output_tokens?: number;
-  // Identifier of the unified exec session (running or with unread output pages).
+  // Identifier of the running unified exec session.
   session_id: number;
   // Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.
   yield_time_ms?: number;
@@ -452,9 +452,9 @@ declare const tools: { write_stdin(args: {
   exit_code?: number;
   // Approximate token count before output truncation.
   original_token_count?: number;
-  // Command output text for this page.
+  // Command output text, possibly truncated.
   output: string;
-  // Session identifier to pass to write_stdin while running or while more output pages remain.
+  // Session identifier to pass to write_stdin when the process is still running.
   session_id?: number;
   // Elapsed wall time spent waiting for output in seconds.
   wall_time_seconds: number;
@@ -629,10 +629,11 @@ declare const tools: { collaboration__wait_agent(args: {
 }
 
 # functions.wait
-Waits on an `exec` cell or reads its next output page.
-- Use `wait` with the cell ID when a response says the script is running or has more output.
+Waits on a yielded `exec` cell and returns new output or completion.
+- Use `wait` only after `exec` returns `Script running with cell ID ...`.
   For a shell session ID, poll `tools.write_stdin` with empty `chars` instead.
-- Reuse the same `cell_id` until the terminal response no longer says there is more output.
+- Each wait returns only new output. Reuse the same `cell_id` after another
+  yield; completion or termination returns the final result and closes the cell.
 
 {
   "name": "wait",

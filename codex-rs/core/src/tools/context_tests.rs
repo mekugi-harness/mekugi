@@ -1,7 +1,10 @@
 use super::*;
+use crate::unified_exec::output::CapturedStream;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::SearchToolCallParams;
+use codex_utils_head_tail_buffer::format_output_omission_marker;
+use core_test_support::assert_regex_match;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -100,6 +103,7 @@ fn mcp_tool_output_response_item_includes_wall_time() {
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
+        truncated_output_dir: None,
     };
 
     let response = output.to_response_item(
@@ -147,6 +151,7 @@ fn mcp_tool_output_response_item_truncates_large_structured_content() {
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(128),
+        truncated_output_dir: None,
     };
 
     assert_eq!(
@@ -198,6 +203,7 @@ fn mcp_tool_output_response_item_preserves_content_items() {
         wall_time: std::time::Duration::from_millis(500),
         original_image_detail_supported: false,
         truncation_policy: TruncationPolicy::Bytes(1024),
+        truncated_output_dir: None,
     };
 
     let response = output.to_response_item(
@@ -260,6 +266,7 @@ fn mcp_tool_output_code_mode_result_preserves_content_without_private_metadata(
         wall_time: std::time::Duration::from_millis(1250),
         original_image_detail_supported: false,
         truncation_policy,
+        truncated_output_dir: None,
     };
 
     let payload = ToolPayload::Function {
@@ -407,78 +414,150 @@ fn log_preview_uses_content_items_when_plain_text_is_missing() {
 }
 
 #[test]
-fn exec_command_tool_output_formats_running_exited_and_paged_headers() {
+fn exec_command_tool_output_formats_truncated_response() {
     let payload = ToolPayload::Function {
         arguments: "{}".to_string(),
     };
-
-    let running = ExecCommandToolOutput {
-        event_call_id: "call-1".to_string(),
+    let output = ExecCommandToolOutput {
+        event_call_id: "call-42".to_string(),
         chunk_id: "abc123".to_string(),
-        wall_time: std::time::Duration::from_millis(500),
-        raw_output: "page-1\n".into(),
-        truncation_policy: TruncationPolicy::Tokens(10_000),
-        max_output_tokens: None,
-        process_id: Some(1000),
-        exit_code: None,
-        original_token_count: Some(2),
-        hook_command: Some("cmd".to_string()),
-        tool_cwd: None,
-        emit_post_tool_use: false,
-    };
-    assert!(running.output_budget_applied());
-    assert!(running.history_output_budget_applied());
-    assert_eq!(running.post_tool_use_response("call-1", &payload), None);
-    assert_eq!(
-        running.log_output(),
-        "Chunk ID: abc123\nWall time: 0.5000 seconds\nProcess running with session ID 1000\nOriginal token count: 2\nOutput:\npage-1\n"
-    );
-
-    let exited_with_more = ExecCommandToolOutput {
-        event_call_id: "call-2".to_string(),
-        chunk_id: "def456".to_string(),
-        wall_time: std::time::Duration::from_millis(750),
-        raw_output: "head-page\n".into(),
+        wall_time: std::time::Duration::from_millis(1250),
+        raw_output: "token one token two token three token four token five".into(),
         truncation_policy: TruncationPolicy::Tokens(10_000),
         max_output_tokens: Some(4),
-        process_id: Some(1001),
+        process_id: None,
         exit_code: Some(0),
-        original_token_count: Some(50),
-        hook_command: Some("cmd".to_string()),
+        original_token_count: Some(10),
+        hook_command: None,
         tool_cwd: None,
-        emit_post_tool_use: true,
+        truncated_output_dir: None,
     };
     assert_eq!(
-        exited_with_more.log_output(),
-        "Chunk ID: def456\nWall time: 0.7500 seconds\nProcess exited with code 0\nMore output available with session ID 1001\nOriginal token count: 50\nOutput:\nhead-page\n"
+        output.log_output(),
+        "Chunk ID: abc123\nWall time: 1.2500 seconds\nProcess exited with code 0\nOriginal token count: 10\nOutput:\ntoken one token two token three token four token five"
     );
-    assert_eq!(
-        exited_with_more.code_mode_result(&payload),
-        json!({
-            "chunk_id": "def456",
-            "wall_time_seconds": 0.75,
-            "exit_code": 0,
-            "session_id": 1001,
-            "original_token_count": 50,
-            "output": "head-page\n",
-        })
+    let response = output.to_response_item("call-42", &payload);
+
+    match response {
+        ResponseInputItem::FunctionCallOutput { call_id, output } => {
+            assert_eq!(call_id, "call-42");
+            assert_eq!(output.success, Some(true));
+            let text = output
+                .body
+                .to_text()
+                .expect("exec output should serialize as text");
+            assert_regex_match(
+                r#"(?sx)
+                    ^Chunk\ ID:\ abc123
+                    \nWall\ time:\ \d+\.\d{4}\ seconds
+                    \nProcess\ exited\ with\ code\ 0
+                    \nOriginal\ token\ count:\ 10
+                    \nOutput:
+                    \n.*tokens\ truncated.*
+                    $"#,
+                &text,
+            );
+        }
+        other => panic!("expected FunctionCallOutput, got {other:?}"),
+    }
+}
+
+#[test]
+fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let raw_output = (1..=150)
+        .map(|line| format!("{line}\n"))
+        .collect::<String>();
+
+    for (policy, marker) in [
+        (TruncationPolicy::Bytes(200), "chars truncated"),
+        (TruncationPolicy::Tokens(50), "tokens truncated"),
+    ] {
+        let response = ExecCommandToolOutput {
+            event_call_id: "call-42".to_string(),
+            chunk_id: "abc123".to_string(),
+            wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
+            raw_output: raw_output.as_str().into(),
+            truncation_policy: policy,
+            max_output_tokens: None,
+            process_id: None,
+            exit_code: Some(0),
+            original_token_count: Some(123),
+            hook_command: None,
+            tool_cwd: None,
+        truncated_output_dir: None,
+        }
+        .to_response_item("call-42", &payload);
+
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            panic!("expected FunctionCallOutput");
+        };
+        let text = output
+            .body
+            .to_text()
+            .expect("exec output should serialize as text");
+
+        assert!(text.len() <= (policy * 1.2).byte_budget());
+        assert_eq!(text.matches(marker).count(), 1);
+        assert!(text.contains("Original token count: 123"));
+        assert!(text.contains("Total output lines: 150"));
+        assert!(text.contains("\n1\n2\n3\n"));
+        assert!(text.ends_with("149\n150\n"));
+    }
+}
+
+#[test]
+fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let marker = format_output_omission_marker(/*omitted_bytes*/ 123_456);
+    let raw_output = format!(
+        "HEAD-{}\n{marker}\nTAIL-{}",
+        "a".repeat(/*n*/ 100),
+        "z".repeat(/*n*/ 100)
     );
+    let mut output = ExecCommandToolOutput {
+        event_call_id: "call-omitted".to_string(),
+        chunk_id: "abc123".to_string(),
+        wall_time: std::time::Duration::from_millis(/*millis*/ 1250),
+        raw_output: CapturedStream {
+            text: raw_output.clone(),
+            omitted_bytes: 123_456,
+        },
+        truncation_policy: TruncationPolicy::Tokens(10_000),
+        max_output_tokens: Some(4),
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: Some(42_000),
+        hook_command: None,
+        tool_cwd: None,
+        truncated_output_dir: None,
+    };
+    let expected_header = "Chunk ID: abc123\nWall time: 1.2500 seconds\nProcess exited with code 0\nOriginal token count: 42000\nOutput:\n";
     assert_eq!(
-        exited_with_more.post_tool_use_response("call-2", &payload),
-        Some(json!("head-page\n"))
+        output.log_output(),
+        format!("{expected_header}{raw_output}")
+    );
+    let response = output.to_response_item("call-omitted", &payload);
+
+    // Collection may report omitted bytes without including the marker in its text.
+    output.raw_output.text = "remaining output".to_string();
+    assert_eq!(
+        output.log_output(),
+        format!("{expected_header}{marker}\nremaining output")
     );
 
-    let later_retained_page = ExecCommandToolOutput {
-        emit_post_tool_use: false,
-        process_id: None,
-        ..exited_with_more
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("expected FunctionCallOutput");
     };
-    assert_eq!(
-        later_retained_page.post_tool_use_response("call-2", &payload),
-        None
-    );
-    assert_eq!(
-        later_retained_page.log_output(),
-        "Chunk ID: def456\nWall time: 0.7500 seconds\nProcess exited with code 0\nOriginal token count: 50\nOutput:\nhead-page\n"
-    );
+    let text = output
+        .body
+        .to_text()
+        .expect("exec output should serialize as text");
+    assert!(text.contains("Original token count: 42000"));
+    assert!(text.contains("Warning: truncated output (original token count: 42000)"));
+    assert_eq!(text.matches(&marker).count(), 1);
 }

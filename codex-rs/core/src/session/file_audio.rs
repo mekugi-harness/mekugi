@@ -80,9 +80,8 @@ pub(super) async fn prepare_new_items(
         let parts = std::mem::take(parts);
         let preserve_producer_limit =
             producer_budgeted && metadata.history_truncation_token_limit.is_none();
-        let page_budget_applied = metadata.tool_output_budget_applied;
         let Ok((mut admitted, repair_limit)) = tokio::task::spawn_blocking(move || {
-            admit_tool_audio(parts, limit, preserve_producer_limit, page_budget_applied)
+            admit_tool_audio(parts, limit, preserve_producer_limit)
         })
         .await
         else {
@@ -105,7 +104,7 @@ pub(super) async fn prepare_new_items(
                 }
             }
         }
-        if replaced_with_text && !page_budget_applied {
+        if replaced_with_text {
             admitted =
                 truncate_measured_tool_output(admitted, TruncationPolicy::Tokens(repair_limit));
         }
@@ -120,7 +119,6 @@ fn admit_tool_audio(
     parts: Vec<FunctionCallOutputContentItem>,
     history_limit: usize,
     preserve_producer_limit: bool,
-    page_budget_applied: bool,
 ) -> (Vec<(FunctionCallOutputContentItem, usize)>, usize) {
     let mut measured = Vec::with_capacity(parts.len());
     for mut part in parts {
@@ -142,9 +140,6 @@ fn admit_tool_audio(
             _ => 0,
         };
         measured.push((part, charge));
-    }
-    if page_budget_applied {
-        return (measured, history_limit);
     }
     let admitted = truncate_measured_tool_output(measured, TruncationPolicy::Tokens(history_limit));
     // Admission matches inline history. Only storage can introduce a new placeholder

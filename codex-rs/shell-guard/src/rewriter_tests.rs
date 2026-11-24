@@ -4,7 +4,11 @@ use crate::protocol::ARG1_SUDO_COMMAND;
 use crate::protocol::ARG1_VCS_COMMAND;
 use crate::protocol::ARG1_VCS_COMMAND_DEFAULT;
 use crate::rewriter::RewriteConfig;
+use crate::rewriter::command_word_nodes;
+use crate::rewriter::parse_bash;
 use crate::rewriter::rewrite_script;
+use crate::rewriter::rewrite_script_tree;
+use crate::rewriter::static_word_value;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 
@@ -140,4 +144,31 @@ fn force_rewrite_bare_rewrites_bare_commands_for_cleared_env_shells() {
     let rewritten = rewrite_script("git push && sudo id", &config);
     assert!(rewritten.contains(ARG1_VCS_COMMAND), "got: {rewritten}");
     assert!(rewritten.contains(ARG1_SUDO_COMMAND), "got: {rewritten}");
+}
+
+#[test]
+fn parse_bash_and_rewrite_script_tree_are_reusable() {
+    let config = cfg(false);
+    let script = "FOO=1 /usr/bin/git 'push' \"origin\" main";
+    let tree = parse_bash(script).expect("valid bash script");
+
+    assert_eq!(
+        rewrite_script_tree(script, &tree, &config),
+        rewrite_script(script, &config)
+    );
+
+    let command = tree.root_node().named_child(0).expect("top-level command");
+    let words: Vec<Option<String>> = command_word_nodes(command)
+        .into_iter()
+        .map(|node| static_word_value(node, script))
+        .collect();
+    assert_eq!(
+        words,
+        vec![
+            Some("/usr/bin/git".to_owned()),
+            Some("push".to_owned()),
+            Some("origin".to_owned()),
+            Some("main".to_owned()),
+        ]
+    );
 }

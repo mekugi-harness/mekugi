@@ -17,8 +17,8 @@ use codex_tools::ToolSpec;
 use super::DEFAULT_WAIT_YIELD_TIME_MS;
 use super::ExecContext;
 use super::WAIT_TOOL_NAME;
+use super::clamp_code_mode_max_output_tokens;
 use super::handle_runtime_response;
-use super::page_token_limit;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
 use super::wait_spec::create_wait_tool;
@@ -127,17 +127,17 @@ impl CodeModeWaitHandler {
                 let started_at = std::time::Instant::now();
                 telemetry.cell_id = Some(args.cell_id.clone());
                 let cell_id = codex_code_mode::CellId::new(args.cell_id);
-                let max_output_tokens = Some(page_token_limit(
+                let max_output_tokens = clamp_code_mode_max_output_tokens(
                     &step_context.settings.model_info,
                     args.max_tokens,
-                ));
+                    exec.turn.config.code_mode.experimental_show_cell_overhead,
+                );
                 let wait_response = if args.terminate {
                     exec.session
                         .services
                         .code_mode_service
                         .terminate(codex_code_mode::TerminateRequest {
                             cell_id: cell_id.clone(),
-                            discard_output: false,
                             max_output_tokens,
                         })
                         .await
@@ -179,15 +179,11 @@ impl CodeModeWaitHandler {
                     cell_trace.record_wait_target(&call_id);
                     tracing::Span::current().record("cell.id", trace_id(runtime_cell_id.as_str()));
                     telemetry.cell_id = Some(runtime_cell_id.to_string());
-                    if !response.is_output_continuation() {
-                        exec.session
-                            .services
-                            .executed_tool_calls
-                            .register_cell(runtime_cell_id, &call_id);
-                    }
-                    if !response.is_output_continuation()
-                        && !matches!(response, RuntimeResponse::Yielded { .. })
-                    {
+                    exec.session
+                        .services
+                        .executed_tool_calls
+                        .register_cell(runtime_cell_id, &call_id);
+                    if !matches!(response, RuntimeResponse::Yielded { .. }) {
                         exec.session
                             .services
                             .executed_tool_calls
@@ -216,7 +212,7 @@ impl CodeModeWaitHandler {
                                 },
                             );
                     }
-                } else if matches!(wait_response, codex_code_mode::WaitOutcome::MissingCell(_)) {
+                } else {
                     telemetry.record_cell_timing(&cell_id, CodeModeCellTiming::CellUnavailable);
                 }
                 if let Some(code_mode_host_duration) = wait_response.code_mode_host_duration() {
@@ -229,10 +225,13 @@ impl CodeModeWaitHandler {
                 Ok(boxed_tool_output(handle_runtime_response(
                     &step_context.settings.model_info,
                     wait_response.into(),
-                    args.max_tokens,
+                    max_output_tokens,
                     exec.session.services.code_mode_service.output_truncation(),
                     wall_time,
                     exec.turn.config.code_mode.experimental_show_cell_overhead,
+                    Some(&codex_utils_output_truncation::truncated_output_dir(
+                        &crate::exec_env::session_tmp_path(exec.session.session_id()),
+                    )),
                 )))
             }
             _ => Err(FunctionCallError::RespondToModel(format!(

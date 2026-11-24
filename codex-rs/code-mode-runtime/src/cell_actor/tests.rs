@@ -6,6 +6,7 @@ use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use codex_code_mode_protocol::CodeModeOutputTruncation;
+use codex_code_mode_protocol::host::BOUNDED_OUTPUT_MAX_IMAGE_BYTES;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
@@ -228,10 +229,7 @@ async fn termination_drains_a_send_already_blocked_by_backpressure() {
             content_items: expected,
         }
     );
-    assert_eq!(
-        harness.initial_event_rx.await.unwrap(),
-        Err(CellError::Closed)
-    );
+    assert_eq!(harness.initial_event_rx.await.unwrap(), Ok(event));
     tokio::time::timeout(Duration::from_secs(1), harness.task)
         .await
         .expect("actor must close")
@@ -318,11 +316,7 @@ async fn termination_during_completion_commit_preserves_output_and_discards_losi
             content_items: expected_output,
         });
         assert_eq!(termination.await, expected, "{mode:?}");
-        let observer = harness.initial_event_rx.await.expect("observer");
-        match mode {
-            CodeModeOutputTruncation::Client => assert_eq!(observer, expected),
-            CodeModeOutputTruncation::Server => assert_eq!(observer, Err(CellError::Closed)),
-        }
+        assert_eq!(harness.initial_event_rx.await.expect("observer"), expected);
         harness.task.await.expect("cell task");
     }
 }
@@ -722,4 +716,50 @@ async fn failed_completion_delivery_rebuffers_the_event() {
         ObservationDelivery::Delivered
     ));
     assert_eq!(response_rx.try_recv(), Ok(Ok(completion(2 * interval))));
+}
+
+#[test]
+fn a_failed_yield_restores_image_allocation_and_omission_order() {
+    let mut output = OutputCollector::new(CodeModeOutputTruncation::Server);
+    let image_url = "i".repeat(BOUNDED_OUTPUT_MAX_IMAGE_BYTES);
+    let pointer = image_url.as_ptr();
+    output.push(OutputItem::InputImage {
+        image_url,
+        detail: None,
+    });
+    output.push(OutputItem::InputImage {
+        image_url: "excess".to_string(),
+        detail: None,
+    });
+    let (tx, rx) = oneshot::channel();
+    drop(rx);
+    send_yield(&mut output, tx);
+
+    output.push(OutputItem::InputText {
+        text: "after".to_string(),
+    });
+    let (tx, mut rx) = oneshot::channel();
+    send_yield(&mut output, tx);
+    let CellEvent::Yielded { content_items } = rx.try_recv().unwrap().unwrap() else {
+        panic!("expected a yield");
+    };
+    let items = crate::output::render_output(
+        content_items.into_collected_output(),
+        /*max_output_tokens*/ None,
+    );
+    let [
+        OutputItem::InputImage { image_url, .. },
+        OutputItem::InputText { text: notice },
+        OutputItem::InputText { text },
+    ] = items.as_slice()
+    else {
+        panic!("expected image, omission notice, and subsequent text");
+    };
+    assert_eq!(image_url.as_ptr(), pointer);
+    assert!(notice.contains("1 images"), "{notice}");
+    assert_eq!(text, "after");
+    assert_eq!(
+        output.take(),
+        OutputCollector::new(CodeModeOutputTruncation::Server)
+    );
 }

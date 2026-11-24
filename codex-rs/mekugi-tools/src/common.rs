@@ -23,24 +23,6 @@ pub fn quote_bundle_path(path: &str) -> String {
         .replace('\u{2029}', r"\u2029")
 }
 
-/// Render a compact Bash-safe argument matching Go's `commandargs.QuoteArgument`.
-pub fn quote_shell_arg(value: &str) -> String {
-    if value.is_empty() {
-        return "''".to_string();
-    }
-    let is_plain = value.bytes().all(|b| {
-        b.is_ascii_alphanumeric()
-            || matches!(
-                b,
-                b'/' | b'.' | b'_' | b'-' | b':' | b'+' | b'=' | b'@' | b',' | b'%'
-            )
-    });
-    if is_plain {
-        return value.to_string();
-    }
-    format!("'{}'", value.replace('\'', r"'\''"))
-}
-
 /// Open a file for reading without blocking on FIFOs on Unix.
 pub fn open_nonblocking(path: &Path) -> io::Result<File> {
     let mut opts = OpenOptions::new();

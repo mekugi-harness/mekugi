@@ -40,9 +40,6 @@ pub struct TerminateRequest {
     /// Limit for the final observation in Server mode; ignored in Client mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<usize>,
-    /// Release retained output without returning another page.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub discard_output: bool,
 }
 
 impl From<CellId> for TerminateRequest {
@@ -50,7 +47,6 @@ impl From<CellId> for TerminateRequest {
         Self {
             cell_id,
             max_output_tokens: None,
-            discard_output: false,
         }
     }
 }
@@ -162,57 +158,6 @@ pub enum RuntimeResponse {
 }
 
 impl RuntimeResponse {
-    pub fn content_items(&self) -> &[FunctionCallOutputContentItem] {
-        match self {
-            Self::Yielded { content_items, .. }
-            | Self::Terminated { content_items, .. }
-            | Self::Result { content_items, .. } => content_items,
-        }
-    }
-
-    pub fn set_content_items(&mut self, items: Vec<FunctionCallOutputContentItem>) {
-        match self {
-            Self::Yielded { content_items, .. }
-            | Self::Terminated { content_items, .. }
-            | Self::Result { content_items, .. } => *content_items = items,
-        }
-    }
-
-    pub fn is_output_continuation(&self) -> bool {
-        matches!(
-            self.content_items().last(),
-            Some(FunctionCallOutputContentItem::PageBoundary {
-                continuation: true,
-                ..
-            }),
-        )
-    }
-
-    pub fn more_output_cell_id(&self) -> Option<&CellId> {
-        match self {
-            Self::Terminated {
-                cell_id,
-                content_items,
-                ..
-            }
-            | Self::Result {
-                cell_id,
-                content_items,
-                ..
-            } if matches!(
-                content_items.last(),
-                Some(FunctionCallOutputContentItem::PageBoundary {
-                    more_output: true,
-                    ..
-                })
-            ) =>
-            {
-                Some(cell_id)
-            }
-            _ => None,
-        }
-    }
-
     /// Returns timing for this observation, excluding background work between requests.
     pub fn code_mode_host_duration(&self) -> Option<Duration> {
         match self {

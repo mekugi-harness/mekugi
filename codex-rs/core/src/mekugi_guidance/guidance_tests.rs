@@ -35,7 +35,8 @@ fn available_helpers_use_the_native_command_entry() -> anyhow::Result<()> {
     );
 
     assert!(entry.starts_with("Runs a shell command.\n\n### Session shell helpers"));
-    assert!(entry.contains("write_stdin"));
+    assert!(entry.contains("$SESSION_TMP/truncated_output/{id}"));
+    assert!(!entry.contains("write_stdin"));
     assert!(entry.contains("#### `mfinspect`\n\nOutline source structure"));
     assert!(entry.contains("#### `mcat`\n\nRead UTF-8 files or inclusive line ranges."));
     assert!(!entry.contains("#### `mread`"));

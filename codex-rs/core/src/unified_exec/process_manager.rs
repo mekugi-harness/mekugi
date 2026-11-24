@@ -1,26 +1,16 @@
-use crate::unified_exec::SharedPluginMetricsSidecar;
 use crate::unified_exec::output::CapturedStream;
-use crate::unified_exec::output::slice_next_page;
-use crate::unified_exec::output::unified_exec_page_byte_budget;
-use crate::unified_exec::retained::RetainedExecMeta;
-use crate::unified_exec::retained::RetainedExecStorage;
-use crate::unified_exec::retained::read_retained_window;
-use codex_features::Feature;
 use rand::Rng;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 use uuid::Uuid;
 
 use super::oneshot::Completion;
@@ -61,9 +51,7 @@ use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::ProcessEntry;
 use crate::unified_exec::ProcessStore;
-use crate::unified_exec::RetainedEntry;
 use crate::unified_exec::TerminalSession;
-use crate::unified_exec::TerminalTarget;
 use crate::unified_exec::UnifiedExecContext;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -96,7 +84,7 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::TerminalInteractionEvent;
 use codex_protocol::shell_environment::is_non_inheritable_tool_env_var;
 use codex_tools::ToolName;
-use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_head_tail_buffer::HeadTailBuffer;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
 use codex_utils_path_uri::PathUri;
 
@@ -112,11 +100,6 @@ const UNIFIED_EXEC_ENV: [(&str, &str); 10] = [
     ("GH_PAGER", "cat"),
     ("CODEX_CI", "1"),
 ];
-
-fn approx_tokens_from_u64(bytes: u64) -> usize {
-    let clamped = usize::try_from(bytes).unwrap_or(usize::MAX);
-    usize::try_from(approx_tokens_from_byte_count(clamped)).unwrap_or(usize::MAX)
-}
 const NETWORK_ACCESS_DENIED_MESSAGE: &str =
     "Network access was denied by the Codex sandbox network proxy.";
 const LATE_NETWORK_DENIAL_GRACE_PERIOD: Duration = Duration::from_millis(100);
@@ -287,22 +270,10 @@ struct PreparedProcessHandles {
     session: Option<Arc<crate::session::session::Session>>,
     network_approval: Option<DeferredNetworkApproval>,
     call_id: String,
-    environment_id: String,
     hook_command: String,
     tool_cwd: Option<PathUri>,
     process_id: i32,
     tty: bool,
-    persisted: bool,
-}
-
-struct RetainedSuffixSnapshot {
-    previously_persisted_bytes: usize,
-    suffix_bytes: Vec<u8>,
-    mem_bytes: Option<Arc<Vec<u8>>>,
-    retained_bytes: usize,
-    discarded_bytes: u64,
-    read_offset: usize,
-    reported_discarded_bytes: u64,
 }
 
 struct InitialExecCommandGuard {
@@ -345,6 +316,17 @@ async fn unregister_network_approval_for_entry(entry: &ProcessEntry) {
             .unregister_call(network_approval.registration_id())
             .await;
     }
+}
+
+async fn finish_network_approval_after_process_exit_for_entry(
+    entry: &ProcessEntry,
+) -> Result<(), String> {
+    let session = entry.session.upgrade();
+    finish_deferred_network_approval_after_process_exit_for_session(
+        session.as_ref(),
+        entry.network_approval.clone(),
+    )
+    .await
 }
 
 async fn finish_deferred_network_approval_for_session(
@@ -474,45 +456,31 @@ fn terminate_process_on_network_denial(
 }
 
 impl UnifiedExecProcessManager {
-    pub(crate) async fn allocate_process_id(&self) -> Result<i32, UnifiedExecError> {
-        const MAX_RANDOM_PROBES: usize = 64;
-        let mut store = self.process_store.lock().await;
+    pub(crate) async fn allocate_process_id(&self) -> i32 {
+        loop {
+            let mut store = self.process_store.lock().await;
 
-        let process_id = if should_use_deterministic_process_ids() {
-            // Test / deterministic mode: monotonic above the highest reserved ID.
-            match store.reserved_process_ids.iter().copied().max() {
-                Some(max_id) => std::cmp::max(max_id, 999).checked_add(1),
-                None => Some(1000),
-            }
-        } else {
-            // Production mode: bounded random probes, then monotonic fallback above the random range.
-            let mut candidate = None;
-            let mut rng = rand::rng();
-            for _ in 0..MAX_RANDOM_PROBES {
-                let id = rng.random_range(1_000..100_000);
-                if !store.reserved_process_ids.contains(&id) {
-                    candidate = Some(id);
-                    break;
-                }
-            }
-            candidate.or_else(|| {
-                let floor = store
+            let process_id = if should_use_deterministic_process_ids() {
+                // test or deterministic mode
+                store
                     .reserved_process_ids
                     .iter()
                     .copied()
                     .max()
-                    .map_or(99_999, |max_id| std::cmp::max(max_id, 99_999));
-                floor.checked_add(1)
-            })
-        };
+                    .map(|m| std::cmp::max(m, 999) + 1)
+                    .unwrap_or(1000)
+            } else {
+                // production mode → random
+                rand::rng().random_range(1_000..100_000)
+            };
 
-        let Some(process_id) = process_id else {
-            return Err(UnifiedExecError::create_process(
-                "unified exec process ID space exhausted".to_string(),
-            ));
-        };
-        store.reserved_process_ids.insert(process_id);
-        Ok(process_id)
+            if store.reserved_process_ids.contains(&process_id) {
+                continue;
+            }
+
+            store.reserved_process_ids.insert(process_id);
+            return process_id;
+        }
     }
 
     pub(crate) async fn release_process_id(&self, process_id: i32) {
@@ -582,7 +550,12 @@ impl UnifiedExecProcessManager {
         let prepared = &request.prepared;
         let command = &prepared.resolved.command;
         let cwd = prepared.cwd.clone();
-        let process = self.open_session_with_sandbox(&request, context).await;
+        let large_capture = completion
+            .as_ref()
+            .is_some_and(|completion| completion.timeout.is_none());
+        let process = self
+            .open_session_with_sandbox(&request, context, large_capture)
+            .await;
 
         let (attempt, mut deferred_network_approval) = match process {
             Ok((attempt, deferred_network_approval)) => (attempt, deferred_network_approval),
@@ -688,54 +661,80 @@ impl UnifiedExecProcessManager {
         }
 
         let yield_time_ms = clamp_yield_time(prepared.yield_time_ms);
-        let truncation_policy: TruncationPolicy = context
-            .step_context
-            .settings
-            .model_info
-            .truncation_policy
-            .into();
-        let is_internal_unpaged = completion
-            .as_ref()
-            .is_some_and(|completion| completion.timeout.is_none());
-        let page_budget =
-            unified_exec_page_byte_budget(prepared.max_output_tokens, truncation_policy);
         // For the initial exec_command call, we both stream output to events
-        // (via start_streaming_output above) and wait for output up to the
-        // yield/completion deadline before slicing the first page.
+        // (via start_streaming_output above) and collect a snapshot here for
+        // the tool response body.
         let wait = completion.as_ref().map_or_else(
             || Some(Duration::from_millis(yield_time_ms)),
             |completion| completion.timeout,
         );
-        if let Some(wait) = wait {
-            let deadline = start.checked_add(wait).ok_or_else(|| {
-                UnifiedExecError::process_failed("timeout_ms is too large".into())
-            })?;
-            Self::wait_for_output_until_deadline(
-                process.output_handles(),
-                Some(context.session.subscribe_elicitation_pause_state()),
-                deadline,
-            )
-            .await;
-        } else {
-            // Internal source readers wait for exit and closed pipes without a polling deadline.
-            let output = process.output_handles();
-            tokio::select! {
-                _ = process.wait_for_exit() => {}
-                _ = context.cancellation_token.cancelled() => {}
-            }
-            loop {
-                let closed = output.output_closed_notify.notified();
-                tokio::pin!(closed);
-                closed.as_mut().enable();
-                if output.output_closed.load(Ordering::Acquire) {
-                    break;
-                }
+        let (mut collected_output, mut original_token_count, mut output_omitted_bytes, mut collected) =
+            if let Some(wait) = wait {
+                let deadline = start.checked_add(wait).ok_or_else(|| {
+                    UnifiedExecError::process_failed("timeout_ms is too large".into())
+                })?;
+                let collected_output = Self::collect_output_until_deadline(
+                    process.output_handles(),
+                    Some(context.session.subscribe_elicitation_pause_state()),
+                    deadline,
+                )
+                .await;
+                let original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                    collected_output.total_bytes(),
+                ))
+                .unwrap_or(usize::MAX);
+                let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+                let collected = CapturedStream::from(&collected_output);
+                (
+                    Some(collected_output),
+                    original_token_count,
+                    output_omitted_bytes,
+                    collected,
+                )
+            } else {
+                // Internal source readers wait for exit and closed pipes without a polling deadline.
+                let output = process.output_handles();
                 tokio::select! {
-                    _ = &mut closed => {}
-                    _ = context.cancellation_token.cancelled() => break,
+                    _ = process.wait_for_exit() => {}
+                    _ = context.cancellation_token.cancelled() => {}
                 }
-            }
-        }
+                loop {
+                    let closed = output.output_closed_notify.notified();
+                    tokio::pin!(closed);
+                    closed.as_mut().enable();
+                    if output.output_closed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    tokio::select! {
+                        _ = &mut closed => {}
+                        _ = context.cancellation_token.cancelled() => break,
+                    }
+                }
+                let mut guard = output.output_buffer.lock().await;
+                if let Some(large_capture) = guard.large_capture.take() {
+                    let original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                        large_capture.total_bytes(),
+                    ))
+                    .unwrap_or(usize::MAX);
+                    let output_omitted_bytes = NonZeroUsize::new(large_capture.omitted_bytes());
+                    let collected = CapturedStream::from(&large_capture);
+                    (None, original_token_count, output_omitted_bytes, collected)
+                } else {
+                    let pending = std::mem::take(&mut guard.pending);
+                    let original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                        pending.total_bytes(),
+                    ))
+                    .unwrap_or(usize::MAX);
+                    let output_omitted_bytes = NonZeroUsize::new(pending.omitted_bytes());
+                    let collected = CapturedStream::from(&pending);
+                    (
+                        Some(pending),
+                        original_token_count,
+                        output_omitted_bytes,
+                        collected,
+                    )
+                }
+            };
         if let Some(completion) = completion.as_mut()
             && completion.timeout.is_some()
             && !process.has_exited()
@@ -747,16 +746,13 @@ impl UnifiedExecProcessManager {
             }
         }
         let wall_time = Instant::now().saturating_duration_since(start);
+
+        let mut text = collected.text.clone();
         let chunk_id = generate_chunk_id();
         if deferred_network_approval
             .as_ref()
             .is_some_and(DeferredNetworkApproval::is_cancelled)
         {
-            let fallback_text = output_buffer
-                .lock()
-                .await
-                .retained
-                .to_lossy_string_with_discard_notice();
             let message = network_denial_message_for_session(
                 Some(&context.session),
                 deferred_network_approval.take(),
@@ -770,7 +766,7 @@ impl UnifiedExecProcessManager {
                 cwd.clone(),
                 plugin_attribution.clone(),
                 Arc::clone(&output_buffer),
-                fallback_text,
+                text.clone(),
                 message.clone(),
                 wall_time,
             )
@@ -779,11 +775,6 @@ impl UnifiedExecProcessManager {
             return Err(fail_process_with_message(process.as_ref(), message));
         }
         if let Some(message) = process.failure_message() {
-            let fallback_text = output_buffer
-                .lock()
-                .await
-                .retained
-                .to_lossy_string_with_discard_notice();
             let finish_result = finish_deferred_network_approval_for_session(
                 Some(&context.session),
                 deferred_network_approval.take(),
@@ -797,7 +788,7 @@ impl UnifiedExecProcessManager {
                 cwd.clone(),
                 plugin_attribution.clone(),
                 Arc::clone(&output_buffer),
-                fallback_text,
+                text.clone(),
                 message.clone(),
                 wall_time,
             )
@@ -808,16 +799,8 @@ impl UnifiedExecProcessManager {
             }
             return Err(UnifiedExecError::process_failed(message));
         }
-
         let process_id = request.process_id;
-        let environment_id = prepared.turn_environment.selection.environment_id.clone();
-        let tool_cwd =
-            (!prepared.turn_environment.environment().is_remote()).then(|| prepared.cwd.clone());
-        let timed_out_oneshot = completion
-            .as_ref()
-            .is_some_and(|completion| completion.timed_out);
-
-        let (process_exited, exit_code) = if process_stored {
+        let (response_process_id, exit_code) = if process_stored {
             let retention = if completion.is_some() {
                 OutputRetention::UntilExit
             } else {
@@ -827,13 +810,27 @@ impl UnifiedExecProcessManager {
                 .refresh_process_state(process_id, &process, retention)
                 .await
             {
-                ProcessStatus::Alive { exit_code, .. } => (false, exit_code),
-                ProcessStatus::Exited {
+                ProcessStatus::Alive {
                     exit_code,
-                    plugin_metrics_sidecar,
+                    process_id,
                     ..
-                } => {
-                    process.cancellation_token().cancel();
+                } => (Some(process_id), exit_code),
+                ProcessStatus::Exited { exit_code, entry } => {
+                    entry.process.cancellation_token().cancel();
+                    if let Some(collected_output) = collected_output.as_mut() {
+                        let trailing = std::mem::take(&mut output_buffer.lock().await.pending);
+                        if trailing.retained_bytes() > 0 || trailing.omitted_bytes() > 0 {
+                            collected_output.push_buffer(trailing);
+                            original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                                collected_output.total_bytes(),
+                            ))
+                            .unwrap_or(usize::MAX);
+                            output_omitted_bytes =
+                                NonZeroUsize::new(collected_output.omitted_bytes());
+                            collected = CapturedStream::from(&*collected_output);
+                            text = collected.text.clone();
+                        }
+                    }
                     if let Err(message) =
                         finish_deferred_network_approval_after_process_exit_for_session(
                             Some(&context.session),
@@ -841,32 +838,24 @@ impl UnifiedExecProcessManager {
                         )
                         .await
                     {
-                        self.release_process(process_id, Some(&process)).await;
-                        return Err(fail_process_with_message(process.as_ref(), message));
+                        return Err(fail_process_with_message(entry.process.as_ref(), message));
                     }
-                    if !timed_out_oneshot {
-                        let (full_text, total_bytes, discarded_bytes) = {
-                            let guard = output_buffer.lock().await;
-                            (
-                                String::from_utf8_lossy(guard.retained.as_bytes()).into_owned(),
-                                guard.retained.total_bytes(),
-                                guard.retained.discarded_bytes(),
-                            )
-                        };
-                        let original_tokens = approx_tokens_from_u64(total_bytes);
-                        let omitted = usize::try_from(discarded_bytes)
-                            .ok()
-                            .and_then(NonZeroUsize::new);
-                        if let Err(err) =
-                            process.check_for_sandbox_denial_with_text(&full_text).await
-                        {
-                            self.release_process(process_id, Some(&process)).await;
-                            return Err(
-                                err.with_output_collection_metadata(original_tokens, omitted)
-                            );
-                        }
+                    if !completion
+                        .as_ref()
+                        .is_some_and(|completion| completion.timed_out)
+                    {
+                        process
+                            .check_for_sandbox_denial_with_text(&text)
+                            .await
+                            .map_err(|err| {
+                                err.with_output_collection_metadata(
+                                    original_token_count,
+                                    output_omitted_bytes,
+                                )
+                            })?;
                     }
-                    let metrics_sidecar = plugin_metrics_sidecar
+                    let metrics_sidecar = entry
+                        .plugin_metrics_sidecar
                         .as_ref()
                         .and_then(take_plugin_metrics_sidecar);
                     finish_and_track_measurements(
@@ -878,7 +867,7 @@ impl UnifiedExecProcessManager {
                         &context.call_id,
                     )
                     .await;
-                    (true, exit_code)
+                    (None, exit_code)
                 }
                 ProcessStatus::Unknown => {
                     return Err(UnifiedExecError::UnknownProcessId { process_id });
@@ -887,14 +876,6 @@ impl UnifiedExecProcessManager {
         } else {
             // Short-lived command: emit the completed command item immediately
             // using the same helper as the background watcher.
-            let (full_text, total_bytes, discarded_bytes) = {
-                let guard = output_buffer.lock().await;
-                (
-                    String::from_utf8_lossy(guard.retained.as_bytes()).into_owned(),
-                    guard.retained.total_bytes(),
-                    guard.retained.discarded_bytes(),
-                )
-            };
             let finish_result = finish_deferred_network_approval_after_process_exit_for_session(
                 Some(&context.session),
                 deferred_network_approval.take(),
@@ -909,7 +890,7 @@ impl UnifiedExecProcessManager {
                     cwd.clone(),
                     plugin_attribution.clone(),
                     Arc::clone(&output_buffer),
-                    full_text,
+                    text.clone(),
                     message.clone(),
                     wall_time,
                 )
@@ -933,213 +914,44 @@ impl UnifiedExecProcessManager {
                 Some(process_id.to_string()),
                 plugin_attribution.clone(),
                 Arc::clone(&output_buffer),
-                full_text.clone(),
+                text.clone(),
                 exit,
                 wall_time,
                 process.timed_out(),
             )
             .await;
 
-            if !timed_out_oneshot {
-                let original_tokens = approx_tokens_from_u64(total_bytes);
-                let omitted = usize::try_from(discarded_bytes)
-                    .ok()
-                    .and_then(NonZeroUsize::new);
-                if let Err(err) = process.check_for_sandbox_denial_with_text(&full_text).await {
-                    self.release_process_id(request.process_id).await;
-                    return Err(err.with_output_collection_metadata(original_tokens, omitted));
-                }
-            }
-            (true, exit_code)
-        };
-
-        if is_internal_unpaged {
-            if process_stored {
-                self.release_process(process_id, Some(&process)).await;
-            } else {
-                self.release_process_id(process_id).await;
-            }
-            let (raw_output, original_token_count) = {
-                let guard = output_buffer.lock().await;
-                let total = guard.retained.total_bytes();
-                (
-                    CapturedStream::from(&guard.retained),
-                    approx_tokens_from_u64(total),
-                )
-            };
-            return Ok(ExecCommandToolOutput {
-                event_call_id: context.call_id.clone(),
-                chunk_id,
-                wall_time,
-                raw_output,
-                truncation_policy,
-                max_output_tokens: prepared.max_output_tokens,
-                process_id: None,
-                exit_code,
-                original_token_count: Some(original_token_count),
-                hook_command: Some(prepared.hook_command.clone()),
-                tool_cwd,
-                emit_post_tool_use: false,
-            });
-        }
-
-        // Only expose a resumable retained session_id when write_stdin paging is
-        // available for this session (Feature::UnifiedExec) and the command did
-        // not time out in one-shot mode.
-        let allow_retained_paging =
-            !timed_out_oneshot && context.session.enabled(Feature::UnifiedExec);
-        let has_persistent_storage = self
-            .storage
-            .as_ref()
-            .is_some_and(|storage| !storage.is_ephemeral());
-        let stream_complete = process_exited
-            && process
-                .output_handles()
-                .output_closed
-                .load(Ordering::Acquire);
-        let (original_token_count, mut page, retained_snapshot, unreturned_bytes_after_page) = {
-            let guard = output_buffer.lock().await;
-            let unread_total = guard.unread_total_bytes();
-            let original_token_count = approx_tokens_from_u64(unread_total);
-            let page = guard.peek_next_page(page_budget, stream_complete);
-            let next_read_offset = guard.read_offset.saturating_add(page.consumed_bytes);
-            let next_reported_discarded = page.reported_discarded_bytes;
-            let unreturned = (guard
-                .retained
-                .retained_bytes()
-                .saturating_sub(next_read_offset) as u64)
-                .saturating_add(
-                    guard
-                        .retained
-                        .discarded_bytes()
-                        .saturating_sub(next_reported_discarded),
-                );
-            let should_retain_snapshot = (!process_exited
-                && (guard.retained.retained_bytes() > 0 || guard.retained.discarded_bytes() > 0))
-                || (process_exited && page.has_more_output && allow_retained_paging);
-            let snapshot = should_retain_snapshot.then(|| RetainedSuffixSnapshot {
-                previously_persisted_bytes: guard.persisted_bytes,
-                suffix_bytes: if has_persistent_storage {
-                    guard.suffix_from(guard.persisted_bytes)
-                } else {
-                    Vec::new()
-                },
-                mem_bytes: (!has_persistent_storage && process_exited)
-                    .then(|| Arc::new(guard.retained.to_bytes())),
-                retained_bytes: guard.retained.retained_bytes(),
-                discarded_bytes: guard.retained.discarded_bytes(),
-                read_offset: next_read_offset,
-                reported_discarded_bytes: next_reported_discarded,
-            });
-            (original_token_count, page, snapshot, unreturned)
-        };
-
-        let (response_process_id, emit_post_tool_use) = if !process_exited {
-            if let Some(snapshot) = retained_snapshot {
-                let meta = RetainedExecMeta {
-                    process_id,
-                    call_id: context.call_id.clone(),
-                    environment_id: environment_id.clone(),
-                    exit_code: None,
-                    completed: false,
-                    retained_bytes: snapshot.retained_bytes,
-                    discarded_bytes: snapshot.discarded_bytes,
-                    read_offset: snapshot.read_offset,
-                    reported_discarded_bytes: snapshot.reported_discarded_bytes,
-                    exhausted: false,
-                    source_thread_id: None,
-                    hook_command: Some(prepared.hook_command.clone()),
-                    tool_cwd: tool_cwd.clone(),
-                };
-                if let Err(err) = self
-                    .persist_running_suffix(
-                        process_id,
-                        &process,
-                        &output_buffer,
-                        snapshot.previously_persisted_bytes,
-                        snapshot.suffix_bytes,
-                        meta,
-                    )
-                    .await
-                {
-                    process.terminate();
-                    self.release_process(process_id, Some(&process)).await;
-                    return Err(err);
-                }
-            }
-            output_buffer.lock().await.commit_page(&page);
-            (Some(process_id), false)
-        } else if page.has_more_output && allow_retained_paging {
-            if let Some(snapshot) = retained_snapshot {
-                let meta = RetainedExecMeta {
-                    process_id,
-                    call_id: context.call_id.clone(),
-                    environment_id: environment_id.clone(),
-                    exit_code,
-                    completed: true,
-                    retained_bytes: snapshot.retained_bytes,
-                    discarded_bytes: snapshot.discarded_bytes,
-                    read_offset: snapshot.read_offset,
-                    reported_discarded_bytes: snapshot.reported_discarded_bytes,
-                    exhausted: false,
-                    source_thread_id: None,
-                    hook_command: Some(prepared.hook_command.clone()),
-                    tool_cwd: tool_cwd.clone(),
-                };
-                if let Err(err) = self
-                    .store_retained_exited(
-                        process_id,
-                        process_stored.then_some(&process),
-                        &output_buffer,
-                        snapshot.previously_persisted_bytes,
-                        snapshot.suffix_bytes,
-                        snapshot.mem_bytes,
-                        meta,
-                        /*post_tool_use_pending*/ false,
-                    )
-                    .await
-                {
-                    if process_stored {
-                        self.release_process(process_id, Some(&process)).await;
-                    } else {
-                        self.release_process_id(process_id).await;
-                    }
-                    return Err(err);
-                }
-            }
-            output_buffer.lock().await.commit_page(&page);
-            (Some(process_id), true)
-        } else {
-            if page.has_more_output && unreturned_bytes_after_page > 0 {
-                if !page.text.is_empty() {
-                    page.text.push('\n');
-                }
-                page.text.push_str(&format!(
-                    "[output truncated: {unreturned_bytes_after_page} bytes omitted]"
-                ));
-            }
-            output_buffer.lock().await.commit_page(&page);
-            if process_stored {
-                self.release_process(process_id, Some(&process)).await;
-            } else {
-                self.release_process_id(process_id).await;
-            }
-            (None, true)
+            self.release_process_id(request.process_id).await;
+            process
+                .check_for_sandbox_denial_with_text(&text)
+                .await
+                .map_err(|err| {
+                    err.with_output_collection_metadata(original_token_count, output_omitted_bytes)
+                })?;
+            (None, exit_code)
         };
 
         let response = ExecCommandToolOutput {
             event_call_id: context.call_id.clone(),
             chunk_id,
             wall_time,
-            raw_output: CapturedStream::from(page.text),
-            truncation_policy,
+            raw_output: collected,
+            truncation_policy: context
+                .step_context
+                .settings
+                .model_info
+                .truncation_policy
+                .into(),
             max_output_tokens: prepared.max_output_tokens,
             process_id: response_process_id,
             exit_code,
             original_token_count: Some(original_token_count),
             hook_command: Some(prepared.hook_command.clone()),
-            tool_cwd,
-            emit_post_tool_use,
+            tool_cwd: (!prepared.turn_environment.environment().is_remote())
+                .then(|| prepared.cwd.clone()),
+            truncated_output_dir: Some(codex_utils_output_truncation::truncated_output_dir(
+                &crate::exec_env::session_tmp_path(context.session.session_id()),
+            )),
         };
 
         Ok(response)
@@ -1181,47 +993,23 @@ impl UnifiedExecProcessManager {
         request: WriteStdinRequest<'_>,
     ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
         let process_id = request.terminal.process_id;
+        let locked_process = &request.terminal.process;
         if let Some(call_id) = trace_id(&request.terminal.call_id) {
             tracing::Span::current().record("original_exec_call_id", call_id);
         }
-        let locked_process = match &request.terminal.target {
-            TerminalTarget::Retained { interaction_lock } => {
-                return self
-                    .write_stdin_retained(context, request, Arc::clone(interaction_lock))
-                    .await;
-            }
-            TerminalTarget::Live(process) => process,
-        };
         // Serialize writes and polls on the original terminal.
-        let interaction_guard = locked_process.interaction_lock().lock_owned().await;
+        let _interaction_guard = locked_process.interaction_lock().lock_owned().await;
         // A queued write must observe strict review enabled while it was waiting.
         let strict_auto_review = context.step_context.turn.strict_auto_review_enabled();
         let approval = {
             let store = self.process_store.lock().await;
-            match store
+            let entry = store
                 .processes
                 .get(&process_id)
                 .filter(|entry| Arc::ptr_eq(&entry.process, locked_process))
-            {
-                Some(entry) => entry.stdin_approval(context, request.input, strict_auto_review)?,
-                None => {
-                    if let Some(retained) = store
-                        .retained
-                        .get(&process_id)
-                        .filter(|entry| entry.meta.call_id == request.terminal.call_id)
-                    {
-                        let retained_lock = Arc::clone(&retained.interaction_lock);
-                        drop(store);
-                        drop(interaction_guard);
-                        return self
-                            .write_stdin_retained(context, request, retained_lock)
-                            .await;
-                    }
-                    return Err(UnifiedExecError::UnknownProcessId { process_id });
-                }
-            }
+                .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+            entry.stdin_approval(context, request.input, strict_auto_review)?
         };
-        let _interaction_guard = interaction_guard;
         if let Some((approval, approval_reason)) = approval {
             let unreviewable_input_error = || {
                 UnifiedExecError::StdinApproval(ToolError::Rejected(
@@ -1292,12 +1080,11 @@ impl UnifiedExecProcessManager {
             session,
             network_approval,
             call_id,
-            environment_id,
             hook_command,
             tool_cwd,
             process_id,
             tty,
-            mut persisted,
+            ..
         } = self
             .prepare_process_handles(process_id, locked_process)
             .await?;
@@ -1310,17 +1097,11 @@ impl UnifiedExecProcessManager {
                 &context.call_id,
                 &call_id,
             );
-        if !request.input.is_empty() {
-            if process.has_exited() {
-                if output.drain_policy == OutputDrainPolicy::WaitForOutputClosure
-                    && !output.output_closed.load(Ordering::Acquire)
-                {
-                    // Exit was observed remotely while output is still draining;
-                    // skip writing to stdin so this call can finish collecting the tail.
-                } else {
-                    return Err(UnifiedExecError::ProcessExited { process_id });
-                }
-            } else if !tty {
+        let remote_exited =
+            process.has_exited() && output.drain_policy == OutputDrainPolicy::WaitForOutputClosure;
+        // A write racing with remote exit still collects the final output.
+        if !request.input.is_empty() && !remote_exited {
+            if !tty {
                 if request.input == INTERRUPT {
                     process.interrupt().await?;
                 } else {
@@ -1334,50 +1115,39 @@ impl UnifiedExecProcessManager {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                     Err(err) => {
-                        if process.has_exited() {
-                            return Err(UnifiedExecError::ProcessExited { process_id });
+                        if !process.has_exited() {
+                            if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
+                                process.terminate();
+                                self.release_process(process_id, Some(locked_process)).await;
+                            }
+                            return Err(err);
                         }
-                        if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
-                            process.terminate();
-                            self.release_process(process_id, Some(locked_process)).await;
-                        }
-                        return Err(err);
                     }
                 }
             }
         }
 
-        let start = Instant::now();
-        let page_budget =
-            unified_exec_page_byte_budget(request.max_output_tokens, request.truncation_policy);
-        let (has_full_buffered_page, has_partial_buffered_output) = if request.input.is_empty() {
-            let stream_complete =
-                process.has_exited() && output.output_closed.load(Ordering::Acquire);
-            let guard = output.output_buffer.lock().await;
-            let unread = guard.unread_total_bytes();
-            let full_ready = stream_complete
-                || (unread >= page_budget as u64 && guard.has_deliverable_unread(stream_complete));
-            let partial_ready = !full_ready && guard.has_deliverable_unread(stream_complete);
-            (full_ready, partial_ready)
-        } else {
-            (false, false)
+        let yield_time_ms = {
+            // Empty polls use configurable background timeout bounds. Non-empty
+            // writes keep a fixed max cap so interactive stdin remains responsive.
+            let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
+            if request.input.is_empty() {
+                time_ms.clamp(MIN_EMPTY_YIELD_TIME_MS, self.max_write_stdin_yield_time_ms)
+            } else {
+                time_ms.min(MAX_YIELD_TIME_MS)
+            }
         };
-        if !has_full_buffered_page {
-            let yield_time_ms = {
-                // Empty polls use configurable background timeout bounds. Non-empty
-                // writes (and polls with partial buffered output still awaiting closure)
-                // keep a fixed max cap so interactive stdin and paging stay responsive.
-                let time_ms = request.yield_time_ms.max(MIN_YIELD_TIME_MS);
-                if request.input.is_empty() && !has_partial_buffered_output {
-                    time_ms.clamp(MIN_EMPTY_YIELD_TIME_MS, self.max_write_stdin_yield_time_ms)
-                } else {
-                    time_ms.min(MAX_YIELD_TIME_MS)
-                }
-            };
-            let deadline = start + Duration::from_millis(yield_time_ms);
-            Self::wait_for_output_until_deadline(&output, pause_state, deadline).await;
-        }
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(yield_time_ms);
+        let mut collected_output =
+            Self::collect_output_until_deadline(&output, pause_state, deadline).await;
         let wall_time = Instant::now().saturating_duration_since(start);
+
+        let mut original_token_count = usize::try_from(approx_tokens_from_byte_count(
+            collected_output.total_bytes(),
+        ))
+        .unwrap_or(usize::MAX);
+        let mut collected = CapturedStream::from(&collected_output);
         let chunk_id = generate_chunk_id();
         if network_approval
             .as_ref()
@@ -1406,181 +1176,58 @@ impl UnifiedExecProcessManager {
         let status = self
             .refresh_process_state(process_id, locked_process, OutputRetention::UntilCollected)
             .await;
-        let (process_exited, exit_code, event_call_id) = match status {
+        let (process_id, exit_code, event_call_id) = match status {
             ProcessStatus::Alive {
-                exit_code, call_id, ..
-            } => (false, exit_code, call_id),
-            ProcessStatus::Exited {
                 exit_code,
                 call_id,
-                persisted: entry_persisted,
-                network_approval: entry_network_approval,
-                session: entry_session,
-                ..
-            } => {
-                process.cancellation_token().cancel();
-                persisted = entry_persisted;
-                if let Err(message) =
-                    finish_deferred_network_approval_after_process_exit_for_session(
-                        entry_session.as_ref(),
-                        entry_network_approval,
-                    )
-                    .await
-                {
-                    self.release_process(process_id, Some(locked_process)).await;
-                    return Err(fail_process_with_message(process.as_ref(), message));
+                process_id,
+            } => (Some(process_id), exit_code, call_id),
+            ProcessStatus::Exited { exit_code, entry } => {
+                entry.process.cancellation_token().cancel();
+                let trailing = std::mem::take(&mut output.output_buffer.lock().await.pending);
+                if trailing.retained_bytes() > 0 || trailing.omitted_bytes() > 0 {
+                    collected_output.push_buffer(trailing);
+                    original_token_count = usize::try_from(approx_tokens_from_byte_count(
+                        collected_output.total_bytes(),
+                    ))
+                    .unwrap_or(usize::MAX);
+                    collected = CapturedStream::from(&collected_output);
                 }
-                (true, exit_code, call_id)
+                let call_id = entry.call_id.clone();
+                if let Err(message) =
+                    finish_network_approval_after_process_exit_for_entry(&entry).await
+                {
+                    return Err(fail_process_with_message(entry.process.as_ref(), message));
+                }
+                (None, exit_code, call_id)
             }
             ProcessStatus::Unknown => {
                 if process.has_exited() {
-                    (true, process.exit_code(), call_id)
+                    (None, process.exit_code(), call_id)
                 } else {
                     return Err(UnifiedExecError::UnknownProcessId { process_id });
                 }
             }
         };
 
-        let has_persistent_storage = self
-            .storage
-            .as_ref()
-            .is_some_and(|storage| !storage.is_ephemeral());
-        let stream_complete = process_exited && output.output_closed.load(Ordering::Acquire);
-        let (original_token_count, page, retained_snapshot) = {
-            let guard = output.output_buffer.lock().await;
-            let unread_total = guard.unread_total_bytes();
-            let original_token_count = approx_tokens_from_u64(unread_total);
-            let page = guard.peek_next_page(page_budget, stream_complete);
-            let next_read_offset = guard.read_offset.saturating_add(page.consumed_bytes);
-            let next_reported_discarded = page.reported_discarded_bytes;
-            let should_retain_snapshot = (!process_exited
-                && (guard.retained.retained_bytes() > 0 || guard.retained.discarded_bytes() > 0))
-                || (process_exited && (page.has_more_output || persisted));
-            let snapshot = should_retain_snapshot.then(|| RetainedSuffixSnapshot {
-                previously_persisted_bytes: guard.persisted_bytes,
-                suffix_bytes: if has_persistent_storage {
-                    guard.suffix_from(guard.persisted_bytes)
-                } else {
-                    Vec::new()
-                },
-                mem_bytes: (!has_persistent_storage && process_exited && page.has_more_output)
-                    .then(|| Arc::new(guard.retained.to_bytes())),
-                retained_bytes: guard.retained.retained_bytes(),
-                discarded_bytes: guard.retained.discarded_bytes(),
-                read_offset: next_read_offset,
-                reported_discarded_bytes: next_reported_discarded,
-            });
-            (original_token_count, page, snapshot)
-        };
-
-        let (response_process_id, emit_post_tool_use) = if !process_exited {
-            if let Some(snapshot) = retained_snapshot {
-                let meta = RetainedExecMeta {
-                    process_id,
-                    call_id: event_call_id.clone(),
-                    environment_id: environment_id.clone(),
-                    exit_code: None,
-                    completed: false,
-                    retained_bytes: snapshot.retained_bytes,
-                    discarded_bytes: snapshot.discarded_bytes,
-                    read_offset: snapshot.read_offset,
-                    reported_discarded_bytes: snapshot.reported_discarded_bytes,
-                    exhausted: false,
-                    source_thread_id: None,
-                    hook_command: Some(hook_command.clone()),
-                    tool_cwd: tool_cwd.clone(),
-                };
-                self.persist_running_suffix(
-                    process_id,
-                    locked_process,
-                    &output.output_buffer,
-                    snapshot.previously_persisted_bytes,
-                    snapshot.suffix_bytes,
-                    meta,
-                )
-                .await?;
-            }
-            output.output_buffer.lock().await.commit_page(&page);
-            (Some(process_id), false)
-        } else if page.has_more_output {
-            if let Some(snapshot) = retained_snapshot {
-                let meta = RetainedExecMeta {
-                    process_id,
-                    call_id: event_call_id.clone(),
-                    environment_id: environment_id.clone(),
-                    exit_code,
-                    completed: true,
-                    retained_bytes: snapshot.retained_bytes,
-                    discarded_bytes: snapshot.discarded_bytes,
-                    read_offset: snapshot.read_offset,
-                    reported_discarded_bytes: snapshot.reported_discarded_bytes,
-                    exhausted: false,
-                    source_thread_id: None,
-                    hook_command: Some(hook_command.clone()),
-                    tool_cwd: tool_cwd.clone(),
-                };
-                self.store_retained_exited(
-                    process_id,
-                    Some(locked_process),
-                    &output.output_buffer,
-                    snapshot.previously_persisted_bytes,
-                    snapshot.suffix_bytes,
-                    snapshot.mem_bytes,
-                    meta,
-                    /*post_tool_use_pending*/ false,
-                )
-                .await?;
-            }
-            output.output_buffer.lock().await.commit_page(&page);
-            (Some(process_id), true)
-        } else {
-            if persisted && let Some(snapshot) = retained_snapshot {
-                let meta = RetainedExecMeta {
-                    process_id,
-                    call_id: event_call_id.clone(),
-                    environment_id: environment_id.clone(),
-                    exit_code,
-                    completed: true,
-                    retained_bytes: snapshot.retained_bytes,
-                    discarded_bytes: snapshot.discarded_bytes,
-                    read_offset: snapshot.read_offset,
-                    reported_discarded_bytes: snapshot.reported_discarded_bytes,
-                    exhausted: true,
-                    source_thread_id: None,
-                    hook_command: Some(hook_command.clone()),
-                    tool_cwd: tool_cwd.clone(),
-                };
-                self.persist_exhausted(
-                    process_id,
-                    &output.output_buffer,
-                    snapshot.previously_persisted_bytes,
-                    snapshot.suffix_bytes,
-                    meta,
-                )
-                .await?;
-            }
-            output.output_buffer.lock().await.commit_page(&page);
-            self.release_process(process_id, Some(locked_process)).await;
-            (None, true)
-        };
-
         let response = ExecCommandToolOutput {
             event_call_id,
             chunk_id,
             wall_time,
-            raw_output: CapturedStream::from(page.text),
+            raw_output: collected,
             truncation_policy: request.truncation_policy,
             max_output_tokens: request.max_output_tokens,
-            process_id: response_process_id,
+            process_id,
             exit_code,
             original_token_count: Some(original_token_count),
             hook_command: Some(hook_command),
             tool_cwd,
-            emit_post_tool_use,
+            truncated_output_dir: Some(codex_utils_output_truncation::truncated_output_dir(
+                &crate::exec_env::session_tmp_path(context.session.session_id()),
+            )),
         };
 
-        let should_emit_interaction = !request.input.is_empty()
-            || (response.process_id.is_some() && response.exit_code.is_none());
+        let should_emit_interaction = !request.input.is_empty() || response.process_id.is_some();
         if should_emit_interaction
             && let Some(WriteStdinInteractionEvent { session, turn }) = request.interaction_event
         {
@@ -1600,325 +1247,55 @@ impl UnifiedExecProcessManager {
         Ok(response)
     }
 
-    async fn write_stdin_retained(
-        &self,
-        context: &UnifiedExecContext,
-        request: WriteStdinRequest<'_>,
-        interaction_lock: Arc<Mutex<()>>,
-    ) -> Result<ExecCommandToolOutput, UnifiedExecError> {
-        let process_id = request.terminal.process_id;
-        let _interaction_guard = interaction_lock.lock_owned().await;
-        if !request.input.is_empty() {
-            return Err(UnifiedExecError::ProcessExited { process_id });
-        }
-
-        let (mut meta, bin_path, mem_bytes, post_tool_use_pending) = {
-            let store = self.process_store.lock().await;
-            let entry = store
-                .retained
-                .get(&process_id)
-                .filter(|entry| !entry.meta.exhausted || entry.post_tool_use_pending)
-                .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
-            (
-                entry.meta.clone(),
-                entry.bin_path.clone(),
-                entry.bytes.clone(),
-                entry.post_tool_use_pending,
-            )
-        };
-
-        context
-            .session
-            .services
-            .rollout_thread_trace
-            .record_stdin_target(
-                &context.step_context.turn.sub_id,
-                &context.call_id,
-                &meta.call_id,
-            );
-
-        let start = Instant::now();
-        let page_budget =
-            unified_exec_page_byte_budget(request.max_output_tokens, request.truncation_policy);
-        let total_unread = meta.retained_bytes.saturating_sub(meta.read_offset);
-        let window_cap = page_budget.saturating_mul(2).saturating_add(16);
-        let expected_window_len = total_unread.min(window_cap);
-
-        let window = if let Some(bytes) = mem_bytes {
-            if bytes.len() < meta.retained_bytes {
-                return Err(UnifiedExecError::process_failed(format!(
-                    "retained output buffer for process {process_id} is truncated ({} bytes available, expected {})",
-                    bytes.len(),
-                    meta.retained_bytes
-                )));
-            }
-            let end = meta.read_offset.saturating_add(expected_window_len);
-            bytes[meta.read_offset..end].to_vec()
-        } else {
-            let read_offset = meta.read_offset;
-            let retained_bytes = meta.retained_bytes;
-            tokio::task::spawn_blocking(move || {
-                read_retained_window(&bin_path, read_offset, retained_bytes, window_cap)
-            })
-            .await
-            .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?
-            .map_err(|err| {
-                UnifiedExecError::process_failed(format!(
-                    "failed to read retained output for process {process_id}: {err}"
-                ))
-            })?
-        };
-
-        if window.len() < expected_window_len {
-            return Err(UnifiedExecError::process_failed(format!(
-                "retained output for process {process_id} is truncated (read {} bytes, expected {expected_window_len})",
-                window.len()
-            )));
-        }
-
-        let unread_total_bytes = (total_unread as u64).saturating_add(
-            meta.discarded_bytes
-                .saturating_sub(meta.reported_discarded_bytes),
-        );
-        let original_token_count = approx_tokens_from_u64(unread_total_bytes);
-        let page = slice_next_page(
-            &window,
-            total_unread,
-            meta.discarded_bytes,
-            meta.reported_discarded_bytes,
-            page_budget,
-            /*stream_complete*/ true,
-        );
-        let wall_time = start.elapsed();
-
-        meta.read_offset = meta.read_offset.saturating_add(page.consumed_bytes);
-        meta.reported_discarded_bytes = page.reported_discarded_bytes;
-        meta.exhausted = !page.has_more_output;
-
-        if let Some(storage) = self.storage.clone()
-            && !storage.is_ephemeral()
-        {
-            let meta_for_disk = meta.clone();
-            tokio::task::spawn_blocking(move || storage.persist_meta(&meta_for_disk))
-                .await
-                .map_err(|err| {
-                    UnifiedExecError::process_failed(format!(
-                        "retained exec metadata persistence task failed for process {process_id}: {err}"
-                    ))
-                })?
-                .map_err(|err| {
-                    UnifiedExecError::process_failed(format!(
-                        "failed to update retained exec metadata for process {process_id}: {err}"
-                    ))
-                })?;
-        }
-
-        {
-            let mut store = self.process_store.lock().await;
-            if meta.exhausted {
-                store.retained.remove(&process_id);
-            } else if let Some(entry) = store.retained.get_mut(&process_id) {
-                entry.meta = meta.clone();
-                entry.post_tool_use_pending = false;
-            }
-        }
-
-        Ok(ExecCommandToolOutput {
-            event_call_id: meta.call_id,
-            chunk_id: generate_chunk_id(),
-            wall_time,
-            raw_output: CapturedStream::from(page.text),
-            truncation_policy: request.truncation_policy,
-            max_output_tokens: request.max_output_tokens,
-            process_id: page.has_more_output.then_some(process_id),
-            exit_code: meta.exit_code,
-            original_token_count: Some(original_token_count),
-            hook_command: meta.hook_command,
-            tool_cwd: meta.tool_cwd,
-            emit_post_tool_use: post_tool_use_pending,
-        })
-    }
-
-    async fn persist_running_suffix(
-        &self,
-        process_id: i32,
-        expected_process: &Arc<UnifiedExecProcess>,
-        output_buffer: &Arc<Mutex<OutputBuffers>>,
-        previously_persisted_bytes: usize,
-        suffix_bytes: Vec<u8>,
-        meta: RetainedExecMeta,
-    ) -> Result<(), UnifiedExecError> {
-        let Some(storage) = self.storage.clone() else {
-            return Ok(());
-        };
-        if storage.is_ephemeral() {
-            return Ok(());
-        }
-        let persisted_len = tokio::task::spawn_blocking(move || {
-            storage.persist_suffix(process_id, previously_persisted_bytes, &suffix_bytes, &meta)
-        })
-        .await
-        .map_err(|err| {
-            UnifiedExecError::process_failed(format!(
-                "running exec output persistence task failed for process {process_id}: {err}"
-            ))
-        })?
-        .map_err(|err| {
-            UnifiedExecError::process_failed(format!(
-                "failed to persist running exec output for process {process_id}: {err}"
-            ))
-        })?;
-        output_buffer.lock().await.persisted_bytes = persisted_len;
-        let mut store = self.process_store.lock().await;
-        if let Some(entry) = store
-            .processes
-            .get_mut(&process_id)
-            .filter(|entry| Arc::ptr_eq(&entry.process, expected_process))
-        {
-            entry.persisted_bytes = persisted_len;
-            entry.persisted = true;
-        }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn store_retained_exited(
-        &self,
-        process_id: i32,
-        expected_process: Option<&Arc<UnifiedExecProcess>>,
-        output_buffer: &Arc<Mutex<OutputBuffers>>,
-        previously_persisted_bytes: usize,
-        suffix_bytes: Vec<u8>,
-        mem_bytes: Option<Arc<Vec<u8>>>,
-        meta: RetainedExecMeta,
-        post_tool_use_pending: bool,
-    ) -> Result<(), UnifiedExecError> {
-        let (bin_path, mem_bytes) = if let Some(storage) = self.storage.clone()
-            && !storage.is_ephemeral()
-        {
-            let bin_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
-            let meta_for_disk = meta.clone();
-            let persisted_len = tokio::task::spawn_blocking(move || {
-                storage.persist_suffix(
-                    process_id,
-                    previously_persisted_bytes,
-                    &suffix_bytes,
-                    &meta_for_disk,
-                )
-            })
-            .await
-            .map_err(|err| {
-                UnifiedExecError::process_failed(format!(
-                    "exited exec output persistence task failed for process {process_id}: {err}"
-                ))
-            })?
-            .map_err(|err| {
-                UnifiedExecError::process_failed(format!(
-                    "failed to persist exited exec output for process {process_id}: {err}"
-                ))
-            })?;
-            output_buffer.lock().await.persisted_bytes = persisted_len;
-            (bin_path, None)
-        } else {
-            (PathBuf::new(), mem_bytes)
-        };
-
-        let removed = {
-            let mut store = self.process_store.lock().await;
-            store.transition_live_to_retained(
-                process_id,
-                expected_process,
-                RetainedEntry {
-                    meta,
-                    bin_path,
-                    bytes: mem_bytes,
-                    interaction_lock: Arc::new(Mutex::new(())),
-                    post_tool_use_pending,
-                },
-            )
-        };
-        if let Some(entry) = removed {
-            unregister_network_approval_for_entry(&entry).await;
-        }
-        Ok(())
-    }
-
-    async fn persist_exhausted(
-        &self,
-        process_id: i32,
-        output_buffer: &Arc<Mutex<OutputBuffers>>,
-        previously_persisted_bytes: usize,
-        suffix_bytes: Vec<u8>,
-        meta: RetainedExecMeta,
-    ) -> Result<(), UnifiedExecError> {
-        let Some(storage) = self.storage.clone() else {
-            return Ok(());
-        };
-        if storage.is_ephemeral() {
-            return Ok(());
-        }
-        let persisted_len = tokio::task::spawn_blocking(move || {
-            storage.persist_suffix(process_id, previously_persisted_bytes, &suffix_bytes, &meta)
-        })
-        .await
-        .map_err(|err| {
-            UnifiedExecError::process_failed(format!(
-                "exhausted exec metadata persistence task failed for process {process_id}: {err}"
-            ))
-        })?
-        .map_err(|err| {
-            UnifiedExecError::process_failed(format!(
-                "failed to persist exhausted exec metadata for process {process_id}: {err}"
-            ))
-        })?;
-        output_buffer.lock().await.persisted_bytes = persisted_len;
-        Ok(())
-    }
-
     async fn refresh_process_state(
         &self,
         process_id: i32,
         expected_process: &Arc<UnifiedExecProcess>,
         retention: OutputRetention,
     ) -> ProcessStatus {
-        let store = self.process_store.lock().await;
+        let mut store = self.process_store.lock().await;
         let Some(entry) = store
             .processes
-            .get(&process_id)
+            .get_mut(&process_id)
             .filter(|entry| Arc::ptr_eq(&entry.process, expected_process))
         else {
             return ProcessStatus::Unknown;
         };
 
         let exit_code = entry.process.exit_code();
+        let process_id = entry.process_id;
 
         if entry.process.has_exited() {
             let output = entry.process.output_handles();
-            // Never wait for output under the shared process-store lock. Retain open remote
-            // output streams for another poll; once output is closed, any unread bytes move
-            // to retained pagination on exit.
+            // Never wait for output under the shared process-store lock. Retain busy output
+            // for another poll; closed, empty output cannot grow again.
             if retention == OutputRetention::UntilCollected
                 && output.drain_policy == OutputDrainPolicy::WaitForOutputClosure
                 && !entry.process.termination_requested.load(Ordering::Acquire)
-                && !output.output_closed.load(Ordering::Acquire)
+                && (!output.output_closed.load(Ordering::Acquire)
+                    || output
+                        .output_buffer
+                        .try_lock()
+                        .map_or(true, |buffer| buffer.pending.total_bytes() > 0))
             {
                 return ProcessStatus::Alive {
                     exit_code: None,
                     call_id: entry.call_id.clone(),
+                    process_id,
                 };
             }
+            let Some(entry) = store.remove(process_id) else {
+                return ProcessStatus::Unknown;
+            };
             ProcessStatus::Exited {
                 exit_code,
-                call_id: entry.call_id.clone(),
-                persisted: entry.persisted,
-                network_approval: entry.network_approval.clone(),
-                session: entry.session.upgrade(),
-                plugin_metrics_sidecar: entry.plugin_metrics_sidecar.clone(),
+                entry: Box::new(entry),
             }
         } else {
             ProcessStatus::Alive {
                 exit_code,
                 call_id: entry.call_id.clone(),
+                process_id,
             }
         }
     }
@@ -1951,7 +1328,6 @@ impl UnifiedExecProcessManager {
             session,
             network_approval: entry.network_approval.clone(),
             call_id: entry.call_id.clone(),
-            environment_id: entry.environment_id.clone(),
             hook_command: entry.hook_command.clone(),
             // Capture the original process's locality before it can be removed
             // from the store. A later turn may select a different environment.
@@ -1959,7 +1335,6 @@ impl UnifiedExecProcessManager {
                 .then(|| entry.cwd.clone()),
             process_id: entry.process_id,
             tty: entry.tty,
-            persisted: entry.persisted,
         })
     }
 
@@ -1999,8 +1374,6 @@ impl UnifiedExecProcessManager {
             network_approval,
             session: Arc::downgrade(&context.session),
             last_used: started_at,
-            persisted_bytes: 0,
-            persisted: false,
         };
         let pruned_entry = {
             let mut store = self.process_store.lock().await;
@@ -2019,17 +1392,11 @@ impl UnifiedExecProcessManager {
             started_at,
             network_denial_monitor,
             plugin_metrics_sidecar,
-            Arc::clone(&self.process_store),
-            self.storage.clone(),
         );
         // Install the watcher before cancellable cleanup, and outside the process-store lock.
         if let Some(pruned_entry) = pruned_entry {
-            self.persist_removed_entry_before_termination(
-                &pruned_entry,
-                /*retain_in_memory*/ true,
-            )
-            .await;
             unregister_network_approval_for_entry(&pruned_entry).await;
+            pruned_entry.process.terminate();
         }
     }
 
@@ -2045,6 +1412,7 @@ impl UnifiedExecProcessManager {
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         tty: bool,
         environment: &codex_exec_server::Environment,
+        large_capture: bool,
     ) -> Result<UnifiedExecProcess, ToolError> {
         let network_policy_decider = request
             .exec_server_network_proxy
@@ -2056,7 +1424,7 @@ impl UnifiedExecProcessManager {
             exec_server_shell_snapshot: shell_snapshot,
             ..request
         };
-        self.open_session_with_prepared_exec_env(
+        self.open_session_with_prepared_exec_env_with_capture(
             process_id,
             &request,
             Some(tool_ctx),
@@ -2064,6 +1432,7 @@ impl UnifiedExecProcessManager {
             network_policy_decider,
             tty,
             environment,
+            large_capture,
         )
         .await
         .map_err(|err| match err {
@@ -2077,6 +1446,7 @@ impl UnifiedExecProcessManager {
         })
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open_session_with_prepared_exec_env(
         &self,
@@ -2087,6 +1457,31 @@ impl UnifiedExecProcessManager {
         network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
         tty: bool,
         environment: &codex_exec_server::Environment,
+    ) -> Result<UnifiedExecProcess, UnifiedExecError> {
+        self.open_session_with_prepared_exec_env_with_capture(
+            process_id,
+            request,
+            tool_ctx,
+            windows_sandbox_proxy_settings_mode,
+            network_policy_decider,
+            tty,
+            environment,
+            /*large_capture*/ false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_session_with_prepared_exec_env_with_capture(
+        &self,
+        process_id: i32,
+        request: &ExecRequest,
+        tool_ctx: Option<&ToolCtx>,
+        windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
+        network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
+        tty: bool,
+        environment: &codex_exec_server::Environment,
+        large_capture: bool,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
         if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
             let backend = environment.get_exec_backend();
@@ -2120,8 +1515,12 @@ impl UnifiedExecProcessManager {
             } else {
                 OutputDrainPolicy::BoundedAfterExit
             };
-            return UnifiedExecProcess::from_exec_server_started(started, output_drain_policy)
-                .await;
+            return UnifiedExecProcess::from_exec_server_started_with_capture(
+                started,
+                output_drain_policy,
+                large_capture,
+            )
+            .await;
         }
 
         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
@@ -2193,7 +1592,7 @@ impl UnifiedExecProcessManager {
         .await;
         let spawned =
             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
-        UnifiedExecProcess::from_spawned(spawned, request.sandbox).await
+        UnifiedExecProcess::from_spawned_with_capture(spawned, request.sandbox, large_capture).await
     }
 
     #[tracing::instrument(
@@ -2206,6 +1605,7 @@ impl UnifiedExecProcessManager {
         &self,
         request: &ExecCommandRequest,
         context: &UnifiedExecContext,
+        large_capture: bool,
     ) -> Result<(UnifiedExecAttempt, Option<DeferredNetworkApproval>), UnifiedExecError> {
         let prepared = &request.prepared;
         let shell_environment_policy = prepared.turn_environment.shell_environment_policy();
@@ -2251,6 +1651,7 @@ impl UnifiedExecProcessManager {
             explicit_env_overrides,
             network: request.network.clone(),
             exec_approval_requirement,
+            large_capture,
         };
         let tool_ctx = ToolCtx {
             session: context.session.clone(),
@@ -2299,11 +1700,11 @@ impl UnifiedExecProcessManager {
             output_closed = tracing::field::Empty,
         )
     )]
-    pub(super) async fn wait_for_output_until_deadline<const MAX_BYTES: usize>(
+    pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
         output: &OutputHandles<MAX_BYTES>,
         mut pause_state: Option<watch::Receiver<bool>>,
         mut deadline: Instant,
-    ) {
+    ) -> HeadTailBuffer<MAX_BYTES> {
         const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_millis(50);
 
         enum StopReason {
@@ -2313,12 +1714,14 @@ impl UnifiedExecProcessManager {
         }
 
         let OutputHandles {
+            output_buffer,
             output_notify,
             output_closed,
             output_closed_notify,
             cancellation_token,
             ..
         } = output;
+        let mut collected = HeadTailBuffer::default();
         let mut exit_signal_received = cancellation_token.is_cancelled();
         let mut post_exit_deadline: Option<Instant> = None;
         let stop_reason = loop {
@@ -2328,50 +1731,77 @@ impl UnifiedExecProcessManager {
                 &mut post_exit_deadline,
             )
             .await;
-
-            exit_signal_received |= cancellation_token.is_cancelled();
-            if exit_signal_received && output_closed.load(Ordering::Acquire) {
-                break StopReason::OutputClosed;
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining == Duration::ZERO {
-                break StopReason::Deadline;
-            }
-
-            if exit_signal_received {
-                let now = Instant::now();
-                let close_wait_deadline = *post_exit_deadline
-                    .get_or_insert_with(|| now + remaining.min(POST_EXIT_CLOSE_WAIT_CAP));
-                let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
-                if close_wait_remaining == Duration::ZERO {
-                    break StopReason::PostExitDeadline;
+            let drained_output: HeadTailBuffer<MAX_BYTES>;
+            let has_drained_output: bool;
+            let mut wait_for_output = None;
+            {
+                let mut guard = output_buffer.lock().await;
+                drained_output = std::mem::take(&mut guard.pending);
+                has_drained_output =
+                    drained_output.retained_bytes() > 0 || drained_output.omitted_bytes() > 0;
+                if !has_drained_output {
+                    wait_for_output = Some(output_notify.notified());
                 }
-                let notified = output_notify.notified();
-                let closed = output_closed_notify.notified();
-                tokio::pin!(notified);
-                tokio::pin!(closed);
-                notified.as_mut().enable();
-                closed.as_mut().enable();
-                if output_closed.load(Ordering::Acquire) {
+            }
+
+            if !has_drained_output {
+                exit_signal_received |= cancellation_token.is_cancelled();
+                if exit_signal_received && output_closed.load(Ordering::Acquire) {
                     break StopReason::OutputClosed;
                 }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining == Duration::ZERO {
+                    break StopReason::Deadline;
+                }
+
+                if exit_signal_received {
+                    let now = Instant::now();
+                    let close_wait_deadline = *post_exit_deadline
+                        .get_or_insert_with(|| now + remaining.min(POST_EXIT_CLOSE_WAIT_CAP));
+                    let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
+                    if close_wait_remaining == Duration::ZERO {
+                        break StopReason::PostExitDeadline;
+                    }
+                    let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
+                    let closed = output_closed_notify.notified();
+                    tokio::pin!(notified);
+                    tokio::pin!(closed);
+                    tokio::select! {
+                        _ = &mut notified => {}
+                        _ = &mut closed => {}
+                        _ = tokio::time::sleep(close_wait_remaining) => break StopReason::PostExitDeadline,
+                        _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+                    }
+                    continue;
+                }
+
+                let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
+                tokio::pin!(notified);
+                let exit_notified = cancellation_token.cancelled();
+                tokio::pin!(exit_notified);
                 tokio::select! {
                     _ = &mut notified => {}
-                    _ = &mut closed => {}
-                    _ = tokio::time::sleep(close_wait_remaining) => break StopReason::PostExitDeadline,
+                    _ = &mut exit_notified => exit_signal_received = true,
+                    _ = tokio::time::sleep(remaining) => break StopReason::Deadline,
                     _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
                 }
                 continue;
             }
 
-            let exit_notified = cancellation_token.cancelled();
-            tokio::pin!(exit_notified);
-            tokio::select! {
-                _ = &mut exit_notified => exit_signal_received = true,
-                _ = tokio::time::sleep(remaining) => break StopReason::Deadline,
-                _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+            collected.push_buffer(drained_output);
+
+            exit_signal_received |= cancellation_token.is_cancelled();
+            if Instant::now() >= deadline {
+                break StopReason::Deadline;
             }
         };
+
+        // Perform one final drain after observing closure/exit or deadline so a
+        // chunk arriving between the last empty drain and loop exit is not dropped.
+        let final_drained = std::mem::take(&mut output_buffer.lock().await.pending);
+        if final_drained.retained_bytes() > 0 || final_drained.omitted_bytes() > 0 {
+            collected.push_buffer(final_drained);
+        }
 
         let span = tracing::Span::current();
         span.record(
@@ -2388,16 +1818,7 @@ impl UnifiedExecProcessManager {
         );
         span.record("output_closed", output_closed.load(Ordering::Acquire));
         span.record("outcome", "completed");
-    }
-
-    #[cfg(test)]
-    pub(super) async fn collect_output_until_deadline<const MAX_BYTES: usize>(
-        output: &OutputHandles<MAX_BYTES>,
-        pause_state: Option<watch::Receiver<bool>>,
-        deadline: Instant,
-    ) -> super::output::HeadRetainedBuffer<MAX_BYTES> {
-        Self::wait_for_output_until_deadline(output, pause_state, deadline).await;
-        output.output_buffer.lock().await.retained.clone()
+        collected
     }
 
     async fn extend_deadlines_while_paused(
@@ -2509,262 +1930,21 @@ impl UnifiedExecProcessManager {
             .map(|(process_id, _, _)| process_id)
     }
 
-    /// Terminate all live background processes for `CleanBackgroundTerminals`
-    /// while preserving already-retained outputs, any unread output collected
-    /// from the terminated processes, and process-ID reservations.
-    pub(crate) async fn clean_background_terminals(&self) {
-        let live: Vec<(i32, Arc<UnifiedExecProcess>)> = {
-            let store = self.process_store.lock().await;
-            store
-                .processes
-                .iter()
-                .map(|(id, entry)| (*id, Arc::clone(&entry.process)))
-                .collect()
-        };
-
-        for (process_id, process) in live {
-            self.retire_live_process(process_id, &process, /*retain_in_memory*/ true)
-                .await;
-        }
-    }
-
-    /// Orderly session shutdown: terminate live processes, drain and persist
-    /// any unread collected output, then clear in-memory tables.
     pub(crate) async fn terminate_all_processes(&self) {
-        let live: Vec<(i32, Arc<UnifiedExecProcess>)> = {
-            let store = self.process_store.lock().await;
-            store
+        let entries: Vec<ProcessEntry> = {
+            let mut processes = self.process_store.lock().await;
+            let entries: Vec<ProcessEntry> = processes
                 .processes
-                .iter()
-                .map(|(id, entry)| (*id, Arc::clone(&entry.process)))
-                .collect()
+                .drain()
+                .map(|(_, entry)| entry)
+                .collect();
+            processes.reserved_process_ids.clear();
+            entries
         };
 
-        for (process_id, process) in live {
-            self.retire_live_process(process_id, &process, /*retain_in_memory*/ false)
-                .await;
-        }
-
-        let mut store = self.process_store.lock().await;
-        store.processes.clear();
-        store.retained.clear();
-        store.reserved_process_ids.clear();
-    }
-
-    async fn retire_live_process(
-        &self,
-        process_id: i32,
-        process: &Arc<UnifiedExecProcess>,
-        retain_in_memory: bool,
-    ) {
-        let _interaction_guard = process.interaction_lock().lock_owned().await;
-        // Stop the producer first so no further output can arrive after the snapshot.
-        process.terminate();
-        let output_handles = process.output_handles();
-        if !output_handles.output_closed.load(Ordering::Acquire) {
-            let _ = tokio::time::timeout(
-                Duration::from_millis(100),
-                output_handles.output_notify.notified(),
-            )
-            .await;
-        }
-
-        let entry_snapshot = {
-            let store = self.process_store.lock().await;
-            store
-                .processes
-                .get(&process_id)
-                .filter(|entry| Arc::ptr_eq(&entry.process, process))
-                .map(|entry| {
-                    (
-                        entry.call_id.clone(),
-                        entry.environment_id.clone(),
-                        entry.hook_command.clone(),
-                        entry.cwd.clone(),
-                        entry.persisted,
-                    )
-                })
-        };
-        let Some((call_id, environment_id, hook_command, cwd, entry_persisted)) = entry_snapshot
-        else {
-            return;
-        };
-
-        let retained_entry = self
-            .persist_process_output_for_retirement(
-                process_id,
-                process,
-                call_id,
-                environment_id,
-                hook_command,
-                cwd,
-                entry_persisted,
-                retain_in_memory,
-            )
-            .await;
-
-        let removed = {
-            let mut store = self.process_store.lock().await;
-            let matches = store
-                .processes
-                .get(&process_id)
-                .is_some_and(|entry| Arc::ptr_eq(&entry.process, process));
-            if !matches {
-                None
-            } else {
-                let removed = store.processes.remove(&process_id);
-                // Keep process_id reserved so future allocations never reuse a cleaned ID.
-                store.reserved_process_ids.insert(process_id);
-                if let Some(retained_entry) = retained_entry {
-                    store.retained.insert(process_id, retained_entry);
-                }
-                removed
-            }
-        };
-        if let Some(entry) = removed {
+        for entry in entries {
             unregister_network_approval_for_entry(&entry).await;
-        }
-    }
-
-    async fn persist_removed_entry_before_termination(
-        &self,
-        entry: &ProcessEntry,
-        retain_in_memory: bool,
-    ) {
-        entry.process.terminate();
-        let output_handles = entry.process.output_handles();
-        if !output_handles.output_closed.load(Ordering::Acquire) {
-            let _ = tokio::time::timeout(
-                Duration::from_millis(100),
-                output_handles.output_notify.notified(),
-            )
-            .await;
-        }
-        let retained_entry = self
-            .persist_process_output_for_retirement(
-                entry.process_id,
-                &entry.process,
-                entry.call_id.clone(),
-                entry.environment_id.clone(),
-                entry.hook_command.clone(),
-                entry.cwd.clone(),
-                entry.persisted,
-                retain_in_memory,
-            )
-            .await;
-        let mut store = self.process_store.lock().await;
-        store.reserved_process_ids.insert(entry.process_id);
-        if let Some(retained_entry) = retained_entry {
-            store.retained.insert(entry.process_id, retained_entry);
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn persist_process_output_for_retirement(
-        &self,
-        process_id: i32,
-        process: &Arc<UnifiedExecProcess>,
-        call_id: String,
-        environment_id: String,
-        hook_command: String,
-        cwd: PathUri,
-        entry_persisted: bool,
-        retain_in_memory: bool,
-    ) -> Option<RetainedEntry> {
-        let output_buffer = Arc::clone(&process.output_handles().output_buffer);
-        let has_persistent_storage = self
-            .storage
-            .as_ref()
-            .is_some_and(|storage| !storage.is_ephemeral());
-        let (has_unread, snapshot) = {
-            let guard = output_buffer.lock().await;
-            let has_unread = guard.unread_total_bytes() > 0;
-            if !has_unread && !entry_persisted {
-                return None;
-            }
-            (
-                has_unread,
-                RetainedSuffixSnapshot {
-                    previously_persisted_bytes: guard.persisted_bytes,
-                    suffix_bytes: if has_persistent_storage {
-                        guard.suffix_from(guard.persisted_bytes)
-                    } else {
-                        Vec::new()
-                    },
-                    mem_bytes: (retain_in_memory && has_unread)
-                        .then(|| Arc::new(guard.retained.to_bytes())),
-                    retained_bytes: guard.retained.retained_bytes(),
-                    discarded_bytes: guard.retained.discarded_bytes(),
-                    read_offset: guard.read_offset,
-                    reported_discarded_bytes: guard.reported_discarded_bytes,
-                },
-            )
-        };
-
-        let tool_cwd = (environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID).then_some(cwd);
-        let meta = RetainedExecMeta {
-            process_id,
-            call_id,
-            environment_id,
-            exit_code: process.exit_code(),
-            completed: true,
-            retained_bytes: snapshot.retained_bytes,
-            discarded_bytes: snapshot.discarded_bytes,
-            read_offset: snapshot.read_offset,
-            reported_discarded_bytes: snapshot.reported_discarded_bytes,
-            exhausted: !has_unread,
-            source_thread_id: None,
-            hook_command: Some(hook_command),
-            tool_cwd,
-        };
-
-        let mut disk_ok = false;
-        let mut bin_path = PathBuf::new();
-        if let Some(storage) = self.storage.clone()
-            && !storage.is_ephemeral()
-        {
-            let target_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
-            let meta_for_disk = meta.clone();
-            match tokio::task::spawn_blocking(move || {
-                storage.persist_suffix(
-                    process_id,
-                    snapshot.previously_persisted_bytes,
-                    &snapshot.suffix_bytes,
-                    &meta_for_disk,
-                )
-            })
-            .await
-            {
-                Ok(Ok(new_len)) => {
-                    output_buffer.lock().await.persisted_bytes = new_len;
-                    bin_path = target_path;
-                    disk_ok = true;
-                }
-                Ok(Err(err)) => {
-                    warn!(
-                        process_id,
-                        "failed to persist exec output before termination; keeping in-memory fallback: {err}"
-                    );
-                }
-                Err(err) => {
-                    warn!(
-                        process_id,
-                        "exec output persistence task failed before termination; keeping in-memory fallback: {err}"
-                    );
-                }
-            }
-        }
-
-        if retain_in_memory && has_unread {
-            Some(RetainedEntry {
-                meta,
-                bin_path,
-                bytes: if disk_ok { None } else { snapshot.mem_bytes },
-                interaction_lock: Arc::new(Mutex::new(())),
-                post_tool_use_pending: false,
-            })
-        } else {
-            None
+            entry.process.terminate();
         }
     }
 
@@ -2773,29 +1953,16 @@ impl UnifiedExecProcessManager {
         process_id: i32,
     ) -> Result<TerminalSession, UnifiedExecError> {
         let store = self.process_store.lock().await;
-        if let Some(entry) = store.processes.get(&process_id) {
-            return Ok(TerminalSession {
-                process_id,
-                target: TerminalTarget::Live(Arc::clone(&entry.process)),
-                call_id: entry.call_id.clone(),
-                environment_id: entry.environment_id.clone(),
-            });
-        }
-        if let Some(entry) = store
-            .retained
+        let entry = store
+            .processes
             .get(&process_id)
-            .filter(|entry| !entry.meta.exhausted || entry.post_tool_use_pending)
-        {
-            return Ok(TerminalSession {
-                process_id,
-                target: TerminalTarget::Retained {
-                    interaction_lock: Arc::clone(&entry.interaction_lock),
-                },
-                call_id: entry.meta.call_id.clone(),
-                environment_id: entry.meta.environment_id.clone(),
-            });
-        }
-        Err(UnifiedExecError::UnknownProcessId { process_id })
+            .ok_or(UnifiedExecError::UnknownProcessId { process_id })?;
+        Ok(TerminalSession {
+            process_id,
+            process: Arc::clone(&entry.process),
+            call_id: entry.call_id.clone(),
+            environment_id: entry.environment_id.clone(),
+        })
     }
 
     pub(crate) async fn list_processes(&self) -> Vec<BackgroundTerminalInfo> {
@@ -2850,189 +2017,8 @@ impl UnifiedExecProcessManager {
             entry
         };
 
-        self.persist_removed_entry_before_termination(&entry, /*retain_in_memory*/ true)
-            .await;
         unregister_network_approval_for_entry(&entry).await;
         true
-    }
-}
-
-/// Persist any newly collected output of an exited background process and
-/// atomically transition it from `store.processes` into `store.retained`
-/// without waiting for another `write_stdin` poll.
-pub(super) async fn persist_and_retain_on_exit(
-    process_store: &Arc<Mutex<ProcessStore>>,
-    storage: Option<&RetainedExecStorage>,
-    process: &Arc<UnifiedExecProcess>,
-    process_id: i32,
-) {
-    let _interaction_guard = process.interaction_lock().lock_owned().await;
-    if process.failure_message().is_some() {
-        return;
-    }
-
-    let (
-        call_id,
-        environment_id,
-        hook_command,
-        tool_cwd,
-        entry_persisted,
-        network_approval,
-        session,
-    ) = {
-        let store = process_store.lock().await;
-        let Some(entry) = store
-            .processes
-            .get(&process_id)
-            .filter(|entry| Arc::ptr_eq(&entry.process, process))
-        else {
-            return;
-        };
-        if entry.initial_exec_command_active.load(Ordering::Acquire) {
-            return;
-        }
-        if entry
-            .network_approval
-            .as_ref()
-            .is_some_and(DeferredNetworkApproval::is_cancelled)
-        {
-            return;
-        }
-        let output = entry.process.output_handles();
-        if output.drain_policy == OutputDrainPolicy::WaitForOutputClosure
-            && !entry.process.termination_requested.load(Ordering::Acquire)
-            && !output.output_closed.load(Ordering::Acquire)
-        {
-            return;
-        }
-        let tool_cwd = (entry.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID)
-            .then(|| entry.cwd.clone());
-        (
-            entry.call_id.clone(),
-            entry.environment_id.clone(),
-            entry.hook_command.clone(),
-            tool_cwd,
-            entry.persisted,
-            entry.network_approval.clone(),
-            entry.session.upgrade(),
-        )
-    };
-
-    if let Err(message) = finish_deferred_network_approval_after_process_exit_for_session(
-        session.as_ref(),
-        network_approval,
-    )
-    .await
-    {
-        process.fail_and_terminate(message);
-        return;
-    }
-
-    let output_buffer = Arc::clone(&process.output_handles().output_buffer);
-    let has_persistent_storage = storage.is_some_and(|s| !s.is_ephemeral());
-    let snapshot = {
-        let guard = output_buffer.lock().await;
-        let has_unread = guard.unread_total_bytes() > 0;
-        if !has_unread && !entry_persisted {
-            return;
-        }
-        (
-            has_unread,
-            RetainedSuffixSnapshot {
-                previously_persisted_bytes: guard.persisted_bytes,
-                suffix_bytes: if has_persistent_storage {
-                    guard.suffix_from(guard.persisted_bytes)
-                } else {
-                    Vec::new()
-                },
-                mem_bytes: (!has_persistent_storage && has_unread)
-                    .then(|| Arc::new(guard.retained.to_bytes())),
-                retained_bytes: guard.retained.retained_bytes(),
-                discarded_bytes: guard.retained.discarded_bytes(),
-                read_offset: guard.read_offset,
-                reported_discarded_bytes: guard.reported_discarded_bytes,
-            },
-        )
-    };
-
-    let (has_unread, snapshot) = snapshot;
-    let meta = RetainedExecMeta {
-        process_id,
-        call_id,
-        environment_id,
-        exit_code: process.exit_code(),
-        completed: true,
-        retained_bytes: snapshot.retained_bytes,
-        discarded_bytes: snapshot.discarded_bytes,
-        read_offset: snapshot.read_offset,
-        reported_discarded_bytes: snapshot.reported_discarded_bytes,
-        exhausted: !has_unread,
-        source_thread_id: None,
-        hook_command: Some(hook_command),
-        tool_cwd,
-    };
-
-    let bin_path = if let Some(storage) = storage.cloned()
-        && !storage.is_ephemeral()
-    {
-        let bin_path = storage.bin_path_for(process_id, /*source_thread_id*/ None);
-        let meta_for_disk = meta.clone();
-        match tokio::task::spawn_blocking(move || {
-            storage.persist_suffix(
-                process_id,
-                snapshot.previously_persisted_bytes,
-                &snapshot.suffix_bytes,
-                &meta_for_disk,
-            )
-        })
-        .await
-        {
-            Ok(Ok(new_len)) => {
-                output_buffer.lock().await.persisted_bytes = new_len;
-                bin_path
-            }
-            Ok(Err(err)) => {
-                warn!(
-                    process_id,
-                    "failed to persist exited background exec output: {err}"
-                );
-                return;
-            }
-            Err(err) => {
-                warn!(
-                    process_id,
-                    "exited background exec output persistence task failed: {err}"
-                );
-                return;
-            }
-        }
-    } else {
-        PathBuf::new()
-    };
-
-    let removed = {
-        let mut store = process_store.lock().await;
-        if !store
-            .processes
-            .get(&process_id)
-            .is_some_and(|entry| Arc::ptr_eq(&entry.process, process))
-        {
-            return;
-        }
-        store.transition_live_to_retained(
-            process_id,
-            Some(process),
-            RetainedEntry {
-                meta,
-                bin_path,
-                bytes: snapshot.mem_bytes,
-                interaction_lock: Arc::new(Mutex::new(())),
-                post_tool_use_pending: true,
-            },
-        )
-    };
-    if let Some(entry) = removed {
-        unregister_network_approval_for_entry(&entry).await;
     }
 }
 
@@ -3046,14 +2032,11 @@ enum ProcessStatus {
     Alive {
         exit_code: Option<i32>,
         call_id: String,
+        process_id: i32,
     },
     Exited {
         exit_code: Option<i32>,
-        call_id: String,
-        persisted: bool,
-        network_approval: Option<DeferredNetworkApproval>,
-        session: Option<Arc<crate::session::session::Session>>,
-        plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
+        entry: Box<ProcessEntry>,
     },
     Unknown,
 }

@@ -19,51 +19,11 @@ use crate::common::format_io_error;
 use crate::common::open_nonblocking;
 use crate::common::quote_bundle_path;
 use crate::common::quote_json_string;
-use crate::common::quote_shell_arg;
 
 const READ_BUNDLE_USAGE: &str =
     "mcat [-n N] [--tail] [--number] PATH [START:END ...] [PATH [START:END ...] ...]";
 const MAX_READ_BUNDLE_READS: usize = 16;
 const GENERATED_REMINDER: &str = "Generated file: edit the source and regenerate.";
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct McatOptions {
-    lines: Option<u64>,
-    tail: bool,
-    number: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReadSelection {
-    path: String,
-    has_range: bool,
-    start: u64,
-    end: u64,
-}
-
-#[derive(Clone, Debug)]
-struct ScanResult {
-    stdout: String,
-    stderr: String,
-    row_count: u64,
-    failed: bool,
-}
-
-fn line_range_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        #[allow(clippy::expect_used)]
-        Regex::new(r"^[0-9]+[:-][0-9]+$").expect("valid line range regex")
-    })
-}
-
-fn malformed_range_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        #[allow(clippy::expect_used)]
-        Regex::new(r"^([0-9]+)(:\+|,)([0-9]+)$").expect("valid malformed range regex")
-    })
-}
 
 fn generated_marker_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -74,206 +34,6 @@ fn generated_marker_regex() -> &'static Regex {
         )
         .expect("valid generated marker regex")
     })
-}
-
-fn is_ascii_digits(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
-}
-
-fn parse_canonical_u64(raw: &str) -> Option<u64> {
-    if !is_ascii_digits(raw) {
-        return None;
-    }
-    if raw.len() > 1 && raw.starts_with('0') {
-        return None;
-    }
-    raw.parse::<u64>().ok()
-}
-
-fn parse_line_range(span: &str) -> Option<(u64, u64)> {
-    let normalized = span.replace('-', ":");
-    let (first, last) = normalized.split_once(':')?;
-    let start = parse_canonical_u64(first)?;
-    let end = parse_canonical_u64(last)?;
-    if end < 1 || start > end || start > MAX_SAFE_INT || end > MAX_SAFE_INT {
-        return None;
-    }
-    Some((start, end))
-}
-
-fn corrected_read_range(operand: &str) -> Option<String> {
-    if is_ascii_digits(operand) {
-        return Some(format!("{operand}:{operand}"));
-    }
-    let caps = malformed_range_regex().captures(operand)?;
-    let first = caps.get(1)?.as_str();
-    let sep = caps.get(2)?.as_str();
-    let second = caps.get(3)?.as_str();
-    if sep == "," {
-        return Some(format!("{first}:{second}"));
-    }
-    let start = first.parse::<u64>().ok();
-    let count = second.parse::<u64>().ok();
-    match (start, count) {
-        (Some(start), Some(count))
-            if count > 0
-                && start <= MAX_SAFE_INT
-                && count <= (MAX_SAFE_INT + 1).saturating_sub(start.max(1)) =>
-        {
-            let s = start.max(1);
-            Some(format!("{s}:{}", s + count - 1))
-        }
-        _ => Some(format!("{first}:END")),
-    }
-}
-
-fn retry_command(args: &[&str]) -> String {
-    let quoted: Vec<String> = args.iter().map(|arg| quote_shell_arg(arg)).collect();
-    format!("mcat {}", quoted.join(" "))
-}
-
-fn parse_args(args: &[String]) -> Result<(Vec<ReadSelection>, McatOptions), String> {
-    let mut options = McatOptions::default();
-    let mut operands: Vec<&str> = Vec::new();
-    let mut ended = false;
-    let mut idx = 0;
-
-    while idx < args.len() {
-        let arg = args[idx].as_str();
-        idx += 1;
-
-        if !ended && arg == "--" {
-            ended = true;
-            continue;
-        }
-        if !ended && arg == "-n" {
-            let raw = args.get(idx).map(String::as_str).unwrap_or("");
-            if idx < args.len() {
-                idx += 1;
-            }
-            if line_range_regex().is_match(raw) {
-                let normalized = raw.replace('-', ":");
-                return Err(format!(
-                    "-n takes a row count, not a range; retry: mcat PATH {normalized}"
-                ));
-            }
-            let parsed = parse_canonical_u64(raw).filter(|&n| (1..=MAX_SAFE_INT).contains(&n));
-            if parsed.is_none() || options.lines.is_some() {
-                return Err(format!(
-                    "-n requires one integer from 1 to {MAX_SAFE_INT} and cannot repeat"
-                ));
-            }
-            options.lines = parsed;
-            continue;
-        }
-        if !ended && arg == "--tail" {
-            if options.tail {
-                return Err("--tail cannot repeat".to_string());
-            }
-            options.tail = true;
-            continue;
-        }
-        if !ended && arg == "--number" {
-            if options.number {
-                return Err("--number cannot repeat".to_string());
-            }
-            options.number = true;
-            continue;
-        }
-        if !ended && arg.starts_with('-') {
-            return Err(format!("unknown option {arg:?}"));
-        }
-        operands.push(arg);
-    }
-
-    if options.tail && options.lines.is_none() {
-        return Err("--tail requires -n".to_string());
-    }
-
-    let mut specs: Vec<ReadSelection> = Vec::new();
-    for operand in operands {
-        if line_range_regex().is_match(operand) {
-            let Some(last) = specs.last_mut() else {
-                let prefixed = format!("./{operand}");
-                return Err(format!(
-                    "range-like paths require ./; retry: {}",
-                    retry_command(&[&prefixed])
-                ));
-            };
-            let Some((start, end)) = parse_line_range(operand) else {
-                return Err(
-                    "line range must be START:END with canonical safe integers and START not after END"
-                        .to_string(),
-                );
-            };
-            let normalized_start = start.max(1);
-            if !last.has_range {
-                last.has_range = true;
-                last.start = normalized_start;
-                last.end = end;
-            } else {
-                let path = last.path.clone();
-                specs.push(ReadSelection {
-                    path,
-                    has_range: true,
-                    start: normalized_start,
-                    end,
-                });
-            }
-            continue;
-        }
-
-        if let Some(correction) = corrected_read_range(operand) {
-            let path = specs.last().map_or("PATH", |spec| spec.path.as_str());
-            return Err(format!(
-                "invalid range {operand:?}; retry: {}",
-                retry_command(&[path, &correction])
-            ));
-        }
-
-        if let Some((path, row)) = operand.rsplit_once(':')
-            && !path.is_empty()
-            && is_ascii_digits(row)
-        {
-            match fs::metadata(operand) {
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    let range = format!("{row}:{row}");
-                    return Err(format!(
-                        "ranges must be separate operands; retry: {}",
-                        retry_command(&[path, &range])
-                    ));
-                }
-                _ => {}
-            }
-        }
-
-        if operand.is_empty() {
-            return Err(format!("{READ_BUNDLE_USAGE} (1–16 reads)"));
-        }
-
-        specs.push(ReadSelection {
-            path: operand.to_string(),
-            has_range: false,
-            start: 0,
-            end: 0,
-        });
-    }
-
-    if specs.is_empty() {
-        return Err(READ_BUNDLE_USAGE.to_string());
-    }
-    if specs.len() > MAX_READ_BUNDLE_READS {
-        let calls = specs.len().div_ceil(MAX_READ_BUNDLE_READS);
-        return Err(format!(
-            "received {} reads after argument expansion, exceeding the {MAX_READ_BUNDLE_READS}-read limit; split into {calls} mcat calls of at most {MAX_READ_BUNDLE_READS} reads each; repeat the path when splitting its ranges",
-            specs.len()
-        ));
-    }
-    if specs.len() > 1 && (options.lines.is_some() || options.tail) {
-        return Err("-n and --tail require a single path".to_string());
-    }
-
-    Ok((specs, options))
 }
 
 #[derive(Default)]
@@ -351,6 +111,187 @@ fn generated_advisory(paths: &[String]) -> String {
     format!("mcat: {}: {GENERATED_REMINDER}\n", quoted.join(", "))
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct McatOptions {
+    lines: Option<u64>,
+    tail: bool,
+    number: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReadSelection {
+    path: String,
+    has_range: bool,
+    start: u64,
+    end: u64,
+}
+
+#[derive(Clone, Debug)]
+struct ScanResult {
+    stdout: String,
+    stderr: String,
+    row_count: u64,
+    failed: bool,
+}
+
+fn is_ascii_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn parse_canonical_u64(raw: &str) -> Option<u64> {
+    if !is_ascii_digits(raw) || (raw.len() > 1 && raw.starts_with('0')) {
+        return None;
+    }
+    raw.parse::<u64>().ok()
+}
+
+fn split_range_shape(s: &str) -> Option<(&str, &str)> {
+    let (first, last) = s.split_once(':').or_else(|| s.split_once('-'))?;
+    (is_ascii_digits(first) && is_ascii_digits(last)).then_some((first, last))
+}
+
+fn parse_line_range(span: &str) -> Option<(u64, u64)> {
+    let (first, last) = split_range_shape(span)?;
+    let start = parse_canonical_u64(first)?;
+    let end = parse_canonical_u64(last)?;
+    (end >= 1 && start <= end && end <= MAX_SAFE_INT).then_some((start, end))
+}
+
+fn is_malformed_range(s: &str) -> bool {
+    if is_ascii_digits(s) {
+        return true;
+    }
+    s.split_once(":+")
+        .or_else(|| s.split_once(','))
+        .is_some_and(|(a, b)| is_ascii_digits(a) && is_ascii_digits(b))
+}
+
+fn parse_args(args: &[String]) -> Result<(Vec<ReadSelection>, McatOptions), String> {
+    let mut options = McatOptions::default();
+    let mut operands: Vec<&str> = Vec::new();
+    let mut ended = false;
+    let mut idx = 0;
+
+    while idx < args.len() {
+        let arg = args[idx].as_str();
+        idx += 1;
+
+        if !ended && arg == "--" {
+            ended = true;
+            continue;
+        }
+        if !ended && arg == "-n" {
+            let raw = args.get(idx).map(String::as_str).unwrap_or("");
+            if idx < args.len() {
+                idx += 1;
+            }
+            if split_range_shape(raw).is_some() {
+                return Err("-n takes a row count, not a range".to_string());
+            }
+            let parsed = parse_canonical_u64(raw).filter(|&n| (1..=MAX_SAFE_INT).contains(&n));
+            if parsed.is_none() || options.lines.is_some() {
+                return Err(format!(
+                    "-n requires one integer from 1 to {MAX_SAFE_INT} and cannot repeat"
+                ));
+            }
+            options.lines = parsed;
+            continue;
+        }
+        if !ended && arg == "--tail" {
+            if options.tail {
+                return Err("--tail cannot repeat".to_string());
+            }
+            options.tail = true;
+            continue;
+        }
+        if !ended && arg == "--number" {
+            if options.number {
+                return Err("--number cannot repeat".to_string());
+            }
+            options.number = true;
+            continue;
+        }
+        if !ended && arg.starts_with('-') {
+            return Err(format!("unknown option {arg:?}"));
+        }
+        operands.push(arg);
+    }
+
+    if options.tail && options.lines.is_none() {
+        return Err("--tail requires -n".to_string());
+    }
+
+    let mut specs: Vec<ReadSelection> = Vec::new();
+    for operand in operands {
+        if split_range_shape(operand).is_some() {
+            let Some(last) = specs.last_mut() else {
+                return Err(format!("range-like path {operand:?} requires ./ prefix"));
+            };
+            let Some((start, end)) = parse_line_range(operand) else {
+                return Err(format!(
+                    "invalid line range {operand:?}: expected START:END with canonical integers and START <= END"
+                ));
+            };
+            let normalized_start = start.max(1);
+            if !last.has_range {
+                last.has_range = true;
+                last.start = normalized_start;
+                last.end = end;
+            } else {
+                let path = last.path.clone();
+                specs.push(ReadSelection {
+                    path,
+                    has_range: true,
+                    start: normalized_start,
+                    end,
+                });
+            }
+            continue;
+        }
+
+        if is_malformed_range(operand) {
+            return Err(format!(
+                "invalid line range {operand:?}: expected START:END"
+            ));
+        }
+
+        if let Some((path, row)) = operand.rsplit_once(':')
+            && !path.is_empty()
+            && is_ascii_digits(row)
+            && matches!(fs::metadata(operand), Err(err) if err.kind() == std::io::ErrorKind::NotFound)
+        {
+            return Err("ranges must be separate START:END operands".to_string());
+        }
+
+        if operand.is_empty() {
+            return Err(format!("{READ_BUNDLE_USAGE} (1–16 reads)"));
+        }
+
+        specs.push(ReadSelection {
+            path: operand.to_string(),
+            has_range: false,
+            start: 0,
+            end: 0,
+        });
+    }
+
+    if specs.is_empty() {
+        return Err(READ_BUNDLE_USAGE.to_string());
+    }
+    if specs.len() > MAX_READ_BUNDLE_READS {
+        let calls = specs.len().div_ceil(MAX_READ_BUNDLE_READS);
+        return Err(format!(
+            "received {} reads after argument expansion, exceeding the {MAX_READ_BUNDLE_READS}-read limit; split into {calls} mcat calls of at most {MAX_READ_BUNDLE_READS} reads each; repeat the path when splitting its ranges",
+            specs.len()
+        ));
+    }
+    if specs.len() > 1 && (options.lines.is_some() || options.tail) {
+        return Err("-n and --tail require a single path".to_string());
+    }
+
+    Ok((specs, options))
+}
+
 fn source_failure(path: &str, message: &str) -> ScanResult {
     ScanResult {
         stdout: String::new(),
@@ -393,14 +334,13 @@ impl<'a> SelectionAccumulator<'a> {
     fn accept(&mut self, formatted_row: &str, options: &McatOptions) {
         self.selected_count += 1;
         if options.tail {
-            if let Some(limit) = options.lines {
-                if self.tail_rows.len() as u64 == limit {
-                    self.tail_rows.pop_front();
-                }
-                self.tail_rows.push_back(formatted_row.to_string());
-            } else {
-                self.tail_rows.push_back(formatted_row.to_string());
+            if options
+                .lines
+                .is_some_and(|limit| self.tail_rows.len() as u64 == limit)
+            {
+                self.tail_rows.pop_front();
             }
+            self.tail_rows.push_back(formatted_row.to_string());
         } else if options
             .lines
             .is_none_or(|limit| self.selected_count <= limit)
@@ -422,10 +362,7 @@ impl<'a> SelectionAccumulator<'a> {
         }
         let (stdout, row_count) = if options.tail {
             let count = self.tail_rows.len() as u64;
-            let mut out = String::new();
-            for row in self.tail_rows {
-                out.push_str(&row);
-            }
+            let out: String = self.tail_rows.into_iter().collect();
             (out, count)
         } else {
             (self.head_out, self.head_rows)
@@ -463,23 +400,16 @@ fn read_logical_line_raw<R: BufRead>(
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
-            return if buf.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(buf.len()))
-            };
+            return Ok((!buf.is_empty()).then_some(buf.len()));
         }
         if let Some(pos) = available.iter().position(|&b| b == b'\n' || b == b'\r') {
             let delim = available[pos];
             buf.extend_from_slice(&available[..=pos]);
             let content_len = buf.len() - 1;
             reader.consume(pos + 1);
-            if delim == b'\r' {
-                let next = reader.fill_buf()?;
-                if next.first() == Some(&b'\n') {
-                    buf.push(b'\n');
-                    reader.consume(1);
-                }
+            if delim == b'\r' && reader.fill_buf()?.first() == Some(&b'\n') {
+                buf.push(b'\n');
+                reader.consume(1);
             }
             return Ok(Some(content_len));
         }
@@ -489,101 +419,28 @@ fn read_logical_line_raw<R: BufRead>(
     }
 }
 
-/// Stream a single plain file directly to `stdout` without buffering the whole file
-/// into memory or altering `\r\n`, `\r`, `\n`, or missing trailing newlines.
-fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Write) -> i32 {
+fn stream_utf8_pass(file: &mut fs::File, mut sink: Option<&mut dyn Write>) -> Result<(), String> {
     const CHUNK_SIZE: usize = 64 * 1024;
-
-    let mut file = match open_verified_regular_file(path) {
-        Ok(file) => file,
-        Err(message) => {
-            let _ = write!(stderr, "mcat: {}: {message}\n", quote_json_string(path));
-            return 1;
-        }
-    };
-
-    // Pass 1: streaming UTF-8 validation in O(1) memory.
     let mut carry = [0u8; 4];
     let mut carry_len = 0usize;
     let mut chunk = vec![0u8; CHUNK_SIZE];
     let mut work = Vec::with_capacity(CHUNK_SIZE + 4);
 
     loop {
-        let read = match file.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(err) => {
-                let _ = write!(
-                    stderr,
-                    "mcat: {}: {}\n",
-                    quote_json_string(path),
-                    format_io_error(&err)
-                );
-                return 1;
-            }
-        };
-
-        work.clear();
-        work.extend_from_slice(&carry[..carry_len]);
-        work.extend_from_slice(&chunk[..read]);
-        carry_len = 0;
-
-        if let Err(err) = std::str::from_utf8(&work) {
-            if err.error_len().is_some() {
-                let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
-                return 1;
-            }
-            let valid_up_to = err.valid_up_to();
-            let rem = &work[valid_up_to..];
-            carry[..rem.len()].copy_from_slice(rem);
-            carry_len = rem.len();
-            if std::str::from_utf8(&work[..valid_up_to]).is_err() {
-                let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
-                return 1;
-            }
+        let read = file.read(&mut chunk).map_err(|err| format_io_error(&err))?;
+        if read == 0 {
+            break;
         }
-    }
-
-    if carry_len > 0 {
-        let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
-        return 1;
-    }
-
-    // Pass 2: stream raw bytes while re-validating UTF-8 so concurrent appends cannot emit invalid bytes.
-    if let Err(err) = file.seek(SeekFrom::Start(0)) {
-        let _ = write!(
-            stderr,
-            "mcat: {}: {}\n",
-            quote_json_string(path),
-            format_io_error(&err)
-        );
-        return 1;
-    }
-    carry_len = 0;
-    loop {
-        let read = match file.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(err) => {
-                let _ = write!(
-                    stderr,
-                    "mcat: {}: {}\n",
-                    quote_json_string(path),
-                    format_io_error(&err)
-                );
-                return 1;
-            }
-        };
         work.clear();
         work.extend_from_slice(&carry[..carry_len]);
         work.extend_from_slice(&chunk[..read]);
         carry_len = 0;
+
         let emit_len = match std::str::from_utf8(&work) {
             Ok(_) => work.len(),
             Err(err) => {
                 if err.error_len().is_some() {
-                    let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
-                    return 1;
+                    return Err("not UTF-8".to_string());
                 }
                 let valid_up_to = err.valid_up_to();
                 let rem = &work[valid_up_to..];
@@ -593,22 +450,35 @@ fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Writ
             }
         };
         if emit_len > 0
-            && let Err(err) = stdout.write_all(&work[..emit_len])
+            && let Some(out) = sink.as_deref_mut()
         {
-            let _ = write!(
-                stderr,
-                "mcat: {}: {}\n",
-                quote_json_string(path),
-                format_io_error(&err)
-            );
-            return 1;
+            out.write_all(&work[..emit_len])
+                .map_err(|err| format_io_error(&err))?;
         }
     }
+
     if carry_len > 0 {
-        let _ = write!(stderr, "mcat: {}: not UTF-8\n", quote_json_string(path));
+        return Err("not UTF-8".to_string());
+    }
+    Ok(())
+}
+
+/// Stream a single plain file directly to `stdout` without buffering the whole file
+/// into memory or altering `\r\n`, `\r`, `\n`, or missing trailing newlines.
+fn stream_plain_file(path: &str, stdout: &mut impl Write, stderr: &mut impl Write) -> i32 {
+    let mut run = || -> Result<(), String> {
+        let mut file = open_verified_regular_file(path)?;
+        // Pass 1: streaming UTF-8 validation in O(1) memory.
+        stream_utf8_pass(&mut file, None)?;
+        // Pass 2: stream raw bytes while re-validating UTF-8 against concurrent appends.
+        file.seek(SeekFrom::Start(0))
+            .map_err(|err| format_io_error(&err))?;
+        stream_utf8_pass(&mut file, Some(stdout))
+    };
+    if let Err(message) = run() {
+        let _ = writeln!(stderr, "mcat: {}: {message}", quote_json_string(path));
         return 1;
     }
-
     0
 }
 
@@ -616,8 +486,7 @@ fn compute_stop_after_line(selections: &[ReadSelection], options: &McatOptions) 
     if options.tail {
         return None;
     }
-    if selections.len() == 1 {
-        let sel = &selections[0];
+    if let [sel] = selections {
         return match (sel.has_range, options.lines) {
             (true, Some(limit)) => Some(
                 sel.start
@@ -630,11 +499,11 @@ fn compute_stop_after_line(selections: &[ReadSelection], options: &McatOptions) 
             (false, None) => None,
         };
     }
-    if selections.iter().all(|sel| sel.has_range) {
-        selections.iter().map(|sel| sel.end).max()
-    } else {
-        None
-    }
+    selections
+        .iter()
+        .all(|sel| sel.has_range)
+        .then(|| selections.iter().map(|sel| sel.end).max())
+        .flatten()
 }
 
 fn scan_selections(selections: &[ReadSelection], options: &McatOptions) -> (Vec<ScanResult>, bool) {
@@ -666,8 +535,7 @@ fn scan_selections(selections: &[ReadSelection], options: &McatOptions) -> (Vec<
         if !header.done {
             header.accept(&raw_line[..content_len], line == 1);
         }
-        let any_wants = states.iter().any(|state| state.wants(line));
-        if any_wants {
+        if states.iter().any(|state| state.wants(line)) {
             let formatted = if options.number {
                 format!("{line:6}\t{}\n", &raw_line[..content_len])
             } else {
@@ -727,7 +595,7 @@ pub fn execute_to_writers(
     let (specs, options) = match parse_args(args) {
         Ok(parsed) => parsed,
         Err(err) => {
-            let _ = write!(stderr_writer, "mcat: {err}\n");
+            let _ = writeln!(stderr_writer, "mcat: {err}");
             return 1;
         }
     };
@@ -743,22 +611,22 @@ pub fn execute_to_writers(
 
     if specs.len() == 1 {
         let (mut results, generated) = scan_selections(&specs, &options);
-        let mut res = results.remove(0);
-        if generated {
-            res.stderr
-                .push_str(&generated_advisory(&[specs[0].path.clone()]));
-        }
+        let res = results.remove(0);
         let mut exit_code = i32::from(res.failed);
         if let Err(err) = stdout_writer.write_all(res.stdout.as_bytes()) {
-            let _ = write!(
+            let _ = writeln!(
                 stderr_writer,
-                "mcat: {}: {}\n",
+                "mcat: {}: {}",
                 quote_json_string(&specs[0].path),
                 format_io_error(&err)
             );
             exit_code = 1;
         }
         let _ = stderr_writer.write_all(res.stderr.as_bytes());
+        if generated {
+            let _ =
+                stderr_writer.write_all(generated_advisory(&[specs[0].path.clone()]).as_bytes());
+        }
         return exit_code;
     }
 
@@ -769,7 +637,7 @@ pub fn execute_to_writers(
     }
 
     let mut executions: Vec<Option<ScanResult>> = vec![None; specs.len()];
-    let mut generated_paths: Vec<String> = Vec::new();
+    let mut generated_paths = Vec::new();
     for spec in &specs {
         let Some(indices) = by_path.remove(spec.path.as_str()) else {
             continue;
@@ -836,9 +704,9 @@ pub fn execute_to_writers(
 
     let mut exit_code = i32::from(any_failed);
     if let Err(err) = stdout_writer.write_all(stdout.as_bytes()) {
-        let _ = write!(
+        let _ = writeln!(
             stderr_writer,
-            "mcat: write stdout: {}\n",
+            "mcat: write stdout: {}",
             format_io_error(&err)
         );
         exit_code = 1;

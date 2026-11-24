@@ -822,7 +822,14 @@ impl ThreadManager {
                     host_program,
                 ))
             };
-        Arc::new(crate::code_mode_host::LocalServerOutputProvider { inner: provider })
+        if config
+            .features
+            .enabled(Feature::CodeModeHostOutputTruncation)
+        {
+            Arc::new(crate::code_mode_host::LocalServerOutputProvider { inner: provider })
+        } else {
+            provider
+        }
     }
 
     /// Construct with a dummy AuthManager containing the provided CodexAuth.

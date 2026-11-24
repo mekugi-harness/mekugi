@@ -309,27 +309,12 @@ async fn delete_thread_after_reference_check(
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to delete thread name index entries for {thread_id}: {err}"),
         })?;
-    delete_retained_exec_dir(store.config.codex_home.as_path(), thread_id)?;
 
     if !found_rollout_path {
         return Err(ThreadStoreError::ThreadNotFound { thread_id });
     }
 
     Ok(())
-}
-
-fn delete_retained_exec_dir(codex_home: &Path, thread_id: ThreadId) -> ThreadStoreResult<()> {
-    let retained_dir = codex_home.join("retained_exec").join(thread_id.to_string());
-    match std::fs::remove_dir_all(&retained_dir) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(ThreadStoreError::Internal {
-            message: format!(
-                "failed to delete retained exec directory `{}`: {err}",
-                retained_dir.display()
-            ),
-        }),
-    }
 }
 
 pub(super) fn delete_rollout_file(
@@ -916,33 +901,6 @@ SELECT
             err.to_string(),
             "thread 00000000-0000-0000-0000-000000000304 not found"
         );
-    }
-
-    #[tokio::test]
-    async fn delete_thread_removes_retained_exec_dir() {
-        let home = TempDir::new().expect("temp dir");
-        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
-        let uuid = Uuid::from_u128(305);
-        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
-        let active_path =
-            write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
-        let retained_dir = home
-            .path()
-            .join("retained_exec")
-            .join(thread_id.to_string());
-        std::fs::create_dir_all(&retained_dir).expect("create retained_exec dir");
-        std::fs::write(retained_dir.join("1000.bin"), b"retained output")
-            .expect("write retained bin");
-        std::fs::write(retained_dir.join("1000.json"), br#"{"process_id":1000}"#)
-            .expect("write retained meta");
-
-        store
-            .delete_thread(DeleteThreadParams { thread_id })
-            .await
-            .expect("delete thread");
-
-        assert!(!active_path.exists());
-        assert!(!retained_dir.exists());
     }
 
     fn set_history_base(path: &Path, history_base: HistoryPosition) {

@@ -190,13 +190,6 @@ fn content_item(item: FunctionCallOutputContentItem) -> proto::ContentItem {
         FunctionCallOutputContentItem::InputAudio { audio_url } => {
             proto::content_item::Item::Audio(proto::AudioContent { audio_url })
         }
-        FunctionCallOutputContentItem::PageBoundary {
-            more_output,
-            continuation,
-        } => proto::content_item::Item::PageBoundary(proto::PageBoundary {
-            more_output,
-            continuation,
-        }),
     };
     proto::ContentItem { item: Some(item) }
 }

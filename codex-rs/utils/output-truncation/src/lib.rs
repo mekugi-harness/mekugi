@@ -1,6 +1,15 @@
 //! Shared byte/token truncation for tool and exec output.
 
 use std::borrow::Cow;
+use std::fs::DirBuilder;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::plain_output_text;
@@ -12,10 +21,88 @@ use codex_utils_string::TextTruncation;
 pub use codex_utils_string::approx_bytes_for_tokens;
 pub use codex_utils_string::approx_token_count;
 pub use codex_utils_string::approx_tokens_from_byte_count;
+use codex_utils_string::plan_byte_truncation;
 use codex_utils_string::plan_token_truncation;
-use codex_utils_string::truncate_middle_chars;
 
 pub use codex_protocol::protocol::TruncationPolicy;
+
+/// Subdirectory inside `$SESSION_TMP` where truncated output portions are saved.
+pub const TRUNCATED_OUTPUT_SUBDIR: &str = "truncated_output";
+
+/// Returns the truncated-output directory under a session's `$SESSION_TMP`.
+pub fn truncated_output_dir(session_tmp: &Path) -> PathBuf {
+    session_tmp.join(TRUNCATED_OUTPUT_SUBDIR)
+}
+
+/// Writes `omitted` to a newly created file `<dir>/<id>`, creating `dir` on demand,
+/// and returns the short unique `id`.
+pub fn spill_truncated_output(dir: &Path, omitted: &str) -> std::io::Result<String> {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)?;
+
+    let pid = u64::from(std::process::id());
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+
+    for _ in 0..16 {
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Mix pid, timestamp, and monotonic counter into an 8-hex-char ID.
+        let mixed = nanos
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ pid.wrapping_mul(0xBF58_476D_1CE4_E5B9)
+            ^ seq.wrapping_mul(0x94D0_49BB_1331_11EB);
+        let id = format!("{:08x}", (mixed ^ (mixed >> 32)) as u32);
+        let path = dir.join(&id);
+
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(mut file) => {
+                file.write_all(omitted.as_bytes())?;
+                return Ok(id);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "failed to allocate unique truncated output id",
+    ))
+}
+
+fn annotate_marker_with_spill(content: &str, edit: &mut TextTruncation, spill_dir: Option<&Path>) {
+    let Some(dir) = spill_dir else {
+        return;
+    };
+    if edit.removed.is_empty() {
+        return;
+    }
+    let omitted = &content[edit.removed.start..edit.removed.end];
+    let Ok(id) = spill_truncated_output(dir, omitted) else {
+        return;
+    };
+    if let Some(prefix) = edit.marker.strip_suffix('…') {
+        edit.marker = format!("{prefix} (id: {id})…");
+    } else {
+        edit.marker.push_str(&format!(" (id: {id})"));
+    }
+}
 
 /// Adds the existing 20% allowance for serialization and headers.
 /// Saved history budgets already include this allowance.
@@ -24,24 +111,33 @@ pub fn with_serialization_allowance(policy: TruncationPolicy) -> TruncationPolic
 }
 
 pub fn formatted_truncate_text(content: &str, policy: TruncationPolicy) -> String {
+    formatted_truncate_text_with_spill(content, policy, /*spill_dir*/ None)
+}
+
+pub fn formatted_truncate_text_with_spill(
+    content: &str,
+    policy: TruncationPolicy,
+    spill_dir: Option<&Path>,
+) -> String {
     if content.len() <= policy.byte_budget() {
         return content.to_string();
     }
 
-    format_truncated_text(content, policy, &mut [])
+    format_truncated_text(content, policy, &mut [], spill_dir)
 }
 
 fn format_truncated_text(
     content: &str,
     policy: TruncationPolicy,
     boundaries: &mut [OutputBoundary],
+    spill_dir: Option<&Path>,
 ) -> String {
     let original_token_count = approx_token_count(content);
     let total_lines = content.lines().count();
     let header = format!(
         "Warning: truncated output (original token count: {original_token_count})\nTotal output lines: {total_lines}\n\n"
     );
-    let (snippet, edit) = truncate_text_with_plan(content, policy);
+    let (snippet, edit) = truncate_text_with_plan(content, policy, spill_dir);
     if let Some(edit) = edit {
         for boundary in boundaries {
             boundary.text_offset = rendered_offset(&edit, boundary.text_offset, header.len());
@@ -51,18 +147,36 @@ fn format_truncated_text(
 }
 
 pub fn truncate_text(content: &str, policy: TruncationPolicy) -> String {
-    truncate_text_with_plan(content, policy).0
+    truncate_text_with_spill(content, policy, /*spill_dir*/ None)
+}
+
+pub fn truncate_text_with_spill(
+    content: &str,
+    policy: TruncationPolicy,
+    spill_dir: Option<&Path>,
+) -> String {
+    truncate_text_with_plan(content, policy, spill_dir).0
 }
 
 // Only token-budget callers supply boundaries that need remapping.
 fn truncate_text_with_plan(
     content: &str,
     policy: TruncationPolicy,
+    spill_dir: Option<&Path>,
 ) -> (String, Option<TextTruncation>) {
     match policy {
-        TruncationPolicy::Bytes(bytes) => (truncate_middle_chars(content, bytes), None),
+        TruncationPolicy::Bytes(bytes) => match plan_byte_truncation(content, bytes) {
+            Some(mut edit) => {
+                annotate_marker_with_spill(content, &mut edit, spill_dir);
+                (edit.apply(content), None)
+            }
+            None => (content.to_owned(), None),
+        },
         TruncationPolicy::Tokens(tokens) => match plan_token_truncation(content, tokens) {
-            Some(edit) => (edit.apply(content), Some(edit)),
+            Some(mut edit) => {
+                annotate_marker_with_spill(content, &mut edit, spill_dir);
+                (edit.apply(content), Some(edit))
+            }
             None => (content.to_owned(), None),
         },
     }
@@ -140,13 +254,32 @@ pub fn truncate_function_output_payload(
     policy: TruncationPolicy,
     estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
 ) {
+    truncate_function_output_payload_with_spill(
+        output,
+        policy,
+        estimate_audio_token_count,
+        /*spill_dir*/ None,
+    );
+}
+
+/// Applies the existing byte/token budget and optionally spills omitted text to `spill_dir`.
+pub fn truncate_function_output_payload_with_spill(
+    output: &mut FunctionCallOutputPayload,
+    policy: TruncationPolicy,
+    estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
+    spill_dir: Option<&Path>,
+) {
     match &mut output.body {
-        FunctionCallOutputBody::Text(text) => *text = truncate_text(text, policy),
+        FunctionCallOutputBody::Text(text) => {
+            *text = truncate_text_with_spill(text, policy, spill_dir);
+        }
         FunctionCallOutputBody::ContentItems(items) => {
-            *items = truncate_function_output_items_with_policy(
-                items,
+            *items = truncate_output_items(
+                Cow::Borrowed(items),
                 policy,
                 estimate_audio_token_count,
+                &mut [],
+                spill_dir,
             );
         }
     }
@@ -175,7 +308,28 @@ pub fn formatted_truncate_function_output_items_with_policy<'a>(
     policy: TruncationPolicy,
     estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
 ) -> Vec<FunctionCallOutputContentItem> {
-    formatted_output(items.into(), policy, estimate_audio_token_count, &mut [])
+    formatted_output(
+        items.into(),
+        policy,
+        estimate_audio_token_count,
+        &mut [],
+        /*spill_dir*/ None,
+    )
+}
+
+pub fn formatted_truncate_function_output_items_with_spill<'a>(
+    items: impl Into<Cow<'a, [FunctionCallOutputContentItem]>>,
+    policy: TruncationPolicy,
+    estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
+    spill_dir: Option<&Path>,
+) -> Vec<FunctionCallOutputContentItem> {
+    formatted_output(
+        items.into(),
+        policy,
+        estimate_audio_token_count,
+        &mut [],
+        spill_dir,
+    )
 }
 
 /// As above, with zero-width boundaries for callers that have already dropped
@@ -186,6 +340,22 @@ pub fn formatted_output_at_token_boundaries<'a>(
     estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
     boundaries: &mut [OutputBoundary],
 ) -> Vec<FunctionCallOutputContentItem> {
+    formatted_output_at_token_boundaries_with_spill(
+        items,
+        max_tokens,
+        estimate_audio_token_count,
+        boundaries,
+        /*spill_dir*/ None,
+    )
+}
+
+pub fn formatted_output_at_token_boundaries_with_spill<'a>(
+    items: impl Into<Cow<'a, [FunctionCallOutputContentItem]>>,
+    max_tokens: usize,
+    estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
+    boundaries: &mut [OutputBoundary],
+    spill_dir: Option<&Path>,
+) -> Vec<FunctionCallOutputContentItem> {
     let items = items.into();
     normalize_boundaries(&items, boundaries);
     formatted_output(
@@ -193,6 +363,7 @@ pub fn formatted_output_at_token_boundaries<'a>(
         TruncationPolicy::Tokens(max_tokens),
         estimate_audio_token_count,
         boundaries,
+        spill_dir,
     )
 }
 
@@ -201,11 +372,18 @@ fn formatted_output(
     policy: TruncationPolicy,
     estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
     boundaries: &mut [OutputBoundary],
+    spill_dir: Option<&Path>,
 ) -> Vec<FunctionCallOutputContentItem> {
     let mut combined_len = 0;
     for item in items.iter() {
         let FunctionCallOutputContentItem::InputText { text } = item else {
-            return truncate_output_items(items, policy, estimate_audio_token_count, boundaries);
+            return truncate_output_items(
+                items,
+                policy,
+                estimate_audio_token_count,
+                boundaries,
+                spill_dir,
+            );
         };
         combined_len += usize::from(combined_len != 0) + text.len();
     }
@@ -236,7 +414,7 @@ fn formatted_output(
         boundary.text_offset = combined.len();
     }
     vec![FunctionCallOutputContentItem::InputText {
-        text: format_truncated_text(&combined, policy, boundaries),
+        text: format_truncated_text(&combined, policy, boundaries, spill_dir),
     }]
 }
 
@@ -250,6 +428,7 @@ pub fn truncate_function_output_items_with_policy(
         policy,
         estimate_audio_token_count,
         &mut [],
+        /*spill_dir*/ None,
     )
 }
 
@@ -261,6 +440,22 @@ pub fn mixed_output_at_token_boundaries<'a>(
     estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
     boundaries: &mut [OutputBoundary],
 ) -> Vec<FunctionCallOutputContentItem> {
+    mixed_output_at_token_boundaries_with_spill(
+        items,
+        max_tokens,
+        estimate_audio_token_count,
+        boundaries,
+        /*spill_dir*/ None,
+    )
+}
+
+pub fn mixed_output_at_token_boundaries_with_spill<'a>(
+    items: impl Into<Cow<'a, [FunctionCallOutputContentItem]>>,
+    max_tokens: usize,
+    estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
+    boundaries: &mut [OutputBoundary],
+    spill_dir: Option<&Path>,
+) -> Vec<FunctionCallOutputContentItem> {
     let items = items.into();
     normalize_boundaries(&items, boundaries);
     truncate_output_items(
@@ -268,6 +463,7 @@ pub fn mixed_output_at_token_boundaries<'a>(
         TruncationPolicy::Tokens(max_tokens),
         estimate_audio_token_count,
         boundaries,
+        spill_dir,
     )
 }
 
@@ -294,6 +490,7 @@ fn truncate_output_items(
     policy: TruncationPolicy,
     estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
     boundaries: &mut [OutputBoundary],
+    spill_dir: Option<&Path>,
 ) -> Vec<FunctionCallOutputContentItem> {
     match items {
         Cow::Borrowed(items) => truncate_output_iter(
@@ -301,12 +498,14 @@ fn truncate_output_items(
             policy,
             estimate_audio_token_count,
             boundaries,
+            spill_dir,
         ),
         Cow::Owned(items) => truncate_output_iter(
             items.into_iter().map(Cow::Owned),
             policy,
             estimate_audio_token_count,
             boundaries,
+            spill_dir,
         ),
     }
 }
@@ -323,6 +522,7 @@ pub fn truncate_measured_tool_output(
             .map(|(item, charge)| (Cow::Owned(item), charge)),
         policy,
         &mut [],
+        /*spill_dir*/ None,
         |item, charge| (item, charge),
     )
 }
@@ -332,6 +532,7 @@ fn truncate_output_iter<'a>(
     policy: TruncationPolicy,
     estimate_audio_token_count: impl Fn(&AudioReference) -> usize,
     boundaries: &mut [OutputBoundary],
+    spill_dir: Option<&Path>,
 ) -> Vec<FunctionCallOutputContentItem> {
     let measured = items.map(|item| {
         let charge = match item.as_ref() {
@@ -342,13 +543,14 @@ fn truncate_output_iter<'a>(
         };
         (item, charge)
     });
-    truncate_measured_output_iter(measured, policy, boundaries, |item, _| item)
+    truncate_measured_output_iter(measured, policy, boundaries, spill_dir, |item, _| item)
 }
 
 fn truncate_measured_output_iter<'a, T>(
     items: impl ExactSizeIterator<Item = (Cow<'a, FunctionCallOutputContentItem>, usize)>,
     policy: TruncationPolicy,
     boundaries: &mut [OutputBoundary],
+    spill_dir: Option<&Path>,
     emit: impl Fn(FunctionCallOutputContentItem, usize) -> T,
 ) -> Vec<T> {
     let mut out = Vec::with_capacity(items.len());
@@ -357,6 +559,7 @@ fn truncate_measured_output_iter<'a, T>(
         TruncationPolicy::Tokens(_) => policy.token_budget(),
     };
     let mut omitted_text_items = 0usize;
+    let mut omitted_text_buf = String::new();
     let mut omitted_audio_items = 0usize;
     let mut next_boundary = 0;
 
@@ -370,8 +573,14 @@ fn truncate_measured_output_iter<'a, T>(
         let keep = match item.as_ref() {
             // Empty text contributes no model content but still consumes an API array slot.
             FunctionCallOutputContentItem::InputText { text } if text.is_empty() => false,
-            FunctionCallOutputContentItem::InputText { .. } if remaining_budget == 0 => {
+            FunctionCallOutputContentItem::InputText { text } if remaining_budget == 0 => {
                 omitted_text_items += 1;
+                if spill_dir.is_some() {
+                    if !omitted_text_buf.is_empty() {
+                        omitted_text_buf.push('\n');
+                    }
+                    omitted_text_buf.push_str(text);
+                }
                 false
             }
             FunctionCallOutputContentItem::InputText { text } => {
@@ -383,10 +592,16 @@ fn truncate_measured_output_iter<'a, T>(
                     remaining_budget = remaining_budget.saturating_sub(cost);
                     true
                 } else {
-                    let (snippet, edit) = truncate_text_with_plan(text, item_policy);
+                    let (snippet, edit) = truncate_text_with_plan(text, item_policy, spill_dir);
                     text_edit = edit;
                     if snippet.is_empty() {
                         omitted_text_items += 1;
+                        if spill_dir.is_some() {
+                            if !omitted_text_buf.is_empty() {
+                                omitted_text_buf.push('\n');
+                            }
+                            omitted_text_buf.push_str(text);
+                        }
                     } else {
                         out.push(emit(
                             FunctionCallOutputContentItem::InputText { text: snippet },
@@ -437,9 +652,14 @@ fn truncate_measured_output_iter<'a, T>(
     }
 
     if omitted_text_items > 0 {
+        let spill_suffix = spill_dir
+            .filter(|_| !omitted_text_buf.is_empty())
+            .and_then(|dir| spill_truncated_output(dir, &omitted_text_buf).ok())
+            .map(|id| format!(" (id: {id})"))
+            .unwrap_or_default();
         out.push(emit(
             FunctionCallOutputContentItem::InputText {
-                text: format!("[omitted {omitted_text_items} text items ...]"),
+                text: format!("[omitted {omitted_text_items} text items{spill_suffix} ...]"),
             },
             0,
         ));

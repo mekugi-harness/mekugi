@@ -157,7 +157,7 @@ pub enum Feature {
     CodeModeHost,
     /// Use gRPC over stdio for the process-owned code-mode host.
     CodeModeHostGrpc,
-    /// Removed rollout flag; model-facing code mode now always pages output.
+    /// Truncate output in the process-owned code-mode host before sending it to Core.
     CodeModeHostOutputTruncation,
     /// Establish the code-mode host connection during session startup.
     CodeModePrewarm,
@@ -1379,8 +1379,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CodeModeHostOutputTruncation,
         key: "code_mode_host_output_truncation",
-        stage: Stage::Removed,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CodeModePrewarm,

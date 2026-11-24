@@ -5,6 +5,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::turn_diff_tracker::TurnDiffTracker;
 use crate::unified_exec::output::CapturedStream;
+use crate::unified_exec::resolve_max_tokens;
 use codex_extension_api::ToolCallOutcome;
 use codex_protocol::ResponseItemId;
 use codex_protocol::mcp::CallToolResult;
@@ -18,11 +19,12 @@ use codex_tools::LoadableToolSpec;
 use codex_tools::ToolName;
 use codex_utils_audio::estimate_tool_audio_tokens;
 use codex_utils_output_truncation::TruncationPolicy;
-use codex_utils_output_truncation::truncate_function_output_payload;
+use codex_utils_output_truncation::truncate_function_output_payload_with_spill;
 use codex_utils_output_truncation::with_serialization_allowance;
 use codex_utils_path_uri::PathUri;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -225,6 +227,7 @@ pub struct McpToolOutput {
     pub wall_time: Duration,
     pub original_image_detail_supported: bool,
     pub truncation_policy: TruncationPolicy,
+    pub truncated_output_dir: Option<PathBuf>,
 }
 
 impl ToolOutput for McpToolOutput {
@@ -303,10 +306,11 @@ impl McpToolOutput {
         }
 
         // History receives this budget in tokens. Code Mode keeps the raw result.
-        truncate_function_output_payload(
+        truncate_function_output_payload_with_spill(
             &mut payload,
             with_serialization_allowance(self.truncation_policy),
             estimate_tool_audio_tokens,
+            self.truncated_output_dir.as_deref(),
         );
         payload
     }
@@ -483,7 +487,7 @@ pub struct ExecCommandToolOutput {
     pub event_call_id: String,
     pub chunk_id: String,
     pub wall_time: Duration,
-    /// Single-page output already sliced for model delivery (or full output for internal callers).
+    /// Output retained by collection, before model-facing truncation.
     pub(crate) raw_output: CapturedStream,
     pub truncation_policy: TruncationPolicy,
     pub max_output_tokens: Option<usize>,
@@ -494,23 +498,17 @@ pub struct ExecCommandToolOutput {
     /// Local execution cwd retained for PostToolUse, independent of the collecting
     /// turn. Remote commands leave this unset to retain the host hook cwd.
     pub tool_cwd: Option<PathUri>,
-    /// Whether this response represents the command's exit transition and should
-    /// trigger `PostToolUse` (true once on exit, false while running or on later
-    /// retained-page reads after exit).
-    pub emit_post_tool_use: bool,
+    /// Optional `$SESSION_TMP/truncated_output` directory for spilling truncated output.
+    pub truncated_output_dir: Option<PathBuf>,
 }
 
 impl ToolOutput for ExecCommandToolOutput {
-    fn output_budget_applied(&self) -> bool {
-        true
-    }
-
-    fn history_output_budget_applied(&self) -> bool {
-        true
-    }
-
     fn log_output(&self) -> String {
-        format!("{}\n{}", self.response_header(), self.raw_output.text)
+        // The telemetry budget must not inherit the model's output-token limit.
+        let output = self
+            .raw_output
+            .render(/*policy*/ None, self.original_token_count);
+        format!("{}\n{output}", self.response_header())
     }
 
     fn success_for_logging(&self) -> bool {
@@ -547,11 +545,13 @@ impl ToolOutput for ExecCommandToolOutput {
     }
 
     fn post_tool_use_response(&self, _call_id: &str, _payload: &ToolPayload) -> Option<JsonValue> {
-        if !self.emit_post_tool_use || self.hook_command.is_none() {
+        if self.process_id.is_some() || self.hook_command.is_none() {
             return None;
         }
 
-        Some(JsonValue::String(self.raw_output.text.clone()))
+        Some(JsonValue::String(
+            self.truncated_output_with_policy(self.model_output_policy()),
+        ))
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
@@ -575,7 +575,14 @@ impl ToolOutput for ExecCommandToolOutput {
             exit_code: self.exit_code,
             session_id: self.process_id,
             original_token_count: self.original_token_count,
-            output: self.raw_output.text.clone(),
+            output: match self.max_output_tokens {
+                Some(max_tokens) => self.raw_output.render_with_spill(
+                    Some(TruncationPolicy::Tokens(max_tokens)),
+                    self.original_token_count,
+                    self.truncated_output_dir.as_deref(),
+                ),
+                None => self.raw_output.text.clone(),
+            },
         };
 
         serde_json::to_value(result).unwrap_or_else(|err| {
@@ -585,6 +592,25 @@ impl ToolOutput for ExecCommandToolOutput {
 }
 
 impl ExecCommandToolOutput {
+    fn model_output_policy(&self) -> TruncationPolicy {
+        let requested_policy = TruncationPolicy::Tokens(resolve_max_tokens(self.max_output_tokens));
+        if requested_policy.byte_budget() < self.truncation_policy.byte_budget() {
+            requested_policy
+        } else {
+            self.truncation_policy
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn truncated_output(&self, max_tokens: usize) -> String {
+        self.truncated_output_with_policy(TruncationPolicy::Tokens(max_tokens))
+    }
+
+    fn truncated_output_with_policy(&self, policy: TruncationPolicy) -> String {
+        self.raw_output
+            .render(Some(policy), self.original_token_count)
+    }
+
     fn response_header(&self) -> String {
         let mut sections = Vec::new();
 
@@ -600,13 +626,7 @@ impl ExecCommandToolOutput {
         }
 
         if let Some(process_id) = &self.process_id {
-            if self.exit_code.is_some() {
-                sections.push(format!(
-                    "More output available with session ID {process_id}"
-                ));
-            } else {
-                sections.push(format!("Process running with session ID {process_id}"));
-            }
+            sections.push(format!("Process running with session ID {process_id}"));
         }
 
         if let Some(original_token_count) = self.original_token_count {
@@ -618,7 +638,48 @@ impl ExecCommandToolOutput {
     }
 
     fn response_text(&self) -> String {
-        format!("{}\n{}", self.response_header(), self.raw_output.text)
+        let header = self.response_header();
+        let spill_suffix_reserve = if self.truncated_output_dir.is_some() {
+            " (id: 00000000)".len()
+        } else {
+            0
+        };
+        let output_budget = with_serialization_allowance(self.truncation_policy)
+            .byte_budget()
+            .saturating_sub(
+                header
+                    .len()
+                    .saturating_add(/*rhs*/ 1)
+                    .saturating_add(spill_suffix_reserve),
+            );
+        let mut policy = self.model_output_policy();
+        let mut output = self.truncated_output_with_policy(policy);
+
+        // History applies this same serialization budget to the complete response.
+        // Reserve room for metadata, warning headers, and the truncation marker so
+        // it does not truncate an already-truncated output a second time.
+        while output.len() > output_budget && policy.byte_budget() > 0 {
+            let excess_bytes = output.len() - output_budget;
+            policy = match policy {
+                TruncationPolicy::Bytes(bytes) => {
+                    TruncationPolicy::Bytes(bytes.saturating_sub(excess_bytes))
+                }
+                TruncationPolicy::Tokens(tokens) => TruncationPolicy::Tokens(
+                    tokens.saturating_sub(TruncationPolicy::Bytes(excess_bytes).token_budget()),
+                ),
+            };
+            output = self.truncated_output_with_policy(policy);
+        }
+
+        if self.truncated_output_dir.is_some() {
+            output = self.raw_output.render_with_spill(
+                Some(policy),
+                self.original_token_count,
+                self.truncated_output_dir.as_deref(),
+            );
+        }
+
+        format!("{header}\n{output}")
     }
 }
 

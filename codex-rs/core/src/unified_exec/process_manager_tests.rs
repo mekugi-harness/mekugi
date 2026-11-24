@@ -47,9 +47,9 @@ fn unified_exec_env_overrides_existing_values() {
 #[tokio::test]
 async fn deterministic_process_ids_are_not_reused_after_release() {
     let manager = UnifiedExecProcessManager::default();
-    let first = manager.allocate_process_id().await.expect("allocate");
+    let first = manager.allocate_process_id().await;
     manager.release_process_id(first).await;
-    let second = manager.allocate_process_id().await.expect("allocate");
+    let second = manager.allocate_process_id().await;
 
     assert_eq!((first, second), (1000, 1001));
 }
@@ -57,9 +57,9 @@ async fn deterministic_process_ids_are_not_reused_after_release() {
 #[tokio::test]
 async fn deterministic_process_ids_are_not_reused_after_removal() {
     let manager = UnifiedExecProcessManager::default();
-    let first = manager.allocate_process_id().await.expect("allocate");
+    let first = manager.allocate_process_id().await;
     let _removed = manager.process_store.lock().await.remove(first);
-    let second = manager.allocate_process_id().await.expect("allocate");
+    let second = manager.allocate_process_id().await;
 
     assert_eq!((first, second), (1000, 1001));
 }
@@ -368,7 +368,7 @@ fn initial_exec_yield_time_has_no_platform_floor() {
 }
 
 #[tokio::test]
-async fn output_collection_stays_head_bounded_across_repeated_chunks() {
+async fn output_collection_stays_bounded_across_repeated_drains() {
     let chunks: [&[u8]; 4] = [b"01234567", b"89ABCDEF", b"ghijklmnopq", b"rs"];
     let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::<10>::default()));
     let output_notify = Arc::new(Notify::new());
@@ -397,7 +397,16 @@ async fn output_collection_stays_head_bounded_across_repeated_chunks() {
                 .await
                 .push_chunk(ExecOutputStream::Stdout, chunk);
             output_notify.notify_one();
-            tokio::task::yield_now().await;
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if output_buffer.lock().await.pending.retained_bytes() == 0 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("collector should drain each chunk");
         }
 
         output_closed.store(true, Ordering::Release);
@@ -407,20 +416,20 @@ async fn output_collection_stays_head_bounded_across_repeated_chunks() {
     };
 
     let (collected, ()) = tokio::join!(collect, produce);
-    let mut expected = crate::unified_exec::output::HeadRetainedBuffer::<10>::default();
+    let mut expected = HeadTailBuffer::<10>::default();
     for chunk in chunks {
         expected.push_chunk(chunk);
     }
     assert_eq!(collected, expected);
-    assert_eq!(output_buffer.lock().await.retained, expected);
+    assert_eq!(output_buffer.lock().await.transcript, expected);
 }
 
 #[tokio::test]
-async fn output_collection_preserves_discard_count_from_head_buffer() {
+async fn output_collection_preserves_omissions_from_drained_buffer() {
     let mut buffered_output = OutputBuffers::<10>::default();
     buffered_output.push_chunk(ExecOutputStream::Stdout, &[b'a'; 10]);
     buffered_output.push_chunk(ExecOutputStream::Stdout, b"overflow");
-    let mut expected = crate::unified_exec::output::HeadRetainedBuffer::<10>::default();
+    let mut expected = HeadTailBuffer::<10>::default();
     expected.push_chunk(&[b'a'; 10]);
     expected.push_chunk(b"overflow");
     let output_buffer = Arc::new(tokio::sync::Mutex::new(buffered_output));
@@ -457,6 +466,60 @@ async fn network_denial_fallback_message_names_sandbox_network_proxy() {
         message,
         "Network access was denied by the Codex sandbox network proxy."
     );
+}
+
+#[tokio::test]
+async fn output_collection_drains_final_chunk_arriving_before_exit_and_closure() {
+    let output_buffer = Arc::new(tokio::sync::Mutex::new(OutputBuffers::<64>::default()));
+    let output_notify = Arc::new(Notify::new());
+    let output_closed = Arc::new(AtomicBool::new(false));
+    let output_closed_notify = Arc::new(Notify::new());
+    let cancellation_token = CancellationToken::new();
+    let output = OutputHandles {
+        output_buffer: Arc::clone(&output_buffer),
+        output_notify: Arc::clone(&output_notify),
+        output_closed: Arc::clone(&output_closed),
+        output_closed_notify: Arc::clone(&output_closed_notify),
+        cancellation_token: cancellation_token.clone(),
+        collection_finished: CancellationToken::new(),
+        drain_policy: OutputDrainPolicy::BoundedAfterExit,
+    };
+
+    // Simulate a final chunk pushed into pending right before exit/closure
+    // without a separate output_notify wake before the post-exit close wait.
+    cancellation_token.cancel();
+    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        /*pause_state*/ None,
+        Instant::now() + Duration::from_secs(1),
+    );
+    let produce = async {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        output_buffer
+            .lock()
+            .await
+            .push_chunk(ExecOutputStream::Stdout, b"final-chunk");
+        output_closed.store(true, Ordering::Release);
+        output_closed_notify.notify_waiters();
+    };
+
+    let (collected, ()) = tokio::join!(collect, produce);
+    assert_eq!(collected.to_bytes(), b"final-chunk");
+}
+
+#[test]
+fn large_capture_output_buffer_retains_more_than_one_mib() {
+    let payload = vec![b'x'; 2 * 1024 * 1024];
+
+    let mut large = OutputBuffers::<{ crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES }>::with_large_capture();
+    large.push_chunk(ExecOutputStream::Stdout, &payload);
+    let captured = large.large_capture.expect("large_capture should be enabled");
+    assert_eq!(captured.omitted_bytes(), 0);
+    assert_eq!(captured.retained_bytes(), payload.len());
+
+    let mut interactive = OutputBuffers::<{ crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES }>::default();
+    interactive.push_chunk(ExecOutputStream::Stdout, &payload);
+    assert!(interactive.pending.omitted_bytes() > 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -781,8 +844,6 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                 } else {
                     now
                 },
-                persisted_bytes: 0,
-                persisted: false,
             },
         );
     }

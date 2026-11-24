@@ -363,103 +363,16 @@ async fn grpc_session_pins_output_mode_across_recovery_and_shutdown() -> Result<
                     assert_eq!(cell_id.as_str(), "g2:1");
                     assert_eq!(diagnostic.len(), 64 * 1024);
                     assert!(diagnostic.starts_with("begin:") && diagnostic.ends_with(":end"));
-                    assert_eq!(
-                        content_items,
-                        [
-                            FunctionCallOutputContentItem::InputText {
-                                text: "Script error:\nbegin:".to_string()
-                            },
-                            FunctionCallOutputContentItem::PageBoundary {
-                                more_output: true,
-                                continuation: false,
-                            },
-                        ],
-                    );
+                    assert_eq!(content_items, [
+                        "Warning: truncated output (original token count: 262144)\nTotal output lines: 2\n\nScript err…262139 tokens truncated…",
+                        "[Code Mode session output limit reached: omitted 67108888 text bytes; discarded 0 text segments, 0 images, 0 audio items]",
+                        "XXXXXX:end",
+                    ].map(|text| FunctionCallOutputContentItem::InputText { text: text.into() }));
                 }
             }
         }
         session.shutdown().await.map_err(anyhow::Error::msg)?;
         assert_eq!(session.output_truncation(), initial_host);
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn grpc_dropping_exec_before_first_response_releases_retention() -> Result<()> {
-    #[derive(Default)]
-    struct GateDelegate {
-        ready: tokio::sync::Notify,
-        closed: tokio::sync::Notify,
-    }
-
-    impl codex_code_mode::CodeModeSessionDelegate for GateDelegate {
-        fn invoke_tool<'a>(
-            &'a self,
-            _invocation: codex_code_mode::CodeModeNestedToolCall,
-            _cancellation: tokio_util::sync::CancellationToken,
-        ) -> codex_code_mode::ToolInvocationFuture<'a> {
-            Box::pin(async { Err("unexpected tool call".to_string()) })
-        }
-
-        fn notify<'a>(
-            &'a self,
-            _call_id: String,
-            _cell_id: codex_code_mode::CellId,
-            _text: String,
-            _cancellation: tokio_util::sync::CancellationToken,
-        ) -> codex_code_mode::NotificationFuture<'a> {
-            self.ready.notify_one();
-            Box::pin(async { Ok(()) })
-        }
-
-        fn cell_closed(&self, _cell_id: &codex_code_mode::CellId) {
-            self.closed.notify_one();
-        }
-    }
-
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("http://{}", listener.local_addr()?);
-    let _server = AbortOnDropHandle::new(tokio::spawn(
-        Server::builder()
-            .add_service(CodeModeHostServer::new(GrpcCodeModeHost::new()))
-            .serve_with_incoming(TcpListenerStream::new(listener)),
-    ));
-    let session = GrpcCodeModeSessionProvider::new(endpoint)
-        .create_session_with_options(CodeModeSessionOptions {
-            output_truncation: CodeModeOutputTruncation::Server,
-            ..CodeModeSessionOptions::default()
-        })
-        .await
-        .map_err(anyhow::Error::msg)?;
-    let delegate = Arc::new(GateDelegate::default());
-    let mut exec_request =
-        request(r#"text("unread".repeat(100)); notify("ready"); await new Promise(() => {});"#);
-    exec_request.max_output_tokens = Some(4);
-    exec_request.yield_time_ms = Some(60_000);
-    let started = session
-        .execute(exec_request, delegate.clone(), /*preempt*/ None)
-        .await
-        .map_err(anyhow::Error::msg)?;
-    let cell_id = started.cell_id.clone();
-    delegate.ready.notified().await;
-    drop(started);
-    delegate.closed.notified().await;
-
-    let outcome = session
-        .wait(
-            codex_code_mode::WaitRequest {
-                cell_id,
-                yield_time_ms: 60_000,
-                max_output_tokens: Some(4),
-            },
-            /*preempt*/ None,
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-    assert!(matches!(
-        outcome,
-        codex_code_mode::WaitOutcome::MissingCell(_)
-    ));
-    session.shutdown().await.map_err(anyhow::Error::msg)?;
     Ok(())
 }

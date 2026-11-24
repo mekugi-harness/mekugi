@@ -11,7 +11,6 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use super::send_cell_event;
-use crate::output::OutputCollector;
 use crate::session_runtime::CellEvent;
 use crate::session_runtime::Observation;
 use crate::session_runtime::ToolKind;
@@ -213,8 +212,8 @@ impl CellState {
         }
         commit();
         *phase = CellPhase::Completed {
-            // Construct terminal output only after completion wins;
-            // termination must not see a losing completion's diagnostic.
+            // Construct terminal output only after completion wins. In bounded
+            // mode, an error may evict user output; termination must not see it.
             event: event(),
             completed_at: Instant::now(),
         };
@@ -319,31 +318,14 @@ impl CellState {
         let observer_event = match std::mem::replace(&mut *phase, CellPhase::Tombstone) {
             CellPhase::Running => Some(event),
             CellPhase::Terminating { response_tx } => {
-                if matches!(
-                    &event,
-                    CellEvent::Terminated {
-                        content_items: OutputCollector::Server(_)
-                    }
-                ) {
-                    // Only one observer may claim the retained output. If the
-                    // terminate receiver disappeared, hand it to the active wait.
-                    send_cell_event(response_tx, event).err()
-                } else {
-                    let _ = response_tx.send(Ok(event.clone()));
-                    Some(event)
-                }
+                let _ = response_tx.send(Ok(event.clone()));
+                Some(event)
             }
             CellPhase::Completed {
                 event,
                 completed_at,
             } => Some(buffered_completion(event, completed_at)),
-            CellPhase::CompletionClaimed(completed_event) => match &completed_event {
-                CellEvent::Completed {
-                    content_items: OutputCollector::Server(_),
-                    ..
-                } => None,
-                _ => Some(completed_event),
-            },
+            CellPhase::CompletionClaimed(completed_event) => Some(completed_event),
             CellPhase::Tombstone => None,
         };
         self.cancellation_token.cancel();

@@ -1,61 +1,68 @@
-//! Bound unread Server output across the actor, delivery events and wait pages.
+//! Bounded retention and per-observation rendering for Code Mode output.
+//!
+//! Keeps omission accounting inside this module until rendered. No actor or
+//! transport state belongs here.
 
 use codex_code_mode_protocol::CodeModeOutputTruncation;
 use codex_code_mode_protocol::FunctionCallOutputContentItem as OutputItem;
+use codex_utils_output_truncation::OutputBoundary;
 use codex_utils_string::truncate_middle_with_marker;
 
-mod pages;
-mod retention;
+mod output_collection;
+mod output_render;
 
-pub(crate) use retention::NextPage;
-pub(crate) use retention::OutputRetention;
-pub(crate) use retention::RetainedCell;
-pub(crate) use retention::ServerOutput;
+pub(crate) use output_collection::BoundedOutput;
+#[cfg(test)]
+pub(crate) use output_collection::MAX_OUTPUT_ITEMS;
+#[cfg(test)]
+pub(crate) use output_render::render_output;
+pub(crate) use output_render::render_output_with_spill;
 
-/// Reserve room for a bounded failure diagnostic even when user output filled the cell.
+/// Bound the buffered server diagnostic independently of model-visible output.
 pub(crate) const MAX_SERVER_DIAGNOSTIC_BYTES: usize = 64 * 1024;
-const ERROR_LABEL: &str = "Script error:\n";
-const MAX_RETAINED_BYTES: usize = 16 * 1024 * 1024;
-const MAX_USER_BYTES: usize = MAX_RETAINED_BYTES - MAX_SERVER_DIAGNOSTIC_BYTES;
 
+/// The actor transfers the whole collector at each observation, so a failed
+/// synchronous send can restore the original state, including any omissions.
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(crate) enum OutputCollector {
     Client(Vec<OutputItem>),
-    Server(ServerOutput),
+    /// Allocate storage only when the observation receives output.
+    Server(Option<Box<BoundedOutput>>),
 }
 
 impl OutputCollector {
     pub(crate) fn new(mode: CodeModeOutputTruncation) -> Self {
         match mode {
             CodeModeOutputTruncation::Client => Self::Client(Vec::new()),
-            CodeModeOutputTruncation::Server => {
-                let cell = OutputRetention::default().register(1, Default::default());
-                Self::Server(cell.batch())
-            }
+            CodeModeOutputTruncation::Server => Self::Server(None),
         }
     }
 
     pub(crate) fn push(&mut self, item: OutputItem) {
         match self {
             Self::Client(items) => items.push(item),
-            Self::Server(output) => output.push(item),
+            Self::Server(output) => output.get_or_insert_with(Box::default).push(item),
         }
     }
 
-    pub(crate) fn collect_error(&mut self, error: String) -> String {
-        if let Self::Server(output) = self {
-            let end = error.floor_char_boundary(
-                error
-                    .len()
-                    .min(MAX_SERVER_DIAGNOSTIC_BYTES - ERROR_LABEL.len()),
-            );
-            output.push_error(format!("{ERROR_LABEL}{}", &error[..end]), error.len() - end);
-            if error.capacity() > MAX_SERVER_DIAGNOSTIC_BYTES {
-                return truncate_middle_with_marker(&error, MAX_SERVER_DIAGNOSTIC_BYTES, "…");
+    /// Server errors share the observation's output budget; their diagnostic
+    /// has an independent bound. Client errors retain their original formatting.
+    pub(crate) fn collect_error(&mut self, error_text: String) -> String {
+        match self {
+            Self::Client(_) => error_text,
+            Self::Server(output) => {
+                output
+                    .get_or_insert_with(Box::default)
+                    .push_error(&error_text);
+                // Reuse small errors without retaining oversized backing storage.
+                if error_text.capacity() <= MAX_SERVER_DIAGNOSTIC_BYTES {
+                    error_text
+                } else {
+                    truncate_middle_with_marker(&error_text, MAX_SERVER_DIAGNOSTIC_BYTES, "…")
+                }
             }
         }
-        error
     }
 
     pub(crate) fn take(&mut self) -> Self {
@@ -73,24 +80,72 @@ impl OutputCollector {
         true
     }
 
-    pub(crate) fn into_items(self) -> Vec<OutputItem> {
+    /// Flatten the retained state only after the observer owns it.
+    pub(crate) fn into_collected_output(self) -> CollectedOutput {
         match self {
-            Self::Client(items) => items,
-            Self::Server(output) => output.into_items(),
+            Self::Client(items) => items.into(),
+            Self::Server(Some(output)) => output.into_collected_output(),
+            Self::Server(None) => CollectedOutput::default(),
         }
     }
 }
 
-fn discard_notice_text(discarded: u64) -> String {
-    format!("Code Mode output limit reached: discarded {discarded} bytes")
+/// Retained content and where the collector had to drop data. Loss is private
+/// to the runtime until it is rendered as text after the observation's budget.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct CollectedOutput {
+    items: Vec<OutputItem>,
+    gaps: Vec<OutputGap>,
 }
 
-fn discard_notice_item(discarded: u64) -> OutputItem {
-    OutputItem::InputText {
-        text: discard_notice_text(discarded),
+impl From<Vec<OutputItem>> for CollectedOutput {
+    fn from(items: Vec<OutputItem>) -> Self {
+        Self {
+            items,
+            gaps: Vec::new(),
+        }
     }
 }
 
-#[cfg(test)]
-#[path = "output_tests.rs"]
-mod tests;
+impl CollectedOutput {
+    fn push_gap(&mut self, boundary: OutputBoundary, omitted: OutputOmission) {
+        if let Some(gap) = self.gaps.last_mut()
+            && gap.boundary == boundary
+        {
+            gap.omitted.combine(omitted);
+        } else {
+            self.gaps.push(OutputGap { boundary, omitted });
+        }
+    }
+
+    /// Takes the unformatted items. Only for client-side observations, where
+    /// the caller already owns truncation and the input was not bounded.
+    pub(crate) fn into_untruncated_items(self) -> Vec<OutputItem> {
+        self.items
+    }
+}
+
+/// Missing output at a boundary in the retained logical items. A nonzero
+/// UTF-8 byte offset marks loss inside a single text item.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OutputGap {
+    boundary: OutputBoundary,
+    omitted: OutputOmission,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct OutputOmission {
+    text_bytes: u64,
+    text_items: u64,
+    image_items: u64,
+    audio_items: u64,
+}
+
+impl OutputOmission {
+    fn combine(&mut self, other: Self) {
+        self.text_bytes = self.text_bytes.saturating_add(other.text_bytes);
+        self.text_items = self.text_items.saturating_add(other.text_items);
+        self.image_items = self.image_items.saturating_add(other.image_items);
+        self.audio_items = self.audio_items.saturating_add(other.audio_items);
+    }
+}

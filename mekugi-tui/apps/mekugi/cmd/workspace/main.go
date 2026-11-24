@@ -329,7 +329,6 @@ func allowedImport(directory, pkg, imported string) error {
 			"legacycall":           {"persistence"},
 			"commandanalysis":      {"sourceanalysis", "commandargs"},
 			"shellinstrumentation": {"commandanalysis", "commandargs"},
-			"outputbudget":         {"sourceanalysis"},
 			"diffrender":           {"diffmodel", "pathdisplay", "textsanitize"},
 			"terminalui":           {"diffrender", "pathdisplay", "sourceanalysis", "textsanitize"},
 		}

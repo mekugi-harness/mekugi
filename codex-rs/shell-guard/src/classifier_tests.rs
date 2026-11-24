@@ -150,12 +150,16 @@ fn gh_hg_svn_jj_classification() {
     // hg
     assert!(remote::writes(&s(&["hg", "push"]), None));
     assert!(remote::writes(&s(&["hg", "pus"]), None));
+    assert!(remote::writes(&s(&["hg", "custom-alias"]), None));
     assert!(!remote::writes(&s(&["hg", "pull"]), None));
+    assert!(!remote::writes(&s(&["hg", "status"]), None));
     assert!(!remote::writes(&s(&["hg", "push", "--help"]), None));
 
     // svn
     assert!(remote::writes(&s(&["svn", "commit", "-m", "x"]), None));
     assert!(remote::writes(&s(&["svn", "ci"]), None));
+    assert!(remote::writes(&s(&["svn", "custom-cmd"]), None));
+    assert!(!remote::writes(&s(&["svn", "status"]), None));
     assert!(!remote::writes(&s(&["svn", "copy", "a", "b"]), None));
     assert!(remote::writes(
         &s(&["svn", "copy", "a", "https://example.com/svn/b"]),
@@ -169,6 +173,8 @@ fn gh_hg_svn_jj_classification() {
         &s(&["jj", "git", "push", "--dry-run"]),
         None
     ));
+    assert!(!remote::writes(&s(&["jj", "git", "fetch"]), None));
+    assert!(remote::writes(&s(&["jj", "git", "unknown"]), None));
     assert!(remote::writes(&s(&["jj", "gerrit", "upload"]), None));
     assert!(!remote::writes(&s(&["jj", "status"]), None));
     assert!(remote::writes(&s(&["jj", "my-alias"]), None));

@@ -1,4 +1,3 @@
-use crate::classifier::remote::static_word_value;
 use crate::classifier::wrapper::DYNAMIC;
 use crate::classifier::wrapper::basename;
 use crate::classifier::wrapper::command_word;
@@ -17,6 +16,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use tree_sitter::Node;
 use tree_sitter::Parser;
+use tree_sitter::Tree;
 
 /// Configuration for the minimal `tree-sitter-bash` executable-word rewriter.
 #[derive(Debug, Clone)]
@@ -67,6 +67,16 @@ struct SourceInsert {
     text: String,
 }
 
+/// Parses a shell script with `tree-sitter-bash`, returning `None` if the grammar
+/// cannot be initialized or parsing fails.
+pub fn parse_bash(script: &str) -> Option<Tree> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_bash::LANGUAGE.into())
+        .ok()?;
+    parser.parse(script, None)
+}
+
 /// Rewrites only executable words that `PATH` shims alone cannot intercept:
 /// explicit paths (e.g. `/usr/bin/git`, `$tools/sudo`), `env -i` / `env PATH=...` /
 /// `env -u PATH`, `command -p`, `PATH=...` overrides, and nested `-c` shells.
@@ -74,16 +84,14 @@ struct SourceInsert {
 /// Bare guarded commands (`git push`, `sudo id`, `gpg --sign`) in a normal environment
 /// are left completely untouched so `PATH` shims handle them with zero AST rewriting.
 pub fn rewrite_script(script: &str, config: &RewriteConfig<'_>) -> String {
-    let mut parser = Parser::new();
-    if parser
-        .set_language(&tree_sitter_bash::LANGUAGE.into())
-        .is_err()
-    {
-        return script.to_owned();
-    }
-    let Some(tree) = parser.parse(script, None) else {
+    let Some(tree) = parse_bash(script) else {
         return script.to_owned();
     };
+    rewrite_script_tree(script, &tree, config)
+}
+
+/// Rewrites executable words in an already-parsed `tree-sitter-bash` syntax tree.
+pub fn rewrite_script_tree(script: &str, tree: &Tree, config: &RewriteConfig<'_>) -> String {
     let root = tree.root_node();
     let script_mutates_path = config.force_rewrite_bare || has_script_path_mutation(root, script);
     let mut edits = Vec::new();
@@ -91,6 +99,109 @@ pub fn rewrite_script(script: &str, config: &RewriteConfig<'_>) -> String {
     apply_inserts(script, edits)
 }
 
+/// Returns the word nodes of a `tree-sitter-bash` `command` node, skipping
+/// variable assignments, redirects, and comments, and unwrapping `command_name`.
+pub fn command_word_nodes<'a>(command_node: Node<'a>) -> Vec<Node<'a>> {
+    let mut words = Vec::new();
+    let mut cursor = command_node.walk();
+    for child in command_node.children(&mut cursor) {
+        match child.kind() {
+            "variable_assignment"
+            | "file_redirect"
+            | "heredoc_redirect"
+            | "herestring_redirect"
+            | "comment" => {}
+            "command_name" => words.push(child.named_child(0).unwrap_or(child)),
+            _ if child.is_named() => words.push(child),
+            _ => {}
+        }
+    }
+    words
+}
+
+/// Unquotes a `tree-sitter-bash` word node if it contains only literal/quoted text
+/// without expansions or tilde expansion.
+pub fn static_word_value(node: Node<'_>, src: &str) -> Option<String> {
+    let text = node.utf8_text(src.as_bytes()).ok()?;
+    match node.kind() {
+        "word" | "number" => (!text.starts_with('~')).then(|| unescape_bare_word(text)),
+        "raw_string" => text
+            .strip_prefix('\'')?
+            .strip_suffix('\'')
+            .map(ToOwned::to_owned),
+        "string" => {
+            let mut cursor = node.walk();
+            let mut out = String::new();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "\"" => {}
+                    "string_content" => {
+                        let content = child.utf8_text(src.as_bytes()).ok()?;
+                        out.push_str(&unescape_double_quoted(content));
+                    }
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        "concatenation" => {
+            let mut cursor = node.walk();
+            let mut out = String::new();
+            let mut first = true;
+            for child in node.children(&mut cursor) {
+                if !child.is_named() {
+                    continue;
+                }
+                let part = static_word_value(child, src)?;
+                if first && child.kind() == "word" && part.starts_with('~') {
+                    return None;
+                }
+                first = false;
+                out.push_str(&part);
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn unescape_bare_word(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next()
+                && next != '\n'
+            {
+                out.push(next);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn unescape_double_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some(next @ ('$' | '`' | '"' | '\\')) => out.push(next),
+                Some('\n') => {}
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
 fn has_script_path_mutation(node: Node<'_>, src: &str) -> bool {
     match node.kind() {
         "variable_assignment" => {
@@ -144,33 +255,19 @@ fn collect_edits(
     edits: &mut Vec<SourceInsert>,
 ) {
     if node.kind() == "command" {
-        let mut word_nodes = Vec::new();
-        let mut word_values = Vec::new();
-        let mut local_path_override = false;
-
         let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            match child.kind() {
-                "variable_assignment" => {
-                    if let Some(name) = child.child_by_field_name("name")
-                        && name.utf8_text(src.as_bytes()).ok() == Some("PATH")
-                    {
-                        local_path_override = true;
-                    }
-                }
-                "file_redirect" | "heredoc_redirect" | "herestring_redirect" | "comment" => {}
-                "command_name" => {
-                    let target = child.named_child(0).unwrap_or(child);
-                    word_nodes.push(target);
-                    word_values.push(word_for_wrapper(target, src));
-                }
-                _ if child.is_named() => {
-                    word_nodes.push(child);
-                    word_values.push(word_for_wrapper(child, src));
-                }
-                _ => {}
-            }
-        }
+        let local_path_override = node.children(&mut cursor).any(|child| {
+            child.kind() == "variable_assignment"
+                && child
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(src.as_bytes()).ok())
+                    == Some("PATH")
+        });
+        let word_nodes = command_word_nodes(node);
+        let word_values: Vec<String> = word_nodes
+            .iter()
+            .map(|&word| word_for_wrapper(word, src))
+            .collect();
 
         if let Some(unwrapped) = command_word(&word_values) {
             let word_node = word_nodes[unwrapped.index];

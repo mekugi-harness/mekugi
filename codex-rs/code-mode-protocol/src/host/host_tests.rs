@@ -254,6 +254,7 @@ fn open_session_serializes_optional_cell_execution_limits() {
                 max_heap_size_bytes: Some(16 * 1024 * 1024),
             }),
             output_truncation: None,
+            truncated_output_dir: None,
         },
         json!({
             "method": "session/open",
@@ -310,6 +311,7 @@ fn client_to_host_v1_variants_are_pinned() {
                 session_id: session_id(),
                 cell_execution_limits: None,
                 output_truncation: None,
+                truncated_output_dir: None,
             },
             json!({ "method": "session/open", "sessionId": "session-1" }),
         ),
@@ -319,6 +321,7 @@ fn client_to_host_v1_variants_are_pinned() {
                 session_id: session_id(),
                 cell_execution_limits: None,
                 output_truncation: Some(WireOutputTruncation::Server),
+                truncated_output_dir: None,
             },
             json!({
                 "method": "session/open",
@@ -385,7 +388,6 @@ fn client_to_host_v1_variants_are_pinned() {
             HostRequest::Terminate {
                 session_id: session_id(),
                 cell_id: cell_id("cell-1"),
-                discard_output: false,
                 max_output_tokens: None,
             },
             json!({

@@ -5,11 +5,14 @@ use crate::approx_tokens_from_byte_count_i64;
 use crate::formatted_output_at_token_boundaries;
 use crate::formatted_truncate_function_output_items_with_policy;
 use crate::formatted_truncate_text;
+use crate::formatted_truncate_text_with_spill;
 use crate::mixed_output_at_token_boundaries;
 use crate::truncate_function_output_items_with_policy;
 use crate::truncate_mcp_tool_result;
 use crate::truncate_measured_tool_output;
 use crate::truncate_text;
+use crate::truncate_text_with_spill;
+use crate::truncated_output_dir;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::AudioReference;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -600,4 +603,56 @@ fn measured_tool_output_keeps_charges_paired_with_retained_clips() {
         ),
         vec![(text, 0), (clip.clone(), 2), (clip, 1), (omitted, 0)]
     );
+}
+
+#[test]
+fn formatted_truncate_text_with_spill_writes_omitted_portion_and_id() {
+    let base = std::env::temp_dir().join(format!(
+        "codex-spill-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    let spill_dir = truncated_output_dir(&base);
+
+    // Non-truncated input must not create the spill directory.
+    let short = "hello world";
+    assert_eq!(
+        formatted_truncate_text_with_spill(short, TruncationPolicy::Tokens(10), Some(&spill_dir)),
+        short
+    );
+    assert!(!spill_dir.exists());
+
+    // Truncated token input spills the exact omitted middle and embeds `(id: <id>)`.
+    let content = format!("HEAD_PART_{}_TAIL_PART", "x".repeat(200));
+    let rendered = formatted_truncate_text_with_spill(
+        &content,
+        TruncationPolicy::Tokens(10),
+        Some(&spill_dir),
+    );
+    let marker_start = rendered.find(" (id: ").expect("missing spill id notice");
+    let id_start = marker_start + " (id: ".len();
+    let id_end = rendered[id_start..].find(')').expect("closing paren") + id_start;
+    let id = &rendered[id_start..id_end];
+    assert_eq!(id.len(), 8);
+
+    let spilled = std::fs::read_to_string(spill_dir.join(id)).expect("read spilled file");
+    assert!(!spilled.is_empty());
+    assert!(content.contains(&spilled));
+
+    // Byte-budget truncation also spills omitted portion.
+    let byte_rendered = truncate_text_with_spill(
+        &content,
+        TruncationPolicy::Bytes(20),
+        Some(&spill_dir),
+    );
+    let b_start = byte_rendered.find(" (id: ").expect("missing byte spill id");
+    let b_id_start = b_start + " (id: ".len();
+    let b_id_end = byte_rendered[b_id_start..].find(')').expect("closing paren") + b_id_start;
+    let b_id = &byte_rendered[b_id_start..b_id_end];
+    assert_ne!(b_id, id);
+    let byte_spilled = std::fs::read_to_string(spill_dir.join(b_id)).expect("read byte spilled");
+    assert!(!byte_spilled.is_empty());
+    assert!(content.contains(&byte_spilled));
+
+    let _ = std::fs::remove_dir_all(&base);
 }

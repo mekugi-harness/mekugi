@@ -695,9 +695,7 @@ impl ContextManager {
         self.sampling.record(&mut processed);
         if let ResponseItem::FunctionCallOutput { output, .. }
         | ResponseItem::CustomToolCallOutput { output, .. } = &mut processed.item
-            && !metadata.is_some_and(|metadata| {
-                metadata.tool_audio_budget_applied || metadata.tool_output_budget_applied
-            })
+            && !metadata.is_some_and(|metadata| metadata.tool_audio_budget_applied)
         {
             // The override already includes the tool's serialization allowance.
             let policy = metadata

@@ -34,8 +34,6 @@ pub(crate) fn terminal_session_for_input(
     #[derive(Deserialize)]
     struct TerminalSessionArgs {
         session_id: i32,
-        #[serde(default)]
-        chars: String,
     }
 
     Box::pin(async move {
@@ -45,37 +43,23 @@ pub(crate) fn terminal_session_for_input(
             ));
         };
         let args: TerminalSessionArgs = parse_arguments(arguments)?;
-        if !args.chars.is_empty() {
-            resolve_tool_environment(
-                &invocation.step_context.environments,
-                /*environment_id*/ None,
-            )?;
-        }
-        let terminal = invocation
+        resolve_tool_environment(
+            &invocation.step_context.environments,
+            /*environment_id*/ None,
+        )?;
+        invocation
             .session
             .services
             .unified_exec_manager
             .resolve_terminal(args.session_id)
             .await
+            .map(ToolEnvironments::Terminal)
             .map_err(|err| {
                 FunctionCallError::RespondToModel(format!(
                     "{} failed: {err}",
                     invocation.tool_name.name
                 ))
-            })?;
-        // Read-only paging of already-retained output (`chars` empty) works even
-        // when the turn has no primary execution environment (e.g. Side turns).
-        // Live processes and non-empty stdin writes still require an executor.
-        if !matches!(
-            terminal.target,
-            crate::unified_exec::TerminalTarget::Retained { .. }
-        ) {
-            resolve_tool_environment(
-                &invocation.step_context.environments,
-                /*environment_id*/ None,
-            )?;
-        }
-        Ok(ToolEnvironments::Terminal(terminal))
+            })
     })
 }
 

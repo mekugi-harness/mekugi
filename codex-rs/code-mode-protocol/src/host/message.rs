@@ -191,6 +191,9 @@ pub enum HostRequest {
         /// Omission preserves the legacy session behavior and wire shape.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output_truncation: Option<WireOutputTruncation>,
+        /// Optional directory where truncated output portions are written.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        truncated_output_dir: Option<String>,
     },
     #[serde(rename = "session/execute")]
     Execute {
@@ -210,8 +213,6 @@ pub enum HostRequest {
         cell_id: WireCellId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_output_tokens: Option<usize>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        discard_output: bool,
     },
     #[serde(rename = "session/shutdown")]
     ShutdownSession { session_id: SessionId },

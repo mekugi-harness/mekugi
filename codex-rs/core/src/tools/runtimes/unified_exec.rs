@@ -81,6 +81,7 @@ pub struct UnifiedExecRequest<'a> {
     pub explicit_env_overrides: HashMap<String, String>,
     pub network: Option<NetworkProxy>,
     pub exec_approval_requirement: ExecApprovalRequirement,
+    pub large_capture: bool,
 }
 
 /// Cache key for approval decisions that can be reused across equivalent
@@ -734,6 +735,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 windows_sandbox_proxy_settings_mode,
                 prepared.tty,
                 prepared.turn_environment.environment().as_ref(),
+                req.large_capture,
             )
             .await;
         let mut process = with_launch_failure_events(process, prepared, ctx).await?;
@@ -961,6 +963,7 @@ mod tests {
                 bypass_sandbox: false,
                 proposed_execpolicy_amendment: None,
             },
+            large_capture: false,
         }
     }
 }

@@ -188,6 +188,10 @@ impl GrpcCodeModeSessionProvider {
                             Some(grpc::OutputTruncation::Server.into())
                         }
                     },
+                    truncated_output_dir: options
+                        .truncated_output_dir
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()),
                 });
                 request.extensions_mut().insert(SessionAdmission);
                 inject_span_traceparent(&mut request, &open_session_span);
