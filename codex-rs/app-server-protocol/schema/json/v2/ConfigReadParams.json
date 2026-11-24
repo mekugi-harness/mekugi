@@ -10,6 +10,13 @@
     },
     "includeLayers": {
       "type": "boolean"
+    },
+    "threadId": {
+      "description": "Read only the terminal settings of this loaded thread. If layers are requested, they contain preset ownership metadata, not raw config.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "ConfigReadParams",

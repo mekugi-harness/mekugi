@@ -688,6 +688,7 @@ async fn config_reads_complete_alongside_skills_list_request() -> Result<()> {
 
     let config_request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1375,6 +1376,7 @@ async fn skills_changed_notification_is_emitted_after_skill_change() -> Result<(
 
     let thread_start_request_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
+            family: None,
             model: None,
             model_provider: None,
             allow_provider_model_fallback: false,

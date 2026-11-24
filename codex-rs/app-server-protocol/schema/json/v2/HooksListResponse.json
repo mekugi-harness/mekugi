@@ -258,6 +258,10 @@
     }
   },
   "properties": {
+    "bypassHookTrust": {
+      "description": "True when this loaded thread does not require startup hook-trust approval.",
+      "type": "boolean"
+    },
     "data": {
       "items": {
         "$ref": "#/definitions/HooksListEntry"

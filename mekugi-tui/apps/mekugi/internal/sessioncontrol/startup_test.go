@@ -161,7 +161,7 @@ func TestStartupExplicitHookTrustForRoot(t *testing.T) {
 	for _, trust := range []*bool{nil, new(false), new(true)} {
 		transport := &requestTransport{id: "start"}
 		requests := NewRequests[string](transport)
-		startup := Startup{Config: make(map[string]any)}
+		startup := Startup{Workspace: t.TempDir(), Config: make(map[string]any)}
 		if trust != nil {
 			startup.Config["bypass_hook_trust"] = *trust
 		}
@@ -173,13 +173,14 @@ func TestStartupExplicitHookTrustForRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 		var params struct {
+			Cwd    string         `json:"cwd"`
 			Config map[string]any `json:"config"`
 		}
 		if err := json.Unmarshal(data, &params); err != nil {
 			t.Fatal(err)
 		}
 		value, present := params.Config["bypass_hook_trust"]
-		if present != (trust != nil) || trust != nil && value != *trust {
+		if params.Cwd != startup.Workspace || present != (trust != nil) || trust != nil && value != *trust {
 			t.Fatalf("trust=%v params=%s", trust, data)
 		}
 	}

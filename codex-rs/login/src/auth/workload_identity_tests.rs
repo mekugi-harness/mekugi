@@ -63,6 +63,41 @@ fn api_access_token(assertion: &str) -> String {
     format!("e30.{payload}.sig")
 }
 
+#[test]
+fn admitted_families_can_use_different_workload_identities() {
+    use codex_protocol::config_types::CallerEnvironment;
+    let home = tempfile::tempdir().expect("tempdir");
+    let config = AuthConfig {
+        codex_home: home.path().to_path_buf(),
+        auth_credentials_store_mode: AuthCredentialsStoreMode::Ephemeral,
+        keyring_backend_kind: Default::default(),
+        forced_login_method: None,
+        chatgpt_base_url: None,
+        forced_chatgpt_workspace_id: None,
+        managed_auth_policy: Default::default(),
+        auth_route_config: auth_route_config(OutboundProxyPolicy::ReqwestDefault),
+    };
+    let admit = |rule: &str| {
+        let caller = CallerEnvironment::new(
+            [
+                (OPENAI_FEDERATION_RULE_ID_ENV_VAR.into(), rule.into()),
+                (
+                    OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR.into(),
+                    home.path().join(rule).to_string_lossy().into_owned(),
+                ),
+            ]
+            .into(),
+        );
+        WorkloadIdentityExternalAuth::from_config(&config, Some(&caller))
+            .expect("admitted workload identity")
+            .expect("selected workload identity")
+    };
+
+    let first = admit("rule-one");
+    let second = admit("rule-two");
+    assert!(!Arc::ptr_eq(&first.session, &second.session));
+}
+
 #[tokio::test]
 async fn api_platform_auth_refreshes_with_a_rotated_assertion() {
     let temp_dir = tempfile::tempdir().expect("tempdir");

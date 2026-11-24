@@ -54,6 +54,50 @@ pub enum ThreadStartSource {
     Clear,
 }
 
+/// Private invocation input for a new or cold-resumed family. Environment values
+/// may contain credentials; do not publish them in thread views or rollouts.
+#[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadFamilyParams {
+    /// For the custom-only launcher, reject an effective OpenAI route.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_custom_provider: bool,
+    /// Optional launcher shell observer, appended after the caller's hooks.
+    #[ts(optional = nullable)]
+    pub tracking_command: Option<String>,
+    pub environment: HashMap<String, String>,
+    #[ts(optional = nullable)]
+    pub profile: Option<String>,
+}
+
+impl std::fmt::Debug for ThreadFamilyParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ThreadFamilyParams")
+            .field("profile", &self.profile)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Previously applied client settings, below current invocation overrides.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RetainedThreadSettingsParams {
+    pub model: String,
+    #[ts(optional = nullable)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Absent in older sessions; null selects the default tier.
+    #[serde(
+        default,
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional = nullable)]
+    pub service_tier: Option<Option<String>>,
+}
+
 // === Threads, Turns, and Items ===
 // Thread APIs
 #[derive(
@@ -62,6 +106,8 @@ pub enum ThreadStartSource {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadStartParams {
+    #[ts(optional = nullable)]
+    pub family: Option<ThreadFamilyParams>,
     #[ts(optional = nullable)]
     pub model: Option<String>,
     #[ts(optional = nullable)]
@@ -378,6 +424,11 @@ pub struct ThreadSettingsUpdatedNotification {
 ///
 /// Prefer using thread_id whenever possible.
 pub struct ThreadResumeParams {
+    /// Cold-resume evidence from the client's retained session, not a CLI override.
+    #[ts(optional = nullable)]
+    pub retained_settings: Option<RetainedThreadSettingsParams>,
+    #[ts(optional = nullable)]
+    pub family: Option<ThreadFamilyParams>,
     pub thread_id: String,
 
     /// [UNSTABLE] FOR CODEX CLOUD - DO NOT USE.
@@ -2445,6 +2496,9 @@ pub struct ContextCompactedNotification {
 #[ts(export_to = "v2/")]
 pub struct ThreadSubtreeListParams {
     pub thread_id: String,
+    /// When supplied, verify the loaded family's selector before reading its subtree.
+    #[ts(optional = nullable)]
+    pub family: Option<ThreadFamilyParams>,
 }
 
 /// Explicit inspection may read retained settings and context history, never to count compactions.

@@ -195,6 +195,7 @@ chatgpt_base_url = "https://managed.example/backend-api/"
 
     let config_id = app_server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -546,6 +547,7 @@ service_tier = "fast"
 
     let config_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -581,6 +583,7 @@ async fn config_read_disables_guardian_v2_when_managed_config_requires_guardian_
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -621,6 +624,7 @@ region = "us"
 
     let read_id = app_server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -685,6 +689,7 @@ region = "us"
     }
     let read_id = app_server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -819,6 +824,7 @@ metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:1/v1/metrics", p
         .await?;
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -879,6 +885,7 @@ async fn config_read_with_relative_cwd_picks_up_external_edits() -> Result<()> {
         write_config(&home, &format!(r#"model = "{model}""#))?;
         let id = server
             .send_config_read_request(ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: Some(".".into()),
             })
@@ -912,6 +919,7 @@ sandbox_mode = "workspace-write"
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -965,6 +973,7 @@ allowed_domains = ["example.com"]
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -1102,6 +1111,7 @@ access = "deny"
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: Some(workspace.path().to_string_lossy().into_owned()),
         })
@@ -1266,6 +1276,7 @@ forced_chatgpt_workspace_id = "{WORKSPACE_ID}"
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1304,6 +1315,7 @@ forced_chatgpt_workspace_id = ["{WORKSPACE_ID_A}", "{WORKSPACE_ID_B}"]
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1345,6 +1357,7 @@ location = { country = "US", city = "New York", timezone = "America/New_York" }
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1388,6 +1401,7 @@ web_search = true
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1450,6 +1464,7 @@ enabled = false
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -1643,6 +1658,7 @@ width = 320
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1689,6 +1705,7 @@ model_reasoning_effort = "high"
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: Some(workspace.path().to_string_lossy().into_owned()),
         })
@@ -1745,6 +1762,7 @@ async fn config_read_respects_managed_project_root_markers() -> Result<()> {
         .await?;
     let request_id = app_server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: Some(child.to_string_lossy().into_owned()),
         })
@@ -1835,6 +1853,7 @@ writable_roots = [{}]
 
     let request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: true,
             cwd: None,
         })
@@ -1922,6 +1941,7 @@ model = "gpt-old"
 
     let read_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -1949,6 +1969,7 @@ model = "gpt-old"
 
     let verify_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2032,6 +2053,7 @@ async fn config_provider_write_reports_source_displacement() -> Result<()> {
         );
         let read_id = app_server
             .send_config_read_request(ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: None,
             })
@@ -2087,6 +2109,7 @@ url_prefixes = ["https://fixed.example"]
     );
     let id = app_server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2224,6 +2247,7 @@ url_prefixes = ["https://api.vendor.example"]
     assert_eq!(written.status, WriteStatus::Ok);
     let id = app_server
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2359,6 +2383,7 @@ auth = ["bearer"]
 
         let read_id = app_server
             .send_config_read_request(ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: None,
             })
@@ -2404,6 +2429,7 @@ async fn config_value_write_updates_desktop_settings() -> Result<()> {
 
     let read_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2444,6 +2470,7 @@ model = "gpt-old"
         .await?;
     let read_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2545,6 +2572,7 @@ async fn config_batch_write_applies_multiple_edits() -> Result<()> {
 
     let read_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2732,6 +2760,7 @@ access = "deny"
 
     let read_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })
@@ -2900,6 +2929,7 @@ async fn config_batch_write_updates_multiple_desktop_settings() -> Result<()> {
 
     let read_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })

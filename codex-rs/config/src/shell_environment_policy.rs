@@ -152,6 +152,7 @@ impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
         };
 
         Self {
+            caller_environment: None,
             inherit,
             ignore_default_excludes,
             exclude: exclude

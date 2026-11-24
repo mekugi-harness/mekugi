@@ -73,6 +73,9 @@ func (r *Requests[T]) OpenSession(s *Startup, control *Live, approvals bool, res
 		return OpeningLatest, err
 	case target == "":
 		params := ThreadPermissions(map[string]any{}, approvals)
+		if s.Workspace != "" {
+			params["cwd"] = s.Workspace
+		}
 		if trust, explicit := s.Config["bypass_hook_trust"]; explicit {
 			params["config"] = map[string]any{"bypass_hook_trust": trust}
 		}

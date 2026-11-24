@@ -1338,10 +1338,10 @@ impl TurnRequestProcessor {
                 && params.version == Some(RealtimeConversationVersion::V3) =>
             {
                 let current = thread.config().await;
-                let latest = Box::pin(self.config_manager.load_latest_config_with_session_layers(
-                    &current.config_layer_stack,
-                    &current.cwd,
-                ))
+                let latest = Box::pin(
+                    self.config_manager
+                        .load_latest_config_with_session_layers(&current),
+                )
                 .await
                 .map_err(|error| config_load_error(&error))?;
                 // Preserve a cleared preference instead of inheriting the thread's old voice.

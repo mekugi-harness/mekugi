@@ -6503,6 +6503,35 @@ async fn child_host_admission_does_not_invent_a_local_workspace() {
 }
 
 #[tokio::test]
+async fn subtree_remains_readable_before_child_materialization() {
+    let harness = AgentControlHarness::new().await;
+    let (root, parent) = harness.start_paginated_thread().await;
+    let pending = ThreadId::new();
+    harness
+        .state_db
+        .as_ref()
+        .unwrap()
+        .upsert_thread_spawn_edge(
+            root,
+            pending,
+            codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await
+        .unwrap();
+
+    let threads = harness.manager.read_thread_subtree(root).await.unwrap();
+    assert_eq!(
+        threads
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect::<Vec<_>>(),
+        vec![root.to_string()]
+    );
+    assert!(harness.manager.read_thread_subtree(pending).await.is_err());
+    parent.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
 async fn end_agent_validates_tree_and_joins_only_selected_subtree() {
     let (home, mut config) = test_config().await;
     config.features.enable(Feature::MultiAgentV2).unwrap();

@@ -29,3 +29,36 @@ fn aws_auth_config_uses_bedrock_service() {
         }
     );
 }
+
+#[tokio::test]
+async fn rejects_invalid_caller_region_in_runtime_base_url() {
+    use super::BedrockAuthSource;
+    use super::bedrock_runtime_base_url;
+    use codex_http_client::HttpClientFactory;
+    use codex_http_client::OutboundProxyPolicy;
+    use codex_protocol::config_types::CallerEnvironment;
+    use std::collections::HashMap;
+
+    let caller_env = CallerEnvironment::new(HashMap::from([(
+        "AWS_REGION".to_string(),
+        "attacker.example/v1#".to_string(),
+    )]));
+    let err = bedrock_runtime_base_url(
+        BedrockAuthSource::CommandBearerToken,
+        None,
+        &ModelProviderAwsAuthInfo {
+            profile: None,
+            region: None,
+            credential_export: None,
+            auth_refresh: None,
+        },
+        Some(&caller_env),
+        &HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    )
+    .await
+    .expect_err("URL delimiter in caller AWS_REGION must be rejected");
+    assert!(
+        err.to_string().contains("Amazon Bedrock region `attacker.example/v1#` is invalid"),
+        "unexpected error: {err:?}"
+    );
+}

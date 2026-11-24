@@ -238,6 +238,7 @@ pub type EnvironmentVariablePattern = WildMatchPattern<'*', '?'>;
 /// 5. If non-empty, filter the map using the `include_only` patterns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellEnvironmentPolicy {
+    pub caller_environment: Option<CallerEnvironment>,
     /// Starting point when building the environment.
     pub inherit: ShellEnvironmentPolicyInherit,
 
@@ -261,6 +262,7 @@ pub struct ShellEnvironmentPolicy {
 impl Default for ShellEnvironmentPolicy {
     fn default() -> Self {
         Self {
+            caller_environment: None,
             inherit: ShellEnvironmentPolicyInherit::All,
             ignore_default_excludes: true,
             exclude: Vec::new(),
@@ -563,6 +565,44 @@ pub enum ForcedLoginMethod {
 
 const DEFAULT_PROVIDER_AUTH_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_PROVIDER_AUTH_REFRESH_INTERVAL_MS: u64 = 300_000;
+
+/// A caller's complete environment, frozen for the lifetime of its thread family.
+#[derive(Clone, Default)]
+pub struct CallerEnvironment(std::sync::Arc<HashMap<String, String>>);
+
+impl CallerEnvironment {
+    pub fn new(values: HashMap<String, String>) -> Self {
+        Self(std::sync::Arc::new(values))
+    }
+
+    pub fn downgrade(&self) -> std::sync::Weak<HashMap<String, String>> {
+        std::sync::Arc::downgrade(&self.0)
+    }
+
+    pub fn values(&self) -> &HashMap<String, String> {
+        &self.0
+    }
+
+    /// Omitted admission uses the process; a missing key in an admission never does.
+    pub fn lookup(environment: Option<&Self>, key: &str) -> Option<String> {
+        match environment {
+            Some(environment) => environment.values().get(key).cloned(),
+            None => std::env::var(key).ok(),
+        }
+    }
+}
+
+impl PartialEq for CallerEnvironment {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for CallerEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CallerEnvironment(<redacted>)")
+    }
+}
 
 /// Configuration for obtaining a provider bearer token from a command.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema)]

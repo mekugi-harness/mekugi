@@ -1,6 +1,8 @@
 use codex_aws_auth::AwsAuthConfig;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderAwsAuthInfo;
+use codex_protocol::config_types::CallerEnvironment;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 
 use super::BedrockEndpoint;
@@ -18,6 +20,16 @@ pub(super) fn aws_auth_config(aws: &ModelProviderAwsAuthInfo) -> AwsAuthConfig {
     }
 }
 
+pub(super) fn is_valid_aws_region(region: &str) -> bool {
+    !region.is_empty()
+        && region.len() <= 63
+        && !region.starts_with('-')
+        && !region.ends_with('-')
+        && region
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 pub(super) fn base_url(region: &str) -> String {
     format!("https://bedrock-runtime.{region}.amazonaws.com/openai/v1")
 }
@@ -26,6 +38,7 @@ pub(super) async fn bedrock_runtime_base_url(
     source: BedrockAuthSource,
     managed_auth: Option<&CodexAuth>,
     aws: &ModelProviderAwsAuthInfo,
+    caller_environment: Option<&CallerEnvironment>,
     http_client_factory: &codex_http_client::HttpClientFactory,
 ) -> Result<String> {
     let region = resolve_region(
@@ -33,9 +46,15 @@ pub(super) async fn bedrock_runtime_base_url(
         managed_auth,
         aws,
         BedrockEndpoint::Runtime,
+        caller_environment,
         http_client_factory,
     )
     .await?;
+    if !is_valid_aws_region(&region) {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Amazon Bedrock region `{region}` is invalid"
+        )));
+    }
     Ok(base_url(&region))
 }
 

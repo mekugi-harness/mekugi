@@ -12,7 +12,7 @@ async fn reserved_header_errors_do_not_echo_secrets() {
     } else {
         "cat headers.json"
     };
-    let error = run_helper(command, dir.path())
+    let error = run_helper(command, dir.path(), None)
         .await
         .expect_err("reserved header");
     assert_eq!(

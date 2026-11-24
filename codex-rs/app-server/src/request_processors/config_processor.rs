@@ -116,6 +116,15 @@ impl ConfigRequestProcessor {
         &self,
         params: ConfigReadParams,
     ) -> Result<ConfigReadResponse, JSONRPCErrorError> {
+        if let Some(id) = &params.thread_id {
+            let thread = super::lookup_loaded_thread(&self.thread_manager, id).await?;
+            let config = self
+                .config_manager
+                .load_latest_config_with_session_layers(&*thread.config().await)
+                .await
+                .map_err(|err| super::config_load_error(&err))?;
+            return terminal_config_response(&config, params.include_layers);
+        }
         let cwd = params.cwd.as_ref().map(PathBuf::from);
         let config = match self.load_latest_config(cwd).await {
             Ok(config) => config,
@@ -450,10 +459,7 @@ async fn reload_user_config_inner(config_manager: &ConfigManager, thread_manager
         for attempt in 0..4 {
             let current_config = thread.config().await;
             let next_config = match config_manager
-                .load_latest_config_with_session_layers(
-                    &current_config.config_layer_stack,
-                    &current_config.cwd,
-                )
+                .load_latest_config_with_session_layers(&current_config)
                 .await
             {
                 Ok(config) => config,
@@ -968,6 +974,57 @@ fn map_network_unix_socket_permission_to_api(
         codex_config::NetworkUnixSocketPermissionToml::Allow => NetworkUnixSocketPermission::Allow,
         codex_config::NetworkUnixSocketPermissionToml::Deny => NetworkUnixSocketPermission::Deny,
     }
+}
+
+/// Thread config is an invocation-private snapshot. Only expose fields the
+/// terminal reads, and only slot presence from raw layers for preset writes.
+fn terminal_config_response(
+    config: &codex_core::config::Config,
+    include_layers: bool,
+) -> Result<ConfigReadResponse, JSONRPCErrorError> {
+    let terminal = serde_json::from_value(json!({
+        "history": config.history,
+        "tui": {
+            "notifications": config.tui_notifications.notifications,
+            "notification_method": config.tui_notifications.method,
+            "notification_condition": config.tui_notifications.condition,
+            "presets": config.tui_quick_dials,
+        },
+    }))
+    .map_err(|err| internal_error(format!("failed to encode terminal settings: {err}")))?;
+    let layers = include_layers.then(|| {
+        config
+            .config_layer_stack
+            .all_layers_high_to_low()
+            .filter_map(|layer| {
+                use codex_config::ConfigLayerSource;
+                let slots = layer
+                    .config
+                    .get("tui")
+                    .and_then(|tui| tui.get("presets"))
+                    .and_then(toml::Value::as_table);
+                if !matches!(layer.name, ConfigLayerSource::User { .. }) && slots.is_none() {
+                    return None;
+                }
+                let slots: serde_json::Map<String, serde_json::Value> = slots
+                    .into_iter()
+                    .flat_map(|slots| slots.keys())
+                    .map(|key| (key.clone(), serde_json::Value::Null))
+                    .collect();
+                Some(codex_app_server_protocol::ConfigLayer {
+                    name: crate::config_layer::config_layer_source_to_api(layer.name.clone()),
+                    version: layer.version.clone(),
+                    disabled_reason: layer.disabled_reason.clone(),
+                    config: json!({"tui": {"presets": slots}}),
+                })
+            })
+            .collect()
+    });
+    Ok(ConfigReadResponse {
+        config: terminal,
+        origins: Default::default(),
+        layers,
+    })
 }
 
 pub(super) fn map_error(err: ConfigManagerError) -> JSONRPCErrorError {

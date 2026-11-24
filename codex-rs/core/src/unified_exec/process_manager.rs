@@ -147,7 +147,11 @@ pub(crate) fn exec_env_policy_from_shell_policy(
         codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
         PLUGIN_METRICS_OUTPUT_ENV_VAR.to_string(),
     ]);
-    let mut r#set = policy.r#set.clone();
+    let mut r#set = if policy.caller_environment.is_some() {
+        create_env(policy, None)
+    } else {
+        policy.r#set.clone()
+    };
     r#set.retain(|key, _| {
         ![
             CODEX_PERMISSION_PROFILE_ENV_VAR,
@@ -160,7 +164,11 @@ pub(crate) fn exec_env_policy_from_shell_policy(
             && !is_non_inheritable_tool_env_var(key)
     });
     codex_exec_server::ExecEnvPolicy {
-        inherit: policy.inherit.clone(),
+        inherit: if policy.caller_environment.is_some() {
+            codex_protocol::config_types::ShellEnvironmentPolicyInherit::None
+        } else {
+            policy.inherit.clone()
+        },
         ignore_default_excludes: policy.ignore_default_excludes,
         exclude,
         r#set,

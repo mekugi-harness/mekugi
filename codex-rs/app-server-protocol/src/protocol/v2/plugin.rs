@@ -63,6 +63,9 @@ pub struct HooksListParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct HooksListResponse {
+    /// True when this loaded thread does not require startup hook-trust approval.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypass_hook_trust: bool,
     pub data: Vec<HooksListEntry>,
 }
 

@@ -22,8 +22,8 @@ use tokio::time::Instant;
 use url::Origin;
 use url::Url;
 
-use crate::utils::create_env_for_mcp_server;
 use crate::www_authenticate::insufficient_scope_challenge;
+use codex_protocol::config_types::CallerEnvironment;
 
 type CachedHeaders = Shared<BoxFuture<'static, std::result::Result<Arc<HeaderMap>, Arc<str>>>>;
 
@@ -31,6 +31,7 @@ struct HttpHeadersProvider {
     server_origin: Origin,
     command: String,
     cwd: PathBuf,
+    caller: Option<CallerEnvironment>,
     cache: Mutex<HeadersCache>,
 }
 
@@ -53,13 +54,23 @@ struct HttpHeadersClient {
 }
 
 impl HttpHeadersProvider {
+    #[cfg(test)]
     fn new(server_url: &str, command: &str, cwd: PathBuf) -> Result<Self> {
+        Self::for_caller(server_url, command, cwd, None)
+    }
+    fn for_caller(
+        server_url: &str,
+        command: &str,
+        cwd: PathBuf,
+        caller: Option<CallerEnvironment>,
+    ) -> Result<Self> {
         let command = command.to_string();
-        let cached = Self::helper_attempt(command.clone(), cwd.clone());
+        let cached = Self::helper_attempt(command.clone(), cwd.clone(), caller.clone());
         Ok(Self {
             server_origin: Url::parse(server_url)?.origin(),
             command,
             cwd,
+            caller,
             cache: Mutex::new(HeadersCache {
                 refresh_epoch: 0,
                 current: cached,
@@ -68,12 +79,16 @@ impl HttpHeadersProvider {
         })
     }
 
-    fn helper_attempt(command: String, cwd: PathBuf) -> CachedHeaders {
+    fn helper_attempt(
+        command: String,
+        cwd: PathBuf,
+        caller: Option<CallerEnvironment>,
+    ) -> CachedHeaders {
         async move {
             // Keep helper cleanup running after caller cancellation; dropping the set aborts it.
             let mut tasks = tokio::task::JoinSet::new();
             tasks.spawn(async move {
-                run_helper(&command, &cwd)
+                run_helper(&command, &cwd, caller.as_ref())
                     .await
                     .map(Arc::new)
                     .map_err(|error| Arc::<str>::from(error.to_string()))
@@ -111,7 +126,11 @@ impl HttpHeadersProvider {
                 cache
                     .refresh
                     .get_or_insert_with(|| {
-                        Self::helper_attempt(self.command.clone(), self.cwd.clone())
+                        Self::helper_attempt(
+                            self.command.clone(),
+                            self.cwd.clone(),
+                            self.caller.clone(),
+                        )
                     })
                     .clone()
             }
@@ -144,7 +163,17 @@ pub fn with_http_headers_helper(
     command: &str,
     cwd: PathBuf,
 ) -> Result<Arc<dyn HttpClient>> {
-    let provider = HttpHeadersProvider::new(server_url, command, cwd)?;
+    with_caller_http_headers_helper(inner, server_url, command, cwd, None)
+}
+
+pub fn with_caller_http_headers_helper(
+    inner: Arc<dyn HttpClient>,
+    server_url: &str,
+    command: &str,
+    cwd: PathBuf,
+    caller: Option<CallerEnvironment>,
+) -> Result<Arc<dyn HttpClient>> {
+    let provider = HttpHeadersProvider::for_caller(server_url, command, cwd, caller)?;
     Ok(Arc::new(HttpHeadersClient { inner, provider }))
 }
 
@@ -349,12 +378,20 @@ impl HttpClient for HttpHeadersClient {
     }
 }
 
-async fn run_helper(command: &str, cwd: &Path) -> Result<HeaderMap> {
+async fn run_helper(
+    command: &str,
+    cwd: &Path,
+    caller: Option<&CallerEnvironment>,
+) -> Result<HeaderMap> {
     let mut process = codex_http_headers_helper::shell_command(command);
     process
         .current_dir(cwd)
         .env_clear()
-        .envs(create_env_for_mcp_server(/*extra_env*/ None, &[])?);
+        .envs(crate::utils::create_env_for_caller(
+            /*extra_env*/ None,
+            &[],
+            caller,
+        )?);
     let headers = codex_http_headers_helper::run(process)
         .await
         .map_err(|err| anyhow!("MCP HTTP {err}"))?;

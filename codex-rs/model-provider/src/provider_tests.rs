@@ -65,6 +65,7 @@ fn provider_for(base_url: String) -> ModelProviderInfo {
         base_url: Some(base_url),
         model_catalog_url: None,
         env_key: None,
+        caller_environment: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,

@@ -662,6 +662,18 @@ fn resolve_turn_environment_requests(
     Ok(Some(requests))
 }
 
+async fn lookup_loaded_thread(
+    manager: &ThreadManager,
+    id: &str,
+) -> Result<Arc<CodexThread>, JSONRPCErrorError> {
+    let id = ThreadId::from_string(id)
+        .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+    manager
+        .get_thread(id)
+        .await
+        .map_err(|_| invalid_request(format!("thread not found: {id}")))
+}
+
 /// Project-local layers cannot define providers, so explicit selectors can use the startup map.
 fn config_for_provider(
     startup: &Arc<Config>,

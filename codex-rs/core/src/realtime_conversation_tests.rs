@@ -9,6 +9,7 @@ use super::RealtimeStreamedItem;
 use super::classify_realtime_input_error;
 use super::classify_realtime_input_error_with_pending;
 use super::prepare_realtime_start;
+use super::realtime_api_key;
 use super::realtime_delegation_from_handoff;
 use super::realtime_request_headers;
 use super::realtime_text_from_handoff_request;
@@ -21,7 +22,9 @@ use codex_api::RealtimeEventParser;
 use codex_features::Feature;
 use codex_features::RuntimeAuthMode;
 use codex_login::CodexAuth;
+use codex_login::OPENAI_API_KEY_ENV_VAR;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_protocol::config_types::CallerEnvironment;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::CodexResponseHandoffMode;
 use codex_protocol::protocol::ConversationStartParams;
@@ -67,6 +70,18 @@ fn websocket_start_params() -> ConversationStartParams {
         version: Some(RealtimeConversationVersion::V1),
         voice: None,
     }
+}
+
+#[test]
+fn realtime_fallback_uses_the_admitted_family_key() {
+    let provider = ModelProviderInfo {
+        caller_environment: Some(CallerEnvironment::new(
+            [(OPENAI_API_KEY_ENV_VAR.into(), "  family-key  ".into())].into(),
+        )),
+        ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+    };
+
+    assert_eq!(realtime_api_key(None, &provider).unwrap(), "family-key");
 }
 
 #[tokio::test]

@@ -14,6 +14,7 @@ use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderAwsAuthInfo;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_protocol::config_types::CallerEnvironment;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 use http::HeaderMap;
@@ -29,8 +30,16 @@ use super::runtime;
 pub(super) const AWS_BEARER_TOKEN_BEDROCK_ENV_VAR: &str = "AWS_BEARER_TOKEN_BEDROCK";
 const AWS_ACCESS_KEY_ID_ENV_VAR: &str = "AWS_ACCESS_KEY_ID";
 const AWS_SECRET_ACCESS_KEY_ENV_VAR: &str = "AWS_SECRET_ACCESS_KEY";
+const AWS_SESSION_TOKEN_ENV_VAR: &str = "AWS_SESSION_TOKEN";
 const AWS_REGION_ENV_VAR: &str = "AWS_REGION";
 const AWS_DEFAULT_REGION_ENV_VAR: &str = "AWS_DEFAULT_REGION";
+
+pub(super) fn lookup_env_var(
+    caller_environment: Option<&CallerEnvironment>,
+    name: &'static str,
+) -> std::result::Result<String, std::env::VarError> {
+    CallerEnvironment::lookup(caller_environment, name).ok_or(std::env::VarError::NotPresent)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BedrockAuthSource {
@@ -95,6 +104,7 @@ pub(super) async fn resolve_auth_method(
     managed_auth: Option<&CodexAuth>,
     aws: &ModelProviderAwsAuthInfo,
     endpoint: BedrockEndpoint,
+    caller_environment: Option<&CallerEnvironment>,
     http_client_factory: &codex_http_client::HttpClientFactory,
 ) -> Result<BedrockAuthMethod> {
     match source {
@@ -103,6 +113,14 @@ pub(super) async fn resolve_auth_method(
                 .to_string(),
         )),
         BedrockAuthSource::CredentialExport => {
+            if caller_environment.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "Amazon Bedrock `aws.credential_export` is not supported for admitted session \
+families; supply Bedrock credentials in the caller environment, Codex-managed auth, or provider \
+command auth"
+                        .to_string(),
+                ));
+            }
             let config = match endpoint {
                 BedrockEndpoint::Mantle => aws_auth_config(aws),
                 BedrockEndpoint::Runtime => runtime::aws_auth_config(aws),
@@ -137,17 +155,26 @@ pub(super) async fn resolve_auth_method(
             })
         }
         BedrockAuthSource::EnvBearerToken => {
-            let token = non_empty_env_var_from(AWS_BEARER_TOKEN_BEDROCK_ENV_VAR, std::env::var)
+            let env_var = |name| lookup_env_var(caller_environment, name);
+            let token = non_empty_env_var_from(AWS_BEARER_TOKEN_BEDROCK_ENV_VAR, env_var)
                 .ok_or_else(|| {
                     CodexErr::Fatal(
                         "selected `AWS_BEARER_TOKEN_BEDROCK` credential is no longer available"
                             .to_string(),
                     )
                 })?;
-            let region = bearer_token_region(aws, std::env::var)?;
+            let region = bearer_token_region(aws, env_var)?;
             Ok(BedrockAuthMethod::EnvBearerToken { token, region })
         }
         BedrockAuthSource::ConfiguredAwsProfile => {
+            if caller_environment.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "Amazon Bedrock `aws.profile` is not supported for admitted session families \
+because it reads the daemon's AWS profile; supply Bedrock credentials in the caller environment, \
+Codex-managed auth, or provider command auth"
+                        .to_string(),
+                ));
+            }
             let config = match endpoint {
                 BedrockEndpoint::Mantle => aws_auth_config(aws),
                 BedrockEndpoint::Runtime => runtime::aws_auth_config(aws),
@@ -169,10 +196,13 @@ pub(super) async fn resolve_auth_method(
                 secret_access_key: auth.secret_access_key.clone(),
                 session_token: auth.session_token.clone(),
             };
-            let config = match endpoint {
+            let mut config = match endpoint {
                 BedrockEndpoint::Mantle => aws_auth_config(aws),
                 BedrockEndpoint::Runtime => runtime::aws_auth_config(aws),
             };
+            if caller_environment.is_some() && config.region.is_none() {
+                config.region = Some(caller_region(aws, caller_environment)?);
+            }
             let context = AwsAuthContext::load_with_access_keys(
                 config,
                 access_keys,
@@ -182,7 +212,60 @@ pub(super) async fn resolve_auth_method(
             .map_err(aws_auth_error_to_codex_error)?;
             Ok(BedrockAuthMethod::AwsSdkAuth { context })
         }
-        BedrockAuthSource::EnvAwsCredentials | BedrockAuthSource::AwsSdk => {
+        BedrockAuthSource::EnvAwsCredentials => {
+            let mut config = match endpoint {
+                BedrockEndpoint::Mantle => aws_auth_config(aws),
+                BedrockEndpoint::Runtime => runtime::aws_auth_config(aws),
+            };
+            let context = if caller_environment.is_some() {
+                let env_var = |name| lookup_env_var(caller_environment, name);
+                let access_key_id = non_empty_env_var_from(AWS_ACCESS_KEY_ID_ENV_VAR, env_var)
+                    .ok_or_else(|| {
+                        CodexErr::Fatal(
+                            "selected `AWS_ACCESS_KEY_ID` credential is no longer available"
+                                .to_string(),
+                        )
+                    })?;
+                let secret_access_key =
+                    non_empty_env_var_from(AWS_SECRET_ACCESS_KEY_ENV_VAR, env_var).ok_or_else(
+                        || {
+                            CodexErr::Fatal(
+                                "selected `AWS_SECRET_ACCESS_KEY` credential is no longer available"
+                                    .to_string(),
+                            )
+                        },
+                    )?;
+                let session_token = non_empty_env_var_from(AWS_SESSION_TOKEN_ENV_VAR, env_var);
+                if config.region.is_none() {
+                    config.region = Some(caller_region(aws, caller_environment)?);
+                }
+                AwsAuthContext::load_with_access_keys(
+                    config,
+                    AwsAccessKeys {
+                        access_key_id,
+                        secret_access_key,
+                        session_token,
+                    },
+                    http_client_factory.clone(),
+                )
+                .await
+                .map_err(aws_auth_error_to_codex_error)?
+            } else {
+                AwsAuthContext::load(config, http_client_factory.clone())
+                    .await
+                    .map_err(aws_auth_error_to_codex_error)?
+            };
+            Ok(BedrockAuthMethod::AwsSdkAuth { context })
+        }
+        BedrockAuthSource::AwsSdk => {
+            if caller_environment.is_some() {
+                return Err(CodexErr::InvalidRequest(
+                    "Amazon Bedrock requires caller-supplied AWS credentials for admitted session \
+families (set `AWS_BEARER_TOKEN_BEDROCK` or `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` with \
+a region, or use Codex-managed or provider command auth) and cannot inherit daemon AWS credentials"
+                        .to_string(),
+                ));
+            }
             let config = match endpoint {
                 BedrockEndpoint::Mantle => aws_auth_config(aws),
                 BedrockEndpoint::Runtime => runtime::aws_auth_config(aws),
@@ -200,9 +283,19 @@ pub(super) async fn resolve_provider_auth(
     managed_auth: Option<&CodexAuth>,
     aws: &ModelProviderAwsAuthInfo,
     endpoint: BedrockEndpoint,
+    caller_environment: Option<&CallerEnvironment>,
     http_client_factory: &codex_http_client::HttpClientFactory,
 ) -> Result<SharedAuthProvider> {
-    match resolve_auth_method(source, managed_auth, aws, endpoint, http_client_factory).await? {
+    match resolve_auth_method(
+        source,
+        managed_auth,
+        aws,
+        endpoint,
+        caller_environment,
+        http_client_factory,
+    )
+    .await?
+    {
         BedrockAuthMethod::ManagedBearerToken { token, .. }
         | BedrockAuthMethod::EnvBearerToken { token, .. } => Ok(Arc::new(BearerAuthProvider {
             token: Some(token),
@@ -220,9 +313,13 @@ pub(super) async fn resolve_region(
     managed_auth: Option<&CodexAuth>,
     aws: &ModelProviderAwsAuthInfo,
     endpoint: BedrockEndpoint,
+    caller_environment: Option<&CallerEnvironment>,
     http_client_factory: &codex_http_client::HttpClientFactory,
 ) -> Result<String> {
     if source == BedrockAuthSource::CommandBearerToken {
+        if caller_environment.is_some() {
+            return caller_region(aws, caller_environment);
+        }
         let config = match endpoint {
             BedrockEndpoint::Mantle => aws_auth_config(aws),
             BedrockEndpoint::Runtime => runtime::aws_auth_config(aws),
@@ -233,7 +330,16 @@ pub(super) async fn resolve_region(
         return Ok(context.region().to_string());
     }
 
-    match resolve_auth_method(source, managed_auth, aws, endpoint, http_client_factory).await? {
+    match resolve_auth_method(
+        source,
+        managed_auth,
+        aws,
+        endpoint,
+        caller_environment,
+        http_client_factory,
+    )
+    .await?
+    {
         BedrockAuthMethod::ManagedBearerToken { region, .. }
         | BedrockAuthMethod::EnvBearerToken { region, .. } => Ok(region),
         BedrockAuthMethod::AwsSdkAuth { context } => Ok(context.region().to_string()),
@@ -250,20 +356,41 @@ fn non_empty_env_var_from(
         .filter(|value| !value.is_empty())
 }
 
+fn configured_or_env_region(
+    aws: &ModelProviderAwsAuthInfo,
+    env_var: impl Fn(&'static str) -> std::result::Result<String, std::env::VarError> + Copy,
+) -> Option<String> {
+    region_from_config(aws)
+        .or_else(|| non_empty_env_var_from(AWS_REGION_ENV_VAR, env_var))
+        .or_else(|| non_empty_env_var_from(AWS_DEFAULT_REGION_ENV_VAR, env_var))
+}
+
 pub(super) fn bearer_token_region(
     aws: &ModelProviderAwsAuthInfo,
     env_var: impl Fn(&'static str) -> std::result::Result<String, std::env::VarError> + Copy,
 ) -> Result<String> {
-    region_from_config(aws)
-        .or_else(|| non_empty_env_var_from(AWS_REGION_ENV_VAR, env_var))
-        .or_else(|| non_empty_env_var_from(AWS_DEFAULT_REGION_ENV_VAR, env_var))
-        .ok_or_else(|| {
-            CodexErr::Fatal(
-                "Amazon Bedrock bearer token auth requires \
+    configured_or_env_region(aws, env_var).ok_or_else(|| {
+        CodexErr::Fatal(
+            "Amazon Bedrock bearer token auth requires \
 `model_providers.amazon-bedrock.aws.region`, `AWS_REGION`, or `AWS_DEFAULT_REGION`"
-                    .to_string(),
-            )
-        })
+                .to_string(),
+        )
+    })
+}
+
+fn caller_region(
+    aws: &ModelProviderAwsAuthInfo,
+    caller_environment: Option<&CallerEnvironment>,
+) -> Result<String> {
+    configured_or_env_region(aws, |name| lookup_env_var(caller_environment, name)).ok_or_else(
+        || {
+            CodexErr::InvalidRequest(
+            "Amazon Bedrock requires `model_providers.amazon-bedrock.aws.region`, `AWS_REGION`, \
+or `AWS_DEFAULT_REGION` in the caller environment"
+                .to_string(),
+        )
+        },
+    )
 }
 
 fn aws_auth_error_to_codex_error(error: AwsAuthError) -> CodexErr {

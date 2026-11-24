@@ -4984,7 +4984,7 @@ async fn wait_for_plugin_hooks(
                     ..Default::default()
                 })
                 .await?;
-            let HooksListResponse { data } = mcp.read_response(request_id).await?;
+            let HooksListResponse { data, .. } = mcp.read_response(request_id).await?;
             let hooks = data
                 .into_iter()
                 .flat_map(|entry| entry.hooks)

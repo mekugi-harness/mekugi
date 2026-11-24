@@ -135,6 +135,7 @@ async fn remote_project_trust_guards_thread_start_and_preserves_repository_decis
         .request_typed(ClientRequest::ConfigRead {
             request_id: RequestId::String("untrusted-project-warning".to_string()),
             params: ConfigReadParams {
+                thread_id: None,
                 include_layers: true,
                 cwd: Some(project_cwd.to_string_lossy().into_owned()),
             },

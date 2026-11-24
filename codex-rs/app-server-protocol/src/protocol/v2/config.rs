@@ -392,6 +392,10 @@ pub enum ConfigWriteErrorCode {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigReadParams {
+    /// Read only the terminal settings of this loaded thread. If layers are
+    /// requested, they contain preset ownership metadata, not raw config.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_layers: bool,
     /// Optional working directory to resolve project config layers. If specified,

@@ -94,8 +94,13 @@ impl AmazonBedrockModelProvider {
                 credential_export: None,
                 auth_refresh: None,
             });
-        let auth_source = auth::auth_source(&provider_info, auth_manager.as_deref(), std::env::var);
-        let credential_export = if auth_source == auth::BedrockAuthSource::CredentialExport {
+        let caller_environment = provider_info.caller_environment.as_ref();
+        let auth_source = auth::auth_source(&provider_info, auth_manager.as_deref(), |name| {
+            auth::lookup_env_var(caller_environment, name)
+        });
+        let credential_export = if caller_environment.is_none()
+            && auth_source == auth::BedrockAuthSource::CredentialExport
+        {
             process_shared_state().aws_credential_export(&aws)
         } else {
             None
@@ -106,11 +111,12 @@ impl AmazonBedrockModelProvider {
                 | auth::BedrockAuthSource::ConfiguredAwsProfile
                 | auth::BedrockAuthSource::AwsSdk
         );
-        let auth_recovery = if uses_aws_sdk_auth && aws.auth_refresh.is_some() {
-            process_shared_state().aws_auth_recovery(&aws)
-        } else {
-            None
-        };
+        let auth_recovery =
+            if caller_environment.is_none() && uses_aws_sdk_auth && aws.auth_refresh.is_some() {
+                process_shared_state().aws_auth_recovery(&aws)
+            } else {
+                None
+            };
         let http_client_factory = auth_manager
             .as_ref()
             .map(|manager| {
@@ -136,7 +142,9 @@ impl AmazonBedrockModelProvider {
     }
 
     fn auth_source(&self) -> auth::BedrockAuthSource {
-        auth::auth_source(&self.info, self.auth_manager.as_deref(), std::env::var)
+        auth::auth_source(&self.info, self.auth_manager.as_deref(), |name| {
+            auth::lookup_env_var(self.info.caller_environment.as_ref(), name)
+        })
     }
 
     fn managed_auth(&self) -> Option<CodexAuth> {
@@ -159,6 +167,9 @@ impl AmazonBedrockModelProvider {
     }
 
     fn uses_aws_auth_recovery(&self) -> bool {
+        if self.info.caller_environment.is_some() {
+            return false;
+        }
         let source = self.auth_source();
         source == auth::BedrockAuthSource::CredentialExport
             || (self.auth_recovery.is_some()
@@ -208,6 +219,7 @@ impl AmazonBedrockModelProvider {
                     auth_source,
                     managed_auth.as_ref(),
                     &self.aws,
+                    self.info.caller_environment.as_ref(),
                     &http_client_factory,
                 )
                 .await?
@@ -217,6 +229,7 @@ impl AmazonBedrockModelProvider {
                     auth_source,
                     managed_auth.as_ref(),
                     &self.aws,
+                    self.info.caller_environment.as_ref(),
                     &http_client_factory,
                 )
                 .await?
@@ -244,6 +257,7 @@ impl AmazonBedrockModelProvider {
             managed_auth.as_ref(),
             &self.aws,
             self.endpoint,
+            self.info.caller_environment.as_ref(),
             &http_client_factory,
         )
         .await
@@ -482,13 +496,18 @@ mod error_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::num::NonZeroU64;
 
+    use codex_http_client::Request;
     use codex_login::auth::BedrockAccessKeysAuth;
     use codex_login::auth::BedrockApiKeyAuth;
     use codex_model_provider_info::AwsAuthRefreshConfig;
+    use codex_model_provider_info::AwsCredentialExportConfig;
+    use codex_protocol::config_types::CallerEnvironment;
     use codex_protocol::config_types::ModelProviderAuthInfo;
     use http::HeaderValue;
+    use http::Method;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -808,6 +827,167 @@ mod tests {
                 AMAZON_BEDROCK_RUNTIME_GLOBAL_GPT_5_6_LUNA_MODEL_ID,
                 AMAZON_BEDROCK_RUNTIME_GLOBAL_GPT_5_6_TERRA_MODEL_ID,
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn admitted_family_does_not_inherit_daemon_aws_credentials() {
+        let mut provider_info =
+            ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
+        provider_info.caller_environment = Some(CallerEnvironment::new(HashMap::new()));
+        let provider = AmazonBedrockModelProvider::new(provider_info, /*auth_manager*/ None);
+
+        assert!(!provider.uses_aws_auth_recovery());
+        let auth_err = provider
+            .api_auth()
+            .await
+            .err()
+            .expect("empty caller environment must not inherit daemon AWS credentials");
+        assert!(
+            auth_err
+                .to_string()
+                .contains("cannot inherit daemon AWS credentials")
+        );
+        let url_err = provider
+            .runtime_base_url()
+            .await
+            .expect_err("empty caller environment must not resolve daemon AWS region");
+        assert!(
+            url_err
+                .to_string()
+                .contains("cannot inherit daemon AWS credentials")
+        );
+
+        let mut profile_provider_info =
+            ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
+                profile: Some("daemon-profile".to_string()),
+                region: Some("us-west-2".to_string()),
+                credential_export: None,
+                auth_refresh: Some(AwsAuthRefreshConfig {
+                    command: "aws".to_string(),
+                    args: vec!["login".into()],
+                    timeout_ms: NonZeroU64::new(1_000).expect("timeout should be non-zero"),
+                }),
+            }));
+        profile_provider_info.caller_environment = Some(CallerEnvironment::new(HashMap::new()));
+        let profile_provider =
+            AmazonBedrockModelProvider::new(profile_provider_info, /*auth_manager*/ None);
+
+        assert!(!profile_provider.uses_aws_auth_recovery());
+        let profile_auth_err = profile_provider
+            .api_auth()
+            .await
+            .err()
+            .expect("admitted family must not load daemon AWS profile");
+        assert!(profile_auth_err.to_string().contains("aws.profile"));
+        let profile_url_err = profile_provider
+            .runtime_base_url()
+            .await
+            .expect_err("admitted family must not resolve region from daemon AWS profile");
+        assert!(profile_url_err.to_string().contains("aws.profile"));
+
+        let mut export_provider_info =
+            ModelProviderInfo::create_amazon_bedrock_provider(Some(ModelProviderAwsAuthInfo {
+                profile: None,
+                region: Some("us-west-2".to_string()),
+                credential_export: Some(AwsCredentialExportConfig {
+                    command: "export-credentials".to_string(),
+                    args: Vec::new(),
+                    timeout_ms: NonZeroU64::new(1_000).expect("timeout should be non-zero"),
+                }),
+                auth_refresh: None,
+            }));
+        export_provider_info.caller_environment = Some(CallerEnvironment::new(HashMap::new()));
+        let export_provider =
+            AmazonBedrockModelProvider::new(export_provider_info, /*auth_manager*/ None);
+
+        assert!(!export_provider.uses_aws_auth_recovery());
+        let export_auth_err = export_provider
+            .api_auth()
+            .await
+            .err()
+            .expect("admitted family must not run daemon credential_export");
+        assert!(
+            export_auth_err
+                .to_string()
+                .contains("aws.credential_export")
+        );
+    }
+
+    #[tokio::test]
+    async fn admitted_family_uses_caller_environment_bedrock_credentials() {
+        let mut bearer_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
+        bearer_info.caller_environment = Some(CallerEnvironment::new(HashMap::from([
+            (
+                "AWS_BEARER_TOKEN_BEDROCK".to_string(),
+                "caller-bedrock-token".to_string(),
+            ),
+            ("AWS_REGION".to_string(), "eu-west-1".to_string()),
+        ])));
+        let bearer_provider =
+            AmazonBedrockModelProvider::new(bearer_info, /*auth_manager*/ None);
+
+        assert_eq!(
+            bearer_provider
+                .runtime_base_url()
+                .await
+                .expect("caller bearer region should resolve"),
+            Some("https://bedrock-mantle.eu-west-1.api.aws/openai/v1".to_string())
+        );
+        assert_eq!(
+            bearer_provider
+                .api_auth()
+                .await
+                .expect("caller bearer auth should resolve")
+                .to_auth_headers()
+                .unwrap()
+                .get(http::header::AUTHORIZATION),
+            Some(&HeaderValue::from_static("Bearer caller-bedrock-token"))
+        );
+
+        let mut keys_info = ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None);
+        keys_info.caller_environment = Some(CallerEnvironment::new(HashMap::from([
+            ("AWS_ACCESS_KEY_ID".to_string(), "AKIACALLER123".to_string()),
+            (
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                "caller-secret-key".to_string(),
+            ),
+            (
+                "AWS_SESSION_TOKEN".to_string(),
+                "caller-session-token".to_string(),
+            ),
+            ("AWS_DEFAULT_REGION".to_string(), "us-east-1".to_string()),
+        ])));
+        let keys_provider = AmazonBedrockModelProvider::new(keys_info, /*auth_manager*/ None);
+
+        assert_eq!(
+            keys_provider
+                .runtime_base_url()
+                .await
+                .expect("caller access key region should resolve"),
+            Some("https://bedrock-mantle.us-east-1.api.aws/openai/v1".to_string())
+        );
+        let auth_provider = keys_provider
+            .api_auth()
+            .await
+            .expect("caller access key auth should resolve");
+        let signed = auth_provider
+            .apply_auth(Request::new(
+                Method::POST,
+                "https://bedrock-mantle.us-east-1.api.aws/openai/v1/responses".to_string(),
+            ))
+            .await
+            .expect("caller access keys should sign request");
+        assert_eq!(
+            signed.headers.get("x-amz-security-token"),
+            Some(&HeaderValue::from_static("caller-session-token"))
+        );
+        assert!(
+            signed
+                .headers
+                .get(http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.contains("Credential=AKIACALLER123/"))
         );
     }
 }

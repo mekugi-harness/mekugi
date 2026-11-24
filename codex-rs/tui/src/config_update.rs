@@ -187,6 +187,7 @@ pub(crate) async fn read_effective_config(
         .request_typed(ClientRequest::ConfigRead {
             request_id,
             params: ConfigReadParams {
+                thread_id: None,
                 include_layers: false,
                 cwd: Some(cwd),
             },
@@ -244,6 +245,7 @@ pub(crate) async fn read_remote_project_trust(
         .request_typed(ClientRequest::ConfigRead {
             request_id,
             params: ConfigReadParams {
+                thread_id: None,
                 include_layers: true,
                 cwd: Some(cwd.clone()),
             },
@@ -454,6 +456,7 @@ pub(crate) async fn read_effective_config_with_optional_layers(
         .request_typed(ClientRequest::ConfigRead {
             request_id: RequestId::String(format!("tui-config-read-{}", Uuid::new_v4())),
             params: ConfigReadParams {
+                thread_id: None,
                 include_layers,
                 cwd: Some(cwd),
             },

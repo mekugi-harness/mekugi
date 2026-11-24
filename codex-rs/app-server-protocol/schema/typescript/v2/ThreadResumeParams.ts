@@ -5,7 +5,9 @@ import type { Personality } from "../Personality";
 import type { JsonValue } from "../serde_json/JsonValue";
 import type { ApprovalsReviewer } from "./ApprovalsReviewer";
 import type { AskForApproval } from "./AskForApproval";
+import type { RetainedThreadSettingsParams } from "./RetainedThreadSettingsParams";
 import type { SandboxMode } from "./SandboxMode";
+import type { ThreadFamilyParams } from "./ThreadFamilyParams";
 
 /**
  * There are three ways to resume a thread:
@@ -23,7 +25,10 @@ import type { SandboxMode } from "./SandboxMode";
  *
  * Prefer using thread_id whenever possible.
  */
-export type ThreadResumeParams = {threadId: string, /**
+export type ThreadResumeParams = {/**
+ * Cold-resume evidence from the client's retained session, not a CLI override.
+ */
+retainedSettings?: RetainedThreadSettingsParams | null, family?: ThreadFamilyParams | null, threadId: string, /**
  * Configuration overrides for the resumed thread, if any.
  */
 model?: string | null, modelProvider?: string | null, serviceTier?: string | null | null, cwd?: string | null, approvalPolicy?: AskForApproval | null, /**

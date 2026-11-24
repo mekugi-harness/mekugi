@@ -152,6 +152,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 ## Native collaboration and protocol
 
+- Native thread start and cold resume accept a private caller environment and
+  named profile. Concurrent families keep separate settings and credentials;
+  live reattach verifies the selector without reopening its profile.
+  Thread-scoped configuration reads expose only terminal settings and preset
+  ownership metadata.
 - V2 delegation supports recipient-authorized preload, agent and subtree
   inspection, and foreign messages routed through their original resource
   owner. Side questions and progress summaries use a tool-free auxiliary
@@ -167,6 +172,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   on `thread/revert`, and feature-use reads. Host callbacks cover child
   admission and retained capture. Native observation also supplies assignment,
   usage, and progress facts to Mekugi without a second agent registry.
+  A subtree read during child startup returns its readable members without
+  waiting for the child or reporting the parent missing.
 
 ## Upstream imports
 

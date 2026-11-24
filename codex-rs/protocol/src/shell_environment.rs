@@ -83,6 +83,22 @@ pub fn create_env(
     policy: &ShellEnvironmentPolicy,
     thread_id: Option<&str>,
 ) -> HashMap<String, String> {
+    if let Some(caller) = &policy.caller_environment {
+        let mut vars = caller.values().clone();
+        if let Some(dir) = std::env::var_os("CODEX_ARG0_PATH_DIR") {
+            let path = vars.get("PATH").into_iter().flat_map(std::env::split_paths);
+            if let Ok(joined) =
+                std::env::join_paths(std::iter::once(std::path::PathBuf::from(&dir)).chain(path))
+            {
+                vars.insert("PATH".into(), joined.to_string_lossy().into_owned());
+                vars.insert(
+                    "CODEX_ARG0_PATH_DIR".into(),
+                    dir.to_string_lossy().into_owned(),
+                );
+            }
+        }
+        return create_env_from_vars(vars, policy, thread_id);
+    }
     create_env_from_vars(std::env::vars(), policy, thread_id)
 }
 

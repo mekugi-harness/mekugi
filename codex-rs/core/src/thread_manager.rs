@@ -977,6 +977,13 @@ impl ThreadManager {
         self.state.auth_manager.clone()
     }
 
+    pub fn auth_for_config(&self, config: &Config) -> Arc<AuthManager> {
+        config
+            .family
+            .as_ref()
+            .map_or_else(|| self.auth_manager(), |family| family.credentials())
+    }
+
     /// Return the harness owner initialized at startup, if runtime auth was enabled.
     pub fn runtime_auth_manager(&self) -> Option<Arc<RuntimeAuthManager>> {
         self.state.runtime_auth.get().cloned()
@@ -998,9 +1005,12 @@ impl ThreadManager {
             return Ok(None);
         }
         Ok(crate::runtime_auth::runtime_for_config(
-            &self.state.runtime_auth,
+            config
+                .family
+                .as_ref()
+                .map_or(&self.state.runtime_auth, |family| &family.runtime_auth),
             config,
-            Arc::clone(&self.state.auth_manager),
+            self.auth_for_config(config),
             &self.state.installation_id,
         )
         .map(|runtime| (runtime, config.runtime_auth_mode)))
@@ -1185,9 +1195,12 @@ impl ThreadManager {
     }
 
     fn catalog_auth_context(&self, config: &Config) -> ProviderAuthContext {
-        let credentials = self.auth_manager();
+        let credentials = self.auth_for_config(config);
         let runtime = crate::runtime_auth::runtime_for_config(
-            &self.state.runtime_auth,
+            config
+                .family
+                .as_ref()
+                .map_or(&self.state.runtime_auth, |family| &family.runtime_auth),
             config,
             Arc::clone(&credentials),
             &self.state.installation_id,
@@ -1222,12 +1235,21 @@ impl ThreadManager {
                 /*parent_originator*/ None,
             )
             .await;
+        let (credentials, runtime_auth) = options.config.family.as_ref().map_or_else(
+            || {
+                (
+                    Arc::clone(&self.state.auth_manager),
+                    &self.state.runtime_auth,
+                )
+            },
+            |family| (family.credentials(), &family.runtime_auth),
+        );
         let manager = self
             .state
             .models_for_thread(
                 &options.config,
-                &self.state.auth_manager,
-                &self.state.runtime_auth,
+                &credentials,
+                runtime_auth,
                 &originator,
                 &source,
             )
@@ -2676,6 +2698,11 @@ impl ThreadManagerState {
             mut reserved_thread_id,
             disabled_plugin_ids,
         } = options;
+        let (auth_manager, inherited_runtime_auth) = if let Some(family) = &config.family {
+            (family.credentials(), Some(Arc::clone(&family.runtime_auth)))
+        } else {
+            (auth_manager, inherited_runtime_auth)
+        };
         if prevent_daybreak_program_propagation_enrollment {
             thread_extension_init.insert(crate::agent::helper_daybreak::PreventRootEnrollment);
         }

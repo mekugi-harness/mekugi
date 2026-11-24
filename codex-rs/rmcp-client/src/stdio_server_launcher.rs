@@ -79,7 +79,6 @@ use crate::executor_process_transport::ExecutorProcessTransport;
 use crate::local_stdio_transport::LocalStdioTransport;
 use crate::program_resolver;
 use crate::protocol_mode::McpProtocolMode;
-use crate::utils::create_env_for_mcp_server;
 use crate::utils::create_env_overlay_for_remote_mcp_server;
 use crate::utils::remote_mcp_env_var_names;
 
@@ -318,6 +317,7 @@ impl StdioServerCommand {
 /// stdin/stdout pipes directly.
 #[derive(Clone)]
 pub struct LocalStdioServerLauncher {
+    caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
     fallback_cwd: PathBuf,
 }
 
@@ -327,7 +327,18 @@ impl LocalStdioServerLauncher {
     /// `fallback_cwd` is used when the MCP server config omits `cwd`, so
     /// relative commands resolve from the caller's runtime working directory.
     pub fn new(fallback_cwd: PathBuf) -> Self {
-        Self { fallback_cwd }
+        Self {
+            fallback_cwd,
+            caller_environment: None,
+        }
+    }
+
+    pub fn with_caller_environment(
+        mut self,
+        caller: Option<codex_protocol::config_types::CallerEnvironment>,
+    ) -> Self {
+        self.caller_environment = caller;
+        self
     }
 }
 
@@ -337,11 +348,12 @@ impl StdioServerLauncher for LocalStdioServerLauncher {
         command: StdioServerCommand,
     ) -> BoxFuture<'static, io::Result<StdioServerTransport>> {
         let fallback_cwd = self.fallback_cwd.clone();
+        let caller = self.caller_environment.clone();
         async move {
             // Cancel queued launches when startup is dropped. A worker that already started
             // drops its transport and cleans up the child when it finishes.
             AbortOnDropHandle::new(tokio::task::spawn_blocking(move || {
-                Self::launch_server(command, fallback_cwd)
+                Self::launch_server(command, fallback_cwd, caller)
             }))
             .await
             .map_err(io::Error::other)?
@@ -452,6 +464,7 @@ impl LocalStdioServerLauncher {
     fn launch_server(
         command: StdioServerCommand,
         fallback_cwd: PathBuf,
+        caller: Option<codex_protocol::config_types::CallerEnvironment>,
     ) -> io::Result<StdioServerTransport> {
         let StdioServerCommand {
             program,
@@ -463,7 +476,8 @@ impl LocalStdioServerLauncher {
             replacement_slot,
         } = command;
         let program_name = program.to_string_lossy().into_owned();
-        let envs = create_env_for_mcp_server(env, &env_vars).map_err(io::Error::other)?;
+        let envs = crate::utils::create_env_for_caller(env, &env_vars, caller.as_ref())
+            .map_err(io::Error::other)?;
         let cwd = cwd.map(PathBuf::from).unwrap_or(fallback_cwd);
         let resolved_program =
             program_resolver::resolve(program, &envs, &cwd).map_err(io::Error::other)?;
@@ -1111,6 +1125,7 @@ mod tests {
             &HashMap::new(),
         );
         let mut policy = ShellEnvironmentPolicy {
+            caller_environment: None,
             inherit: exec_policy.inherit,
             ignore_default_excludes: exec_policy.ignore_default_excludes,
             exclude: exec_policy

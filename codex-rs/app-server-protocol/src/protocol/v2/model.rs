@@ -53,6 +53,9 @@ pub struct ModelProviderCapabilitiesReadResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ModelListParams {
+    /// Use the loaded thread's catalog and credentials instead of app-server defaults.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
     /// List models for this configured provider instead of the app-server default.
     #[ts(optional = nullable)]
     pub model_provider: Option<String>,

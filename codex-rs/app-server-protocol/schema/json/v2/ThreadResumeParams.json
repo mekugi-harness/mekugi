@@ -1548,6 +1548,35 @@
         }
       ]
     },
+    "RetainedThreadSettingsParams": {
+      "description": "Previously applied client settings, below current invocation overrides.",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serviceTier": {
+          "description": "Absent in older sessions; null selects the default tier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
     "SandboxMode": {
       "enum": [
         "read-only",
@@ -1562,6 +1591,38 @@
         "desc"
       ],
       "type": "string"
+    },
+    "ThreadFamilyParams": {
+      "description": "Private invocation input for a new or cold-resumed family. Environment values may contain credentials; do not publish them in thread views or rollouts.",
+      "properties": {
+        "environment": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requireCustomProvider": {
+          "description": "For the custom-only launcher, reject an effective OpenAI route.",
+          "type": "boolean"
+        },
+        "trackingCommand": {
+          "description": "Optional launcher shell observer, appended after the caller's hooks.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "environment"
+      ],
+      "type": "object"
     },
     "ThreadResumeInitialTurnsPageParams": {
       "properties": {
@@ -1677,6 +1738,16 @@
       "description": "When true, return only thread metadata and live-resume state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after resuming. Full-history hydration is deprecated for paginated threads; use this with `thread/turns/list` and `thread/items/list` instead.",
       "type": "boolean"
     },
+    "family": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadFamilyParams"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "model": {
       "description": "Configuration overrides for the resumed thread, if any.",
       "type": [
@@ -1700,6 +1771,17 @@
         }
       ],
       "description": "@deprecated `friendly` and `pragmatic` no longer select a style. Changing this does not rewrite the thread's existing instructions."
+    },
+    "retainedSettings": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RetainedThreadSettingsParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Cold-resume evidence from the client's retained session, not a CLI override."
     },
     "sandbox": {
       "anyOf": [

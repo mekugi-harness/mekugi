@@ -1402,6 +1402,11 @@ impl CodexThread {
         self.session.selected_model_info().await
     }
 
+    /// Return this thread's running catalog, including its cache and auth scope.
+    pub fn models_manager(&self) -> codex_models_manager::manager::SharedModelsManager {
+        Arc::clone(&self.session.services.models_manager)
+    }
+
     /// Looks up a named model in the catalog selected for this thread's provider and credentials.
     pub async fn model_info(&self, model: &str, config: &ModelsManagerConfig) -> CatalogModel {
         self.session

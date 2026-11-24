@@ -215,6 +215,7 @@ async fn status_snapshot_only_downgrades_oauth_and_ema_authentication_failures()
 pub(crate) fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
     McpConfig {
         client: super::McpClientConfig {
+            caller_environment: None,
             chatgpt_base_url: "https://chatgpt.com".to_string(),
             requires_read_only_mcp_tools: false,
             protocol_mode: McpProtocolMode::Legacy,

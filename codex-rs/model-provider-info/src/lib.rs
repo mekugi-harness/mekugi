@@ -149,6 +149,9 @@ impl<'de> Deserialize<'de> for WireApi {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ModelProviderInfo {
+    /// Runtime credential scope, never serialized into provider configuration.
+    #[serde(skip)]
+    pub caller_environment: Option<codex_protocol::config_types::CallerEnvironment>,
     /// Friendly display name.
     #[serde(default)]
     pub name: String,
@@ -457,8 +460,10 @@ other non-default provider fields are not supported"
 
         if let Some(env_headers) = &self.env_http_headers {
             for (header, env_var) in env_headers {
-                if let Ok(val) = std::env::var(env_var)
-                    && !val.trim().is_empty()
+                if let Some(val) = codex_protocol::config_types::CallerEnvironment::lookup(
+                    self.caller_environment.as_ref(),
+                    env_var,
+                ) && !val.trim().is_empty()
                     && let (Ok(name), Ok(value)) =
                         (HeaderName::try_from(header), HeaderValue::try_from(val))
                 {
@@ -527,15 +532,17 @@ other non-default provider fields are not supported"
     pub fn api_key(&self) -> CodexResult<Option<String>> {
         match &self.env_key {
             Some(env_key) => {
-                let api_key = std::env::var(env_key)
-                    .ok()
-                    .filter(|v| !v.trim().is_empty())
-                    .ok_or_else(|| {
-                        CodexErr::EnvVar(EnvVarError {
-                            var: env_key.clone(),
-                            instructions: self.env_key_instructions.clone(),
-                        })
-                    })?;
+                let api_key = codex_protocol::config_types::CallerEnvironment::lookup(
+                    self.caller_environment.as_ref(),
+                    env_key,
+                )
+                .filter(|v| !v.trim().is_empty())
+                .ok_or_else(|| {
+                    CodexErr::EnvVar(EnvVarError {
+                        var: env_key.clone(),
+                        instructions: self.env_key_instructions.clone(),
+                    })
+                })?;
                 Ok(Some(api_key))
             }
             None => Ok(None),
@@ -576,6 +583,7 @@ other non-default provider fields are not supported"
             base_url,
             model_catalog_url: None,
             env_key: None,
+            caller_environment: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
@@ -629,6 +637,7 @@ other non-default provider fields are not supported"
             base_url: None,
             model_catalog_url: None,
             env_key: None,
+            caller_environment: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
@@ -675,6 +684,7 @@ other non-default provider fields are not supported"
             base_url: None,
             model_catalog_url: None,
             env_key: None,
+            caller_environment: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             // Config loading supplies default command auth after resolving its working directory.
@@ -922,6 +932,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         base_url: Some(base_url.into()),
         model_catalog_url: None,
         env_key: None,
+        caller_environment: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,

@@ -6869,6 +6869,13 @@
         },
         "includeLayers": {
           "type": "boolean"
+        },
+        "threadId": {
+          "description": "Read only the terminal settings of this loaded thread. If layers are requested, they contain preset ownership metadata, not raw config.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "title": "ConfigReadParams",
@@ -11326,6 +11333,10 @@
     "HooksListResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "bypassHookTrust": {
+          "description": "True when this loaded thread does not require startup hook-trust approval.",
+          "type": "boolean"
+        },
         "data": {
           "items": {
             "$ref": "#/definitions/HooksListEntry"
@@ -13505,6 +13516,13 @@
         },
         "modelProvider": {
           "description": "List models for this configured provider instead of the app-server default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "description": "Use the loaded thread's catalog and credentials instead of app-server defaults.",
           "type": [
             "string",
             "null"
@@ -18245,6 +18263,35 @@
         }
       ]
     },
+    "RetainedThreadSettingsParams": {
+      "description": "Previously applied client settings, below current invocation overrides.",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "reasoningEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "serviceTier": {
+          "description": "Absent in older sessions; null selects the default tier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
     "ReviewDelivery": {
       "enum": [
         "inline"
@@ -22099,6 +22146,38 @@
       "description": "Extra app-server data for a thread.",
       "type": "object"
     },
+    "ThreadFamilyParams": {
+      "description": "Private invocation input for a new or cold-resumed family. Environment values may contain credentials; do not publish them in thread views or rollouts.",
+      "properties": {
+        "environment": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requireCustomProvider": {
+          "description": "For the custom-only launcher, reject an effective OpenAI route.",
+          "type": "boolean"
+        },
+        "trackingCommand": {
+          "description": "Optional launcher shell observer, appended after the caller's hooks.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "environment"
+      ],
+      "type": "object"
+    },
     "ThreadForkParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "There are two ways to fork a thread: 1. By thread_id: load the thread from disk by thread_id and fork it into a new thread. 2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using a non-empty path, the thread_id param will be ignored. Empty string path values are treated as absent.\n\nPrefer using thread_id whenever possible.",
@@ -25045,6 +25124,16 @@
           "description": "When true, return only thread metadata and live-resume state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after resuming. Full-history hydration is deprecated for paginated threads; use this with `thread/turns/list` and `thread/items/list` instead.",
           "type": "boolean"
         },
+        "family": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadFamilyParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model": {
           "description": "Configuration overrides for the resumed thread, if any.",
           "type": [
@@ -25068,6 +25157,17 @@
             }
           ],
           "description": "@deprecated `friendly` and `pragmatic` no longer select a style. Changing this does not rewrite the thread's existing instructions."
+        },
+        "retainedSettings": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetainedThreadSettingsParams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cold-resume evidence from the client's retained session, not a CLI override."
         },
         "sandbox": {
           "anyOf": [
@@ -25818,6 +25918,16 @@
             "null"
           ]
         },
+        "family": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadFamilyParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model": {
           "type": [
             "string",
@@ -26083,6 +26193,17 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Native spawn subtree, including its root and ephemeral loaded descendants.",
       "properties": {
+        "family": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadFamilyParams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When supplied, verify the loaded family's selector before reading its subtree."
+        },
         "threadId": {
           "type": "string"
         }

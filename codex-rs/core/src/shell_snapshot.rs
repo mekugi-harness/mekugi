@@ -311,6 +311,7 @@ impl ShellSnapshot {
             shell,
             &temp_path,
             session_cwd,
+            Some(shell_environment_policy),
             credential_broker.as_ref(),
             sandbox,
         )
@@ -611,6 +612,7 @@ async fn capture_snapshot(
         SNAPSHOT_TIMEOUT,
         shell_mode,
         cwd,
+        Some(shell_environment_policy),
         credential_broker,
         sandbox,
     )
@@ -633,7 +635,10 @@ async fn capture_snapshot(
         .collect::<Vec<_>>();
     let policy = &credential_broker.shell_environment_policy;
     // Child visibility must not change the trusted destination of an inherited credential.
-    let inherited_env = std::env::vars().collect();
+    let inherited_env = policy.caller_environment.as_ref().map_or_else(
+        || std::env::vars().collect(),
+        |caller| caller.values().clone(),
+    );
     let network_config = credential_broker.network_proxy.current_cfg().await?;
     let inherited_env = network_config
         .credential_broker_context
@@ -1015,6 +1020,7 @@ async fn validate_snapshot(
     shell: &Shell,
     snapshot_path: &AbsolutePathBuf,
     cwd: &AbsolutePathBuf,
+    policy: Option<&ShellEnvironmentPolicy>,
     credential_broker: Option<&SnapshotCredentialBroker>,
     sandbox: Option<&ShellSnapshotSandbox>,
 ) -> Result<()> {
@@ -1026,6 +1032,7 @@ async fn validate_snapshot(
         SNAPSHOT_TIMEOUT,
         SnapshotShellMode::Validation(snapshot_path),
         cwd,
+        policy,
         credential_broker,
         sandbox,
     )
@@ -1039,6 +1046,7 @@ async fn run_script_with_timeout(
     snapshot_timeout: Duration,
     shell_mode: SnapshotShellMode<'_>,
     cwd: &AbsolutePathBuf,
+    policy: Option<&ShellEnvironmentPolicy>,
     credential_broker: Option<&SnapshotCredentialBroker>,
     sandbox: Option<&ShellSnapshotSandbox>,
 ) -> Result<String> {
@@ -1049,10 +1057,14 @@ async fn run_script_with_timeout(
         args[1] = "-fc".to_string();
     }
     let shell_name = shell.name();
-    let mut prepared_env = None;
+    let mut prepared_env = policy
+        .filter(|policy| policy.caller_environment.is_some())
+        .map(|policy| codex_protocol::shell_environment::create_env(policy, None));
     if let Some(credential_broker) = credential_broker {
         let policy = &credential_broker.shell_environment_policy;
-        let mut env = create_env_from_vars(std::env::vars(), policy, /*thread_id*/ None);
+        let mut env = prepared_env
+            .take()
+            .unwrap_or_else(|| codex_protocol::shell_environment::create_env(policy, None));
         if suppress_startup_files {
             env.remove("BASH_ENV");
             env.remove("ENV");

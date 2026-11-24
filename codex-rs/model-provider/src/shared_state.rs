@@ -13,7 +13,14 @@ use codex_model_provider_info::CredentialExportConfig;
 use codex_model_provider_info::GatewayOAuthSettings;
 use codex_model_provider_info::ModelProviderAwsAuthInfo;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_protocol::config_types::ModelProviderAuthInfo;
+use codex_protocol::config_types::{CallerEnvironment, ModelProviderAuthInfo};
+
+type CommandCredentialEntry = (
+    ModelProviderAuthInfo,
+    AuthRuntimeConfig,
+    Option<std::sync::Weak<std::collections::HashMap<String, String>>>,
+    Weak<AuthManager>,
+);
 
 use crate::amazon_bedrock::AwsAuthRecovery;
 use crate::amazon_bedrock::AwsCredentialExport;
@@ -21,7 +28,7 @@ use crate::amazon_bedrock::AwsCredentialExport;
 /// Provider-owned runtime state shared across independently configured sessions.
 #[derive(Debug, Default)]
 pub(crate) struct ModelProviderSharedState {
-    command_credentials: Mutex<Vec<(ModelProviderAuthInfo, AuthRuntimeConfig, Weak<AuthManager>)>>,
+    command_credentials: Mutex<Vec<CommandCredentialEntry>>,
     aws_credential_exports: Mutex<Vec<(ModelProviderAwsAuthInfo, Weak<AwsCredentialExport>)>>,
     aws_auth_recoveries: Mutex<Vec<(ModelProviderAwsAuthInfo, Weak<AwsAuthRecovery>)>>,
     gateway_exports: Mutex<Vec<GatewayExportEntry>>,
@@ -51,21 +58,41 @@ impl ModelProviderSharedState {
         &self,
         config: &ModelProviderAuthInfo,
         runtime: &AuthRuntimeConfig,
+        environment: Option<&CallerEnvironment>,
     ) -> Arc<AuthManager> {
         let mut owners = self
             .command_credentials
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        owners.retain(|(_, _, owner)| owner.strong_count() != 0);
+        owners.retain(|(_, _, _, owner)| owner.strong_count() != 0);
         if let Some(owner) = owners
             .iter()
-            .find(|(source, context, _)| source == config && context == runtime)
-            .and_then(|(_, _, owner)| owner.upgrade())
+            .find(|(source, context, caller, _)| {
+                source == config
+                    && context == runtime
+                    && match (caller, environment) {
+                        (None, None) => true,
+                        (Some(caller), Some(environment)) => {
+                            caller.ptr_eq(&environment.downgrade())
+                        }
+                        _ => false,
+                    }
+            })
+            .and_then(|(_, _, _, owner)| owner.upgrade())
         {
             return owner;
         }
-        let owner = AuthManager::external_bearer_with_runtime(config.clone(), runtime.clone());
-        owners.push((config.clone(), runtime.clone(), Arc::downgrade(&owner)));
+        let owner = AuthManager::external_bearer_for_caller(
+            config.clone(),
+            runtime.clone(),
+            environment.cloned(),
+        );
+        owners.push((
+            config.clone(),
+            runtime.clone(),
+            environment.map(CallerEnvironment::downgrade),
+            Arc::downgrade(&owner),
+        ));
         owner
     }
 

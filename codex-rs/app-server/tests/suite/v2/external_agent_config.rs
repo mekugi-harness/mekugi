@@ -267,6 +267,7 @@ async fn external_agent_config_detect_does_not_block_configuration_reads() -> Re
 
     let config_request_id = mcp
         .send_config_read_request(ConfigReadParams {
+            thread_id: None,
             include_layers: false,
             cwd: None,
         })

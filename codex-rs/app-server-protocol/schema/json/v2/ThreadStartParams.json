@@ -258,6 +258,38 @@
       ],
       "type": "object"
     },
+    "ThreadFamilyParams": {
+      "description": "Private invocation input for a new or cold-resumed family. Environment values may contain credentials; do not publish them in thread views or rollouts.",
+      "properties": {
+        "environment": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requireCustomProvider": {
+          "description": "For the custom-only launcher, reject an effective OpenAI route.",
+          "type": "boolean"
+        },
+        "trackingCommand": {
+          "description": "Optional launcher shell observer, appended after the caller's hooks.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "environment"
+      ],
+      "type": "object"
+    },
     "ThreadHistoryMode": {
       "enum": [
         "legacy",
@@ -352,6 +384,16 @@
       "type": [
         "boolean",
         "null"
+      ]
+    },
+    "family": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadFamilyParams"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "model": {

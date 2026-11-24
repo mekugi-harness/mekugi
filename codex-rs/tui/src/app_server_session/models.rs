@@ -48,6 +48,7 @@ pub(super) async fn list(
         .request_typed(ClientRequest::ModelList {
             request_id,
             params: ModelListParams {
+                thread_id: None,
                 cursor: None,
                 limit: None,
                 include_hidden: Some(true),

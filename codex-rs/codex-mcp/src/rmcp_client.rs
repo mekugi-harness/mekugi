@@ -1106,7 +1106,15 @@ fn resolve_bearer_token(
         ));
     }
 
-    match env::var(env_var) {
+    resolve_bearer_from(server_name, env_var, env::var(env_var))
+}
+
+fn resolve_bearer_from(
+    server_name: &str,
+    env_var: &str,
+    value: Result<String, env::VarError>,
+) -> Result<Option<String>> {
+    match value {
         Ok(value) => {
             if value.is_empty() {
                 Err(anyhow!(
@@ -1513,6 +1521,22 @@ pub(crate) async fn make_rmcp_client(
         } => {
             let command_os: OsString = command.into();
             let args_os: Vec<OsString> = args.into_iter().map(Into::into).collect();
+            let mut env = env;
+            let mut env_vars = env_vars;
+            if !is_local_environment && let Some(caller) = &runtime_context.caller_environment {
+                let explicit = env.get_or_insert_with(HashMap::new);
+                env_vars.retain(|variable| {
+                    if variable.is_remote_source() {
+                        return true;
+                    }
+                    if let Some(value) = caller.values().get(variable.name()) {
+                        explicit
+                            .entry(variable.name().to_owned())
+                            .or_insert_with(|| value.clone());
+                    }
+                    false
+                });
+            }
             let env_os = env.map(|env| {
                 env.into_iter()
                     .map(|(key, value)| (key.into(), value.into()))
@@ -1522,9 +1546,10 @@ pub(crate) async fn make_rmcp_client(
                 // TODO(starr): Unify local stdio MCP launch with
                 // `ExecutorStdioServerLauncher` once the executor-backed path
                 // preserves `LocalStdioServerLauncher` semantics.
-                Arc::new(LocalStdioServerLauncher::new(
-                    runtime_context.local_process_cwd(),
-                )) as Arc<dyn StdioServerLauncher>
+                Arc::new(
+                    LocalStdioServerLauncher::new(runtime_context.local_process_cwd())
+                        .with_caller_environment(runtime_context.caller_environment.clone()),
+                ) as Arc<dyn StdioServerLauncher>
             } else {
                 let Some(environment) = resolved_environment.as_ref() else {
                     unreachable!(
@@ -1595,11 +1620,26 @@ pub(crate) async fn make_rmcp_client(
                     Some(StreamableHttpBearerToken::ProvidedByHttpClient),
                 )
             } else {
-                let token = resolve_bearer_token(
-                    server_name,
-                    bearer_token_env_var.as_deref(),
-                    server.credential_policy(),
-                )
+                let token = if let (Some(caller), Some(key)) =
+                    (&runtime_context.caller_environment, &bearer_token_env_var)
+                    && server.credential_policy() != McpCredentialPolicy::ExecutorOnly
+                {
+                    resolve_bearer_from(
+                        server_name,
+                        key,
+                        caller
+                            .values()
+                            .get(key)
+                            .cloned()
+                            .ok_or(env::VarError::NotPresent),
+                    )
+                } else {
+                    resolve_bearer_token(
+                        server_name,
+                        bearer_token_env_var.as_deref(),
+                        server.credential_policy(),
+                    )
+                }
                 .map_err(StartupOutcomeError::from)?
                 .map(StreamableHttpBearerToken::Resolved);
                 (http_client, token)
@@ -1609,6 +1649,22 @@ pub(crate) async fn make_rmcp_client(
             } else {
                 StreamableHttpRedirectMode::Legacy
             };
+            let mut http_headers = http_headers;
+            let mut env_http_headers = env_http_headers;
+            if let Some(caller) = &runtime_context.caller_environment
+                && let Some(headers) = env_http_headers.take()
+            {
+                let resolved = http_headers.get_or_insert_with(HashMap::new);
+                for (name, variable) in headers {
+                    if let Some(value) = caller
+                        .values()
+                        .get(&variable)
+                        .filter(|value| !value.trim().is_empty())
+                    {
+                        resolved.insert(name, value.clone());
+                    }
+                }
+            }
             RmcpClient::new_streamable_http_client_with_protocol_mode_and_redirect_mode(
                 oauth_credential_name.as_ref(),
                 &url,

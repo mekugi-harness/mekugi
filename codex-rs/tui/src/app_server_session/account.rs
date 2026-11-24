@@ -84,6 +84,7 @@ impl AppServerSession {
             .request_typed(ClientRequest::ConfigRead {
                 request_id,
                 params: ConfigReadParams {
+                    thread_id: None,
                     include_layers: false,
                     cwd: None,
                 },
