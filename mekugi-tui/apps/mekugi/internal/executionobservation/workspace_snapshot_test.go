@@ -611,9 +611,9 @@ exit 7`
 	}
 	trace.start(thread, "cell", "scratch", source)
 	trace.tool(thread, "cell", "shell", nativeExecCommandToolName, args)
-	ctx, cancel := context.WithTimeout(transform.ctx, segmenttransport.BoundaryHold)
+	ctx, cancel := context.WithTimeout(transform.ctx, NativeBoundaryHold)
 	deadline, _ := ctx.Deadline()
-	proxy.ObserveNativeBoundary(ctx, segmenttransport.Boundary{
+	proxy.ObserveNativeBoundary(ctx, NativeBoundary{
 		Thread: thread, Turn: trace.turn, Item: "shell", Tool: "Bash",
 		CWD: workspace, Input: command, SessionTmp: scratch, Deadline: deadline,
 	})

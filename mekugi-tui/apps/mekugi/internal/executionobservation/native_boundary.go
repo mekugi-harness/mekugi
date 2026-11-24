@@ -18,6 +18,7 @@ import (
 // NativeBoundary is a synchronous native pre-tool observation, never an approval.
 type NativeBoundary struct {
 	Thread, Turn, Item, Tool, CWD, Input string
+	SessionTmp                           string
 	Deadline                             time.Time
 }
 
