@@ -8,4 +8,20 @@ import type { TokenUsageBreakdown } from "./TokenUsageBreakdown";
  * Internal-only notification containing the exact usage from one upstream
  * Responses API completion.
  */
-export type RawResponseCompletedNotification = { threadId: string, turnId: string, responseId: string, usage: TokenUsageBreakdown | null, usageMetadata: ResponseUsageMetadata | null, };
+export type RawResponseCompletedNotification = { threadId: string, turnId: string, responseId: string, usage: TokenUsageBreakdown | null, usageMetadata: ResponseUsageMetadata | null,
+/**
+ * Model applied to this individual response, if known.
+ */
+model: string | null,
+/**
+ * Provider-reported tier, or the applied request tier if it was not returned.
+ */
+serviceTier: string | null,
+/**
+ * Built-in OpenAI on a first-party endpoint, not a custom Responses route.
+ */
+openaiEndpoint: boolean,
+/**
+ * Elapsed provider request time through the terminal response, when measured.
+ */
+requestDurationMs: number | null, };
