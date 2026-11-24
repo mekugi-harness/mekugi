@@ -93,7 +93,7 @@ pub fn instrument_script(
             "__mekugi_f() {{ __mekugi_s=$?; {{ printf 'd %s\n' \"$__mekugi_s\" > \"$__mekugi_ctl\" && IFS= read -r __mekugi_r < \"$__mekugi_ack\"; }} 2>/dev/null || :; }}; ",
             "__mekugi_mktemp() {{ ",
             "__mekugi_dry=0; __mekugi_cmd=$1; shift; ",
-            "for __mekugi_a in \"$@\"; do case \"$__mekugi_a\" in --) break ;; --dry-run|-u|-*u*) __mekugi_dry=1 ;; esac; done; ",
+            "for __mekugi_a in \"$@\"; do case \"$__mekugi_a\" in --) break ;; --dry-run) __mekugi_dry=1 ;; --*) ;; -*u*) __mekugi_dry=1 ;; esac; done; ",
             "if __mekugi_mr=$(command \"$__mekugi_cmd\" \"$@\"; __mekugi_ms=$?; printf .; exit \"$__mekugi_ms\"); then __mekugi_ms=0; else __mekugi_ms=$?; fi; ",
             "__mekugi_mr=${{__mekugi_mr%.}}; ",
             "if [ \"$__mekugi_ms\" -eq 0 ] && [ \"$__mekugi_dry\" -eq 0 ] && [ -n \"$__mekugi_mr\" ]; then ",

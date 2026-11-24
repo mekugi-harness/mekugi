@@ -59,6 +59,18 @@ impl CoverageStatus {
     pub fn is_complete(&self) -> bool {
         matches!(self, Self::Complete)
     }
+
+    /// Combine pre-edit and post-edit coverage honesty markers.
+    pub fn merge(self, after: Self) -> Self {
+        match (self, after) {
+            (Self::Complete, Self::Complete) => Self::Complete,
+            (Self::MissingBaseline { reason }, _) => Self::MissingBaseline { reason },
+            (_, Self::MissingBaseline { reason }) => Self::Partial { reason },
+            (Self::Partial { reason }, _) | (_, Self::Partial { reason }) => {
+                Self::Partial { reason }
+            }
+        }
+    }
 }
 
 /// Raw in-memory file bytes observed before or after an edit.

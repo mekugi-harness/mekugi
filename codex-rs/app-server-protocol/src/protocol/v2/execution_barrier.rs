@@ -17,7 +17,7 @@ pub struct ExecutionBeforeToolParams {
     pub cwd: String,
     pub input: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[ts(optional = nullable)]
     pub session_tmp: Option<String>,
 }
 

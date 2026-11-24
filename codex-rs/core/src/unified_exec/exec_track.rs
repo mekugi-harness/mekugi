@@ -63,6 +63,7 @@ impl ExecTrackAttachment {
     pub(crate) fn prepare_for_shell(
         authored_script: &str,
         cwd: &Path,
+        workspace_root: PathBuf,
         shell_type: &ShellType,
         tty: bool,
         store_dir: PathBuf,
@@ -115,7 +116,7 @@ impl ExecTrackAttachment {
             session,
             write_capture,
             store_dir,
-            workspace_root: cwd.to_path_buf(),
+            workspace_root,
             thread_id,
             session_id,
             turn_id,

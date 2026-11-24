@@ -565,3 +565,112 @@ fn revert_rename_filtered_by_destination_restores_source() {
         b"original\n"
     );
 }
+
+#[test]
+fn rename_revert_filter_does_not_leak_across_working_directories() {
+    let ws = TempDir::new().expect("ws");
+    let pkg_a = ws.path().join("pkg/a");
+    let pkg_b = ws.path().join("pkg/b");
+    fs::create_dir_all(&pkg_a).expect("mkdir pkg/a");
+    fs::create_dir_all(&pkg_b).expect("mkdir pkg/b");
+    let store = ChangeHistoryStore::open(ws.path().join("store")).expect("open");
+
+    let a_old = pkg_a.join("old.txt");
+    let a_new = pkg_a.join("new.txt");
+    let b_old = pkg_b.join("old.txt");
+
+    let rec_a = store
+        .record_change(
+            test_metadata(&pkg_a, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![
+                PendingFileChange {
+                    rel_path: "old.txt".to_string(),
+                    abs_path: a_old.clone(),
+                    moved_from: None,
+                    before: FileSnapshot::Present(b"a-orig\n".to_vec()),
+                    after: FileSnapshot::Missing,
+                    coverage: CoverageStatus::Complete,
+                },
+                PendingFileChange {
+                    rel_path: "new.txt".to_string(),
+                    abs_path: a_new.clone(),
+                    moved_from: Some("old.txt".to_string()),
+                    before: FileSnapshot::Missing,
+                    after: FileSnapshot::Present(b"a-renamed\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+            ],
+        )
+        .expect("record rename in pkg/a");
+
+    let rec_b = store
+        .record_change(
+            test_metadata(&pkg_b, "t1", "c2", ChangeSourceKind::ShellWrite),
+            vec![PendingFileChange {
+                rel_path: "old.txt".to_string(),
+                abs_path: b_old.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"b-before\n".to_vec()),
+                after: FileSnapshot::Present(b"b-after\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("record edit in pkg/b");
+
+    fs::write(&a_new, b"a-renamed\n").expect("write a_new");
+    fs::write(&b_old, b"b-after\n").expect("write b_old");
+
+    store
+        .mutate_workspace(
+            MutationDirection::Revert,
+            &[rec_a.id, rec_b.id],
+            &["new.txt".to_string()],
+            "t1",
+            "s1",
+        )
+        .expect("revert new.txt");
+
+    assert!(!a_new.exists(), "pkg/a/new.txt should be removed");
+    assert_eq!(fs::read(&a_old).expect("read a_old"), b"a-orig\n");
+    assert_eq!(
+        fs::read(&b_old).expect("read b_old"),
+        b"b-after\n",
+        "pkg/b/old.txt must not be reverted by pkg/a rename filter"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn revert_refuses_to_follow_replacement_symlink() {
+    let ws = TempDir::new().expect("ws");
+    let store = ChangeHistoryStore::open(ws.path().join("store")).expect("open");
+    let config = ws.path().join("config");
+    let shared = ws.path().join("shared-config");
+
+    let rec = store
+        .record_change(
+            test_metadata(ws.path(), "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![PendingFileChange {
+                rel_path: "config".to_string(),
+                abs_path: config.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"old\n".to_vec()),
+                after: FileSnapshot::Present(b"new\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("record");
+
+    fs::write(&shared, b"new\n").expect("write shared");
+    std::os::unix::fs::symlink(&shared, &config).expect("symlink config -> shared");
+
+    let err = store
+        .mutate_workspace(MutationDirection::Revert, &[rec.id], &[], "t1", "s1")
+        .expect_err("revert must refuse replacement symlink");
+    assert!(matches!(err, ChangeHistoryError::DriftConflict { .. }));
+    assert_eq!(
+        fs::read(&shared).expect("read shared"),
+        b"new\n",
+        "symlink target must remain untouched"
+    );
+}

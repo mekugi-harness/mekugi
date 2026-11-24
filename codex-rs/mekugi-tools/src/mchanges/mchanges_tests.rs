@@ -34,7 +34,7 @@ fn list_summary_diff_history_and_path_scoped_revert_apply() {
                 turn_id: "turn-1".to_string(),
                 call_id: "call-1".to_string(),
                 source_kind: ChangeSourceKind::ApplyPatch,
-                workspace_root: ws.clone(),
+                workspace_root: ws,
                 created_at: 1_700_000_000,
                 exit_code: Some(0),
                 summary: Some("update a and b".to_string()),

@@ -150,6 +150,29 @@ impl ChangeHistoryStore {
 }
 
 fn read_live_snapshot(path: &Path) -> Result<FileSnapshot, ChangeHistoryError> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(ChangeHistoryError::DriftConflict {
+                    path: path.to_path_buf(),
+                    reason: "live path is a symlink; refusing to follow or overwrite".to_string(),
+                });
+            }
+            if !meta.file_type().is_file() {
+                return Err(ChangeHistoryError::DriftConflict {
+                    path: path.to_path_buf(),
+                    reason: "live path is not a regular file".to_string(),
+                });
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(FileSnapshot::Missing),
+        Err(err) => {
+            return Err(ChangeHistoryError::Storage(format!(
+                "stat workspace file {}: {err}",
+                path.display()
+            )));
+        }
+    }
     match fs::read(path) {
         Ok(bytes) => Ok(FileSnapshot::Present(bytes)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(FileSnapshot::Missing),
@@ -161,6 +184,14 @@ fn read_live_snapshot(path: &Path) -> Result<FileSnapshot, ChangeHistoryError> {
 }
 
 fn apply_snapshot_to_disk(path: &Path, snapshot: &FileSnapshot) -> Result<(), ChangeHistoryError> {
+    if let Ok(meta) = fs::symlink_metadata(path)
+        && (meta.file_type().is_symlink() || !meta.file_type().is_file())
+    {
+        return Err(ChangeHistoryError::DriftConflict {
+            path: path.to_path_buf(),
+            reason: "refusing to overwrite symlink or non-regular file".to_string(),
+        });
+    }
     match snapshot {
         FileSnapshot::Missing => match fs::remove_file(path) {
             Ok(()) => Ok(()),

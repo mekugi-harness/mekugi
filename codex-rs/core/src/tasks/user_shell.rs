@@ -173,19 +173,12 @@ pub(crate) async fn execute_user_shell_command(
     if exec_env_map.contains_key(PROXY_ACTIVE_ENV_KEY) {
         strip_managed_proxy_env(&mut exec_env_map);
     }
-    let exec_command = prepare_user_shell_exec_command(
-        &display_command,
-        environment_shell,
-        shell_snapshot_location.as_ref(),
-        &shell_environment_policy.r#set,
-        &mut exec_env_map,
-    );
-
     let call_id = Uuid::new_v4().to_string();
     let raw_command = command;
     let user_shell_track = crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
         &raw_command,
         cwd.as_path(),
+        cwd.as_path().to_path_buf(),
         &environment_shell.shell_type,
         /*tty*/ false,
         crate::exec_env::change_history_dir(session.session_id()),
@@ -193,6 +186,17 @@ pub(crate) async fn execute_user_shell_command(
         session.session_id().to_string(),
         turn_context.sub_id.clone(),
         call_id.clone(),
+    );
+    let tracked_display_command = user_shell_track
+        .instrumented_script
+        .as_deref()
+        .map(|script| environment_shell.derive_exec_args(script, use_login_shell));
+    let exec_command = prepare_user_shell_exec_command(
+        tracked_display_command.as_ref().unwrap_or(&display_command),
+        environment_shell,
+        shell_snapshot_location.as_ref(),
+        &shell_environment_policy.r#set,
+        &mut exec_env_map,
     );
 
     let parsed_cmd = parse_command(&display_command);

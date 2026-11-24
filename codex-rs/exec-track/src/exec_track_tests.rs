@@ -78,7 +78,7 @@ async fn run_tracked_shell(
 
     if let Some(hook) = extra_pre_exec {
         unsafe {
-            cmd.pre_exec(move || hook());
+            cmd.pre_exec(hook);
         }
     }
 
@@ -800,4 +800,74 @@ fn oversized_before_and_after_preserves_partial_coverage_record() {
         "expected Partial coverage, got {:?}",
         record.files[0].coverage
     );
+}
+
+#[test]
+fn extract_static_write_paths_tracks_cd_and_resolves_symlinks() {
+    let dir = TempDir::new().expect("tempdir");
+    let sub = dir.path().join("subdir");
+    let nested = dir.path().join("nested");
+    let deep = nested.join("deep");
+    fs::create_dir_all(&sub).expect("mkdir subdir");
+    fs::create_dir_all(&deep).expect("mkdir deep");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&deep, &link).expect("symlink");
+
+    // Static cd updates cwd for subsequent writes; subshell cd does not leak.
+    let paths = extract_static_write_paths(
+        "(cd subdir && echo a > in_sub.txt); echo b > in_root.txt; cd subdir && echo c > after_cd.txt",
+        dir.path(),
+    );
+    let canon_root = fs::canonicalize(dir.path()).expect("canon root");
+    let canon_sub = fs::canonicalize(&sub).expect("canon sub");
+    assert!(paths.contains(&canon_sub.join("in_sub.txt")));
+    assert!(paths.contains(&canon_root.join("in_root.txt")));
+    assert!(paths.contains(&canon_sub.join("after_cd.txt")));
+
+    // Symlink parent with .. resolves to nested/config rather than root/config.
+    let sym_paths = extract_static_write_paths(
+        "echo x > config; echo y > link/../config; echo z >> subdir/../config",
+        dir.path(),
+    );
+    let canon_nested = fs::canonicalize(&nested).expect("canon nested");
+    assert!(sym_paths.contains(&canon_root.join("config")));
+    assert!(sym_paths.contains(&canon_nested.join("config")));
+    assert_eq!(
+        sym_paths.len(),
+        2,
+        "subdir/../config should deduplicate with config while link/../config stays distinct"
+    );
+}
+
+#[tokio::test]
+async fn mktemp_long_option_with_u_is_still_recorded() {
+    let dir = TempDir::new().expect("tempdir");
+    let script = format!(
+        "f=$(mktemp --suffix=.txt '{}/suf.XXXXXX') && echo ok > \"$f\"",
+        dir.path().display()
+    );
+    let split = split_segments(&script, ShellDialect::Bash).expect("split");
+    let (session, _drain_rx) = ExecTrackSession::start(split.segments.clone(), TrackingMode::Pipe)
+        .expect("start");
+    let instrumented = session.instrument_script(&script, &split.segments, ShellDialect::Bash);
+
+    let output = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(&instrumented)
+        .current_dir(dir.path())
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .expect("run bash");
+
+    // Skip assertion if the platform's mktemp does not support --suffix (e.g. BSD mktemp).
+    if output.status.success() {
+        let report = session.finalize(output.status.code());
+        assert_eq!(
+            report.mktemp_creations.len(),
+            1,
+            "mktemp --suffix=.txt must not be treated as dry-run: {report:?}"
+        );
+        assert!(report.mktemp_creations[0].path.to_string_lossy().ends_with(".txt"));
+    }
 }

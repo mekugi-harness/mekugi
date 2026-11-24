@@ -65,6 +65,7 @@ impl ApplyPatchCapture {
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
         let store_dir = change_history_dir(tool_ctx.session.session_id());
         let workspace_root = path_uri_to_path_buf(&request.action.cwd);
+        let is_remote = request.turn_environment.environment().is_remote();
         let metadata = ChangeMetadata {
             thread_id: tool_ctx.session.thread_id().to_string(),
             session_id: tool_ctx.session.session_id().to_string(),
@@ -77,11 +78,19 @@ impl ApplyPatchCapture {
             summary: Some("apply_patch".to_string()),
             claim_key: None,
         };
-        self.persist_to_dir(fs, &store_dir, &request.file_paths, delta, metadata)
-            .await
+        self.persist_to_dir_with_locality(
+            fs,
+            &store_dir,
+            &request.file_paths,
+            delta,
+            metadata,
+            is_remote,
+        )
+        .await
     }
 
     /// Observe post-edit bytes and persist to `store_dir`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn persist_to_dir(
         self,
         fs: &dyn ExecutorFileSystem,
@@ -89,6 +98,19 @@ impl ApplyPatchCapture {
         candidate_paths: &[PathUri],
         delta: Option<&AppliedPatchDelta>,
         metadata: ChangeMetadata,
+    ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
+        self.persist_to_dir_with_locality(fs, store_dir, candidate_paths, delta, metadata, false)
+            .await
+    }
+
+    async fn persist_to_dir_with_locality(
+        self,
+        fs: &dyn ExecutorFileSystem,
+        store_dir: &Path,
+        candidate_paths: &[PathUri],
+        delta: Option<&AppliedPatchDelta>,
+        metadata: ChangeMetadata,
+        is_remote: bool,
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
         let workspace_root = metadata.workspace_root.clone();
         let mut moved_from_by_dest: HashMap<PathUri, String> = HashMap::new();
@@ -129,7 +151,12 @@ impl ApplyPatchCapture {
                 continue;
             }
 
-            let coverage = merge_coverage(before_cov, after_cov);
+            let mut coverage = before_cov.merge(after_cov);
+            if is_remote {
+                coverage = coverage.merge(CoverageStatus::Partial {
+                    reason: "remote workspace edit cannot be reverted locally".to_string(),
+                });
+            }
             let rel_path = display_rel_path(&workspace_root, path);
             let abs_path = path_uri_to_path_buf(path);
             pending_files.push(PendingFileChange {
@@ -170,19 +197,6 @@ async fn read_snapshot(
                 reason: err.to_string(),
             },
         ),
-    }
-}
-
-fn merge_coverage(before: CoverageStatus, after: CoverageStatus) -> CoverageStatus {
-    match (before, after) {
-        (CoverageStatus::Complete, CoverageStatus::Complete) => CoverageStatus::Complete,
-        (CoverageStatus::MissingBaseline { reason }, _) => {
-            CoverageStatus::MissingBaseline { reason }
-        }
-        (_, CoverageStatus::MissingBaseline { reason }) => CoverageStatus::Partial { reason },
-        (CoverageStatus::Partial { reason }, _) | (_, CoverageStatus::Partial { reason }) => {
-            CoverageStatus::Partial { reason }
-        }
     }
 }
 

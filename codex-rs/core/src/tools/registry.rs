@@ -898,7 +898,6 @@ impl ToolRegistry {
             Ok(environments) => environments,
             Err(err) => return Err(fail_before_execution(dispatch_trace, &invocation, err).await),
         };
-        let before_tool_params = before_tool_barrier_params(tool.as_ref(), &invocation);
         match apply_pre_tool_use(tool.as_ref(), &mut invocation).await {
             Ok(()) => {}
             Err(PreToolUseError::Blocked(message)) => {
@@ -1000,7 +999,7 @@ impl ToolRegistry {
 
         let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
 
-        if let Some(params) = before_tool_params {
+        if let Some(params) = before_tool_barrier_params(tool.as_ref(), &invocation) {
             invocation
                 .session
                 .services

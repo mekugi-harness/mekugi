@@ -489,6 +489,12 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
                     &prepared.hook_command,
                     native_cwd.as_path(),
+                    prepared
+                        .turn_environment
+                        .cwd()
+                        .to_abs_path()
+                        .map(|p| p.as_path().to_path_buf())
+                        .unwrap_or_else(|_| native_cwd.as_path().to_path_buf()),
                     &prepared.resolved.shell.shell.shell_type,
                     prepared.tty,
                     crate::exec_env::change_history_dir(ctx.session.session_id()),

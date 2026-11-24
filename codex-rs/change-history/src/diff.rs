@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Component;
 use std::path::Path;
@@ -91,11 +92,31 @@ fn normalize_abs_path(path: &Path) -> PathBuf {
     out
 }
 
-fn expand_rename_filters(records: &[&ChangeRecord], path_filters: &[String]) -> Vec<String> {
+/// Resolve user-supplied path_filters into exact normalized absolute paths,
+/// expanding rename counterparts (including chains) within each record's own
+/// workspace root so a rename in pkg/a never matches a same-named file in pkg/b.
+fn select_matching_abs_paths(
+    records: &[&ChangeRecord],
+    path_filters: &[String],
+) -> Option<BTreeSet<PathBuf>> {
     if path_filters.is_empty() {
-        return Vec::new();
+        return None;
     }
-    let mut expanded: Vec<String> = path_filters.to_vec();
+    let mut matched = BTreeSet::new();
+    for record in records {
+        for file in &record.files {
+            let dest_abs = normalize_abs_path(&file.abs_path);
+            if path_matches_filters(&file.rel_path, path_filters) {
+                matched.insert(dest_abs.clone());
+            }
+            if let Some(from) = file.moved_from.as_deref()
+                && path_matches_filters(from, path_filters)
+            {
+                matched.insert(dest_abs);
+                matched.insert(normalize_abs_path(&record.metadata.workspace_root.join(from)));
+            }
+        }
+    }
     loop {
         let mut added = false;
         for record in records {
@@ -103,13 +124,11 @@ fn expand_rename_filters(records: &[&ChangeRecord], path_filters: &[String]) -> 
                 let Some(from) = file.moved_from.as_deref() else {
                     continue;
                 };
-                let rel_matched = path_matches_filters(&file.rel_path, &expanded);
-                let from_matched = path_matches_filters(from, &expanded);
-                if rel_matched && !from_matched {
-                    expanded.push(from.to_string());
-                    added = true;
-                } else if from_matched && !rel_matched {
-                    expanded.push(file.rel_path.clone());
+                let dest_abs = normalize_abs_path(&file.abs_path);
+                let src_abs = normalize_abs_path(&record.metadata.workspace_root.join(from));
+                if (matched.contains(&dest_abs) && matched.insert(src_abs.clone()))
+                    || (matched.contains(&src_abs) && matched.insert(dest_abs))
+                {
                     added = true;
                 }
             }
@@ -118,7 +137,7 @@ fn expand_rename_filters(records: &[&ChangeRecord], path_filters: &[String]) -> 
             break;
         }
     }
-    expanded
+    Some(matched)
 }
 
 pub(crate) fn compose_transitions(
@@ -137,16 +156,14 @@ pub(crate) fn compose_transitions_with_continuity(
 ) -> Result<Vec<ComposedFileTransition>, ChangeHistoryError> {
     let mut ordered: Vec<&ChangeRecord> = records.iter().collect();
     ordered.sort_by_key(|r| r.sequence);
-    let effective_filters = expand_rename_filters(&ordered, path_filters);
+    let matched_abs = select_matching_abs_paths(&ordered, path_filters);
 
-    let mut by_path: BTreeMap<PathBuf, ComposedFileTransition> = BTreeMap::new();
+    let mut by_path: BTreeMap<PathBuf, (u64, ComposedFileTransition)> = BTreeMap::new();
     for record in ordered {
         for file in &record.files {
-            if !path_matches_filters(&file.rel_path, &effective_filters)
-                && !file
-                    .moved_from
-                    .as_deref()
-                    .is_some_and(|from| path_matches_filters(from, &effective_filters))
+            let key = normalize_abs_path(&file.abs_path);
+            if let Some(allowed) = &matched_abs
+                && !allowed.contains(&key)
             {
                 continue;
             }
@@ -161,8 +178,15 @@ pub(crate) fn compose_transitions_with_continuity(
                     Some(format!("{}: missing baseline ({reason})", record.id))
                 }
             };
-            let key = normalize_abs_path(&file.abs_path);
-            if let Some(existing) = by_path.get_mut(&key) {
+            if let Some((last_seq, existing)) = by_path.get_mut(&key) {
+                if *last_seq == record.sequence {
+                    // Duplicate path spelling within the same record: coalesce without
+                    // treating the two snapshots as sequential edits.
+                    if let Some(note) = note {
+                        existing.coverage_notes.push(note);
+                    }
+                    continue;
+                }
                 if require_continuity && existing.after != before {
                     return Err(ChangeHistoryError::DriftConflict {
                         path: file.abs_path.clone(),
@@ -172,6 +196,7 @@ pub(crate) fn compose_transitions_with_continuity(
                         ),
                     });
                 }
+                *last_seq = record.sequence;
                 existing.after = after;
                 existing.rel_path = file.rel_path.clone();
                 existing.abs_path = file.abs_path.clone();
@@ -188,20 +213,23 @@ pub(crate) fn compose_transitions_with_continuity(
                 }
                 by_path.insert(
                     key,
-                    ComposedFileTransition {
-                        rel_path: file.rel_path.clone(),
-                        abs_path: file.abs_path.clone(),
-                        moved_from: file.moved_from.clone(),
-                        before,
-                        after,
-                        coverage_notes,
-                    },
+                    (
+                        record.sequence,
+                        ComposedFileTransition {
+                            rel_path: file.rel_path.clone(),
+                            abs_path: file.abs_path.clone(),
+                            moved_from: file.moved_from.clone(),
+                            before,
+                            after,
+                            coverage_notes,
+                        },
+                    ),
                 );
             }
         }
     }
 
-    Ok(by_path.into_values().collect())
+    Ok(by_path.into_values().map(|(_, tr)| tr).collect())
 }
 
 /// Compose unified diffs across `records` (in capture order), optionally filtered by `path_filters`.
@@ -247,18 +275,16 @@ pub fn compose_summary(
 pub fn render_history(records: &[ChangeRecord], path_filters: &[String]) -> String {
     let mut ordered: Vec<&ChangeRecord> = records.iter().collect();
     ordered.sort_by_key(|r| r.sequence);
-    let effective_filters = expand_rename_filters(&ordered, path_filters);
+    let matched_abs = select_matching_abs_paths(&ordered, path_filters);
 
     let mut out = String::new();
     for record in ordered {
         let matched_files: Vec<_> = record
             .files
             .iter()
-            .filter(|f| {
-                path_matches_filters(&f.rel_path, &effective_filters)
-                    || f.moved_from
-                        .as_deref()
-                        .is_some_and(|from| path_matches_filters(from, &effective_filters))
+            .filter(|f| match &matched_abs {
+                Some(allowed) => allowed.contains(&normalize_abs_path(&f.abs_path)),
+                None => true,
             })
             .collect();
         if !path_filters.is_empty() && matched_files.is_empty() {
