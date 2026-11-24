@@ -4601,6 +4601,18 @@ impl ThreadRequestProcessor {
             })?;
             typesafe_overrides.approval_policy = Some(approval_policy);
         }
+        if let Some(value) = request_overrides
+            .as_mut()
+            .and_then(|overrides| overrides.remove("service_tier"))
+        {
+            let service_tier: Option<String> = serde_json::from_value(value).map_err(|err| {
+                invalid_params(format!("invalid `service_tier` config override: {err}"))
+            })?;
+            // Typed `serviceTier` takes precedence over `config.service_tier` if both are present.
+            if typesafe_overrides.service_tier.is_none() {
+                typesafe_overrides.service_tier = Some(service_tier);
+            }
+        }
         let has_explicit_model_resume_override =
             has_model_resume_override(request_overrides.as_ref(), &typesafe_overrides);
         let persisted_model_settings = latest_persisted_model_settings(&thread_history);

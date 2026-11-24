@@ -1017,6 +1017,31 @@ impl Session {
                 /*developer_instructions*/ None,
             )
         });
+        let mut collaboration_mode = collaboration_mode;
+        if matches!(
+            thread_source
+                .as_ref()
+                .and_then(crate::client::SideFork::from_source),
+            Some(crate::client::SideFork::OneOff | crate::client::SideFork::Question)
+        ) {
+            match collaboration_mode.settings.reasoning_effort.take() {
+                Some(effort) => {
+                    collaboration_mode.settings.reasoning_effort =
+                        Some(crate::client::downgrade_ultra_effort(&model_info, effort));
+                }
+                None if model_info.default_reasoning_level
+                    == Some(codex_protocol::openai_models::ReasoningEffort::Ultra) =>
+                {
+                    collaboration_mode.settings.reasoning_effort = Some(
+                        crate::client::downgrade_ultra_effort(
+                            &model_info,
+                            codex_protocol::openai_models::ReasoningEffort::Ultra,
+                        ),
+                    );
+                }
+                None => {}
+            }
+        }
         let mut service_tier_choices = Arc::clone(&config.retained_service_tier_choices);
         if let Some(tier) = &config.service_tier_choice {
             Arc::make_mut(&mut service_tier_choices).insert(model_info.slug.clone(), tier.clone());

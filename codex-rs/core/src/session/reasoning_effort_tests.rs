@@ -249,3 +249,49 @@ async fn unsupported_model_compaction_uses_selected_effort_without_mutating_pin(
         Some(ReasoningEffort::High),
     );
 }
+
+#[tokio::test]
+async fn compaction_downgrades_ultra_to_max_without_overrides() {
+    let (session, turn, _events) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |_| {},
+    )
+    .await;
+    let mut model = (*turn.initial_settings.model_info).clone();
+    model.supported_reasoning_levels = [ReasoningEffort::High, ReasoningEffort::Max, ReasoningEffort::Ultra]
+        .into_iter()
+        .map(|effort| ReasoningEffortPreset {
+            description: effort.to_string(),
+            effort,
+        })
+        .collect();
+    let mut choice = turn.initial_settings.selected().clone();
+    choice.collaboration_mode.settings.reasoning_effort = Some(ReasoningEffort::Ultra);
+    let step = ResolvedStepSettings::new(
+        Arc::new(choice.clone()),
+        Arc::new(model.clone()),
+        &Default::default(),
+    );
+    assert_eq!(
+        session
+            .reasoning_effort_for_request(&step, RequestEffortUsage::Compaction)
+            .await,
+        Some(ReasoningEffort::Max),
+    );
+
+    // Also downgrade when Ultra comes from default_reasoning_level.
+    choice.collaboration_mode.settings.reasoning_effort = None;
+    model.default_reasoning_level = Some(ReasoningEffort::Ultra);
+    let default_ultra_step = ResolvedStepSettings::new(
+        Arc::new(choice),
+        Arc::new(model),
+        &Default::default(),
+    );
+    assert_eq!(
+        session
+            .reasoning_effort_for_request(&default_ultra_step, RequestEffortUsage::Compaction)
+            .await,
+        Some(ReasoningEffort::Max),
+    );
+}
