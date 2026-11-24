@@ -178,6 +178,7 @@ pub(crate) async fn execute_user_shell_command(
     let user_shell_track = crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
         &raw_command,
         cwd.as_path(),
+        Some(&crate::exec_env::session_tmp_path(session.session_id())),
         cwd.as_path().to_path_buf(),
         None,
         &environment_shell.shell_type,

@@ -101,6 +101,7 @@ func resumeTestKeys(t *testing.T, u *appServerUI, keys ...string) {
 func newResumeSessionTestUI(t *testing.T) (*appServerUI, *appServerTestInput) {
 	u, w := newAppServerTestUI()
 	u.ctx = t.Context()
+	u.rewindExecutable = filepath.Join(t.TempDir(), "mchanges")
 	resumeTestMembers(t, u, "main", "saved", "missing")
 
 	t.Cleanup(func() { terminalTest(u).Diff.Close() })

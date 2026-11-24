@@ -18,6 +18,7 @@ use codex_change_history::PendingFileChange;
 use codex_shell_guard::command_word_nodes;
 use codex_shell_guard::parse_bash;
 use codex_shell_guard::static_word_value;
+use codex_shell_guard::static_word_value_with_expansion;
 use tree_sitter::Node;
 
 #[cfg(unix)]
@@ -46,7 +47,7 @@ impl ShellWriteCapture {
     /// Extract statically recognized shell write targets from script and
     /// capture their pre-execution baseline bytes before the shell runs.
     pub fn prepare(script: &str, cwd: &Path) -> Self {
-        Self::prepare_with_policy(script, cwd, |_| true)
+        Self::prepare_with_policy(script, cwd, None, |_| true)
     }
 
     /// Extract statically recognized shell write targets from script and
@@ -54,9 +55,10 @@ impl ShellWriteCapture {
     pub fn prepare_with_policy(
         script: &str,
         cwd: &Path,
+        session_tmp: Option<&Path>,
         can_read: impl Fn(&Path) -> bool,
     ) -> Self {
-        let paths = extract_static_write_paths(script, cwd);
+        let paths = extract_write_paths(script, cwd, session_tmp);
         let mut baselines = BTreeMap::new();
         for path in paths {
             if !can_read(&path) {
@@ -179,13 +181,138 @@ impl ShellWriteCapture {
 /// Extract statically recognized shell write target paths from script using
 /// codex-shell-guard::parse_bash and static_word_value.
 pub fn extract_static_write_paths(script: &str, cwd: &Path) -> Vec<PathBuf> {
+    extract_write_paths(script, cwd, None)
+}
+
+fn extract_write_paths(script: &str, cwd: &Path, session_tmp: Option<&Path>) -> Vec<PathBuf> {
     let Some(tree) = parse_bash(script) else {
         return Vec::new();
     };
     let mut paths = BTreeSet::new();
     let mut current_cwd = resolve_canonical_path(cwd);
     collect_write_paths(tree.root_node(), script, &mut current_cwd, &mut paths);
+    if let Some(session_tmp) = session_tmp.filter(|path| path.is_absolute())
+        && script.contains("SESSION_TMP")
+        && !tree.root_node().has_error()
+    {
+        collect_scratch_redirects(tree.root_node(), script, session_tmp, &mut paths);
+    }
     paths.into_iter().collect()
+}
+
+fn collect_scratch_redirects(
+    root: Node<'_>,
+    script: &str,
+    session_tmp: &Path,
+    paths: &mut BTreeSet<PathBuf>,
+) {
+    let Some(binding) = session_tmp.to_str() else {
+        return;
+    };
+    let session_tmp = resolve_canonical_path(session_tmp);
+    let resolve = |text: &str, quoted: bool| {
+        if matches!(text, "$SESSION_TMP" | "${SESSION_TMP}")
+            && (quoted || !binding.contains([' ', '\t', '\n']))
+        {
+            Some(binding.to_owned())
+        } else {
+            None
+        }
+    };
+    let mut cursor = root.walk();
+    for stmt in root.named_children(&mut cursor) {
+        let command = match stmt.kind() {
+            "comment" => continue,
+            "command" => stmt,
+            "redirected_statement" => {
+                let Some(command) = stmt.child_by_field_name("body") else {
+                    break;
+                };
+                if command.kind() != "command" {
+                    break;
+                }
+                command
+            }
+            _ => break,
+        };
+        if !has_stable_scratch_binding(stmt, script) {
+            break;
+        }
+        for statement in [stmt, command] {
+            let mut cursor = statement.walk();
+            for redirect in statement.named_children(&mut cursor) {
+                if redirect.kind() != "file_redirect" {
+                    continue;
+                }
+                let mut tokens = redirect.walk();
+                if !is_output_redirect(redirect, script)
+                    && !redirect
+                        .children(&mut tokens)
+                        .any(|node| node.kind() == "<>")
+                {
+                    continue;
+                }
+                if let Some(word) = redirect.child_by_field_name("destination")
+                    && static_word_value(word, script).is_none()
+                    && let Some(path) = static_word_value_with_expansion(word, script, resolve)
+                    && !path.contains(['*', '?', '[', '{', '}'])
+                    && Path::new(&path).is_absolute()
+                {
+                    let path = resolve_canonical_path(Path::new(&path));
+                    if path != session_tmp && path.starts_with(&session_tmp) {
+                        paths.insert(path);
+                    }
+                }
+            }
+            if stmt == command {
+                break;
+            }
+        }
+        // Stop before subsequent commands after anything that may change the
+        // parent shell's binding, such as a sourcing builtin or shell function.
+        let words = command_word_nodes(command);
+        if !words
+            .first()
+            .and_then(|word| static_word_value(*word, script))
+            .is_some_and(|name| {
+                matches!(
+                    name.as_str(),
+                    "cat"
+                        | "mkdir"
+                        | "tee"
+                        | "touch"
+                        | "echo"
+                        | "printf"
+                        | "set"
+                        | "cd"
+                        | "true"
+                        | "false"
+                        | ":"
+                )
+            })
+        {
+            break;
+        }
+    }
+}
+
+fn has_stable_scratch_binding(node: Node<'_>, script: &str) -> bool {
+    match node.kind() {
+        "variable_assignment" | "arithmetic_expansion" => return false,
+        "expansion" => {
+            if node
+                .utf8_text(script.as_bytes())
+                .is_ok_and(|text| text.contains(":=") || text.contains('='))
+            {
+                return false;
+            }
+        }
+        "heredoc_body" | "command_substitution" | "process_substitution" => return true,
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .all(|child| has_stable_scratch_binding(child, script))
 }
 
 fn collect_write_paths(

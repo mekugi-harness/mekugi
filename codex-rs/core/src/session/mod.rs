@@ -253,7 +253,7 @@ pub(crate) mod file_audio;
 pub(crate) use file_audio::FileAudioDurations;
 
 mod approved_plan;
-mod capture_delivery;
+pub(crate) mod capture_delivery;
 mod code_mode_warning;
 mod compaction_replacement;
 mod config_refresh;

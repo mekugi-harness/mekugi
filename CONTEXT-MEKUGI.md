@@ -7,9 +7,11 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 
 ## Component owners
 
-- **Native (`codex-rs`)**: root/child execution, coordination (`thread_manager`, `agent_host`),
+- **Native (`codex-rs`)**: root/child execution, coordination
+  (`thread_manager`, `core/src/agent`),
   model templates (`models-manager`), helper/child-reply guidance (`core/src/mekugi_guidance`),
-  native helper tools (`mcat`, `mfinspect`, `msymbol`, `mrun`), native shell guard
+  native helper tools (`mcat`, `mchanges`, `mfinspect`, `msymbol`, `mrun`),
+  native shell guard
   (`codex-shell-guard`, `features.shell_guard`, `codex-arg0` guard shims, v2 `shellGuard/*`),
   context usage milestones (`token_budget.rs`), source acquisition & reload
   (`context_sources*.rs`, `compact_token_budget.rs`, `ext/skills`), OS/Git environment facts
@@ -32,7 +34,7 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 | `headless` | Noninteractive automation client and JSONL host evidence |
 | `inferencegateway` | Responses HTTP/WS admission, pinned custom routing, catalog/auxiliary forwarding, service tier |
 | `requestexecution` | Shared inference attempt, delivery, cancellation, failure handling, and instruction retention |
-| `executionobservation` | Stock-tool and synchronous pre-tool capture windows, completion, and publication |
+| `executionobservation` | Legacy Go change evidence from the inference relay |
 | `sessioncontrol` | Sole host app-server connection/request ledger; submission, compaction, approvals, prompts, presets, side threads |
 | `sessionpresentation` | Scoped live/replay admission, turn/input/activity reduction, detached publications, metrics projection |
 | `sessionapi` | Server-owned runtime admission, versioned Unix/WS control protocol, detached projections, HTTP resources |

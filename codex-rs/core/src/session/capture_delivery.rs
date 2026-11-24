@@ -3,13 +3,33 @@
 
 use super::Session;
 use crate::agent_communication::FinalCaptureAttachment;
-use codex_change_history::{ChangeHistoryStore, ChangeId, compose_diff, expand_id_spec};
+use codex_change_history::{
+    ChangeHistoryStore, ChangeId, ChangeIndexEntry, ChangeRecord, compose_diff, expand_id_spec,
+};
 use codex_history::ResponseItemEnvelope;
-use codex_protocol::agent_capture::*;
+use codex_protocol::agent_capture::{CaptureCursor, CaptureInterval};
 use codex_protocol::{SessionId, ThreadId};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 
-fn interval(id: &ChangeId, sequence: u64) -> CaptureInterval {
+#[derive(Clone)]
+pub(crate) struct ProgressActor {
+    pub(crate) thread_id: ThreadId,
+    pub(crate) task_name: String,
+}
+
+pub(crate) struct ProgressCapture {
+    pub(crate) actor: ProgressActor,
+    pub(crate) entries: Vec<ChangeIndexEntry>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct ProgressOutput {
+    pub(crate) text: String,
+    pub(crate) delivered_intervals: Vec<CaptureInterval>,
+}
+
+pub(crate) fn interval(id: &ChangeId, sequence: u64) -> CaptureInterval {
     CaptureInterval {
         key: format!("native:{id}"),
         change_id: id.to_string(),
@@ -18,6 +38,62 @@ fn interval(id: &ChangeId, sequence: u64) -> CaptureInterval {
         first_chunk: 1,
         last_chunk: 1,
     }
+}
+
+#[tracing::instrument(skip_all)]
+pub(crate) async fn read_change_source(
+    session: SessionId,
+    selection: Vec<String>,
+    recipient: Option<ThreadId>,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let store =
+            ChangeHistoryStore::open_existing(crate::exec_env::change_history_dir(session))?;
+        let ids = selection
+            .iter()
+            .map(|spec| expand_id_spec(spec))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut records = store.load_records(&ids.into_iter().flatten().collect::<Vec<_>>())?;
+        if let Some(recipient) = recipient {
+            let recipient = recipient.to_string();
+            records.retain(|record| {
+                record.metadata.thread_id != recipient && record.metadata.source_kind.is_authored()
+            });
+        }
+        render_change_source(&store, &records, crate::context_sources::MAX_SOURCE_BYTES)?
+            .ok_or_else(|| anyhow::anyhow!("source exceeded the retained change attachment budget"))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+fn render_change_source(
+    store: &ChangeHistoryStore,
+    records: &[ChangeRecord],
+    limit: usize,
+) -> anyhow::Result<Option<String>> {
+    let mut body = String::new();
+    // These IDs can omit intervening edits from other threads. Rendering their own
+    // transitions never attributes a skipped transition to a selected author.
+    for record in records {
+        if records.len() > 1 {
+            writeln!(body, "Change {}", record.id)?;
+        }
+        if record.files.iter().any(|file| !file.coverage.is_complete()) {
+            body.push_str("Incomplete capture coverage.\n");
+        }
+        for diff in compose_diff(store, std::slice::from_ref(record), &[])? {
+            if body.len().saturating_add(diff.unified_diff.len()) > limit {
+                return Ok(None);
+            }
+            body.push_str(&diff.unified_diff);
+        }
+        if body.len() > limit {
+            return Ok(None);
+        }
+    }
+    Ok(Some(body))
 }
 
 impl FinalCaptureAttachment {
@@ -93,39 +169,42 @@ impl FinalCaptureAttachment {
             .join(",");
         let dir = crate::exec_env::change_history_dir(self.session_id);
         let ids: Result<Vec<ChangeId>, _> = intervals.iter().map(|i| i.change_id.parse()).collect();
-        let rendered = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let rendered = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
             let store = ChangeHistoryStore::open_existing(dir)?;
             let records = store.load_records(&ids?)?;
-            let mut body = String::new();
-            if records
-                .iter()
-                .flat_map(|r| &r.files)
-                .any(|f| !f.coverage.is_complete())
-            {
-                body.push_str("Incomplete capture coverage.\n");
+            let mut text = String::new();
+            for record in &records {
+                let Some(body) = render_change_source(
+                    &store,
+                    std::slice::from_ref(record),
+                    16_000 - text.len(),
+                )?
+                else {
+                    return Ok(None);
+                };
+                let source = format!("mchanges:{}", record.id);
+                let frame = crate::context_sources::frame_source_body(&source, &body)?;
+                if text.len() + frame.len() + 1 > 16_000 {
+                    return Ok(None);
+                }
+                writeln!(text, "{frame}")?;
             }
-            for diff in compose_diff(&store, &records, &[])? {
-                body.push_str(&diff.unified_diff);
-            }
-            Ok(body)
+            text.pop();
+            Ok(Some(text))
         })
         .await;
-        match rendered {
-            Ok(Ok(body)) if body.len() + selection.len() <= 16_000 => {
-                (format!("mchanges:{selection}\n{body}"), intervals)
-            }
-            Ok(Ok(_)) => (
-                format!(
-                    "Captured changes exceed the attachment budget. Read mchanges:{selection}."
-                ),
-                Vec::new(),
-            ),
-            Ok(Err(error)) => (
-                format!("mchanges:{selection}: CONTENT NOT ATTACHED: {error}"),
+        let source = format!("mchanges:{selection}");
+        match rendered
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result)
+        {
+            Ok(Some(text)) => (text, intervals),
+            Ok(None) => (
+                format!("Captured changes exceed the attachment budget. Read {source}."),
                 Vec::new(),
             ),
             Err(error) => (
-                format!("mchanges:{selection}: CONTENT NOT ATTACHED: {error}"),
+                format!("{source}: CONTENT NOT ATTACHED: {error}"),
                 Vec::new(),
             ),
         }
@@ -143,7 +222,7 @@ impl Session {
     pub(crate) async fn select_progress_ranges(
         &self,
         selected: Vec<ProgressActor>,
-    ) -> anyhow::Result<Vec<FrozenAgentCapture>> {
+    ) -> anyhow::Result<Vec<ProgressCapture>> {
         let (_, seen) = self.capture_context().await;
         let dir = crate::exec_env::change_history_dir(self.session_id());
         tokio::task::spawn_blocking(move || {
@@ -153,9 +232,9 @@ impl Session {
             let seen: HashSet<_> = seen.into_iter().map(|cursor| cursor.key).collect();
             let mut agents: Vec<_> = selected
                 .into_iter()
-                .map(|actor| FrozenAgentCapture {
+                .map(|actor| ProgressCapture {
                     actor,
-                    intervals: Vec::new(),
+                    entries: Vec::new(),
                 })
                 .collect();
             let positions: HashMap<_, _> = agents
@@ -167,13 +246,12 @@ impl Session {
                 if entry.source_kind.is_authored()
                     && let Some(&i) = positions.get(&entry.thread_id)
                 {
-                    let interval = interval(&entry.id, entry.sequence);
-                    if !seen.contains(&interval.key) {
-                        agents[i].intervals.push(interval);
+                    if !seen.contains(&format!("native:{}", entry.id)) {
+                        agents[i].entries.push(entry);
                     }
                 }
             }
-            agents.retain(|a| !a.intervals.is_empty());
+            agents.retain(|a| !a.entries.is_empty());
             Ok(agents)
         })
         .await?

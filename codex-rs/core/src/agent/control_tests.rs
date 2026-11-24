@@ -6527,12 +6527,38 @@ async fn end_agent_validates_tree_and_joins_only_selected_subtree() {
 
 #[tokio::test]
 async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::Result<()> {
+    use crate::session::capture_delivery::{ProgressActor, interval};
     use crate::tools::handlers::apply_patch_capture::ApplyPatchCapture;
+    use crate::tools::handlers::multi_agents_v2::WaitAgentHandler;
     use codex_change_history::{ChangeMetadata, ChangeSourceKind};
     use codex_exec_server::LOCAL_FS;
-    use codex_protocol::agent_capture::ProgressActor;
+    use core_test_support::responses;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+
+    let server = responses::start_mock_server().await;
+    let progress = responses::mount_sse_once_match(
+        &server,
+        |request: &wiremock::Request| {
+            String::from_utf8_lossy(&request.body).contains("Summarize substantive progress")
+        },
+        responses::sse(vec![
+            responses::ev_assistant_message("progress", "Two sections edited."),
+            responses::ev_completed("progress"),
+        ]),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(600)))
+        .with_priority(10)
+        .mount(&server)
+        .await;
     let (home, mut config) = test_config().await;
     config.features.enable(Feature::MultiAgentV2)?;
+    config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
+    config.model_provider.supports_websockets = false;
+    config.model_provider.stream_idle_timeout_ms = Some(600_000);
     let harness = AgentControlHarness::new_with_config(home, config).await;
     let (root_id, root) = harness.start_paginated_thread().await;
     let runtime = &root.session.services.local_agent_runtime;
@@ -6549,30 +6575,56 @@ async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::
     let candidates = vec![PathUri::from(
         codex_utils_absolute_path::AbsolutePathBuf::try_from(path.clone())?,
     )];
-    let capture = ApplyPatchCapture::capture_baselines(LOCAL_FS.as_ref(), &candidates).await;
-    std::fs::write(&path, "delegated bytes\n")?;
     let child_turn = thread.session.new_default_turn().await;
-    let record = capture
-        .persist_to_dir(
-            LOCAL_FS.as_ref(),
-            &crate::exec_env::change_history_dir(thread.session.session_id()),
-            &candidates,
-            None,
-            ChangeMetadata {
-                thread_id: child.thread_id.to_string(),
-                session_id: thread.session.session_id().to_string(),
-                turn_id: child_turn.sub_id.clone(),
-                call_id: "patch".into(),
-                source_kind: ChangeSourceKind::ApplyPatch,
-                workspace_root: workspace.path().into(),
-                created_at: 1,
-                exit_code: Some(0),
-                summary: None,
-                claim_key: None,
-            },
-        )
-        .await?
-        .expect("published native change");
+    let mut records = Vec::new();
+    for (author_id, author, turn, contents) in [
+        (
+            child.thread_id,
+            &thread,
+            child_turn.sub_id.clone(),
+            "delegated bytes\n",
+        ),
+        (
+            root_id,
+            &root,
+            root.session.new_default_turn().await.sub_id.clone(),
+            "delegated bytes\nrecipient bytes\n",
+        ),
+        (
+            child.thread_id,
+            &thread,
+            child_turn.sub_id.clone(),
+            "delegated bytes\nrecipient bytes\nmore delegated bytes\n",
+        ),
+    ] {
+        let capture = ApplyPatchCapture::capture_baselines(LOCAL_FS.as_ref(), &candidates).await;
+        std::fs::write(&path, contents)?;
+        let record = capture
+            .persist_to_dir(
+                LOCAL_FS.as_ref(),
+                &crate::exec_env::change_history_dir(author.session.session_id()),
+                &candidates,
+                None,
+                ChangeMetadata {
+                    thread_id: author_id.to_string(),
+                    session_id: author.session.session_id().to_string(),
+                    turn_id: turn,
+                    call_id: format!("patch-{}", records.len()),
+                    source_kind: ChangeSourceKind::ApplyPatch,
+                    workspace_root: workspace.path().into(),
+                    created_at: 1,
+                    exit_code: Some(0),
+                    summary: None,
+                    claim_key: None,
+                },
+            )
+            .await?
+            .expect("published native change");
+        records.push(record);
+    }
+    let [first, recipient, last] = &records[..] else {
+        unreachable!();
+    };
     let changed = root
         .session
         .select_progress_ranges(vec![ProgressActor {
@@ -6580,8 +6632,72 @@ async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::
             task_name: "/root/editor".into(),
         }])
         .await?;
-    assert_eq!(changed[0].intervals[0].change_id, record.id.to_string());
+    assert_eq!(
+        changed[0]
+            .entries
+            .iter()
+            .map(|entry| &entry.id)
+            .collect::<Vec<_>>(),
+        [&first.id, &last.id]
+    );
+    for entry in &changed[0].entries {
+        assert_eq!(entry.file_paths, ["delegated.txt"]);
+    }
+    let turn = root.session.new_default_turn().await;
+    let wait = WaitAgentHandler::default();
+    let output = wait.handle(ToolInvocation {
+        session: Arc::clone(&root.session),
+        step_context: StepContext::for_test(Arc::clone(&turn)),
+        turn,
+        cancellation_token: CancellationToken::new(),
+        tracker: Default::default(),
+        call_id: "wait-progress".into(),
+        tool_name: codex_tools::ToolName::plain("wait_agent"),
+        source: ToolCallSource::Direct,
+        payload: ToolPayload::Function {
+            arguments: r#"{"yield_time_ms":300000}"#.into(),
+        },
+        native_call: None,
+        environments: Default::default(),
+    });
+    tokio::pin!(output);
+    tokio::time::pause();
+    tokio::select! {
+        biased;
+        _ = &mut output => panic!("wait returned before the progress deadline"),
+        _ = tokio::time::sleep(Duration::from_millis(300_001)) => {}
+    }
+    tokio::time::resume();
+    let output = tokio::time::timeout(Duration::from_secs(10), output).await??;
+    let output = output.log_output();
+    assert!(output.contains("Two sections edited."), "{output}");
+    let request = progress.single_request().body_json();
+    assert!(request["tools"].is_null() || request["tools"] == serde_json::json!([]));
+    let input = request["input"].to_string();
+    for entry in [first, last] {
+        assert!(input.contains(&format!("mchanges:{} (complete coverage)", entry.id)));
+    }
+    assert!(input.contains("delegated.txt"));
+    assert!(!input.contains(recipient.id.as_str()));
+
     std::fs::write(path, "later workspace bytes")?;
+    let step = StepContext::for_test(root.session.new_default_turn().await);
+    assert!(step.environments.primary().is_none());
+    let selection = crate::context_sources::acquire_selection(
+        &root.session,
+        &step,
+        &codex_protocol::protocol::ReloadSelection {
+            sources: vec![format!("mchanges:{},{}", first.id, last.id)],
+        },
+        &CancellationToken::new(),
+        None,
+    )
+    .await?
+    .expect("retained changes are independent of executor selection");
+    assert!(selection.contains("+delegated bytes"), "{selection}");
+    assert!(selection.contains("+more delegated bytes"), "{selection}");
+    assert!(!selection.contains("+recipient bytes"), "{selection}");
+    assert!(!selection.contains("later workspace bytes"), "{selection}");
     let mut status = thread.subscribe_status();
     status.borrow_and_update();
     let report = thread.session.send_event(
@@ -6590,7 +6706,10 @@ async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::
             root_turn_id: None,
             turn_id: child_turn.sub_id.clone(),
             started_at: None,
-            last_agent_message: Some(format!("Review mchanges:{},amber9999", record.id)),
+            last_agent_message: Some(format!(
+                "Review mchanges:{},{},amber9999",
+                first.id, last.id
+            )),
             error: None,
             completed_at: None,
             duration_ms: None,
@@ -6624,7 +6743,18 @@ async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::
     let history = root.session.clone_history().await;
     let body = serde_json::to_string(&history.raw_items().collect::<Vec<_>>())?;
     assert!(body.contains("+delegated bytes"), "{body}");
+    assert!(body.contains("+more delegated bytes"), "{body}");
+    assert!(
+        body.contains(&format!(r#"Source \"mchanges:{}\""#, first.id)),
+        "{body}"
+    );
+    assert!(
+        body.contains(&format!(r#"Source \"mchanges:{}\""#, last.id)),
+        "{body}"
+    );
     assert!(body.contains("unknown change ID amber9999"), "{body}");
+    assert!(!body.contains("+recipient bytes"), "{body}");
+    assert!(!body.contains(recipient.id.as_str()), "{body}");
     assert!(!body.contains("later workspace bytes"));
     assert!(
         history
@@ -6632,7 +6762,11 @@ async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::
             .iter()
             .filter_map(|i| i.metadata.as_ref())
             .flat_map(|m| &m.capture_deliveries)
-            .any(|r| r.intervals == changed[0].intervals)
+            .any(|r| r.intervals
+                == [
+                    interval(&first.id, first.sequence),
+                    interval(&last.id, last.sequence)
+                ])
     );
     runtime
         .control(root.session.session_id())

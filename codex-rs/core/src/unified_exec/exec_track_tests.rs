@@ -32,6 +32,7 @@ async fn exec_track_attachment_persists_shell_write_and_mktemp_once_even_on_nonz
     let prepared = ExecTrackAttachment::prepare_for_shell(
         &script,
         ws.path(),
+        /*session_tmp*/ None,
         ws.path().to_path_buf(),
         None,
         &ShellType::Bash,
@@ -115,6 +116,7 @@ async fn exec_track_attachment_deduplicates_against_existing_apply_patch_claim()
     let prepared = ExecTrackAttachment::prepare_for_shell(
         script,
         ws.path(),
+        /*session_tmp*/ None,
         ws.path().to_path_buf(),
         None,
         &ShellType::Bash,

@@ -88,23 +88,6 @@ fn list_summary_diff_history_and_path_scoped_revert_apply() {
     assert!(diff_out.stdout.contains("+line1-mod\n"));
     assert!(!diff_out.stdout.contains("b.txt"));
 
-    let recipient = |thread| {
-        run_mchanges(&args(&[
-            "--store",
-            &store_str,
-            "--for-recipient",
-            "--thread",
-            thread,
-            "amber1",
-        ]))
-    };
-    let own = recipient(&r1.metadata.thread_id);
-    assert_eq!(own.exit_code, 0);
-    assert!(own.stdout.is_empty());
-    let received = recipient("parent");
-    assert_eq!(received.exit_code, 0);
-    assert!(received.stdout.contains("+line1-mod"));
-
     // Write live workspace with an unrelated edit on line3 of a.txt.
     fs::write(&a_path, b"line1-mod\nline2\nline3-unrelated\n").expect("write a");
     fs::write(&b_path, b"brand-new\n").expect("write b");

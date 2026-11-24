@@ -96,6 +96,7 @@ type nativeSession struct {
 	archived              bool
 	exitUsage             binding.TokenUsage
 	resumeArgv            []string
+	rewindExecutable      string
 	profile               *launchoptions.Profile
 	replayDebugDirectory  string
 	serviceTiers          *inferencegateway.Tiers

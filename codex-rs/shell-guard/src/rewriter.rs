@@ -122,6 +122,15 @@ pub fn command_word_nodes<'a>(command_node: Node<'a>) -> Vec<Node<'a>> {
 /// Unquotes a `tree-sitter-bash` word node if it contains only literal/quoted text
 /// without expansions or tilde expansion.
 pub fn static_word_value(node: Node<'_>, src: &str) -> Option<String> {
+    static_word_value_with_expansion(node, src, |_, _| None)
+}
+
+/// Unquote a word, accepting only expansions explicitly supplied by the caller.
+pub fn static_word_value_with_expansion(
+    node: Node<'_>,
+    src: &str,
+    resolve: impl Fn(&str, bool) -> Option<String> + Copy,
+) -> Option<String> {
     let text = node.utf8_text(src.as_bytes()).ok()?;
     match node.kind() {
         "word" | "number" => (!text.starts_with('~')).then(|| unescape_bare_word(text)),
@@ -139,6 +148,9 @@ pub fn static_word_value(node: Node<'_>, src: &str) -> Option<String> {
                         let content = child.utf8_text(src.as_bytes()).ok()?;
                         out.push_str(&unescape_double_quoted(content));
                     }
+                    "simple_expansion" | "expansion" => {
+                        out.push_str(&resolve(child.utf8_text(src.as_bytes()).ok()?, true)?);
+                    }
                     _ => return None,
                 }
             }
@@ -152,7 +164,7 @@ pub fn static_word_value(node: Node<'_>, src: &str) -> Option<String> {
                 if !child.is_named() {
                     continue;
                 }
-                let part = static_word_value(child, src)?;
+                let part = static_word_value_with_expansion(child, src, resolve)?;
                 if first && child.kind() == "word" && part.starts_with('~') {
                     return None;
                 }
@@ -161,6 +173,7 @@ pub fn static_word_value(node: Node<'_>, src: &str) -> Option<String> {
             }
             Some(out)
         }
+        "simple_expansion" | "expansion" => resolve(text, false),
         _ => None,
     }
 }
