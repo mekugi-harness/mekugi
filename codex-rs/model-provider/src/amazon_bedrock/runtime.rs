@@ -2,6 +2,7 @@ use codex_aws_auth::AwsAuthConfig;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderAwsAuthInfo;
 use codex_protocol::config_types::CallerEnvironment;
+use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
 
 use super::BedrockEndpoint;
@@ -17,6 +18,16 @@ pub(super) fn aws_auth_config(aws: &ModelProviderAwsAuthInfo) -> AwsAuthConfig {
         region: region_from_config(aws),
         service: BEDROCK_RUNTIME_SERVICE_NAME.to_string(),
     }
+}
+
+pub(super) fn is_valid_aws_region(region: &str) -> bool {
+    !region.is_empty()
+        && region.len() <= 63
+        && !region.starts_with('-')
+        && !region.ends_with('-')
+        && region
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 pub(super) fn base_url(region: &str) -> String {
@@ -39,6 +50,11 @@ pub(super) async fn bedrock_runtime_base_url(
         http_client_factory,
     )
     .await?;
+    if !is_valid_aws_region(&region) {
+        return Err(CodexErr::InvalidRequest(format!(
+            "Amazon Bedrock region `{region}` is invalid"
+        )));
+    }
     Ok(base_url(&region))
 }
 
