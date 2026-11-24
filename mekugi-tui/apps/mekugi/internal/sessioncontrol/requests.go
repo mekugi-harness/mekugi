@@ -47,19 +47,16 @@ type Request[T any] struct {
 // owner serializes issuance and response delivery; it does not execute host work.
 type Requests[T any] struct {
 	*requestLedger[T]
-	consumer                 string
-	InheritedEffort          func(model, effort string) (string, error)
-	CaptureConfiguredCatalog func([]byte)
-	CatalogPending           bool
-	InputContext             func(string) string
-	AdmitSideFork            func(source, thread, workspace string)
-	sidesMu                  sync.RWMutex
-	sides                    map[string]*Side
-	predictions              map[string]*Prediction
-	calls                    chan *HostCall
-	inspections              chan *Inspection
-	closed                   chan struct{}
-	closeOnce                sync.Once
+	consumer      string
+	InputContext  func(string) string
+	AdmitSideFork func(source, thread, workspace string)
+	sidesMu       sync.RWMutex
+	sides         map[string]*Side
+	predictions   map[string]*Prediction
+	calls         chan *HostCall
+	inspections   chan *Inspection
+	closed        chan struct{}
+	closeOnce     sync.Once
 }
 
 // One connection owns correlation. Thread handles borrow it while retaining
@@ -86,7 +83,7 @@ func (r *Requests[T]) ForThread(thread string) *Requests[T] {
 	return &Requests[T]{requestLedger: r.requestLedger, consumer: thread,
 		calls: make(chan *HostCall), inspections: make(chan *Inspection), closed: make(chan struct{}),
 		InputContext:  r.InputContext,
-		AdmitSideFork: r.AdmitSideFork, InheritedEffort: r.InheritedEffort}
+		AdmitSideFork: r.AdmitSideFork}
 }
 
 // RetireEndpoint releases only this endpoint's outstanding observations.

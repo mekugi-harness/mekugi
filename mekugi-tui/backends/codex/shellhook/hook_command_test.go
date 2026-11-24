@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/BurntSushi/toml"
 )
 
 func TestHookConfigCommandAdapter(t *testing.T) {
@@ -33,26 +31,11 @@ func TestHookConfigCommandAdapter(t *testing.T) {
 				}
 			}
 			resources := []string{filepath.Join(directory, "tracker's")}
-			config, _, _, err := Config(helper, resources[0], Invocation{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var parsed struct {
-				Hooks struct {
-					PreToolUse []struct{ Hooks []struct{ Command string } }
-				}
-			}
-			if _, err := toml.Decode(config, &parsed); err != nil {
-				t.Fatal(err)
-			}
-			if len(parsed.Hooks.PreToolUse) != 1 || len(parsed.Hooks.PreToolUse[0].Hooks) != 1 {
-				t.Fatalf("unexpected hook config: %s", config)
-			}
-			command := exec.CommandContext(t.Context(), "/bin/sh", "-c", parsed.Hooks.PreToolUse[0].Hooks[0].Command)
+			command := exec.CommandContext(t.Context(), "/bin/sh", "-c", TrackingCommand(helper, resources[0]))
 			command.Stdin = strings.NewReader("native input\n")
 			var output, stderr bytes.Buffer
 			command.Stdout, command.Stderr = &output, &stderr
-			err = command.Run()
+			err := command.Run()
 			if tt.unavailable {
 				if err != nil || output.Len() != 0 {
 					t.Fatalf("error=%v stdout=%s stderr=%s", err, &output, &stderr)
@@ -66,4 +49,3 @@ func TestHookConfigCommandAdapter(t *testing.T) {
 		})
 	}
 }
-

@@ -3,9 +3,7 @@ package accounting
 // Source: internal/router/thread_usage.go@47bcdd8e provider accounting.
 
 import (
-	"cmp"
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -47,61 +45,13 @@ type threadUsageTotal struct {
 	priorUnknown bool
 }
 
-type Observation struct {
-	started     time.Time
-	ReceivedAt  time.Time
-	Throughput  inference.OutputThroughput
-	once        sync.Once
-	totals      *Service
-	conflicted  bool
-	model       string
-	Reasoning   string
-	Price       func(string, inference.Usage) Cost
-	serviceTier string
-	thread      string
-}
-
 func New() *Service {
 	return &Service{threads: make(map[string]*threadUsageTotal), changed: make(chan struct{})}
 }
 
-// Transport identity owns usage accounting, not auxiliary author or ancestry
-// metadata. A contradictory explicit thread ID makes lifetime totals incomplete.
-func (u *Service) Observation(thread, metadataThread, model, serviceTier string) *Observation {
-	if u == nil {
-		return nil
-	}
-	return &Observation{totals: u, thread: thread, model: model, serviceTier: serviceTier, conflicted: metadataThread != "" && metadataThread != thread}
-}
-
-func (o *Observation) Observe(counts inference.Usage) {
-	if o == nil {
-		return
-	}
-	o.once.Do(func() {
-		tier := cmp.Or(counts.ServiceTier, o.serviceTier)
-		round := RoundOutput{}
-		if !o.started.IsZero() {
-			round.StartedUnixNano = o.started.UnixNano()
-			at := o.ReceivedAt
-			if at.IsZero() {
-				at = time.Now()
-			}
-			round.Throughput = MeasureThroughput(counts, o.started, at)
-		}
-		o.Throughput = round.Throughput
-		o.totals.addRound(o, tier, counts, round)
-	})
-}
-
-// A forwarded request without terminal usage leaves a permanent accounting gap.
-// A later successful response must not revive an apparently complete total.
-func (o *Observation) Finish() {
-	o.Observe(inference.Usage{Incomplete: true})
-}
-
-func (u *Service) addRound(o *Observation, serviceTier string, counts inference.Usage, round RoundOutput) {
-	thread, model, reasoning, conflicted, price := o.thread, o.model, o.Reasoning, o.conflicted, o.Price
+// ObserveResponse projects one native provider completion. Other traffic is
+// not inferred from context counts or from turn lifecycle notifications.
+func (u *Service) ObserveResponse(thread, model, tier string, openai bool, counts inference.Usage, duration time.Duration) {
 	if u == nil || thread == "" || len(thread) > maxThreadIdentityBytes {
 		return
 	}
@@ -111,52 +61,48 @@ func (u *Service) addRound(o *Observation, serviceTier string, counts inference.
 		return
 	}
 	delta := newThreadUsageTotal()
-	delta.roundOutput = round
-	delta.roundtrips = 1 // Forwarded requests count whether or not usage arrived.
-	displayModel := usageModelLabel(model, reasoning, serviceTier)
-	if displayModel != "" {
-		delta.models = []string{displayModel}
-	}
-	delta.complete = !conflicted
-	if counts.Incomplete {
+	delta.roundtrips = 1
+	if !counts.TotalsKnown {
 		delta.missingUsage = 1
 	} else {
-		delta.counts = inference.Usage{
-			InputTokens: counts.InputTokens, UncachedInputTokens: counts.UncachedInputTokens,
-			CacheWriteTokens: counts.CacheWriteTokens, OutputTokens: counts.OutputTokens,
-			ReasoningTokens: counts.ReasoningTokens, Inconsistent: counts.Inconsistent,
+		delta.counts = counts
+		if duration > 0 && !counts.Inconsistent {
+			delta.roundOutput = RoundOutput{
+				StartedUnixNano: time.Now().Add(-duration).UnixNano(),
+				Throughput:      inference.OutputThroughput{OutputTokens: counts.OutputTokens, DurationNanos: uint64(duration), MeasuredRequests: 1},
+			}
 		}
-		if price != nil {
-			delta.cost = price(serviceTier, counts)
+		if openai {
+			delta.cost = estimateReferenceCost(model, tier, counts)
 		} else {
-			delta.cost = estimateReferenceCost(model, serviceTier, counts)
+			delta.cost.Known = false
 		}
 	}
 	u.updateLocked(thread, delta)
 }
 
-func usageTotalReport(total *threadUsageTotal) (Report, bool) {
-	if total == nil {
-		return Report{}, false
-	}
-	if !total.complete {
-		return Report{Roundtrips: total.roundtrips, PriorUnknown: total.priorUnknown, RoundOutput: total.roundOutput}, false
-	}
-	return Report{Usage: total.counts, Cost: total.cost, Model: strings.Join(total.models, ", "), MissingUsage: total.missingUsage, PriorUnknown: total.priorUnknown, Roundtrips: total.roundtrips, RoundOutput: total.roundOutput}, true
-}
-
-func (u *Service) Snapshot(thread string) (Report, bool) {
+func (u *Service) Snapshot(thread string) Report {
 	if u == nil {
-		return Report{}, false
+		return Report{}
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if !u.closed {
-		u.loadLocked(thread)
-		report, observed := usageTotalReport(u.threads[thread])
-		return report, observed
+	if u.closed {
+		return Report{}
 	}
-	return Report{}, false
+	u.loadLocked(thread)
+	total := u.threads[thread]
+	if total == nil {
+		return Report{}
+	}
+	report := Report{PriorUnknown: total.priorUnknown, Roundtrips: total.roundtrips, OutputThroughput: total.roundOutput.Throughput}
+	if total.complete {
+		report.Usage = total.counts
+		report.TotalsKnown = total.roundtrips > total.missingUsage
+		report.MissingUsage = total.missingUsage
+		report.Cost, report.CostKnown = total.cost.Total(), report.TotalsKnown && total.cost.Known
+	}
+	return report
 }
 
 func (u *Service) Close() {
@@ -181,15 +127,6 @@ func (u *Service) Close() {
 	u.mu.Lock()
 	clear(u.threads)
 	u.mu.Unlock()
-}
-
-// Model labels include reasoning and service tier; pricing uses the bare model.
-func usageModelLabel(model, reasoning, tier string) string {
-	label := strings.TrimSpace(model + " " + reasoning)
-	if label != "" && (tier == "fast" || tier == "priority") {
-		label += " [fast]"
-	}
-	return label
 }
 
 // Start establishes the invocation lifetime; publication workers start on demand.

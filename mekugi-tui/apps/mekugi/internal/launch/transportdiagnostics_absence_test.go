@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
@@ -42,27 +40,13 @@ func TestTransportDiagnosticsAbsentDebugSession(t *testing.T) {
 	defer cancel()
 	history := testHistory()
 	usage := accounting.New()
-	if err := usage.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer usage.Close()
 	var paths []string
 	ready := false
-	err = runFixtureInvocation(terminalsession.Views{}, testPresentation(), new(conversationmodel.Service), previewmodel.New(changecapture.ReadFile), new(activitymodel.Service), history, testPreferences(), &segmentservice.Service{Reports: testReports()}, testCapture(t, ""), usage, new(evidence.Service), nil, testDiagnostics(new(evidence.Service), nil), ctx, testCommands(), testNaming(), nil, options, nil, func(session invocationFixture) {
+	err = runFixtureInvocation(terminalsession.Views{}, testPresentation(), new(conversationmodel.Service), previewmodel.New(changecapture.ReadFile), new(activitymodel.Service), history, testPreferences(), &segmentservice.Service{Reports: testReports()}, testCapture(t, ""), usage, new(evidence.Service), nil, testDiagnostics(new(evidence.Service), nil), ctx, testCommands(), nil, options, nil, func(session invocationFixture) {
 		defer cancel()
 		ready = true
 		if session.AXReadOutput == "" {
 			t.Error("transport omission disabled independent AX evidence")
-		}
-		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
-		response, err := client.Get(strings.TrimSuffix(session.BaseURL, "/v1") + "/api/metrics")
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		response.Body.Close()
-		if response.StatusCode != http.StatusNotFound {
-			t.Errorf("absent diagnostics metrics status = %d", response.StatusCode)
 		}
 	}, func(artifacts []string) { paths = artifacts })
 	if err != nil || !ready || len(paths) != 4 {
@@ -105,7 +89,7 @@ func TestTransportDiagnosticsAbsentRejectsCaptureOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Capability rejection precedes session resources and mutable outputs.
-			err = runFixtureInvocation(terminalsession.Views{}, testPresentation(), new(conversationmodel.Service), previewmodel.New(changecapture.ReadFile), new(activitymodel.Service), nil, nil, nil, nil, nil, nil, nil, nil, t.Context(), nil, nil, nil, options, nil, func(invocationFixture) { t.Error("unavailable capture reached readiness") }, func([]string) { t.Error("unavailable capture created debug artifacts") })
+			err = runFixtureInvocation(terminalsession.Views{}, testPresentation(), new(conversationmodel.Service), previewmodel.New(changecapture.ReadFile), new(activitymodel.Service), nil, nil, nil, nil, nil, nil, nil, nil, t.Context(), nil, nil, options, nil, func(invocationFixture) { t.Error("unavailable capture reached readiness") }, func([]string) { t.Error("unavailable capture created debug artifacts") })
 			if err == nil || !strings.Contains(err.Error(), "transport diagnostics are unavailable") {
 				t.Fatalf("capture capability error = %v", err)
 			}

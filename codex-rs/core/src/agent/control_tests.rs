@@ -2844,9 +2844,11 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
         .session
         .record_observed_response_completed(
             turn_context.as_ref(),
+            &turn_context.initial_settings,
             "child-response",
             Some(&child_usage),
             /*usage_metadata*/ None,
+            /*request_duration_ms*/ None,
         )
         .await;
     child_thread

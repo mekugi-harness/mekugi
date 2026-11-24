@@ -121,7 +121,7 @@ initialize:
 			}
 		}
 	}
-	store := requests.Presets(ctx, "fixture", workspace)
+	store := requests.Presets(ctx, "", workspace)
 	var slots [10]presets.Slot
 	read := func() error { var err error; slots, err = store.Load(); return err }
 	run(read)

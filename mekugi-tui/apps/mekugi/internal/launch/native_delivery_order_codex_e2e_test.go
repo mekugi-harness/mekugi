@@ -14,27 +14,24 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
 
 const nativeDeliveryBody = "Delivered before reasoning: keep these exact bytes."
 
 // These fixtures drive actual model-authored native tools, not a Go input bridge.
-func nativeCollabResponse(program, answer string) (*inferencegateway.Response, error) {
+func nativeCollabResponse(program, answer string) (*http.Response, error) {
 	id := "native-collab-response"
 	item := map[string]any{"type": "message", "id": id, "role": "assistant", "phase": "final_answer", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": answer}}}
 	if program != "" {
 		item = map[string]any{"type": "custom_tool_call", "id": id, "call_id": id + "-call", "name": "exec", "namespace": "functions", "input": program, "status": "completed"}
 	}
-	wire := routerFaultSSE(
+	wire := fixtureResponsesSSE(
 		map[string]any{"type": "response.created", "response": map[string]any{"id": id, "status": "in_progress", "output": []any{}}},
 		map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item},
 		map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item},
 		map[string]any{"type": "response.completed", "response": map[string]any{"id": id, "status": "completed", "output": []any{item}}},
 	)
-	return testGatewayResponse(&http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}, nil)
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}, nil
 }
 
 // Withhold even the reasoning item's creation until the real worker's message
@@ -48,9 +45,9 @@ type deliveryOrderProvider struct {
 	retained                chan bool
 }
 
-func (p *deliveryOrderProvider) ForwardExecution(parent, ctx context.Context, body []byte, headers http.Header, key string) (*inferencegateway.Response, error) {
-	metadata, _ := codexresponses.DecodeTurnMetadata(headers)
-	thread := headers.Get(codexresponses.ThreadIDHeader)
+func (p *deliveryOrderProvider) respond(ctx context.Context, body []byte, headers http.Header) (*http.Response, error) {
+	metadata, _ := fixtureTurnMetadata(headers)
+	thread := headers.Get(fixtureThreadIDHeader)
 	if thread == "" {
 		thread = metadata.ThreadID
 	}
@@ -80,7 +77,7 @@ func (p *deliveryOrderProvider) ForwardExecution(parent, ctx context.Context, bo
 		close(p.mainReady)
 		select {
 		case <-p.stages[0]:
-			return p.appReasoningStreamProvider.ForwardExecution(parent, ctx, body, headers, key)
+			return p.appReasoningStreamProvider.respond(ctx, body, headers)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -101,7 +98,7 @@ func TestNativeMessageBeforeReasoningCodexE2E(t *testing.T) {
 		calls:                      make(map[string]int), mainReady: make(chan struct{}), acknowledged: make(chan struct{}), retained: make(chan bool, 1),
 	}
 	proxy := newManagedMekugiProxy(t)
-	server := httptest.NewServer(inferencegateway.ResponsesHandler(t.Context(), time.Minute, testRequestExecutor(p, nil, proxy).ExecuteHTTP))
+	server := httptest.NewServer(fixtureResponsesHandler(p))
 	defer server.Close()
 	environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
 	terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {

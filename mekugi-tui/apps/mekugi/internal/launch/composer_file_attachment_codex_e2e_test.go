@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
 )
@@ -31,7 +30,7 @@ func TestComposerFileAttachmentsNativeCodexE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &appQueueProvider{requests: make(chan []byte, 8)}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	t.Cleanup(func() { server.Close() })
 	newCommand := func(ctx context.Context) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, codex,
@@ -101,7 +100,7 @@ func TestComposerFileAttachmentsNativeCodexE2E(t *testing.T) {
 	}
 	// A fresh handler and native process reuse the recorded source without reopening it.
 	server.Close()
-	server = httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server = httptest.NewServer(fixtureResponsesHandler(provider))
 	second := startAppResumeTerminal(t, newCommand, "--last")
 	second.await("Ready")
 	second.await("Attach " + name)
@@ -226,7 +225,7 @@ func TestSkillContentsNativeCodexE2E(t *testing.T) {
 				proxy = newManagedMekugiProxy(t)
 			}
 			provider := &appQueueProvider{requests: make(chan []byte, 2)}
-			server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+			server := httptest.NewServer(fixtureResponsesHandler(provider))
 			defer server.Close()
 			command := func(ctx context.Context) *exec.Cmd {
 				cmd := exec.CommandContext(ctx, codex, "-c", `model_providers.preview={name="preview",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false")

@@ -3,12 +3,9 @@
 package launch
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json/jsontext"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
@@ -29,7 +26,7 @@ import (
 	"time"
 )
 
-// The installed Codex, not the router, owns both preemption and the live Code
+// The installed Codex owns both preemption and the live Code
 // Mode interpreter. This provider holds only response bytes, never host tools.
 type instantInterruptCodexProvider struct {
 	t        *testing.T
@@ -42,32 +39,7 @@ type instantInterruptCodexProvider struct {
 	cell     string
 }
 
-// serveHTTPTestProvider streams local fixture responses over the host-selected HTTP transport.
-func serveHTTPTestProvider(w http.ResponseWriter, r *http.Request, provider inferencegateway.Forwarder) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return
-	}
-	response, err := provider.ForwardExecution(r.Context(), r.Context(), body, r.Header, "")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer response.Body.Close()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.WriteHeader(response.StatusCode)
-	scanner := bufio.NewScanner(response.Body)
-	for scanner.Scan() {
-		if _, err := fmt.Fprintln(w, scanner.Text()); err != nil {
-			return
-		}
-		if err := http.NewResponseController(w).Flush(); err != nil {
-			return
-		}
-	}
-}
-
-func (p *instantInterruptCodexProvider) ForwardExecution(_ context.Context, responseCtx context.Context, body []byte, _ http.Header, _ string) (_ *inferencegateway.Response, resultErr error) {
+func (p *instantInterruptCodexProvider) respond(responseCtx context.Context, body []byte, _ http.Header) (_ *http.Response, resultErr error) {
 	defer func() {
 		if resultErr != nil {
 			p.t.Error(resultErr)
@@ -97,37 +69,37 @@ func (p *instantInterruptCodexProvider) ForwardExecution(_ context.Context, resp
 	case 1:
 		if p.mode == "model" {
 			reader, writer := io.Pipe()
-			response := routerFaultCodexStreamResponse("")
+			response := fixtureResponsesStream("")
 			response.Body = reader
 			go func() {
 				defer writer.Close()
 				_, _ = io.WriteString(writer, "data: "+string(responses.MustMarshalJSON(map[string]any{"type": "response.created", "response": map[string]any{"id": "instant-held", "status": "in_progress", "output": []any{}}}))+"\n\n")
 				select {
 				case <-p.gate:
-					_, _ = io.WriteString(writer, routerFaultSSE(map[string]any{"type": "response.completed", "response": map[string]any{"id": "instant-held", "status": "completed", "output": []any{}}}))
+					_, _ = io.WriteString(writer, fixtureResponsesSSE(map[string]any{"type": "response.completed", "response": map[string]any{"id": "instant-held", "status": "completed", "output": []any{}}}))
 				case <-responseCtx.Done():
 					_ = writer.CloseWithError(responseCtx.Err())
 				}
 			}()
-			return testGatewayResponse(response, nil)
+			return response, nil
 		}
-		return testGatewayResponse(mchangesNestedCodexResponse(1, map[string]any{"type": "custom_tool_call", "id": "instant-exec-item", "call_id": "instant-exec", "name": "exec", "status": "completed", "input": p.program}), nil)
+		return mchangesNestedCodexResponse(1, map[string]any{"type": "custom_tool_call", "id": "instant-exec-item", "call_id": "instant-exec", "name": "exec", "status": "completed", "input": p.program}), nil
 	case 2:
 		if !bytes.Contains(body, []byte("Steer now")) {
 			return nil, fmt.Errorf("steering input missing from replacement request: %.1000s", body)
 		}
 		if p.mode == "model" {
-			return testGatewayResponse(mchangesNestedCodexResponse(2, instantInterruptAnswer("Steered while model response was gated")), nil)
+			return mchangesNestedCodexResponse(2, instantInterruptAnswer("Steered while model response was gated")), nil
 		}
 		for _, item := range request.Input {
 			if item.Type == "custom_tool_call_output" && item.CallID == "instant-exec" {
-				p.cell = strings.TrimPrefix(binding.DecodeExecutionResult("exec", []byte(item.Output)).ResumeHandle, "cell:")
+				_, p.cell, _ = binding.CodeModeExecutionHeader(strings.Join(binding.ExecutionOutputTexts(item.Output), "\n"))
 			}
 		}
 		if p.cell == "" {
 			return nil, fmt.Errorf("steering did not yield the original exec cell: %.2000s", body)
 		}
-		return testGatewayResponse(mchangesNestedCodexResponse(2, map[string]any{"type": "function_call", "id": "instant-wait-item", "call_id": "instant-wait", "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": p.cell, "yield_time_ms": 10000}))}), nil)
+		return mchangesNestedCodexResponse(2, map[string]any{"type": "function_call", "id": "instant-wait-item", "call_id": "instant-wait", "name": "wait", "status": "completed", "arguments": string(responses.MustMarshalJSON(map[string]any{"cell_id": p.cell, "yield_time_ms": 10000}))}), nil
 	case 3:
 		for _, item := range request.Input {
 			if item.Type == "function_call_output" && item.CallID == "instant-wait" {
@@ -135,7 +107,7 @@ func (p *instantInterruptCodexProvider) ForwardExecution(_ context.Context, resp
 				if !strings.Contains(output, "cell-survived") || !strings.Contains(output, "Script completed") {
 					return nil, fmt.Errorf("wait did not complete the original cell: %s", output)
 				}
-				return testGatewayResponse(mchangesNestedCodexResponse(3, instantInterruptAnswer("Steered cell completed")), nil)
+				return mchangesNestedCodexResponse(3, instantInterruptAnswer("Steered cell completed")), nil
 			}
 		}
 		return nil, fmt.Errorf("wait result missing")
@@ -183,17 +155,9 @@ func TestInstantInterruptNativeCodexE2E(t *testing.T) {
 			provider.program = "// @exec: {\"yield_time_ms\": 60000}\nconst result = await tools.exec_command({cmd: " + string(responses.MustMarshalJSON(shell)) + ", workdir: " + string(responses.MustMarshalJSON(workspace)) + ", yield_time_ms: 30000}); text(result.output);"
 			proxy := newManagedMekugiProxy(t)
 			attachTestReplayStore(t, proxy)
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { serveHTTPTestProvider(w, r, provider) }))
-			defer upstream.Close()
-			client := newTestProviderClient(upstream.URL, upstream.Client())
-			issues := testCriticalErrors()
 			created := make(chan struct{}, 1)
-			handler := testResponsesHandler(t.Context(), time.Minute, client, issues, proxy)
+			handler := fixtureResponsesHandler(provider)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Fixture credentials terminate at the local mock provider.
-				for key, values := range codexAuthHeaders() {
-					r.Header[key] = values
-				}
 				handler(&instantInterruptResponseWriter{ResponseWriter: w, created: created}, r)
 			}))
 			defer server.Close()
@@ -210,14 +174,14 @@ func TestInstantInterruptNativeCodexE2E(t *testing.T) {
 			select {
 			case <-provider.requests:
 			case <-terminal.ctx.Done():
-				t.Fatalf("first provider request missing: notices=%v\n%s", issues.Notices.Pending(), terminal.screen.String())
+				t.Fatalf("first provider request missing:\n%s", terminal.screen.String())
 			}
 			// Steer only after response copying has delivered the first event,
 			// rather than racing provider admission or startup inspection.
 			select {
 			case <-created:
 			case <-terminal.ctx.Done():
-				t.Fatalf("response.created was not delivered: %v", issues.Notices.Pending())
+				t.Fatal("response.created was not delivered")
 			}
 			if mode == "code" {
 				deadline := time.After(10 * time.Second)
@@ -260,9 +224,6 @@ func TestInstantInterruptNativeCodexE2E(t *testing.T) {
 			}
 			terminal.await("completed")
 			terminal.quit()
-			if pending := issues.Notices.Pending(); len(pending) != 0 {
-				t.Fatalf("instant interruption produced router failures: %v", pending)
-			}
 		})
 	}
 }

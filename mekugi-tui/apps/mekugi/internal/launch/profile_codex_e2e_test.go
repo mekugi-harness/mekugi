@@ -33,7 +33,7 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, auth := range []string{"anonymous", "env", "literal", "managed", "command", "websocket", "refresh", "remote", "unknown"} {
+	for _, auth := range []string{"openai", "anonymous", "env", "literal", "managed", "command", "websocket", "refresh", "remote", "unknown"} {
 		t.Run(auth, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 			defer cancel()
@@ -71,7 +71,7 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 			refreshed := false
 			catalogRequests := 0
 			searchRequests := 0
-			socketRequests, continuations := 0, 0
+			socketRequests, continuations, prewarms := 0, 0, 0
 			expectedEffort := "high"
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if auth == "remote" && r.URL.Path == "/catalog" {
@@ -86,14 +86,18 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 					return
 				}
 				search := r.URL.Path == "/tenant/v1/alpha/search"
-				if r.URL.Path != "/tenant/v1/responses" && !search || r.URL.RawQuery != "version=a%2Bb" || r.Header.Get("X-Provider") != "native" || r.Header.Get("Chatgpt-Account-Id") != "" {
+				if auth == "openai" {
+					if r.URL.Path != "/v1/responses" || r.URL.RawQuery != "" || r.Header.Get("X-Provider") != "" {
+						t.Errorf("unexpected native OpenAI request: %s", r.URL.RequestURI())
+					}
+				} else if r.URL.Path != "/tenant/v1/responses" && !search || r.URL.RawQuery != "version=a%2Bb" || r.Header.Get("X-Provider") != "native" || r.Header.Get("Chatgpt-Account-Id") != "" {
 					t.Error("profile endpoint/query/header or account isolation failed")
 				}
 				if (auth == "env" || auth == "websocket") && r.Header.Get("X-Inherited") != "admitted-header" {
 					t.Error("environment-backed inherited provider header lost")
 				}
 				wantAuth := "Bearer fixture-profile-token"
-				if auth == "anonymous" || auth == "websocket" || auth == "unknown" {
+				if auth == "anonymous" || auth == "unknown" {
 					wantAuth = ""
 				}
 				if auth == "refresh" && r.Header.Get("Authorization") == "Bearer stale-profile-token" {
@@ -123,11 +127,22 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 						return
 					}
 					if wire["generate"] == false {
+						mu.Lock()
+						prewarms++
+						mu.Unlock()
 						profileFixtureReply(w, "prewarm", nil)
 						return
 					}
-					if wire["model"] == sessionTitleModel {
-						if requestHeaders.Get(codexresponses.TurnMetadataHeader) != "" || requestHeaders.Get(codexresponses.ThreadIDHeader) != "" || requestHeaders.Get("x-codex-turn-state") != "" {
+					tools, _ := wire["tools"].([]any)
+					if bytes.Contains(body, []byte("Generate a concise session title")) {
+						if len(tools) != 0 || wire["model"] != model["slug"] {
+							t.Errorf("native title ignored the selected model or advertised tools: %v", wire["model"])
+						}
+						mu.Lock()
+						main := parent
+						mu.Unlock()
+						if requestHeaders.Get(fixtureTurnMetadataHeader) != "" || requestHeaders.Get("x-codex-turn-state") != "" ||
+							main != "" && requestHeaders.Get(fixtureThreadIDHeader) == main {
 							t.Error("profile naming leaked execution identity")
 						}
 						profileFixtureReply(w, "title", map[string]any{"type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]string{"type": "output_text", "text": "Profile fixture task"}}})
@@ -158,11 +173,11 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 					}
 					mu.Unlock()
 					if reasoning, ok := wire["reasoning"].(map[string]any); !ok || reasoning["effort"] != wantEffort {
-						t.Error("profile reasoning effort changed")
+						t.Errorf("profile reasoning effort changed for model %v: got %v, want %s", wire["model"], wire["reasoning"], wantEffort)
 					}
-					metadata, ok := codexresponses.DecodeTurnMetadata(requestHeaders)
+					metadata, ok := fixtureTurnMetadata(requestHeaders)
 					if !ok || metadata.ThreadID == "" {
-						t.Error("native metadata lost")
+						t.Errorf("native metadata missing for model %v with %d tools", wire["model"], len(tools))
 						http.Error(w, "metadata", 500)
 						return
 					}
@@ -191,7 +206,7 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 						if auth == "anonymous" && !bytes.Contains(body, []byte("HTTP_CHILD_PRELOAD_CONTENT")) {
 							t.Error("fresh HTTP child did not receive its preload before inference")
 						}
-						program = `text(await tools.exec_command({cmd:"printf PROFILE_TOOL_ONCE >> profile-effect.txt",shell:"/bin/bash",login:false}));`
+						program = `text(await tools.exec_command({cmd:"test -z \"$MEKUGI_INFERENCE_CAPTURE\" && printf PROFILE_TOOL_ONCE >> profile-effect.txt",shell:"/bin/bash",login:false}));`
 						if auth == "literal" {
 							program += `text(await tools.web__run({search_query:[{q:"profile fixture"}]}));`
 						}
@@ -218,7 +233,7 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 						return
 					}
 					defer conn.CloseNow()
-					conn.SetReadLimit(codexresponses.MaxRequestBytes)
+					conn.SetReadLimit(fixtureMaxResponseRequestBytes)
 					for {
 						_, body, err := conn.Read(r.Context())
 						if err != nil {
@@ -254,14 +269,14 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 			switch auth {
 			case "literal":
 				authConfig = "experimental_bearer_token=\"fixture-profile-token\"\n"
-			case "managed":
+			case "managed", "openai":
 				if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(`{"OPENAI_API_KEY":"fixture-profile-token"}`), 0600); err != nil {
 					t.Fatal(err)
 				}
 			case "remote":
 				authConfig = "env_key=\"PROFILE_FIXTURE_TOKEN\"\nmodel_catalog_url=" + strconv.Quote(upstream.URL+"/catalog?catalog=a%2Bb") + "\n"
 				environment = append(environment, "PROFILE_FIXTURE_TOKEN=fixture-profile-token")
-			case "env":
+			case "env", "websocket":
 				authConfig = "env_key=\"PROFILE_FIXTURE_TOKEN\"\n"
 				environment = append(environment, "PROFILE_FIXTURE_TOKEN=fixture-profile-token")
 			case "command", "refresh":
@@ -306,10 +321,19 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 			if auth == "env" {
 				environment = append(environment, "MEKUGI_PROFILE_ADMITTED_ENV=1")
 			}
-			if err := os.WriteFile(filepath.Join(home, "work.config.toml"), []byte(profile), 0600); err != nil {
+			configName := "work.config.toml"
+			if auth == "openai" {
+				configName = "config.toml"
+				profile = fmt.Sprintf("openai_base_url=%q\nmodel_reasoning_effort=%q\nmodel_catalog_json=%q\n", upstream.URL+"/v1", expectedEffort, catalogPath)
+				environment = append(environment, "MEKUGI_PROFILE_OPENAI=1")
+			}
+			if err := os.WriteFile(filepath.Join(home, configName), []byte(profile), 0600); err != nil {
 				t.Fatal(err)
 			}
 			environment = append(environment, "MEKUGI_PROFILE_PROCESS=1", routerTestWorkerEnvironment+"=1", "MEKUGI_PROFILE_CAPTURE="+filepath.Join(workspace, "capture.jsonl"))
+			if auth == "literal" {
+				environment = append(environment, "MEKUGI_PROFILE_LIVE_ONLY=1", "XDG_STATE_HOME="+t.TempDir())
+			}
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestProfileLaunchProcess$")
 			cmd.Env, cmd.Dir, cmd.Stdin = environment, workspace, strings.NewReader("Delegate one fixture task and wait for its completion")
 			var stdout, stderr bytes.Buffer
@@ -324,15 +348,19 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 			if err != nil || string(effect) != "PROFILE_TOOL_ONCE" {
 				t.Fatalf("stock tool execution count: %q %v", effect, err)
 			}
-			captures, err := filepath.Glob(filepath.Join(workspace, "capture.jsonl.runtimes", "*", "capture.jsonl"))
-			if err != nil || len(captures) != 1 {
-				t.Fatalf("child captures: %q %v", captures, err)
-			}
-			captures = append(captures, filepath.Join(workspace, "capture.jsonl"))
-			for _, capture := range captures {
-				if info, err := os.Stat(capture); err != nil || info.Size() == 0 {
-					t.Fatalf("normal capture missing: %v", err)
+			if auth == "literal" {
+				if _, err := os.Stat(filepath.Join(workspace, "capture.jsonl")); !os.IsNotExist(err) {
+					t.Fatalf("live-only launch created a private capture: %v", err)
 				}
+			} else {
+				events := readNativeCapture(t, filepath.Join(workspace, "capture.jsonl"))
+				mu.Lock()
+				for thread := range steps {
+					if !events[thread]["completed"] {
+						t.Errorf("missing native response evidence for thread %s: %v", thread, events[thread])
+					}
+				}
+				mu.Unlock()
 			}
 			if after, _ := os.ReadFile(catalogPath); !bytes.Equal(after, catalog) {
 				t.Fatal("source catalog modified")
@@ -347,8 +375,8 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 			if auth == "literal" && searchRequests != 1 {
 				t.Errorf("native search executions: %d", searchRequests)
 			}
-			if auth == "websocket" && (socketRequests == 0 || continuations == 0) {
-				t.Errorf("native dedicated socket/ancestry not exercised: %d sockets, %d continuations", socketRequests, continuations)
+			if (auth == "websocket" || auth == "openai") && (socketRequests == 0 || continuations == 0 || prewarms == 0) {
+				t.Errorf("native dedicated socket/ancestry not exercised: %d sockets, %d continuations, %d prewarms", socketRequests, continuations, prewarms)
 			}
 			if len(steps) != 2 {
 				t.Errorf("runtime identities: %v", steps)
@@ -358,8 +386,6 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 				// Stop every runtime, modify the selected import, then resume the
 				// same Mekugi identity through ordinary native server admission.
 				profile = strings.Replace(profile, "model_reasoning_effort=\"high\"", "model_reasoning_effort=\"low\"", 1)
-				profile = strings.Replace(profile, "model_context_window=250000", "model_context_window=260000", 1)
-				profile = strings.Replace(profile, "model_auto_compact_token_limit=240000", "model_auto_compact_token_limit=245000", 1)
 				if err := os.WriteFile(filepath.Join(home, "work.config.toml"), []byte(profile), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -375,8 +401,8 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 				if err := resumed.Run(); err != nil {
 					t.Fatalf("fresh profile resume: %v\n%.12000s", err, &output)
 				}
-				if !strings.Contains(output.String(), "PROFILE_PARENT_COMPLETE") || !strings.Contains(output.String(), `"model_context_window":260000`) || !strings.Contains(output.String(), `"model_auto_compact_token_limit":245000`) {
-					t.Fatalf("fresh resume lost imported settings/completion: %.12000s", &output)
+				if !strings.Contains(output.String(), "PROFILE_PARENT_COMPLETE") {
+					t.Fatalf("fresh resume did not complete with the admitted profile: %.12000s", &output)
 				}
 				mu.Lock()
 				if parent != resume || len(steps) != 2 || steps[resume] != 4 {
@@ -449,9 +475,144 @@ func TestProfileLaunchProcess(t *testing.T) {
 		}
 		return
 	}
-	code, err := wrapCodex(ctx, []string{"--capture-output", os.Getenv("MEKUGI_PROFILE_CAPTURE")}, []string{"headless", "--yolo", "-p", "work", "-c", "features.plugins=false", "-c", "bypass_hook_trust=true"})
+	args := []string{"headless", "--yolo", "-c", "features.plugins=false", "-c", "bypass_hook_trust=true"}
+	if os.Getenv("MEKUGI_PROFILE_OPENAI") == "" {
+		args = append(args, "-p", "work")
+	}
+	routerArgs := []string{"--capture-output", os.Getenv("MEKUGI_PROFILE_CAPTURE")}
+	liveOnly := os.Getenv("MEKUGI_PROFILE_LIVE_ONLY") == "1"
+	if liveOnly {
+		routerArgs = nil
+	}
+	code, err := wrapCodex(ctx, routerArgs, args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 	os.Exit(code)
+}
+
+// The same attached session must remain usable after an interrupt. A subsequent
+// provider error belongs to its own turn, not to the interrupted request.
+func TestNativeProviderInterruptionAndFailure(t *testing.T) {
+	native, err := exec.LookPath("mekugi-app-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, provider := range []string{"openai", "custom"} {
+		t.Run(provider, func(t *testing.T) {
+			workspace, traces := t.TempDir(), t.TempDir()
+			started := make(chan string, 1)
+			stop := make(chan struct{})
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != "Bearer fixture-profile-token" {
+					t.Error("provider request lost its endpoint or authentication")
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if r.Method == http.MethodGet {
+					w.WriteHeader(http.StatusUpgradeRequired)
+					return
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					return
+				}
+				if bytes.Contains(body, []byte("FAIL_FIXTURE_TURN")) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"fixture request rejected"}}`)
+					return
+				}
+				meta, ok := fixtureTurnMetadata(r.Header)
+				if !ok {
+					t.Error("missing native turn metadata")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				// Interrupt both before response headers and with a live SSE stream.
+				if provider == "custom" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"UNTRUSTED_PROVIDER_ID\",\"status\":\"in_progress\",\"output\":[]}}\n\n")
+					w.(http.Flusher).Flush()
+				}
+				select {
+				case started <- meta.ThreadID:
+				case <-r.Context().Done():
+				}
+				select {
+				case <-r.Context().Done():
+				case <-stop:
+				}
+			}))
+			defer upstream.Close()
+			defer close(stop)
+			environment := routerFaultCodexEnvironment(t)
+			home := launchoptions.EnvironmentValue(environment, "CODEX_HOME")
+			if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(`{"OPENAI_API_KEY":"fixture-profile-token"}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"-c", "features.plugins=false", "-c", `model="gpt-6-astra"`}
+			if provider == "openai" {
+				args = append(args, "-c", "openai_base_url="+strconv.Quote(upstream.URL+"/v1"))
+			} else {
+				args = append(args, "-c", `model_provider="custom"`, "-c", `model_providers.custom={name="Named fixture",base_url=`+strconv.Quote(upstream.URL+"/v1")+`,wire_api="responses",env_key="PROFILE_TOKEN"}`)
+				environment = append(environment, "PROFILE_TOKEN=fixture-profile-token")
+			}
+			terminal := startAppResumeTerminal(t, func(ctx context.Context) *exec.Cmd {
+				cmd := exec.CommandContext(ctx, native, args...)
+				cmd.Dir = workspace
+				cmd.Env = append(environment, "CODEX_ROLLOUT_TRACE_ROOT="+traces)
+				return cmd
+			}, "")
+			terminal.await("Ready")
+			terminal.send("CANCEL_FIXTURE_TURN\r")
+			select {
+			case <-started:
+			case <-terminal.ctx.Done():
+				t.Fatal("no active provider stream")
+			}
+			terminal.send("\x1b")
+			terminal.awaitStatus("Interrupted")
+			terminal.send("FAIL_FIXTURE_TURN\r")
+			terminal.await("fixture request rejected")
+			terminal.quit()
+		})
+	}
+}
+
+func readNativeCapture(t *testing.T, path string) map[string]map[string]bool {
+	t.Helper()
+	capture, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := map[string]map[string]bool{}
+	for line := range bytes.SplitSeq(capture, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var event struct {
+			Boundary string `json:"boundary"`
+			Phase    string `json:"response_status"`
+			Thread   string `json:"thread_id"`
+			Turn     string `json:"turn_id"`
+			Call     string `json:"request_id"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"fixture-profile-token", "PROFILE_TOOL_ONCE", "UNTRUSTED_PROVIDER_ID", "FAIL_FIXTURE_TURN", "fixture request rejected"} {
+			if bytes.Contains(line, []byte(secret)) {
+				t.Fatal("private inference record includes content or credentials")
+			}
+		}
+		if event.Boundary != "native_response" || event.Thread == "" || event.Turn == "" {
+			t.Fatalf("invalid native response evidence: %+v", event)
+		}
+		if events[event.Thread] == nil {
+			events[event.Thread] = map[string]bool{}
+		}
+		events[event.Thread][event.Phase] = true
+	}
+	return events
 }

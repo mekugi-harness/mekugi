@@ -18,7 +18,7 @@ import (
 // Live sessions and offline replay share one profiling lifetime. Workers and
 // hooks do not start it; concurrent processes have separate loopback URLs.
 func startProfiling(ctx context.Context, stderr io.Writer) (func() error, error) {
-	listener, err := net.Listen("tcp", defaultListenAddress)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("start profiling listener: %w", err)
 	}
@@ -37,7 +37,7 @@ func startProfiling(ctx context.Context, stderr io.Writer) (func() error, error)
 	return func() error {
 		cancel()
 		defer stopSampling()
-		shutdownCtx, stop := context.WithTimeout(context.Background(), shutdownTimeout)
+		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
 		err := server.Shutdown(shutdownCtx)
 		if err != nil {

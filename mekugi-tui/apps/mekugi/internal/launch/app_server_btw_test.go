@@ -10,7 +10,6 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 
 	"time"
@@ -21,29 +20,6 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 )
-
-func TestSideForkWaitsForEffectiveCatalog(t *testing.T) {
-	u, wire := newAppServerTestUI()
-	path := filepath.Join(t.TempDir(), "selected.json")
-	if err := os.WriteFile(path, []byte(`{"models":[{"slug":"selected","multi_agent_reasoning_effort":"high","supported_reasoning_levels":[{"effort":"high"},{"effort":"max"}]}]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	catalog := &inferencegateway.ReasoningCatalog{}
-	u.Requests.InheritedEffort = catalog.InheritedEffort
-	u.Requests.CaptureConfiguredCatalog = catalog.CaptureConfigured
-	u.Requests.CatalogPending = true
-	u.settings.Model, u.settings.Effort = "selected", "ultra"
-	appServerTestRequest(t, u, "42", "config/read")
-	appServerTestKeys(t, u, "/oneoff initial task\r")
-	if wire.Len() != 0 {
-		t.Fatalf("fork before config: %s", wire.String())
-	}
-	appServerTestMessage(t, u, fmt.Sprintf(`{"id":42,"result":{"config":{"model_catalog_json":%q}}}`, path))
-	fork := btwTestRequest(t, wire, "thread/fork", "main")
-	if got := fork.Params.Config["model_reasoning_effort"]; got != "high" {
-		t.Fatalf("fork effort = %v", got)
-	}
-}
 
 type btwTestRPC struct {
 	ID     int    `json:"id"`

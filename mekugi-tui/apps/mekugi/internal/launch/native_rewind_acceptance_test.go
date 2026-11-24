@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
@@ -81,7 +82,7 @@ func TestNativeRewindRevertSocket(t *testing.T) {
 				cmd.Dir = u.attached.cwd
 				conversation := new(conversationmodel.Service)
 				observations := conversationbinding.Codex.Observation(conversation)
-				wait, err := (&nativeSession{reviewSource: u.reviewSource, presentationState: testPresentation(), conversationState: conversation, activity: u.activity, history: testHistory(), segments: testReports(), ctx: runtimeContext, controlObservations: u.controlObservations, usage: u.usage, audience: u.audience, review: u.review, execWindows: u.execWindows, nativeTrace: u.nativeTrace, retained: u.review.Projection.Retained, changeSource: u.review.Projection.Changes, snapshots: u.snapshots, publishChanges: u.publishChanges, captureNotice: u.captureNotice, execTrack: u.execTrack, issues: nil, sessionCapture: nil, resumeArgv: nil, rewindExecutable: u.rewindExecutable, replayDebugDirectory: "", titleGenerator: nil, observations: &observations, approvalMode: false}).start(testPreferences(), cmd, false, "", nil, api, false, threads)
+				wait, err := (&nativeSession{reviewSource: u.reviewSource, presentationState: testPresentation(), conversationState: conversation, activity: u.activity, history: testHistory(), segments: testReports(), ctx: runtimeContext, controlObservations: u.controlObservations, usage: u.usage, audience: u.audience, review: u.review, execWindows: u.execWindows, nativeTrace: u.nativeTrace, retained: u.review.Projection.Retained, changeSource: u.review.Projection.Changes, snapshots: u.snapshots, publishChanges: u.publishChanges, captureNotice: u.captureNotice, execTrack: u.execTrack, issues: nil, sessionCapture: nil, resumeArgv: nil, rewindExecutable: u.rewindExecutable, replayDebugDirectory: "", observations: &observations, approvalMode: false}).start(testPreferences(), cmd, false, "", nil, api, launchoptions.Config{}, threads)
 				if err != nil {
 					return err
 				}

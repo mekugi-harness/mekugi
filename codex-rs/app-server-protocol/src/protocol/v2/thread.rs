@@ -2264,6 +2264,19 @@ pub struct RawResponseCompletedNotification {
     pub response_id: String,
     pub usage: Option<TokenUsageBreakdown>,
     pub usage_metadata: Option<ResponseUsageMetadata>,
+    /// Model applied to this individual response, if known.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Provider-reported tier, or the applied request tier if it was not returned.
+    #[serde(default)]
+    pub service_tier: Option<String>,
+    /// Built-in OpenAI on a first-party endpoint, not a custom Responses route.
+    #[serde(default)]
+    pub openai_endpoint: bool,
+    /// Elapsed provider request time through the terminal response, when measured.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub request_duration_ms: Option<i64>,
 }
 
 /// Usage metadata reported for one upstream response.

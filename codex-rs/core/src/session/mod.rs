@@ -6044,12 +6044,80 @@ impl Session {
         result
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
+    pub(crate) async fn generate_title(&self, turn_id: &str, prompt: &str) -> Option<String> {
+        self.check_rollout_budget().ok()?;
+        let model = self.selected_model_info().await;
+        // The title is not a continuation of the execution thread or its cache.
+        let request_id = Uuid::new_v4().to_string();
+        let metadata = crate::responses_metadata::CodexResponsesMetadata::new(
+            self.installation_id.clone(),
+            request_id.clone(),
+            request_id.clone(),
+            request_id,
+        );
+        let (name, response_id, token_usage, usage_metadata) = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.services.model_client.sample_title(
+                prompt,
+                &model,
+                &self.services.session_telemetry,
+                &metadata,
+            ),
+        )
+        .await
+        .ok()??;
+        self.record_rollout_budget_usage(
+            turn_id,
+            &crate::client_common::SamplingUsage {
+                provider: token_usage.clone(),
+                charge: Default::default(),
+            },
+        )
+        .await
+        .ok()?;
+        let config = self.get_config().await;
+        let service_tier = usage_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.service_tier.clone());
+        self.send_event_raw_with_persistence(
+            Event {
+                id: turn_id.to_owned(),
+                msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                    response_id,
+                    token_usage,
+                    usage_metadata,
+                    model: Some(model.slug.clone()),
+                    service_tier,
+                    openai_endpoint: Self::on_builtin_openai(&config),
+                    request_duration_ms: None,
+                }),
+            },
+            /*persist*/ false,
+            /*status*/ None,
+        )
+        .await;
+        crate::util::normalize_thread_name(&name.split_whitespace().collect::<Vec<_>>().join(" "))
+    }
+
+    fn on_builtin_openai(config: &Config) -> bool {
+        config.model_provider_id == "openai"
+            && config
+                .model_provider
+                .base_url
+                .as_deref()
+                .is_none_or(codex_http_client::is_openai_api_url)
+            && codex_http_client::is_openai_api_url(&config.chatgpt_base_url)
+    }
+
     pub(crate) async fn record_observed_response_completed(
         &self,
         turn_context: &TurnContext,
+        settings: &ResolvedStepSettings,
         response_id: &str,
         usage: Option<&TokenUsage>,
         usage_metadata: Option<&ResponseUsageMetadata>,
+        request_duration_ms: Option<i64>,
     ) {
         self.send_event(
             turn_context,
@@ -6057,6 +6125,12 @@ impl Session {
                 response_id: response_id.to_string(),
                 token_usage: usage.cloned(),
                 usage_metadata: usage_metadata.cloned(),
+                model: Some(settings.model_info.slug.clone()),
+                service_tier: usage_metadata
+                    .and_then(|metadata| metadata.service_tier.clone())
+                    .or_else(|| settings.service_tier.clone()),
+                openai_endpoint: Self::on_builtin_openai(&turn_context.config),
+                request_duration_ms,
             }),
         )
         .await;

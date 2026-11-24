@@ -10,16 +10,14 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
 	"github.com/charmbracelet/x/vt"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
 func TestAppServerSessionTitleHostConfirmation(t *testing.T) {
 	u, wire := newAppServerTestUI()
 	u.title = "Existing title"
-	persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Generated title"})
+	renameSessionTitle(&u.Client, &u.attached.feedback, u.clock, "Requested title")
 	requests := appServerDrainRequests[struct {
 		ID     int    `json:"id"`
 		Method string `json:"method"`
@@ -28,14 +26,14 @@ func TestAppServerSessionTitleHostConfirmation(t *testing.T) {
 			Name     string `json:"name"`
 		} `json:"params"`
 	}](t, wire)
-	if len(requests) != 1 || requests[0].Method != "thread/name/set" || requests[0].Params.ThreadID != "main" || requests[0].Params.Name != "Generated title" {
+	if len(requests) != 1 || requests[0].Method != "thread/name/set" || requests[0].Params.ThreadID != "main" || requests[0].Params.Name != "Requested title" {
 		t.Fatalf("title persistence request = %+v", requests)
 	}
 	if u.title != "Existing title" {
 		t.Fatalf("unconfirmed title displayed: %q", u.title)
 	}
 	appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, requests[0].ID))
-	if u.title != "Generated title" || u.Requests.Pending() {
+	if u.title != "Requested title" || u.Requests.Pending() {
 		t.Fatalf("confirmation state: title=%q pending=%v requests=%v dirty=%v", u.title, u.Requests, u.Requests, u.dirty)
 	}
 	appServerTestMessage(t, u, `{"method":"thread/name/updated","params":{"threadId":"main","threadName":"Host rename"}}`)
@@ -44,103 +42,10 @@ func TestAppServerSessionTitleHostConfirmation(t *testing.T) {
 	}
 }
 
-func TestAppServerSessionTitleSaveFailureNonfatal(t *testing.T) {
-	for _, immediate := range []bool{false, true} {
-		t.Run(fmt.Sprint(immediate), func(t *testing.T) {
-			u, wire := newAppServerTestUI()
-			u.title, u.attached.presentation.Status.Text, u.Turn, u.Text = "Confirmed", "Working", "active-turn", "unsent input"
-			u.dirty = false
-			if immediate {
-				u.Host.Input = new(sessionTitleFailInput)
-			}
-			persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Candidate"})
-			if immediate {
-				if wire.Len() != 0 {
-					t.Fatal("failed transport wrote metadata")
-				}
-			} else {
-				request := resumeTestOne(t, wire, "thread/name/set")
-				appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"error":{"code":-1,"message":"unavailable"}}`, request.ID))
-			}
-			if u.title != "Confirmed" || u.attached.presentation.Status.Text != "Working" || u.Turn != "active-turn" || u.Text != "unsent input" || u.attached.feedback.Text == "" || u.attached.feedback.Alert || u.Requests.Pending() {
-				t.Fatalf("save failure disturbed session: title=%q status=%q turn=%q draft=%q notice=%q alert=%v dirty=%v", u.title, u.attached.presentation.Status.Text, u.Turn, u.Text, u.attached.feedback.Text, u.attached.feedback.Alert, u.dirty)
-			}
-		})
-	}
-}
-
 type sessionTitleFailInput struct{ appServerTestInput }
 
 func (*sessionTitleFailInput) Write([]byte) (int, error) {
 	return 0, errors.New("metadata transport unavailable")
-}
-
-func TestAppServerSessionTitleIdleSaveFailureRepaints(t *testing.T) {
-	for _, immediate := range []bool{false, true} {
-		t.Run(fmt.Sprint(immediate), func(t *testing.T) {
-			u, wire := newAppServerTestUI()
-			u.attached.presentation.Status.Text, u.dirty = "Ready", false
-			if immediate {
-				u.Host.Input = new(sessionTitleFailInput)
-			}
-			persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Candidate"})
-			if !immediate {
-				request := resumeTestOne(t, wire, "thread/name/set")
-				appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"error":{"code":-1,"message":"unavailable"}}`, request.ID))
-			}
-			if u.attached.feedback.Text == "" || u.attached.feedback.Alert || u.Turn != "" || u.attached.presentation.Status.Text != "Ready" {
-				t.Fatalf("idle failure will not repaint: dirty=%v notice=%q status=%q", u.dirty, u.attached.feedback.Text, u.attached.presentation.Status.Text)
-			}
-		})
-	}
-}
-
-func TestAppServerSessionTitleOldThreadIsolation(t *testing.T) {
-	u, wire := newAppServerTestUI()
-	persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Old generated title"})
-	request := resumeTestOne(t, wire, "thread/name/set")
-	u.Thread, u.title, u.dirty = "replacement", "Replacement title", false
-	appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, request.ID))
-	appServerTestMessage(t, u, `{"method":"thread/name/updated","params":{"threadId":"main","threadName":"Old host title"}}`)
-	appServerTestMessage(t, u, `{"method":"thread/name/updated","params":{"threadId":"","threadName":"Unscoped title"}}`)
-	if u.title != "Replacement title" || u.Requests.Pending() {
-		t.Fatalf("old thread renamed Main: title=%q dirty=%v pending=%v", u.title, u.dirty, u.Requests)
-	}
-}
-
-func TestAppServerSessionTitleManualRenameWinsGeneration(t *testing.T) {
-	u, wire := newAppServerTestUI()
-	u.titleGenerator = newTestSessionNaming(t.Context(), nil)
-	u.titleGenerator.register(binding.ThreadInfo{ID: "main"})
-	appServerTestMessage(t, u, `{"method":"thread/name/updated","params":{"threadId":"main","threadName":"Manual host title"}}`)
-	persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Late generated title"})
-	if u.title != "Manual host title" || wire.Len() != 0 || u.Requests.Pending() {
-		t.Fatalf("late generation overwrote manual rename: title=%q wire=%q pending=%v", u.title, wire.String(), u.Requests)
-	}
-}
-
-func TestAppServerSessionTitleSkippedNamingPreservesHostMetadata(t *testing.T) {
-	u, wire := newAppServerTestUI()
-	u.titleGenerator = newTestSessionNaming(t.Context(), nil)
-	u.titleGenerator.register(binding.ThreadInfo{ID: "main"})
-	u.titleUpdates = u.titleGenerator.updates
-	u.attached.presentation.Status.Text, u.Turn, u.Text = "Working", "active-turn", "unsent input"
-	setNotice(&u.attached.feedback, presentationTime(u.clock), "Existing host notice", false)
-	u.dirty = false
-	u.titleGenerator.ObserveInput("main", responses.MustMarshalJSON("First user message"))
-	u.titleGenerator.Completed(t.Context(), "main", nil)
-	select {
-	case update := <-u.titleUpdates:
-		t.Fatalf("unavailable naming emitted update: %+v", update)
-	default:
-	}
-	if u.attached.feedback.Text != "Existing host notice" || wire.Len() != 0 {
-		t.Fatalf("skipped naming changed UI: dirty=%v notice=%q wire=%q", u.dirty, u.attached.feedback.Text, wire.String())
-	}
-	appServerTestMessage(t, u, `{"method":"thread/name/updated","params":{"threadId":"main","threadName":"Saved host title"}}`)
-	if u.title != "Saved host title" || u.attached.feedback.Text != "Existing host notice" || u.attached.presentation.Status.Text != "Working" || u.Turn != "active-turn" || u.Text != "unsent input" || wire.Len() != 0 || u.Requests.Pending() {
-		t.Fatalf("host metadata after skipped naming: title=%q dirty=%v notice=%q status=%q turn=%q draft=%q wire=%q", u.title, u.dirty, u.attached.feedback.Text, u.attached.presentation.Status.Text, u.Turn, u.Text, wire.String())
-	}
 }
 
 func TestAppServerSessionTitleStartResumeMetadata(t *testing.T) {
@@ -164,14 +69,12 @@ func TestAppServerSessionTitleComposerRename(t *testing.T) {
 		t.Run(fmt.Sprint(busy), func(t *testing.T) {
 			u, wire := newAppServerTestUI()
 			u.title = "Saved title"
-			u.titleGenerator = newTestSessionNaming(t.Context(), nil)
-			u.titleGenerator.register(binding.ThreadInfo{ID: "main"})
 			if busy {
 				u.Turn, u.attached.presentation.Status.Text = "active-turn", "Working"
 			}
 			appServerTestKeys(t, u, "/title 修復 session title\r")
 			request := sessionTitleTestOne(t, wire)
-			if request.Params.ThreadID != "main" || request.Params.Name != "修復 session title" || u.Text != "" || u.title != "Saved title" || u.titleGenerator.acceptCandidate("main") {
+			if request.Params.ThreadID != "main" || request.Params.Name != "修復 session title" || u.Text != "" || u.title != "Saved title" {
 				t.Fatalf("manual rename: request=%+v draft=%q saved=%q", request, u.Text, u.title)
 			}
 			if busy && (u.Turn != "active-turn" || u.attached.presentation.Status.Text != "Working") {
@@ -184,10 +87,6 @@ func TestAppServerSessionTitleComposerRename(t *testing.T) {
 			appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, request.ID))
 			if u.title != "修復 session title" || u.Names.Pending("main") != "" {
 				t.Fatalf("manual title not confirmed: title=%q pending=%v", u.title, u.Names.Pending("main"))
-			}
-			persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Late generated title"})
-			if wire.Len() != 0 {
-				t.Fatal("manual rename did not suppress automatic naming")
 			}
 		})
 	}
@@ -216,7 +115,6 @@ func TestAppServerSessionTitleBeforeSessionStart(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			u, wire := newAppServerTestUI()
 			u.Thread, u.Startup.Thread = "", "saved"
-			u.titleGenerator = newTestSessionNaming(t.Context(), nil)
 			appServerTestKeys(t, u, "/title First name\r/title Final name\r")
 			if wire.Len() != 0 || u.Names.Pending("") != "Final name" || u.publishedTitle() != "Final name" {
 				t.Fatalf("pre-session title: pending=%q wire=%q", u.Names.Pending(""), wire.String())
@@ -228,16 +126,11 @@ func TestAppServerSessionTitleBeforeSessionStart(t *testing.T) {
 			if len(requests) != wantRequests || requests[0].Method != "thread/name/set" || requests[0].Params.ThreadID != "saved" || requests[0].Params.Name != "Final name" || requests[1].Method != "model/list" {
 				t.Fatalf("start title persistence: %+v", requests)
 			}
-			if u.Names.Pending("") != "" || u.titleGenerator.acceptCandidate("saved") || u.publishedTitle() != "Final name" {
-				t.Fatal("thread creation lost the manual title or enabled generation")
+			if u.Names.Pending("") != "" || u.publishedTitle() != "Final name" {
+				t.Fatal("thread creation lost the manual title")
 			}
 			appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, requests[0].ID))
-			// Fresh process registration uses only the durable host name.
-			fresh := newTestSessionNaming(t.Context(), nil)
-			fresh.register(binding.ThreadInfo{ID: "saved", Name: u.title})
-			if fresh.acceptCandidate("saved") {
-				t.Fatal("fresh process would regenerate the saved manual title")
-			}
+
 		})
 	}
 }
@@ -280,41 +173,35 @@ func TestAppServerSessionTitleManualSaveFailure(t *testing.T) {
 }
 
 func TestAppServerSessionTitleSerializesManualRenames(t *testing.T) {
-	for _, automatic := range []bool{false, true} {
-		for _, failed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("automatic=%v/failed=%v", automatic, failed), func(t *testing.T) {
-				u, wire := newAppServerTestUI()
-				if automatic {
-					persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Older name"})
-				} else {
-					appServerTestKeys(t, u, "/title Older name\r")
-				}
-				older := sessionTitleTestOne(t, wire)
-				appServerTestKeys(t, u, "/title Latest name\r")
-				if wire.Len() != 0 || u.publishedTitle() != "Latest name" {
-					t.Fatal("rename was not immediately displayed and serialized")
-				}
-				response := `"result":{}`
-				if failed {
-					response = `"error":{"code":-1,"message":"older failure"}`
-				}
-				appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,%s}`, older.ID, response))
-				latest := sessionTitleTestOne(t, wire)
-				if latest.Params.Name != "Latest name" || u.attached.feedback.Text != "" {
-					t.Fatalf("queued rename: request=%+v notice=%q", latest, u.attached.feedback.Text)
-				}
-				if !failed {
-					appServerTestMessage(t, u, `{"method":"thread/name/updated","params":{"threadId":"main","threadName":"Older name"}}`)
-				}
-				if u.publishedTitle() != "Latest name" {
-					t.Fatal("older confirmation overwrote pending manual display")
-				}
-				appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, latest.ID))
-				if u.title != "Latest name" || u.Names.Pending("main") != "" {
-					t.Fatal("latest title not confirmed")
-				}
-			})
-		}
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprint(failed), func(t *testing.T) {
+			u, wire := newAppServerTestUI()
+			appServerTestKeys(t, u, "/title Older name\r")
+			older := sessionTitleTestOne(t, wire)
+			appServerTestKeys(t, u, "/title Latest name\r")
+			if wire.Len() != 0 || u.publishedTitle() != "Latest name" {
+				t.Fatal("rename was not immediately displayed and serialized")
+			}
+			response := `"result":{}`
+			if failed {
+				response = `"error":{"code":-1,"message":"older failure"}`
+			}
+			appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,%s}`, older.ID, response))
+			latest := sessionTitleTestOne(t, wire)
+			if latest.Params.Name != "Latest name" || u.attached.feedback.Text != "" {
+				t.Fatalf("queued rename: request=%+v notice=%q", latest, u.attached.feedback.Text)
+			}
+			if !failed {
+				appServerTestMessage(t, u, `{"method":"thread/name/updated","params":{"threadId":"main","threadName":"Older name"}}`)
+			}
+			if u.publishedTitle() != "Latest name" {
+				t.Fatal("older confirmation overwrote pending manual display")
+			}
+			appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{}}`, latest.ID))
+			if u.title != "Latest name" || u.Names.Pending("main") != "" {
+				t.Fatal("latest title not confirmed")
+			}
+		})
 	}
 }
 
@@ -358,7 +245,7 @@ func TestUISnapshotNativeSessionTitle(t *testing.T) {
 			u.attached.presentation.Status.Text, u.settings.Model, u.title = "Ready", "snapshot-model", tc.title
 			if tc.name == "idle-save-failure" {
 				u.Host.Input = new(sessionTitleFailInput)
-				persistSessionTitle(&u.Client, u.titleGenerator, &u.attached.feedback, u.clock, sessionTitleUpdate{thread: "main", name: "Candidate"})
+				renameSessionTitle(&u.Client, &u.attached.feedback, u.clock, "Candidate")
 			}
 			if strings.HasPrefix(tc.name, "manual-") {
 				if tc.name == "manual-before-start" {

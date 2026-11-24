@@ -593,25 +593,6 @@ func TestStorageRetentionRejectsObsoleteHandleNames(t *testing.T) {
 	}
 }
 
-func TestNewRequestDoesNotReadUnrelatedRetentionCatalog(t *testing.T) {
-	t.Parallel()
-	proxy := newManagedMekugiProxy(t)
-	attachTestReplayStore(t, proxy)
-	store := testProxyStore(proxy)
-	name := retainedhistory.SessionName("unrelated-thread")
-	invalid := retainedhistory.Catalog{
-		Version: 1, Thread: "unrelated-thread", LastUsed: time.Now().Add(-15 * 24 * time.Hour),
-		Files: map[string]bool{"../outside.json": true},
-	}
-	if err := os.WriteFile(filepath.Join(store.directory, name), responses.MustMarshalJSON(invalid), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.publication.ReadCatalog(name); err == nil {
-		t.Fatal("unrelated catalog was not invalid")
-	}
-	newTopLevelMekugiTestTransformWithProxy(t, proxy)
-}
-
 func TestBackgroundRetentionReportsUnrelatedCatalogFailure(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())

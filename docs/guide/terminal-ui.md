@@ -125,16 +125,14 @@ details](../../mekugi-tui/apps/mekugi/internal/terminalsession/SPEC.md#layout-co
 
 ## Live diff pane
 
-Source-content edits stream, including patches, `cat` heredocs, and supported Python
-writes. Copies, removals, formatters, and other command effects stay in saved changes.
-Only completed edits become saved changes. Main shows live edits from its session
-family with source attribution; a selected child shows only its own edits.
-`/live` toggles them without stopping capture;
-new launches enable them again. In saved Diff, `s` opens the navigator, `/` filters,
-`n`/`p` changes files, `[`/`]` jumps hunks. Tab opens Changes by caller. Click an Edit
-for its hunk; `Ctrl-B e` pins files, `Ctrl-B r` resumes following.
-See [saved-review controls](../../mekugi-tui/modules/changehistory/SPEC.md#saved-review-presentation) and
-[live previews](../../mekugi-tui/modules/livepreview/SPEC.md).
+Supported patches and shell edits appear provisionally as the tool input
+streams. Use `/live` to toggle previews. Open a patch in Activity for its
+native details, or use `mchanges` for the native captured history.
+
+Saved Diff shows legacy captures and client-side user shell edits, not new
+native captures. Press `s` for the navigator, `/` to filter, `n`/`p` to change
+files, or `[`/`]` to jump hunks. Tab opens Changes by caller.
+See [saved-review controls](../../mekugi-tui/modules/changehistory/SPEC.md#saved-review-presentation).
 
 ## Agents
 

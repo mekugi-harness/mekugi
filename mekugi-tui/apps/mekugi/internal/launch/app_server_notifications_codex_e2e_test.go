@@ -33,7 +33,7 @@ func TestAppServerNotificationsNativeCodexE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, &appPreviewProvider{}, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(&appPreviewProvider{}))
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
@@ -51,7 +51,7 @@ func TestAppServerNotificationsNativeCodexE2E(t *testing.T) {
 	conversation := new(conversationmodel.Service)
 	observations := conversationbinding.Codex.Observation(conversation)
 	reviewSource := new(changecapture.Service)
-	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, cmd, inner, inner, appServerIntegration{}, nil, "", true, nil, nil, "", nil, &observations, false)
+	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, cmd, inner, inner, appServerIntegration{}, nil, "", true, nil, nil, "", &observations, false)
 	if err != nil {
 		t.Fatal(err)
 	}

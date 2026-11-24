@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
@@ -185,28 +183,6 @@ func TestMekugiReplayStoreQuotaAndCommentary(t *testing.T) {
 	}
 	if _, ok, err := s.lookup(t.Context(), "/w", "c"); err != nil || ok {
 		t.Fatalf("partial record %v %v", ok, err)
-	}
-}
-
-func TestTerminalResponseReplayPersistenceFailureIsClassified(t *testing.T) {
-	proxy := newManagedMekugiProxy(t)
-	attachTestReplayStore(t, proxy)
-	transform, _, _, _ := newMekugiTestTransformWithProxy(t, proxy)
-	transform.local["completed-call"] = mekugiHistory{Script: "completed"}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "absent"),
-		filepath.Join(testProxyStore(proxy).directory, legacycall.Name(transform.directory, "completed-call", false))); err != nil {
-		t.Fatal(err)
-	}
-	_, err := transform.TransformSSE([]byte(`{"type":"response.completed","response":{"status":"completed","output":[]}}`))
-	if err == nil {
-		t.Fatal("terminal response claimed successful persistence")
-	}
-	diagnostic, ok := errors.AsType[*requestexecution.DiagnosticError](err)
-	if !ok || diagnostic.Code != "mekugi_sse:replay_history_commit" || diagnostic.Summary != "Mekugi could not persist completed response history" {
-		t.Fatalf("terminal persistence diagnostic = %#v, wrapped = %v", diagnostic, err)
-	}
-	if transform.historyCommitted {
-		t.Fatal("failed history was marked committed")
 	}
 }
 
@@ -483,30 +459,6 @@ func TestMekugiReplayStorePayloadStringEscapes(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestReplayItemConflictReportsSafeCause(t *testing.T) {
-	old := mekugiHistory{UpstreamItem: map[string]json.RawMessage{"input": responses.MustMarshalJSON("private old script")}}
-	next := mekugiHistory{UpstreamItem: map[string]json.RawMessage{"input": responses.MustMarshalJSON("private new script")}}
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.put(t.Context(), "/w", map[string]mekugiHistory{"call": old}); err != nil {
-		t.Fatal(err)
-	}
-	err = store.put(t.Context(), "/w", map[string]mekugiHistory{"call": next})
-	if err == nil {
-		t.Fatal("accepted changed tool input")
-	}
-	issues := testCriticalErrors()
-	finalization := issues.Report(requestexecution.Failure{Phase: "transform"}, err)
-	notice := strings.Join(issues.Notices.Pending(), "\n")
-	if finalization.Code != "replay_item_conflict" ||
-		!strings.Contains(notice, "changed a retained replay item field") ||
-		strings.Contains(notice, "private") || strings.Contains(notice, "not safe for display") {
-		t.Fatalf("unsafe or missing replay conflict diagnostic: %s", notice)
 	}
 }
 

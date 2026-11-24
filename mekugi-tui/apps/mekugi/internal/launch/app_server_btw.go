@@ -169,12 +169,6 @@ func flushSide(attached *attachedPresentation, control *sessioncontrol.Client[ap
 			if control.Requests.SideReplyStarting(thread) {
 				return nil
 			}
-			if input.Question != nil && observations != nil && observations.EmittingToolInput(attached.cwd, thread) {
-				if b.Drafts.AdvancePrompt() {
-					continue
-				}
-				return nil
-			}
 			parts := []conversationmodel.Input{input}
 			if picker.waitForSkillBindings(attached, clock, control.Requests, parts) {
 				return nil

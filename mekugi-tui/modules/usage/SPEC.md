@@ -10,16 +10,12 @@
 
 ## Current approach (replaceable)
 
-- Accumulates provider-authoritative usage per thread across compaction and session remapping
-  (excluding fork sources and descendants from a thread's own counters; surviving restart via
-  [Session history](../sessionhistory/SPEC.md) with asynchronous coalesced writes so lock
-  contention never blocks delivery or UI reads).
-- **Reference pricing**: applies built-in OpenAI API reference rates per response (honoring
-  returned `service_tier`, long-context >272k thresholds, cached-input/cache-write rules, without
-  double-charging reasoning) and persists already-priced totals; custom providers and unknown
-  models/tiers report unavailable cost while keeping token counts.
-- **Output throughput**: pairs authoritative output tokens (including reasoning) against forwarding-
-  to-terminal-usage duration per request, exposed to composer captions and roster rows via status
-  contributions.
-- Native context-occupancy snapshots (from resume/fork/rewind) stay separate from cumulative
-  billable usage.
+- The client sums individual native provider completions and keeps the
+  latest valid output measurement per thread. Forked threads start their
+  own counters; inherited context is not spending.
+- Reference prices apply per OpenAI response, including returned service tier and applicable
+  long-context and cache rates. Custom providers and unknown prices do not acquire an estimate.
+- The client retains these values in [session history](../sessionhistory/SPEC.md).
+  Reopened records retain their reported totals and are marked partial.
+- Composer captions and roster rows share the output throughput measurement. Context occupancy
+  remains separate from cumulative provider usage.

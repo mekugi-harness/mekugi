@@ -12,7 +12,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
@@ -113,7 +112,7 @@ func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *ses
 		options, settings = threads.setup.options, threads.setup.settings
 		environment = slices.Clone(threads.setup.environment)
 	} else {
-		options.Profile, args, err = launchoptions.ImportProfile(args, environment)
+		options.Profile, args, err = launchoptions.ProfileSelector(args)
 		if err != nil {
 			return 2, err
 		}
@@ -122,17 +121,8 @@ func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *ses
 			return 1, err
 		}
 	}
-	if err := validateCodexArgs(args, options.Profile != nil); err != nil {
-		return 2, err
-	}
-	if options.RequireCustomProvider {
-		route, err := profileRoute(args, options.Profile)
-		if err != nil {
-			return 2, err
-		}
-		if route == nil {
-			return 2, errors.New("mekugi requires a custom Responses provider profile: configure NAME.config.toml and run mekugi -p NAME; use mekugi codex for native OpenAI")
-		}
+	if options.RequireCustomProvider && options.Profile == "" {
+		return 2, errors.New("mekugi requires a custom Responses provider profile: configure NAME.config.toml and run mekugi -p NAME; use mekugi codex for native OpenAI")
 	}
 	options = options.ResolveFeatures(settings.Features)
 	var resumeThread string
@@ -143,6 +133,9 @@ func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *ses
 		var yolo bool
 		args, resumeThread, yolo, err = appServerArgs(args)
 		if err != nil {
+			return 2, err
+		}
+		if err := validateProviderOverrides(args, options.Profile); err != nil {
 			return 2, err
 		}
 		approvals = !yolo
@@ -166,9 +159,6 @@ func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *ses
 	captureDirectory, err := history.ReplayDirectory()
 	if err != nil {
 		return 1, fmt.Errorf("initialize replay storage: %w", err)
-	}
-	if options.Profile != nil {
-		api.BindProfileIdentity(sessionapi.ProfileIdentity{Name: options.Profile.Name, Home: options.Profile.Home})
 	}
 	if threads.setup == nil {
 		threads.setup = &threadSetup{options: options, settings: settings, executable: executable, args: slices.Clone(args), environment: slices.Clone(environment), approvals: approvals}
@@ -202,7 +192,7 @@ func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *ses
 		directory := filepath.Dir(debugPaths[0])
 		fmt.Fprintf(os.Stderr, "  mekugi inspect-session --debug-dir %s --field diagnostic\n", commandargs.Quote(directory))
 	}()
-	return runInvocation(frontends.Presentation, frontends.Conversation, frontends.LivePreview, frontends.Activity, frontends.History, frontends.Preferences, frontends.Segments, frontends.Changes, frontends.Usage, frontends.AgentMetrics, frontends.TransportDiagnostics, frontends.Diagnostics, ctx, frontends.Commands, frontends.Naming, frontends.Observation, options, settings, issues, executable, args, environment, os.Stderr, resumeThread, resumeArgv, approvals, func(paths []string) { debugPaths = paths }, api, workspace, threads)
+	return runInvocation(frontends.Presentation, frontends.Conversation, frontends.LivePreview, frontends.Activity, frontends.History, frontends.Preferences, frontends.Segments, frontends.Changes, frontends.Usage, frontends.AgentMetrics, frontends.TransportDiagnostics, frontends.Diagnostics, ctx, frontends.Commands, frontends.AutoTitle, frontends.Observation, options, settings, issues, executable, args, environment, os.Stderr, resumeThread, resumeArgv, approvals, func(paths []string) { debugPaths = paths }, api, workspace, threads)
 }
 
 // Reasoning shortcuts are session-local Codex config overrides. Preserve option
@@ -358,79 +348,6 @@ func frontendShellEnvironment(environment []string, directory, helper string, re
 	return append(environment,
 		"PATH="+front+string(os.PathListSeparator)+basePath,
 		"BASH_ENV="+path, userBashEnvEnvironment+"="+previous), nil
-}
-
-func codexArgs(baseURL string, args []string, route *inferencegateway.NativeProvider) []string {
-	args = slices.Clone(args)
-	// Apply invocation-local endpoints after caller config without crossing --.
-	index := slices.Index(args, "--")
-	if index < 0 {
-		index = len(args)
-	}
-	var overrides []string
-	if route != nil {
-		providers, _ := launchoptions.ConfigOverrides(args)["model_providers"].(map[string]any)
-		if providers == nil {
-			providers = make(map[string]any)
-		}
-		definition, _ := providers[route.ID].(map[string]any)
-		if definition == nil {
-			definition = make(map[string]any)
-			providers[route.ID] = definition
-		}
-		if route.ID == "openai" {
-			overrides = append(overrides, "-c", fmt.Sprintf("openai_base_url=%q", baseURL))
-		} else {
-			definition["base_url"] = baseURL
-		}
-		if route.CatalogURL != "" {
-			definition["model_catalog_url"] = baseURL + "/models"
-		}
-		// The parsed TOML tree contains only representable TOML values. Encoding
-		// the whole top-level value preserves literal provider IDs containing dots.
-		if value, err := launchoptions.TOMLValue(providers); err == nil {
-			overrides = append(overrides, "-c", "model_providers="+value)
-		}
-		overrides = append(overrides, "-c", fmt.Sprintf("model_provider=%q", route.ID))
-	} else {
-		// Keep stock capabilities and runtime-only internal metadata.
-		overrides = append(overrides, "-c", `model_provider="openai"`, "-c", fmt.Sprintf(`openai_base_url=%q`, baseURL))
-	}
-	return slices.Insert(args, index, overrides...)
-}
-
-func validateCodexArgs(args []string, profile bool) error {
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			break
-		}
-		if arg == "--oss" || arg == "--local-provider" || strings.HasPrefix(arg, "--local-provider=") {
-			return errors.New("mekugi codex does not support provider-selection arguments; custom providers are not supported")
-		}
-		var override string
-		switch {
-		case arg == "-c" || arg == "--config":
-			if i+1 < len(args) {
-				i++
-				override = args[i]
-			}
-		case strings.HasPrefix(arg, "--config="):
-			override = strings.TrimPrefix(arg, "--config=")
-		case strings.HasPrefix(arg, "-c"):
-			override = strings.TrimPrefix(arg, "-c")
-		}
-		key, _, _ := strings.Cut(strings.TrimPrefix(override, "="), "=")
-		root, _, _ := strings.Cut(key, ".")
-		root = strings.Trim(strings.TrimSpace(root), `"'`)
-		if root == "model_provider" || root == "model_providers" || root == "openai_base_url" || root == "oss_provider" {
-			if profile && root != "oss_provider" {
-				continue
-			}
-			return errors.New("mekugi codex does not support provider overrides; it overrides config.toml provider selection and uses the router's default upstream")
-		}
-	}
-	return nil
 }
 
 // Only session arguments may enter the native interactive client.

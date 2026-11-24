@@ -13,18 +13,18 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 )
 
 func TestAppServerContextWindow(t *testing.T) {
 	u := newAppServerSessionTestUI(t, t.TempDir())
-	setTestAppServerIntegration(u, &observationFixture{usage: newTestUsage(t)})
-	u.usage.Observation("main", "main", "gpt-6-sol", "").Observe(inference.Usage{InputTokens: 900000, UncachedInputTokens: 900000, OutputTokens: 50000})
+	setTestAppServerIntegration(u, &observationFixture{usage: accounting.New()})
+	notifyTestProviderUsage(t, u, "main", "completion", "gpt-5.6-sol", true, 900000, 50000)
 	notify := func(thread string, used, window uint64) {
 		appServerTestNotify(t, u, "thread/tokenUsage/updated", map[string]any{
 			"threadId": thread, "tokenUsage": map[string]any{
-				"total": map[string]any{"inputTokens": 900000, "outputTokens": 50000},
+				"total": map[string]any{"inputTokens": 980000, "outputTokens": 57000},
 				"last":  map[string]any{"totalTokens": used}, "modelContextWindow": window,
 			},
 		})

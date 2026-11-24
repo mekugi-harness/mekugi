@@ -4,80 +4,74 @@ import (
 	"math"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/charmbracelet/x/ansi"
 
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
-
-	"github.com/charmbracelet/x/ansi"
 )
 
+func notifyTestProviderUsage(t *testing.T, u *appServerUI, thread, response, model string, openai bool, input, output uint64) {
+	t.Helper()
+	appServerTestNotify(t, u, "rawResponse/completed", testProviderUsage(thread, response, model, openai, input, output))
+}
+
+func testProviderUsage(thread, response, model string, openai bool, input, output uint64) map[string]any {
+	return map[string]any{
+		"threadId": thread, "turnId": "turn", "responseId": response,
+		"model": model, "openaiEndpoint": openai,
+		"usage": map[string]any{"inputTokens": input, "outputTokens": output},
+		"usageMetadata": map[string]any{"metadata": map[string]any{
+			"input_tokens_details":  map[string]any{"cached_tokens": 0},
+			"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+		}},
+	}
+}
+
 func TestNativeRosterCostMatchesCanonicalUsage(t *testing.T) {
-	proxy := newManagedMekugiProxy(t)
 	u := newAppServerSessionTestUI(t, t.TempDir())
-	setTestAppServerIntegration(u, proxy)
-	counts := inference.Usage{InputTokens: 100_000, UncachedInputTokens: 100_000, OutputTokens: 10_000, TotalsKnown: true}
-	proxy.usage.Observation("child", "", "gpt-6-sol", "").Observe(counts)
-	report, observed := proxy.usage.Snapshot("child")
-	if !observed {
-		t.Fatal("canonical child usage missing")
-	}
-	agent := sessionpresentation.ActivityAgent{Name: "/root/child", Turns: 1, InputTokens: counts.InputTokens, OutputTokens: counts.OutputTokens}
-	observeCost(u.usage, "child", &agent)
+	setTestAppServerIntegration(u, newManagedMekugiProxy(t))
+	appServerTestMessage(t, u, `{"method":"turn/started","params":{"threadId":"child","turn":{"id":"turn"}}}`)
+	notifyTestProviderUsage(t, u, "child", "one", "gpt-6.2-sol", true, 100_000, 10_000)
+	agent := u.attached.session.Agent(u.attached.session.KnownCaller("child"))
 	if !agent.CostKnown || agent.CostPartial || math.Abs(agent.Cost-.3) > 1e-10 ||
-		agent.Cost != report.Cost.CachedInput+report.Cost.UncachedInput+report.Cost.Output ||
-		agent.InputTokens != counts.InputTokens || agent.OutputTokens != counts.OutputTokens {
-		t.Fatalf("native agent = %+v, report = %+v", agent, report)
+		agent.InputTokens != 100_000 || agent.OutputTokens != 10_000 {
+		t.Fatalf("native agent = %+v", agent)
 	}
-	if got := activityui.Cost(testActivityAgent(agent)); got != "$0.30" {
+	if got := activityui.Cost(testActivityAgent(*agent)); got != "$0.30" {
 		t.Fatalf("cost = %q", got)
 	}
-	root := sessionpresentation.ActivityAgent{Name: "/root"}
-	observeCost(u.usage, "root", &root)
+	root := u.attached.session.Agent("/root")
 	if root.CostKnown || root.Cost != 0 {
 		t.Fatalf("child cost leaked into Main: %+v", root)
 	}
 }
 
-func TestNativeRosterUsageGapShowsLowerBoundCost(t *testing.T) {
-	proxy := newManagedMekugiProxy(t)
+func TestNativeRosterUsageGapKeepsMeasuredCost(t *testing.T) {
 	u := newAppServerSessionTestUI(t, t.TempDir())
-	setTestAppServerIntegration(u, proxy)
-	counts := inference.Usage{InputTokens: 100_000, UncachedInputTokens: 100_000, OutputTokens: 10_000, TotalsKnown: true}
-	for _, complete := range []bool{true, false, true} {
-		observation := proxy.usage.Observation("child", "", "gpt-6-sol", "")
-		if complete {
-			observation.Observe(counts)
-		} else {
-			observation.Finish()
-		}
+	setTestAppServerIntegration(u, newManagedMekugiProxy(t))
+	appServerTestMessage(t, u, `{"method":"turn/started","params":{"threadId":"child","turn":{"id":"turn"}}}`)
+	notifyTestProviderUsage(t, u, "child", "one", "gpt-6.2-sol", true, 100_000, 10_000)
+	appServerTestNotify(t, u, "rawResponse/completed", map[string]any{"threadId": "child", "responseId": "missing"})
+	notifyTestProviderUsage(t, u, "child", "two", "gpt-6.2-sol", true, 100_000, 10_000)
+	agent := u.attached.session.Agent(u.attached.session.KnownCaller("child"))
+	if !agent.CostPartial || !agent.CostKnown || !agent.UsagePartial || !agent.TokensKnown || agent.InputTokens != 200_000 || agent.OutputTokens != 20_000 {
+		t.Fatalf("missing usage hid measured counts or priced subtotal: %+v", agent)
 	}
-	agent := sessionpresentation.ActivityAgent{Name: "/root/child", Turns: 3, InputTokens: 200_000}
-	observeCost(u.usage, "child", &agent)
-	if !agent.CostPartial || !agent.CostKnown || math.Abs(agent.Cost-.6) > 1e-10 || agent.InputTokens != 200_000 {
-		t.Fatalf("missing usage hid or reset lower bound: %+v", agent)
-	}
-	if got := activityui.Cost(testActivityAgent(agent)); got != "≥$0.60" {
+	if got := activityui.Cost(testActivityAgent(*agent)); got != "≥$0.60" {
 		t.Fatalf("lower-bound cost = %q", got)
 	}
-	// T+N counts every forwarded provider request, including one without usage,
-	// rather than Codex turns.
-	if agent.Roundtrips != 3 || ansi.Strip(activityui.Turns(testActivityAgent(agent))) != "T+3" {
-		t.Fatalf("roundtrips = %d, label %q", agent.Roundtrips, activityui.Turns(testActivityAgent(agent)))
+	// T+N counts provider roundtrips, including one without usage, not Codex turns.
+	if agent.Roundtrips != 3 || ansi.Strip(activityui.Turns(testActivityAgent(*agent))) != "T+3" {
+		t.Fatalf("roundtrips = %d, label %q", agent.Roundtrips, activityui.Turns(testActivityAgent(*agent)))
 	}
 }
 
-func TestNativeRosterUnknownAndMissingUsageDoNotClaimCost(t *testing.T) {
-	proxy := newManagedMekugiProxy(t)
+func TestNativeRosterUnknownPriceDoesNotClaimCost(t *testing.T) {
 	u := newAppServerSessionTestUI(t, t.TempDir())
-	setTestAppServerIntegration(u, proxy)
-	proxy.usage.Observation("child", "", "unpriced-model", "").Observe(inference.Usage{InputTokens: 10, UncachedInputTokens: 10, OutputTokens: 1, TotalsKnown: true})
-	for _, thread := range []string{"child", "root"} {
-		agent := sessionpresentation.ActivityAgent{}
-		observeCost(u.usage, thread, &agent)
-		if agent.CostKnown || activityui.Cost(testActivityAgent(agent)) != "" {
-			t.Fatalf("%s claimed unknown cost: %+v", thread, agent)
-		}
+	setTestAppServerIntegration(u, newManagedMekugiProxy(t))
+	appServerTestMessage(t, u, `{"method":"turn/started","params":{"threadId":"child","turn":{"id":"turn"}}}`)
+	notifyTestProviderUsage(t, u, "child", "one", "gpt-6.2-sol", false, 10, 1)
+	agent := u.attached.session.Agent(u.attached.session.KnownCaller("child"))
+	if !agent.TokensKnown || agent.CostKnown || activityui.Cost(testActivityAgent(*agent)) != "" {
+		t.Fatalf("unpriced provider usage: %+v", agent)
 	}
 }

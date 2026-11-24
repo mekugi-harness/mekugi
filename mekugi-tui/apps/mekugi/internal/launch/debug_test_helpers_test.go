@@ -5,13 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
-func diagnosticDebugOutput(t *testing.T) *requestexecution.Debug {
+func diagnosticDebugOutput(t *testing.T) *diagnostic.Bundle {
 	t.Helper()
 	d, err := openDebugOutput(testDiagnostics(new(evidence.Service), new(transportcapture.Service)), true, "", os.Getenv(evidence.AXReadOutputEnvironment))
 	if err != nil {

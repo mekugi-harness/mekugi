@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
@@ -19,7 +18,6 @@ func TestUISnapshotSideComposerMetrics(t *testing.T) {
 		u.startSession("main", "/workspace")
 		u.settings.Model, u.settings.Effort, u.settings.Tier = "main-model", "high", "priority"
 		u.usage = accounting.New()
-		t.Cleanup(u.usage.Close)
 		u.clock = func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local) }
 		appServerTestNotify(t, u, "thread/tokenUsage/updated", map[string]any{"threadId": "main", "tokenUsage": map[string]any{"last": map[string]any{"totalTokens": 3000}, "modelContextWindow": 10000}})
 		appServerTestKeys(t, u, "/oneoff inspect\r")
@@ -31,11 +29,10 @@ func TestUISnapshotSideComposerMetrics(t *testing.T) {
 		if caption := u.attached.presentation.View().Caption; caption.Model != "side-model" || caption.Effort != "low" || caption.Tier != "flex" {
 			t.Fatalf("fork settings lost: %+v", caption)
 		}
-		measured := u.usage.Observation("side", "side", "side-model", "flex")
-		measured.Begin()
-		time.Sleep(2 * time.Second)
-		measured.Observe(inference.Usage{TotalsKnown: true, OutputTokens: 100})
 		appServerTestNotify(t, u, "thread/tokenUsage/updated", map[string]any{"threadId": "side", "turnId": "side-turn", "tokenUsage": map[string]any{"last": map[string]any{"totalTokens": 8000}, "modelContextWindow": 20000}})
+		completion := testProviderUsage("side", "side-response", "side-model", false, 8000, 80)
+		completion["requestDurationMs"] = 2000
+		appServerTestNotify(t, u, "rawResponse/completed", completion)
 		appServerTestNotify(t, u, "thread/settings/updated", map[string]any{"threadId": "side", "threadSettings": map[string]any{"model": "live-side", "effort": "medium", "serviceTier": "flex"}})
 		for _, width := range []int{48, 120} {
 			rows, _ := u.testMainFrame(width, 12, 0)

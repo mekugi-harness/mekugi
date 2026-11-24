@@ -1,19 +1,12 @@
 package launch
 
 import (
-	"bytes"
 	"encoding/base64"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
-
-	jsonv1 "encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,72 +18,6 @@ import (
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 )
-
-func TestErrorDetailsLiveCodeMode(t *testing.T) {
-	for _, child := range []bool{false, true} {
-		t.Run(map[bool]string{false: "main", true: "child"}[child], func(t *testing.T) {
-			u := newAppServerSessionTestUI(t, t.TempDir())
-			u.shell.Transcript.Conversation = true
-			u.testActivity(u.shell.Transcript).testAudience()
-			activity := sessioncontrol.NewAudience(nil)
-			activity.Attach("main")
-			proxy := &observationFixture{activity: activity}
-			setTestAppServerIntegration(u, proxy)
-			thread, view, focus := "main", u.testActivity(u.shell.Transcript), 0
-			if child {
-				thread, view, focus = "child", u.testActivity(u.shell.Agents), 0
-				u.testActivity(u.shell.Agents).setDisplayFilter(true, "/root/worker")
-				activity.Observe("child", "main", "/root/worker", true)
-				registerThread(&u.attached.session, binding.ThreadInfo{ID: "child", AgentNickname: "worker"})
-			}
-			// The decisive reason is beyond both the old first-line clip and
-			// Activity's generic 64 KiB message limit. No shell is executed.
-			detail := "exec_command failed: CreateProcess { message: Rejected(" + strings.Repeat("escaped-command ", 5000) + ") }\n\x1b[31mrejected: forced cleanup is not permitted\x1b[0m\n    at cell:17\n"
-			output := []any{
-				map[string]any{"type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\n"},
-				map[string]any{"type": "input_text", "text": "Script error:\n" + detail},
-			}
-			input := responses.MustMarshalJSON([]any{
-				map[string]any{"type": "custom_tool_call", "name": "exec", "call_id": "rejected", "input": "opaque rejected script"},
-				map[string]any{"type": "custom_tool_call_output", "call_id": "rejected", "output": output},
-			})
-			original := bytes.Clone(input)
-			request := &codexresponses.Request{Fields: map[string]jsonv1.RawMessage{"input": input}}
-			for range 2 {
-				observeActivityRequest(t, proxy, thread, map[bool]string{false: "/root", true: "/root/worker"}[thread != "main"], request)
-				applyObservedActivity(&u.attached, &u.Client, u.usage, u.review, &u.approvals, &u.pendingEditReceipts, u.clock, u.restoring, u.audience)
-			}
-			if !bytes.Equal(original, request.Fields["input"]) {
-				t.Fatal("stock host evidence changed")
-			}
-			full := "exec script failed: " + detail
-			if len(view.Entries) != 1 || view.Entries[0].Source.ErrorDetail != full || view.Entries[0].Source.Text != activitypresentation.ErrorPreview(full) {
-				t.Fatal("full evidence or bounded preview lost, or repeated failure duplicated")
-			}
-			if child {
-				view.setDisplayFilter(true, "/root/worker")
-			}
-			feed := view.RenderFeed(80, 40)
-			row := slices.IndexFunc(feed.Snippets, func(s activityui.Snippet) bool { return s != activityui.Snippet{} })
-			if row < 0 || !terminalTest(u).openOutput(view.View, feed.Snippets[row]) {
-				t.Fatal("error click target cannot open shared dialog")
-			}
-			assertErrorDialog(t, terminalTest(u), textsanitize.Safe(full, false))
-			terminalTest(u).outputKey("q")
-			terminalTest(u).Focus = focus
-			u.Text = "keep the user's draft"
-			for _, key := range []byte{2, '!'} {
-				if err := terminalTest(u).key(key); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if u.Text != "keep the user's draft" || terminalTest(u).Focus != focus || terminalTest(u).Dialog == nil {
-				t.Fatal("keyboard detail navigation modified composer or failed to open")
-			}
-			assertErrorDialog(t, terminalTest(u), textsanitize.Safe(full, false))
-		})
-	}
-}
 
 func assertErrorDialog(t *testing.T, u *terminalUI, full string) {
 	t.Helper()

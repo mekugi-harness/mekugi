@@ -14,9 +14,6 @@ func (h *Hub) AdoptThread(owner *Server, thread, parent, workspace string, end f
 	if thread == "" || parent == "" || thread == parent || end == nil {
 		return nil, errors.New("native endpoint requires confirmed child identity and an end owner")
 	}
-	owner.mu.Lock()
-	profile := owner.profileIdentity
-	owner.mu.Unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var runtime *managedSession
@@ -39,7 +36,6 @@ func (h *Hub) AdoptThread(owner *Server, thread, parent, workspace string, end f
 	}
 	server := NewPreparedLive(owner.prepare)
 	server.preparations, server.activeThread = owner.preparations, h.activeThread
-	server.profileIdentity = profile
 	server.questionOwner = func(call string) *Server { return h.questionOwner(server, call) }
 	server.family = func() (*Family, *changes.ReviewView) { return h.Family(thread) }
 	server.reserveThread = func(target string) error {

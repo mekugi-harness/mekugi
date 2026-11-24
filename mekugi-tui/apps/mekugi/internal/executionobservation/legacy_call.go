@@ -11,6 +11,14 @@ import (
 
 // The historical wire schema has no live preview or request-local state.
 // Conversion leaves those fields unset, just as reading retained JSON did.
+// Legacy schema, decoded only when reading retained pre-redesign records.
+type resolvedStockBaseline struct {
+	Root    string
+	Shell   string
+	Files   []changecapture.File     `json:",omitempty"`
+	Omitted []changecapture.Omission `json:",omitempty"`
+}
+
 func legacyBaseline(v legacycall.Baseline) resolvedStockBaseline {
 	return resolvedStockBaseline{
 		Root:    v.Root,

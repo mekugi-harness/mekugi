@@ -14,15 +14,14 @@ import (
 
 func TestBindingsReference(t *testing.T) {
 	bindings := Bindings[struct{}]{
-		Frontends:     true,
-		Rollout:       func(struct{}, RolloutSource) error { panic("Rollout executed") },
-		SessionNaming: func(struct{}) SessionNaming { panic("SessionNaming executed") },
-		Observation:   func(struct{}) Observation { panic("Observation executed") },
+		Frontends:   true,
+		Rollout:     func(struct{}, RolloutSource) error { panic("Rollout executed") },
+		Observation: func(struct{}) Observation { panic("Observation executed") },
 	}
 	want := module.BindingReference{
 		Mechanisms: []string{
 			"executable-frontend", "rollout",
-			"thread-naming", "observation",
+			"observation",
 		},
 	}
 	got := bindings.Reference()
@@ -42,7 +41,6 @@ func TestBindingsReference(t *testing.T) {
 		{name: "empty"},
 		{name: "frontend", bindings: Bindings[struct{}]{Frontends: bindings.Frontends}, want: module.BindingReference{Mechanisms: []string{"executable-frontend"}}},
 		{name: "rollout", bindings: Bindings[struct{}]{Rollout: bindings.Rollout}, want: module.BindingReference{Mechanisms: []string{"rollout"}}},
-		{name: "naming", bindings: Bindings[struct{}]{SessionNaming: bindings.SessionNaming}, want: module.BindingReference{Mechanisms: []string{"thread-naming"}}},
 		{name: "observation", bindings: Bindings[struct{}]{Observation: bindings.Observation}, want: module.BindingReference{Mechanisms: []string{"observation"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,7 +54,7 @@ func TestBindingsReference(t *testing.T) {
 func TestBindingsRegister(t *testing.T) {
 	wantCalls := []string{
 		"executable-frontend", "executable-frontend", "rollout",
-		"thread-naming", "observation",
+		"observation",
 	}
 	for failAt := 0; failAt <= len(wantCalls); failAt++ {
 		name := "success"
@@ -84,10 +82,7 @@ func TestBindingsRegister(t *testing.T) {
 					}
 					return nil
 				},
-				SessionNaming: func(got *int) SessionNaming {
-					checkService(got, "thread-naming")
-					return SessionNaming{NewThread: func(string, bool) ThreadNaming { return nil }}
-				},
+
 				Observation: func(got *int) Observation {
 					checkService(got, "observation")
 					return Observation{NewTranscript: func(*scope.Store) observation.Transcript { return nil }}
@@ -120,7 +115,7 @@ func TestBindingsRegister(t *testing.T) {
 			if got := slices.Compact(slices.Clone(registrar.calls)); !slices.Equal(got, bindings.Reference().Mechanisms) {
 				t.Fatalf("registered mechanisms = %v, reference = %v", got, bindings.Reference().Mechanisms)
 			}
-			if !slices.EqualFunc(registrar.frontends, commands, func(a command.Spec, b command.Definition[*int]) bool { return a == b.Spec }) || registrar.naming.NewThread == nil {
+			if !slices.EqualFunc(registrar.frontends, commands, func(a command.Spec, b command.Definition[*int]) bool { return a == b.Spec }) {
 				t.Fatalf("registered values differ: %+v", registrar)
 			}
 
@@ -154,8 +149,6 @@ type referenceRegistrar struct {
 	failAt    int
 	failure   error
 	frontends []command.Spec
-
-	naming SessionNaming
 }
 
 func (r *referenceRegistrar) record(mechanism string) error {
@@ -176,11 +169,6 @@ func (r *referenceRegistrar) Rollout(attach func(RolloutSource) error) error {
 		return err
 	}
 	return attach(RolloutSource{Identity: func(path string) (string, error) { return path + " identity", nil }})
-}
-
-func (r *referenceRegistrar) SessionNaming(naming SessionNaming) error {
-	r.naming = naming
-	return r.record("thread-naming")
 }
 
 func (r *referenceRegistrar) Observation(Observation) error { return r.record("observation") }

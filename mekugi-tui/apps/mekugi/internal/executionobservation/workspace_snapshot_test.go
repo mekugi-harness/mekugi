@@ -19,7 +19,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/execscope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 
@@ -62,24 +61,38 @@ func TestWorkspaceSnapshotRepositoryIgnoresUserGitConfig(t *testing.T) {
 	gitTestRun(t, workspace, "commit", "--quiet", "--allow-empty", "-m", "isolated command")
 }
 
-// runSnapshotExec streams one native command, applies effect as the host,
-// and reconciles its terminal result. It returns the derived record and the
-// reconciling request's context.
-func runSnapshotExec(t *testing.T, proxy *Preparer, workspace, callID, command string, effect func()) (mekugiHistory, context.Context) {
+// runSnapshotExec observes the native user-shell operation around the host effect.
+func runSnapshotExec(t *testing.T, proxy *Preparer, workspace, callID, command string, effect func(context.Context)) (mekugiHistory, context.Context) {
 	t.Helper()
-	transform := prepareNativeStockTransform(t, proxy, workspace, "snapshot-"+callID)
-	arguments := string(responses.MustMarshalJSON(map[string]any{"cmd": command, "workdir": workspace}))
-	retainCommandObservation(t, transform, callID, arguments)
-	effect()
-	next := reconcileExecItems(t, proxy, workspace, []any{
-		map[string]any{"type": "function_call", "call_id": callID, "name": nativeExecCommandToolName, "arguments": arguments},
-		map[string]any{"type": "function_call_output", "call_id": callID, "output": nativeExecOutput("Process exited with code 0")},
-	})
-	history, _, err := testProxyStore(proxy).lookup(t.Context(), workspace, legacycall.ExecCallID(callID, false))
+	store := testProxyStore(proxy)
+	thread := proxy.Retained.Thread
+	if thread == "" {
+		thread = uniqueTestThread("snapshot")
+	}
+	ctx, release, err := store.beginSession(t.Context(), thread)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return history, next.ctx
+	t.Cleanup(release)
+	ctx = bindTestHandleScope(t, store, ctx, "", "")
+	scope := store.scoped(ctx).changeScope()
+	proxy.Retained = scope
+	operation := PrepareShell(ctx, scope, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice,
+		ShellInput{Thread: scope.Thread, Namespace: scope.Namespace, Workspace: workspace, Caller: "/root", Shell: "bash", Command: command})
+	if operation == nil {
+		t.Fatal("expected an observed command")
+	}
+	operation.Begin(proxy.Review)
+	operation.BindItem(callID)
+	effect(ctx)
+	if err := operation.Complete(binding.ToolResult{CallID: callID, Tool: "userShell", Status: "completed", ExitCode: new(0)}, nativeExecOutput("Process exited with code 0")); err != nil {
+		t.Fatal(err)
+	}
+	value, found, err := store.lookup(ctx, workspace, legacycall.ExecCallID(operation.call, false))
+	if err != nil || !found {
+		t.Fatalf("%s: missing native shell capture (err = %v)", callID, err)
+	}
+	return value, ctx
 }
 
 func reviewPaths(history mekugiHistory) []string {
@@ -107,7 +120,7 @@ func TestWorkspaceSnapshotRecordsUnnamedEditsWithinIgnoreRules(t *testing.T) {
 	}
 
 	// The parser cannot name these targets; the host still writes them.
-	history, ctx := runSnapshotExec(t, proxy, workspace, "dynamic", "python3 tools/edit.py", func() {
+	history, ctx := runSnapshotExec(t, proxy, workspace, "dynamic", "python3 tools/edit.py", func(context.Context) {
 		writeTestFile(t, filepath.Join(workspace, "main.go"), "package main\n\nfunc renamed() {}\n")
 		writeTestFile(t, filepath.Join(workspace, "notes.md"), "untracked after\n")
 		writeTestFile(t, filepath.Join(workspace, "generated", "new.txt"), "created\n")
@@ -142,9 +155,8 @@ func TestWorkspaceSnapshotRecordsUnnamedEditsWithinIgnoreRules(t *testing.T) {
 	}
 
 	// A later read-only command takes no checkpoint and records nothing.
-	transform := prepareNativeStockTransform(t, proxy, workspace, "snapshot-read")
-	retainCommandObservation(t, transform, "read", string(responses.MustMarshalJSON(map[string]any{"cmd": "rg renamed", "workdir": workspace})))
-	if _, found := transform.local["read"]; found {
+	if operation := PrepareShell(ctx, testProxyStore(proxy).scoped(ctx).changeScope(), proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice,
+		ShellInput{Workspace: workspace, Command: "rg renamed", Shell: "bash"}); operation != nil {
 		t.Fatal("a neutral reader was observed")
 	}
 }
@@ -160,7 +172,7 @@ func TestWorkspaceSnapshotRetainedIgnoredPathDoesNotBecomeDeletion(t *testing.T)
 	artifact := filepath.Join(workspace, "build", "cache.bin")
 	writeTestFile(t, artifact, strings.Repeat("\x00", changecapture.MaxFileBytes+1))
 
-	history, ctx := runSnapshotExec(t, proxy, workspace, "ignore-transition", "python3 edit.py", func() {
+	history, ctx := runSnapshotExec(t, proxy, workspace, "ignore-transition", "python3 edit.py", func(context.Context) {
 		writeTestFile(t, filepath.Join(workspace, ".gitignore"), "/build/\n*.log\n")
 		writeTestFile(t, tracked, "after\n")
 
@@ -172,7 +184,7 @@ func TestWorkspaceSnapshotRetainedIgnoredPathDoesNotBecomeDeletion(t *testing.T)
 		t.Fatalf("ignored artifact made the net diff incomplete: %v", err)
 	}
 	// Source-named edits retain coverage even when their path is ignored.
-	named, _ := runSnapshotExec(t, proxy, workspace, "named-ignored", "printf 'written\\n' > build/note.txt", func() {
+	named, _ := runSnapshotExec(t, proxy, workspace, "named-ignored", "printf 'written\\n' > build/note.txt", func(context.Context) {
 		writeTestFile(t, filepath.Join(workspace, "build", "note.txt"), "written\n")
 	})
 	if len(named.ReviewFiles) != 1 || !strings.HasSuffix(named.ReviewFiles[0].AfterPath, "build/note.txt") {
@@ -186,7 +198,7 @@ func TestWorkspaceSnapshotPlainWorkspaceBoundsNewTrees(t *testing.T) {
 	attachTestReplayStore(t, proxy)
 	workspace := t.TempDir()
 	writeTestFile(t, filepath.Join(workspace, "existing.txt"), "before\n")
-	history, _ := runSnapshotExec(t, proxy, workspace, "plain", "./generate", func() {
+	history, _ := runSnapshotExec(t, proxy, workspace, "plain", "./generate", func(context.Context) {
 		writeTestFile(t, filepath.Join(workspace, "existing.txt"), "after\n")
 		writeTestFile(t, filepath.Join(workspace, "small", "new.txt"), "new\n")
 		for index := range 257 {
@@ -219,7 +231,7 @@ func TestWorkspaceSnapshotOverlappingCallsRecordAnEffectOnce(t *testing.T) {
 			ExecObservation: &changecapture.Observation{Commands: []commandanalysis.Command{{Command: ref}}, Class: execscope.Opaque.String(), Roots: []string{f.workspace}, Tree: tree}}
 	}
 	finalize := func(proxy *Preparer, ref string, history mekugiHistory) mekugiHistory {
-		if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: ref, history: history, result: binding.DecodeExecutionResult(history.ToolName, responses.MustMarshalJSON(nativeExecOutput("Process exited with code 0")))}}); err != nil {
+		if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: ref, history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0), Text: nativeExecOutput("Process exited with code 0")}}}); err != nil {
 			t.Fatal(err)
 		}
 		record, _, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID(ref, false))
@@ -421,7 +433,7 @@ func TestWorkspaceSnapshotRecordsBytesOnDiskDespiteAttributes(t *testing.T) {
 	writeTestFile(t, filepath.Join(workspace, ".gitattributes"), "*.txt text eol=crlf\n")
 	writeTestFile(t, filepath.Join(workspace, "notes.txt"), "a\r\nb\r\nc\r\n")
 	gitTestCommit(t, workspace)
-	history, _ := runSnapshotExec(t, proxy, workspace, "crlf", "python3 tools/edit.py", func() {
+	history, _ := runSnapshotExec(t, proxy, workspace, "crlf", "python3 tools/edit.py", func(context.Context) {
 		writeTestFile(t, filepath.Join(workspace, "notes.txt"), "a\r\nB\r\nc\r\n")
 	})
 	if len(history.ReviewFiles) != 1 {
@@ -448,7 +460,7 @@ func TestWorkspaceSnapshotRecoversFromAnUnmergedSeedIndex(t *testing.T) {
 	gitTestRun(t, repository, "commit", "--quiet", "-am", "main")
 	gitTestRun(t, repository, "merge", "--quiet", "side") // Leaves other/f unmerged.
 	workspace := filepath.Join(repository, "sub")
-	history, _ := runSnapshotExec(t, proxy, workspace, "unmerged", "python3 edit.py", func() {
+	history, _ := runSnapshotExec(t, proxy, workspace, "unmerged", "python3 edit.py", func(context.Context) {
 		writeTestFile(t, filepath.Join(workspace, "x.go"), "after\n")
 	})
 	if paths := strings.Join(reviewPaths(history), "\n"); len(history.ReviewFiles) != 1 || !strings.Contains(paths, filepath.Join("sub", "x.go")) {
@@ -479,7 +491,7 @@ func TestWorkspaceSnapshotClaimsStayWithinTheirWorkspace(t *testing.T) {
 		ref, workspace string
 		history        mekugiHistory
 	}{{"outer", f.workspace, outer}, {"nested", inner, nested}} {
-		if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, call.workspace, []execCompletion{{callID: call.ref, history: call.history, result: binding.DecodeExecutionResult(call.history.ToolName, responses.MustMarshalJSON(nativeExecOutput("Process exited with code 0")))}}); err != nil {
+		if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, call.workspace, []execCompletion{{callID: call.ref, history: call.history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0), Text: nativeExecOutput("Process exited with code 0")}}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -513,7 +525,7 @@ func TestWorkspaceSnapshotVCSChangesStayOutOfAuthoredTotals(t *testing.T) {
 			if mixed {
 				command = "env -u BASH_ENV rtk proxy git switch incoming; python3 -c " + commandargs.QuoteArgument("from pathlib import Path; Path('authored.txt').write_text('after\\n')")
 			}
-			history, ctx := runSnapshotExec(t, proxy, workspace, "vcs", command, func() {
+			history, ctx := runSnapshotExec(t, proxy, workspace, "vcs", command, func(context.Context) {
 				if mixed {
 					gitTestRun(t, workspace, "switch", "incoming")
 					writeTestFile(t, filepath.Join(workspace, "authored.txt"), "after\n")

@@ -1270,7 +1270,9 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
             outgoing.send_server_notification(notification).await;
         }
-        msg @ (EventMsg::PatchApplyUpdated(_) | EventMsg::TerminalInteraction(_)) => {
+        msg @ (EventMsg::PatchApplyUpdated(_)
+        | EventMsg::CodeModeInputDelta(_)
+        | EventMsg::TerminalInteraction(_)) => {
             let notification = item_event_to_server_notification(
                 msg,
                 &conversation_id.to_string(),
@@ -1354,6 +1356,10 @@ pub(crate) async fn apply_bespoke_event_handling(
                 response_id: raw_response_completed_event.response_id,
                 usage: raw_response_completed_event.token_usage.map(Into::into),
                 usage_metadata: raw_response_completed_event.usage_metadata.map(Into::into),
+                model: raw_response_completed_event.model,
+                service_tier: raw_response_completed_event.service_tier,
+                openai_endpoint: raw_response_completed_event.openai_endpoint,
+                request_duration_ms: raw_response_completed_event.request_duration_ms,
             };
             outgoing
                 .send_server_notification(ServerNotification::RawResponseCompleted(notification))

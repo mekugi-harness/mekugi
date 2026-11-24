@@ -102,3 +102,90 @@ async fn named_empty_paginated_thread_resumes_after_restart() -> Result<()> {
     assert_eq!(completed.turn.error, None);
     Ok(())
 }
+
+#[tokio::test]
+async fn automatic_title_uses_the_selected_provider_without_blocking_the_turn() -> Result<()> {
+    use core_test_support::responses;
+    use core_test_support::streaming_sse::{StreamingSseChunk, start_streaming_sse_server};
+
+    let (release, waiting) = tokio::sync::oneshot::channel();
+    let response = |id: &str, text: &str, tokens, gate| {
+        vec![StreamingSseChunk {
+            gate,
+            body: responses::sse(vec![
+                responses::ev_response_created(id),
+                responses::ev_assistant_message(id, text),
+                responses::ev_completed_with_tokens(id, tokens),
+            ]),
+        }]
+    };
+    let (server, _) = start_streaming_sse_server(vec![
+        response("answer", "Done", 29, None),
+        response("title", "Repair Index", 11, Some(waiting)),
+    ])
+    .await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(server.uri()).write(home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .with_env_overrides(&[("MEKUGI_AUTO_TITLE", Some("1"))])
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = app.start_thread(ThreadStartParams::default()).await?;
+    let completed = timeout(
+        READ_TIMEOUT,
+        app.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "Repair the search index".into(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        }),
+    )
+    .await??;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    timeout(READ_TIMEOUT, server.wait_for_request_count(2)).await?;
+    let requests = server.requests().await;
+    let title: serde_json::Value = serde_json::from_slice(&requests[1])?;
+    let answer: serde_json::Value = serde_json::from_slice(&requests[0])?;
+    assert_eq!(title["model"], answer["model"]);
+    assert_eq!(
+        title["input"]
+            .as_array()
+            .and_then(|items| items.last())
+            .expect("title prompt")["content"][0]["text"],
+        "Repair the search index"
+    );
+    assert_eq!(title["tools"], serde_json::json!([]));
+    release.send(()).expect("unblock title request");
+    let notification = timeout(
+        READ_TIMEOUT,
+        app.read_stream_until_notification_message("thread/name/updated"),
+    )
+    .await??;
+    let name: codex_app_server_protocol::ThreadNameUpdatedNotification =
+        serde_json::from_value(notification.params.expect("notification params"))?;
+    assert_eq!(name.thread_id, thread.id);
+    assert_eq!(name.thread_name.as_deref(), Some("Repair Index"));
+    assert!(
+        timeout(READ_TIMEOUT, app.shutdown_gracefully())
+            .await??
+            .success()
+    );
+    let mut app = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized()
+        .await?;
+    let resume = app
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let resumed: ThreadResumeResponse = timeout(READ_TIMEOUT, app.read_response(resume)).await??;
+    assert_eq!(resumed.thread.context_tokens, Some(29));
+    server.shutdown().await;
+    Ok(())
+}

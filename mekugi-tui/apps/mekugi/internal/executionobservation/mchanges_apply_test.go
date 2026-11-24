@@ -14,7 +14,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/execscope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/projection"
@@ -62,7 +61,7 @@ func TestMChangesRevertAndApplyReportHistoryStat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "stock-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "stock-thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +143,7 @@ func TestMChangesRevertLeavesConflictMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "stock-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "stock-thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,21 +196,9 @@ func TestMChangesRevertIsRecordedAndRevertable(t *testing.T) {
 
 	run := func(callID, command string, effect func(ctx context.Context)) mekugiHistory {
 		t.Helper()
-		transform := prepareNativeStockTransform(t, proxy, workspace, "exec-session-"+callID)
-		arguments := string(responses.MustMarshalJSON(map[string]any{"cmd": command, "workdir": workspace}))
-		retainCommandObservation(t, transform, callID, arguments)
-		observation := transform.local[callID].ExecObservation
-		if observation == nil || observation.Class != "declared" {
-			t.Fatalf("%q observation = %+v", command, observation)
-		}
-		effect(transform.ctx)
-		reconcileExecItems(t, proxy, workspace, []any{
-			map[string]any{"type": "function_call", "call_id": callID, "name": nativeExecCommandToolName, "arguments": arguments},
-			map[string]any{"type": "function_call_output", "call_id": callID, "output": nativeExecOutput("Process exited with code 0")},
-		})
-		history, found, err := testProxyStore(proxy).lookup(t.Context(), workspace, callID+":exec:1")
-		if err != nil || !found || history.ChangeID == "" {
-			t.Fatalf("%q record = %+v found=%v err=%v", command, history, found, err)
+		history, _ := runSnapshotExec(t, proxy, workspace, callID, command, effect)
+		if history.ChangeID == "" {
+			t.Fatalf("%q record has no change ID: %+v", command, history)
 		}
 		return history
 	}
@@ -290,7 +277,7 @@ func TestMChangesRevertReportsUnknownStat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "stock-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "stock-thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +323,7 @@ func TestMChangesRevertKeepsMoveSourceWhenDestinationFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "stock-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "stock-thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +357,7 @@ func TestMChangesFrontendRevertsWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "revert-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "revert-thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +408,7 @@ func TestMChangesRevertSwapsDirectoryAndFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "stock-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "stock-thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +452,7 @@ func TestMChangesSkipsRecordedSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "stock-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "stock-thread")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +488,7 @@ func TestMChangesHistoryFollowsMovesToDroppedDiffs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := store.beginSession(t.Context(), "stock-thread", "")
+	ctx, release, err := store.beginSession(t.Context(), "stock-thread")
 	if err != nil {
 		t.Fatal(err)
 	}

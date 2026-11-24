@@ -7,21 +7,17 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/providers/openai"
 )
 
 // Live continuation uses the built-in OpenAI provider. Reset itself is native;
@@ -31,6 +27,7 @@ func TestCompactReloadLiveOpenAI(t *testing.T) {
 	if model == "" {
 		t.Fatal("MEKUGI_E2E_MODEL must be set")
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	registry, err := buildToolRegistryForTest(t, t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -58,45 +55,16 @@ func TestCompactReloadLiveOpenAI(t *testing.T) {
 		t.Fatal(err)
 	}
 	setTestProxyStore(proxy, store)
-	provider := &liveCompactProvider{Forwarder: newTestProviderClient(openai.BaseURL, http.DefaultClient)}
-	executor := testRequestExecutor(provider, nil, proxy)
-	handler := inferencegateway.ResponsesHandler(t.Context(), time.Minute, executor.ExecuteHTTP)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-			http.Error(w, "use HTTP", http.StatusUpgradeRequired)
-			return
-		}
-		handler(w, r)
-	}))
-	defer server.Close()
-	// Copy authentication privately into the isolated host configuration.
-	configRoot := os.Getenv("CODEX_HOME")
-	if configRoot == "" {
-		user, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		configRoot = filepath.Join(user, ".codex")
-	}
-	auth, err := os.ReadFile(filepath.Join(configRoot, "auth.json"))
-	if err != nil {
-		t.Fatal("live Codex authentication required")
-	}
-	environment := builtInOpenAICodexEnvironment(t)
-	for _, entry := range environment {
-		if path, ok := strings.CutPrefix(entry, "CODEX_HOME="); ok {
-			if err := os.WriteFile(filepath.Join(path, "auth.json"), auth, 0600); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
+	traceRoot := t.TempDir()
+	environment := liveOpenAIEnvironment(t, traceRoot)
 	environment, err = frontendShellEnvironment(environment, filepath.Dir(filepath.Join(registry.FrontendDirectory, "mcat")), "", segmenttransport.Endpoints{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	environment = append(environment, routerTestWorkerEnvironment+"=1")
 	terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {
-		args := nativeAppServerArgs(codexArgs(server.URL+"/v1", []string{"-c", fmt.Sprintf("model=%q", model), "-c", "features.plugins=false", "-c", "model_reasoning_effort=\"low\""}, nil))
+		args := []string{"-c", fmt.Sprintf("model=%q", model), "-c", `model_provider="openai"`,
+			"-c", "features.plugins=false", "-c", `model_reasoning_effort="low"`}
 		cmd := exec.CommandContext(ctx, "mekugi-app-server", args...)
 		cmd.Env, cmd.Dir = environment, workspace
 		return cmd
@@ -112,10 +80,21 @@ func TestCompactReloadLiveOpenAI(t *testing.T) {
 	terminal.send("Read guide.txt and SKILL.md with ordinary tools and report their current file and skill tokens.\r")
 	terminal.await("FILE_AFTER_7391")
 	terminal.await("SKILL_AFTER_8264")
-	if !provider.reloaded.Load() {
-		t.Fatal("fresh file and skill results did not reach live provider as reloaded context")
+	terminal.awaitStatus("Completed")
+	terminal.quit()
+	samples := readLiveInferences(t, traceRoot)
+	foundFresh := false
+	for _, sample := range samples {
+		if sample.contains("FILE_AFTER_7391") && sample.contains("SKILL_AFTER_8264") {
+			if sample.contains("<mekugi-reload-v1>") {
+				t.Fatal("selection metadata leaked into native continuation")
+			}
+			foundFresh = true
+		}
 	}
-	terminal.stopCanceled()
+	if !foundFresh {
+		t.Fatal("fresh file and skill results did not reach the live provider")
+	}
 	t.Log("actual /compact: native reset followed by ordinary selected reads reached live continuation")
 }
 
@@ -303,19 +282,4 @@ func TestNativeMigrationLiveOpenAI(t *testing.T) {
 		t.Fatalf("compound/native family counts: self=%+v descendants=%+v agents=%d", last.Self.FeatureUse, last.Descendants.FeatureUse, last.Agents)
 	}
 	t.Logf("Luna compound reset and native family aggregation: self=%+v descendants=%+v", last.Self.FeatureUse, last.Descendants.FeatureUse)
-}
-
-type liveCompactProvider struct {
-	inferencegateway.Forwarder
-	reloaded atomic.Bool
-}
-
-func (p *liveCompactProvider) ForwardExecution(ctx, execution context.Context, body []byte, headers http.Header, model string) (*inferencegateway.Response, error) {
-	if bytes.Contains(body, []byte("FILE_AFTER_7391")) && bytes.Contains(body, []byte("SKILL_AFTER_8264")) {
-		if i := bytes.Index(body, []byte("<mekugi-reload-v1>")); i >= 0 {
-			return nil, fmt.Errorf("selection metadata leaked into continuation: %.300s", body[i:])
-		}
-		p.reloaded.Store(true)
-	}
-	return p.Forwarder.ForwardExecution(ctx, execution, body, headers, model)
 }

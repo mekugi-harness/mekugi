@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
@@ -18,11 +19,11 @@ func runHeadless(ctx context.Context, routerArgs, args []string, input io.Reader
 	if err != nil {
 		return 2, err
 	}
-	if err := validateCodexArgs(args, profile != ""); err != nil {
+	overrides, resume, yolo, err := appServerArgs(expandReasoningShortcuts(args))
+	if err != nil {
 		return 2, err
 	}
-	_, resume, yolo, err := appServerArgs(expandReasoningShortcuts(args))
-	if err != nil {
+	if err := validateProviderOverrides(overrides, profile); err != nil {
 		return 2, err
 	}
 	if !yolo {
@@ -45,7 +46,7 @@ func runHeadless(ctx context.Context, routerArgs, args []string, input io.Reader
 	launcher := &serverLauncher{headless: stream}
 	hub := sessionapi.NewHub(ctx, launcher)
 	launcher.hub = hub
-	thread, err := hub.RunNative(ctx, sessionapi.NativeStart{Workspace: workspace, RouterArgs: routerArgs, Args: args}, prompt)
+	thread, err := hub.RunNative(ctx, sessionapi.NativeStart{Workspace: workspace, RouterArgs: routerArgs, Args: args, Environment: os.Environ()}, prompt)
 	hub.Close()
 	err = errors.Join(err, launcher.workers.Close(), stream.Err())
 	if err != nil {
@@ -58,4 +59,25 @@ func runHeadless(ctx context.Context, routerArgs, args []string, input io.Reader
 		return 1, err
 	}
 	return 0, nil
+}
+
+// The native argument parser has normalized config overrides to -c VALUE.
+func validateProviderOverrides(args []string, profile string) error {
+	for i := 0; i < len(args); i++ {
+		if args[i] != "-c" {
+			continue
+		}
+		i++
+		key, _, _ := strings.Cut(args[i], "=")
+		root, _, _ := strings.Cut(key, ".")
+		switch strings.Trim(strings.TrimSpace(root), `"'`) {
+		case "oss_provider":
+			return errors.New("Mekugi does not support local OSS providers")
+		case "model_provider", "model_providers", "openai_base_url":
+			if profile == "" {
+				return errors.New("provider overrides require a named Mekugi profile")
+			}
+		}
+	}
+	return nil
 }

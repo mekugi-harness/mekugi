@@ -10,5 +10,7 @@ use ts_rs::TS;
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq, TS, JsonSchema)]
 pub struct ResponseUsageMetadata {
     pub amount: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     pub metadata: Option<Value>,
 }

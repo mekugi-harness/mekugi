@@ -22,21 +22,19 @@ import (
 
 const maxExecWindows = 1024
 
-// execWindow is the observation window of one writer call: from forwarding
+// execWindow is the observation window of one writer call: from observing
 // the call to observing its terminal result. The registry is in memory, so
 // after a restart, records carry no overlap tags for windows opened before it.
 type execWindow struct {
-	intervalMu               sync.Mutex
-	owner                    *Windows
-	scope                    changes.Scope
-	cuts                     []execIntervalCut
-	ref                      string
-	roots                    []string
-	thread                   string
-	turn                     string
-	source, workspace, shell string
-	nativeDirectory          *changecapture.Observation
-	dynamic                  bool // The cell may supply its working directory at native dispatch.
+	intervalMu sync.Mutex
+	owner      *Windows
+	cuts       []execIntervalCut
+	ref        string
+	roots      []string
+	thread     string
+	turn       string
+	workspace  string
+	dynamic    bool // The cell may supply its working directory at native dispatch.
 	// group identifies the response that emitted the call.
 	group  string
 	paths  []string
@@ -54,12 +52,6 @@ type execWindow struct {
 	// claims are snapshot states that overlapping calls already recorded.
 	// This window's snapshot comparison starts from them.
 	claims changecapture.Claims
-}
-
-func (w *execWindow) coversInterval(path string) bool {
-	return slices.Contains(w.paths, path) || !w.background && slices.ContainsFunc(w.roots, func(root string) bool {
-		return changes.PathWithin(path, root)
-	})
 }
 
 type Windows struct {
@@ -297,25 +289,6 @@ func (r *Windows) setSession(ref, session string) {
 	defer r.state().mu.Unlock()
 	if window := r.find(ref); window != nil {
 		window.session = session
-	}
-}
-
-// markBackground marks windows of thread that are still open when a request
-// for another turn arrives. They stop producing overlap tags.
-func (r *Windows) markBackground(thread, turn string) {
-	if r == nil || turn == "" {
-		return
-	}
-	r.state().mu.Lock()
-	defer r.state().mu.Unlock()
-	for _, window := range r.state().windows {
-		if window.thread == thread && window.turn != "" && window.turn != turn && window.closed.IsZero() && window.session != "" {
-			window.background = true
-			if window.previewCancel != nil {
-				window.previewCancel()
-				window.previewCancel = nil
-			}
-		}
 	}
 }
 

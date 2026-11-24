@@ -14,7 +14,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -1125,12 +1124,6 @@ type execTrackFixture struct {
 func (h *execTrackFixture) start(key [3]string, command string) {
 	if script, ok := shellinstrumentation.CommandScript(command); ok {
 		h.Start(key, script)
-	}
-}
-
-func (h *execTrackFixture) observeCommandStart(message appserver.Message) {
-	if command, ok := binding.DecodeCommandObservation(message.Method, message.Params); ok && message.Method == "item/started" {
-		h.start(command.Key, command.Command)
 	}
 }
 

@@ -29,7 +29,11 @@ func newShellEditTestUI(t *testing.T) *appServerUI {
 		t.Fatal(err)
 	}
 	t.Cleanup(u.retainedSession.Close)
-	u.shellEdits.shell = execTrackShellExecutable(t, "bash")
+	if _, err := u.Requests.Send("environment/info", nil, "main", appServerRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	request := resumeTestOne(t, u.Host.Input.(*appServerTestInput), "environment/info")
+	appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{"shell":{"path":%q}}}`, request.ID, execTrackShellExecutable(t, "bash")))
 	return u
 }
 
@@ -124,7 +128,7 @@ func TestAppServerShellEditsFailedWriterAndNoEffect(t *testing.T) {
 	appServerTestTurn(t, u, "model")
 	for _, command := range []string{"printf 'saved\\n' > \"$SHELL_EDIT_TARGET\"; exit 7", "rm -f missing.txt"} {
 		startShellEditTestCommand(t, u, command, command)
-		cmd := exec.Command(u.shellEdits.shell, "-c", command)
+		cmd := exec.Command(u.preparer.LocalShell(), "-c", command)
 		cmd.Dir = u.attached.cwd
 		cmd.Env = append(mchangesSliceInvocation(u.attached.cwd, u.Thread).environment, "SHELL_EDIT_TARGET=saved.txt")
 		err := cmd.Run()

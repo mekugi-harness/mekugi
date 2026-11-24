@@ -7,8 +7,6 @@ import (
 	"context"
 	"encoding/base64"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 
@@ -22,7 +20,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // questionCodexProvider makes the installed Codex emit the real tool call and
@@ -35,7 +32,7 @@ type questionCodexProvider struct {
 	turns    int
 }
 
-func (p *questionCodexProvider) ForwardExecution(ctx, _ context.Context, body []byte, _ http.Header, _ string) (*inferencegateway.Response, error) {
+func (p *questionCodexProvider) respond(ctx context.Context, body []byte, _ http.Header) (*http.Response, error) {
 	p.mu.Lock()
 	p.turns++
 	turn := p.turns
@@ -53,7 +50,7 @@ func (p *questionCodexProvider) ForwardExecution(ctx, _ context.Context, body []
 		}
 	}
 	if turn > 1 {
-		return testGatewayResponse(routerFaultCodexSuccessResponse(), nil)
+		return fixtureResponsesSuccess(), nil
 	}
 	name, args := "request_user_input", map[string]any{"questions": []any{map[string]any{
 		"header": "Scope", "question": "Which release scope?",
@@ -66,13 +63,13 @@ func (p *questionCodexProvider) ForwardExecution(ctx, _ context.Context, body []
 	}
 	item := map[string]any{"type": "function_call", "id": fmt.Sprintf("question-item-%s", p.mode), "call_id": fmt.Sprintf("question-call-%s", p.mode), "name": name, "arguments": string(responses.MustMarshalJSON(args)), "status": "completed"}
 	response := map[string]any{"id": "question-response", "status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}
-	return testGatewayResponse(routerFaultCodexStreamResponse(routerFaultSSE(
+	return fixtureResponsesStream(fixtureResponsesSSE(
 		map[string]any{"type": "response.created", "response": map[string]any{"id": "question-response", "status": "in_progress", "output": []any{}}},
 		map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item},
 		map[string]any{"type": "response.function_call_arguments.done", "item_id": item["id"], "arguments": item["arguments"]},
 		map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item},
 		map[string]any{"type": "response.completed", "response": response},
-	)), nil)
+	)), nil
 }
 
 func TestUserInputQuestionsNativeCodexE2E(t *testing.T) {
@@ -116,7 +113,7 @@ func TestUserInputQuestionsNativeCodexE2E(t *testing.T) {
 			}
 			provider := &questionCodexProvider{mode: mode, requests: make(chan []byte, 8), gate: make(chan struct{})}
 			gateClosed := false
-			server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+			server := httptest.NewServer(fixtureResponsesHandler(provider))
 			defer server.Close()
 			defer func() {
 				if !gateClosed {

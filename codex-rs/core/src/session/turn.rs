@@ -2761,6 +2761,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::ExecCommandEnd(_)
         | EventMsg::PatchApplyBegin(_)
         | EventMsg::PatchApplyUpdated(_)
+        | EventMsg::CodeModeInputDelta(_)
         | EventMsg::PatchApplyEnd(_)
         | EventMsg::ImageGenerationBegin(_)
         | EventMsg::ImageGenerationEnd(_)
@@ -3420,7 +3421,12 @@ async fn try_run_sampling_request(
         };
 
         let event = SamplingStream::accept_for_turn(event, &cancellation_token);
-        let Some(crate::client_common::SamplingEvent { event, hook_output }) = event else {
+        let Some(crate::client_common::SamplingEvent {
+            event,
+            hook_output,
+            request_duration_ms,
+        }) = event
+        else {
             if stream.consumer_dropped.is_cancelled() {
                 break Ok(SamplingRequestResult {
                     needs_follow_up: true,
@@ -3886,9 +3892,11 @@ async fn try_run_sampling_request(
                 .await;
                 sess.record_observed_response_completed(
                     &turn_context,
+                    &step_context.settings,
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    request_duration_ms,
                 )
                 .await;
                 let mut hook_output = hook_output;

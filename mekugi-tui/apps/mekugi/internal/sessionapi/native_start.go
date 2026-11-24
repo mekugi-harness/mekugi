@@ -16,7 +16,7 @@ type NativeStart struct {
 	Workspace   string   `json:"workspace"`
 	RouterArgs  []string `json:"routerArgs"`
 	Args        []string `json:"args"`
-	Environment []string `json:"environment,omitempty"`
+	Environment []string `json:"environment,omitzero"`
 }
 
 // ProfileIdentity is private attachment admission, never a public session fact.
@@ -25,9 +25,9 @@ type ProfileIdentity struct {
 	Home string `json:"home"`
 }
 
-func (s *Server) BindProfileIdentity(identity ProfileIdentity) {
+func (s *Server) BindProfileVerifier(verify func(context.Context, string, ProfileIdentity) error) {
 	s.mu.Lock()
-	s.profileIdentity = identity
+	s.verifyProfile = verify
 	s.mu.Unlock()
 }
 

@@ -12,11 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
 
 func TestSideForkDuringMainCompactionNativeCodex(t *testing.T) {
@@ -24,7 +19,7 @@ func TestSideForkDuringMainCompactionNativeCodex(t *testing.T) {
 	seed, compact := make(chan struct{}), make(chan struct{})
 	close(seed)
 	provider := &appQueueProvider{requests: make(chan []byte, 8), gates: []chan struct{}{seed, compact}}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	defer func() {
 		select {
@@ -88,11 +83,11 @@ type btwCompactionProvider struct {
 	mainTurns, sideTurns, compactions int
 }
 
-func (p *btwCompactionProvider) ForwardExecution(_, _ context.Context, _ []byte, headers http.Header, _ string) (*inferencegateway.Response, error) {
+func (p *btwCompactionProvider) respond(_ context.Context, _ []byte, headers http.Header) (*http.Response, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	metadata, _ := codexresponses.DecodeTurnMetadata(headers)
-	thread := headers.Get(codexresponses.ThreadIDHeader)
+	metadata, _ := fixtureTurnMetadata(headers)
+	thread := headers.Get(fixtureThreadIDHeader)
 	if thread == "" {
 		thread = metadata.ThreadID
 	}
@@ -115,19 +110,17 @@ func (p *btwCompactionProvider) ForwardExecution(_, _ context.Context, _ []byte,
 		"id": id + "-message", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
 		"content": []any{map[string]any{"type": "output_text", "text": text, "annotations": []any{}}},
 	}
-	wire := routerFaultSSE(
+	wire := fixtureResponsesSSE(
 		map[string]any{"type": "response.created", "response": map[string]any{"id": id, "status": "in_progress", "output": []any{}}},
 		map[string]any{"type": "response.output_item.added", "output_index": 0, "item": item},
 		map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item},
 		map[string]any{"type": "response.completed", "response": map[string]any{"id": id, "status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": tokens, "output_tokens": 1, "total_tokens": tokens + 1}}},
 	)
-	response := serverHTTPResponse(wire)
-	response.Header.Set("Content-Type", "text/event-stream")
-	return testGatewayResponse(response, nil)
+	return fixtureResponsesStream(wire), nil
 }
 
 func TestAppServerBTWCompactionNativeCodexE2E(t *testing.T) {
-	codex, err := exec.LookPath("codex")
+	codex, err := exec.LookPath("mekugi-app-server")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,11 +128,11 @@ func TestAppServerBTWCompactionNativeCodexE2E(t *testing.T) {
 	proxy := newManagedMekugiProxy(t)
 	attachTestReplayStore(t, proxy)
 	provider := &btwCompactionProvider{}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, proxy))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
 	terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, codex, "app-server", "-c", `model_providers.btw_fixture={name="btw_fixture",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="btw_fixture"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false", "-c", "model_auto_compact_token_limit=100000")
+		cmd := exec.CommandContext(ctx, codex, "-c", `model_providers.btw_fixture={name="btw_fixture",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="btw_fixture"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false", "-c", "model_auto_compact_token_limit=100000")
 		cmd.Env, cmd.Dir = environment, workspace
 		return cmd
 	}, "", testAppServerIntegration(proxy))
@@ -155,7 +148,7 @@ func TestAppServerBTWCompactionNativeCodexE2E(t *testing.T) {
 	terminal.await("Side question requires compaction.")
 	terminal.await("follow-up needing compaction")
 	// Close the rejected panel, discard the restored side draft, and submit
-	// another ordinary Main turn through the same installed host and router.
+	// another ordinary Main turn through the same app-server and provider.
 	terminal.send("\x1b\x03")
 	terminal.send("Main after rejected side.\r")
 	terminal.await("Main after rejected side.")
@@ -163,8 +156,8 @@ func TestAppServerBTWCompactionNativeCodexE2E(t *testing.T) {
 	terminal.quit()
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	// The native boundary rejects the reset without sending another request.
 	if provider.compactions != 0 || provider.sideTurns != 1 || provider.mainTurns != 2 {
-		t.Fatalf("compaction isolation: forwarded=%d side turns=%d Main turns=%d", provider.compactions, provider.sideTurns, provider.mainTurns)
+		t.Fatalf("compaction isolation: provider compactions=%d side turns=%d Main turns=%d",
+			provider.compactions, provider.sideTurns, provider.mainTurns)
 	}
 }

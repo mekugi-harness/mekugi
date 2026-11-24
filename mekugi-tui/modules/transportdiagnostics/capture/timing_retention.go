@@ -9,19 +9,16 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sync"
-	"time"
+
+	responseevents "github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 const (
-	maxTimingRequests     = 64
-	maxTimingRecordBytes  = 512 << 10
-	maxPendingTimings     = 128
-	timingShutdownTimeout = 5 * time.Second
+	maxTimingRequests    = 64
+	maxTimingRecordBytes = 512 << 10
 )
 
 // TimingRecord uses the existing shared budget and session ownership/expiry.
@@ -33,59 +30,6 @@ type timingWindow struct {
 	Thread   string          `json:"thread_id"`
 	Evicted  uint64          `json:"evicted_requests"`
 	Requests []RequestTiming `json:"requests"`
-}
-
-type timingRetention struct {
-	store   *history.Store
-	limits  history.Limits
-	notice  func(string, error)
-	mu      sync.Mutex
-	closed  bool
-	pending chan pendingTiming
-	done    chan struct{}
-	cancel  context.CancelFunc
-}
-
-type pendingTiming struct {
-	thread  string
-	request RequestTiming
-}
-
-// RetainTimings binds the selected store before serving requests. It opens no
-// network resource. Its bounded worker drains before Recorder.Close returns.
-func (r *Recorder) RetainTimings(store *history.Store, limits history.Limits, notice func(string, error)) {
-	if r != nil && store != nil {
-		r.timings.close()
-		ctx, cancel := context.WithCancel(context.Background())
-		r.timings = &timingRetention{store: store, limits: limits, notice: notice, pending: make(chan pendingTiming, maxPendingTimings), done: make(chan struct{}), cancel: cancel}
-		go r.timings.run(ctx, r)
-	}
-}
-
-func (retention *timingRetention) close() {
-	if retention == nil {
-		return
-	}
-	retention.mu.Lock()
-	if !retention.closed {
-		retention.closed = true
-		close(retention.pending)
-		// Bound draining at recorder teardown, not during ordinary contention.
-		timer := time.AfterFunc(timingShutdownTimeout, retention.cancel)
-		defer timer.Stop()
-	}
-	retention.mu.Unlock()
-	<-retention.done
-}
-
-func (retention *timingRetention) run(ctx context.Context, r *Recorder) {
-	defer close(retention.done)
-	defer retention.cancel()
-	for pending := range retention.pending {
-		if err := retention.publish(ctx, r, pending); err != nil && retention.notice != nil {
-			retention.notice(pending.thread, err)
-		}
-	}
 }
 
 func timingName(thread string) string {
@@ -104,12 +48,12 @@ func readTimingWindow(store inspection.RetainedReader, thread string) (timingWin
 	if err := json.Unmarshal(data, &window); err != nil {
 		return window, false, err
 	}
-	if window.Version != 1 || window.Thread != thread || thread == "" || safeDiagnosticIdentifier(thread) != thread || len(window.Requests) == 0 || len(window.Requests) > maxTimingRequests {
+	if window.Version != 1 || window.Thread != thread || thread == "" || !responseevents.SafeDiagnosticIdentity(thread) || len(window.Requests) == 0 || len(window.Requests) > maxTimingRequests {
 		return window, false, errors.New("invalid retained request timing window")
 	}
 	identities := make(map[string]bool, len(window.Requests))
 	for _, request := range window.Requests {
-		if request.CaptureID == "" || safeDiagnosticIdentifier(request.CaptureID) != request.CaptureID || identities[request.CaptureID] || request.Sequence == 0 || request.Started.IsZero() || request.Completed == nil || !validTimingOutcome(request.Outcome) || len(request.Attempts) > maxTimingAttempts {
+		if request.CaptureID == "" || !responseevents.SafeDiagnosticIdentity(request.CaptureID) || identities[request.CaptureID] || request.Sequence == 0 || request.Started.IsZero() || request.Completed == nil || !validTimingOutcome(request.Outcome) || len(request.Attempts) > maxTimingAttempts {
 			return window, false, errors.New("invalid retained request timing identity")
 		}
 		identities[request.CaptureID] = true
@@ -132,58 +76,6 @@ func readTimingWindow(store inspection.RetainedReader, thread string) (timingWin
 	return window, true, nil
 }
 
-func (r *Recorder) retainTiming(state *requestState, at time.Time) {
-	if r.timings == nil || state.threadID == "" {
-		return
-	}
-	request := state.completedTiming(at)
-	r.timings.mu.Lock()
-	var err error
-	if r.timings.closed {
-		err = errors.New("request timing recorder is closed")
-	} else {
-		select {
-		case r.timings.pending <- pendingTiming{thread: state.threadID, request: request}:
-		default:
-			err = errors.New("request timing publication queue is full; observation unavailable")
-		}
-	}
-	r.timings.mu.Unlock()
-	if err != nil && r.timings.notice != nil {
-		r.timings.notice(state.threadID, err)
-	}
-}
-
-func (retention *timingRetention) publish(ctx context.Context, r *Recorder, pending pendingTiming) error {
-	// Only this bounded background worker waits behind correctness state.
-	// Inference cancellation does not discard already observed timing facts.
-	return retention.store.Transaction(ctx, r.writes, func(tx *history.Transaction) error {
-		window, _, err := readTimingWindow(retention.store, pending.thread)
-		if err != nil {
-			return err
-		}
-		if len(window.Requests) == maxTimingRequests {
-			copy(window.Requests, window.Requests[1:])
-			window.Requests = window.Requests[:maxTimingRequests-1]
-			window.Evicted++
-		}
-		window.Requests = append(window.Requests, pending.request)
-		data, err := json.Marshal(&window)
-		if err != nil {
-			return err
-		}
-		name := timingName(pending.thread)
-		if err := tx.Retain(pending.thread, retention.limits, name); err != nil {
-			return err
-		}
-		if err := tx.Admit(retention.limits, name, int64(len(data))); err != nil {
-			return err
-		}
-		return tx.Write(name, "request-timing-pending-", data)
-	})
-}
-
-// InspectTiming reads only this thread's bounded record; it never opens a writer.
 func (*Service) InspectTiming(ctx context.Context, store inspection.RetainedReader, thread string) (jsontext.Value, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
 
 func TestSpawnInvokingSettingsNativeCodex(t *testing.T) {
@@ -33,7 +32,7 @@ type spawnSettingsFixture struct {
 	ready, release     chan struct{}
 }
 
-func (p *spawnSettingsFixture) serve(t *testing.T, w http.ResponseWriter, r *http.Request, metadata codexresponses.TurnMetadata, body []byte) {
+func (p *spawnSettingsFixture) serve(t *testing.T, w http.ResponseWriter, r *http.Request, metadata fixtureRequestMetadata, body []byte) {
 	t.Helper()
 	p.mu.Lock()
 	defer p.mu.Unlock()

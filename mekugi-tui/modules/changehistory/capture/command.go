@@ -69,8 +69,7 @@ type Omission struct {
 type Observation struct {
 	// endpoints is an operation-local, already observed boundary. Interval
 	// reconciliation must not replace it with a later filesystem read.
-	endpoints map[string]File
-	Commands  []commandanalysis.Command
+	Commands []commandanalysis.Command
 	// CommandClasses retain pre-call classification for repeated literal
 	// occurrences, without reclassifying providers after execution.
 	CommandClasses []string `json:",omitempty"`

@@ -81,7 +81,7 @@ func TestLivePreviewStreamPublication(t *testing.T) {
 	defer session.Close()
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "source.txt")
-	if err := os.WriteFile(path, []byte("executed\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("before\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	session.SetScope(preview.Scope{Workspaces: map[string]map[string]bool{workspace: {"child": true}}})
@@ -94,7 +94,6 @@ func TestLivePreviewStreamPublication(t *testing.T) {
 		Workspace: workspace, Thread: "child", Turn: "turn", Caller: "/root/child", Kind: "apply_patch",
 	}, codexbinding.Timing{Frame: time.Millisecond, Unit: time.Millisecond, Finish: time.Second}, projection.ReadFile)
 	defer stream.Stop()
-	stream.Prime(path, "before\n", true)
 	stream.Append("*** Begin Patch\n*** Update File: source.txt\n@@\n-before\n+arriving\n")
 	deadline := time.After(5 * time.Second)
 	var id string
@@ -110,7 +109,11 @@ func TestLivePreviewStreamPublication(t *testing.T) {
 			t.Fatal("source did not publish before completion")
 		}
 	}
-	stream.Prime(path, "late baseline\n", true)
+	// The accepted input still projects against the first observed source,
+	// even if the host has already applied its edit.
+	if err := os.WriteFile(path, []byte("executed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	stream.Finish("*** Begin Patch\n*** Update File: source.txt\n@@\n-before\n+authoritative\n*** End Patch\n")
 	cancel()
 	select {

@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
@@ -25,27 +24,10 @@ func TestServerInvocationRequiresExecutionOwners(t *testing.T) {
 }
 
 func TestCodexArgsPreservesArguments(t *testing.T) {
-	for _, forwarded := range [][]string{
-		{"-c", `model="example"`, "--", "a prompt with spaces"},
-		{"-c", `model="example"`},
-	} {
-		original := slices.Clone(forwarded)
-		args := codexArgs("http://127.0.0.1:12345/v1", forwarded, nil)
-		index := slices.Index(forwarded, "--")
-		if index < 0 {
-			index = len(forwarded)
-		}
-		delimiter := slices.Index(args, "--")
-		if delimiter < 0 {
-			delimiter = len(args)
-		}
-		if !slices.Equal(args[:index], forwarded[:index]) || !slices.Equal(args[delimiter:], forwarded[index:]) || !slices.Equal(forwarded, original) {
-			t.Fatalf("caller arguments changed: %q", args)
-		}
-		values := launchoptions.ConfigOverrides(args)
-		if values["model_provider"] != "openai" || values["openai_base_url"] != "http://127.0.0.1:12345/v1" || values["model"] != "example" {
-			t.Fatalf("provider endpoint or model changed: %#v", values)
-		}
+	forwarded := []string{"-c", `model="example"`, "-c", `model_provider="custom"`, "-c", `developer_instructions="keep spaces"`}
+	original := slices.Clone(forwarded)
+	if args := nativeAppServerArgs(forwarded); !slices.Equal(args, original) || !slices.Equal(forwarded, original) {
+		t.Fatalf("caller arguments changed: %q", args)
 	}
 }
 
@@ -117,29 +99,6 @@ func TestWrapCodexMissingExecutable(t *testing.T) {
 	code, err := runServerSession(t.Context(), nil, nil, sessionapi.NewLive(), t.TempDir(), &threadExecution{})
 	if code != 1 || err == nil || !strings.Contains(err.Error(), "locate mekugi-app-server") {
 		t.Fatalf("wrap = %d, %v", code, err)
-	}
-}
-
-func TestValidateCodexArgs(t *testing.T) {
-	for _, args := range [][]string{
-		{"--oss"}, {"exec", "--local-provider", "ollama"}, {"--local-provider=ollama"},
-		{"-c", `model_provider="other"`}, {"--config=model_providers.other={}"},
-		{`-cmodel_provider="other"`}, {`-c=model_provider="other"`},
-		{"--config", `"model_providers".mekugi_wrap.base_url="https://example.com"`},
-		{"-c", `openai_base_url="https://example.com"`}, {"-c", `oss_provider="ollama"`},
-	} {
-		if err := validateCodexArgs(args, false); err == nil {
-			t.Errorf("accepted provider override: %q", args)
-		}
-	}
-	for _, args := range [][]string{
-		nil, {"exec", "a prompt with spaces"}, {"--profile", "work"},
-		{"exec", "-c", `model="example"`}, {"--", "--oss"},
-		{"--", `-cmodel_provider="other"`}, {"-c"},
-	} {
-		if err := validateCodexArgs(args, false); err != nil {
-			t.Errorf("rejected ordinary arguments %q: %v", args, err)
-		}
 	}
 }
 

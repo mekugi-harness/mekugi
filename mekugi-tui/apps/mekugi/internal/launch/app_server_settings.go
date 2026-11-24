@@ -329,7 +329,7 @@ func (session *nativeSession) settingsMessage(attached *attachedPresentation, pi
 		}
 		session.models = append(session.models, result.Data...)
 		if result.NextCursor != "" {
-			return true, session.Client.Request("model/list", map[string]any{"cursor": result.NextCursor, "includeHidden": true})
+			return true, session.Client.Request("model/list", map[string]any{"threadId": session.Client.Thread, "cursor": result.NextCursor, "includeHidden": true})
 		}
 		session.modelsLoading = false
 		applied := session.settings

@@ -1936,7 +1936,12 @@ impl Session {
                     parent_rollout_thread_trace.start_child_thread_trace(trace_metadata)
                 }
             } else {
-                ThreadTraceContext::start_root(trace_metadata, config.rollout_trace_limits)
+                let key = codex_rollout_trace::CODEX_ROLLOUT_TRACE_ROOT_ENV;
+                let root = match config.family.as_ref() {
+                    Some(family) => family.environment.values().get(key).map(PathBuf::from),
+                    None => std::env::var_os(key).map(PathBuf::from),
+                };
+                ThreadTraceContext::start_root(trace_metadata, config.rollout_trace_limits, root)
             };
             let rollout_thread_trace = rollout_thread_trace.unwrap_or_else(|err| {
                 startup_error.get_or_insert_with(|| {

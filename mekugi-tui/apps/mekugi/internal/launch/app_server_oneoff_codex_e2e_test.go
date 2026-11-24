@@ -15,12 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	json "encoding/json/v2"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
 
 // Hold only the fork's final provider round so Main can finish independently
@@ -31,10 +27,10 @@ type oneoffCodexProvider struct {
 	finish   chan struct{}
 }
 
-func (p *oneoffCodexProvider) ForwardExecution(ctx, responseCtx context.Context, body []byte, headers http.Header, key string) (*inferencegateway.Response, error) {
-	p.requests <- btwCodexRequest{bytes.Clone(body), key, headers.Clone()}
+func (p *oneoffCodexProvider) respond(ctx context.Context, body []byte, headers http.Header) (*http.Response, error) {
+	p.requests <- btwCodexRequest{bytes.Clone(body), fixturePromptCacheKey(body), headers.Clone()}
 	if bytes.Contains(body, []byte("ONEOFF_TASK_ONLY")) {
-		response, err := p.tools.ForwardExecution(ctx, responseCtx, body, headers, key)
+		response, err := p.tools.respond(ctx, body, headers)
 		if err != nil {
 			return nil, err
 		}
@@ -51,7 +47,7 @@ func (p *oneoffCodexProvider) ForwardExecution(ctx, responseCtx context.Context,
 		}
 		return response, nil
 	}
-	response := routerFaultCodexSuccessResponse()
+	response := fixtureResponsesSuccess()
 	wire, err := io.ReadAll(response.Body)
 	response.Body.Close()
 	if err != nil {
@@ -65,7 +61,7 @@ func (p *oneoffCodexProvider) ForwardExecution(ctx, responseCtx context.Context,
 		answer = "MAIN_CONTINUATION_FINISHED"
 	}
 	response.Body = io.NopCloser(bytes.NewReader(bytes.ReplaceAll(wire, []byte("Recovered after a retry."), []byte(answer))))
-	return testGatewayResponse(response, nil)
+	return response, nil
 }
 
 func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
@@ -84,7 +80,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		},
 	}
 	proxy := newManagedMekugiProxy(t)
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, p, nil, proxy))
+	server := httptest.NewServer(fixtureResponsesHandler(p))
 	defer server.Close()
 	defer func() {
 		select {
@@ -120,8 +116,8 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	terminal.await("completed")
 	terminal.send("/oneoff ONEOFF_TASK_ONLY\r")
 	fork := next()
-	mainMetadata, _ := codexresponses.DecodeTurnMetadata(main.headers)
-	forkMetadata, _ := codexresponses.DecodeTurnMetadata(fork.headers)
+	mainMetadata, _ := fixtureTurnMetadata(main.headers)
+	forkMetadata, _ := fixtureTurnMetadata(fork.headers)
 	if mainMetadata.ThreadID == "" || forkMetadata.ThreadID == "" || mainMetadata.ThreadID == forkMetadata.ThreadID {
 		t.Fatalf("fork identities: Main=%q oneoff=%q", mainMetadata.ThreadID, forkMetadata.ThreadID)
 	}
@@ -142,7 +138,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		return statLineNames(frame, "One-off")
 	})
 	result := next()
-	resultMetadata, _ := codexresponses.DecodeTurnMetadata(result.headers)
+	resultMetadata, _ := fixtureTurnMetadata(result.headers)
 	if resultMetadata.ThreadID != forkMetadata.ThreadID || !bytes.Contains(result.body, []byte("custom_tool_call_output")) || !bytes.Contains(result.body, []byte("ONEOFF_ENV_INHERITED")) {
 		t.Fatalf("stock tool result did not return within the fork: %s", result.body)
 	}
@@ -156,7 +152,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	})
 	terminal.send("/btw BTW_WHILE_ONEOFF\r")
 	question := next()
-	questionMetadata, _ := codexresponses.DecodeTurnMetadata(question.headers)
+	questionMetadata, _ := fixtureTurnMetadata(question.headers)
 	if questionMetadata.ThreadID == "" || questionMetadata.ThreadID == forkMetadata.ThreadID || questionMetadata.ThreadID == mainMetadata.ThreadID || bytes.Contains(question.body, []byte("ONEOFF_TASK_ONLY")) {
 		t.Fatal("BTW reused One-off's thread or history")
 	}
@@ -168,7 +164,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	})
 	terminal.send("\x021Main continuation\r")
 	after := next()
-	afterMetadata, _ := codexresponses.DecodeTurnMetadata(after.headers)
+	afterMetadata, _ := fixtureTurnMetadata(after.headers)
 	if afterMetadata.ThreadID != mainMetadata.ThreadID || after.key != main.key {
 		t.Fatal("Main continuation changed thread/cache identity")
 	}

@@ -5,16 +5,12 @@ package launch
 import (
 	"bytes"
 	"context"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/providers/openai"
 )
 
 const codexE2EPrompt = `Use stock exec tools.exec_command and tools.apply_patch for operations. Use the executable Mekugi frontends from PATH for focused reads and validation.
@@ -42,31 +38,16 @@ func TestCodexMekugiGrammarE2E(t *testing.T) {
 	gitPath := requireExecutable(t, "git")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	server := httptest.NewServer(testResponsesHandler(
-		t.Context(),
-		10*time.Minute,
-		newTestProviderClient(openai.BaseURL, nil),
-		nil,
-		newManagedMekugiProxy(t),
-	))
-	defer server.Close()
-
 	workspace := t.TempDir()
 	runCommand(t, workspace, gitPath, "init", "--quiet")
 	writeFixture(t, workspace, "whole.go", "package sample\n\nfunc status() string {\n\treturn \"old\"\n}\n")
 	writeFixture(t, workspace, "anchor.go", "package sample\n\nfunc save(path string, b []byte) error {\n\t\treturn saveArtifactPayload(path, b)\n}\n")
 	writeFixture(t, workspace, "partial.go", "package sample\n\nvar expression = prefix + oldCall(\n\tfirstArgument,\n\tfinalArgument) + suffix\n")
 
-	providerName := "mekugi-e2e"
-	baseURL := server.URL + "/v1"
-	providerConfig := "model_providers." + providerName + "={ name = " + strconv.Quote(providerName) +
-		", base_url = " + strconv.Quote(baseURL) + ", wire_api = \"responses\", requires_openai_auth = true }"
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
 	defer cancel()
 	args := []string{
-		"-c", providerConfig,
-		"--local-provider", providerName,
-		"--oss",
+		"-c", `model_provider="openai"`,
 		"--model", model,
 		"--sandbox", "workspace-write",
 		"--ask-for-approval", "never",

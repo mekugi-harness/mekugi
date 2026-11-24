@@ -99,10 +99,7 @@ func runNativeClient(ctx context.Context, socket string, routerArgs, args []stri
 		}
 	}
 	if connection == nil {
-		start := sessionapi.NativeStart{Workspace: workspace, RouterArgs: routerArgs, Args: args}
-		if profile != "" {
-			start.Environment = os.Environ()
-		}
+		start := sessionapi.NativeStart{Workspace: workspace, RouterArgs: routerArgs, Args: args, Environment: os.Environ()}
 		connection, err = sessionapi.StartNative(ctx, client, "http://mekugi", start)
 		if err != nil {
 			return err
@@ -429,7 +426,8 @@ func (c *nativeClient) run(ctx context.Context, stdin, stdout *os.File) (*native
 					if width != c.renderer.terminal.Width || height != c.renderer.terminal.Height {
 						c.renderer.terminal.Width, c.renderer.terminal.Height, c.dirty = width, height, true
 					}
-					if c.event.Attachment != "" && (c.dirty || c.renderer.terminal.Live.Tick(now)) {
+					// Advance live reveals even while another animation already needs a paint.
+					if c.event.Attachment != "" && (c.renderer.terminal.Live.Tick(now) || c.dirty) {
 						in := c.renderer.terminal.FrameInput(now, mekugiVersion())
 						source := in.SourceContext()
 						linkScope := fileLinkScope(in)

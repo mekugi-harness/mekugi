@@ -3,9 +3,7 @@ package launch
 import (
 	"bytes"
 	"context"
-	"io"
 	"io/fs"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -43,17 +41,6 @@ func TestDiagnosticsAbsentNormalSession(t *testing.T) {
 	err := runDiagnosticsAbsentSession(t, ctx, nil, func(session invocationFixture) {
 		defer cancel()
 		ready = true
-		client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
-		response, err := client.Get(strings.TrimSuffix(session.BaseURL, "/v1") + "/api/metrics")
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		defer response.Body.Close()
-		body, err := io.ReadAll(response.Body)
-		if err != nil || response.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"schema":"mekugi.capture.metrics.v7"`)) {
-			t.Errorf("independent transport metrics: status=%d body=%q err=%v", response.StatusCode, body, err)
-		}
 	})
 	if err != nil || !ready {
 		t.Fatalf("normal session ready=%t err=%v", ready, err)
@@ -94,13 +81,9 @@ func runDiagnosticsAbsentSession(t *testing.T, ctx context.Context, args []strin
 	}
 	history := testHistory()
 	usage := accounting.New()
-	if err := usage.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer usage.Close()
 	return runFixtureInvocation(terminalsession.Views{}, testPresentation(), new(conversationmodel.Service), previewmodel.New(changecapture.ReadFile), new(activitymodel.Service), history, testPreferences(), &segmentservice.Service{Reports: testReports()}, testCapture(t, ""), usage,
 		new(evidence.Service), new(transportcapture.Service), nil, ctx,
-		testCommands(), testNaming(), nil, options, testCriticalErrors(), ready,
+		testCommands(), nil, options, testCriticalErrors(), ready,
 		func(paths []string) { t.Errorf("absent diagnostics published artifacts: %v", paths) })
 }
 

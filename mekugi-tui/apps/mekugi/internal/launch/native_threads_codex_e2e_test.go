@@ -41,7 +41,6 @@ import (
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	agentevidence "github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
 type nativeThreadsProvider struct {
@@ -118,13 +117,13 @@ func (p *nativeThreadsProvider) serveSocket(t *testing.T, w http.ResponseWriter,
 	}
 	defer conn.CloseNow()
 	for {
-		fields, err := providerSocketRead(r.Context(), conn)
+		fields, err := readFixtureResponseSocket(r.Context(), conn)
 		if err != nil {
 			return
 		}
 		if string(fields["generate"]) == "false" {
-			if providerSocketWrite(r.Context(), conn, socketEvent("response.created", "managed-prewarm")) != nil ||
-				providerSocketWrite(r.Context(), conn, socketEvent("response.completed", "managed-prewarm")) != nil {
+			if writeFixtureResponseSocket(r.Context(), conn, fixtureSocketEvent("response.created", "managed-prewarm")) != nil ||
+				writeFixtureResponseSocket(r.Context(), conn, fixtureSocketEvent("response.completed", "managed-prewarm")) != nil {
 				return
 			}
 			continue
@@ -150,12 +149,12 @@ func (p *nativeThreadsProvider) serveSocket(t *testing.T, w http.ResponseWriter,
 				var rejection map[string]any
 				if json.Unmarshal(response.Body.Bytes(), &rejection) == nil {
 					rejection["type"], rejection["status"] = "error", response.Code
-					if providerSocketWrite(r.Context(), conn, rejection) == nil {
+					if writeFixtureResponseSocket(r.Context(), conn, rejection) == nil {
 						continue
 					}
 				}
 			}
-			_ = providerSocketWrite(r.Context(), conn, map[string]any{"type": "error", "error": map[string]string{"type": "server_error", "message": "managed-thread fixture rejected request"}})
+			_ = writeFixtureResponseSocket(r.Context(), conn, map[string]any{"type": "error", "error": map[string]string{"type": "server_error", "message": "managed-thread fixture rejected request"}})
 			return
 		}
 		for line := range strings.SplitSeq(response.Body.String(), "\n") {
@@ -206,7 +205,7 @@ func (p *nativeThreadsProvider) serve(t *testing.T, w http.ResponseWriter, r *ht
 		writeChildActivityResponse(w, "activity-side", "", "", "The command results are ready.")
 		return
 	}
-	metadata, ok := codexresponses.DecodeTurnMetadata(r.Header)
+	metadata, ok := fixtureTurnMetadata(r.Header)
 	if !ok && request.Model == "gpt-6-luna" && len(request.Tools) == 0 && strings.HasPrefix(request.Instructions, "Generate a concise session title") && r.Header.Get("Authorization") == "Bearer fixture-access" && r.Header.Get("ChatGPT-Account-Id") == "fixture-account" {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"native-title\",\"status\":\"in_progress\",\"output\":[]}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Native thread fixture\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"native-title\",\"status\":\"completed\",\"output\":[]}}\n\n")
@@ -862,7 +861,7 @@ func TestNativeChildActivityServerOwnedCodex(t *testing.T) {
 	testNativeThreadsServerOwnedCodex(t, nativeThreadsScenario{childActivity: true})
 }
 
-func (p *nativeThreadsProvider) serveChildReset(t *testing.T, w http.ResponseWriter, r *http.Request, metadata codexresponses.TurnMetadata, previousResponse string) {
+func (p *nativeThreadsProvider) serveChildReset(t *testing.T, w http.ResponseWriter, r *http.Request, metadata fixtureRequestMetadata, previousResponse string) {
 	p.mu.Lock()
 	thread := metadata.ThreadID
 	if p.parent == "" {
@@ -985,7 +984,7 @@ func writeNativeThreadResponse(w http.ResponseWriter, id string, items []any) {
 	events = append(events, map[string]any{"type": "response.completed", "response": map[string]any{"id": id, "status": "completed", "output": items,
 		"usage": map[string]any{"input_tokens": 100, "output_tokens": 20, "total_tokens": 120, "input_tokens_details": map[string]int{"cached_tokens": 0}, "output_tokens_details": map[string]int{"reasoning_tokens": 0}}}})
 	w.Header().Set("Content-Type", "text/event-stream")
-	fmt.Fprint(w, routerFaultSSE(events...))
+	fmt.Fprint(w, fixtureResponsesSSE(events...))
 }
 
 // Exercise ordered delivery across independent child reducers while their stock
@@ -1562,58 +1561,7 @@ func testNativeThreadsServerOwnedCodex(t *testing.T, scenario nativeThreadsScena
 			if err != nil || !paired {
 				t.Fatalf("runtime capture has no joined metrics bundle: %q, %v", capture, err)
 			}
-			var snapshot transportcapture.MetricsSnapshot
-			if err := json.Unmarshal(metrics, &snapshot); err != nil {
-				t.Fatal(err)
-			}
-			if health := snapshot.Capture; health.MissingProvider != 0 || health.CaptureErrors != 0 || health.Incomplete != 0 || health.AttemptGaps != 0 || health.WriteErrors != 0 {
-				t.Fatalf("completed headless runtime lost provider evidence: %+v", snapshot.Capture)
-			}
-			raw, err := os.ReadFile(capture)
-			if err != nil {
-				t.Fatal(err)
-			}
-			local := make(map[uint64]bool)
-			capturedThreads := make(map[uint64]string)
-			capturedAttempts := make(map[[2]uint64]bool)
-			for row := range bytes.SplitSeq(bytes.TrimSpace(raw), []byte("\n")) {
-				var record struct {
-					Boundary         string `json:"boundary"`
-					Thread           string `json:"thread_id"`
-					Attempt          uint64 `json:"provider_attempt"`
-					Sequence         uint64 `json:"request_sequence"`
-					ProviderExpected *bool  `json:"provider_expected"`
-				}
-				if err := json.Unmarshal(row, &record); err != nil {
-					t.Fatal(err)
-				}
-				if record.Boundary == "codex" {
-					capturedThreads[record.Sequence] = record.Thread
-				}
-				if record.Boundary == "provider" {
-					capturedAttempts[[2]uint64{record.Sequence, record.Attempt}] = true
-				}
-				if record.Boundary == "codex" && record.ProviderExpected != nil && !*record.ProviderExpected {
-					local[record.Sequence] = true
-				}
-			}
-			completedThreads := make(map[string]bool)
-			for _, exchange := range snapshot.Exchanges {
-				if exchange.ProviderAttempts == nil || exchange.Status == "completed" && len(exchange.ProviderAttempts) == 0 && !local[exchange.Sequence] {
-					t.Fatalf("headless exchange has no provider decision: %+v", exchange)
-				}
-				if exchange.RequestKind == "turn" && exchange.Status == "completed" && exchange.ResponseComplete {
-					if capturedThreads[exchange.Sequence] != exchange.ThreadID {
-						t.Fatal("shared transport capture lost the metrics thread identity")
-					}
-					for _, attempt := range exchange.ProviderAttempts {
-						if !capturedAttempts[[2]uint64{exchange.Sequence, attempt.Attempt}] {
-							t.Fatal("shared capture lost a measured provider attempt")
-						}
-					}
-					completedThreads[exchange.ThreadID] = true
-				}
-			}
+			completedThreads := readNativeCapture(t, capture)
 			fixture.mu.Lock()
 			threads := []string{fixture.parent, fixture.child}
 			fixture.mu.Unlock()
@@ -1621,7 +1569,7 @@ func testNativeThreadsServerOwnedCodex(t *testing.T, scenario nativeThreadsScena
 				t.Fatal("shared capture lacks distinct native actors")
 			}
 			for _, thread := range threads {
-				if !completedThreads[thread] {
+				if !completedThreads[thread]["completed"] {
 					t.Fatalf("no completed measured exchange for native actor %s", thread)
 				}
 				reads, err := new(agentevidence.Service).ReadReads(ctx, filepath.Join(filepath.Dir(capture), "reads.jsonl"), thread)
@@ -1636,6 +1584,10 @@ func testNativeThreadsServerOwnedCodex(t *testing.T, scenario nativeThreadsScena
 				}
 				destination := filepath.Join(export, t.Name(), relative)
 				if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+					t.Fatal(err)
+				}
+				raw, err := os.ReadFile(capture)
+				if err != nil {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(destination, raw, 0600); err != nil {
@@ -1679,7 +1631,7 @@ func testNativeThreadsServerOwnedCodex(t *testing.T, scenario nativeThreadsScena
 	}
 	connection, err := sessionapi.StartNative(ctx, client, "http://mekugi", sessionapi.NativeStart{
 		Workspace: workspace,
-		Args: args,
+		Args:      args,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2225,7 +2177,7 @@ func testNativeThreadsServerOwnedCodex(t *testing.T, scenario nativeThreadsScena
 		serverCLIAwait(t, func() bool { _, err := os.Stat(socket); return err == nil })
 		connection, err = sessionapi.StartNative(ctx, client, "http://mekugi", sessionapi.NativeStart{
 			Workspace: workspace,
-			Args: append(permissionArgs, "-c", "features.plugins=false", "-c", `model_reasoning_effort="high"`, "resume", root),
+			Args:      append(permissionArgs, "-c", "features.plugins=false", "-c", `model_reasoning_effort="high"`, "resume", root),
 		})
 		if err != nil {
 			t.Fatal("cold resume:", err)
@@ -2289,7 +2241,7 @@ func testNativeThreadsServerOwnedCodex(t *testing.T, scenario nativeThreadsScena
 			}
 		}
 		if !retainedAgent.WorkKnown || !retainedAgent.WorkSince.IsZero() || !slices.Contains(retainedAgent.Skills, "activity-skill") ||
-			!retainedAgent.TokensKnown || !retainedAgent.UsagePartial || !retainedAgent.CostKnown || !retainedAgent.CostPartial || retainedAgent.Cost <= 0 {
+			!retainedAgent.TokensKnown || retainedAgent.InputTokens == 0 || retainedAgent.Roundtrips == 0 || retainedAgent.UsagePartial || retainedAgent.CostKnown || retainedAgent.Cost != 0 {
 			t.Fatalf("retained child roster: skills=%v work=%t since=%v tokens=%t partial=%t cost=%f known=%t costPartial=%t",
 				retainedAgent.Skills, retainedAgent.WorkKnown, retainedAgent.WorkSince, retainedAgent.TokensKnown, retainedAgent.UsagePartial,
 				retainedAgent.Cost, retainedAgent.CostKnown, retainedAgent.CostPartial)
@@ -2610,7 +2562,7 @@ func assertNativeChildRosterCommand(t *testing.T, ctx context.Context, root *ses
 			}
 			for _, entry := range event.Frame.Main.Entries {
 				if nativeChildCommand(entry) && entry.OutputComplete {
-					if agent.WorkKnown && !agent.WorkSince.IsZero() && slices.Contains(agent.Skills, "activity-skill") && agent.TokensKnown && !agent.UsagePartial && agent.CostKnown && agent.Cost > 0 {
+					if agent.WorkKnown && !agent.WorkSince.IsZero() && slices.Contains(agent.Skills, "activity-skill") && agent.TokensKnown && !agent.UsagePartial && !agent.CostKnown && agent.Cost == 0 {
 						return
 					}
 				}

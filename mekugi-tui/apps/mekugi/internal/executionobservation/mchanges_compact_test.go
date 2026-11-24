@@ -17,7 +17,7 @@ func TestMChangesCompactViewsKeepKnownStatsWithoutManagedNoise(t *testing.T) {
 		t.Fatal(err)
 	}
 	workspace := t.TempDir()
-	ctx, release, err := store.beginSession(t.Context(), "author", "")
+	ctx, release, err := store.beginSession(t.Context(), "author")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestMChangesListCompressesAppliedChangesRegardlessOfCommandAttribution(t *t
 		t.Fatal(err)
 	}
 	workspace := t.TempDir()
-	ctx, release, err := store.beginSession(t.Context(), "author", "")
+	ctx, release, err := store.beginSession(t.Context(), "author")
 	if err != nil {
 		t.Fatal(err)
 	}

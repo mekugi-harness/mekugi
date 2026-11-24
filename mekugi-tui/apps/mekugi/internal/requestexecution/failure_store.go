@@ -3,7 +3,6 @@ package requestexecution
 
 import (
 	"context"
-	json "encoding/json/v2"
 	"errors"
 	"time"
 
@@ -12,10 +11,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
 )
 
-func (c *Failures) persistFailure(f *requestFinalization) {
-	if c == nil || f.diagnosticReference == "" {
-		return
-	}
+func (c *Failures) persistFailure(f Failure, d Diagnostic) {
 	c.mu.Lock()
 	store := c.failureStore
 	limits := c.failureLimits
@@ -42,17 +38,13 @@ func (c *Failures) persistFailure(f *requestFinalization) {
 	if store == nil {
 		err = errors.New("failure storage unavailable")
 	} else {
-		record := diagnostic.Failure{Version: 1, Time: time.Now().UTC(), Thread: f.threadID,
-			Phase: string(f.failurePhase), Code: f.diagnosticCode, Reference: f.diagnosticReference,
-			Error: f.diagnosticError}
-		if f.streamDiagnostics != nil {
-			record.Stream, err = json.Marshal(f.streamDiagnostics.Snapshot())
-		}
-		if err == nil {
-			err = service.RetainFailure(ctx, store, writes, limits, record)
-		}
+		record := diagnostic.Failure{Version: 1, Time: time.Now().UTC(), Thread: f.Thread,
+			Phase: f.Phase, Code: d.Code, Reference: d.Reference,
+			Error: d.Error}
+		err = service.RetainFailure(ctx, store, writes, limits, record)
+
 	}
 	if err != nil {
-		c.AddThreadNotice(f.sessionID, f.threadID, "failure_storage", "Mekugi could not retain the failure reference. Relaunch with --debug to capture a future failure.")
+		c.AddThreadNotice(f.Session, f.Thread, "failure_storage", "Mekugi could not retain the failure reference. Relaunch with --debug to capture a future failure.")
 	}
 }

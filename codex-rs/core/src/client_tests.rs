@@ -1863,6 +1863,7 @@ async fn untraced_http_stream_releases_completed_output_before_response_ends() {
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
         super::ResponseDelivery::default(),
+        Default::default(),
     );
 
     assert!(matches!(
@@ -1906,6 +1907,7 @@ async fn incomplete_response_traces_attempted_call_without_streaming_it() -> any
             &test_model_client(SessionSource::Cli).state,
             /*last_response_tx*/ None,
             super::ResponseDelivery::default(),
+            Default::default(),
         );
         assert!(stream.next().await.is_some_and(|item| item.event.is_err()));
         assert!(stream.next().await.is_none());
@@ -1952,6 +1954,7 @@ async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Re
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
         super::ResponseDelivery::default(),
+        Default::default(),
     );
 
     let observed = stream
@@ -2011,6 +2014,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
         super::ResponseDelivery::default(),
+        Default::default(),
     );
 
     while stream.next().await.is_some() {}
@@ -2236,6 +2240,7 @@ async fn dropped_backpressured_response_stream_traces_cancelled_partial_output()
         &test_model_client(SessionSource::Cli).state,
         /*last_response_tx*/ None,
         super::ResponseDelivery::default(),
+        Default::default(),
     );
 
     // Fill the mapper channel with non-terminal events, then yield one output
@@ -3049,6 +3054,7 @@ async fn intercepted_output_reaches_trace_and_websocket_bookkeeping() -> anyhow:
     drop(tx_event);
     let (last_response_tx, last_response_rx) = tokio::sync::oneshot::channel();
     let mut stream = super::OpenedModelResponse {
+        request_started: std::time::Instant::now(),
         stream: codex_api::ResponseStream {
             routing_affinity: None,
             rx_event,

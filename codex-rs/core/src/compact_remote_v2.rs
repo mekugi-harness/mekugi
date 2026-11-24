@@ -458,7 +458,12 @@ async fn collect_compaction_output(
                 _ = cancellation.cancelled() => return Err(CodexErr::TurnAborted),
             },
         };
-        let Some(SamplingEvent { event, hook_output }) = event else {
+        let Some(SamplingEvent {
+            event,
+            hook_output,
+            request_duration_ms,
+        }) = event
+        else {
             break;
         };
         let event = match event {
@@ -514,9 +519,11 @@ async fn collect_compaction_output(
                 if matches!(request_kind, CompactionRequestKind::Foreground(_)) {
                     sess.record_observed_response_completed(
                         turn_context,
+                        &turn_context.initial_settings,
                         &response_id,
                         usage.provider.as_ref(),
                         usage_metadata.as_ref(),
+                        request_duration_ms,
                     )
                     .await;
                 }
@@ -1459,6 +1466,7 @@ mod tests {
             ..Default::default()
         };
         let stream = response_stream(vec![SamplingEvent {
+            request_duration_ms: None,
             event: Err(CodexErr::new(CodexErrorDetails::ResponseIncomplete(
                 Box::new(codex_protocol::error::ResponseIncompleteError {
                     partial_output: vec![],
@@ -1551,6 +1559,7 @@ mod tests {
             ..Default::default()
         });
         let stream = response_stream(vec![SamplingEvent {
+            request_duration_ms: None,
             event: Ok(ResponseEvent::Completed {
                 response_id: "resp-compact".into(),
                 token_usage: provider_usage.clone(),
@@ -1632,6 +1641,7 @@ mod tests {
                     codex_rollout_budget_units: None,
                 }),
                 usage_metadata: Some(codex_protocol::ResponseUsageMetadata {
+                    service_tier: None,
                     amount: Some("0.125".to_string()),
                     metadata: Some(serde_json::json!({ "extra": { "label": "example" } })),
                 }),
@@ -1661,6 +1671,7 @@ mod tests {
         assert_eq!(
             completed.usage_metadata,
             Some(codex_protocol::ResponseUsageMetadata {
+                service_tier: None,
                 amount: Some("0.125".to_string()),
                 metadata: Some(serde_json::json!({ "extra": { "label": "example" } })),
             })

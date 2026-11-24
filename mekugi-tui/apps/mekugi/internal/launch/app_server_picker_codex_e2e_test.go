@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Installed Codex owns both searches. The UI only renders their app-server
@@ -60,7 +59,7 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &appResumeProvider{}
-	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, nil))
+	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	environment := routerFaultCodexEnvironment(t)
 	newCommand := func(ctx context.Context) *exec.Cmd {

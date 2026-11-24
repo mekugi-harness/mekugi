@@ -1,10 +1,7 @@
 package launch
 
 import (
-	"bytes"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,13 +11,8 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
 )
 
 func TestComposerErrorClickAndDismiss(t *testing.T) {
@@ -78,46 +70,6 @@ func TestComposerErrorClickAndDismiss(t *testing.T) {
 				t.Fatal("dismissal changed draft, host state, wire, or transcript")
 			}
 		})
-	}
-}
-
-func TestComposerErrorClearsOnSuccessfulModelRequest(t *testing.T) {
-	u, _ := newAppServerTestUI()
-	u.issues = testCriticalErrors()
-	u.Turn = "still-running"
-	u.clock = time.Now
-	defer terminalTest(u).Diff.Close()
-	setNotice(&u.attached.feedback, presentationTime(u.clock), "previous request failed", true)
-	u.testMainFrame(80, 8, 0)
-	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"ok\",\"status\":\"completed\",\"output\":[]}}\n\n")
-	}))
-	defer provider.Close()
-	executor := requestexecution.Executor{Issues: u.issues, Provider: inferencegateway.NewClient(provider.URL, provider.Client(), requestexecution.ProviderDiagnostics())}
-	request, err := codexresponses.ParseRequest([]byte(`{"model":"gpt-test","stream":true,"input":[]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, thread := range []string{"unrelated", "main"} {
-		headers := http.Header{}
-		headers.Set("Authorization", "Bearer fixture")
-		headers.Set("ChatGPT-Account-ID", "fixture-account")
-		headers.Set(codexresponses.ThreadIDHeader, thread)
-		headers.Set(codexresponses.TurnMetadataHeader, `{"thread_id":"`+thread+`","turn_id":"still-running","request_kind":"turn"}`)
-		var output bytes.Buffer
-		if err := executor.ExecuteHTTP(t.Context(), t.Context(), request, headers, &output); err != nil {
-			t.Fatal(err)
-		}
-		applyCriticalNotices(&u.attached, &u.Client, &u.picker, &u.Editor, u.clock, preferences.Applied{}, u.title, u.backendVersion, &u.restoring, &u.side, u.audience, u.issues)
-		rows, _ := u.testMainFrame(80, 8, 0)
-		if thread == "unrelated" {
-			if !u.attached.feedback.Alert || !strings.Contains(ansi.Strip(strings.Join(rows, "\n")), "[×]") {
-				t.Fatal("unrelated success cleared feedback")
-			}
-		} else if u.attached.feedback.Alert || u.shell.Main.NoticeDismiss.W != 0 || u.Turn != "still-running" {
-			t.Fatal("successful model request did not clear the error during its host turn")
-		}
 	}
 }
 

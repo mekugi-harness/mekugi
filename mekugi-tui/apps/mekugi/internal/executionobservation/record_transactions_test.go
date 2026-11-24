@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/recordtransactions"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
@@ -64,33 +64,6 @@ type interruptedForkChanges struct {
 	check func() error
 }
 
-func TestRecordTransactionsIndependentForkKeepsAdmittedChildScope(t *testing.T) {
-	t.Parallel()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	parent, _ := retentionTestSession(t, store, "parent", 0)
-	bindTestHandleScope(t, store, parent, "", "")
-	if err := store.publication.Transaction(t.Context(), store.writes, func(tx *history.Transaction) error {
-		return tx.InitializeScope(history.Scope{Thread: "child", Namespace: "parent", Parent: "parent"}, nil)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	child, _ := retentionTestSession(t, store, "child", 0)
-	child, err = store.prepareHandleScope(child, codexresponses.TurnMetadata{ThreadID: "child", ForkedFromThreadID: "parent"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.retainInput(child, "/child", nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	scope, found, err := store.publication.ReadScope("child")
-	if err != nil || !found || scope.Namespace != "parent" || scope.Parent != "parent" || scope.Fork != "" {
-		t.Fatalf("host fork changed admitted scope: %+v, found=%v, err=%v", scope, found, err)
-	}
-}
-
 func (s interruptedForkChanges) PrepareFork(selected changes.Scope, source, dest, fork string) (changes.ForkPlan, error) {
 	plan, err := s.Service.PrepareFork(selected, source, dest, fork)
 	return interruptedForkPlan{ForkPlan: plan, check: s.check}, err
@@ -140,10 +113,7 @@ func TestRecordTransactionsInterruptedForkRetriesBeforeScopePublication(t *testi
 		t.Fatal(err)
 	}
 	fork, _ := retentionTestSession(t, store, "fork", 0)
-	fork, err = store.prepareHandleScope(fork, codexresponses.TurnMetadata{ThreadID: "fork", ForkedFromThreadID: "parent"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	initialize := recordtransactions.Input{Workspace: "/w", Initialize: &history.Scope{Thread: "fork", Namespace: "fork", Fork: "parent"}}
 	fault := errors.New("interrupted after cloned index")
 	owner := store.changes
 	store.changes = interruptedForkChanges{Service: owner, check: func() error {
@@ -156,14 +126,14 @@ func TestRecordTransactionsInterruptedForkRetriesBeforeScopePublication(t *testi
 		}
 		return fault
 	}}
-	if err := store.retainInput(fork, "/w", nil, nil, nil); !errors.Is(err, fault) {
+	if err := recordtransactions.RetainInput(fork, store.scoped(fork).changeScope(), store.changes, initialize); !errors.Is(err, fault) {
 		t.Fatalf("interrupted initialization: %v", err)
 	}
 	store.changes = owner
 	if _, exists, err := store.publication.ReadScope("fork"); err != nil || exists {
 		t.Fatalf("interrupted fork became initialized: %v %v", exists, err)
 	}
-	if err := store.retainInput(fork, "/w", nil, nil, nil); err != nil {
+	if err := recordtransactions.RetainInput(fork, store.scoped(fork).changeScope(), store.changes, initialize); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(legacyPath); err != nil || string(data) != legacy {

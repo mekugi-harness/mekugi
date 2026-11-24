@@ -3,7 +3,6 @@ package executionobservation
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -14,52 +13,9 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/recordtransactions"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
-
-const testCodeModeDescription = "Run JavaScript. All nested tools are available on the global `tools` object, including `tools.exec_command` and `tools.apply_patch`.\n\n### `exec_command`\nRun a command.\n\nexec tool declaration:\n```ts\ndeclare const tools: { exec_command(args: { cmd: string }): Promise<unknown>; };\n```\n\n### `apply_patch`\nApply a patch.\n\nexec tool declaration:\n```ts\ndeclare const tools: { apply_patch(input: string): Promise<unknown>; };\n```"
-const testBaseInstructions = "caller-owned base instructions\n"
-
-func mustTestJSON(t *testing.T, value any) []byte {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return encoded
-}
-
-func testCodeModeAdditionalTools(description string) map[string]any {
-	return map[string]any{
-		"type": "additional_tools", "role": "developer",
-		"tools": []any{
-			map[string]any{"type": "namespace", "name": "functions", "tools": []any{
-				map[string]any{"type": "custom", "name": "exec", "description": description, "format": map[string]any{"type": "text"}},
-				map[string]any{"type": "function", "name": "wait"},
-			}},
-		},
-	}
-}
-
-func testFlatCodeModeAdditionalTools(description string) map[string]any {
-	return map[string]any{
-		"type": "additional_tools", "role": "developer",
-		"tools": []any{
-			map[string]any{"type": "custom", "name": "exec", "description": description, "format": map[string]any{"type": "text"}},
-			map[string]any{"type": "function", "name": "wait"},
-		},
-	}
-}
-
-func testExecResponsesTools() []any {
-	return []any{
-		map[string]any{"type": "custom", "name": "exec", "description": testCodeModeDescription},
-	}
-}
-
-func (p *Preparer) prepareRequest(ctx context.Context, request *codexresponses.Request, sessionID, threadID string, metadata codexresponses.TurnMetadata, metadataValid bool) (*mekugiResponseTransform, error) {
-	return p.prepareModelRequest(ctx, request, sessionID, threadID, metadata, metadataValid, false)
-}
 
 func attachTestReplayStore(t *testing.T, proxy *Preparer) {
 	t.Helper()
@@ -69,30 +25,6 @@ func attachTestReplayStore(t *testing.T, proxy *Preparer) {
 	}
 	t.Cleanup(store.snapshots.Close)
 	setTestProxyStore(proxy, store)
-}
-
-func newMekugiTestTransform(t *testing.T) (*mekugiResponseTransform, *Preparer, *codexresponses.Request, string) {
-	t.Helper()
-	return newMekugiTestTransformWithProxy(t, newManagedMekugiProxy(t))
-}
-
-func newMekugiTestTransformWithProxy(t *testing.T, proxy *Preparer) (*mekugiResponseTransform, *Preparer, *codexresponses.Request, string) {
-	t.Helper()
-	workspace := t.TempDir()
-	request, err := codexresponses.ParseRequest(mustTestJSON(t, map[string]any{
-		"model": "gpt-test", "input": []any{testCodeModeAdditionalTools(testCodeModeDescription), map[string]any{"role": "user", "content": "task"}}, "tools": []any{map[string]any{"type": "function", "name": "lookup"}}, "tool_choice": "auto",
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	transform, err := proxy.prepareRequest(t.Context(), &request, "session-1", "thread-1", codexresponses.TurnMetadata{
-		RequestKind: "turn", Directories: map[string]json.RawMessage{workspace: nil},
-	}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(transform.Close)
-	return transform, proxy, &request, workspace
 }
 
 type shellWorkerTestInvocation struct {
@@ -162,17 +94,20 @@ func prependToolFrontendPath(environment []string, frontendDirectory string) []s
 
 func bindTestHandleScope(t *testing.T, store *mekugiReplayStore, ctx context.Context, parent, fork string) context.Context {
 	t.Helper()
-	thread := store.scoped(ctx).session.Thread
-	metadata := codexresponses.TurnMetadata{ThreadID: thread, ParentThreadID: parent, ForkedFromThreadID: fork}
+	selected := store.scoped(ctx)
 	if parent != "" {
-		metadata.SubagentKind = "thread_spawn"
+		namespace, err := store.publication.NamespaceForThread(parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selected.session.Namespace = namespace
 	}
-	ctx, err := store.prepareHandleScope(ctx, metadata)
-	if err == nil {
-		err = store.retainInput(ctx, "/w", nil, nil, nil)
-	}
+	err := recordtransactions.RetainInput(ctx, selected.changeScope(), selected.changes, recordtransactions.Input{
+		Workspace:  "/w",
+		Initialize: &history.Scope{Thread: selected.session.Thread, Namespace: selected.session.Namespace, Parent: parent, Fork: fork},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ctx
+	return context.WithValue(ctx, storageSessionKey{}, selected.session)
 }

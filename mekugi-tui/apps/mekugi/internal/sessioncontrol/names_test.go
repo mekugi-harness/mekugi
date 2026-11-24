@@ -18,10 +18,11 @@ func TestNamesSerializeWithoutRendererOrWireIdentity(t *testing.T) {
 		t.Fatal("name save was lost or issued twice")
 	}
 	names.Manual("main", "newer")
-	if names.AllowsGenerated("main") || names.Generated("main", "late candidate") != nil || names.Next("main") != nil {
+	if names.Next("main") != nil {
 		t.Fatal("a pending save was bypassed")
 	}
-	other := names.Generated("other", "independent")
+	names.Manual("other", "independent")
+	other := names.Next("other")
 	if other == nil || names.Complete(*first) {
 		t.Fatal("independent thread blocked or newer manual name lost")
 	}

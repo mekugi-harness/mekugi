@@ -3,6 +3,7 @@ use crate::protocol::item_builders::build_command_execution_begin_item;
 use crate::protocol::item_builders::build_command_execution_end_item;
 use crate::protocol::item_builders::convert_patch_changes;
 use crate::protocol::v2::AgentMessageDeltaNotification;
+use crate::protocol::v2::CodeModeInputDeltaNotification;
 use crate::protocol::v2::CollabAgentState;
 use crate::protocol::v2::CollabAgentTool;
 use crate::protocol::v2::CollabAgentToolCallStatus;
@@ -436,6 +437,15 @@ pub fn item_event_to_server_notification(
                 turn_id,
                 item_id: event.call_id,
                 changes: convert_patch_changes(&event.changes),
+            })
+        }
+        EventMsg::CodeModeInputDelta(event) => {
+            ServerNotification::CodeModeInputDelta(CodeModeInputDeltaNotification {
+                thread_id,
+                turn_id,
+                call_id: event.call_id,
+                offset: event.offset,
+                delta: event.delta,
             })
         }
         EventMsg::ExecCommandBegin(exec_command_begin_event) => {

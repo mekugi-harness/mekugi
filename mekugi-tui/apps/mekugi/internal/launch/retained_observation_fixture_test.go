@@ -29,7 +29,6 @@ type replayRecord struct {
 	Commentary   bool
 	CaptureOrder uint64 `json:",omitzero"`
 	History      legacycall.History
-	Snapshots    *legacycall.Snapshots `json:",omitempty"`
 }
 
 func (s *mekugiReplayStore) read(workspace, callID string, commentary bool) (replayRecord, bool, error) {
@@ -126,9 +125,6 @@ func fixtureCapturedRecord(store *history.Store, workspace, call string, comment
 		record.History.ReviewFiles = append(record.History.ReviewFiles, legacycall.ReviewFile(file))
 	}
 	return record.Record, true, nil
-}
-func (s *mekugiReplayStore) write(r replayRecord) error {
-	return requestexecution.StoragePublicationError(s.transaction.PublishHostCall(s.session.Thread, s.retentionLimits(), legacycall.Record{Version: r.Version, Workspace: r.Workspace, CallID: r.CallID, Commentary: r.Commentary, CaptureOrder: r.CaptureOrder, History: r.History, Snapshots: r.Snapshots}, r.History.ChangeID != "" && len(r.History.ReviewFiles) > 0))
 }
 
 // These identities select fixture records only. Requests select their own scope

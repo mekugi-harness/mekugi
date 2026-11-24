@@ -8,7 +8,7 @@ import (
 )
 
 var Module = module.Descriptor[Deps, *accounting.Service, module.NoBindings, module.NoViews]{
-	ID: "usage", Summary: "Retain provider-authoritative thread usage, reference costs and throughput",
+	ID: "usage", Summary: "Project provider usage and reference costs from native responses",
 	Requires: []module.ID{"sessionhistory"}, Lifetime: module.Invocation,
 	Resources:   []string{"on-demand retained-usage publication worker"},
 	Contributes: module.Contributions[*accounting.Service]{RecordKinds: accounting.RecordKinds(), Presentation: []presentation.Status{usagepresentation.Throughput}},

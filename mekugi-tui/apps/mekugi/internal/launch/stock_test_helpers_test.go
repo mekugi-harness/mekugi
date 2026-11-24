@@ -16,13 +16,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
-
-const testCodeModeDescription = "Run JavaScript. All nested tools are available on the global `tools` object, including `tools.exec_command` and `tools.apply_patch`.\n\n### `exec_command`\nRun a command.\n\nexec tool declaration:\n```ts\ndeclare const tools: { exec_command(args: { cmd: string }): Promise<unknown>; };\n```\n\n### `apply_patch`\nApply a patch.\n\nexec tool declaration:\n```ts\ndeclare const tools: { apply_patch(input: string): Promise<unknown>; };\n```"
-const testBaseInstructions = "caller-owned base instructions\n"
 
 func mustTestJSON(t *testing.T, value any) []byte {
 	t.Helper()
@@ -33,41 +27,9 @@ func mustTestJSON(t *testing.T, value any) []byte {
 	return encoded
 }
 
-func testCodeModeAdditionalTools(description string) map[string]any {
-	return map[string]any{
-		"type": "additional_tools", "role": "developer",
-		"tools": []any{
-			map[string]any{"type": "namespace", "name": "functions", "tools": []any{
-				map[string]any{"type": "custom", "name": "exec", "description": description, "format": map[string]any{"type": "text"}},
-				map[string]any{"type": "function", "name": "wait"},
-			}},
-		},
-	}
-}
-
-func testFlatCodeModeAdditionalTools(description string) map[string]any {
-	return map[string]any{
-		"type": "additional_tools", "role": "developer",
-		"tools": []any{
-			map[string]any{"type": "custom", "name": "exec", "description": description, "format": map[string]any{"type": "text"}},
-			map[string]any{"type": "function", "name": "wait"},
-		},
-	}
-}
-
-func testExecResponsesTools() []any {
-	return []any{
-		map[string]any{"type": "custom", "name": "exec", "description": testCodeModeDescription},
-	}
-}
-
 func newManagedMekugiProxy(t *testing.T) *observationFixture {
 	t.Helper()
 	return newProxyWithSharedTestRegistry(t, sharedProxyTestRegistry(t))
-}
-
-func (p *observationFixture) prepareRequest(ctx context.Context, request *codexresponses.Request, sessionID, threadID string, metadata codexresponses.TurnMetadata, metadataValid bool) (requestexecution.Prepared, error) {
-	return p.Prepare(ctx, request, requestexecution.Preparation{Session: sessionID, Thread: threadID, Metadata: metadata, MetadataValid: metadataValid})
 }
 
 func attachTestReplayStore(t *testing.T, proxy *observationFixture) {
@@ -82,63 +44,6 @@ func attachTestReplayStore(t *testing.T, proxy *observationFixture) {
 		store.snapshots.Close()
 	})
 	setTestProxyStore(proxy, store)
-}
-
-func newMekugiTestTransform(t *testing.T) (requestexecution.Prepared, *observationFixture, *codexresponses.Request, string) {
-	t.Helper()
-	return newMekugiTestTransformWithProxy(t, newManagedMekugiProxy(t))
-}
-
-func newMekugiTestTransformWithProxy(t *testing.T, proxy *observationFixture) (requestexecution.Prepared, *observationFixture, *codexresponses.Request, string) {
-	t.Helper()
-	workspace := t.TempDir()
-	request, err := codexresponses.ParseRequest(mustTestJSON(t, map[string]any{
-		"model": "gpt-test", "input": []any{testCodeModeAdditionalTools(testCodeModeDescription), map[string]any{"role": "user", "content": "task"}}, "tools": []any{map[string]any{"type": "function", "name": "lookup"}}, "tool_choice": "auto",
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	transform, err := proxy.prepareRequest(t.Context(), &request, "session-1", "thread-1", codexresponses.TurnMetadata{
-		RequestKind: "turn", Directories: map[string]json.RawMessage{workspace: nil},
-	}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(transform.Close)
-	return transform, proxy, &request, workspace
-}
-
-func newTopLevelMekugiTestTransformWithProxy(t *testing.T, proxy *observationFixture) (requestexecution.Prepared, *codexresponses.Request) {
-	t.Helper()
-	workspace := t.TempDir()
-	request, err := codexresponses.ParseRequest(mustTestJSON(t, map[string]any{
-		"model": "gpt-test", "input": []any{map[string]any{"role": "user", "content": "task"}},
-		"tools": testExecResponsesTools(), "tool_choice": "auto",
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	transform, err := proxy.prepareRequest(t.Context(), &request, "native-session", "native-thread", codexresponses.TurnMetadata{
-		RequestKind: "turn", Directories: map[string]json.RawMessage{workspace: nil},
-	}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(transform.Close)
-	return transform, &request
-}
-
-func titleRequestFields() map[string]any {
-	return map[string]any{
-		"model": "gpt-test", "instructions": "Generate a short title.",
-		"input": []any{map[string]any{"type": "message", "role": "user", "content": "Format Run previews"}},
-		"text": map[string]any{"format": map[string]any{
-			"type": "json_schema", "name": "title", "strict": true,
-			"schema": map[string]any{"type": "object", "properties": map[string]any{
-				"title": map[string]any{"type": "string"},
-			}, "required": []string{"title"}, "additionalProperties": false},
-		}},
-	}
 }
 
 type shellWorkerTestInvocation struct {

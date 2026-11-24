@@ -57,6 +57,31 @@ func (e *TurnError) Recoverable() bool {
 	return false
 }
 
+// ResponseCompleted is the native completion observation, not context usage.
+type ResponseCompleted struct {
+	ThreadID          string `json:"threadId"`
+	TurnID            string `json:"turnId"`
+	ResponseID        string `json:"responseId"`
+	Model             string `json:"model"`
+	ServiceTier       string `json:"serviceTier"`
+	OpenAIEndpoint    bool   `json:"openaiEndpoint"`
+	RequestDurationMS int64  `json:"requestDurationMs"`
+	Usage             *struct {
+		TokenUsage
+		CacheWriteInputTokens uint64 `json:"cacheWriteInputTokens"`
+	} `json:"usage"`
+	UsageMetadata *struct {
+		Metadata struct {
+			Input struct {
+				Cached *uint64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
+			Output struct {
+				Reasoning *uint64 `json:"reasoning_tokens"`
+			} `json:"output_tokens_details"`
+		} `json:"metadata"`
+	} `json:"usageMetadata"`
+}
+
 type Notification struct {
 	Command *CommandObservation `json:"-"`
 	Status  struct {

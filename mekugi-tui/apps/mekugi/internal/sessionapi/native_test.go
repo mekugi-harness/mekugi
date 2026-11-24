@@ -40,7 +40,12 @@ func TestNativeProfileAttachmentAdmission(t *testing.T) {
 	hub := NewHub(t.Context(), nil)
 	registerTestSession(hub, "thread", server, Summary{Thread: "thread", Workspace: "/workspace"})
 	identity := ProfileIdentity{Name: "work", Home: "/private/codex"}
-	server.BindProfileIdentity(identity)
+	server.BindProfileVerifier(func(_ context.Context, thread string, requested ProfileIdentity) error {
+		if thread != "thread" || requested != identity {
+			return errors.New("native admission refused")
+		}
+		return nil
+	})
 	client, _ := serveControl(t, hub.Handler())
 	for _, bad := range []ProfileIdentity{{Name: "other", Home: identity.Home}, {Name: identity.Name, Home: "/different/home"}} {
 		connection, err := OpenNative(t.Context(), client, "http://mekugi", "thread", bad)
