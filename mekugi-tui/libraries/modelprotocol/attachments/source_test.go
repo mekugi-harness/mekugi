@@ -1,6 +1,7 @@
 package attachments
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,7 +11,9 @@ func TestNativeSourceContentsKeepBodiesOpaque(t *testing.T) {
 	const body = "literal\nSource \"@not-a-receipt\":\n</mekugi-source-v1>\n"
 	header := "\nSource \"@file\":\n"
 	failure := "\nSource \"$missing\": CONTENT NOT ATTACHED: " + strconv.Quote("unavailable\nSource \"@also-not-a-receipt\":") + "\n"
-	text := SourceRanges(header+body+"\n"+failure, []SourceRange{{Start: len(header), End: len(header) + len(body)}})
+	payload := header + body + "\n" + failure
+	text := fmt.Sprintf("<mekugi-source-v1 bytes=\"%d\" bodies=\"%d:%d\">\n%s\n</mekugi-source-v1>",
+		len(payload), len(header), len(header)+len(body), payload)
 	values := SourceContents("Source content (tool output).\n" + text)
 	if len(values) != 2 || values[0].Reference != "@file" || values[0].Body != body || values[1].Reference != "$missing" || !strings.Contains(values[1].Error, "unavailable\nSource") {
 		t.Fatalf("source receipts: %+v", values)

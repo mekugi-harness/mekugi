@@ -1,58 +1,138 @@
-//! Capture selections borrow the host's retained evidence. Delivery is proven by
-//! native history, not by a callback reply or an unprinted JavaScript result.
-
-use std::collections::BTreeMap;
-
-use codex_history::ResponseItemEnvelope;
-use codex_protocol::agent_capture::*;
-use tokio_util::sync::CancellationToken;
+//! Native retained records are immutable. A sampled, complete history item is
+//! the receipt for a change, not the worker's return or an unprinted result.
 
 use super::Session;
+use crate::agent_communication::FinalCaptureAttachment;
+use codex_change_history::{ChangeHistoryStore, ChangeId, compose_diff, expand_id_spec};
+use codex_history::ResponseItemEnvelope;
+use codex_protocol::agent_capture::*;
+use codex_protocol::{SessionId, ThreadId};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-impl Session {
-    pub(crate) async fn project_final_capture(
-        &self,
-        capture: &crate::agent_communication::FinalCaptureAttachment,
-    ) -> String {
-        if capture.resource_ref.is_empty() {
-            return capture.full_text.clone();
-        }
-        let project = async {
-            let resources = self
-                .services
-                .local_agent_runtime
-                .host_resources
-                .get()
-                .ok_or_else(|| "capture resource owner unavailable".to_string())?;
-            let (recipient_context_id, seen) = self.capture_context().await;
-            let request = FinalCaptureProjectRequest {
-                root_thread_id: capture.root_thread_id,
-                thread_id: capture.sender_thread_id,
-                operation_id: capture.operation_id.clone(),
-                recipient_thread_id: self.thread_id,
-                recipient_cwd: capture.recipient_cwd.clone(),
-                recipient_context_id,
-                resource_ref: capture.resource_ref.clone(),
-                seen,
-            };
-            let cancellation = self.services.local_agent_runtime.shutdown.child_token();
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => Err("capture projection cancelled".to_string()),
-                result = (resources.project_final_capture)(request, cancellation.clone()) =>
-                    result.map(|response| response.text).map_err(|error| error.to_string()),
+fn interval(id: &ChangeId, sequence: u64) -> CaptureInterval {
+    CaptureInterval {
+        key: format!("native:{id}"),
+        change_id: id.to_string(),
+        record_order: sequence,
+        legacy_record_key: None,
+        first_chunk: 1,
+        last_chunk: 1,
+    }
+}
+
+impl FinalCaptureAttachment {
+    pub(crate) async fn freeze(
+        session: SessionId,
+        recipient: ThreadId,
+        sources: Vec<String>,
+    ) -> anyhow::Result<(Self, Vec<String>)> {
+        tokio::task::spawn_blocking(move || {
+            let store =
+                ChangeHistoryStore::open_existing(crate::exec_env::change_history_dir(session))?;
+            let entries = store.list_entries()?;
+            let index: HashMap<_, _> = entries.iter().map(|entry| (&entry.id, entry)).collect();
+            let mut changes = Vec::new();
+            let mut diagnostics = Vec::new();
+            let recipient = recipient.to_string();
+            for source in sources {
+                let selection = source
+                    .strip_prefix("mchanges:")
+                    .ok_or_else(|| anyhow::anyhow!("invalid change source: {source}"))?;
+                for spec in selection.split(',') {
+                    let ids = match expand_id_spec(spec) {
+                        Ok(ids) => ids,
+                        Err(error) => {
+                            diagnostics.push(error.to_string());
+                            continue;
+                        }
+                    };
+                    let mut first_missing = None;
+                    for id in ids {
+                        if let Some(entry) = index.get(&id) {
+                            if entry.thread_id != recipient && entry.source_kind.is_authored() {
+                                changes.push(interval(&id, entry.sequence));
+                            }
+                        } else if first_missing.is_none() {
+                            first_missing = Some(id);
+                        }
+                    }
+                    // Bound the diagnostic by the selection, not by a missing range's length.
+                    if let Some(id) = first_missing {
+                        diagnostics.push(format!("mchanges:{spec}: unknown change ID {id}"));
+                    }
+                }
             }
+            changes.sort_unstable_by_key(|i| i.record_order);
+            changes.dedup_by_key(|i| i.record_order);
+            Ok((
+                Self {
+                    session_id: session,
+                    changes,
+                },
+                diagnostics,
+            ))
+        })
+        .await?
+    }
+
+    pub(crate) async fn project(&self, seen: &[CaptureCursor]) -> (String, Vec<CaptureInterval>) {
+        let seen: HashSet<_> = seen.iter().map(|cursor| &cursor.key).collect();
+        let intervals: Vec<_> = self
+            .changes
+            .iter()
+            .filter(|i| !seen.contains(&i.key))
+            .cloned()
+            .collect();
+        if intervals.is_empty() {
+            return (String::new(), intervals);
         }
+        let selection = intervals
+            .iter()
+            .map(|i| i.change_id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let dir = crate::exec_env::change_history_dir(self.session_id);
+        let ids: Result<Vec<ChangeId>, _> = intervals.iter().map(|i| i.change_id.parse()).collect();
+        let rendered = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let store = ChangeHistoryStore::open_existing(dir)?;
+            let records = store.load_records(&ids?)?;
+            let mut body = String::new();
+            if records
+                .iter()
+                .flat_map(|r| &r.files)
+                .any(|f| !f.coverage.is_complete())
+            {
+                body.push_str("Incomplete capture coverage.\n");
+            }
+            for diff in compose_diff(&store, &records, &[])? {
+                body.push_str(&diff.unified_diff);
+            }
+            Ok(body)
+        })
         .await;
-        match project {
-            Ok(text) => text,
-            Err(error) => format!(
-                "{}\nCapture projection unavailable: {error}. Full frozen selection retained above.\n",
-                capture.full_text
+        match rendered {
+            Ok(Ok(body)) if body.len() + selection.len() <= 16_000 => {
+                (format!("mchanges:{selection}\n{body}"), intervals)
+            }
+            Ok(Ok(_)) => (
+                format!(
+                    "Captured changes exceed the attachment budget. Read mchanges:{selection}."
+                ),
+                Vec::new(),
+            ),
+            Ok(Err(error)) => (
+                format!("mchanges:{selection}: CONTENT NOT ATTACHED: {error}"),
+                Vec::new(),
+            ),
+            Err(error) => (
+                format!("mchanges:{selection}: CONTENT NOT ATTACHED: {error}"),
+                Vec::new(),
             ),
         }
     }
+}
 
+impl Session {
     pub(crate) async fn capture_context(&self) -> (String, Vec<CaptureCursor>) {
         let state = self.state.lock().await;
         let context_id = self.current_window_from_state(&state).2.to_string();
@@ -62,58 +142,41 @@ impl Session {
 
     pub(crate) async fn select_progress_ranges(
         &self,
-        operation_id: &str,
         selected: Vec<ProgressActor>,
-        cancellation: CancellationToken,
-    ) -> anyhow::Result<Option<ProgressFreezeResponse>> {
-        let Some(resources) = self.services.local_agent_runtime.host_resources.get() else {
-            return Ok(None);
-        };
-        let (recipient_context_id, seen) = self.capture_context().await;
-        let request = ProgressFreezeRequest {
-            root_thread_id: self.session_id().into(),
-            operation_id: operation_id.to_string(),
-            caller_thread_id: self.thread_id,
-            recipient_context_id,
-            selected,
-            seen,
-        };
-        let frozen = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => anyhow::bail!("capture selection cancelled"),
-            result = (resources.freeze_progress)(request, cancellation.clone()) => result?,
-        };
-        Ok((!frozen.agents.is_empty()).then_some(frozen))
-    }
-
-    pub(crate) async fn prepare_progress_output(
-        &self,
-        operation_id: &str,
-        frozen: ProgressFreezeResponse,
-        agents: Vec<PreparedProgressAgent>,
-        cancellation: CancellationToken,
-    ) -> anyhow::Result<ProgressOutputResponse> {
-        let resources = self
-            .services
-            .local_agent_runtime
-            .host_resources
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("capture resource owner unavailable"))?;
-        let (recipient_context_id, _) = self.capture_context().await;
-        let request = ProgressOutputRequest {
-            root_thread_id: self.session_id().into(),
-            operation_id: operation_id.to_string(),
-            caller_thread_id: self.thread_id,
-            recipient_context_id,
-            selection_ref: frozen.selection_ref,
-            agents,
-            coverage: frozen.coverage,
-        };
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => anyhow::bail!("capture output cancelled"),
-            result = (resources.prepare_progress_output)(request, cancellation.clone()) => Ok(result?),
-        }
+    ) -> anyhow::Result<Vec<FrozenAgentCapture>> {
+        let (_, seen) = self.capture_context().await;
+        let dir = crate::exec_env::change_history_dir(self.session_id());
+        tokio::task::spawn_blocking(move || {
+            if !dir.try_exists()? {
+                return Ok(Vec::new());
+            }
+            let seen: HashSet<_> = seen.into_iter().map(|cursor| cursor.key).collect();
+            let mut agents: Vec<_> = selected
+                .into_iter()
+                .map(|actor| FrozenAgentCapture {
+                    actor,
+                    intervals: Vec::new(),
+                })
+                .collect();
+            let positions: HashMap<_, _> = agents
+                .iter()
+                .enumerate()
+                .map(|(i, a)| (a.actor.thread_id.to_string(), i))
+                .collect();
+            for entry in ChangeHistoryStore::open_existing(dir)?.list_entries()? {
+                if entry.source_kind.is_authored()
+                    && let Some(&i) = positions.get(&entry.thread_id)
+                {
+                    let interval = interval(&entry.id, entry.sequence);
+                    if !seen.contains(&interval.key) {
+                        agents[i].intervals.push(interval);
+                    }
+                }
+            }
+            agents.retain(|a| !a.intervals.is_empty());
+            Ok(agents)
+        })
+        .await?
     }
 }
 
@@ -253,20 +316,15 @@ mod tests {
         let (session, context, _events) =
             crate::session::tests::make_session_and_context_with_rx().await;
         let facts = Arc::new(Mutex::new(Vec::new()));
-        let mut resources =
-            crate::agent::host_resources::tests::admission_resources(Arc::new(|_, _| {
-                Box::pin(async { panic!("not spawning") })
-            }));
-        resources.record_feature_use = Some(Arc::new({
-            let facts = facts.clone();
-            move |fact| facts.lock().unwrap().push(fact)
-        }));
         assert!(
             session
                 .services
                 .local_agent_runtime
-                .host_resources
-                .set(resources)
+                .feature_use
+                .set(Arc::new({
+                    let facts = facts.clone();
+                    move |fact| facts.lock().unwrap().push(fact)
+                }))
                 .is_ok()
         );
         for truncated in [false, true] {
@@ -288,109 +346,6 @@ mod tests {
         assert_eq!(
             facts[0].event,
             codex_protocol::feature_use::FeatureUseEvent::ProgressDelivered
-        );
-    }
-
-    #[tokio::test]
-    async fn final_mail_projects_when_consumed_and_reset_restores_eligibility() {
-        use crate::agent_communication::{
-            AgentCommunicationContext, AgentCommunicationKind, FinalCaptureAttachment,
-            MessageDelivery,
-        };
-        use codex_protocol::protocol::InterAgentCommunication;
-        use codex_protocol::{AgentPath, ThreadId};
-        use std::sync::{Arc, Mutex};
-        let (session, context, _events) =
-            crate::session::tests::make_session_and_context_with_rx().await;
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let resources = crate::AgentHostResources {
-            route_foreign: None,
-            prepare_child: None,
-            before_tool: None,
-            record_feature_use: None,
-            freeze_progress: Arc::new(|_, _| Box::pin(async { panic!("not progress") })),
-            prepare_progress_output: Arc::new(|_, _| Box::pin(async { panic!("not progress") })),
-            prepare_final_capture: Arc::new(|_, _| Box::pin(async { panic!("already frozen") })),
-            project_final_capture: Arc::new({
-                let requests = Arc::clone(&requests);
-                move |request, _| {
-                    let seen = !request.seen.is_empty();
-                    requests.lock().unwrap().push(request);
-                    Box::pin(async move {
-                        Ok(FinalCaptureProjectResponse {
-                            text: if seen {
-                                "unseen extension"
-                            } else {
-                                "full frozen evidence"
-                            }
-                            .into(),
-                        })
-                    })
-                }
-            }),
-        };
-        assert!(
-            session
-                .services
-                .local_agent_runtime
-                .host_resources
-                .set(resources)
-                .is_ok()
-        );
-        let (context_id, _) = session.capture_context().await;
-        session.state.lock().await.history.record_annotated_items(
-            &mut [delivery(1, 1, &context_id, 1, 2)],
-            codex_utils_output_truncation::TruncationPolicy::Tokens(1000),
-        );
-        let sender = ThreadId::new();
-        let mut publication =
-            AgentCommunicationContext::new(AgentCommunicationKind::Result, sender);
-        publication.result_operation = Some("final".into());
-        publication.final_capture = Some(Arc::new(FinalCaptureAttachment {
-            root_thread_id: session.session_id().into(),
-            sender_thread_id: sender,
-            operation_id: "final".into(),
-            recipient_cwd: Some("/workspace".into()),
-            resource_ref: "frozen".into(),
-            full_text: "full frozen evidence".into(),
-        }));
-        for reset in [false, true] {
-            let delivery = MessageDelivery::publish_with_context(&publication, &[]);
-            if reset {
-                session.replace_history(Vec::new(), None).await;
-            }
-            let mail = crate::PendingAgentMessage::new(
-                InterAgentCommunication::new(
-                    AgentPath::try_from("/root/child").unwrap(),
-                    AgentPath::root(),
-                    Vec::new(),
-                    "original final answer".into(),
-                    false,
-                ),
-                Some(delivery.clone()),
-            );
-            assert_eq!(mail.result_sender(), Some(sender));
-            session
-                .record_inter_agent_communication(&context, context.model_info(), mail)
-                .await;
-            assert!(delivery.final_capture().is_none());
-            let history = session.clone_history().await;
-            let text = serde_json::to_string(&history.raw_items().collect::<Vec<_>>()).unwrap();
-            assert!(text.contains("original final answer"));
-            assert!(text.contains(if reset {
-                "full frozen evidence"
-            } else {
-                "unseen extension"
-            }));
-        }
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].seen[0].through_chunk, 2);
-        assert!(requests[1].seen.is_empty());
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.operation_id == "final" && request.resource_ref == "frozen")
         );
     }
 }

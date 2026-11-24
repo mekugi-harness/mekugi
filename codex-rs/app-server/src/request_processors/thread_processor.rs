@@ -1084,30 +1084,6 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
-    pub(crate) async fn agent_foreign_receive(
-        &self,
-        request_id: &ConnectionRequestId,
-        params: codex_app_server_protocol::AgentForeignRequest,
-        cancellation: tokio_util::sync::CancellationToken,
-    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let root = self
-            .thread_manager
-            .loaded_agent_root(params.target_thread_id)
-            .await
-            .map_err(|error| invalid_request(format!("foreign target is unavailable: {error}")))?;
-        let state = self.thread_state_manager.thread_state(root).await;
-        if state.lock().await.resource_host != Some(request_id.connection_id) {
-            return Err(invalid_request(
-                "foreign delivery requires the owning resource connection",
-            ));
-        }
-        self.thread_manager
-            .receive_foreign_agent_operation(params, cancellation)
-            .await
-            .map(|response| Some(response.into()))
-            .map_err(|error| invalid_request(format!("foreign operation failed: {error}")))
-    }
-
     pub(crate) async fn agent_end(
         &self,
         request_id: &ConnectionRequestId,
@@ -1118,7 +1094,7 @@ impl ThreadRequestProcessor {
         let target = ThreadId::from_string(&params.thread_id)
             .map_err(|error| invalid_request(format!("invalid agent ID: {error}")))?;
         let state = self.thread_state_manager.thread_state(root).await;
-        if state.lock().await.resource_host != Some(request_id.connection_id) {
+        if state.lock().await.control_owner != Some(request_id.connection_id) {
             return Err(invalid_request(
                 "agent end requires the owning resource connection",
             ));
@@ -1639,7 +1615,6 @@ impl ThreadRequestProcessor {
     }
 
     pub(crate) async fn shutdown_threads(&self) {
-        self.outgoing.shutdown_host_requests().await;
         let report = self
             .thread_manager
             .shutdown_all_threads_bounded(Duration::from_secs(10))

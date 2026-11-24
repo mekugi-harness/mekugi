@@ -19,7 +19,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -177,14 +176,7 @@ func TestApprovalReviewPreservesNativeRequestAndChildAdmission(t *testing.T) {
 			}
 			if kind == "thread_spawn" {
 				metadata["parent_thread_id"], metadata["agent_name"] = "root", "/root/native-child"
-				if err := proxy.Retained.Store.Transaction(t.Context(), proxy.Retained.Writes, func(tx *history.Transaction) error {
-					return tx.InitializeScope(history.Scope{Thread: "root", Namespace: "root"}, nil)
-				}); err != nil {
-					t.Fatal(err)
-				}
-				if err := proxy.AdmitNativeChild(t.Context(), appserver.ChildHostAdmissionRequest{RootThreadID: "root", ParentThreadID: "root", ThreadID: "review-thread"}); err != nil {
-					t.Fatal(err)
-				}
+
 			}
 			headers.Set(codexresponses.TurnMetadataHeader, string(mustTestJSON(t, metadata)))
 			const response = `{"id":"review-result","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"denied"}]}]}`
@@ -195,9 +187,6 @@ func TestApprovalReviewPreservesNativeRequestAndChildAdmission(t *testing.T) {
 			if kind == "thread_spawn" {
 				if err != nil || len(provider.forwarded) != 1 {
 					t.Fatalf("native-admitted child required Go logical admission: %v, forwards=%d", err, len(provider.forwarded))
-				}
-				if scope, err := proxy.Retained.Store.ReadAdmittedScope("review-thread"); err != nil || scope.Namespace != "root" || scope.Parent != "root" {
-					t.Fatalf("native request changed admitted resource scope: %+v, %v", scope, err)
 				}
 				return
 			}

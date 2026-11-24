@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -85,34 +84,7 @@ func (c *nativeConnection) add(endpoint *nativeEndpoint) {
 
 func (c *nativeConnection) run() (runErr error) {
 	host := c.root.Client.Host
-	ctx, cancel := context.WithCancel(c.root.ctx)
-	c.root.finalCaptures = &nativeFinalCaptures{ctx: ctx, cancel: cancel, results: make(chan finalCaptureReply, 1)}
-	c.root.finalCaptures.foreign = func(ctx context.Context, request appserver.AgentForeignRequest) (appserver.AgentForeignResponse, error) {
-		return c.threads.hub.RouteForeign(ctx, c.api, request)
-	}
-	c.api.BindNativeForeign(func(ctx context.Context, request appserver.AgentForeignRequest) (appserver.AgentForeignResponse, error) {
-		return c.root.Client.Requests.ExternalForeignReceive(ctx, c.root.Client.Thread, request)
-	})
-	if c.root.preparer != nil {
-		c.root.finalCaptures.prepare = c.root.preparer.PrepareNativeFinalCapture
-		c.root.finalCaptures.admit = c.root.preparer.AdmitNativeChild
-		c.root.finalCaptures.freeze = c.root.preparer.FreezeNativeProgress
-		c.root.finalCaptures.output = c.root.preparer.PrepareNativeProgressOutput
-		c.root.finalCaptures.project = c.root.preparer.ProjectNativeFinalCapture
-		c.root.finalCaptures.beforeTool = func(ctx context.Context, request appserver.ExecutionBeforeToolParams) {
-			deadline, ok := ctx.Deadline()
-			if !ok {
-				deadline = time.Now().Add(executionobservation.NativeBoundaryHold)
-			}
-			c.root.preparer.ObserveNativeBoundary(ctx, executionobservation.NativeBoundary{
-				Thread: request.ThreadID, Turn: request.TurnID, Item: request.ItemID,
-				Tool: request.Tool, CWD: request.CWD, Input: request.Input, Deadline: deadline,
-				SessionTmp: request.SessionTmp,
-			})
-		}
-	}
 	defer func() {
-		c.root.finalCaptures.close()
 		if !c.exited {
 			var sides []*sessioncontrol.Side
 			for _, endpoint := range c.endpoints {
@@ -175,7 +147,6 @@ func (c *nativeConnection) run() (runErr error) {
 		}
 		return err
 	})
-	nativeOn(global, func() <-chan finalCaptureReply { return c.root.finalCaptures.results }, func(reply finalCaptureReply, _ bool) error { return c.root.finalCaptureReply(reply) })
 	nativeOn(global, func() <-chan nativeAttachRequest { return c.attach }, func(request nativeAttachRequest, _ bool) error {
 		if err := request.ctx.Err(); err != nil {
 			request.reply <- err
@@ -294,9 +265,6 @@ func nativeMessageThread(message appserver.Message) string {
 }
 
 func (c *nativeConnection) message(message appserver.Message) error {
-	if handled, err := c.root.finalCaptureMessage(message); handled {
-		return err
-	}
 	if c.threads != nil && c.threads.headless != nil && message.Method != "" && len(message.ID) != 0 {
 		err := fmt.Errorf("headless cannot answer host request %s; continue interactively", message.Method)
 		c.threads.headless.Fail(err)

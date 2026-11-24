@@ -1,6 +1,6 @@
 mod managed;
 mod model_catalog;
-mod observation;
+pub(crate) mod observation;
 mod registry;
 mod shared_instructions;
 mod shutdown;
@@ -1434,37 +1434,9 @@ impl ThreadManager {
         &self,
         thread_id: ThreadId,
     ) -> CodexResult<Vec<ThreadId>> {
-        let mut subtree_thread_ids = Vec::new();
-        let mut seen_thread_ids = HashSet::new();
-        subtree_thread_ids.push(thread_id);
-        seen_thread_ids.insert(thread_id);
-
-        if let Some(agent_graph_store) = self.state.agent_graph_store() {
-            for descendant_id in agent_graph_store
-                .list_thread_spawn_descendants(thread_id, /*status_filter*/ None)
-                .await
-                .map_err(|err| {
-                    CodexErr::Fatal(format!("failed to load thread-spawn descendants: {err}"))
-                })?
-            {
-                if seen_thread_ids.insert(descendant_id) {
-                    subtree_thread_ids.push(descendant_id);
-                }
-            }
-        }
-
-        for descendant_id in self
-            .agent_control()
-            .runtime
-            .list_live_agent_subtree_thread_ids(thread_id)
-            .await?
-        {
-            if seen_thread_ids.insert(descendant_id) {
-                subtree_thread_ids.push(descendant_id);
-            }
-        }
-
-        Ok(subtree_thread_ids)
+        self.state
+            .list_agent_subtree_thread_ids(thread_id, &self.agent_control().runtime)
+            .await
     }
 
     pub async fn start_thread(&self, options: StartThreadOptions) -> CodexResult<NewThread> {
@@ -2277,6 +2249,26 @@ impl ThreadManagerState {
             && let Some(captured_op) = capture_test_op(&op)
         {
             log.push((thread.session.thread_id, captured_op));
+        }
+        if message_delivery
+            .as_ref()
+            .is_some_and(|delivery| delivery.result_operation().is_some())
+            && let Op::InterAgentCommunication {
+                communication,
+                start_options,
+            } = op
+        {
+            // Completion wakes native waiters. Submit to the receiving mailbox
+            // itself before returning, not merely to the session's op channel.
+            let id = crate::session::new_submission_id();
+            crate::session::inter_agent_communication(
+                &thread.session,
+                id.clone(),
+                crate::PendingAgentMessage::new(communication, message_delivery),
+                start_options,
+            )
+            .await;
+            return Ok(id);
         }
         thread
             .io

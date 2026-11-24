@@ -22,22 +22,11 @@ impl ToolExecutor<ToolInvocation> for Handler {
         Box::pin(async move {
             let args: InspectAgentArgs =
                 parse_arguments(&function_arguments(invocation.payload.clone())?)?;
-            if let Some(target) = super::foreign::target(&invocation, &args.target) {
-                let response = super::foreign::route(
-                    &invocation,
-                    target,
-                    codex_app_server_protocol::AgentForeignOperation::Inspect,
-                )
-                .await?;
-                let codex_app_server_protocol::AgentForeignResponse::Inspect { thread } = response
-                else {
-                    return Err(super::foreign::invalid_response());
-                };
-                let thread: Thread = serde_json::from_value(thread)
-                    .map_err(|_| super::foreign::invalid_response())?;
-                if thread.id != target.to_string() {
-                    return Err(super::foreign::invalid_response());
-                }
+            if let Some(recipient) = super::foreign::target(&invocation, &args.target).await? {
+                let thread = recipient
+                    .inspect()
+                    .await
+                    .map_err(|e| collab_v2_agent_error(recipient.id(), e))?;
                 return Ok(boxed_tool_output(InspectAgentResult { thread }));
             }
             let target =

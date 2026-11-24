@@ -270,35 +270,22 @@ pub(super) async fn ensure_conversation_listener(
         .thread_state_manager
         .thread_state(conversation_id)
         .await;
-    if let Some((disconnect, observe_before_tool)) = listener_task_context
+    let feature_use = Arc::clone(&listener_task_context.thread_state_manager.feature_use);
+    let root_state = listener_task_context
         .thread_state_manager
-        .resource_host_registration(connection_id)
-        .await
-    {
-        let mut resources = crate::agent_host::host_resources(
-            &listener_task_context.outgoing,
-            connection_id,
-            disconnect,
-            conversation.agent_tree_shutdown_token(),
-            observe_before_tool,
-        );
-        let feature_use = Arc::clone(&listener_task_context.thread_state_manager.feature_use);
-        resources.record_feature_use = Some(Arc::new(move |fact| {
-            if let Ok(mut features) = feature_use.lock() {
-                features.record(fact);
-            } else {
-                tracing::warn!("native feature accounting unavailable");
-            }
-        }));
-        let root_state = listener_task_context
-            .thread_state_manager
-            .thread_state(conversation.agent_root_id())
-            .await;
-        let mut root_state = root_state.lock().await;
-        if conversation.install_agent_host_resources(resources) {
-            root_state.resource_host = Some(connection_id);
+        .thread_state(conversation.agent_root_id())
+        .await;
+    let mut root_state = root_state.lock().await;
+    if conversation.install_feature_use_recorder(move |fact| {
+        if let Ok(mut features) = feature_use.lock() {
+            features.record(fact);
+        } else {
+            tracing::warn!("native feature accounting unavailable");
         }
+    }) {
+        root_state.control_owner = Some(connection_id);
     }
+    drop(root_state);
     start_listener(
         listener_task_context,
         conversation_id,

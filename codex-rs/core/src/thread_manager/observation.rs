@@ -5,6 +5,16 @@ use codex_app_server_protocol::Thread;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
 
+/// A live foreign target. Resolving it grants only messages, private questions
+/// and passive inspection, never enrollment, restore or lifecycle control.
+pub(crate) struct ForeignAgent {
+    target: Arc<CodexThread>,
+    actor: ThreadId,
+    actor_path: codex_protocol::AgentPath,
+    origin_root: ThreadId,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+
 impl ThreadManager {
     async fn registered_agent_runtime(
         &self,
@@ -26,19 +36,9 @@ impl ThreadManager {
 
     /// Native spawn discovery includes the root and never restores an unloaded thread.
     pub async fn read_thread_subtree(&self, root: ThreadId) -> CodexResult<Vec<Thread>> {
-        let mut threads = vec![self.state.read_thread_view(root, false).await?];
-        for target in self.list_agent_subtree_thread_ids(root).await? {
-            if target == root {
-                continue;
-            }
-            match self.state.read_thread_view(target, false).await {
-                Ok(thread) => threads.push(thread),
-                // The spawn edge is durable before the child is readable.
-                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
-                Err(err) => return Err(err),
-            }
-        }
-        Ok(threads)
+        self.state
+            .read_thread_subtree(root, &self.agent_control().runtime)
+            .await
     }
 
     pub async fn populate_thread_observations(
@@ -64,174 +64,186 @@ impl ThreadManager {
             .await
             .map(|(_, ended)| ended)
     }
-
-    /// Destination API for an already-authenticated question. Never enrolls its sender
-    /// or restores the target. Ordinary sources are frozen under recipient authority.
-    pub async fn answer_agent_side_question(
-        &self,
-        target: ThreadId,
-        question: String,
-        cancellation: tokio_util::sync::CancellationToken,
-    ) -> CodexResult<String> {
-        let thread = self.get_thread(target).await?;
-        let runtime = &thread.session.services.local_agent_runtime;
-        let question = runtime
-            .acquire_recipient_message(target, &question, &cancellation)
-            .await?;
-        runtime
-            .answer_recipient_side_question(target, question, None, cancellation)
-            .await
-    }
 }
 
-impl ThreadManager {
-    /// Resolve only an already loaded target, without acquiring execution or restoring it.
-    pub async fn loaded_agent_root(&self, target: ThreadId) -> CodexResult<ThreadId> {
-        self.get_thread(target).await?;
-        self.state.agent_root(target).await
-    }
-
-    pub async fn receive_foreign_agent_operation(
+impl crate::agent::control::LocalAgentRuntime {
+    pub(crate) async fn foreign_agent(
         &self,
-        request: codex_app_server_protocol::AgentForeignRequest,
+        actor: ThreadId,
+        target: ThreadId,
         cancellation: tokio_util::sync::CancellationToken,
-    ) -> CodexResult<codex_app_server_protocol::AgentForeignResponse> {
-        use crate::agent_communication::{AgentCommunicationContext, AgentCommunicationKind};
-        use codex_app_server_protocol::{
-            AgentForeignOperation as Operation, AgentForeignResponse as Response,
-        };
-        use codex_protocol::protocol::InterAgentCommunication;
-        let target = request.target_thread_id;
-        let root = self.loaded_agent_root(target).await?;
-        let thread = self.get_thread(target).await?;
-        let runtime = &thread.session.services.local_agent_runtime;
-        if root == request.source.root_thread_id
-            || runtime.registered_root(request.source.actor_id).is_some()
+    ) -> CodexResult<ForeignAgent> {
+        let manager = self.upgrade()?;
+        let source = manager.get_thread(actor).await?;
+        let origin_root = self
+            .registered_root(actor)
+            .ok_or(CodexErr::ThreadNotFound(actor))?;
+        if source.session_source.is_internal()
+            || source.has_shutdown_status()
+            || source.session.services.local_agent_runtime.tree_id() != self.tree_id()
         {
+            return Err(CodexErr::ThreadNotFound(actor));
+        }
+        let target = manager.get_thread(target).await?;
+        if target.session_source.is_internal() || target.has_shutdown_status() {
+            return Err(CodexErr::ThreadNotFound(target.session.thread_id));
+        }
+        if target.agent_root_id() == origin_root {
             return Err(CodexErr::InvalidRequest(
                 "same-tree operations require the local agent owner".into(),
             ));
         }
-        if cancellation.is_cancelled() {
+        let runtime = &target.session.services.local_agent_runtime;
+        if cancellation.is_cancelled() || runtime.shutdown.is_cancelled() {
             return Err(CodexErr::TurnAborted);
         }
-        match request.operation {
-            Operation::Message { message } => {
-                if message.trim().is_empty() {
-                    return Err(CodexErr::InvalidRequest("empty foreign message".into()));
-                }
-                let message = runtime
-                    .acquire_recipient_message(target, &message, &cancellation)
-                    .await?;
-                let recipient =
-                    runtime
-                        .ensure_agent_known(target)?
-                        .agent_path
-                        .ok_or_else(|| {
-                            CodexErr::InvalidRequest("recipient has no agent path".into())
-                        })?;
-                // Paths are tree-local. Preserve the authenticated foreign identity in the
-                // delivered content as well as in native delivery diagnostics.
-                let attribution = serde_json::to_string(&request.source)
-                    .map_err(|error| CodexErr::Fatal(error.to_string()))?;
-                let communication = InterAgentCommunication::new(
-                    request.source.agent_path,
-                    recipient,
-                    Vec::new(),
-                    format!("Foreign sender: {attribution}\n{message}"),
-                    false,
-                );
-                let delivery_id = runtime
-                    .control(root.into())
-                    .send_inter_agent_communication(
-                        target,
-                        communication,
-                        AgentCommunicationContext::new(
-                            AgentCommunicationKind::Message,
-                            request.source.actor_id,
-                        ),
-                        crate::TurnStartOptions::default(),
-                    )
-                    .await?;
-                Ok(Response::Message {
-                    target_thread_id: target,
-                    delivery_id,
-                    accepted: true,
-                })
-            }
-            Operation::SideQuestion { question } => {
-                if question.trim().is_empty() {
-                    return Err(CodexErr::InvalidRequest("empty foreign question".into()));
-                }
-                let answer = self
-                    .answer_agent_side_question(target, question, cancellation)
-                    .await?;
-                Ok(Response::SideQuestion {
-                    target_thread_id: target,
-                    answer,
-                })
-            }
-            Operation::Inspect => Ok(Response::Inspect {
-                thread: serde_json::to_value(self.read_thread_details(target).await?)
-                    .map_err(|error| CodexErr::Fatal(error.to_string()))?,
-            }),
-            Operation::List { path_prefix } => {
-                let mut threads = self.read_thread_subtree(root).await?;
-                if let Some(prefix) = path_prefix {
-                    threads.retain(|thread| {
-                        let source: codex_protocol::protocol::SessionSource =
-                            thread.source.clone().into();
-                        source
-                            .get_agent_path()
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .as_deref()
-                            .is_some_and(|path| {
-                                path == prefix.as_str()
-                                    || path
-                                        .strip_prefix(prefix.as_str())
-                                        .is_some_and(|suffix| suffix.starts_with('/'))
-                            })
-                    });
-                }
-                Ok(Response::List {
-                    threads: serde_json::to_value(threads)
-                        .map_err(|error| CodexErr::Fatal(error.to_string()))?,
-                })
-            }
+        runtime.register_session_root(
+            target.session.thread_id,
+            target.session_source.parent_thread_id(),
+        );
+        runtime.ensure_agent_known(target.session.thread_id)?;
+        let actor_path = self
+            .ensure_agent_known(actor)?
+            .agent_path
+            .ok_or(CodexErr::ThreadNotFound(actor))?;
+        Ok(ForeignAgent {
+            target,
+            actor,
+            actor_path,
+            origin_root,
+            cancellation,
+        })
+    }
+}
+
+impl ForeignAgent {
+    pub(crate) fn id(&self) -> ThreadId {
+        self.target.session.thread_id
+    }
+
+    async fn while_live<T>(
+        &self,
+        operation: impl Future<Output = CodexResult<T>>,
+    ) -> CodexResult<T> {
+        let shutdown = &self.target.session.services.local_agent_runtime.shutdown;
+        tokio::select! {
+            biased;
+            _ = self.cancellation.cancelled() => Err(CodexErr::TurnAborted),
+            _ = shutdown.cancelled() => Err(CodexErr::TurnAborted),
+            result = operation => result,
         }
+    }
+
+    pub(crate) async fn message(&self, message: &str, turn: &str, call: &str) -> CodexResult<()> {
+        use crate::agent_communication::{AgentCommunicationContext, AgentCommunicationKind};
+        use codex_protocol::protocol::InterAgentCommunication;
+        let id = self.id();
+        let runtime = &self.target.session.services.local_agent_runtime;
+        self.while_live(async {
+            let message = runtime.acquire_recipient_message(id, message, &self.cancellation).await?;
+            let recipient = runtime.ensure_agent_known(id)?.agent_path.ok_or(CodexErr::ThreadNotFound(id))?;
+            let attribution = serde_json::json!({"rootThreadId":self.origin_root,"actorId":self.actor,
+                "agentPath":self.actor_path,"turnId":turn,"callId":call});
+            let communication = InterAgentCommunication::new(
+                self.actor_path.clone(), recipient, Vec::new(), format!("Foreign sender: {attribution}\n{message}"), false,
+            );
+            runtime.control(self.target.session.session_id()).send_inter_agent_communication(
+                id, communication, AgentCommunicationContext::new(AgentCommunicationKind::Message, self.actor),
+                crate::TurnStartOptions::default(),
+            ).await.map(|_| ())
+        }).await
+    }
+
+    pub(crate) async fn answer(&self, question: &str) -> CodexResult<String> {
+        let runtime = &self.target.session.services.local_agent_runtime;
+        self.while_live(async {
+            let question = runtime
+                .acquire_recipient_message(self.id(), question, &self.cancellation)
+                .await?;
+            runtime
+                .answer_recipient_side_question(
+                    self.id(),
+                    question,
+                    None,
+                    self.cancellation.clone(),
+                )
+                .await
+        })
+        .await
+    }
+
+    pub(crate) async fn inspect(&self) -> CodexResult<Thread> {
+        let runtime = &self.target.session.services.local_agent_runtime;
+        self.while_live(runtime.read_thread_details(self.id()))
+            .await
+    }
+
+    pub(crate) async fn list(&self) -> CodexResult<Vec<Thread>> {
+        let runtime = &self.target.session.services.local_agent_runtime;
+        self.while_live(
+            runtime
+                .upgrade()?
+                .read_thread_subtree(self.target.agent_root_id(), runtime),
+        )
+        .await
     }
 }
 
 impl ThreadManagerState {
-    async fn agent_root(&self, target: ThreadId) -> CodexResult<ThreadId> {
-        let mut current = target;
-        let mut seen = HashSet::new();
-        loop {
-            if !seen.insert(current) {
-                return Err(CodexErr::InvalidRequest(
-                    "cyclic thread-spawn ancestry".into(),
-                ));
-            }
-            let parent = match self.get_thread(current).await {
-                Ok(thread) => thread.session_source.parent_thread_id(),
-                Err(error) if matches!(error.details(), CodexErrorDetails::ThreadNotFound(_)) => {
-                    let stored = self
-                        .read_stored_thread(ReadThreadParams {
-                            thread_id: current,
-                            include_archived: true,
-                            include_history: false,
-                        })
-                        .await?;
-                    stored.parent_thread_id
+    pub(super) async fn list_agent_subtree_thread_ids(
+        &self,
+        thread_id: ThreadId,
+        runtime: &crate::agent::control::LocalAgentRuntime,
+    ) -> CodexResult<Vec<ThreadId>> {
+        let mut subtree_thread_ids = Vec::new();
+        let mut seen_thread_ids = HashSet::new();
+        subtree_thread_ids.push(thread_id);
+        seen_thread_ids.insert(thread_id);
+
+        if let Some(agent_graph_store) = self.agent_graph_store() {
+            for descendant_id in agent_graph_store
+                .list_thread_spawn_descendants(thread_id, /*status_filter*/ None)
+                .await
+                .map_err(|err| {
+                    CodexErr::Fatal(format!("failed to load thread-spawn descendants: {err}"))
+                })?
+            {
+                if seen_thread_ids.insert(descendant_id) {
+                    subtree_thread_ids.push(descendant_id);
                 }
-                Err(error) => return Err(error),
-            };
-            match parent {
-                Some(parent) => current = parent,
-                None => return Ok(current),
             }
         }
+
+        for descendant_id in runtime
+            .list_live_agent_subtree_thread_ids(thread_id)
+            .await?
+        {
+            if seen_thread_ids.insert(descendant_id) {
+                subtree_thread_ids.push(descendant_id);
+            }
+        }
+
+        Ok(subtree_thread_ids)
+    }
+
+    async fn read_thread_subtree(
+        &self,
+        root: ThreadId,
+        runtime: &crate::agent::control::LocalAgentRuntime,
+    ) -> CodexResult<Vec<Thread>> {
+        let mut threads = vec![self.read_thread_view(root, false).await?];
+        for target in self.list_agent_subtree_thread_ids(root, runtime).await? {
+            if target == root {
+                continue;
+            }
+            match self.read_thread_view(target, false).await {
+                Ok(thread) => threads.push(thread),
+                // The spawn edge is durable before the child is readable.
+                Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(threads)
     }
 
     pub(crate) async fn read_thread_view(

@@ -54,12 +54,8 @@ pub(crate) struct AgentCommunicationContext {
 /// Projection happens then, against that recipient's current context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FinalCaptureAttachment {
-    pub(crate) root_thread_id: ThreadId,
-    pub(crate) sender_thread_id: ThreadId,
-    pub(crate) operation_id: String,
-    pub(crate) recipient_cwd: Option<String>,
-    pub(crate) resource_ref: String,
-    pub(crate) full_text: String,
+    pub(crate) session_id: codex_protocol::SessionId,
+    pub(crate) changes: Vec<codex_protocol::agent_capture::CaptureInterval>,
 }
 
 impl AgentCommunicationContext {

@@ -192,7 +192,6 @@ pub(crate) struct InitializedConnectionSessionState {
     pub(crate) app_server_client_name: String,
     pub(crate) client_version: String,
     pub(crate) request_attestation: bool,
-    pub(crate) observe_before_tool: bool,
     pub(crate) client_mcp_extensions: ClientMcpExtensions,
 }
 
@@ -240,12 +239,6 @@ impl ConnectionSessionState {
         self.initialized
             .get()
             .is_some_and(|session| session.request_attestation)
-    }
-
-    pub(crate) fn observe_before_tool(&self) -> bool {
-        self.initialized
-            .get()
-            .is_some_and(|session| session.observe_before_tool)
     }
 
     pub(crate) fn client_mcp_extensions(&self) -> ClientMcpExtensions {
@@ -822,7 +815,6 @@ impl MessageProcessor {
         &self,
         connection_id: ConnectionId,
         request_attestation: bool,
-        observe_before_tool: bool,
     ) {
         self.account_processor
             .notify_workspace_routing_to_connection(connection_id);
@@ -831,7 +823,6 @@ impl MessageProcessor {
                 connection_id,
                 ConnectionCapabilities {
                     request_attestation,
-                    observe_before_tool,
                     ..Default::default()
                 },
             )
@@ -968,12 +959,8 @@ impl MessageProcessor {
                 )
                 .await?;
             if connection_initialized {
-                self.connection_initialized(
-                    connection_id,
-                    session.request_attestation(),
-                    session.observe_before_tool(),
-                )
-                .await;
+                self.connection_initialized(connection_id, session.request_attestation())
+                    .await;
             }
             return Ok(());
         }
@@ -1665,15 +1652,6 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadSubtreeList { params, .. } => {
                 self.thread_processor.thread_subtree_list(params).await
-            }
-            ClientRequest::AgentForeignReceive { params, .. } => {
-                self.thread_processor
-                    .agent_foreign_receive(
-                        &request_id,
-                        params,
-                        request_context.cancellation.clone(),
-                    )
-                    .await
             }
             ClientRequest::AgentEnd { params, .. } => {
                 self.thread_processor.agent_end(&request_id, params).await

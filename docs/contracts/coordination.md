@@ -42,11 +42,11 @@ Inherited from [product requirements](../product.md#user-requirements):
 
 ## Current approach (replaceable)
 
-- Native `thread_manager` and `app-server/src/agent_host.rs` own trees, forks, passive inspection,
-  and connection-bound host resources; Go `sessionapi/coordination.go` and `executionobservation`
-  supply direct foreign routing and retained capture-range selection.
+- Native `thread_manager` owns trees, forks, passive inspection and routing
+  between loaded families in that manager. Progress and final delivery read
+  immutable IDs from the family's native change store.
 - Full-history children use native history forking (inheriting settings/cwd without inheriting
   execution, approval, or process handles).
 - Progress `yield_time_ms` enforces a 5-minute minimum interval.
 - Cross-session communication reuses stock Codex local/remote message boards alongside direct
-  foreign message/BTW/list/inspect routing over the destination's authenticated resource connection.
+  foreign message/BTW/list/inspect calls to a loaded native target.

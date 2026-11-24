@@ -119,62 +119,17 @@ impl LocalAgentControl {
                 .map(crate::context_sources::completion_sources)
                 .unwrap_or_default();
             if !sources.is_empty() {
-                let prepared = async {
-                    let resources = self
-                        .runtime
-                        .host_resources
-                        .get()
-                        .ok_or_else(|| "capture resource owner unavailable".to_string())?;
-                    let recipient_cwd = match self
-                        .inspect_agent(parent_thread_id)
-                        .await
-                        .map_err(|error| error.to_string())?
-                    {
-                        crate::agent::api::AgentInfo::Loaded { config, .. } => {
-                            Some(config.cwd().to_string_lossy().into_owned())
-                        }
-                        crate::agent::api::AgentInfo::Unloaded(_) => {
-                            let manager =
-                                self.runtime.upgrade().map_err(|error| error.to_string())?;
-                            let stored = manager
-                                .read_stored_thread(codex_thread_store::ReadThreadParams {
-                                    thread_id: parent_thread_id,
-                                    include_archived: true,
-                                    include_history: false,
-                                })
-                                .await
-                                .map_err(|error| error.to_string())?;
-                            Some(stored.cwd.to_string_lossy().into_owned())
-                        }
-                    };
-                    let request = codex_protocol::agent_capture::FinalCaptureRequest {
-                        root_thread_id: self.session_id.into(),
-                        thread_id: outcome.thread_id,
-                        operation_id: outcome.turn_id.clone(),
-                        recipient_thread_id: parent_thread_id,
-                        recipient_cwd: recipient_cwd.clone(),
-                        sources,
-                    };
-                    let capture = (resources.prepare_final_capture)(
-                        request,
-                        self.runtime.shutdown.child_token(),
-                    )
+                match FinalCaptureAttachment::freeze(self.session_id, parent_thread_id, sources)
                     .await
-                    .map_err(|error| error.to_string())?;
-                    Ok::<_, String>(capture.capture.map(|capture| {
-                        Arc::new(FinalCaptureAttachment {
-                            root_thread_id: self.session_id.into(),
-                            sender_thread_id: outcome.thread_id,
-                            operation_id: outcome.turn_id.clone(),
-                            recipient_cwd,
-                            resource_ref: capture.resource_ref,
-                            full_text: capture.full_text,
-                        })
-                    }))
-                }
-                .await;
-                match prepared {
-                    Ok(capture) => context.final_capture = capture,
+                {
+                    Ok((capture, diagnostics)) => {
+                        if !capture.changes.is_empty() {
+                            context.final_capture = Some(Arc::new(capture));
+                        }
+                        for error in diagnostics {
+                            message.push_str(&format!("\nCONTENT NOT ATTACHED: {error}\n"));
+                        }
+                    }
                     Err(error) => message.push_str(&format!("\nCONTENT NOT ATTACHED: {error}\n")),
                 }
             }
@@ -192,7 +147,7 @@ impl LocalAgentControl {
             .send_inter_agent_communication(
                 parent_thread_id,
                 communication,
-                AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id),
+                context,
                 TurnStartOptions::default(),
             )
             .await;

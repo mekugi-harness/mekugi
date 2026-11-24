@@ -7,10 +7,6 @@ import (
 	"context"
 	"encoding/json/jsontext"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/shellhook"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"

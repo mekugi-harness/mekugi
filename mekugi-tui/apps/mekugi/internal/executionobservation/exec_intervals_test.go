@@ -350,7 +350,10 @@ func TestPrivateArtifactWriterDoesNotClaimIsolatedWorktree(t *testing.T) {
 			}
 			p.Windows.open(&execWindow{ref: "writer", group: "writer", workspace: f.workspace, roots: observation.Roots, paths: observation.ScopePaths(), scope: selected})
 			path := filepath.Join(sibling, "test.go")
-			childObservation := changecapture.NamedUntil([]string{path}, sibling, time.Now().Add(500*time.Millisecond), captureSource(selected))
+			childObservation, ok := changecapture.Capture(f.ctx, []commandanalysis.Command{{Command: "printf test > test.go", Workdir: sibling, Shell: "bash"}}, false, false, changecapture.Options{Directory: sibling, Evidence: captureSource(selected)})
+			if !ok || len(childObservation.Files) != 1 || childObservation.Files[0].Path != path {
+				t.Fatal("missing sibling file baseline")
+			}
 			child := mekugiHistory{ToolName: nativeExecCommandToolName, Root: sibling, ExecutingThread: "delegate", ExecObservation: childObservation}
 			if err := publishObservations(f.ctx, selected, p.Changes, nil, sibling, map[string]mekugiHistory{"child": child}); err != nil {
 				t.Fatal(err)
@@ -401,7 +404,7 @@ func TestPrivateArtifactWriterDoesNotClaimIsolatedWorktree(t *testing.T) {
 }
 
 func TestCheckpointIntervalsKeepAuthoredWorkspace(t *testing.T) {
-	for _, mode := range []string{"eager", "dynamic-native", "terminal-native", "eager-writer-alias", "eager-patch-alias", "dynamic-native-writer-alias", "dynamic-native-patch-alias", "terminal-native-writer-alias", "terminal-native-patch-alias"} {
+	for _, mode := range []string{"eager", "eager-writer-alias", "eager-patch-alias"} {
 		t.Run(mode, func(t *testing.T) {
 			isolateSnapshotGit(t)
 			f := newMChangesSliceFixture(t, "cross-workspace-interval")
@@ -417,10 +420,8 @@ func TestCheckpointIntervalsKeepAuthoredWorkspace(t *testing.T) {
 				}
 				if strings.HasSuffix(mode, "-writer-alias") {
 					writerDirectory = alias
-					mode = strings.TrimSuffix(mode, "-writer-alias")
 				} else {
 					directory = alias
-					mode = strings.TrimSuffix(mode, "-patch-alias")
 				}
 			}
 			path := filepath.Join(directory, "selected.txt")
@@ -445,17 +446,10 @@ func TestCheckpointIntervalsKeepAuthoredWorkspace(t *testing.T) {
 			trace.tool(f.thread, "writer-runtime", "writer-command", "exec_command", string(arguments))
 			writeTestFile(t, path, "B\n")
 			before := "B"
-			if mode == "terminal-native" {
-				before = "D"
-			}
 			patch := "*** Begin Patch\n*** Update File: selected.txt\n@@\n-" + before + "\n+C\n*** End Patch\n"
 			patchSource := "await tools.apply_patch(" + string(responses.MustMarshalJSON(patch)) + ");"
 			later := mekugiHistory{ToolName: "exec", Root: directory, ExecutingThread: f.thread}
-			if mode == "dynamic-native" {
-				patchSource = "await tools.apply_patch(makePatch());"
-			} else {
-				later.NativePatches = changecapture.Patches([]string{patch}, directory)
-			}
+			later.NativePatches = changecapture.Patches([]string{patch}, directory)
 			later.Script = patchSource
 			if err := publishObservations(f.ctx, selected, edit.Changes, nil, directory, map[string]mekugiHistory{"patch": later}); err != nil {
 				t.Fatal(err)
@@ -465,22 +459,10 @@ func TestCheckpointIntervalsKeepAuthoredWorkspace(t *testing.T) {
 			if err := transform.splitExecIntervals("patch", nil, later.NativePatches); err != nil {
 				t.Fatal(err)
 			}
-			if mode == "terminal-native" {
-				// A completed writer changes again between the eager cut and hook.
-				writeTestFile(t, path, "D\n")
-				trace.result(f.thread, "writer-command", "completed", map[string]any{"exit_code": 0})
-			} else {
-				trace.result(f.thread, "writer-command", "completed", map[string]any{"session_id": 101})
-			}
+			trace.result(f.thread, "writer-command", "completed", map[string]any{"session_id": 101})
 			trace.end(f.thread, "writer-runtime")
 			trace.start(f.thread, "patch-runtime", "patch", patchSource)
 			trace.tool(f.thread, "patch-runtime", "patch-command", "apply_patch", patch)
-			if mode != "eager" {
-				ctx, cancel := context.WithTimeout(f.ctx, NativeBoundaryHold)
-				deadline, _ := ctx.Deadline()
-				edit.ObserveNativeBoundary(ctx, NativeBoundary{Thread: f.thread, Turn: trace.turn, Item: "patch-command", Tool: applyPatchToolName, CWD: directory, Input: patch, Deadline: deadline})
-				cancel()
-			}
 			prefixID := execIntervalID("writer", true, 0)
 			prefix, found, err := f.store.lookup(f.ctx, f.workspace, prefixID)
 			if err != nil || !found || len(prefix.ReviewFiles) != 1 || !strings.Contains(prefix.ReviewFiles[0].Diff, "-A\n+B") {

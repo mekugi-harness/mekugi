@@ -38,26 +38,13 @@ impl Handler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let args: ListAgentsArgs =
             parse_arguments(&function_arguments(invocation.payload.clone())?)?;
-        if let Some(target) = args
-            .path_prefix
-            .as_deref()
-            .and_then(|value| super::foreign::target(&invocation, value))
+        if let Some(prefix) = args.path_prefix.as_deref()
+            && let Some(recipient) = super::foreign::target(&invocation, prefix).await?
         {
-            use codex_app_server_protocol::{AgentForeignOperation, AgentForeignResponse};
-            let response = super::foreign::route(
-                &invocation,
-                target,
-                AgentForeignOperation::List { path_prefix: None },
-            )
-            .await?;
-            let AgentForeignResponse::List { threads } = response else {
-                return Err(super::foreign::invalid_response());
-            };
-            let threads: Vec<codex_app_server_protocol::Thread> =
-                serde_json::from_value(threads).map_err(|_| super::foreign::invalid_response())?;
-            if !threads.iter().any(|agent| agent.id == target.to_string()) {
-                return Err(super::foreign::invalid_response());
-            }
+            let threads = recipient
+                .list()
+                .await
+                .map_err(|e| collab_v2_agent_error(recipient.id(), e))?;
             let agents = threads
                 .into_iter()
                 .filter_map(|thread| {

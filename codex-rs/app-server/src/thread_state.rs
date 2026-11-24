@@ -107,7 +107,7 @@ pub(crate) struct TurnSummary {
 
 #[derive(Default)]
 pub(crate) struct ThreadState {
-    pub(crate) resource_host: Option<ConnectionId>,
+    pub(crate) control_owner: Option<ConnectionId>,
     goal_resume_lock: Arc<Mutex<()>>,
     pub(crate) pending_interrupts: PendingInterruptQueue,
     pub(crate) network_approvals: HashMap<String, PendingNetworkApproval>,
@@ -454,8 +454,6 @@ struct ThreadStateManagerInner {
 #[derive(Clone, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
-    pub(crate) observe_before_tool: bool,
-    pub(crate) resource_disconnect: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Clone, Default)]
@@ -519,23 +517,6 @@ impl ThreadStateManager {
             .await
             .live_connections
             .insert(connection_id, capabilities);
-    }
-
-    pub(crate) async fn resource_host_registration(
-        &self,
-        connection: ConnectionId,
-    ) -> Option<(tokio_util::sync::CancellationToken, bool)> {
-        self.state
-            .lock()
-            .await
-            .live_connections
-            .get(&connection)
-            .map(|capabilities| {
-                (
-                    capabilities.resource_disconnect.clone(),
-                    capabilities.observe_before_tool,
-                )
-            })
     }
 
     pub(crate) async fn first_attestation_capable_connection_for_thread(
@@ -813,9 +794,7 @@ impl ThreadStateManager {
     pub(crate) async fn remove_connection(&self, connection_id: ConnectionId) -> Vec<ThreadId> {
         {
             let mut state = self.state.lock().await;
-            if let Some(capabilities) = state.live_connections.remove(&connection_id) {
-                capabilities.resource_disconnect.cancel();
-            }
+            state.live_connections.remove(&connection_id);
             let thread_ids = state
                 .thread_ids_by_connection
                 .remove(&connection_id)
