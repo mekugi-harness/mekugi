@@ -32,10 +32,10 @@ use codex_config::config_toml::RealtimeWsVersion;
 use codex_features::Feature;
 use codex_http_client::HttpClientFactory;
 use codex_login::CodexAuth;
-use codex_login::OPENAI_API_KEY_ENV_VAR;
 use codex_login::auth::is_fedramp_api_key;
 use codex_login::default_client::add_originator_header;
 use codex_login::default_client::default_headers;
+use codex_login::read_openai_api_key_from_env;
 use codex_model_provider::resolve_api_provider;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_prompts::prepare_realtime_backend_prompt;
@@ -2562,12 +2562,7 @@ fn realtime_api_key(auth: Option<&CodexAuth>, provider: &ModelProviderInfo) -> C
     // TODO(aibrahim): Remove this temporary fallback once realtime auth no longer
     // requires API key auth for ChatGPT/SIWC sessions.
     if provider.is_openai()
-        && let Some(api_key) = codex_protocol::config_types::CallerEnvironment::lookup(
-            provider.caller_environment.as_ref(),
-            OPENAI_API_KEY_ENV_VAR,
-        )
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+        && let Some(api_key) = read_openai_api_key_from_env()
     {
         return Ok(api_key);
     }

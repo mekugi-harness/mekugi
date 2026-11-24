@@ -517,15 +517,21 @@ async fn thread_family_keeps_caller_route_on_live_attach_and_reloads_on_cold_res
     let profile = caller.path().join("team.config.toml");
     std::fs::write(
         &profile,
-        "model = 'profile-one'\nhooks.PreToolUse = [{matcher='Bash',hooks=[{type='command',command='/bin/true'}]}]",
+        r#"model = 'profile-one'
+model_provider = 'openai'
+hooks.PreToolUse = [{matcher='Bash',hooks=[{type='command',command='/bin/true'}]}]
+shell_environment_policy.set.FAMILY_PRIVATE = 'private-family-value'
+tui.notifications = false
+"#,
     )?;
     let mut server = TestAppServer::builder()
         .with_codex_home(daemon.path())
+        .with_args(&["--strict-config"])
         .with_env_overrides(&[("FAMILY_TEST_KEY", Some("daemon"))])
         .build_initialized()
         .await?;
     let admission = |key: &str| codex_app_server_protocol::ThreadFamilyParams {
-        provider_policy: None,
+        require_custom_provider: true,
         tracking_command: Some("/bin/true".into()),
         environment: [
             ("CODEX_HOME".into(), caller.path().display().to_string()),
@@ -537,33 +543,46 @@ async fn thread_family_keeps_caller_route_on_live_attach_and_reloads_on_cold_res
     let start = |key: &str| ThreadStartParams {
         family: Some(admission(key)),
         cwd: Some(caller.path().display().to_string()),
+        model_provider: Some("mock_provider".into()),
+        config: Some([("bypass_hook_trust".into(), json!(false))].into()),
         ..Default::default()
     };
     let first = server.start_thread(start("first")).await?;
     let second = server.start_thread(start("second")).await?;
     assert_eq!(&first.model, "profile-one");
-    std::fs::write(&profile, "model_provider = 'amazon-bedrock'")?;
     let rejected = server
-        .send_thread_start_request_with_auto_env(start("unused"))
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            model_provider: None,
+            ..start("unused")
+        })
         .await?;
     let error = timeout(
         DEFAULT_READ_TIMEOUT,
         server.read_stream_until_error_message(RequestId::Integer(rejected)),
     )
     .await??;
-    assert!(error.error.message.contains("AWS signing"));
+    assert!(
+        error
+            .error
+            .message
+            .contains("requires a custom Responses provider")
+    );
 
     let settings: codex_app_server_protocol::ConfigReadResponse = server
         .request(|request_id| ClientRequest::ConfigRead {
             request_id,
             params: codex_app_server_protocol::ConfigReadParams {
                 thread_id: Some(first.thread.id.clone()),
-                include_layers: false,
+                include_layers: true,
                 cwd: None,
             },
         })
         .await?;
-    assert_eq!(settings.config.model.as_deref(), Some("profile-one"));
+    assert_eq!(
+        settings.config.additional["tui"]["notifications"],
+        json!(false)
+    );
+    assert!(!serde_json::to_string(&settings)?.contains("private-family-value"));
     let hooks: codex_app_server_protocol::HooksListResponse = server
         .request(|request_id| ClientRequest::HooksList {
             request_id,
@@ -655,7 +674,7 @@ async fn thread_family_keeps_caller_route_on_live_attach_and_reloads_on_cold_res
     .await??;
     std::fs::write(
         &profile,
-        "model = 'profile-two'\nmodel_reasoning_effort = 'medium'",
+        "model = 'profile-two'\nmodel_reasoning_effort = 'medium'\nmodel_provider = 'openai'",
     )?;
     let cold: ThreadResumeResponse = server
         .request(|request_id| ClientRequest::ThreadResume {
@@ -668,12 +687,14 @@ async fn thread_family_keeps_caller_route_on_live_attach_and_reloads_on_cold_res
                     service_tier: Some(Some("flex".into())),
                 }),
                 family: Some(admission("new")),
+                model_provider: Some("mock_provider".into()),
                 config: Some([("model".into(), json!("explicit"))].into()),
                 ..Default::default()
             },
         })
         .await?;
     assert_eq!(cold.model, "explicit");
+    assert_eq!(cold.model_provider, "mock_provider");
     assert_eq!(cold.reasoning_effort, Some(ReasoningEffort::Medium));
     assert_eq!(cold.service_tier.as_deref(), Some("flex"));
     Ok(())

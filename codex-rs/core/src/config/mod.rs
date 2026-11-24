@@ -4246,16 +4246,6 @@ impl Config {
             })?
             .clone();
 
-        if family.is_some()
-            && (model_provider.aws.is_some()
-                || model_provider.is_amazon_bedrock()
-                || model_provider.gateway_oauth.is_some())
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Mekugi family routes do not support AWS signing or gateway OAuth",
-            ));
-        }
         let mut shell_environment_policy = ShellEnvironmentPolicy::from(cfg.shell_environment_policy);
         if let Some(family) = &family {
             shell_environment_policy.caller_environment = Some(family.environment.clone());

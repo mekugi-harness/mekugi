@@ -54,25 +54,15 @@ pub enum ThreadStartSource {
     Clear,
 }
 
-/// Provider selection imposed by the launcher, independently of file layering.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub enum ThreadFamilyProviderPolicy {
-    /// Require a provider and its endpoint in the selected profile or CLI flags.
-    RequireCustomEndpoint,
-    /// If no provider was explicitly selected, use native OpenAI.
-    DefaultOpenai,
-}
-
 /// Private invocation input for a new or cold-resumed family. Environment values
 /// may contain credentials; do not publish them in thread views or rollouts.
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadFamilyParams {
-    #[ts(optional = nullable)]
-    pub provider_policy: Option<ThreadFamilyProviderPolicy>,
+    /// For the custom-only launcher, reject an effective OpenAI route.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_custom_provider: bool,
     /// Optional launcher shell observer, appended after the caller's hooks.
     #[ts(optional = nullable)]
     pub tracking_command: Option<String>,

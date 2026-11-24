@@ -33,7 +33,7 @@ impl ThreadManager {
             }
             match self.state.read_thread_view(target, false).await {
                 Ok(thread) => threads.push(thread),
-                // The deletion edge is durable before the child is readable.
+                // The spawn edge is durable before the child is readable.
                 Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
                 Err(err) => return Err(err),
             }

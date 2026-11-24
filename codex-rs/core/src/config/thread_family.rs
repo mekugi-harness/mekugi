@@ -12,7 +12,7 @@ pub struct ThreadFamily {
     pub environment: CallerEnvironment,
     pub profile: Option<ProfileV2Name>,
     pub caller_home: Option<PathBuf>,
-    pub required_route: Option<(String, String)>,
+    require_custom_provider: bool,
     pub tracking_command: Option<String>,
     pub flags: Vec<(String, toml::Value)>,
     credentials: OnceCell<Arc<AuthManager>>,
@@ -25,7 +25,7 @@ impl ThreadFamily {
         profile: Option<ProfileV2Name>,
         caller_home: Option<PathBuf>,
         flags: Vec<(String, toml::Value)>,
-        required_route: Option<(String, String)>,
+        require_custom_provider: bool,
         tracking_command: Option<String>,
     ) -> Self {
         Self {
@@ -33,16 +33,30 @@ impl ThreadFamily {
             profile,
             caller_home,
             flags,
-            required_route,
+            require_custom_provider,
             tracking_command,
             credentials: OnceCell::new(),
             runtime_auth: Default::default(),
         }
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
     pub async fn initialize_credentials(&self, config: &Config) -> std::io::Result<()> {
         self.credentials
             .get_or_try_init(|| async {
+                if self.require_custom_provider
+                    && !config.model_provider.base_url.as_deref().is_some_and(|base| {
+                        url::Url::parse(base).is_ok_and(|url| {
+                            matches!(url.scheme(), "http" | "https") && url.has_host()
+                        }) && codex_http_client::classify_openai_api_url(base)
+                            == codex_http_client::OpenAiDestination::Other
+                    })
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "mekugi requires a custom Responses provider: configure NAME.config.toml and run mekugi -p NAME; use mekugi codex for native OpenAI",
+                    ));
+                }
                 let mut auth = config.auth_config();
                 if let Some(home) = &self.caller_home {
                     auth.codex_home.clone_from(home);

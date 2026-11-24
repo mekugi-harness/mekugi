@@ -1728,7 +1728,10 @@ impl ThreadRequestProcessor {
             let trust_target = resolve_root_git_project_for_trust(LOCAL_FS.as_ref(), &config.cwd)
                 .await
                 .unwrap_or_else(|| config.cwd.clone());
-            let current_cli_overrides = config_manager.current_cli_overrides();
+            let current_cli_overrides = typesafe_overrides.family.as_ref().map_or_else(
+                || config_manager.current_cli_overrides(),
+                |family| family.flags.clone(),
+            );
             let cli_overrides_with_trust;
             let cli_overrides_for_reload = if let Err(err) =
                 codex_core::config::set_project_trust_level(
@@ -1770,6 +1773,13 @@ impl ThreadRequestProcessor {
                     typesafe_overrides,
                     /*fallback_cwd*/ None,
                 )
+                .await
+                .map_err(|err| config_load_error(&err))?;
+        }
+
+        if let Some(family) = &config.family {
+            family
+                .initialize_credentials(&config)
                 .await
                 .map_err(|err| config_load_error(&err))?;
         }
@@ -4731,6 +4741,12 @@ impl ThreadRequestProcessor {
                     )
                     .await
                     .map_err(|err| config_load_error(&err))?;
+                if let Some(family) = &config.family {
+                    family
+                        .initialize_credentials(&config)
+                        .await
+                        .map_err(|err| config_load_error(&err))?;
+                }
                 retry.prepared_config = Some(PreparedResumeConfig {
                     state: config_state,
                     config,
@@ -5226,7 +5242,7 @@ impl ThreadRequestProcessor {
             }
             permit.finish_probe();
             self.config_manager
-                .check_thread_model_provider(existing_thread.config().await.as_ref())
+                .check_thread_model_provider(&live_config)
                 .await
                 .map_err(|err| config_load_error(&err))?;
             let redact_resume_payloads =

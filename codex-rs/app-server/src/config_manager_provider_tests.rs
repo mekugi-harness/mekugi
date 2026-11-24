@@ -46,9 +46,12 @@ async fn provider_requirements_resolve_builtin_overrides(
         LoaderOverrides::without_managed_config_for_tests(),
         CloudConfigBundleFixture::loader_with_enterprise_requirement(&requirements),
     );
-    let current = manager
+    let mut current = manager
         .load_latest_config(Some(workspace.path().to_path_buf()))
         .await?;
+    current.model_provider.caller_environment = Some(
+        codex_protocol::config_types::CallerEnvironment::new(Default::default()),
+    );
     if provider_id == "openai" {
         assert_eq!(current.model_provider.base_url.as_deref(), openai_base_url);
         // Retained threads keep their inference route even if user defaults later change.

@@ -222,6 +222,7 @@ impl ConfigManager {
     }
 
     /// Resolve private invocation inputs only for a new runtime, never on a live attach.
+    #[instrument(level = "trace", skip_all)]
     pub(crate) async fn admit_family(
         &self,
         params: codex_app_server_protocol::ThreadFamilyParams,
@@ -278,80 +279,12 @@ impl ConfigManager {
                 .flatten()
                 .map(|(key, value)| (key.clone(), json_to_toml(value.clone()))),
         );
-        use codex_app_server_protocol::ThreadFamilyProviderPolicy;
-        let values = codex_config::build_cli_overrides_layer(&flags);
-        let selected = values.get("model_provider").and_then(TomlValue::as_str);
-        let definition = selected.and_then(|id| values.get("model_providers")?.get(id));
-        let base = if selected == Some(OPENAI_PROVIDER_ID) {
-            values.get("openai_base_url")
-        } else {
-            definition.and_then(|provider| provider.get("base_url"))
-        }
-        .and_then(TomlValue::as_str);
-        let custom = selected.is_some_and(|id| {
-            !id.is_empty()
-                && (id != OPENAI_PROVIDER_ID
-                    || base.is_some_and(|url| {
-                        codex_http_client::classify_openai_api_url(url)
-                            == codex_http_client::OpenAiDestination::Other
-                    }))
-        });
-        let require_endpoint = match params.provider_policy {
-            Some(ThreadFamilyProviderPolicy::RequireCustomEndpoint)
-                if !custom || profile.is_none() =>
-            {
-                return Err(invalid(
-                    "mekugi requires a custom Responses provider profile: configure NAME.config.toml and run mekugi -p NAME; use mekugi codex for native OpenAI",
-                ));
-            }
-            Some(ThreadFamilyProviderPolicy::RequireCustomEndpoint) => true,
-            Some(ThreadFamilyProviderPolicy::DefaultOpenai) => {
-                if selected.is_none() {
-                    flags.push((
-                        "model_provider".into(),
-                        TomlValue::String(OPENAI_PROVIDER_ID.into()),
-                    ));
-                }
-                custom
-            }
-            None => false,
-        };
-        let required_route = if require_endpoint {
-            let id = selected.expect("custom provider selection was validated above");
-            let base = base.ok_or_else(|| {
-                invalid("selected provider requires an imported or explicit base_url")
-            })?;
-            let valid_url = |value: &str| {
-                url::Url::parse(value).is_ok_and(|url| {
-                    matches!(url.scheme(), "http" | "https")
-                        && url.has_host()
-                        && url.username().is_empty()
-                        && url.password().is_none()
-                        && url.fragment().is_none()
-                })
-            };
-            if !valid_url(base) {
-                return Err(invalid(
-                    "provider endpoint requires an absolute HTTP(S) URL without userinfo or fragment",
-                ));
-            }
-            if definition
-                .and_then(|provider| provider.get("model_catalog_url"))
-                .and_then(TomlValue::as_str)
-                .is_some_and(|value| !valid_url(value))
-            {
-                return Err(invalid("invalid provider model_catalog_url"));
-            }
-            Some((id.to_owned(), base.to_owned()))
-        } else {
-            None
-        };
         Ok(Arc::new(codex_core::config::ThreadFamily::new(
             codex_protocol::config_types::CallerEnvironment::new(params.environment),
             profile,
             home,
             flags,
-            required_route,
+            params.require_custom_provider,
             params.tracking_command,
         )))
     }
@@ -649,9 +582,13 @@ impl ConfigManager {
             Some(provider) => Some(provider),
             None => None,
         };
-        let definition_changed = required_provider
-            .as_ref()
-            .is_some_and(|provider| provider != &current.model_provider);
+        let definition_changed = required_provider.is_some_and(|mut provider| {
+            // Managed policy compares provider definitions, not the caller's credentials.
+            provider
+                .caller_environment
+                .clone_from(&current.model_provider.caller_environment);
+            provider != current.model_provider
+        });
         if selection_changed || definition_changed {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -738,8 +675,12 @@ impl ConfigManager {
         request_overrides: Option<HashMap<String, serde_json::Value>>,
         typesafe_overrides: ConfigOverrides,
     ) -> std::io::Result<Config> {
+        let cli_overrides = typesafe_overrides.family.as_ref().map_or_else(
+            || self.current_cli_overrides(),
+            |family| family.flags.clone(),
+        );
         self.load_with_cli_overrides(
-            &self.current_cli_overrides(),
+            &cli_overrides,
             request_overrides,
             typesafe_overrides,
             /*fallback_cwd*/ None,
@@ -753,17 +694,16 @@ impl ConfigManager {
         typesafe_overrides: ConfigOverrides,
         cwd: Option<PathBuf>,
     ) -> std::io::Result<Config> {
-        self.load_with_cli_overrides(
-            &self.current_cli_overrides(),
-            request_overrides,
-            typesafe_overrides,
-            cwd,
-        )
-        .await
-        .and_then(|config| {
-            config.validate_windows_mxc_requirement()?;
-            Ok(config)
-        })
+        let cli_overrides = typesafe_overrides.family.as_ref().map_or_else(
+            || self.current_cli_overrides(),
+            |family| family.flags.clone(),
+        );
+        self.load_with_cli_overrides(&cli_overrides, request_overrides, typesafe_overrides, cwd)
+            .await
+            .and_then(|config| {
+                config.validate_windows_mxc_requirement()?;
+                Ok(config)
+            })
     }
 
     /// Validates saved and requested providers before resume overrides or policy can replace them.
@@ -791,8 +731,12 @@ impl ConfigManager {
         if let Some(saved) = saved_provider {
             typesafe_overrides.model_provider = Some(saved.to_owned());
         }
+        let cli_overrides = typesafe_overrides.family.as_ref().map_or_else(
+            || self.current_cli_overrides(),
+            |family| family.flags.clone(),
+        );
         self.load_with_validation(
-            &self.current_cli_overrides(),
+            &cli_overrides,
             request_overrides,
             typesafe_overrides,
             cwd,
@@ -877,6 +821,10 @@ impl ConfigManager {
             /*request_overrides*/ None,
             ConfigOverrides {
                 family: thread_config.family.clone(),
+                bypass_hook_trust: thread_config
+                    .family
+                    .as_ref()
+                    .map(|_| thread_config.bypass_hook_trust),
                 cwd: Some(cwd.to_path_buf()),
                 default_permissions: Some(permission_profile),
                 codex_linux_sandbox_exe: self.arg0_paths.codex_linux_sandbox_exe.clone(),
@@ -932,24 +880,12 @@ impl ConfigManager {
                 )
             })?);
         }
-        let mut merged_cli_overrides = typesafe_overrides
-            .family
-            .as_ref()
-            .map_or(cli_overrides, |family| family.flags.as_slice())
-            .iter()
-            .cloned()
-            .chain(
-                request_overrides
-                    .into_iter()
-                    .map(|(key, value)| (key, json_to_toml(value))),
-            )
-            .collect::<Vec<_>>();
-        if let Some(family) = &typesafe_overrides.family {
-            // This setting is request-only in stock Codex.
+        let mut merged_cli_overrides = if typesafe_overrides.family.is_some() {
+            // This setting is request-only in stock Codex and cannot enter a TOML layer.
+            let flags = cli_overrides.iter();
             if typesafe_overrides.bypass_hook_trust.is_none()
-                && let Some((_, value)) = family
-                    .flags
-                    .iter()
+                && let Some((_, value)) = flags
+                    .clone()
                     .rev()
                     .find(|(key, _)| key == "bypass_hook_trust")
             {
@@ -960,9 +896,24 @@ impl ConfigManager {
                     )
                 })?);
             }
-            if let Some(command) = family.tracking_command.as_deref() {
-                add_tracking_hook(&mut merged_cli_overrides, command);
-            }
+            flags
+                .filter(|(key, _)| key != "bypass_hook_trust")
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            cli_overrides.to_vec()
+        };
+        merged_cli_overrides.extend(
+            request_overrides
+                .into_iter()
+                .map(|(key, value)| (key, json_to_toml(value))),
+        );
+        if let Some(command) = typesafe_overrides
+            .family
+            .as_ref()
+            .and_then(|family| family.tracking_command.as_deref())
+        {
+            add_tracking_hook(&mut merged_cli_overrides, command);
         }
         let result = codex_core::config::ConfigBuilder::default()
             .codex_home(self.codex_home.clone())
@@ -983,18 +934,6 @@ impl ConfigManager {
         config.config_layer_stack = config
             .config_layer_stack
             .with_mcp_ema_cancellation(mcp_ema_cancellation);
-        if let Some(family) = &config.family {
-            if family.required_route.as_ref().is_some_and(|(id, base)| {
-                id != &config.model_provider_id
-                    || config.model_provider.base_url.as_ref() != Some(base)
-            }) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "selected provider conflicts with the effective provider",
-                ));
-            }
-            family.initialize_credentials(&config).await?;
-        }
         Ok(config)
     }
 

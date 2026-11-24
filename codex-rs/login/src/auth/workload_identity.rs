@@ -441,7 +441,6 @@ impl WorkloadIdentityExternalAuth {
         auth_config: &AuthConfig,
         caller: Option<&codex_protocol::config_types::CallerEnvironment>,
     ) -> Result<Option<Self>, WorkloadIdentitySessionError> {
-        let registry = process_registry();
         resolve_config(
             auth_config
                 .chatgpt_base_url
@@ -450,7 +449,18 @@ impl WorkloadIdentityExternalAuth {
             ProcessEnvironment::read(caller),
             auth_config.auth_route_config.clone(),
         )?
-        .map(|config| Self::from_config_with_registry(config, registry))
+        .map(|config| {
+            // Each admitted family owns one AuthManager; its children share it.
+            // Keep the stock single-session registry for process-wide credentials.
+            if caller.is_some() {
+                Ok(Self {
+                    observed_token_version: AtomicU64::new(0),
+                    session: Arc::new(WorkloadIdentitySession::new(config)?),
+                })
+            } else {
+                Self::from_config_with_registry(config, process_registry())
+            }
+        })
         .transpose()
     }
 
