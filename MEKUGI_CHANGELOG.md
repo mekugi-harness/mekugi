@@ -43,8 +43,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - Native coordination uses the shared thread manager for live foreign messages,
   side questions, listing and inspection. Child startup, wait-progress selection
   and final change delivery no longer request resources from a connected Go
-  client. Preload and context reset resolve retained change IDs through the
-  native `mchanges` alias without a launcher opt-in. The retired resource
+  client. Preload and context reset resolve retained change IDs from the
+  native store without a launcher opt-in. The retired resource
   callbacks are no longer on the v2 wire.
 - Native change-evidence capture (`codex-change-history`, `MEKUGI-806`):
   `codex-core` captures pre-edit baseline bytes and post-edit observed bytes at

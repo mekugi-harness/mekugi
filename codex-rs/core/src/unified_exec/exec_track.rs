@@ -65,6 +65,7 @@ impl ExecTrackAttachment {
     pub(crate) fn prepare_for_shell(
         authored_script: &str,
         cwd: &Path,
+        session_tmp: Option<&Path>,
         workspace_root: PathBuf,
         read_policy: Option<(FileSystemSandboxPolicy, PathBuf)>,
         shell_type: &ShellType,
@@ -75,9 +76,10 @@ impl ExecTrackAttachment {
         turn_id: String,
         call_id: String,
     ) -> PreparedExecTrack {
-        let write_capture = ShellWriteCapture::prepare_with_policy(authored_script, cwd, |path| {
-            Self::can_read_path(&read_policy, path)
-        });
+        let write_capture =
+            ShellWriteCapture::prepare_with_policy(authored_script, cwd, session_tmp, |path| {
+                Self::can_read_path(&read_policy, path)
+            });
 
         #[cfg(unix)]
         let (session, instrumented_script, drain_rx) = {

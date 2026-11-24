@@ -1,13 +1,12 @@
 use super::*;
 use crate::session::InputQueueActivity;
+use crate::session::capture_delivery::{ProgressActor, ProgressOutput, interval};
 use crate::session::session::Session;
 use crate::thread_input::pending_wait_activity;
 use crate::thread_input::subscribe_input_activity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use codex_protocol::ThreadId;
-use codex_protocol::agent_capture::ProgressActor;
-use codex_protocol::agent_capture::ProgressOutputResponse;
 use codex_tools::ToolSpec;
 use futures::StreamExt;
 use futures::stream::SelectAll;
@@ -349,7 +348,7 @@ pub(crate) struct WaitAgentResult {
     pub(crate) progress: String,
     /// Candidate delivery only. The outer native result owner acknowledges it.
     #[serde(skip)]
-    pub(crate) progress_output: Option<ProgressOutputResponse>,
+    pub(crate) progress_output: Option<ProgressOutput>,
 }
 
 impl WaitAgentResult {
@@ -370,7 +369,7 @@ async fn collect_progress(
     selected: Vec<ProgressActor>,
     yield_time_ms: Option<i64>,
     cancellation: CancellationToken,
-) -> anyhow::Result<ProgressOutputResponse> {
+) -> anyhow::Result<ProgressOutput> {
     let _cancel_on_drop = cancellation.clone().drop_guard();
     let Some(yield_time_ms) = yield_time_ms else {
         return std::future::pending().await;
@@ -381,16 +380,10 @@ async fn collect_progress(
         if changed.is_empty() {
             continue;
         }
-        let agents = futures::future::join_all(changed.into_iter().map(|agent| {
+        let agents = futures::future::join_all(changed.into_iter().map(|mut agent| {
             let cancellation = cancellation.child_token();
             async move {
-                let ids = agent
-                    .intervals
-                    .iter()
-                    .map(|interval| interval.change_id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let question = format!("Summarize substantive progress for mchanges:{ids}.");
+                let question = progress_question(&mut agent.entries);
                 let summary = session
                     .services
                     .local_agent_runtime
@@ -400,20 +393,30 @@ async fn collect_progress(
                         cancellation,
                     )
                     .await;
-                (agent, ids, summary)
+                (agent, summary)
             }
         }))
         .await;
         let mut text = String::new();
         let mut references = Vec::new();
         let mut delivered_intervals = Vec::new();
-        for (agent, ids, summary) in agents {
+        for (agent, summary) in agents {
+            let intervals: Vec<_> = agent
+                .entries
+                .iter()
+                .map(|entry| interval(&entry.id, entry.sequence))
+                .collect();
+            let ids = intervals
+                .iter()
+                .map(|interval| interval.change_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
             writeln!(text, "{}: mchanges:{ids}", agent.actor.task_name)?;
             references.push(ids);
             match summary {
                 Ok(summary) => {
                     writeln!(text, "{summary}")?;
-                    delivered_intervals.extend(agent.intervals);
+                    delivered_intervals.extend(intervals);
                 }
                 Err(error) => writeln!(text, "Progress summary unavailable: {error}")?,
             }
@@ -425,11 +428,43 @@ async fn collect_progress(
             );
             delivered_intervals.clear();
         }
-        return Ok(ProgressOutputResponse {
+        return Ok(ProgressOutput {
             text,
             delivered_intervals,
         });
     }
+}
+
+fn progress_question(entries: &mut Vec<codex_change_history::ChangeIndexEntry>) -> String {
+    let mut question = String::from("Summarize substantive progress for these retained edits:\n");
+    let mut described = 0;
+    for entry in entries.iter() {
+        if question.len() >= 8 * 1024 {
+            break;
+        }
+        let coverage = if entry.has_incomplete_coverage {
+            "incomplete"
+        } else {
+            "complete"
+        };
+        let _ = write!(question, "mchanges:{} ({coverage} coverage):", entry.id);
+        for path in &entry.file_paths {
+            // Keep the sampler bounded, and delimit paths as data rather than instructions.
+            if question.len().saturating_add(path.len().saturating_mul(6)) >= 8 * 1024 {
+                question.push_str(" [more paths]");
+                break;
+            }
+            let _ = write!(
+                question,
+                " {}",
+                serde_json::to_string(path).expect("string path")
+            );
+        }
+        question.push('\n');
+        described += 1;
+    }
+    entries.truncate(described);
+    question
 }
 
 impl ToolOutput for WaitAgentResult {

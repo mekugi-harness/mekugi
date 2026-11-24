@@ -81,7 +81,6 @@ pub struct UnifiedExecRequest<'a> {
     pub explicit_env_overrides: HashMap<String, String>,
     pub network: Option<NetworkProxy>,
     pub exec_approval_requirement: ExecApprovalRequirement,
-    pub large_capture: bool,
 }
 
 /// Cache key for approval decisions that can be reused across equivalent
@@ -489,6 +488,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
                     &prepared.hook_command,
                     native_cwd.as_path(),
+                    Some(&crate::exec_env::session_tmp_path(ctx.session.session_id())),
                     prepared
                         .turn_environment
                         .cwd()
@@ -792,7 +792,6 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 windows_sandbox_proxy_settings_mode,
                 prepared.tty,
                 prepared.turn_environment.environment().as_ref(),
-                req.large_capture,
                 exec_track_handles,
             )
             .await;
@@ -1021,7 +1020,6 @@ mod tests {
                 bypass_sandbox: false,
                 proposed_execpolicy_amendment: None,
             },
-            large_capture: false,
         }
     }
 }

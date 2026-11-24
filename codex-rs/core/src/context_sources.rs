@@ -1,5 +1,5 @@
 //! Shared source acquisition for messages, preload and context reload. Files and skills use
-//! the selected native filesystem; managed skills and captured changes retain their external owners.
+//! the selected native filesystem, and captured changes use the family's retained store.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -20,13 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
-use crate::session::turn_context::TurnEnvironment;
 use crate::tools::handlers::resolve_tool_environment;
-use crate::tools::handlers::unified_exec::preparation::ExecCommandLifetime;
-use crate::tools::handlers::unified_exec::preparation::ParsedExecCommand;
-use crate::unified_exec::ExecCommandRequest;
-use crate::unified_exec::UnifiedExecContext;
-use crate::unified_exec::UnifiedExecProcessManager;
 
 #[path = "context_sources_directory.rs"]
 mod directory;
@@ -42,7 +36,7 @@ use skills::SkillSources;
 
 const MAX_REFERENCE_DEPTH: usize = 3;
 // Match retained capture capacity; charge cached reads, output and pending references.
-const MAX_SOURCE_BYTES: usize = 32 << 20;
+pub(crate) const MAX_SOURCE_BYTES: usize = 32 << 20;
 
 enum Target {
     File(String),
@@ -98,13 +92,11 @@ async fn acquire_sources(
         return Ok(None);
     }
     check_capacity(sources.iter().map(String::len).sum())?;
-    let environment = resolve_tool_environment(&step.environments, None)
-        .map_err(|error| CodexErr::Fatal(format!("Reload acquisition: {error}")))?;
     // Dropping a native read cannot install a partially acquired replacement context.
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(CodexErr::TurnAborted),
-        body = read_sources(session, step, environment, sources, recipient_message, cancellation, outcomes) => {
+        body = read_sources(session, step, sources, recipient_message, cancellation, outcomes) => {
             let body = body?;
             if body.is_empty() { return Ok(None); }
             let body = format!(
@@ -119,19 +111,25 @@ async fn acquire_sources(
 async fn read_sources(
     session: &Arc<Session>,
     step: &Arc<StepContext>,
-    environment: &TurnEnvironment,
     sources: Vec<String>,
     recipient_message: bool,
     cancellation: &CancellationToken,
     mut outcomes: Option<&mut Vec<SourceAcquisitionResult>>,
 ) -> CodexResult<String> {
-    let access = step.fs_accessor(environment);
+    let environment = resolve_tool_environment(&step.environments, None);
+    let fallback_cwd = PathUri::from(step.turn.config.cwd.clone());
+    let cwd = environment.as_ref().map_or(&fallback_cwd, |env| env.cwd());
     let skills = HostSkillsSnapshot::for_step(&step.extension_data, &step.turn.extension_data);
-    let skill_sources = SkillSources::new(step, environment, skills.as_deref());
+    let file_sources = environment.as_ref().map(|environment| {
+        (
+            step.fs_accessor(environment),
+            SkillSources::new(step, environment, skills.as_deref()),
+        )
+    });
     let mut pending_bytes: usize = sources.iter().map(String::len).sum();
     let mut pending = sources
         .into_iter()
-        .map(|source| (source, environment.cwd().clone(), 1))
+        .map(|source| (source, cwd.clone(), 1))
         .collect::<VecDeque<_>>();
     let mut cached_bytes = 0usize;
     let mut files: HashMap<ResolvedSource, Result<SourceBody, String>> = HashMap::new();
@@ -204,11 +202,13 @@ async fn read_sources(
                 append(Err("nested source depth limit 3 exceeded"))?;
                 continue;
             }
-            let command = std::iter::once("mchanges".to_string())
-                .chain(recipient_message.then(|| "--for-recipient".to_string()))
-                .chain(ids.iter().cloned())
-                .collect();
-            match read_external(session, step, environment, command, cancellation).await {
+            match crate::session::capture_delivery::read_change_source(
+                session.session_id(),
+                ids.clone(),
+                recipient_message.then_some(session.thread_id),
+            )
+            .await
+            {
                 Ok(body) if recipient_message && body.is_empty() => omitted_change = true,
                 Ok(body) => {
                     append(Ok(&body))?;
@@ -219,6 +219,9 @@ async fn read_sources(
             }
             continue;
         }
+        let (access, skill_sources) = file_sources
+            .as_ref()
+            .map_err(|error| CodexErr::Fatal(format!("Reload acquisition: {error}")))?;
         let is_skill = matches!(&source.target, Target::Skill(_));
         // Reject deep skill references before resolving them.
         if is_skill && depth > MAX_REFERENCE_DEPTH {
@@ -239,7 +242,7 @@ async fn read_sources(
             {
                 continue;
             }
-            skill_sources.resolve(&access, skill).await
+            skill_sources.resolve(access, skill).await
         };
         let resolved = match resolved {
             Ok(path) => path,
@@ -261,8 +264,8 @@ async fn read_sources(
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let result = match &resolved {
-                    ResolvedSource::ManagedSkill(skill) => skill_sources.read(&access, skill).await,
-                    ResolvedSource::File(path) => read_file(&access, path).await,
+                    ResolvedSource::ManagedSkill(skill) => skill_sources.read(access, skill).await,
+                    ResolvedSource::File(path) => read_file(access, path).await,
                 };
                 cached_bytes = cached_bytes.saturating_add(match &result {
                     Ok(body) => body.text.len(),
@@ -287,7 +290,7 @@ async fn read_sources(
             }
         };
         append(Ok(&body))?;
-        let nested_base = acquired.relative_to.as_ref().unwrap_or(environment.cwd());
+        let nested_base = acquired.relative_to.as_ref().unwrap_or(cwd);
         for nested in if acquired.expand_references {
             references(&body)
         } else {
@@ -301,17 +304,7 @@ async fn read_sources(
     if omitted_change && output.is_empty() {
         return Ok(output);
     }
-    // The source envelope preserves byte boundaries for Mekugi's existing output projection.
-    // Framing and failures are not source bytes, even when they contain marker lookalikes.
-    let ranges = bodies
-        .into_iter()
-        .map(|(start, end)| format!("{start}:{end}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let result = format!(
-        "<mekugi-source-v1 bytes=\"{}\" bodies=\"{ranges}\">\n{output}\n</mekugi-source-v1>",
-        output.len()
-    );
+    let result = framing::envelope(&output, &bodies);
     check_capacity(result.len())?;
     Ok(result)
 }
@@ -406,53 +399,11 @@ fn selected_lines<'a>(
     Ok(std::borrow::Cow::Owned(selected))
 }
 
-async fn read_external(
-    session: &Arc<Session>,
-    step: &Arc<StepContext>,
-    environment: &TurnEnvironment,
-    command: Vec<String>,
-    cancellation: &CancellationToken,
-) -> Result<String, String> {
-    let display =
-        shlex::try_join(command.iter().map(String::as_str)).map_err(|error| error.to_string())?;
-    let arguments = serde_json::json!({"cmd": display, "login": false}).to_string();
-    let mut prepared = ParsedExecCommand::parse(&arguments, session, step, environment)
-        .and_then(|parsed| parsed.prepare(ExecCommandLifetime::OneShot))
-        .map_err(|error| error.to_string())?;
-    // Approval receives the actual argv. The shell-shaped metadata is only its display text.
-    prepared.resolved.command = command;
-    prepared.completion_timeout = None;
-    let context = UnifiedExecContext::new(
-        Arc::clone(session),
-        Arc::clone(step),
-        cancellation.child_token(),
-        format!("reload-source-{}", uuid::Uuid::now_v7()),
-    );
-    let request = ExecCommandRequest {
-        prepared,
-        process_id: session
-            .services
-            .unified_exec_manager
-            .allocate_process_id()
-            .await,
-        network: step.turn.network.clone(),
-    };
-    let output =
-        UnifiedExecProcessManager::exec_command_to_completion_without_timeout(request, &context)
-            .await
-            .map_err(|error| error.to_string())?;
-    if output.raw_output.omitted_bytes != 0 {
-        return Err(
-            "source exceeded the native capture limit; no partial body attached".to_string(),
-        );
-    }
-    match output.exit_code {
-        Some(0) => Ok(output.raw_output.text),
-        // Native exec combines stdout and stderr. A nonzero capture can
-        // contain valid source bytes from a partial selection, not just errors.
-        Some(code) => Err(format!("source reader exited with code {code}")),
-        None => Err("source reader did not complete".to_string()),
-    }
+pub(crate) fn frame_source_body(source: &str, body: &str) -> CodexResult<String> {
+    let mut output = String::new();
+    append_body(&mut output, source, body)?;
+    let end = output.len() - 1;
+    Ok(framing::envelope(&output, &[(end - body.len(), end)]))
 }
 
 fn append_body(output: &mut String, source: &str, body: &str) -> CodexResult<()> {
