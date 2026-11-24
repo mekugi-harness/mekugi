@@ -107,7 +107,7 @@ func remoteOwnerView(t *testing.T, u *appServerUI) *remoteViewHarness {
 
 func (h *remoteViewHarness) publish() {
 	u, v := h.u, h.view
-	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, u.side, true)
+	view := publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, "", "", false, u.side, true)
 	frame := sessionapi.NativeFrame{View: view, Questions: nativePendingQuestions(u.attached.conversation), Main: v.attached.source.Publication(v.attached.presentation, nil)}
 	v.publishDetails(&frame)
 	if err := h.api.Native().Publish(h.event.Attachment, frame); err != nil {
@@ -468,7 +468,7 @@ func TestRemoteViewApprovalGrantsRetireWithAnsweringAttachment(t *testing.T) {
 	}
 	wire.Reset()
 	secondID := enqueue(binding.Sudo)
-	publishSessionView(&other.attached, &u.Client, &other.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, u.side, false)
+	publishSessionView(&other.attached, &u.Client, &other.picker, "", preferences.Applied{}, "", "", false, u.side, false)
 	approval = u.approvals.calls()[0]
 	intent = &sessionpresentation.ApprovalIntent{Version: other.attached.presentation.View().Version, Request: approval.ID, Choice: 1}
 	if err := u.nativeSession.decideApproval(&other.attached, &u.picker, &u.Editor, u.side, u.clock, false, *intent); err != nil || !strings.Contains(wire.String(), `"id":"`+secondID+`"`) {

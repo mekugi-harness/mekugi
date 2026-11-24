@@ -12,7 +12,6 @@ import (
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 
 	"github.com/charmbracelet/x/vt"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 )
 
@@ -166,7 +165,7 @@ func TestNativeChildReferenceReturnsToMain(t *testing.T) {
 	u.main.shell.Agents = u.Agents
 	u.main.Text = "draft "
 	u.main.testActivity(u.main.shell.Agents).setDisplayFilter(true, "/root/reader")
-	publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.serviceTiers, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
+	publishTestPresentation(&u.main.attached, u.main.shell, &u.main.Client, &u.main.picker, &u.main.Editor, u.main.settings, u.main.title, u.main.backendVersion, u.main.restoring != nil, u.main.side)
 	u.main.shell.Agents.FeedLeft, u.main.shell.Agents.FeedTop = 1, 1
 	u.main.shell.Agents.FeedRight, u.main.shell.Agents.FeedRows = 40, 1
 	selectionTestDrag(t, u, 0, 0, 4, 0)
@@ -200,12 +199,8 @@ func TestNativeChildComposerSettingsEvidence(t *testing.T) {
 	if got := caption(); !strings.Contains(got, "live-model (low) · default") || strings.Contains(got, "saved-model") {
 		t.Fatalf("late metadata replaced live child settings: %s", got)
 	}
-	u.serviceTiers = inferencegateway.NewTiers(map[string]string{"live-model": "priority"})
-	if got := caption(); !strings.Contains(got, "live-model (low) · priority") {
-		t.Fatalf("child tier ignored model routing: %s", got)
-	}
-	u.serviceTiers.Confirm("live-model", info.ID, "flex")
-	publication := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	appServerTestNotify(t, u, "thread/settings/updated", map[string]any{"threadId": info.ID, "threadSettings": map[string]any{"model": "live-model", "effort": "low", "serviceTier": "flex"}})
+	publication := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	if publication.Caption.Model != "live-model" || publication.Caption.Tier != "flex" || publication.Status.Composer.Text != "Read-only" {
 		t.Fatalf("detached child caption lost confirmed thread settings: %+v", publication)
 	}

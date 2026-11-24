@@ -657,8 +657,7 @@ impl Session {
             &configuration.model_info_overrides,
         ))
         .await;
-        snapshot.service_tier = get_service_tier(
-            snapshot.service_tier.take(),
+        snapshot.service_tier = configuration.step_settings.effective_service_tier(
             &configuration.original_config_do_not_use.features,
             &model_info,
         );
@@ -977,9 +976,14 @@ impl Session {
                 .root_thread_instructions_provider(thread_id, instructions.thread_provider);
         }
         // Ephemeral forks reuse cache routing, without sharing storage or lifecycle identity.
+        let side_fork = session_configuration
+            .thread_source
+            .as_ref()
+            .and_then(crate::client::SideFork::from_source)
+            .is_some();
         let fork_cache_key = match &initial_history {
             InitialHistory::Forked(items)
-                if config.ephemeral
+                if (config.ephemeral || side_fork)
                     && !session_configuration.session_source.is_non_root_agent() =>
             {
                 items.iter().find_map(|item| match item {
@@ -987,6 +991,7 @@ impl Session {
                     _ => None,
                 })
             }
+            InitialHistory::Resumed(_) if side_fork => forked_from_id.map(|id| id.to_string()),
             InitialHistory::New
             | InitialHistory::Cleared
             | InitialHistory::Resumed(_)
@@ -1895,6 +1900,7 @@ impl Session {
                 workspace_routing.as_ref().clone(),
                 extensions.model_request_contributors().to_vec(),
             )
+            .with_request_shaping(session_configuration.thread_source.as_ref(), &config)
             .with_child_reply_summary(config.features.enabled(Feature::ChildReplySummary))
             .with_budget_policy(budget_policy.clone())
             .with_executed_tool_calls(executed_tool_calls.clone())

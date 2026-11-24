@@ -115,11 +115,12 @@ async fn build_prompt_input_from_session(
     let prompt_input = sess
         .clone_history()
         .await
-        .for_prompt(
+        .for_prompt_annotated(
             &step_context.settings.model_info.input_modalities,
             sess.services.image_store.as_ref(),
         )
-        .await;
+        .await
+        .into_request_items();
     let base_instructions = sess.get_base_instructions().await;
     let prompt = build_prompt(
         prompt_input,

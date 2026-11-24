@@ -371,7 +371,7 @@ func testWebUISemanticBrowser(t *testing.T, lane webUISemanticLane) {
 			}
 			metricsUI.statusPanel.Features = featureMetricsFixture()
 			metricsUI.statusPanel.RenderMetrics()
-			published := publishTestPresentation(&metricsUI.attached, metricsUI.shell, &metricsUI.Client, &metricsUI.picker, &metricsUI.Editor, preferences.Applied{}, nil, "", "", false, nil)
+			published := publishTestPresentation(&metricsUI.attached, metricsUI.shell, &metricsUI.Client, &metricsUI.picker, &metricsUI.Editor, preferences.Applied{}, "", "", false, nil)
 			if err := native.Publish(request.Attachment, sessionapi.NativeFrame{View: published}); err != nil {
 				request.Reply <- err.Error()
 			} else {

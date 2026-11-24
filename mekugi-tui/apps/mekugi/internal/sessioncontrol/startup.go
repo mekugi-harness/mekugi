@@ -111,7 +111,7 @@ func (s *Startup) Latest(result jsontext.Value) (string, error) {
 		return "", fmt.Errorf("find latest thread: %w", err)
 	}
 	for _, thread := range response.Data {
-		if thread.ThreadSource == SideThreadSource {
+		if IsSideSource(thread.ThreadSource) {
 			continue
 		}
 		found, err := s.History.ContainsSession(thread.ID)

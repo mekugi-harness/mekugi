@@ -14,9 +14,7 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 
-	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
@@ -31,17 +29,14 @@ import (
 // Executor runs attempts using borrowed application services. Each invocation
 // keeps its original capture, usage, control and retained-publication owners.
 type Executor struct {
-	Naming           Naming
-	ServiceTiers     *inferencegateway.Tiers
-	Provider         inferencegateway.Forwarder
-	Exchange         *inferencegateway.Exchange
-	Output           io.Writer
-	Issues           *Failures
-	Observations     Preparer
-	ReasoningChoices func(string) (string, []string, bool)
-	SideThreads      sessioncontrol.ForkClassifier
-	Usage            *accounting.Service
-	Instructions     *diagnostic.InstructionRetention
+	Naming       Naming
+	Provider     inferencegateway.Forwarder
+	Exchange     *inferencegateway.Exchange
+	Output       io.Writer
+	Issues       *Failures
+	Observations Preparer
+	Usage        *accounting.Service
+	Instructions *diagnostic.InstructionRetention
 }
 
 type requestAttempt struct {
@@ -64,7 +59,6 @@ type requestAttempt struct {
 	approvalReview bool
 	threadID       string
 	prewarm        bool
-	cacheKey       string
 
 	prepared        Prepared
 	forwardBody     []byte
@@ -201,9 +195,6 @@ func (a *requestAttempt) prepare() error {
 	a.finalization.threadID = a.threadID
 	a.finalization.turnID = a.metadata.TurnID
 	if !a.approvalReview && a.executor.Observations != nil && a.metadataValid && a.metadata.RequestKind == responses.Compaction {
-		if a.executor.SideThreads != nil && a.executor.SideThreads.IsSideThread(a.threadID) {
-			return inferencegateway.IncompatibleRequest("btw_compaction_required", conversationmodel.SideCompactionRequired)
-		}
 		if err := codexresponses.ValidateCompaction(&a.request, a.metadata); err != nil {
 			return err
 		}
@@ -216,11 +207,6 @@ func (a *requestAttempt) prepare() error {
 	if exchange := a.executor.Exchange; exchange != nil && exchange.State != nil {
 		exchange.State.RememberProviderModel(a.request)
 	}
-	requestedTier := responses.StringField(a.request.Fields, "service_tier")
-	if tier := a.executor.ServiceTiers.Effective(a.request.Model(), requestedTier, a.threadID); tier != requestedTier {
-		a.request.Fields["service_tier"] = responses.MustMarshalJSON(tier)
-	}
-
 	// Only the WebSocket provider guarantees non-generating warmup for every
 	// supported model. HTTP requests retain ordinary preparation checks.
 	webSocketRequest := a.executor.Exchange != nil
@@ -243,26 +229,6 @@ func (a *requestAttempt) prepare() error {
 }
 
 func (a *requestAttempt) prepareWire() error {
-	var err error
-	nativeKey := a.request.PromptCacheKey()
-	a.cacheKey = nativeKey
-	if a.cacheKey == "" {
-		a.cacheKey = a.sessionID
-	}
-	if !a.approvalReview && a.metadataValid && !a.metadata.ActivityIdentityInvalid &&
-		(a.metadata.RequestKind == responses.Turn || a.prewarm) && (a.metadata.ThreadID == "" || a.metadata.ThreadID == a.threadID) &&
-		inferencegateway.NativeContinuations(a.executor.Provider) && a.executor.SideThreads != nil {
-		if key := a.executor.SideThreads.ForkCacheKey(a.threadID); key != "" {
-			// An omitted native body key stays omitted. Provider affinity is
-			// independent of the session identity already used for preparation.
-			if nativeKey != "" {
-				a.request.Fields["prompt_cache_key"] = responses.MustMarshalJSON(key)
-			}
-			a.cacheKey = key
-		} else if !a.prewarm && codexresponses.ValidCacheKey(a.cacheKey) {
-			a.executor.SideThreads.ObserveCacheKey(a.threadID, a.cacheKey)
-		}
-	}
 	if inferencegateway.ApplyOpenAIPolicy(a.executor.Provider) {
 		programs, err := standardCyberAccess(a.request.Fields["access_programs"])
 		if err != nil {
@@ -270,31 +236,15 @@ func (a *requestAttempt) prepareWire() error {
 		}
 		a.request.Fields["access_programs"] = programs
 	}
-	compaction := !a.approvalReview && a.metadataValid && a.metadata.RequestKind == responses.Compaction
-	if !a.approvalReview && a.executor.ReasoningChoices != nil && (compaction || a.executor.SideThreads != nil && a.executor.SideThreads.IsBTWThread(a.threadID)) {
-		fallback, choices, updates := a.executor.ReasoningChoices(a.request.Model())
-		if err := a.request.UseLowReasoning(fallback, choices, updates && inferencegateway.NativeContinuations(a.executor.Provider)); err != nil {
-			return err
-		}
-	}
-	attachmentsProjected, attachmentIDs := ProjectFileAttachments(&a.request)
-	projectedInput, err := codexresponses.ProjectStandaloneOutputs(a.request.Fields["input"])
-	if err != nil {
-		return fmt.Errorf("project standalone tool context: %w", err)
-	}
-	a.request.Fields["input"] = projectedInput
 	nativeBody, err := a.request.WireBody(a.request.Fields)
 	if err != nil {
 		return fmt.Errorf("encode native Responses request: %w", err)
 	}
-	if attachmentsProjected && len(nativeBody) > codexresponses.MaxRequestBytes {
-		return fmt.Errorf("request with file attachments exceeds the %d-byte request limit; reduce attachments or conversation context", codexresponses.MaxRequestBytes)
-	}
 	a.forwardBody = nativeBody
 	if observer, ok := a.prepared.(interface {
-		ObservePreparedContent(*codexresponses.Request, map[int]string)
+		ObservePreparedContent(*codexresponses.Request)
 	}); ok {
-		observer.ObservePreparedContent(&a.request, attachmentIDs)
+		observer.ObservePreparedContent(&a.request)
 	}
 	if exchange := a.executor.Exchange; exchange != nil {
 		started := time.Now()
@@ -352,7 +302,7 @@ func (a *requestAttempt) forward() error {
 		a.executionCtx,
 		a.forwardBody,
 		a.headers,
-		a.cacheKey,
+		a.sessionID,
 	)
 	rejection, rejectedUpgrade := errors.AsType[*inferencegateway.WebSocketStatusError](err)
 	if rejectedUpgrade {

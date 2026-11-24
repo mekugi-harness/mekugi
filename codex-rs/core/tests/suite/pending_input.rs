@@ -153,7 +153,7 @@ async fn standalone_tool_output_starts_instruction_turn() -> anyhow::Result<()> 
         "namespace": "codex_app",
         "output": "delegated work",
     });
-    let output = serde_json::from_value(expected_output.clone())?;
+    let output = serde_json::from_value(expected_output)?;
 
     let submission = test
         .codex
@@ -166,11 +166,22 @@ async fn standalone_tool_output_starts_instruction_turn() -> anyhow::Result<()> 
 
     let request = response.single_request();
     responses::assert_root_turn(&request.body_json(), Some(&turn_id))?;
-    let output = &request.inputs_of_type("function_call_output")[0];
-    assert_eq!(output["name"], expected_output["name"]);
-    assert_eq!(output["namespace"], expected_output["namespace"]);
-    assert_eq!(output["output"], expected_output["output"]);
-    assert!(output.get("call_id").is_none());
+    assert_eq!(
+        request
+            .inputs_of_type("message")
+            .into_iter()
+            .find(|item| item["role"] == "assistant")
+            .expect("standalone context")["content"],
+        json!([{"type":"output_text","text":"Tool context: codex_app.send_message_to_thread"},{"type":"output_text","text":"delegated work"}]),
+    );
+    assert!(request.inputs_of_type("function_call_output").is_empty());
+    let history = test.codex.load_history(/*include_archived*/ false).await?;
+    assert!(history.items.iter().any(|item| matches!(item,
+        RolloutItem::ResponseItem(envelope) if matches!(&envelope.item,
+            ResponseItem::FunctionCallOutput { name: Some(name), call_id: None, output, .. }
+                if name == "send_message_to_thread" && output.text_content() == Some("delegated work")
+        )
+    )));
 
     Ok(())
 }
@@ -973,6 +984,13 @@ async fn plugin_wait_wakes_on_turn_input(
         .map(responses::ResponseMock::single_request)
         .collect::<Vec<_>>();
     for request in &requests {
+        if notification["type"] == "function_call_output" {
+            assert!(request.inputs_of_type("message").iter().any(|item| item["role"] == "assistant" && item["content"] == json!([
+                {"type":"output_text","text":"Tool context: local_ma.worker_result"},
+                {"type":"output_text","text":"worker is done"}
+            ])));
+            continue;
+        }
         assert_eq!(
             request
                 .inputs_of_type(notification["type"].as_str().expect("item type"))

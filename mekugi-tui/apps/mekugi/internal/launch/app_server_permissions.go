@@ -4,7 +4,6 @@ import (
 	json "encoding/json/v2"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
@@ -72,7 +71,7 @@ func (p *composerPicker) permissionsResponse(attached *attachedPresentation, con
 	return nil
 }
 
-func choosePermission(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], applied preferences.Applied, tiers **inferencegateway.Tiers, panes *nativePreferences, restoring bool, clock func() time.Time, picker *composerPicker, choice completion.Choice) {
+func choosePermission(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], applied preferences.Applied, panes *nativePreferences, restoring bool, clock func() time.Time, picker *composerPicker, choice completion.Choice) {
 	selection := picker.permissionSelection
 	change, err := selection.Choose(choice.Name)
 	if err != nil {
@@ -80,7 +79,7 @@ func choosePermission(attached *attachedPresentation, control *sessioncontrol.Cl
 		return
 	}
 	selection.Closed = true // Transfer the input gate to the admitted host update.
-	accepted, err := updateSettings(attached, control, applied, tiers, panes, restoring, clock, change)
+	accepted, err := updateSettings(attached, control, applied, panes, restoring, clock, change)
 	if err != nil {
 		setNotice(&attached.feedback, presentationTime(clock), "Permission update failed: "+err.Error(), true)
 	}

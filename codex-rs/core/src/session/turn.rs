@@ -509,7 +509,7 @@ pub(crate) async fn run_turn(
         .await;
     }
 
-    if super::async_compaction::enabled(&turn_context) {
+    if super::async_compaction::enabled(&sess, &turn_context) {
         let token_status = super::context_window::context_window_token_status(
             sess.as_ref(),
             turn_context.as_ref(),
@@ -865,7 +865,9 @@ pub(crate) async fn run_turn(
                         }
                         Ok(false) => {}
                         Err(err) => {
-                            if crate::tasks::ends_turn_as_interrupted(&err) {
+                            if sess.services.model_client.answer_only()
+                                || crate::tasks::ends_turn_as_interrupted(&err)
+                            {
                                 return Err(err);
                             }
                             let error = err.to_codex_protocol_error();
@@ -943,6 +945,7 @@ pub(crate) async fn run_turn(
                     // policy. Keep summarizing compaction in this task to serialize history updates.
                     let config = &turn_context.config;
                     if auto_summarization_enabled
+                        && !sess.services.model_client.answer_only()
                         && config.model_post_turn_compact_threshold_percent > 0
                         && !sess.input_queue.has_pending_input(&sess.active_turn).await
                         && !cancellation_token.is_cancelled()
@@ -1214,7 +1217,14 @@ pub(crate) async fn run_hooks_and_record_inputs(
                     let text: Vec<_> = content
                         .iter()
                         .filter_map(|part| match part {
-                            ResolvedUserInput::Text { text, .. } => Some(text.as_str()),
+                            ResolvedUserInput::Text { text, .. }
+                                if !(content.len() > 1
+                                    && text.starts_with("\n\n---\nUser selections:\n"))
+                                    && crate::context_manager::attachment_frames(text)
+                                        .is_none() =>
+                            {
+                                Some(text.as_str())
+                            }
                             _ => None,
                         })
                         .collect();
@@ -1925,6 +1935,7 @@ async fn run_auto_compact(
     cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
+    sess.services.model_client.check_compaction()?;
     if !sess.inline_compaction_allowed(turn_context)? {
         return Ok(false);
     }
@@ -2196,7 +2207,7 @@ async fn run_sampling_request(
             )
             .await;
         let savings = projected.savings;
-        let mut prompt_input = projected.into_items();
+        let mut prompt_input = projected.into_request_items();
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);

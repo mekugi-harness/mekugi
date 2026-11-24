@@ -14,7 +14,7 @@ func TestNonTerminalQuestionSubmissionKeepsOtherEditor(t *testing.T) {
 	u, wire := newAppServerTestUI()
 	u.Turn = "turn"
 	questionTestSync(t, u, "first", false)
-	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	call := v.Questions.Call
 	answer := sessionpresentation.AnswerIntent{Version: v.Version,
 		Call: call.ID, Question: call.Questions[0].ID, Choice: 0, Draft: composer.Draft{Text: "explicit note"}}
@@ -26,7 +26,7 @@ func TestNonTerminalQuestionSubmissionKeepsOtherEditor(t *testing.T) {
 	u.Editor = hideQuestionEditor(&u.questions, u.attached.conversation, u.Editor, u.Thread)
 	openQuestionCall(&u.questions, &u.approvals, u.attached.conversation, &u.picker, &u.Editor, u.Thread, u.questions.calls()[1])
 	u.Text = "another answer draft"
-	submit := sessionpresentation.QuestionSubmitIntent{Version: publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Version, Call: call.ID}
+	submit := sessionpresentation.QuestionSubmitIntent{Version: publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Version, Call: call.ID}
 	if err := u.nativeSession.submitQuestions(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, u.ctx, submit); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestNonTerminalQuestionSubmissionKeepsOtherEditor(t *testing.T) {
 	if err := u.nativeSession.submitQuestions(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, u.ctx, submit); err != nil || wire.Len() != 0 {
 		t.Fatal("answered call responded again")
 	}
-	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	submit = sessionpresentation.QuestionSubmitIntent{Version: v.Version, Call: v.Questions.Call.ID}
 	if err := u.nativeSession.submitQuestions(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, u.ctx, submit); err != nil || wire.Len() != 0 || u.attached.feedback.Text != prompt.ErrIncompleteAnswers.Error() {
 		t.Fatal("incomplete submission skipped confirmation")
@@ -60,7 +60,7 @@ func TestNonTerminalQuestionBatchUsesOrdinarySubmission(t *testing.T) {
 	u.startSession("main", t.TempDir())
 	u.Turn = "turn"
 	questionTestAsync(t, u, "batch", "Who receives it?", "Who approves it?")
-	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	call := v.Questions.Call
 	for i, q := range call.Questions {
 		v = u.attached.presentation.View()
@@ -86,7 +86,7 @@ func TestNonTerminalQuestionRejectsSecretReplayAndRetiredView(t *testing.T) {
 	u, wire := newAppServerTestUI()
 	u.Turn = "turn"
 	questionTestSync(t, u, "secret", true)
-	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	answer := sessionpresentation.AnswerIntent{Version: v.Version,
 		Call: v.Questions.Call.ID, Question: v.Questions.Call.Questions[0].ID,
 		Choice: 0, Draft: composer.Draft{Text: "ordinary input"}}
@@ -94,7 +94,7 @@ func TestNonTerminalQuestionRejectsSecretReplayAndRetiredView(t *testing.T) {
 		t.Fatal("ordinary intent entered secret state")
 	}
 	u.attached.presentation.Attach(sessionpresentation.Thread{ID: u.Thread, Caller: "/root"}, true)
-	answer.Version = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Version
+	answer.Version = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Version
 	if u.nativeSession.answerQuestion(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, answer) || u.attached.feedback.Text != sessionpresentation.ErrReplayIntent.Error() {
 		t.Fatal("replay accepted an answer")
 	}

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
@@ -21,7 +20,6 @@ import (
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	previewbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/codexbinding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
@@ -31,8 +29,7 @@ const applyPatchToolName = "apply_patch"
 
 // Config supplies borrowed invocation owners. Startup owns their lifetimes.
 type Config struct {
-	ProgressSnapshot   func(string) *changepresentation.ReviewView
-	ContextAttachments func(context.Context, string, string) (composer.AttachmentSnapshot, error)
+	ProgressSnapshot func(string) *changepresentation.ReviewView
 
 	Usage          *accounting.Service
 	Review         *sessionreview.Review
@@ -137,7 +134,6 @@ func (t *mekugiResponseTransform) ObserveUsage(counts inference.Usage) {
 // Prewarm shares model projection but cannot initialize execution, replay, or
 // agent lifecycle state. Only the non-generating WebSocket path selects it.
 func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexresponses.Request, sessionID, threadID string, metadata codexresponses.TurnMetadata, metadataValid, prewarm bool) (*mekugiResponseTransform, error) {
-	var attachments attachmentPreparation
 	if bytes.Contains(request.Fields["input"], []byte(history.CompactSummaryPrefix)) {
 		if !metadataValid {
 			return nil, errors.New("compaction recovery requires valid metadata")
@@ -145,13 +141,6 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 		if err := p.prepareCompactInput(ctx, request, sessionID, threadID, metadata, prewarm); err != nil {
 			return nil, err
 		}
-	}
-	if metadataValid && !metadata.ActivityIdentityInvalid && (metadata.ThreadID == "" || metadata.ThreadID == threadID) {
-		prepared, err := p.prepareAttachmentContext(ctx, request, threadID, metadata, prewarm)
-		if err != nil {
-			return nil, err
-		}
-		attachments = prepared
 	}
 	if err := validateProviderContext(request.Fields["input"]); err != nil {
 		return nil, err
@@ -224,10 +213,6 @@ func (p *Preparer) prepareModelRequest(ctx context.Context, request *codexrespon
 	}
 	visible, err := p.reconcileVisibleInput(ctx, request, directory, historySessionID)
 	if err != nil {
-		retained.Finish(false)
-		return nil, err
-	}
-	if err := p.prepareAttachmentHints(ctx, request, attachments); err != nil {
 		retained.Finish(false)
 		return nil, err
 	}

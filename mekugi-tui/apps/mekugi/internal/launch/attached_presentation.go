@@ -3,7 +3,6 @@ package launch
 import (
 	"context"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -48,7 +47,7 @@ type executionHooks struct {
 	activeThread    func(string) bool
 	reserveThread   func(string) error
 	nativeImages    func(func(string))
-	modelsReady     func([]appServerModel, preferences.Applied, *inferencegateway.Tiers, string)
+	modelsReady     func([]appServerModel, preferences.Applied, string)
 }
 
 func (hooks *executionHooks) bind(native *nativeViews, api *sessionapi.Server, compaction func(string, string) func(context.Context) (string, error)) {

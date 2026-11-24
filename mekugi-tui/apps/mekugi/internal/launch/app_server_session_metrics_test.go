@@ -98,7 +98,7 @@ func sessionMetricsFixture(t *testing.T) transportcapture.MetricsSnapshot {
 
 func sessionMetricField(t *testing.T, u *appServerUI, group, label, want string) {
 	t.Helper()
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	for _, field := range u.shell.Main.Panel.Fields {
 		if field.Group == group && field.Label == label {
 			if field.Value != want {
@@ -118,7 +118,7 @@ func TestAppServerSessionMetricsLocalNavigation(t *testing.T) {
 		t.Fatal("session command did not open a local dialog")
 	}
 	*u.statusPanel.Metrics = sessionMetricsFixture(t)
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	sessionMetricField(t, u, "Requests", "Attempts", "3")
 	sessionMetricField(t, u, "Usage", "Average output", "1.2 tok/s")
 	sessionMetricField(t, u, "Usage", "Measured duration", "10.000 s")
@@ -207,7 +207,7 @@ func TestAppServerSessionMetricsRefreshAndBounds(t *testing.T) {
 	now = now.Add(500 * time.Millisecond)
 	u.dirty = refreshSessionMetrics(u.statusPanel, u.sessionCapture, presentationTime(u.clock), false) || u.dirty
 	sessionMetricField(t, u, "Requests", "Logical", "1")
-	published := publishSessionView(&u.attached, &u.Client, &u.picker, "", preferences.Applied{}, nil, "", "", false, nil, true)
+	published := publishSessionView(&u.attached, &u.Client, &u.picker, "", preferences.Applied{}, "", "", false, nil, true)
 	logical := ""
 	for _, field := range published.Panel.Fields {
 		if field.Group == "Requests" && field.Label == "Logical" {
@@ -221,7 +221,7 @@ func TestAppServerSessionMetricsRefreshAndBounds(t *testing.T) {
 		u.shell.Transcript.Painter.Theme = theme
 		for tab := range 3 {
 			u.shell.Main.Panel.Tab = tab
-			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 			for _, size := range [][2]int{{90, 25}, {30, 15}, {12, 8}, {1, 1}, {0, 0}} {
 				for _, row := range u.statusPanelFrame(size[0], size[1]) {
 					if ansi.StringWidth(row) > size[0] {
@@ -275,7 +275,7 @@ func TestUISnapshotAppServerSessionMetrics(t *testing.T) {
 			u.attached.cwd = "/workspace"
 			u.replayDebugDirectory = tc.debug
 			u.nativeSession.showSessionMetrics(&u.attached, &u.picker, &u.Editor, u.clock, &u.side, &u.statusPanel, &u.resumePicker)
-			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 			m := u.statusPanel.Metrics
 			u.shell.Main.Panel.Tab = tc.tab
 			if !tc.missing {
@@ -296,7 +296,7 @@ func TestUISnapshotAppServerSessionMetrics(t *testing.T) {
 			if tc.empty {
 				m.Exchanges = nil
 			}
-			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 			u.shell.Main.Panel.Top = tc.top
 			assertNativeUISnapshot(t, "native-session-"+tc.name, u.statusPanelFrame(tc.width, tc.height))
 		})

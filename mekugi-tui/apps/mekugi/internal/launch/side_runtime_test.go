@@ -49,20 +49,6 @@ func TestNativeChildContextUsesSharedRuntimeWithoutView(t *testing.T) {
 			}
 		})
 	}
-	cache := u.conversationState.Attachments(u.attached.session.Thread("child"))
-	cache.Set("reset-window", []composer.ContextAttachment{{ID: "retained-attachment"}})
-	done := make(chan error, 1)
-	go func() {
-		snapshot, err := u.Requests.ContextAttachments(t.Context(), "child", "reset-window")
-		if err == nil && (len(snapshot.Values) != 1 || snapshot.Values[0].ID != "retained-attachment") {
-			err = fmt.Errorf("child attachment context changed: %+v", snapshot)
-		}
-		done <- err
-	}()
-	u.observeInspection(<-u.Requests.Inspections())
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
 	if execution.native.byThread["child"] != nil || u.Host.Input.(*appServerTestInput).Len() != 0 {
 		t.Fatal("passive child context inspection created a view or native request")
 	}

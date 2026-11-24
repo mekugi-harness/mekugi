@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
@@ -52,7 +51,7 @@ type appServerIntegration struct {
 	skillsManager       bool
 }
 
-func startAppServerUI(terminalViews terminalsession.Views, reviewSource *changecapture.Service, views *sessionpresentation.Service, conversation *conversationmodel.Service, activity *activitymodel.Service, service *history.Service, prefs *preferences.Service, segments *reports.Service, ctx context.Context, cmd *exec.Cmd, stdin, stdout *os.File, integration appServerIntegration, issues *requestexecution.Failures, resumeThread string, faint bool, serviceTiers *inferencegateway.Tiers, capture *transportcapture.Recorder, resumeArgv []string, debugDirectory string, generator *sessionNaming, observations *binding.Observation, approvals bool) (func() error, error) {
+func startAppServerUI(terminalViews terminalsession.Views, reviewSource *changecapture.Service, views *sessionpresentation.Service, conversation *conversationmodel.Service, activity *activitymodel.Service, service *history.Service, prefs *preferences.Service, segments *reports.Service, ctx context.Context, cmd *exec.Cmd, stdin, stdout *os.File, integration appServerIntegration, issues *requestexecution.Failures, resumeThread string, faint bool, capture *transportcapture.Recorder, resumeArgv []string, debugDirectory string, generator *sessionNaming, observations *binding.Observation, approvals bool) (func() error, error) {
 	workspace, err := filepath.Abs(cmd.Dir)
 	if err != nil {
 		return nil, err
@@ -86,7 +85,7 @@ func startAppServerUI(terminalViews terminalsession.Views, reviewSource *changec
 		defer listener.Close()
 		serverContext, stopServer := context.WithCancel(ctx)
 		launcher := nativeFixtureLauncher{run: func(runtimeContext context.Context, api *sessionapi.Server, threads *threadExecution) error {
-			wait, err := (&nativeSession{preparer: integration.preparer, reviewSource: reviewSource, presentationState: views, conversationState: conversation, activity: activity, history: service, segments: segments, ctx: runtimeContext, controlObservations: integration.controlObservations, usage: integration.usage, audience: integration.audience, review: integration.review, execWindows: integration.execWindows, nativeTrace: integration.nativeTrace, retained: integration.retained, changeSource: integration.changeSource, snapshots: integration.snapshots, publishChanges: integration.publishChanges, captureNotice: integration.captureNotice, execTrack: integration.execTrack, issues: issues, serviceTiers: serviceTiers, sessionCapture: capture, resumeArgv: resumeArgv, replayDebugDirectory: debugDirectory, titleGenerator: generator, observations: observations, approvalMode: approvals}).start(prefs, cmd, integration.skillsManager, resumeThread, nil, api, false, threads)
+			wait, err := (&nativeSession{preparer: integration.preparer, reviewSource: reviewSource, presentationState: views, conversationState: conversation, activity: activity, history: service, segments: segments, ctx: runtimeContext, controlObservations: integration.controlObservations, usage: integration.usage, audience: integration.audience, review: integration.review, execWindows: integration.execWindows, nativeTrace: integration.nativeTrace, retained: integration.retained, changeSource: integration.changeSource, snapshots: integration.snapshots, publishChanges: integration.publishChanges, captureNotice: integration.captureNotice, execTrack: integration.execTrack, issues: issues, sessionCapture: capture, resumeArgv: resumeArgv, replayDebugDirectory: debugDirectory, titleGenerator: generator, observations: observations, approvalMode: approvals}).start(prefs, cmd, integration.skillsManager, resumeThread, nil, api, false, threads)
 			if err != nil {
 				return err
 			}

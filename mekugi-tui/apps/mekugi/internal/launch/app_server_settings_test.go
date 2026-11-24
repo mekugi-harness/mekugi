@@ -257,7 +257,7 @@ func TestAppServerSettingsReasoningWaitsForCatalog(t *testing.T) {
 	appServerTestRequest(t, u, "99", "model/list")
 	// Native views borrow execution while retaining their own presentation value.
 	view := u.attached
-	if err := stepReasoning(&view, &u.Client, preferences.Applied{Model: u.settings.Model, Effort: u.settings.Effort}, &u.serviceTiers, u.panes, false, u.clock, u.models, u.modelsLoading, true); err != nil {
+	if err := stepReasoning(&view, &u.Client, preferences.Applied{Model: u.settings.Model, Effort: u.settings.Effort}, u.panes, false, u.clock, u.models, u.modelsLoading, true); err != nil {
 		t.Fatal(err)
 	}
 	if w.Len() != 0 || u.attached.reasoning == nil {

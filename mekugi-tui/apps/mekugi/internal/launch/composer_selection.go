@@ -16,7 +16,7 @@ import (
 
 func (session *nativeSession) referenceInput(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, side **sessioncontrol.Side, panel **appServerStatusReport, resumePicker **appServerResumePicker, parent context.Context, intent sessionpresentation.ReferenceIntent) bool {
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
 	}()
 	if attached.effects != nil {
 		if err := attached.presentation.ClientReference(intent); err != nil {

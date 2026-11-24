@@ -7,7 +7,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
@@ -83,7 +82,7 @@ func nativeTestCancel(t *testing.T, u *appServerUI) *nativeClient {
 		}
 		if intent.Mode == sessioncontrol.RestoreWaiting && cancelQueuedCompact(&u.attached, &u.Client, &u.picker, &u.questions, &u.approvals, u.clock) {
 			u.picker.refreshPicker(&u.attached, u.clock, u.Requests, u.Editor, u.ctx, u.skillEnvironment)
-			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 			continue
 		}
 		if err := u.applyInput(u.shell, func(yield func(terminalsession.InputEffect) bool) {
@@ -110,8 +109,6 @@ func TestAppServerCompactQueuedContinuesOnceAfterAckAndTurn(t *testing.T) {
 			t.Run(fmt.Sprintf("turnBeforeAck=%t/resetBeforeHost=%t", beforeAck, resetBeforeHost), func(t *testing.T) {
 				u, w := newAppServerTestUI()
 				u.settings.Model = "gpt-6.1-sol"
-				u.serviceTiers = inferencegateway.NewTiers(map[string]string{u.settings.Model: "priority"})
-				appServerTestKeys(t, u, "/tier default\r")
 				r := queueBusyCompact(t, u, w)
 				ack := fmt.Sprintf(`{"id":%d,"result":{}}`, r.ID)
 				if !beforeAck {
@@ -150,9 +147,6 @@ func TestAppServerCompactQueuedContinuesOnceAfterAckAndTurn(t *testing.T) {
 				start := appServerOneRequest(t, w, "turn/start", "")
 				if len(start.Params.Input) != 0 {
 					t.Fatal("continuation fabricated user input")
-				}
-				if start.Params.ServiceTier != "default" {
-					t.Fatalf("manual reset lost selected default tier: %+v", start)
 				}
 				appServerTestTurnEnd(t, u, "compact-turn", "completed")
 				appServerTestMessage(t, u, ack)

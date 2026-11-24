@@ -89,9 +89,6 @@ func TestTokenUsageServiceTierAcrossTransports(t *testing.T) {
 						t.Fatalf("tier-aware usage = %+v, ok=%v", report, ok)
 					}
 					requested := tc.requested
-					if requested == "fast" {
-						requested = "priority"
-					}
 					var forwarded map[string]json.RawMessage
 					if json.Unmarshal(provider.forwarded[0], &forwarded) != nil || responses.StringField(forwarded, "service_tier") != requested {
 						t.Fatal("accounting changed requested tier")

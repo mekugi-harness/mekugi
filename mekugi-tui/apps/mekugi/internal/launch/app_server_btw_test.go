@@ -91,7 +91,7 @@ func btwTestStart(t *testing.T, u *appServerUI, w *appServerTestInput) {
 	t.Helper()
 	appServerTestKeys(t, u, "/btw why?\r")
 	fork := btwTestRequest(t, w, "thread/fork", "main")
-	if fork.Params.Ephemeral || !fork.Params.ExcludeTurns || fork.Params.ThreadSource != sessioncontrol.SideThreadSource {
+	if fork.Params.Ephemeral || !fork.Params.ExcludeTurns || fork.Params.ThreadSource != sessioncontrol.BTWThreadSource {
 		t.Fatalf("fork is not a retained internal snapshot: %+v", fork.Params)
 	}
 	btwTestReply(t, u, fork, `{"thread":{"id":"side"}}`)
@@ -432,7 +432,7 @@ func TestAppServerBTWRejectedAttachmentsReturnWithNewDraft(t *testing.T) {
 func selectSideThread(t *testing.T, u *appServerUI, thread sessionpresentation.Thread) {
 	t.Helper()
 	v := u.attached.presentation.View()
-	if !displaySession(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, false, u.side, u.clock, &u.questions, &u.approvals, false, sessionpresentation.DisplayIntent{Version: v.Version, Thread: thread}) {
+	if !displaySession(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, false, u.side, u.clock, &u.questions, &u.approvals, false, sessionpresentation.DisplayIntent{Version: v.Version, Thread: thread}) {
 		t.Fatal("display rejected")
 	}
 }
@@ -698,7 +698,7 @@ func TestForeignSideDisplayPreservesReplaceMenu(t *testing.T) {
 	if u.picker.Kind != sessionpresentation.MenuSideReplace {
 		t.Fatal("fixture menu absent")
 	}
-	if displaySession(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, false, u.side, u.clock, &u.questions, &u.approvals, false, stale) {
+	if displaySession(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, false, u.side, u.clock, &u.questions, &u.approvals, false, stale) {
 		t.Fatal("stale display accepted")
 	}
 	if !u.picker.Open || u.picker.Kind != sessionpresentation.MenuSideReplace {

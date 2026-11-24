@@ -14,7 +14,7 @@ import (
 
 func (session *nativeSession) submitInput(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, clock func() time.Time, side **sessioncontrol.Side, overlay bool, parent context.Context, intent sessionpresentation.SubmitIntent) error {
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, overlay)
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, overlay)
 	}()
 	draft, plan, err := attached.presentation.TakeInput(intent, &session.Client.Live, attached.conversation, session.restoring != nil)
 	if err != nil {
@@ -69,7 +69,7 @@ func (session *nativeSession) applyComposerCommand(attached *attachedPresentatio
 	}
 	switch intent.Operation {
 	case sessionpresentation.IncreaseEffort, sessionpresentation.DecreaseEffort:
-		return false, stepReasoning(attached, &session.Client, session.settings, &session.serviceTiers, session.panes, session.restoring != nil, clock, session.models, session.modelsLoading, intent.Operation == sessionpresentation.IncreaseEffort)
+		return false, stepReasoning(attached, &session.Client, session.settings, session.panes, session.restoring != nil, clock, session.models, session.modelsLoading, intent.Operation == sessionpresentation.IncreaseEffort)
 	case sessionpresentation.RestoreWaiting:
 		active, err := attached.presentation.ResolveInterrupt(sessionpresentation.InterruptIntent{Version: intent.Version, Target: *intent.Work, Mode: sessioncontrol.RestoreWaiting}, &session.Client.Live, &attached.session)
 		if err != nil {

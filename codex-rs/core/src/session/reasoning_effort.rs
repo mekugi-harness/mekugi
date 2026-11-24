@@ -32,6 +32,12 @@ impl Session {
         let Some(effort) = self.effort_for_configuration_update(settings) else {
             return;
         };
+        // Record a BTW cap with the ordinary step update so continuations retain
+        // the exact sampled prefix and the parent window's request-effort pin.
+        let effort = self
+            .services
+            .model_client
+            .cap_btw_effort(&settings.model_info, effort);
         let should_skip = {
             let mut state = self.state.lock().await;
             if matches!(state.reasoning_effort_pin, ReasoningEffortPin::Compacted) {

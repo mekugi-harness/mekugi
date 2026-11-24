@@ -120,7 +120,7 @@ func TestManagedSkillNativePublicationAdoptsCurrentQuery(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("managed helper did not complete")
 	}
-	h.views.publish(&u.attached, &u.Client, u.settings, u.serviceTiers, "", "", false, u.side, u.review, u.reviewSource, sessionapi.NativeSessionFacts{}, time.Now())
+	h.views.publish(&u.attached, &u.Client, u.settings, "", "", false, u.side, u.review, u.reviewSource, sessionapi.NativeSessionFacts{}, time.Now())
 	if view.picker.skillsLoad != nil || len(view.picker.Choices) != 1 || view.picker.Choices[0].Name != "review" || view.picker.Target.Query != "review" || !view.picker.SkillsLoaded {
 		t.Fatal("native publication did not adopt completion for the current query")
 	}

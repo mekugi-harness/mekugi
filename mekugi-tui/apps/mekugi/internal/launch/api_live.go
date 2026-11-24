@@ -156,7 +156,7 @@ func (session *nativeSession) applyAPIIntent(attached *attachedPresentation, pic
 		}
 		// Unlike Enter in the terminal, this leaves the terminal's notice and
 		// scroll position alone.
-		defer settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, overlay)
+		defer settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, overlay)
 		plan := session.Client.PlanInput(sessioncontrol.SendInput, attached.conversation.Questions.Waiting(session.Client.Thread))
 		var input conversationmodel.Input
 		if intent.Prepared != nil {
@@ -184,7 +184,7 @@ func (session *nativeSession) applyAPIIntent(attached *attachedPresentation, pic
 	case sessionapi.Stop:
 		// Ctrl-C semantics for Main, even while the terminal displays a side
 		// conversation; the terminal's lock guards only its keyboard.
-		view := publishPresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side))
+		view := publishPresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side))
 		if !sessionpresentation.MainInterruptible(&session.Client.Live, attached.conversation) {
 			return "Nothing is running.", nil
 		}

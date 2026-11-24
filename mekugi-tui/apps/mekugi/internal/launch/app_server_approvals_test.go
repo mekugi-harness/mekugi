@@ -122,7 +122,7 @@ func TestNonTerminalApprovalDecisionsPreserveIdentityAndReason(t *testing.T) {
 	u.Turn = "turn"
 	approvalTestCommand(t, u, "first", map[string]any{"availableDecisions": []string{"accept", "decline"}})
 	approvalTestCommand(t, u, "second", map[string]any{"availableDecisions": []string{"accept"}})
-	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	intent := sessionpresentation.ApprovalIntent{Version: v.Version, Request: v.Approvals.Approval.ID, Choice: 99, Reason: "explicit reason"}
 	if err := u.nativeSession.decideApproval(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil || wire.Len() != 0 || len(u.approvals.calls()) != 2 {
 		t.Fatal("unoffered choice answered a request")
@@ -145,7 +145,7 @@ func TestNonTerminalApprovalDecisionsPreserveIdentityAndReason(t *testing.T) {
 	if err := u.nativeSession.decideApproval(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil || wire.Len() != 0 || len(u.approvals.calls()) != 1 {
 		t.Fatal("resolved identity answered the next request")
 	}
-	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	intent = sessionpresentation.ApprovalIntent{Version: v.Version, Request: v.Approvals.Approval.ID, Choice: v.Approvals.Approval.Choices[0].ID}
 	u.Thread = "replacement"
 	attachPresentation(&u.attached, &u.picker, &u.Editor, &u.questions, &u.approvals, u.Thread, &u.review, &u.commits, u.ctx, u.retained, u.changeSource, u.activity != nil)
@@ -153,7 +153,7 @@ func TestNonTerminalApprovalDecisionsPreserveIdentityAndReason(t *testing.T) {
 		t.Fatal("retired attachment answered a retained approval")
 	}
 	u.attached.presentation.Attach(sessionpresentation.Thread{ID: u.Thread, Caller: "/root"}, true)
-	intent.Version = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Version
+	intent.Version = publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Version
 	if err := u.nativeSession.decideApproval(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, intent); err != nil || wire.Len() != 0 || u.attached.feedback.Text != sessionpresentation.ErrReplayIntent.Error() {
 		t.Fatal("replay answered an approval")
 	}
@@ -163,7 +163,7 @@ func TestNonTerminalGuardDecisionUsesPublishedChoice(t *testing.T) {
 	u := newAppServerSessionTestUI(t, "/work")
 	wire := u.Host.Input.(*appServerTestInput)
 	approvalTestShellGuard(t, u, "sg-1", map[string]any{"argv": []string{"git", "push"}})
-	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	v := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	a := v.Approvals.Approval
 	if a.Choices[0].ID == a.Choices[1].ID || a.Choices[1].ID == a.Choices[2].ID {
 		t.Fatal("guard choices have ambiguous identities")
@@ -175,7 +175,7 @@ func TestNonTerminalGuardDecisionUsesPublishedChoice(t *testing.T) {
 		t.Fatalf("wrong guard decision: %s", got)
 	}
 	approvalTestShellGuard(t, u, "sg-2", map[string]any{"argv": []string{"git", "push"}})
-	if next := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Approvals.Approval.ID; next == "" || next == a.ID {
+	if next := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Approvals.Approval.ID; next == "" || next == a.ID {
 		t.Fatal("retired local request identity was reused")
 	}
 }
@@ -737,7 +737,7 @@ func TestUISnapshotNativeApprovalOutcomes(t *testing.T) {
 			if tc.name == "guard-approved" {
 				uisnapshot.AssertTerminal(t, "testdata/snapshots/approval-pending-"+tc.name+".txt", append(view.RenderFeed(48, 30).Lines, "plain after approval"), 48)
 			}
-			if err := u.nativeSession.decideApproval(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, sessionpresentation.ApprovalIntent{Version: publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Version, Request: a.ID, Choice: a.Choices[tc.choice].ID}); err != nil {
+			if err := u.nativeSession.decideApproval(&u.attached, &u.picker, &u.Editor, u.side, u.clock, u.statusPanel != nil || u.resumePicker != nil, sessionpresentation.ApprovalIntent{Version: publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Version, Request: a.ID, Choice: a.Choices[tc.choice].ID}); err != nil {
 				t.Fatal(err)
 			}
 			if !tc.guard && !tc.early {

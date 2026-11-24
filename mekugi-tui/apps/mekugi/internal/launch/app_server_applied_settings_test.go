@@ -285,7 +285,7 @@ func TestAppServerAppliedSettingsResumeWaitsForDefaultConfirmation(t *testing.T)
 				if !fresh.ResumeEffort || !reflect.DeepEqual(params["config"], map[string]any{"model": "saved-model"}) {
 					t.Fatal("fresh retry promoted transient resume defaults over saved null intent")
 				}
-				if _, err := updateSettings(&u.attached, &u.Client, u.settings, &u.serviceTiers, u.panes, u.restoring != nil, u.clock, map[string]any{"effort": effort}); err != nil {
+				if _, err := updateSettings(&u.attached, &u.Client, u.settings, u.panes, u.restoring != nil, u.clock, map[string]any{"effort": effort}); err != nil {
 					t.Fatal(err)
 				}
 				if effort == "medium" {

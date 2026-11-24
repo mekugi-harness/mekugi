@@ -13,17 +13,17 @@ import (
 
 func TestServerBorrowsForkClassificationFromRequests(t *testing.T) {
 	server := NewLive()
-	if server.IsSideThread("side") || server.IsBTWThread("side") {
+	if server.IsSideThread("side") {
 		t.Fatal("unbound server classified a fork")
 	}
 	requests := sessioncontrol.NewRequests[struct{}](nil)
 	server.BindRequests(requests)
 	requests.TrackSide("side", &sessioncontrol.Side{Thread: "side", SideAnswer: new(conversation.SideAnswer), LowReasoning: true})
-	if !server.IsSideThread("side") || !server.IsBTWThread("side") || server.IsSideThread("main") {
+	if !server.IsSideThread("side") || server.IsSideThread("main") {
 		t.Fatal("server did not borrow the bound request ledger")
 	}
 	requests.CloseSide("side")
-	if server.IsSideThread("side") || server.IsBTWThread("side") {
+	if server.IsSideThread("side") {
 		t.Fatal("server retained classification after owner cleanup")
 	}
 }

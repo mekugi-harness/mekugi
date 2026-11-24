@@ -31,6 +31,10 @@ pub(crate) struct StepSettings {
     pub(crate) reasoning_summary: Option<ReasoningSummary>,
     /// Normalized requested tier; resolution filters it against the pinned model.
     pub(crate) service_tier: Option<String>,
+    /// Choices travel with this thread's immutable settings version.
+    pub(crate) model_tiers: Arc<std::collections::BTreeMap<String, String>>,
+    pub(crate) fallback_tier: Option<String>,
+    pub(crate) configured_model_tiers: Arc<std::collections::BTreeMap<String, String>>,
     pub(crate) personality: Option<Personality>,
     pub(crate) approval_policy: Constrained<AskForApproval>,
     pub(crate) approvals_reviewer: ApprovalsReviewer,
@@ -69,8 +73,7 @@ impl ResolvedStepSettings {
         let reasoning_summary = selected
             .reasoning_summary
             .unwrap_or(model_info.default_reasoning_summary);
-        let service_tier =
-            super::get_service_tier(selected.service_tier.clone(), features, &model_info);
+        let service_tier = selected.effective_service_tier(features, &model_info);
         Self {
             selected,
             model_info,
@@ -245,6 +248,18 @@ pub(crate) struct StepSettingsConstraints<'a> {
 }
 
 impl StepSettings {
+    pub(super) fn effective_service_tier(
+        &self,
+        features: &Features,
+        model: &CatalogModel,
+    ) -> Option<String> {
+        if self.configured_model_tiers.contains_key(&model.slug) {
+            self.service_tier.clone()
+        } else {
+            super::get_service_tier(self.service_tier.clone(), features, model)
+        }
+    }
+
     /// Resolves the selected model using the session's explicit startup overrides.
     pub(super) async fn resolve_model_info(
         &self,
@@ -281,13 +296,22 @@ impl StepSettings {
         if let Some(service_tier) = update.service_tier.clone() {
             // TODO(aibrahim): Remove once v2 clients no longer send the legacy
             // "fast" service tier value.
-            next.service_tier = Some(match service_tier {
+            let tier = match service_tier {
                 Some(service_tier) => ServiceTier::from_request_value(&service_tier)
                     .map_or(service_tier, |service_tier| {
                         service_tier.request_value().to_string()
                     }),
                 None => SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string(),
-            });
+            };
+            Arc::make_mut(&mut next.model_tiers)
+                .insert(next.collaboration_mode.model().to_owned(), tier.clone());
+            next.service_tier = Some(tier);
+        } else if self.collaboration_mode.model() != next.collaboration_mode.model() {
+            next.service_tier = next
+                .model_tiers
+                .get(next.collaboration_mode.model())
+                .cloned()
+                .or_else(|| next.fallback_tier.clone());
         }
         if let Some(personality) = update.personality {
             next.personality = Some(personality);
