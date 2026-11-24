@@ -418,13 +418,17 @@ fn prepare_aliases_in_home(
     lock_file.try_lock()?;
 
     let exe = std::env::current_exe()?;
+    #[cfg(unix)]
+    if std::env::var_os("MEKUGI_NATIVE_MCHANGES").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        symlink(&exe, path.join(MCHANGES_ARG0))?;
+    }
     for filename in &[
         APPLY_PATCH_ARG0,
         MISSPELLED_APPLY_PATCH_ARG0,
         #[cfg(unix)]
         MCAT_ARG0,
-        #[cfg(unix)]
-        MCHANGES_ARG0,
         #[cfg(unix)]
         MFINSPECT_ARG0,
         #[cfg(unix)]
@@ -937,7 +941,6 @@ mod tests {
             super::APPLY_PATCH_ARG0,
             super::MISSPELLED_APPLY_PATCH_ARG0,
             super::MCAT_ARG0,
-            super::MCHANGES_ARG0,
             super::MFINSPECT_ARG0,
             super::MSYMBOL_ARG0,
             super::MRUN_ARG0,

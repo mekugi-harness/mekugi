@@ -71,6 +71,12 @@ impl ChangeHistoryStore {
 
         let mut planned = Vec::with_capacity(transitions.len());
         for tr in transitions {
+            if !tr.coverage_notes.is_empty() {
+                return Err(ChangeHistoryError::MissingEvidence {
+                    id: tr.rel_path.clone(),
+                    detail: tr.coverage_notes.join("; "),
+                });
+            }
             let (expected, desired) = match direction {
                 MutationDirection::Revert => (tr.after, tr.before),
                 MutationDirection::Apply => (tr.before, tr.after),

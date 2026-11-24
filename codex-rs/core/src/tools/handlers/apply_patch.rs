@@ -630,11 +630,16 @@ async fn execute_prepared_patch(
         &tool_ctx.call_id,
         tracker,
     );
-    let finish_result = emitter.finish(event_ctx, result, delta.as_ref()).await;
-    if let Err(err) = persist_result {
-        return Err(FunctionCallError::RespondToModel(format!(
-            "failed to persist change evidence: {err}"
-        )));
+    let (finish_input, persist_error) = match persist_result {
+        Ok(_) => (result, None),
+        Err(err) => {
+            let msg = format!("failed to persist change evidence: {err}");
+            (Err(ToolError::Rejected(msg.clone())), Some(msg))
+        }
+    };
+    let finish_result = emitter.finish(event_ctx, finish_input, delta.as_ref()).await;
+    if let Some(msg) = persist_error {
+        return Err(FunctionCallError::RespondToModel(msg));
     }
     finish_result
 }
