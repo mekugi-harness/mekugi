@@ -38,7 +38,7 @@ func TestAppServerRespondKeepsEmptyResult(t *testing.T) {
 		result any
 		want   string
 	}{
-		{"before-tool acknowledgment", &appserver.ExecutionBeforeToolResponse{}, `{}`},
+		{"empty object", &struct{}{}, `{}`},
 		{"array", []string{}, `[]`},
 		{"string", "", `""`},
 		{"null", nil, `null`},
