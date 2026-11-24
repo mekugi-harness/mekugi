@@ -39,15 +39,10 @@ func (session *nativeSession) start(prefs *preferences.Service, cmd *exec.Cmd, s
 	if api == nil {
 		return nil, errors.New("server session requires a control API")
 	}
-	var resumeCwd string
-	if resumeThread == "--last" || resumeThread == sessioncontrol.ResumePicker {
-		var err error
-		resumeCwd, err = filepath.Abs(cmd.Dir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve resume workspace: %w", err)
-		}
+	processCwd, err := filepath.Abs(cmd.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve invocation workspace: %w", err)
 	}
-	var err error
 	session.Client, err = sessioncontrol.Start[appServerRequest](cmd, func(message appserver.Message) {
 		if message.Method != "item/started" {
 			return
@@ -61,14 +56,13 @@ func (session *nativeSession) start(prefs *preferences.Service, cmd *exec.Cmd, s
 	if err != nil {
 		return nil, err
 	}
-	session.Client.Startup.Thread, session.Client.Startup.Workspace = resumeThread, resumeCwd
+	session.Client.Startup.Thread, session.Client.Startup.Workspace = resumeThread, processCwd
 	session.resumeArgv = slices.Clone(session.resumeArgv)
 	if session.profile != nil {
 		session.Client.Startup.Config = profileResumeConfig(cmd.Args, session.resumeArgv, session.profile)
 	} else {
 		session.Client.Startup.Config = appServerResumeConfig(cmd.Args, session.resumeArgv)
 	}
-	processCwd, _ := filepath.Abs(cmd.Dir)
 	connection := newNativeConnection(session, api, threads, prefs, cmd.Environ(), processCwd, skillsManager, childSummary)
 	session.connection = connection
 	threads.native = connection
@@ -1297,7 +1291,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 				session.commits = attachCommitReader(&attached.session, session.commits, parent, session.activity != nil)
 				attached.presentation.Attach(sessionpresentation.Thread{ID: cmp.Or(session.Client.Thread, "/root"), Caller: "/root"}, false)
 				session.Client.LeaveThread()
-				session.Client.Startup.Thread, session.Client.Startup.Workspace = "", ""
+				session.Client.Startup.Thread = ""
 				session.Client.Readmit(result.Thread.ID)
 				resetDiffScope(attached, session.review, session.reviewSource, parent)
 				if method == "thread/resume" || method == "thread/fork" || method == "thread/revert" {
