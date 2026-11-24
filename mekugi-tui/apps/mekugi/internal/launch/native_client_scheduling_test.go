@@ -128,6 +128,11 @@ func TestNativeClientRosterArrowNavigation(t *testing.T) {
 		{key: "\x1b[B", thread: "main", open: true},
 		{key: "\x1b[A", thread: "main", open: true},
 		{key: "\x1b[B", thread: "parent", open: true, frozenTranscript: true},
+		{key: "j", thread: "parent", open: true},
+		{key: "k", thread: "parent", open: true},
+		{key: "n", thread: "parent", open: true},
+		{key: "p", thread: "parent", open: true},
+		{key: "\t", thread: "parent", open: true},
 		{key: "\x1bOB", thread: "peer", open: true},
 		{key: "\x1bOA", thread: "parent", open: true},
 		{key: "\x1b[A", thread: "main", open: true, frozenTranscript: true},
@@ -163,8 +168,11 @@ func TestNativeClientRosterArrowNavigation(t *testing.T) {
 		if step.frozenTranscript && r.active.renderer.terminal.Selection != nil {
 			t.Fatalf("key %q went to the frozen transcript instead of the roster", step.key)
 		}
-		if step.key == "\r" && (len(r.active.calls) != pending || r.active.reattach != "") {
-			t.Fatal("confirming the roster should not submit input or select the thread again")
+		switch step.key {
+		case "j", "k", "n", "p", "\t", "\r":
+			if len(r.active.calls) != pending || r.active.reattach != "" {
+				t.Fatalf("roster key %q should not submit input or select a thread", step.key)
+			}
 		}
 		for r.active.event.Frame.View.Displayed.ID != step.thread {
 			nativeSchedulingStep(t, r)

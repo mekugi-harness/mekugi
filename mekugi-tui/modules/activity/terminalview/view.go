@@ -1680,9 +1680,9 @@ func (v *View) HandleRosterKey(key string) bool {
 	switch key {
 	case "\r", "\x03", "q":
 		return true
-	case "j", "n", "\t", "\x1b[B", "\x1bOB":
+	case "\x1b[B", "\x1bOB":
 		v.ShowAgent(1)
-	case "k", "p", "\x1b[A", "\x1bOA":
+	case "\x1b[A", "\x1bOA":
 		v.ShowAgent(-1)
 	case "a":
 		if v.displayingChild() {
