@@ -131,20 +131,21 @@ Schedule retained observations with synthetic streaming and read-only playback c
 
 ## [transportdiagnostics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md)
 
-Measure native inference exchanges and inspect private transport evidence
+Summarize native provider responses and read private diagnostic evidence
 
 - Composition: selected; lifetime: `invocation`.
-- Requires: `sessionhistory`.
+- Requires: none.
 - Contributes: `record-kinds`, `inspection`, `diagnostic-sections`.
 - Records: `request-timing`.
 - Codex connections: none.
 
 ## [usage](../../mekugi-tui/modules/usage/SPEC.md)
 
-Project provider-authoritative thread usage, reference costs and throughput
+Project provider usage and reference costs from native responses
 
 - Composition: selected; lifetime: `invocation`.
 - Requires: `sessionhistory`.
+- Resources: on-demand retained-usage publication worker.
 - Contributes: `record-kinds`, `presentation`.
 - Records: `usage`.
 - Codex connections: none.
