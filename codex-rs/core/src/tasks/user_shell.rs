@@ -179,6 +179,7 @@ pub(crate) async fn execute_user_shell_command(
         &raw_command,
         cwd.as_path(),
         cwd.as_path().to_path_buf(),
+        None,
         &environment_shell.shell_type,
         /*tty*/ false,
         crate::exec_env::change_history_dir(session.session_id()),
@@ -187,6 +188,8 @@ pub(crate) async fn execute_user_shell_command(
         turn_context.sub_id.clone(),
         call_id.clone(),
     );
+    #[cfg(unix)]
+    drop(user_shell_track.drain_rx);
     let tracked_display_command = user_shell_track
         .instrumented_script
         .as_deref()

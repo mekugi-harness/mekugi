@@ -655,7 +655,10 @@ async fn delayed_final_ack_reader_does_not_hang_after_control_loop_exits() {
 
     // Handshake open + immediate ack.
     {
-        let mut ctl = fs::OpenOptions::new().write(true).open(&ctl_path).expect("open ctl");
+        let mut ctl = fs::OpenOptions::new()
+            .write(true)
+            .open(&ctl_path)
+            .expect("open ctl");
         writeln!(ctl, "o").expect("write o");
         ctl.flush().expect("flush o");
     }
@@ -678,7 +681,10 @@ async fn delayed_final_ack_reader_does_not_hang_after_control_loop_exits() {
 
     // Send final done message and deliberately wait so run_control_loop exits before Bash opens ack.
     {
-        let mut ctl = fs::OpenOptions::new().write(true).open(&ctl_path).expect("open ctl");
+        let mut ctl = fs::OpenOptions::new()
+            .write(true)
+            .open(&ctl_path)
+            .expect("open ctl");
         writeln!(ctl, "d 0").expect("write d");
         ctl.flush().expect("flush d");
     }
@@ -815,13 +821,15 @@ fn extract_static_write_paths_tracks_cd_and_resolves_symlinks() {
 
     // Static cd updates cwd for subsequent writes; subshell cd does not leak.
     let paths = extract_static_write_paths(
-        "(cd subdir && echo a > in_sub.txt); echo b > in_root.txt; cd subdir && echo c > after_cd.txt",
+        "(cd subdir && echo a > in_sub.txt); x=$(cd subdir && echo d > in_cmdsub.txt); echo b > in_root.txt; mkdir -p nonexistent && echo e > nonexistent/../beside.txt; cd subdir && echo c > after_cd.txt",
         dir.path(),
     );
     let canon_root = fs::canonicalize(dir.path()).expect("canon root");
     let canon_sub = fs::canonicalize(&sub).expect("canon sub");
     assert!(paths.contains(&canon_sub.join("in_sub.txt")));
+    assert!(paths.contains(&canon_sub.join("in_cmdsub.txt")));
     assert!(paths.contains(&canon_root.join("in_root.txt")));
+    assert!(paths.contains(&canon_root.join("beside.txt")));
     assert!(paths.contains(&canon_sub.join("after_cd.txt")));
 
     // Symlink parent with .. resolves to nested/config rather than root/config.
@@ -842,13 +850,21 @@ fn extract_static_write_paths_tracks_cd_and_resolves_symlinks() {
 #[tokio::test]
 async fn mktemp_long_option_with_u_is_still_recorded() {
     let dir = TempDir::new().expect("tempdir");
+    let probe = Command::new("mktemp")
+        .arg("--suffix=.txt")
+        .arg(format!("{}/probe.XXXXXX", dir.path().display()))
+        .output()
+        .await;
+    if !probe.is_ok_and(|o| o.status.success()) {
+        return;
+    }
     let script = format!(
         "f=$(mktemp --suffix=.txt '{}/suf.XXXXXX') && echo ok > \"$f\"",
         dir.path().display()
     );
     let split = split_segments(&script, ShellDialect::Bash).expect("split");
-    let (session, _drain_rx) = ExecTrackSession::start(split.segments.clone(), TrackingMode::Pipe)
-        .expect("start");
+    let (session, _drain_rx) =
+        ExecTrackSession::start(split.segments.clone(), TrackingMode::Pipe).expect("start");
     let instrumented = session.instrument_script(&script, &split.segments, ShellDialect::Bash);
 
     let output = Command::new("/bin/bash")
@@ -860,14 +876,74 @@ async fn mktemp_long_option_with_u_is_still_recorded() {
         .await
         .expect("run bash");
 
-    // Skip assertion if the platform's mktemp does not support --suffix (e.g. BSD mktemp).
-    if output.status.success() {
-        let report = session.finalize(output.status.code());
-        assert_eq!(
-            report.mktemp_creations.len(),
-            1,
-            "mktemp --suffix=.txt must not be treated as dry-run: {report:?}"
-        );
-        assert!(report.mktemp_creations[0].path.to_string_lossy().ends_with(".txt"));
-    }
+    assert!(output.status.success(), "instrumented mktemp --suffix failed");
+    let report = session.finalize(output.status.code());
+    assert_eq!(
+        report.mktemp_creations.len(),
+        1,
+        "mktemp --suffix=.txt must not be treated as dry-run: {report:?}"
+    );
+    assert!(
+        report.mktemp_creations[0]
+            .path
+            .to_string_lossy()
+            .ends_with(".txt")
+    );
+}
+
+#[test]
+fn read_policy_blocks_denied_workspace_and_mktemp_paths() {
+    use crate::MktempCreation;
+
+    let dir = TempDir::new().expect("tempdir");
+    let store_dir = TempDir::new().expect("store dir");
+    let secret = dir.path().join(".env");
+    let allowed = dir.path().join("ok.txt");
+    fs::write(&secret, b"TOP_SECRET=1").expect("write secret");
+    fs::write(&allowed, b"public").expect("write allowed");
+
+    let secret_canon = fs::canonicalize(&secret).expect("canon secret");
+    let can_read = |p: &std::path::Path| {
+        p != secret && p != secret_canon && p.file_name().and_then(|n| n.to_str()) != Some(".env")
+    };
+
+    let capture = ShellWriteCapture::prepare_with_policy("echo x >> .env", dir.path(), can_read);
+    assert_eq!(capture.candidate_count(), 0);
+
+    let mktemp_creations = vec![
+        MktempCreation {
+            path: secret.clone(),
+            is_dir: false,
+            segment_index: 0,
+        },
+        MktempCreation {
+            path: allowed,
+            is_dir: false,
+            segment_index: 0,
+        },
+    ];
+
+    let record = capture
+        .finalize_and_persist_with_policy(
+            store_dir.path(),
+            ChangeMetadata {
+                thread_id: "thread-sec".to_string(),
+                session_id: "sess-sec".to_string(),
+                turn_id: "turn-sec".to_string(),
+                call_id: "call-sec".to_string(),
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: dir.path().to_path_buf(),
+                created_at: 1_700_000_030,
+                exit_code: Some(0),
+                summary: Some("policy check".to_string()),
+                claim_key: Some(shell_write_claim_key("thread-sec", "call-sec")),
+            },
+            &mktemp_creations,
+            can_read,
+        )
+        .expect("persist")
+        .expect("allowed file should persist");
+
+    assert_eq!(record.files.len(), 1);
+    assert_eq!(record.files[0].rel_path, "ok.txt");
 }

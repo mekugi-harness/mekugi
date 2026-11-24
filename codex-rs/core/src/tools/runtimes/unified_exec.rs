@@ -495,6 +495,13 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                         .to_abs_path()
                         .map(|p| p.as_path().to_path_buf())
                         .unwrap_or_else(|_| native_cwd.as_path().to_path_buf()),
+                    Some((
+                        attempt
+                            .exec_server_permissions
+                            .file_system_sandbox_policy()
+                            .clone(),
+                        attempt.sandbox_cwd.to_path_buf(),
+                    )),
                     &prepared.resolved.shell.shell.shell_type,
                     prepared.tty,
                     crate::exec_env::change_history_dir(ctx.session.session_id()),

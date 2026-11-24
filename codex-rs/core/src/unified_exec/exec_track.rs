@@ -27,6 +27,7 @@ use codex_exec_track::shell_write_claim_key;
 use codex_exec_track::split_segments;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio::sync::mpsc;
 
@@ -40,6 +41,7 @@ pub(crate) struct ExecTrackAttachment {
     write_capture: ShellWriteCapture,
     store_dir: PathBuf,
     workspace_root: PathBuf,
+    read_policy: Option<(FileSystemSandboxPolicy, PathBuf)>,
     thread_id: String,
     session_id: String,
     turn_id: String,
@@ -64,6 +66,7 @@ impl ExecTrackAttachment {
         authored_script: &str,
         cwd: &Path,
         workspace_root: PathBuf,
+        read_policy: Option<(FileSystemSandboxPolicy, PathBuf)>,
         shell_type: &ShellType,
         tty: bool,
         store_dir: PathBuf,
@@ -72,7 +75,9 @@ impl ExecTrackAttachment {
         turn_id: String,
         call_id: String,
     ) -> PreparedExecTrack {
-        let write_capture = ShellWriteCapture::prepare(authored_script, cwd);
+        let write_capture = ShellWriteCapture::prepare_with_policy(authored_script, cwd, |path| {
+            Self::can_read_path(&read_policy, path)
+        });
 
         #[cfg(unix)]
         let (session, instrumented_script, drain_rx) = {
@@ -117,6 +122,7 @@ impl ExecTrackAttachment {
             write_capture,
             store_dir,
             workspace_root,
+            read_policy,
             thread_id,
             session_id,
             turn_id,
@@ -219,16 +225,24 @@ impl ExecTrackAttachment {
                 summary: Some(self.summary.clone()),
                 claim_key: Some(claim_key),
             };
-            if let Err(err) = self.write_capture.finalize_and_persist(
+            if let Err(err) = self.write_capture.finalize_and_persist_with_policy(
                 &self.store_dir,
                 metadata,
                 &mktemp_creations,
+                |path| Self::can_read_path(&self.read_policy, path),
             ) {
                 tracing::warn!(
                     call_id = %self.call_id,
                     "failed to persist native shell-write change evidence: {err}"
                 );
             }
+        }
+    }
+
+    fn can_read_path(policy: &Option<(FileSystemSandboxPolicy, PathBuf)>, path: &Path) -> bool {
+        match policy {
+            Some((policy, sandbox_cwd)) => policy.can_read_local_path_with_cwd(path, sandbox_cwd),
+            None => true,
         }
     }
 }

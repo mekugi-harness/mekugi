@@ -100,6 +100,7 @@ pub fn instrument_script(
             "__mekugi_mp=${{__mekugi_mr%\"$__mekugi_nl\"}}; ",
             "if [ -e \"$__mekugi_mp\" ] || [ -L \"$__mekugi_mp\" ]; then ",
             "__mekugi_mt=f; [ -d \"$__mekugi_mp\" ] && __mekugi_mt=d; ",
+            "case \"$__mekugi_mp\" in /*) ;; *) __mekugi_mp=\"$PWD/$__mekugi_mp\" ;; esac; ",
             "{{ printf 'm %s %s %s\\0' \"${{__mekugi_cur-0}}\" \"$__mekugi_mt\" \"$__mekugi_mp\" >> \"$__mekugi_mk\"; }} 2>/dev/null || :; ",
             "fi; fi; ",
             "printf '%s' \"$__mekugi_mr\"; return \"$__mekugi_ms\"; }}; ",

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -45,9 +46,22 @@ impl ShellWriteCapture {
     /// Extract statically recognized shell write targets from script and
     /// capture their pre-execution baseline bytes before the shell runs.
     pub fn prepare(script: &str, cwd: &Path) -> Self {
+        Self::prepare_with_policy(script, cwd, |_| true)
+    }
+
+    /// Extract statically recognized shell write targets from script and
+    /// capture pre-execution baselines only for paths permitted by `can_read`.
+    pub fn prepare_with_policy(
+        script: &str,
+        cwd: &Path,
+        can_read: impl Fn(&Path) -> bool,
+    ) -> Self {
         let paths = extract_static_write_paths(script, cwd);
         let mut baselines = BTreeMap::new();
         for path in paths {
+            if !can_read(&path) {
+                continue;
+            }
             let snapshot = read_bounded_snapshot(&path);
             baselines.insert(path, snapshot);
         }
@@ -73,6 +87,20 @@ impl ShellWriteCapture {
         metadata: ChangeMetadata,
         mktemp_creations: &[MktempCreation],
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
+        self.finalize_and_persist_with_policy(store_dir, metadata, mktemp_creations, |_| true)
+    }
+
+    /// Observe post-execution bytes only for paths permitted by `can_read`,
+    /// preventing sandboxed commands from using the writable `mktemp` log to
+    /// read files denied by their sandbox policy.
+    #[cfg(unix)]
+    pub fn finalize_and_persist_with_policy(
+        &self,
+        store_dir: &Path,
+        metadata: ChangeMetadata,
+        mktemp_creations: &[MktempCreation],
+        can_read: impl Fn(&Path) -> bool,
+    ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
         let workspace_root = metadata.workspace_root.clone();
         let allowed_roots = allowed_mktemp_roots(&workspace_root, &self.cwd);
         let mut all_paths: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus)> =
@@ -80,16 +108,28 @@ impl ShellWriteCapture {
 
         for created in mktemp_creations {
             let abs = resolve_path(&self.cwd, &created.path);
+            if !can_read(&abs) {
+                continue;
+            }
             let Some(canonical) = admit_mktemp_path(&abs, &allowed_roots) else {
                 continue;
             };
+            if !can_read(&canonical) {
+                continue;
+            }
             if created.is_dir {
                 let mut tree_files = Vec::new();
                 collect_dir_files(&canonical, &mut tree_files, MAX_MKTEMP_TREE_FILES);
                 for file_path in tree_files {
+                    if !can_read(&file_path) {
+                        continue;
+                    }
                     let Some(canonical_file) = admit_mktemp_path(&file_path, &allowed_roots) else {
                         continue;
                     };
+                    if !can_read(&canonical_file) {
+                        continue;
+                    }
                     all_paths
                         .entry(canonical_file)
                         .or_insert((FileSnapshot::Missing, CoverageStatus::Complete));
@@ -103,6 +143,13 @@ impl ShellWriteCapture {
 
         let mut pending_files = Vec::new();
         for (abs_path, (before, before_cov)) in all_paths {
+            if !can_read(&abs_path)
+                || fs::canonicalize(&abs_path)
+                    .ok()
+                    .is_some_and(|canonical| !can_read(&canonical))
+            {
+                continue;
+            }
             let (after, after_cov) = read_bounded_snapshot(&abs_path);
             let coverage = before_cov.merge(after_cov);
             if before == after && coverage == CoverageStatus::Complete {
@@ -349,22 +396,27 @@ fn resolve_canonical_path(path: &Path) -> PathBuf {
     if let Ok(canonical) = fs::canonicalize(path) {
         return canonical;
     }
-    let mut suffix = Vec::new();
-    let mut cur = path;
-    while let Some(parent) = cur.parent() {
-        if let Some(name) = cur.file_name() {
-            suffix.push(name.to_os_string());
-        }
-        if let Ok(canonical_parent) = fs::canonicalize(parent) {
-            let mut resolved = canonical_parent;
-            for part in suffix.into_iter().rev() {
-                resolved.push(part);
+    let mut resolved = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let candidate = resolved.join("..");
+                if let Ok(canonical) = fs::canonicalize(&candidate) {
+                    resolved = canonical;
+                } else if !resolved.pop() {
+                    resolved.push(comp.as_os_str());
+                }
             }
-            return resolved;
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                resolved.push(comp.as_os_str());
+                if let Ok(canonical) = fs::canonicalize(&resolved) {
+                    resolved = canonical;
+                }
+            }
         }
-        cur = parent;
     }
-    path.to_path_buf()
+    resolved
 }
 
 fn allowed_mktemp_roots(workspace_root: &Path, cwd: &Path) -> Vec<PathBuf> {

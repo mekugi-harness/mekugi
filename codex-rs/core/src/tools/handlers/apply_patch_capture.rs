@@ -90,7 +90,7 @@ impl ApplyPatchCapture {
     }
 
     /// Observe post-edit bytes and persist to `store_dir`.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) async fn persist_to_dir(
         self,
         fs: &dyn ExecutorFileSystem,
