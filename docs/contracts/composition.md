@@ -11,7 +11,7 @@ means, not proof of better cost or quality.
 - **Single workspace**: `mekugi-tui/go.work` is the membership authority. It lists the
   terminal client modules and the sibling `mekugi-webui` asset host module.
   The repository root has no Go module. Members ship together (`GOWORK=off` builds are unsupported).
-- **Import boundaries** (enforced by `make workspace-check`):
+- **Import boundaries** (enforced by `just workspace-check`):
   - `contracts` imports no local implementation.
   - `libraries` imports no application, feature, backend, or provider.
   - `backends` and `providers` stay mutually independent; production code never imports
@@ -30,8 +30,8 @@ means, not proof of better cost or quality.
   invocation resources in dependency order and drains in reverse order on shutdown or failure.
 - **Generated module reference**: `docs/reference/modules.md` is derived from workspace
   membership, feature descriptors, and the app composition declarations without
-  invoking constructors or callbacks (`make check-generated` checks drift; `make generate`
-  regenerates).
+  invoking constructors or callbacks. `just check-generated` detects drift;
+  `just generate` refreshes the reference.
 
 ## Current approach (replaceable)
 

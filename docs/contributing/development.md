@@ -8,34 +8,37 @@ See [Contributing](../../CONTRIBUTING.md) for the contributor entry point.
 From a checkout with [source prerequisites](../../README.md#build-from-source):
 
 ```sh
-make build
-make test
-make lint
-make docs-check
+just build
+just test
+just lint
+just docs-check
 ```
 
 Recipes suppress command echoes and compact tool output when RTK is enabled.
 Go tests summarize successful packages and stream failure diagnostics; lint keeps
 native diagnostics and exit status. Set `RTK=` for native Go package outcomes.
 
-`make webui` builds the pinned Svelte application for embedding; `make build-binaries`
-and release recipes include it. Plain `make build` checks the Go workspace.
+`just webui` builds the pinned Svelte application for embedding.
+`just build-binaries` and the release workflow include it. Plain `just build`
+builds and checks the Go workspace.
 Browser build and check recipes use **Bun 1.4.4+** on `PATH` to install pinned
 dependencies from `bun.lock` and run package scripts. Node.js remains required
 for the Vite build and browser binding tests.
-`make webui-check` runs browser binding tests, `bun check` for TypeScript,
+`just webui-check` runs browser binding tests, `bun check` for TypeScript,
 `svelte-check` for Svelte script/template and CSS diagnostics, lint and formatting
 checks. Focused tests use `node --test` with
 the selected test file under
 `mekugi-webui/app/src/lib/`.
-`make webui-fmt` formats the browser sources with `bun fmt`, using the existing
+`just webui-fmt` formats the browser sources with `bun fmt`, using the existing
 `.oxfmtrc.json` configuration. The assets host returns 503 until assets are built.
 
 After building assets, the opt-in browser fixtures exercise the actual UI,
 connector and server with controlled execution hosts:
 
 ```sh
-MEKUGI_TEST_WEBUI_BROWSER=1 make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/internal/launch TEST_RUN='^TestWebUI(BrowserMachines|SemanticBrowser)$'
+MEKUGI_TEST_WEBUI_BROWSER=1 just test \
+  ./mekugi-tui/apps/mekugi/internal/launch \
+  -run '^TestWebUI(BrowserMachines|SemanticBrowser)$'
 ```
 
 They require Chrome and `agent-browser`; `MEKUGI_TEST_AGENT_BROWSER` may select an
@@ -47,35 +50,44 @@ Run the session metrics and responsive Features checks independently of the
 file-details flow:
 
 ```sh
-MEKUGI_TEST_WEBUI_BROWSER=1 make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/internal/launch TEST_RUN='^TestWebUIMetricsBrowser$'
+MEKUGI_TEST_WEBUI_BROWSER=1 just test \
+  ./mekugi-tui/apps/mekugi/internal/launch -run '^TestWebUIMetricsBrowser$'
 ```
 
 The build, test, lint, generation, and snapshot recipes load
 `mekugi-tui/go.work`. For raw Go commands, run inside `mekugi-tui/` or set
-`GOWORK="$PWD/mekugi-tui/go.work"` at the repository root. `make build-binaries`
+`GOWORK="$PWD/mekugi-tui/go.work"` at the repository root. `just build-binaries`
 writes the Go executables and native runtime to `bin/` without installing them. Run member tests from
 that member with the workspace enabled. Local modules are released together and
 resolved by `go.work`, not unpublished version requirements or local replacements.
 See [workspace ownership](../contracts/composition.md).
 
 The [module reference](../reference/modules.md) is generated from workspace
-descriptors, binding declarations and composition. `make generate` refreshes it
-alongside the other generated assets. `make check-generated` checks the reference
-without rewriting it; CI runs the same check.
+descriptors, binding declarations and composition. `just generate` refreshes
+the reference and browser wire types. `just check-generated` checks both
+without rewriting them; CI runs the same check.
 
 Interpreter and query fixtures use Node.js/ripgrep; lint needs `golangci-lint`/`deadcode` and installs neither.
-Focus tests with `TEST_PACKAGES`/`TEST_RUN`/`TEST_FLAGS`; `-count=1` bypasses caching.
-`make test-saved-diff` checks retained-Diff presentation, rendering and shared diff
-primitives; `make test-live-preview` checks provisional projection, streaming and
-rendering. Both accept `TEST_RUN`/`TEST_FLAGS` without compiling Launch. Launch
-retains host/session integration checks, so run its affected tests when changing
-those boundaries. These focused checks do not replace the snapshot commit gate.
-Make builds use `-trimpath` so unchanged packages reuse the Go build cache across
-worktrees and staged snapshot checks. Set `GO_BUILD_FLAGS=` when absolute source
-paths are needed.
-Use `make test-host` for the focused runtime checks with local mock providers;
+Pass package paths and `go test` flags to focus tests. Use `@workspace` to
+include all workspace packages when passing flags; `-count=1` bypasses caching.
+
+```sh
+# Saved Diff: presentation, rendering and shared diff primitives
+just test ./mekugi-tui/modules/changehistory/presentation \
+  ./mekugi-tui/modules/changehistory/terminalview \
+  ./mekugi-tui/libraries/diffrender
+# Live preview: provisional projection, streaming and rendering
+just test ./mekugi-tui/modules/livepreview/...
+```
+
+Launch retains host/session integration checks. Run its affected tests when
+changing those boundaries. Focused tests do not replace the snapshot gate.
+Go builds use `-trimpath` to reuse cached packages across worktrees and staged
+checks; use raw Go commands when you need absolute source paths.
+Use `just test-host` for the focused runtime checks with local mock providers;
 see [host acceptance](testing-host.md).
-`make test-ui-snapshots` checks fixtures; review before updating. See [snapshot procedures](testing-snapshots.md).
+`just test-ui-snapshots` checks fixtures; review before updating. See
+[snapshot procedures](testing-snapshots.md).
 Enable the repository's Git hooks from the main checkout once per clone:
 
 ```sh
@@ -88,20 +100,19 @@ does not replace existing output.
 
 When documentation changes are staged, the gate checks local link targets and Markdown
 heading anchors across the staged documentation. It excludes dependency, build and
-test-fixture directories. Run `make docs-check` for the same validation in the checkout.
+test-fixture directories. Run `just docs-check` to check the working tree.
 The gate checks affected UI snapshots against the staged source in a temporary checkout.
 Go source changes select snapshot packages through transitive imports, including test and
 platform-tagged imports. Snapshot baseline changes select their owning package; shared
 renderer changes still check downstream rendering consumers. Other inputs, including build
 configuration and resources without known ownership, retain the full snapshot gate.
 It skips commits made while a rebase is in progress, including amended or reworded steps, so
-run `make docs-check` on the rebased tip when documentation changed, and
-`make test-ui-snapshots` when UI sources changed.
+run `just docs-check` on the rebased tip when documentation changed, and
+`just test-ui-snapshots` when UI sources changed.
 The absolute hook path also applies the gate to this clone's other worktrees. To test changes
 to the hook in another worktree, use `git -c core.hooksPath="$PWD/.githooks" commit` there;
 this selects that worktree's hook without changing the clone's configuration.
-Older staged workspace runners ignore the shared hook's optional affected-path input
-and continue checking all snapshots.
+Checkouts predating the Just migration need their own checkout's hook.
 Unstaged fixes cannot hide stale staged fixtures. A mismatch blocks the commit and
 prints its diff. Review and update the affected baselines, then stage them with the
 source change. The existing Linux CI suite also checks all UI snapshots.
@@ -109,8 +120,8 @@ The [release workflow](../../.github/workflows/release.yml) packages Linux/macOS
 
 ## Preview the terminal UI
 
-Build the native runtime with `make build-native`, then run
-`make preview-native-ui` in a terminal. The preview runs real Mekugi against a
+Build the native runtime with `just build-native`, then run
+`just preview-native-ui` in a terminal. The preview runs real Mekugi against a
 scripted local provider. It needs no credentials and calls no live model. Its
 workspace and session data are discarded when it exits.
 
@@ -126,29 +137,29 @@ Build the [native runtime](../../codex-rs) from the same checkout, without
 installing anything:
 
 ```sh
-make build-native
-make check-native
-make test-native
-make package-native
+just build-native
+just check-native
+just test-native
+just package-native
 ```
 
 Building needs Python 3.11+, Rustup, a C/C++ toolchain and, on Linux,
 `pkg-config`, `libcap-dev` and `libssl-dev`. Rustup selects the fork's pinned
 toolchain; the build uses its pinned V8 downloader. First builds need network
-access. Checks and tests default to `dev-small`. `make build-native` uses the
+access. Checks and tests default to `dev-small`. `just build-native` uses the
 `release` profile with LTO disabled by default to reduce peak build memory.
-Use `make build-native NATIVE_PROFILE=release` to use the release profile's
-ThinLTO setting. `make package-native` and CI release packaging use that setting
+Use `just build-native --profile release` to use the release profile's
+ThinLTO setting. `just package-native` and CI release packaging use that setting
 by default. CI runs native integration tests in `dev-small` and smoke-tests the
 full release archive through the installer on each platform. To cap local
 compile concurrency, optionally set
 `CARGO_BUILD_JOBS=2`; the native runner does not set a jobs limit.
 
-For an affected crate, forward Cargo selectors through `NATIVE_ARGS`:
+For an affected crate, pass Cargo selectors after `--`:
 
 ```sh
-make check-native NATIVE_ARGS='-p codex-core --tests'
-make test-native NATIVE_ARGS='-p codex-core --lib -- capture_delivery'
+just check-native -- -p codex-core --tests
+just test-native -- -p codex-core --lib -- capture_delivery
 ```
 
 To run matching app-server integration cases with the freshly staged server and
@@ -156,7 +167,7 @@ code-mode host, use a test name or substring instead of Cargo selectors. The
 filter applies to both the subprocess and broader app-server integration suites:
 
 ```sh
-make test-native NATIVE_TEST_FILTER='suite::v2::code_mode_host'
+just test-native --test-filter suite::v2::code_mode_host
 ```
 
 Use `check-native` to catch compilation errors without generating or linking the
@@ -190,9 +201,10 @@ key splits. Equivalent configured and environment settings can reuse the same
 cache entries; genuinely different compilation settings still have separate keys.
 
 Builds and the default native regression suite put executables in `bin/native`;
-packaging puts the archive in `bin/mekugi-native.tar.gz`. `make build-binaries` places the complete client and
-runtime together in `bin/`; `make install` installs both in the Go binary directory.
-Override these with `NATIVE_OUTPUT` and `NATIVE_ARCHIVE`. Keep the server beside
+packaging puts the archive in `bin/mekugi-native.tar.gz`. Native recipes accept
+`--output` and `--archive` to change these paths. `just build-binaries` places
+the complete client and runtime together in `bin/`; `just install` installs both
+in the Go binary directory. Keep the server beside
 `codex-code-mode-host` and Linux `bwrap`. The archive also includes protocol
 schemas, the bundled model catalog, licenses and the source revision. Shells and
 `rg` remain host tools.
@@ -208,7 +220,7 @@ these sessions. Mekugi does not wrap stock CLI commands such as `exec` or `revie
 Use `mekugi codex headless --yolo` with a stdin prompt for noninteractive execution;
 run Codex administrative commands directly.
 
-`make test-native` runs the existing standalone CLI, command execution, connection,
+`just test-native` runs standalone CLI, command execution, connection,
 code-mode-host and strict-configuration tests using local fixtures, not live
 providers. When importing upstream Codex changes, review security changes, rerun
 these checks and compare protocol changes with client consumers before packaging.
@@ -220,8 +232,9 @@ without a receipt or acceptance-state store. Supply explicit commits in pick ord
 or one reviewed Mekugi merge ref, and check argv after `--`:
 
 ```sh
-make integrate INTEGRATE_ARGS='--commits "COMMIT1 COMMIT2" -- make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/cmd/workspace'
-make integrate INTEGRATE_ARGS='--merge REVIEWED_MEKUGI_REF -- make test-native'
+just integrate --commits "COMMIT1 COMMIT2" -- \
+  just test ./mekugi-tui/apps/mekugi/cmd/workspace
+just integrate --merge REVIEWED_MEKUGI_REF -- just test-native
 ```
 
 Preparation does not infer acceptance or set statuses. After Main's QA,
@@ -229,8 +242,10 @@ reuse already-completed related-batch checks by explicitly
 attesting their full HEAD and choosing the desired status:
 
 ```sh
-make integrate INTEGRATE_ARGS='--checked-head FULL_HEAD --accept --items "MEKUGI-123 MEKUGI-124" --state "Pending QA"'
-make integrate INTEGRATE_ARGS='--checked-head FULL_HEAD --accept --items "MEKUGI-123 MEKUGI-124" --state Done --cleanup .worktrees/task-name'
+just integrate --checked-head FULL_HEAD --accept \
+  --items "MEKUGI-123 MEKUGI-124" --state "Pending QA"
+just integrate --checked-head FULL_HEAD --accept \
+  --items "MEKUGI-123 MEKUGI-124" --state Done --cleanup .worktrees/task-name
 ```
 
 `--accept` is Main's explicit authorization of the requested status/cleanup, not
@@ -351,7 +366,7 @@ and lifecycle phase. Sample the actual process within the authorized isolation b
 reproduce those dimensions in an isolated process. Fresh sessions and replay cannot establish
 coverage of missing retained process state.
 
-`make mekugi-pprof` builds a separate optimized executable with symbols and the
+`just mekugi-pprof` builds a separate optimized executable with symbols and the
 `pprof` build tag, plus its sibling executor, without installing or replacing the
 normal command. Launch arguments, worker dispatch and hooks retain their behavior.
 The normal build starts no profiling listener.

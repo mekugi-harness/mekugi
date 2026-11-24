@@ -5,7 +5,7 @@ version, field names, and queue bounds below are replaceable across coordinated 
 the 32 MiB decoded-upload budget is a required message constraint.
 
 Generated TypeScript wire types (`protocol.ts`) are authoritative for exact payload schemas; run
-`make generate` to regenerate and `make check-generated` to verify.
+`just generate` to regenerate and `just check-generated` to verify.
 TypeScript types do not grant endpoint authority.
 
 ## Transport, version, and authority

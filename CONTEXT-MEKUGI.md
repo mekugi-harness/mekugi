@@ -49,8 +49,9 @@ Go owner paths below are relative to `mekugi-tui/`; shared contracts are at root
 - `backends/codex/{appserver,binding,rollout,responses,shellhook,messagehistory,nativetrace}`
   owns Codex RPC, protocol decoding, rollout reads, Responses framing, and shell hook protocols.
 - `providers/openai` owns native OpenAI credentials, transport, and composer predictions.
-- `apps/mekugi/cmd/workspace` owns workspace enumeration, import/boundary checks, `make docs-check`,
-  `make check-generated`, and `make integrate` (`docs/contributing/development.md#integrate-reviewed-work`).
+- `apps/mekugi/cmd/workspace` owns workspace enumeration and import checks,
+  plus `just docs-check`, the module index, and `just integrate`
+  (`docs/contributing/development.md#integrate-reviewed-work`).
 - Shared cross-boundary contracts live in `docs/contracts/`: `coordination.md`, `composition.md`,
   `change-evidence.md`, `record-publication.md`, `responses-transport.md`, `provider-routing.md`.
 - Controlled model comparisons live in https://github.com/yusing/codex-setup-ab (use only for comparison tasks).

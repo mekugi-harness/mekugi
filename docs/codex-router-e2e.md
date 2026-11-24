@@ -93,7 +93,7 @@ workspace state are known. The router serves `GET /v1/models`; a model-refresh
 Build local binaries and run a headless probe in a disposable directory:
 
 ```sh
-make build-binaries
+just build-binaries
 (cd /absolute/path/to/disposable/fixture && \
   /path/to/mekugi/bin/mekugi codex headless --yolo --model gpt-5.6-luna <<< "PROMPT")
 ```

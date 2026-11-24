@@ -26,7 +26,7 @@ import (
 func TestNativeUIWalkthrough(t *testing.T) {
 	binary := os.Getenv("MEKUGI_PREVIEW_BINARY")
 	if binary == "" {
-		t.Skip("use make preview-native-ui")
+		t.Skip("use just preview-native-ui")
 	}
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
@@ -34,7 +34,7 @@ func TestNativeUIWalkthrough(t *testing.T) {
 	}
 	defer tty.Close()
 	if _, err := exec.LookPath("mekugi-app-server"); err != nil {
-		t.Fatal("native runtime not found; run make build-native first")
+		t.Fatal("native runtime not found; run just build-native first")
 	}
 
 	// Keep the control socket path short, even when the test name or workspace is long.

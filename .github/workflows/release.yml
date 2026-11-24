@@ -94,6 +94,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.4'
+      - name: Install Just
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: just@1.51.0
       - name: Cache Bun dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -108,13 +112,13 @@ jobs:
           sudo apt-get install --yes --no-install-recommends ripgrep
       - name: Test offline suite
         if: matrix.platform == 'linux_amd64'
-        run: make test TEST_FLAGS=-count=1
+        run: just test @workspace -count=1
       - name: Check documentation and generated references
         if: matrix.platform == 'linux_amd64'
-        run: make docs-check check-generated
+        run: just docs-check check-generated
       - name: Check web UI
         if: matrix.platform == 'linux_amd64'
-        run: make webui-check
+        run: just webui-check
       - name: Cache lint tools
         if: matrix.platform == 'linux_amd64'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -130,19 +134,21 @@ jobs:
           command -v deadcode >/dev/null || go install golang.org/x/tools/cmd/deadcode@v0.51.0
       - name: Lint
         if: matrix.platform == 'linux_amd64'
-        run: make lint
+        run: just lint
       - name: Test commands
         if: matrix.platform != 'linux_amd64'
-        run: make test TEST_PACKAGES='./mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec'
+        run: just test ./mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec
       - name: Test welcome and linked version
         run: |
-          MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" make test TEST_PACKAGES=./mekugi-tui/apps/mekugi/internal/launch TEST_RUN='^(TestMekugi(BuildVersion|LinkedBuildVersion)|TestNativeWelcome|TestUISnapshotNativeWelcome)' TEST_FLAGS="-ldflags='-X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG'"
+          MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" just test ./mekugi-tui/apps/mekugi/internal/launch \
+            -run '^(TestMekugi(BuildVersion|LinkedBuildVersion)|TestNativeWelcome|TestUISnapshotNativeWelcome)' \
+            -ldflags="-X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG"
       - name: Resolve native runtime archive key
         id: native_key
         env:
           PLATFORM: ${{ matrix.platform }}
           RUNNER_LABEL: ${{ matrix.runner }}
-          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'Makefile', 'runtime/build.py') }}
+          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'justfile', 'runtime/build.py') }}
         run: |
           native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
           image="$RUNNER_LABEL-${ImageVersion:-$GITHUB_RUN_ID}"
@@ -258,12 +264,12 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: |
           # App-server integration fixtures use debug-only startup options.
-          make test-native NATIVE_PROFILE=dev-small
+          just test-native
       - name: Package native runtime
         if: steps.native_cache.outputs.cache-hit != 'true' && steps.native_artifact.outputs.restored != 'true'
         env: *native_env
         run: |
-          make package-native NATIVE_ARCHIVE="$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
+          just package-native --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
       - name: Build and package
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -271,7 +277,7 @@ jobs:
           test "$(go env GOOS)_$(go env GOARCH)" = "$PLATFORM"
           package_dir="$RUNNER_TEMP/package"
           mkdir -p "$package_dir" "$RUNNER_TEMP/artifacts"
-          make webui build
+          just webui build
           GOWORK="$PWD/mekugi-tui/go.work" go build -trimpath -ldflags="-s -w -X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG" -o "$package_dir/" ./mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec
           native_files=(mekugi-app-server codex-code-mode-host mekugi-models.json)
           if [ "$RUNNER_OS" = Linux ]; then

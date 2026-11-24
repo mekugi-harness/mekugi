@@ -24,9 +24,11 @@ Secret prompts (`sudo`/GPG) and native-local filesystem/editor actions remain na
 
 ## Current approach (replaceable)
 
-- `mekugi web` serves embedded Svelte assets built with `make webui` (returns 503 if unbuilt) and
-  holds no machine credentials, runtimes, or proxy routes. Browser connections talk directly to
-  each machine's [Connector](../mekugi-tui/apps/mekugi/internal/connector/SPEC.md) over the [Web UI contract](CONTRACT.md).
+- `mekugi web` serves embedded Svelte assets built with `just webui` (503 if
+  unbuilt). It holds no machine credentials, runtimes, or proxy routes.
+  Browser connections go directly to each machine's
+  [Connector](../mekugi-tui/apps/mekugi/internal/connector/SPEC.md)
+  over the [Web UI contract](CONTRACT.md).
 - **Machines & PWA**: machine names, connector URLs, and bearer tokens store in origin-scoped
   browser storage (never URLs/cookies); installable as an online standalone PWA over HTTPS or
   localhost.

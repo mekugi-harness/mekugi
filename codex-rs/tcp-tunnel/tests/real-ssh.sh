@@ -37,4 +37,4 @@ sshd_pid=$!
 export PORTALS_TEST_SSHD_PORT="$port" PORTALS_TEST_KEY="$fixture/client"
 export PORTALS_TEST_PROXY="$fixture/proxy.py"
 cd "$(dirname "$0")/../.."
-just test -p codex-tcp-tunnel --lib real_ssh_delivery_over_http3 --run-ignored all
+just test-rust -p codex-tcp-tunnel --lib real_ssh_delivery_over_http3 --run-ignored all

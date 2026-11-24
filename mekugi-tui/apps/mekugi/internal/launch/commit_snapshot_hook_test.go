@@ -29,15 +29,11 @@ func TestSnapshotCommitHookChecksStagedTree(t *testing.T) {
 	workspace := gitTestWorkspace(t)
 	hooks := repositoryHooks(t)
 	bin := t.TempDir()
-	makePath := filepath.Join(bin, "make")
-	// An older recipe/runner accepts @snapshots and ignores the optional input.
-	// Keep its argument contract while checking exact-index source and fixtures.
-	writeTestFile(t, makePath, `#!/bin/sh
+	justPath := filepath.Join(bin, "just")
+	writeTestFile(t, justPath, `#!/bin/sh
 set -eu
 [ "$*" != docs-check ] || exit 0
-[ "$1" = test-ui-snapshots ]
-[ "$2" = 'SNAPSHOT_PACKAGES=@snapshots' ]
-[ "$3" = 'SNAPSHOT=^TestUISnapshot' ]
+[ "$*" = test-ui-snapshots ]
 [ "$MEKUGI_STAGED_SNAPSHOT_CHANGED_PATHS" = "$(dirname "$(pwd -P)")/changed" ]
 [ -s "$MEKUGI_STAGED_SNAPSHOT_CHANGED_PATHS" ]
 [ -z "${MEKUGI_UPDATE_UI_SNAPSHOTS-}" ]
@@ -46,7 +42,7 @@ set -eu
 dirname "$(pwd -P)" > "$SNAPSHOT_HOOK_TREE"
 cmp rendered.txt baseline.txt
 `)
-	if err := os.Chmod(makePath, 0o755); err != nil {
+	if err := os.Chmod(justPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -96,21 +92,21 @@ func TestDocumentationCommitHookChecksStagedDocsOnly(t *testing.T) {
 	workspace := gitTestWorkspace(t)
 	hooks := repositoryHooks(t)
 	bin := t.TempDir()
-	makePath := filepath.Join(bin, "make")
-	writeTestFile(t, makePath, `#!/bin/sh
+	justPath := filepath.Join(bin, "just")
+	writeTestFile(t, justPath, `#!/bin/sh
 set -eu
 case "$*" in
   docs-check)
     printf 'docs\n' >> "$DOC_HOOK_LOG"
     [ ! -f guide.md ] || ! grep -q broken guide.md
     ;;
-  'test-ui-snapshots SNAPSHOT_PACKAGES=@snapshots SNAPSHOT=^TestUISnapshot')
+  test-ui-snapshots)
     printf 'snapshots\n' >> "$DOC_HOOK_LOG"
     ;;
   *) exit 9 ;;
 esac
 `)
-	if err := os.Chmod(makePath, 0o755); err != nil {
+	if err := os.Chmod(justPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

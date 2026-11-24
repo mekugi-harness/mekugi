@@ -62,7 +62,7 @@ func TestRunWebLifecycle(t *testing.T) {
 	}
 	body, err := io.ReadAll(response.Body)
 	response.Body.Close()
-	if err != nil || (response.StatusCode != http.StatusOK && (response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "make webui"))) {
+	if err != nil || (response.StatusCode != http.StatusOK && (response.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "just webui"))) {
 		t.Fatalf("page = %d %q, %v", response.StatusCode, body, err)
 	}
 	cancel()

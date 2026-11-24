@@ -63,7 +63,7 @@ func moduleIndex(members []member, check bool) error {
 			return err
 		}
 		if !bytes.Equal(retained, output.Bytes()) {
-			return fmt.Errorf("%s is stale; run make generate", indexOutput)
+			return fmt.Errorf("%s is stale; run just generate", indexOutput)
 		}
 		return nil
 	}

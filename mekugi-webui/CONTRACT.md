@@ -7,8 +7,9 @@ across coordinated updates while preserving those requirements.
 ## Boundary contract
 
 - **Assets-only host**: `mekugi web` serves only `GET`/`HEAD` page and embedded static assets
-  (503 naming `make webui` when unbuilt). It never proxies machine APIs, holds credentials, or runs
-  sessions. Index and manifest revalidate; hashed assets cache indefinitely.
+  (503 naming `just webui` when unbuilt). It never proxies machine APIs, holds
+  credentials, or runs sessions. Index and manifest revalidate; hashed assets
+  cache indefinitely.
 - **CSP & untrusted content**: responses forbid framing, plugins, and base-URL changes, restrict
   scripts/styles to bundled assets (+ inline styles), and permit connections only to explicitly
   selected WS(S) connectors. Markdown raw HTML and unsafe schemes stay inert; remote Markdown

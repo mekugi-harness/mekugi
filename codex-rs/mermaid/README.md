@@ -72,8 +72,8 @@ From `codex-rs`, preview a file, optionally specifying the available width:
 cargo run -p codex-mermaid --example render -- 180 < diagram.mmd
 ```
 
-Run `just test -p codex-mermaid --lib`. Coverage includes complex snapshots for every
-family, relationship endpoints, all ER cardinalities, width/error bounds,
+Run `just test-rust -p codex-mermaid --lib`. Tests include complex snapshots for
+every family, relationship endpoints, all ER cardinalities, width/error bounds,
 truncated input, and reconstruction of every edge in all 512 directed three-node
 graphs in each of the four layout directions.
 

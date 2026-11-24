@@ -76,6 +76,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   runtime, including the exec-server fixture's Linux sandbox helper so it can
   find the bundled `bwrap` without a system installation. The native development
   profile favors incremental rebuilds.
+- The root Just recipes build and package Mekugi's native runtime. `just test`
+  runs the Go workspace suite; use `just test-native` for the prepared native
+  suite or `just test-rust` for direct nextest runs.
 
 ## Execution and model guidance
 

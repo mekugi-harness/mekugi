@@ -124,7 +124,7 @@ require a source build.
 
 ### Build from source
 
-Requires **Go 1.27+** (CGO enabled), a C/C++ toolchain, **Make**,
+Requires **Go 1.27+** (CGO enabled), a C/C++ toolchain, **Just 1.51+**,
 **Bun 1.4.4+**, **Node.js 24.21+**, **Python 3.11+**, and **Rustup**. See
 [native build dependencies](docs/contributing/development.md#native-app-server)
 for Linux libraries and the pinned Rust toolchain.
@@ -132,11 +132,11 @@ for Linux libraries and the pinned Rust toolchain.
 ```sh
 git clone https://github.com/mekugi-harness/mekugi.git
 cd mekugi
-make install
+just install
 ```
 
-Add `$GOBIN` (or `$(go env GOPATH)/bin`) to your `PATH`. Run `make uninstall`
-to remove installed executables and the bundled model catalog. Start a new
+Add `$GOBIN` (or `$(go env GOPATH)/bin`) to your `PATH`. Use `just uninstall`
+to remove the executables and bundled model catalog. Start a new
 session after updating.
 
 ## Quick start

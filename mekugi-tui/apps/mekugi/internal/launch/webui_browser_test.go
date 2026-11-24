@@ -36,7 +36,7 @@ import (
 // controls. Fixture owners acknowledge interrupts without launching a backend.
 func TestWebUIBrowserMachines(t *testing.T) {
 	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
-		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after make webui, with agent-browser installed")
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui, with agent-browser installed")
 	}
 	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
 	browser := browserFixtureCommand(t)
@@ -50,7 +50,7 @@ func TestWebUIBrowserMachines(t *testing.T) {
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatal("built application is unavailable; run make webui before this test")
+		t.Fatal("built application is unavailable; run just webui before this test")
 	}
 	type pendingAttachment struct {
 		native  *sessionapi.Native
@@ -1580,7 +1580,7 @@ func TestWebUIBrowserMachines(t *testing.T) {
 // options or failure, including after returning to the same machine.
 func TestWebUIBrowserStartOptions(t *testing.T) {
 	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
-		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after make webui, with agent-browser installed")
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui, with agent-browser installed")
 	}
 	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
 	browser := browserFixtureCommand(t)

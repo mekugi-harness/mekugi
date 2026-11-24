@@ -35,17 +35,15 @@ unset $(git rev-parse --local-env-vars)
 cd "$snapshot_tree/source"
 if [ "$docs_changed" -eq 1 ]; then
     printf 'Checking documentation in the staged tree...\n'
-    if ! env -u BASH_ENV -u MEKUGI_EXEC_TRACK TMPDIR="$snapshot_tree/tmp" make docs-check; then
+    if ! env -u BASH_ENV -u MEKUGI_EXEC_TRACK TMPDIR="$snapshot_tree/tmp" just docs-check; then
         printf '%s\n' 'Commit blocked: fix documentation links and heading anchors, then stage the corrections.' >&2
         exit 1
     fi
 fi
 printf 'Checking UI snapshots in the staged tree...\n'
-# Shared hooks also run against older worktrees. Old runners ignore the optional
-# input and keep checking all snapshots through the established argument.
 if ! env -u BASH_ENV -u MEKUGI_EXEC_TRACK -u MEKUGI_UPDATE_UI_SNAPSHOTS -u COLORFGBG TMPDIR="$snapshot_tree/tmp" \
     MEKUGI_STAGED_SNAPSHOT_CHANGED_PATHS="$snapshot_tree/changed" \
-    make test-ui-snapshots SNAPSHOT_PACKAGES=@snapshots SNAPSHOT='^TestUISnapshot'; then
+    just test-ui-snapshots; then
     printf '%s\n' 'Commit blocked: fix the reported test failure; update snapshot baselines only for intended rendering changes.' >&2
     exit 1
 fi

@@ -37,7 +37,7 @@ func (h assetHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := fs.Stat(h.assets, "index.html"); err != nil {
-		http.Error(w, "Web UI assets are not built. Run `make webui`, then rebuild mekugi.", http.StatusServiceUnavailable)
+		http.Error(w, "Web UI assets are not built. Run `just webui`, then rebuild mekugi.", http.StatusServiceUnavailable)
 		return
 	}
 	name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")

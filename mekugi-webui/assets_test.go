@@ -79,7 +79,7 @@ func TestAssetsOnlyHost(t *testing.T) {
 func TestMissingAssets(t *testing.T) {
 	response := httptest.NewRecorder()
 	assetHandler{assets: fstest.MapFS{}}.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "make webui") || response.Header().Get("Cache-Control") != "no-cache" {
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "just webui") || response.Header().Get("Cache-Control") != "no-cache" {
 		t.Fatalf("missing assets = %d %q, headers %v", response.Code, response.Body.String(), response.Header())
 	}
 }

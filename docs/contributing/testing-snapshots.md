@@ -6,16 +6,17 @@ nondeterministic inputs. Run commands from the repository root using the
 [build and test](development.md#build-and-test) runner (which also documents the staged-tree snapshot commit gate).
 
 ```sh
-make test-ui-snapshots SNAPSHOT_PACKAGES=./mekugi-tui/apps/mekugi/internal/launch SNAPSHOT='^TestUISnapshotNativeSessionShortcuts$'
+just test-ui-snapshots ./mekugi-tui/apps/mekugi/internal/launch \
+  '^TestUISnapshotNativeSessionShortcuts$'
 ```
 
 Checks are offline, include the snapshot harness, and need neither Codex nor model requests.
-Omit `SNAPSHOT_PACKAGES` to discover snapshot-containing packages across the workspace before
-compiling them, or `SNAPSHOT` for all UI snapshot cases. Discovery includes `TestUISnapshot`
-and harness `TestSnapshot` declarations, including platform-tagged files; Go selects runnable
-tests. `SNAPSHOT` filters test names within selected packages. Explicit package paths bypass discovery;
-`SNAPSHOT_PACKAGES=@workspace` compiles every member package. The same selections apply to
-`make update-ui-snapshots`.
+Both `just test-ui-snapshots` and `just update-ui-snapshots` accept a package
+selector followed by an optional test name pattern. The default selector,
+`@snapshots`, discovers packages declaring `TestUISnapshot` or harness
+`TestSnapshot` tests, including platform-tagged files. Go selects which can run.
+An explicit package path bypasses discovery; `@workspace` compiles every member
+package. Omit the pattern to select all UI snapshot cases in those packages.
 
 - `testsupport/uisnapshot.Assert` strips ANSI only: spacing, blank lines, wrapping and borders
   remain exact. Text comparisons do not prove color/style correctness.
@@ -27,7 +28,8 @@ tests. `SNAPSHOT` filters test names within selected packages. Explicit package 
   the baseline stays unchanged. Review the candidate against the requested behavior and the
   owner's design guide, as its user would see it. Accept it only for an intended change by moving
   it over the fixture or running the selected update recipe; a difference outside the intended
-  change is a regression to fix in the code. Omitting `SNAPSHOT` updates all matching cases.
+  change is a regression to fix in the code. Omit the pattern to update all
+  UI snapshot cases in the selected packages.
 - Updates require `MEKUGI_UPDATE_UI_SNAPSHOTS=1`; check recipes clear it. A pass or explicit update
   removes stale candidates. Rerun checks after accepting a baseline.
 - Keep copy/state/bounds/interaction/PTY checks separate. Git attributes exempt only snapshot text

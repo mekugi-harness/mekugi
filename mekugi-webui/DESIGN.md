@@ -70,7 +70,7 @@ Visual and interaction rules for the browser UI (`mekugi-webui/app`).
 
 ## Rendered verification
 
-Source review does not prove layout. Build with `make webui`, then run browser tests in
+Source review does not prove layout. Build with `just webui`, then run tests in
 `mekugi-tui/apps/mekugi/internal/launch` with `MEKUGI_TEST_WEBUI_BROWSER=1` and `MEKUGI_TEST_WEBUI_ARTIFACTS=<dir>`
 across affected viewports (desktop 1280px, tablet, phone 390px), light/dark themes, and realistic
 long content. Measure geometry with `getBoundingClientRect`; verify delayed refreshes retain old

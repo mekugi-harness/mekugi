@@ -20,7 +20,7 @@ import (
 
 func TestWebUIBrowserRetainedHistory(t *testing.T) {
 	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
-		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after make webui, with agent-browser installed")
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui, with agent-browser installed")
 	}
 	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
 	browser := browserFixtureCommand(t)

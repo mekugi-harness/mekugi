@@ -20,7 +20,7 @@ import (
 func TestWebUIQuestionPreviewFixture(t *testing.T) {
 	path := os.Getenv("MEKUGI_TEST_WEBUI_QUESTION_FIXTURE")
 	if path == "" {
-		t.Skip("set MEKUGI_TEST_WEBUI_QUESTION_FIXTURE to a local fixture manifest path after make webui")
+		t.Skip("set MEKUGI_TEST_WEBUI_QUESTION_FIXTURE to a local fixture manifest path after just webui")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Minute)
 	defer cancel()

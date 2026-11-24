@@ -24,7 +24,7 @@ import (
 // connector and session server. Fixture owners supply detached edit evidence.
 func TestWebUIBrowserDiffs(t *testing.T) {
 	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
-		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after make webui, with agent-browser installed")
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui, with agent-browser installed")
 	}
 	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
 	browser := browserFixtureCommand(t)

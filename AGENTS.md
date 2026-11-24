@@ -17,7 +17,8 @@ Distinguish current failures from fixed history; do not equate investigation tim
 In text Mekugi gives models (guidance, tool descriptions, results) and in agent guidance, minimize
 tokens while preserving meaning.
 
-Never run bare `make`, `make install`, or another installation-path build; bare `make` installs.
+Never run `just install` or another installation-path build.
+Bare `just` lists recipes.
 
 The repository ships the native runtime (`codex-rs/`), terminal client
 (`mekugi-tui/`), and browser client with its embedded asset host (`mekugi-webui/`).
@@ -146,8 +147,8 @@ differences that upstream now supplies.
 Use the pinned Rust toolchain and Cargo lockfile. From the **Mekugi project root**, prefer:
 
 ```sh
-make check-native NATIVE_ARGS='-p codex-core --tests'
-make test-native NATIVE_ARGS='-p codex-core --lib -- <test_filter>'
+just check-native -- -p codex-core --tests
+just test-native -- -p codex-core --lib -- <test_filter>
 ```
 
 Select the affected crate and test target. A name filter limits execution, not compilation.
@@ -156,8 +157,9 @@ do not replace them with unprepared raw Cargo commands. Keep the profile stable.
 configured target directory and incremental setting, including in worktrees. Do not override
 `CARGO_TARGET_DIR`, `build.target-dir`, or `CARGO_INCREMENTAL`, including via Cargo flags.
 
-- `make test-native` without selectors builds the runtime and runs its default offline
-  regression selection, not the full Rust workspace. Use it for runtime integration or upstream imports; select broader coverage only when the affected shared contracts require it.
+- `just test-native` without selectors builds the runtime and runs its offline
+  regression selection, not the full Rust workspace. Use it for runtime
+  integration or upstream imports; expand coverage for affected shared contracts.
 - From the repository root, `just fmt` formats Rust, the justfile and maintained Python scripts;
   run it after code changes, not instruction-only edits. `just fmt-check` checks without edits.
   Scope Clippy with `just clippy -p <crate>`; `just fix -p <crate>` also modifies source.

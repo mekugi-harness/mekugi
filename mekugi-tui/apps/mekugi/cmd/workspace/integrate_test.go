@@ -110,9 +110,9 @@ func TestIntegrationMergeChecksOneTree(t *testing.T) {
 
 func TestIntegrationDirtyRootChecksAndStatusChoices(t *testing.T) {
 	f := newIntegrationFixture(t)
-	// Use the same ignored destinations as make webui.
+	// Use the same ignored destinations as the build recipes.
 	for _, path := range []string{
-		"mekugi-webui/app/node_modules/.bun-install",
+		"mekugi-webui/app/node_modules/.bin/vite",
 		"mekugi-webui/dist/app/assets/app.js",
 	} {
 		writeWorkspaceSource(t, filepath.Join(f.source, path), "generated\n")
@@ -310,47 +310,38 @@ func TestIntegrationRefusalsAndFailurePropagation(t *testing.T) {
 	}
 }
 
-func TestIntegrationMakeRecipe(t *testing.T) {
-	makefile := repositoryMakefile(t)
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestIntegrationJustRecipe(t *testing.T) {
+	recipes := installJustFixture(t)
 	f := newIntegrationFixture(t)
 	for _, path := range []string{
 		"bin/native/mekugi-app-server",
 		"bin/mekugi-native.tar.gz",
 		"codex-rs/target/dev-small/mekugi-app-server",
 		"graphify-out/graph.json",
-		"mekugi-webui/app/node_modules/.bun-install",
+		"mekugi-webui/app/node_modules/.bin/vite",
 		"mekugi-webui/dist/app/assets/app.js",
 		"runtime/__pycache__/build.cpython-313.pyc",
 		"scripts/codex_package/__pycache__/targets.cpython-313.pyc",
 	} {
 		writeWorkspaceSource(t, filepath.Join(f.source, path), "generated\n")
 	}
-	writeWorkspaceSource(t, "Makefile", string(makefile))
-	wrapper := filepath.Join(t.TempDir(), "workspace")
-	writeWorkspaceSource(t, wrapper, "#!/bin/sh\nexec '"+strings.ReplaceAll(executable, "'", "'\\''")+"' -test.run=^TestMakefileWorkspaceFixture$ -- \"$@\"\n")
-	if err := os.Chmod(wrapper, 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("MEKUGI_MAKEFILE_WORKSPACE_FIXTURE", "1")
-	command := exec.Command("make", "--no-print-directory", "integrate", "WORKSPACE="+wrapper, "INTEGRATE_ARGS=--commits "+f.commit+" --accept --cleanup '"+f.source+"' -- check focused")
+	writeWorkspaceSource(t, "justfile", recipes)
+	command := exec.Command("just", "integrate", "--commits", f.commit, "--accept",
+		"--cleanup", f.source, "--", "check", "focused")
 	data, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("make integrate: %v\n%s", err, data)
+		t.Fatalf("just integrate: %v\n%s", err, data)
 	}
 	if !strings.Contains(string(data), "Integration HEAD:") {
 		t.Fatalf("missing result: %s", data)
 	}
 	if data, err := os.ReadFile(f.events); err != nil || string(data) != "check focused\n" {
-		t.Fatalf("make did not route supplied check: %s, %v", data, err)
+		t.Fatalf("just did not route supplied check: %s, %v", data, err)
 	}
 	if _, err := os.Stat(f.source); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("make integrate retained generated worktree: %v", err)
+		t.Fatalf("just integrate retained generated worktree: %v", err)
 	}
 	if f.git(t, "branch", "--list", "task/reviewed") != "" {
-		t.Fatal("make integrate retained source branch")
+		t.Fatal("just integrate retained source branch")
 	}
 }

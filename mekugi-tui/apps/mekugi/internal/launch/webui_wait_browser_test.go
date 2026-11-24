@@ -22,7 +22,7 @@ import (
 // markers, linked agents beyond the loaded roster page and coloured counts.
 func TestWebUIBrowserWaitTargets(t *testing.T) {
 	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
-		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after make webui")
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui")
 	}
 	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
 	browser := browserFixtureCommand(t)
@@ -158,7 +158,7 @@ console.log('ready');`, strings.TrimSpace(run("get", "cdp-url")))
 // roster gains its row without waiting for unrelated activity.
 func TestWebUIBrowserWaitTargetDuringRepublication(t *testing.T) {
 	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
-		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after make webui")
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui")
 	}
 	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
 	browser := browserFixtureCommand(t)
@@ -251,7 +251,7 @@ func TestWebUIBrowserWaitTargetDuringRepublication(t *testing.T) {
 // Exercise the real observation decoder, not hand-authored progress values.
 func TestWebUIBrowserWaitAcknowledgements(t *testing.T) {
 	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
-		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after make webui")
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui")
 	}
 	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
 	browser := browserFixtureCommand(t)

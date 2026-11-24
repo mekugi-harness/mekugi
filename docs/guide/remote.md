@@ -99,7 +99,7 @@ between viewers, and requires the live thread to be ended first. Completed playb
 stays open until ended. If a request loses its acknowledgement, check that machine's
 state before resubmitting; the browser does not retry mutations automatically.
 
-Source checkouts need `make webui` before embedding browser assets. See
+Source checkouts need `just webui` before embedding browser assets. See
 [development checks](../contributing/development.md#build-and-test) and the
 [browser specification](../../mekugi-webui/SPEC.md).
 
