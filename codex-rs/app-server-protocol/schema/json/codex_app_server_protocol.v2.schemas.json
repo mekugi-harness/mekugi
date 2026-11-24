@@ -6871,7 +6871,7 @@
           "type": "boolean"
         },
         "threadId": {
-          "description": "Read the effective layers for this loaded thread instead of resolving from cwd.",
+          "description": "Read only the terminal settings of this loaded thread. If layers are requested, they contain preset ownership metadata, not raw config.",
           "type": [
             "string",
             "null"
@@ -22161,15 +22161,9 @@
             "null"
           ]
         },
-        "providerPolicy": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ThreadFamilyProviderPolicy"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "requireCustomProvider": {
+          "description": "For the custom-only launcher, reject an effective OpenAI route.",
+          "type": "boolean"
         },
         "trackingCommand": {
           "description": "Optional launcher shell observer, appended after the caller's hooks.",
@@ -22183,25 +22177,6 @@
         "environment"
       ],
       "type": "object"
-    },
-    "ThreadFamilyProviderPolicy": {
-      "description": "Provider selection imposed by the launcher, independently of file layering.",
-      "oneOf": [
-        {
-          "description": "Require a provider and its endpoint in the selected profile or CLI flags.",
-          "enum": [
-            "requireCustomEndpoint"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "If no provider was explicitly selected, use native OpenAI.",
-          "enum": [
-            "defaultOpenai"
-          ],
-          "type": "string"
-        }
-      ]
     },
     "ThreadForkParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",

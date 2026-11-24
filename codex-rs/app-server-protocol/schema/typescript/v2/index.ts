@@ -584,7 +584,6 @@ export type { ThreadDeletedNotification } from "./ThreadDeletedNotification";
 export type { ThreadEnvironment } from "./ThreadEnvironment";
 export type { ThreadExtra } from "./ThreadExtra";
 export type { ThreadFamilyParams } from "./ThreadFamilyParams";
-export type { ThreadFamilyProviderPolicy } from "./ThreadFamilyProviderPolicy";
 export type { ThreadForkParams } from "./ThreadForkParams";
 export type { ThreadForkResponse } from "./ThreadForkResponse";
 export type { ThreadGoal } from "./ThreadGoal";

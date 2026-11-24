@@ -4,7 +4,8 @@
 
 export type ConfigReadParams = {
 /**
- * Read the effective layers for this loaded thread instead of resolving from cwd.
+ * Read only the terminal settings of this loaded thread. If layers are
+ * requested, they contain preset ownership metadata, not raw config.
  */
 threadId?: string | null, includeLayers?: boolean,
 /**
