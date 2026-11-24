@@ -316,7 +316,7 @@ func endSyncQuestions(attached *attachedPresentation, control *sessioncontrol.Cl
 
 func (session *nativeSession) answerQuestion(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, side *sessioncontrol.Side, clock func() time.Time, overlay bool, intent sessionpresentation.AnswerIntent) bool {
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
 	}()
 	q, err := attached.presentation.AnswerQuestion(intent, session.questions.Questions)
 	if err != nil {
@@ -331,7 +331,7 @@ func (session *nativeSession) answerQuestion(attached *attachedPresentation, pic
 
 func (session *nativeSession) submitQuestions(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, side *sessioncontrol.Side, clock func() time.Time, overlay bool, parent context.Context, intent sessionpresentation.QuestionSubmitIntent) error {
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
 	}()
 	record, err := attached.presentation.SubmitQuestions(intent, session.questions.Questions)
 	if err != nil {

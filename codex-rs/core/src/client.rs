@@ -356,6 +356,8 @@ pub struct ModelClient {
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
     restored_history: bool,
+    side_fork: Option<SideFork>,
+    configured_model_tiers: Arc<std::collections::BTreeMap<String, String>>,
     child_reply_summary: bool,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     budget_policy: Option<crate::rollout_budget::ThreadBudgetPolicy>,
@@ -363,6 +365,24 @@ pub struct ModelClient {
     // Resolved once when the session is created, like other session feature flags.
     api_key_cyber_access_programs: cyber_access_program::ApiKeyCyberAccessPrograms,
     required_cyber_access_programs: Option<Arc<cyber_access_program::RequiredCyberAccessPrograms>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SideFork {
+    OneOff,
+    Question,
+    Btw,
+}
+
+impl SideFork {
+    pub(crate) fn from_source(source: &codex_protocol::protocol::ThreadSource) -> Option<Self> {
+        match source.as_str() {
+            "mekugi_side" => Some(Self::OneOff),
+            "mekugi_side_question" => Some(Self::Question),
+            "mekugi_btw" => Some(Self::Btw),
+            _ => None,
+        }
+    }
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -699,6 +719,8 @@ impl ModelClient {
             event_sender: None,
             http_client_factory,
             restored_history: false,
+            side_fork: None,
+            configured_model_tiers: Default::default(),
             child_reply_summary: false,
             request_contributors,
             budget_policy: None,
@@ -707,6 +729,59 @@ impl ModelClient {
                 cyber_access_program::ApiKeyCyberAccessPrograms::UnsupportedProvider,
             required_cyber_access_programs: None,
         }
+    }
+
+    pub(crate) fn with_request_shaping(
+        mut self,
+        thread_source: Option<&codex_protocol::protocol::ThreadSource>,
+        config: &crate::config::Config,
+    ) -> Self {
+        self.side_fork = match &self.state.session_source {
+            SessionSource::SubAgent(SubAgentSource::Other(tag)) if tag == "side_question" => {
+                Some(SideFork::Btw)
+            }
+            _ => thread_source.and_then(SideFork::from_source),
+        };
+        self.configured_model_tiers = Arc::clone(&config.service_tiers);
+        self
+    }
+
+    pub(crate) fn cap_btw_effort(
+        &self,
+        model: &ModelInfo,
+        effort: ReasoningEffortConfig,
+    ) -> ReasoningEffortConfig {
+        if self.side_fork == Some(SideFork::Btw)
+            && matches!(
+                effort,
+                ReasoningEffortConfig::Medium
+                    | ReasoningEffortConfig::High
+                    | ReasoningEffortConfig::XHigh
+                    | ReasoningEffortConfig::Max
+            )
+            && model
+                .supported_reasoning_levels
+                .iter()
+                .any(|level| level.effort == ReasoningEffortConfig::Low)
+        {
+            ReasoningEffortConfig::Low
+        } else {
+            effort
+        }
+    }
+
+    pub(crate) fn answer_only(&self) -> bool {
+        matches!(self.side_fork, Some(SideFork::Question | SideFork::Btw))
+    }
+
+    pub(crate) fn check_compaction(&self) -> Result<()> {
+        if self.answer_only() {
+            return Err(CodexErr::InvalidRequest(
+                "Side question requires compaction. Close this answer, compact Main, then retry."
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn with_child_reply_summary(mut self, enabled: bool) -> Self {
@@ -1203,6 +1278,27 @@ impl ModelClient {
         request_telemetry
     }
 
+    fn service_tier_for_request(
+        &self,
+        model_info: &ModelInfo,
+        service_tier: Option<String>,
+    ) -> Option<String> {
+        if self.configured_model_tiers.contains_key(&model_info.slug) {
+            service_tier
+        } else {
+            model_info.service_tier_for_request(service_tier)
+        }
+        .filter(|tier| {
+            // Bedrock requires an advertised tier, including for flex, which the
+            // generic OpenAI resolver permits without catalog support.
+            !self.state.provider.info().is_amazon_bedrock()
+                || model_info
+                    .service_tiers
+                    .iter()
+                    .any(|supported| supported.id == *tier)
+        })
+    }
+
     fn build_reasoning(
         &self,
         model_info: &ModelInfo,
@@ -1259,7 +1355,10 @@ impl ModelClient {
         // within the thread so retries and resumed sessions preserve their identity.
         let prefix_namespace = Uuid::new_v5(
             &Uuid::NAMESPACE_OID,
-            self.state.thread_id.to_string().as_bytes(),
+            self.session_id_override
+                .as_deref()
+                .map_or_else(|| self.state.thread_id.to_string(), str::to_owned)
+                .as_bytes(),
         );
         let mut prefix = Vec::new();
         let tools = if model_info.use_responses_lite {
@@ -1332,7 +1431,12 @@ impl ModelClient {
                 }
             }
         }
-        let reasoning = self.build_reasoning(model_info, effort, summary);
+        let mut reasoning = self.build_reasoning(model_info, effort, summary);
+        if !self.reasoning_effort_override_enabled(model_info) {
+            reasoning.effort = reasoning
+                .effort
+                .map(|effort| self.cap_btw_effort(model_info, effort));
+        }
         let stream_options = (self.state.concurrent_reasoning_summaries_enabled
             && is_openai
             && reasoning.summary.is_some())
@@ -1359,17 +1463,7 @@ impl ModelClient {
             &prompt.output_schema,
             prompt.output_schema_strict,
         );
-        let service_tier = model_info
-            .service_tier_for_request(service_tier)
-            .filter(|tier| {
-                // Bedrock requires an advertised tier, including for flex, which the
-                // generic OpenAI resolver permits without catalog support.
-                !self.state.provider.info().is_amazon_bedrock()
-                    || model_info
-                        .service_tiers
-                        .iter()
-                        .any(|supported| supported.id == *tier)
-            });
+        let service_tier = self.service_tier_for_request(model_info, service_tier);
         if !include_internal {
             let captures_result_bodies = self.captures_result_bodies();
             for item in &mut input {
@@ -1897,8 +1991,8 @@ impl ModelClientSession {
                 client_setup.auth.as_ref(),
                 &responses_headers,
                 &model_info.slug,
-                model_info
-                    .service_tier_for_request(service_tier.clone())
+                self.client
+                    .service_tier_for_request(model_info, service_tier.clone())
                     .as_deref(),
             );
             match self

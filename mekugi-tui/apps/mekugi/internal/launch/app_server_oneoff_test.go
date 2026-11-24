@@ -18,7 +18,7 @@ func sideTestClose(t *testing.T, u *appServerUI) {
 	t.Helper()
 	v := u.attached.presentation.View()
 	in := sessionpresentation.CloseSideIntent{Version: v.Version, Key: v.Side.Key, Exchange: v.Side.ID}
-	if err := applyCloseSide(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, &u.questions, &u.approvals, u.clock, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, &u.side, false, &u.ownedImages, in); err != nil {
+	if err := applyCloseSide(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, &u.questions, &u.approvals, u.clock, u.settings, u.title, u.backendVersion, u.restoring != nil, &u.side, false, &u.ownedImages, in); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -386,8 +386,13 @@ async fn schedule_startup_prewarm_inner(
     let preconnect_model_info = Arc::clone(startup_turn_context.model_info());
     // Spawned subagents inherit the root's selection, with the same feature and model filtering
     // that capture applies to the actual request.
-    let inherits_root_service_tier =
-        session.inherits_root_service_tier(&startup_turn_context.session_source);
+    let inherits_root_service_tier = session
+        .inherits_root_service_tier(&startup_turn_context.session_source)
+        && !startup_turn_context
+            .initial_settings
+            .selected()
+            .model_tiers
+            .contains_key(&preconnect_model_info.slug);
     let preconnect_service_tier = if inherits_root_service_tier {
         crate::session::get_service_tier(
             crate::agent::host::service_tier(
@@ -477,7 +482,7 @@ async fn schedule_startup_prewarm_inner(
             )
             .await;
         savings = projected.savings;
-        let mut history = projected.into_items();
+        let mut history = projected.into_request_items();
         session
             .services
             .executed_tool_calls

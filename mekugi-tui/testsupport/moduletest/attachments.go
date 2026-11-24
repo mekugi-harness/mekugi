@@ -81,15 +81,6 @@ func WithLegacyAttachments(input []map[string]any, values []string) []map[string
 	return input
 }
 
-// SelectionFrames builds bounded retained selection fixtures.
-func SelectionFrames(label, source, body string) []string {
-	frames := frameText(body, func(_, _, _ int) string { return "" })
-	for i := range frames {
-		frames[i] = FormatSelection(label, source, frames[i])
-	}
-	return frames
-}
-
 // Source: libraries/modelprotocol/attachments/selection.go:18:40@[8e65cb769]
 // FormatSelection builds retained Go selection markup, not current input.
 func FormatSelection(label, source, body string) string {

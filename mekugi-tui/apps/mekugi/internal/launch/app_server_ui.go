@@ -126,7 +126,7 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 		session.panes = &nativePreferences{service: prefs}
 	}
 
-	settlePresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side, session.clock, &session.questions, &session.approvals, session.overlayOpen(session.statusPanel, session.resumePicker))
+	settlePresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side, session.clock, &session.questions, &session.approvals, session.overlayOpen(session.statusPanel, session.resumePicker))
 	predictions := composerPredictions{provider: predictionProvider, results: make(chan predictionConfiguration, 1)}
 	native := newNativeViews(session.ctx, api.Native(), session.presentationState, session.activity, session.Client.Requests)
 	endpoint.views = native
@@ -761,7 +761,7 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 		}
 		// Mutation acknowledgement is a publication barrier for keyboard
 		// continuations. Publish before releasing the requesting client.
-		native.publish(&session.attached, &session.Client, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
+		native.publish(&session.attached, &session.Client, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
 		if request.Reply != nil {
 			request.Reply <- refusal
 		}
@@ -814,7 +814,7 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 		}
 		refreshSessionMetrics(session.statusPanel, session.sessionCapture, presentationTime(session.clock), false)
 		applyObservedActivity(&session.attached, &session.Client, session.usage, session.review, &session.approvals, &session.pendingEditReceipts, session.clock, session.restoring, session.audience)
-		publishPresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side)
+		publishPresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side)
 		session.flushStreamOutput(&session.attached, session.clock, session.ctx)
 		startCommitReads(&session.attached, session.commits)
 		paneError(session.attached.source, session.panes.savePrepared(presentationTime(session.clock), false))
@@ -832,13 +832,13 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 			}
 			if view.notices == nil {
 				requestEditor := new(composer.Editor)
-				view.notices = applyCriticalNotices(&view.attached, &session.Client, &view.picker, &requestEditor, session.clock, session.settings, session.serviceTiers, session.title, session.backendVersion, &session.restoring, &session.side, session.audience, session.issues)
+				view.notices = applyCriticalNotices(&view.attached, &session.Client, &view.picker, &requestEditor, session.clock, session.settings, session.title, session.backendVersion, &session.restoring, &session.side, session.audience, session.issues)
 			}
 		}
-		notices := applyCriticalNotices(&session.attached, &session.Client, &session.picker, &session.Editor, session.clock, session.settings, session.serviceTiers, session.title, session.backendVersion, &session.restoring, &session.side, session.audience, session.issues)
-		settlePresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side, session.clock, &session.questions, &session.approvals, session.overlayOpen(session.statusPanel, session.resumePicker))
+		notices := applyCriticalNotices(&session.attached, &session.Client, &session.picker, &session.Editor, session.clock, session.settings, session.title, session.backendVersion, &session.restoring, &session.side, session.audience, session.issues)
+		settlePresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side, session.clock, &session.questions, &session.approvals, session.overlayOpen(session.statusPanel, session.resumePicker))
 		live.publish(&session.attached, &session.Client, session.review, session.reviewSource, session.restoring != nil, childSummary, presentationTime(session.clock))
-		native.publish(&session.attached, &session.Client, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
+		native.publish(&session.attached, &session.Client, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
 		// Publication is not a native paint receipt. Release claims without
 		// acknowledging notices that no terminal has displayed.
 		notices.finish(terminalsession.NoticeReceipt{})
@@ -849,9 +849,9 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 		if err := syncPredictions(); err != nil {
 			return err
 		}
-		settlePresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side, session.clock, &session.questions, &session.approvals, session.overlayOpen(session.statusPanel, session.resumePicker))
+		settlePresentation(&session.attached, &session.Client, &session.picker, &session.Editor, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side, session.clock, &session.questions, &session.approvals, session.overlayOpen(session.statusPanel, session.resumePicker))
 		live.publish(&session.attached, &session.Client, session.review, session.reviewSource, session.restoring != nil, childSummary, presentationTime(session.clock))
-		native.publish(&session.attached, &session.Client, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
+		native.publish(&session.attached, &session.Client, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
 		return session.connection.observeTree()
 	}
 	endpoint.finish = func(runErr error) error {
@@ -876,7 +876,7 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 		for _, view := range native.views {
 			view.projected = time.Time{}
 		}
-		native.publish(&session.attached, &session.Client, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
+		native.publish(&session.attached, &session.Client, session.settings, session.title, session.backendVersion, session.restoring != nil, session.side, session.review, session.reviewSource, nativePublicationFacts(&session.attached, session.panes, session.exitUsage, session.replayDebugDirectory, session.archived, session.notifications, session.Client.Thread, &predictions), presentationTime(session.clock))
 		releaseSegmentOutputs(&session.attached, session.execTrack)
 		session.review.Close()
 		session.Editor = hideQuestionEditor(&session.questions, session.attached.conversation, session.Editor, session.Client.Thread)
@@ -975,7 +975,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 			session.shellEdits.pending = nil
 		}
 		finishRewindRevert(attached, &session.Client, clock)
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
 	}()
 	session.issues.ObserveTurnCompletion(m.Method, m.Params)
 	observeShellMessage(&session.shellEdits, attached, clock, m)
@@ -1450,7 +1450,7 @@ func (session *nativeSession) dispatchHostMessage(attached *attachedPresentation
 						session.panes.attachment.Recover(session.Client.Startup.Evidence, presentationTime(clock))
 						paneError(attached.source, session.panes.savePrepared(presentationTime(clock), true))
 					}
-					if _, err := updateSettings(attached, &session.Client, session.settings, &session.serviceTiers, session.panes, session.restoring != nil, clock, repair); err != nil {
+					if _, err := updateSettings(attached, &session.Client, session.settings, session.panes, session.restoring != nil, clock, repair); err != nil {
 						return err
 					}
 				}

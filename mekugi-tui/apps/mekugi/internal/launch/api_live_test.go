@@ -255,7 +255,7 @@ func TestAPIIntentsActOnMain(t *testing.T) {
 	}
 	appServerTestMessage(t, u, fmt.Sprintf(`{"id":%d,"result":{"turnId":"main-turn"}}`, steer.ID))
 
-	view := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side)
+	view := publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side)
 	if !u.attached.presentation.DisplayingSide() || !view.Status.Session.Running || !sessionpresentation.MainInterruptible(&u.Live, u.attached.conversation) {
 		t.Fatalf("Main's status while the side conversation shows = %+v", view.Status.Session)
 	}

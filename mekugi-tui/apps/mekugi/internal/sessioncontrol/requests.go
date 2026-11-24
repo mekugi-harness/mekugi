@@ -56,7 +56,6 @@ type Requests[T any] struct {
 	sidesMu                  sync.RWMutex
 	sides                    map[string]*Side
 	predictions              map[string]*Prediction
-	cacheThread, cacheKey    string // Guarded by sidesMu; forks freeze their own copy.
 	calls                    chan *HostCall
 	inspections              chan *Inspection
 	closed                   chan struct{}

@@ -1288,3 +1288,69 @@ async fn new_context_tool_skips_auto_compact_fallback() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_context_publishes_supplied_selection_without_replaying_it() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call("reset", "new_context", "{}"),
+                ev_completed("before"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg", "done"),
+                ev_completed("after"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.features.enable(Feature::TokenBudget).unwrap();
+        })
+        .build(&server)
+        .await?;
+    let selection = "\n\n---\nUser selections:\n- message 1: selected bytes";
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(
+            ["request new context window [Selected message 1]", selection]
+                .into_iter()
+                .map(|text| UserInput::Text {
+                    text: text.to_owned(),
+                    text_elements: vec![],
+                })
+                .collect(),
+        ))
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].body_contains_text("selected bytes"));
+    for request in &requests[1..] {
+        assert!(!request.body_contains_text("selected bytes"));
+        let path = request
+            .message_input_texts("user")
+            .into_iter()
+            .find_map(|text| {
+                text.strip_prefix("Optional attachment recall (read with mcat): ")
+                    .map(str::to_owned)
+            })
+            .expect("recall available after reset");
+        assert!(std::fs::metadata(&path)?.permissions().readonly());
+        assert_eq!(
+            std::fs::read_to_string(path)?,
+            serde_yaml::to_string(&std::collections::BTreeMap::from([(
+                "selections",
+                vec![selection]
+            )]))?
+        );
+    }
+    Ok(())
+}

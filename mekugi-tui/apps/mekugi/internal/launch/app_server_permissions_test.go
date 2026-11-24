@@ -136,7 +136,7 @@ func TestNativePermissionSelectionRetiresWithView(t *testing.T) {
 		t.Fatal(refusal)
 	}
 	v := n.views["view"]
-	publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+	publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, "", "", false, nil, true)
 	editor := new(composer.Editor)
 	editor.Text = "/permissions"
 	if handled, err := u.nativeSession.settingsCommand(&v.attached, &v.picker, &editor, nil, u.clock, false, editor.Text); !handled || err != nil {

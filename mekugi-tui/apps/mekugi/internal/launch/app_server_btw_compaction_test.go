@@ -1,27 +1,17 @@
 package launch
 
 import (
-	"bytes"
 	jsonv1 "encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 
 	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
@@ -118,62 +108,6 @@ func TestOneoffReplacementDuringMainCompaction(t *testing.T) {
 	btwTestReply(t, u, archive, `{}`)
 	btwTestReply(t, u, fork, `{"thread":{"id":"replacement"}}`)
 	btwTestRequest(t, wire, "turn/start", "replacement")
-}
-
-func TestAppServerBTWCompactionRejectsBeforeProvider(t *testing.T) {
-	proxy := newManagedMekugiProxy(t)
-	workspace := t.TempDir()
-	thread := "side"
-	requests := sessioncontrol.NewRequests[appServerRequest](nil)
-	proxy.bindForkRequests(requests)
-	requests.TrackSide(thread, &sessioncontrol.Side{Thread: thread, SideAnswer: new(conversationmodel.SideAnswer)})
-	requestFor := func(thread string) (codexresponses.Request, http.Header) {
-		request, err := codexresponses.ParseRequest(mustTestJSON(t, map[string]any{
-			"model": "gpt-test", "stream": true,
-			"tool_choice": "auto", "parallel_tool_calls": false,
-			"input": []any{map[string]any{"role": "user", "content": "Summarize."}},
-		}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		metadata, ok := codexresponses.DecodeTurnMetadata(serverCompactionMetadataHeaders(t))
-		if !ok {
-			t.Fatal("invalid fixture metadata")
-		}
-		metadata.ThreadID = thread
-		metadata.Directories = map[string]jsonv1.RawMessage{workspace: nil}
-		headers := make(http.Header)
-		headers.Set(codexresponses.TurnMetadataHeader, string(mustTestJSON(t, metadata)))
-		headers.Set(codexresponses.ThreadIDHeader, thread)
-		return request, headers
-	}
-	request, headers := requestFor(thread)
-	provider := &serverFakeProvider{}
-	var output bytes.Buffer
-	err := executeRequest(t.Context(), t.Context(), request, headers, "side", provider, &output, nil, proxy)
-	compatibility, ok := errors.AsType[*inferencegateway.CompatibilityError](err)
-	if !ok || compatibility.Code != "btw_compaction_required" || compatibility.Message != conversationmodel.SideCompactionRequired {
-		t.Fatalf("rejection = %v", err)
-	}
-	if len(provider.forwarded) != 0 || output.Len() != 0 {
-		t.Fatalf("side request escaped: upstream=%d output=%q", len(provider.forwarded), output.String())
-	}
-	httpRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(mustTestJSON(t, request.Fields)))
-	httpRequest.Header = headers
-	recorder := httptest.NewRecorder()
-	testResponsesHandler(t.Context(), time.Second, provider, nil, proxy)(recorder, httpRequest)
-	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), conversationmodel.SideCompactionRequired) {
-		t.Fatalf("HTTP rejection: %d %s", recorder.Code, recorder.Body.String())
-	}
-	// Main compaction still goes to the provider while a side thread is registered.
-	mainRequest, mainHeaders := requestFor("main")
-	provider.results = []serverForwardResult{{response: serverHTTPResponse(`{"id":"main-compact","status":"completed","output":[]}`)}}
-	if err := executeRequest(t.Context(), t.Context(), mainRequest, mainHeaders, "main", provider, io.Discard, nil, proxy); err != nil {
-		t.Fatal(err)
-	}
-	if len(provider.forwarded) != 1 {
-		t.Fatalf("Main compaction requests=%d want=1", len(provider.forwarded))
-	}
 }
 
 func TestAppServerBTWCompactionRestoresAttachmentsOnce(t *testing.T) {

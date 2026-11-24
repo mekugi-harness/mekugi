@@ -17,7 +17,6 @@ import (
 
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
@@ -45,14 +44,14 @@ func renderTestPresentation(attached *attachedPresentation, terminal *terminalse
 	publishActivity(attached, terminal)
 }
 
-func publishTestPresentation(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, tiers *inferencegateway.Tiers, title string, backend string, restoring bool, side *sessioncontrol.Side) sessionpresentation.View {
-	view := publishPresentation(attached, control, picker, editor, settings, tiers, title, backend, restoring, side)
+func publishTestPresentation(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, title string, backend string, restoring bool, side *sessioncontrol.Side) sessionpresentation.View {
+	view := publishPresentation(attached, control, picker, editor, settings, title, backend, restoring, side)
 	renderTestPresentation(attached, terminal, view, *editor)
 	return view
 }
 
-func settleTestPresentation(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, tiers *inferencegateway.Tiers, title string, backend string, restoring bool, side *sessioncontrol.Side, clock func() time.Time, questions *nativeQuestionDock, approvals *nativeApprovalDock, overlay bool) {
-	settlePresentation(attached, control, picker, editor, settings, tiers, title, backend, restoring, side, clock, questions, approvals, overlay)
+func settleTestPresentation(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, title string, backend string, restoring bool, side *sessioncontrol.Side, clock func() time.Time, questions *nativeQuestionDock, approvals *nativeApprovalDock, overlay bool) {
+	settlePresentation(attached, control, picker, editor, settings, title, backend, restoring, side, clock, questions, approvals, overlay)
 	renderTestPresentation(attached, terminal, attached.presentation.View(), *editor)
 }
 

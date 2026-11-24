@@ -7,54 +7,17 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 )
 
 type Inspection struct {
 	measurement *HostCall
 	thread      string
 	result      chan inspectionResult
-	window      string
-	loaded      bool
-	attachments []composer.ContextAttachment
 }
 
 type inspectionResult struct {
-	details     observation.SessionDetails
-	err         error
-	attachments composer.AttachmentSnapshot
-	cached      bool
-}
-
-// AttachmentReader borrows the same admitted runtime and native history used by
-// ordinary thread restoration. It neither opens source files nor runs skills.
-type AttachmentReader interface {
-	ContextAttachments(context.Context, string, string) (composer.AttachmentSnapshot, error)
-}
-
-func (r *Requests[T]) ContextAttachments(ctx context.Context, thread, window string) (composer.AttachmentSnapshot, error) {
-	query := &Inspection{thread: thread, window: window, result: make(chan inspectionResult, 1)}
-	result := r.inspect(ctx, query)
-	if result.err != nil || result.cached {
-		return result.attachments, result.err
-	}
-	turns, err := r.attachmentHistory(ctx, thread)
-	if err != nil {
-		return composer.AttachmentSnapshot{}, err
-	}
-	query = &Inspection{thread: thread, window: window, loaded: true, attachments: conversationbinding.CompactedAttachments(turns), result: make(chan inspectionResult, 1)}
-	result = r.inspect(ctx, query)
-	return result.attachments, result.err
-}
-
-func (r *Requests[T]) attachmentHistory(ctx context.Context, thread string) ([]binding.HistoryTurn, error) {
-	raw, err := r.callInspection(ctx, thread, "thread/read", map[string]any{"threadId": thread, "includeTurns": true})
-	if err != nil {
-		return nil, err
-	}
-	info, err := binding.DecodeHistoryThread(raw, thread)
-	return info.Turns, err
+	details observation.SessionDetails
+	err     error
 }
 
 // ReadThreadDetails observes native facts without restoring or starting the thread.
@@ -65,20 +28,6 @@ func (r *Requests[T]) ReadThreadDetails(ctx context.Context, thread string) (obs
 	}
 	info, err := binding.DecodeHistoryThread(raw, thread)
 	return info.Details(), err
-}
-
-func (request *Inspection) ContextWindow() string { return request.window }
-
-func (request *Inspection) CompleteAttachments(thread string, cache *composer.AttachmentContext) {
-	if request.thread != thread {
-		request.Complete(thread, observation.SessionDetails{})
-		return
-	}
-	if request.loaded {
-		cache.Set(request.window, request.attachments)
-	}
-	values, cached := cache.Get(request.window)
-	request.result <- inspectionResult{attachments: values, cached: cached}
 }
 
 // Target identifies the requested native thread. The owning event loop validates

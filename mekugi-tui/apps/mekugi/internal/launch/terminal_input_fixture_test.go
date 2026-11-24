@@ -17,10 +17,10 @@ import (
 // resumes interpretation; no application key or pointer switch remains here.
 func (session *nativeSession) applyInput(attached *attachedPresentation, terminal *terminalsession.Attachment, picker *composerPicker, editor **composer.Editor, clock func() time.Time, side **sessioncontrol.Side, panel **appServerStatusReport, resumePicker **appServerResumePicker, parent context.Context, dirty *bool, files *detailFiles, quit *bool, surface *terminalsession.Attachment, effects iter.Seq[terminalsession.InputEffect]) error {
 	if attached != nil {
-		publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side))
+		publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side))
 		publishActivity(attached, terminal)
 		defer func() {
-			settleTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
+			settleTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
 		}()
 	}
 	for effect := range effects {
@@ -29,7 +29,7 @@ func (session *nativeSession) applyInput(attached *attachedPresentation, termina
 			return err
 		}
 		if attached != nil {
-			publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side))
+			publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side))
 		}
 	}
 	return nil
@@ -74,7 +74,7 @@ func (session *nativeSession) applyEffect(attached *attachedPresentation, termin
 		session.dispatchRewind(attached, picker, clock, parent)
 		return !handled, nil
 	case effect.Side != nil:
-		return false, applyCloseSide(attached, terminal, &session.Client, picker, editor, &session.questions, &session.approvals, clock, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, side, session.overlayOpen(*panel, *resumePicker), &session.ownedImages, *effect.Side)
+		return false, applyCloseSide(attached, terminal, &session.Client, picker, editor, &session.questions, &session.approvals, clock, session.settings, session.title, session.backendVersion, session.restoring != nil, side, session.overlayOpen(*panel, *resumePicker), &session.ownedImages, *effect.Side)
 	case effect.BTW != nil:
 		view := attached.presentation.View()
 		if effect.BTW.Version == view.Version && view.BTW != nil && effect.BTW.Exchange == view.BTW.ID {
@@ -98,11 +98,11 @@ func (session *nativeSession) applyEffect(attached *attachedPresentation, termin
 		}
 
 	case effect.Display != nil:
-		displaySession(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker), *effect.Display)
+		displaySession(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker), *effect.Display)
 	case effect.Roster != nil:
 		intent := effect.Roster
 		target := attached.presentation.ActivityTarget(intent.Caller, attached.childSource)
-		if displaySession(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker), sessionpresentation.DisplayIntent{Version: sessionpresentation.Version{Attachment: intent.Attachment, Revision: intent.Revision}, Thread: target}) && target.Caller != "/root" {
+		if displaySession(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker), sessionpresentation.DisplayIntent{Version: sessionpresentation.Version{Attachment: intent.Attachment, Revision: intent.Revision}, Thread: target}) && target.Caller != "/root" {
 			surface.Agents.Selected = target.Caller
 		}
 	case effect.Details != nil:

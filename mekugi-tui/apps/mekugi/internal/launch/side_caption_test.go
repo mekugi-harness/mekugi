@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
@@ -37,9 +36,7 @@ func TestUISnapshotSideComposerMetrics(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		measured.Observe(inference.Usage{TotalsKnown: true, OutputTokens: 100})
 		appServerTestNotify(t, u, "thread/tokenUsage/updated", map[string]any{"threadId": "side", "turnId": "side-turn", "tokenUsage": map[string]any{"last": map[string]any{"totalTokens": 8000}, "modelContextWindow": 20000}})
-		appServerTestNotify(t, u, "thread/settings/updated", map[string]any{"threadId": "side", "threadSettings": map[string]any{"model": "live-side", "effort": "medium", "serviceTier": nil}})
-		u.serviceTiers = inferencegateway.NewTiers(map[string]string{"live-side": "priority"})
-		u.serviceTiers.Confirm("live-side", "side", "flex")
+		appServerTestNotify(t, u, "thread/settings/updated", map[string]any{"threadId": "side", "threadSettings": map[string]any{"model": "live-side", "effort": "medium", "serviceTier": "flex"}})
 		for _, width := range []int{48, 120} {
 			rows, _ := u.testMainFrame(width, 12, 0)
 			caption := u.attached.presentation.View().Caption

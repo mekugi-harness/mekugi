@@ -89,10 +89,23 @@ pub enum ModelSearchState {
     Standalone,
 }
 
+/// Host-owned read-only recall, including a completed boundary with no attachments.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+pub enum AttachmentRecallCheckpoint {
+    Empty,
+    Published {
+        session_id: codex_protocol::SessionId,
+        digest: [u8; 32],
+    },
+}
+
 /// Metadata owned by the Codex harness and persisted with a response item.
 ///
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 pub struct CodexHarnessMetadata {
+    /// Which submitted attachments were retained at this context boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_recall: Option<AttachmentRecallCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_acquisition: Option<codex_protocol::protocol::SourceAcquisition>,
     /// Realtime provenance for an accepted ordinary turn input. Never model-visible.

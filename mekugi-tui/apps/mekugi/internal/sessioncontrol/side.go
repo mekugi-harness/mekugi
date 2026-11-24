@@ -11,9 +11,6 @@ import (
 // ForkClassifier lends request preparation the authoritative auxiliary ledger.
 type ForkClassifier interface {
 	IsSideThread(string) bool
-	IsBTWThread(string) bool
-	ObserveCacheKey(thread, key string)
-	ForkCacheKey(thread string) string
 }
 
 // Side owns live side-thread admission and cleanup independently of Main.
@@ -28,7 +25,6 @@ type Side struct {
 	release                     forkRelease
 	Settings                    Settings
 	LowReasoning                bool
-	cacheKey                    string
 }
 
 // OwnedSides supplies final cleanup to the sole connection owner.
@@ -129,43 +125,6 @@ func (r *Requests[T]) IsSideThread(thread string) bool {
 	defer r.sidesMu.RUnlock()
 	s := r.sides[thread]
 	return r.predictions[thread] != nil || s != nil && s.Thread == thread && !s.OneOff && !s.Unloaded()
-}
-
-func (r *Requests[T]) IsBTWThread(thread string) bool {
-	if r == nil {
-		return false
-	}
-	r.sidesMu.RLock()
-	defer r.sidesMu.RUnlock()
-	s := r.sides[thread]
-	return s != nil && s.Thread == thread && s.LowReasoning && !s.Unloaded()
-}
-
-// ObserveCacheKey retains the current source request's effective provider affinity.
-// Side requests and predictions cannot replace their source's observed key.
-func (r *Requests[T]) ObserveCacheKey(thread, key string) {
-	if r == nil || thread == "" {
-		return
-	}
-	r.sidesMu.Lock()
-	defer r.sidesMu.Unlock()
-	if r.sides[thread] == nil && r.predictions[thread] == nil {
-		r.cacheThread, r.cacheKey = thread, key
-	}
-}
-
-// ForkCacheKey returns only a confirmed side root's frozen source affinity.
-// Native descendants keep their own provider routing and thread identities.
-func (r *Requests[T]) ForkCacheKey(thread string) string {
-	if r == nil {
-		return ""
-	}
-	r.sidesMu.RLock()
-	defer r.sidesMu.RUnlock()
-	if side := r.sides[thread]; side != nil && side.Thread == thread {
-		return side.cacheKey
-	}
-	return ""
 }
 
 func (r *Requests[T]) HasSides() bool {

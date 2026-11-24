@@ -227,19 +227,19 @@ async fn cancelled_turn_skips_launch_but_preserves_existing_work(trigger: Compac
 #[test_case::test_case(true; "root only")]
 #[tokio::test]
 async fn root_only_controls_child_eligibility(root_only: bool) {
-    let (_, mut turn) = crate::session::tests::make_session_and_context().await;
+    let (sess, mut turn) = crate::session::tests::make_session_and_context().await;
     let features = &mut Arc::make_mut(&mut turn.config).features;
     features.enable(Feature::AsyncCompaction).unwrap();
     features
         .set_enabled(Feature::AsyncCompactionRootOnly, root_only)
         .unwrap();
 
-    assert!(enabled(&turn));
+    assert!(enabled(&sess, &turn));
     for source in [
         SessionSource::SubAgent(SubAgentSource::Review),
         SessionSource::Internal(InternalSessionSource::Guardian),
     ] {
         turn.session_source = source;
-        assert_eq!(enabled(&turn), !root_only);
+        assert_eq!(enabled(&sess, &turn), !root_only);
     }
 }

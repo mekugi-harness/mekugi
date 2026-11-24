@@ -425,6 +425,9 @@ pub struct ConfigToml {
     /// `default`, `priority`, or `flex`; legacy `fast` also works).
     pub service_tier: Option<String>,
 
+    /// Request tier defaults keyed by the exact model ID.
+    pub service_tiers: Option<BTreeMap<String, String>>,
+
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: Option<String>,
 

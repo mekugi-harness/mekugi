@@ -5,7 +5,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
 
@@ -42,9 +41,9 @@ func (session *nativeSession) drainKeys(attached *attachedPresentation, terminal
 }
 
 // prepareComposerInput admits terminal-selected prompt suspension before editing.
-func prepareComposerInput(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, tiers *inferencegateway.Tiers, title string, backend string, restoring bool, side *sessioncontrol.Side, clock func() time.Time, questions *nativeQuestionDock, approvals *nativeApprovalDock) bool {
+func prepareComposerInput(attached *attachedPresentation, terminal *terminalsession.Attachment, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, editor **composer.Editor, settings preferences.Applied, title string, backend string, restoring bool, side *sessioncontrol.Side, clock func() time.Time, questions *nativeQuestionDock, approvals *nativeApprovalDock) bool {
 	ready := terminal.Prompts.Ready()
-	publishTestPresentation(attached, terminal, control, picker, editor, settings, tiers, title, backend, restoring, side)
+	publishTestPresentation(attached, terminal, control, picker, editor, settings, title, backend, restoring, side)
 	preparation := terminal.Main.PrepareInput(ready)
 	if !preparation.Editable {
 		return false
@@ -72,7 +71,7 @@ func (session *nativeSession) input(attached *attachedPresentation, terminal *te
 		return false, nil
 	}
 	defer func() {
-		settleTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
+		settleTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals, session.overlayOpen(*panel, *resumePicker))
 	}()
 	switch event.Kind {
 	case terminalsession.KeyInput:
@@ -80,13 +79,13 @@ func (session *nativeSession) input(attached *attachedPresentation, terminal *te
 	case terminalsession.PasteStart, terminalsession.PasteInput, terminalsession.PasteEnd:
 		if event.Kind == terminalsession.PasteStart {
 			terminal.Main.CancelPaste()
-			if !prepareComposerInput(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals) {
+			if !prepareComposerInput(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side), clock, &session.questions, &session.approvals) {
 				return false, nil
 			}
 			(*editor).Run = composer.NoRun
 		}
 		if event.Kind != terminalsession.PasteInput {
-			publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, (*side))
+			publishTestPresentation(attached, terminal, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, (*side))
 		}
 		pasted, err := terminal.Main.PasteInput(event, terminal.Prompts)
 		if err != nil {

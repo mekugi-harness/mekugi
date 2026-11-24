@@ -50,18 +50,6 @@ func (p *observationFixture) IsSideThread(thread string) bool {
 	return p.forks.Load().IsSideThread(thread)
 }
 
-func (p *observationFixture) IsBTWThread(thread string) bool {
-	return p.forks.Load().IsBTWThread(thread)
-}
-
-func (p *observationFixture) ObserveCacheKey(thread, key string) {
-	p.forks.Load().ObserveCacheKey(thread, key)
-}
-
-func (p *observationFixture) ForkCacheKey(thread string) string {
-	return p.forks.Load().ForkCacheKey(thread)
-}
-
 func (p *observationFixture) bindForkRequests(requests *sessioncontrol.Requests[appServerRequest]) {
 	requests.AdmitSideFork = p.preparer().AdmitFork
 	server := sessionapi.NewLive()

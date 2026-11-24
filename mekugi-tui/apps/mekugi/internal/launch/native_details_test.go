@@ -35,7 +35,7 @@ func nativeDetailTestViews(t *testing.T, u *appServerUI) (*nativeViews, *nativeS
 			t.Fatal(refusal)
 		}
 		v := n.views[id]
-		publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+		publishSessionView(&v.attached, &u.Client, &v.picker, "", preferences.Applied{}, "", "", false, nil, true)
 	}
 	return n, n.views["first"], n.views["second"]
 }
@@ -67,7 +67,7 @@ func TestNativeDetailsSelectAndCloseIndependently(t *testing.T) {
 		call := client.calls[0]
 		request := sessionapi.NativeRequest{Attachment: call.target.Attachment, Thread: call.target.Thread, Version: call.target.Version, Workspace: u.attached.cwd, Context: t.Context(), Operation: call.operation}
 		view.attached.feedback.Set("running progress", false, time.Now())
-		after := publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+		after := publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{}, "", "", false, nil, true)
 		if after.Version == before.Version {
 			t.Fatal("fixture did not advance the running publication")
 		}
@@ -178,7 +178,7 @@ func TestNativeFileDialogsOwnReadAndStaleCompletionLifetime(t *testing.T) {
 	client := nativeClient{event: sessionapi.NativeEvent{Attachment: "first", Frame: sessionapi.NativeFrame{View: before}}, renderer: *nativeDetailTestRenderer(t, u, first)}
 	client.dialog(terminalsession.DialogIntent{Action: terminalsession.DialogOpenLink, Text: "first.go"})
 	first.attached.feedback.Set("progress before link admission", false, time.Now())
-	after := publishSessionView(&first.attached, &u.Client, &first.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+	after := publishSessionView(&first.attached, &u.Client, &first.picker, "", preferences.Applied{}, "", "", false, nil, true)
 	if after.Version == before.Version || len(client.calls) != 1 {
 		t.Fatal("fixture did not capture a link before publication advanced")
 	}
@@ -419,7 +419,7 @@ func TestNativeRunningCountOpensProcessesWithoutConsumingDraft(t *testing.T) {
 	c.editor("main").InsertText("keep this draft")
 	for i := range 2 {
 		processNotify(t, u, "main", fmt.Sprint(i), "sleep 30", "inProgress")
-		publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{}, u.serviceTiers, "", "", false, nil, true)
+		publishSessionView(&view.attached, &u.Client, &view.picker, "", preferences.Applied{}, "", "", false, nil, true)
 		frame := nativeDetailFrame(view)
 		c.accept(sessionapi.NativeEvent{Attachment: "first", Frame: frame})
 		c.calls = nil

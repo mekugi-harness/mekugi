@@ -152,7 +152,7 @@ func TestUISnapshotNativeResumePicker(t *testing.T) {
 				{ID: "empty", Workspace: "/workspace", Branch: "main", Updated: now.Add(-48 * time.Hour).Unix()},
 			}
 			u.resumePicker = &appServerResumePicker{ResumeChooser: chooser}
-			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 			u.shell.Main.Resume.Selected = 1
 			assertNativeUISnapshot(t, tc.name, u.resumePickerFrame(tc.width, 11))
 		})
@@ -259,7 +259,7 @@ func TestUISnapshotNativeFilePicker(t *testing.T) {
 				{Name: "internal/ui/activity/snapshot_test.go", Path: "internal/ui/activity/snapshot_test.go"},
 				{Name: "internal/ui/diffview/snapshot_test.go", Path: "internal/ui/diffview/snapshot_test.go"},
 			}}
-			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+			settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 			u.shell.Main.Menu.Selected = 1
 			assertNativeUISnapshot(t, fmt.Sprintf("native-file-picker-%d", width), u.renderPicker(width, 7))
 		})
@@ -273,7 +273,7 @@ func TestUISnapshotNativePresetPicker(t *testing.T) {
 		{ID: 2, Name: "review", Preset: true, Description: "Preset 1: Review carefully."},
 		{Name: "review", Path: "/skills/review/SKILL.md", Description: "Review code changes"},
 	}}
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, preferences.Applied{}, nil, "", "", false, nil, u.clock, &u.questions, &u.approvals, false)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, preferences.Applied{}, "", "", false, nil, u.clock, &u.questions, &u.approvals, false)
 	assertNativeUISnapshot(t, "native-preset-picker", u.renderPicker(80, 7))
 }
 

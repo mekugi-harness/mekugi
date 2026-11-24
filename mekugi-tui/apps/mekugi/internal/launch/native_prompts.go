@@ -165,7 +165,7 @@ func (session *nativeSession) applyNativeAnswers(attached *attachedPresentation,
 		secretEditors[index] = composer.State{Snapshot: composer.Undo{Draft: draft}}
 	}
 	defer func() {
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, side, clock, &session.questions, &session.approvals, overlay)
 	}()
 	err := session.submitQuestionAnswers(attached, picker, editor, side, clock, overlay, parent, handle, secretEditors, secrets)
 	if !handle.Sending() && !handle.Resolved {

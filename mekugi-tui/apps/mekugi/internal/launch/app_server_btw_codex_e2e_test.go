@@ -266,10 +266,7 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 			}
 			p := &btwCodexProvider{requests: make(chan btwCodexRequest, 12), mainGate: make(chan struct{}), sideGate: make(chan struct{}), cancelGate: make(chan struct{}), canceled: make(chan struct{})}
 			proxy := newManagedMekugiProxy(t)
-			catalog := new(inferencegateway.ReasoningCatalog)
-			catalog.Capture([]byte(`{"models":[{"slug":"gpt-6-sol","default_reasoning_level":"high","supports_reasoning_effort_updates":true,"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]},{"slug":"gpt-6-astra","default_reasoning_level":"high","supports_reasoning_effort_updates":true,"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}`))
 			executor := testRequestExecutor(p, nil, proxy)
-			executor.ReasoningChoices = catalog.Choices
 			server := httptest.NewServer(inferencegateway.ResponsesHandler(t.Context(), time.Minute, executor.ExecuteHTTP))
 			defer server.Close()
 			defer func() {

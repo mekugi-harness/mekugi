@@ -109,7 +109,7 @@ func TestComposerErrorClearsOnSuccessfulModelRequest(t *testing.T) {
 		if err := executor.ExecuteHTTP(t.Context(), t.Context(), request, headers, &output); err != nil {
 			t.Fatal(err)
 		}
-		applyCriticalNotices(&u.attached, &u.Client, &u.picker, &u.Editor, u.clock, preferences.Applied{}, u.serviceTiers, u.title, u.backendVersion, &u.restoring, &u.side, u.audience, u.issues)
+		applyCriticalNotices(&u.attached, &u.Client, &u.picker, &u.Editor, u.clock, preferences.Applied{}, u.title, u.backendVersion, &u.restoring, &u.side, u.audience, u.issues)
 		rows, _ := u.testMainFrame(80, 8, 0)
 		if thread == "unrelated" {
 			if !u.attached.feedback.Alert || !strings.Contains(ansi.Strip(strings.Join(rows, "\n")), "[×]") {

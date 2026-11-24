@@ -99,12 +99,12 @@ func (session *nativeSession) applyMenuResult(attached *attachedPresentation, pi
 			}
 		}
 		picker.sideTask = nil
-		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, *side, clock, &session.questions, &session.approvals, overlay)
+		settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, *side, clock, &session.questions, &session.approvals, overlay)
 		return true
 	}
 	accepted := session.applyMenuAction(attached, picker, editor, *side, clock, overlay, parent, result.Action)
 	picker.refreshPicker(attached, clock, session.Client.Requests, (*editor), parent, session.skillEnvironment)
-	settlePresentation(attached, &session.Client, picker, editor, session.settings, session.serviceTiers, session.title, session.backendVersion, session.restoring != nil, *side, clock, &session.questions, &session.approvals, overlay)
+	settlePresentation(attached, &session.Client, picker, editor, session.settings, session.title, session.backendVersion, session.restoring != nil, *side, clock, &session.questions, &session.approvals, overlay)
 	return result.Handled && !(accepted && result.Submit)
 }
 func (session *nativeSession) applyMenuAction(attached *attachedPresentation, picker *composerPicker, editor **composer.Editor, side *sessioncontrol.Side, clock func() time.Time, overlay bool, parent context.Context, action sessionpresentation.MenuAction) bool {
@@ -159,7 +159,7 @@ func (session *nativeSession) applyMenuAction(attached *attachedPresentation, pi
 		case "archive":
 			chooseArchive(picker, &session.Client, &attached.feedback, clock, choice.ID == archiveConfirmChoice)
 		case "settings":
-			chooseSetting(attached, &session.Client, session.settings, &session.serviceTiers, session.panes, session.restoring != nil, clock, picker, choice)
+			chooseSetting(attached, &session.Client, session.settings, session.panes, session.restoring != nil, clock, picker, choice)
 		case "copy":
 			if attached.effects != nil {
 				attached.effects.add(sessionapi.NativeEffect{Thread: session.Client.Thread, Clipboard: new(p.CopyTexts[index])})

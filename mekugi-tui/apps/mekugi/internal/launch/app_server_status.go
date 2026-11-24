@@ -60,7 +60,7 @@ func (session *nativeSession) showStatus(attached *attachedPresentation, picker 
 	}
 	add("Model", session.settings.Model)
 	add("Reasoning", session.settings.Effort)
-	add("Service tier", session.serviceTiers.Effective(session.settings.Model, session.settings.Tier, session.Client.Thread))
+	add("Service tier", session.settings.Tier)
 	add("Model provider", session.statusConfig.Provider)
 	group = "Session"
 	add("Directory", attached.cwd)

@@ -53,7 +53,7 @@ func (s *replayAttachment) sessionView() sessionpresentation.View {
 		DisplayedWorkspace: s.workspace(s.presentation.View().Displayed.ID),
 		RecordedTurn:       s.Turn, Conversation: s.conversation, Feedback: &s.feedback, Processes: processes,
 		WaitTiming: s.session.WaitTiming,
-	}, sessionCaption(&s.session, s.presentation, sessionpresentation.Caption{}, nil))
+	}, sessionCaption(&s.session, s.presentation, sessionpresentation.Caption{}))
 }
 
 // apply admits one recorded observation. Playback selects recorded turns

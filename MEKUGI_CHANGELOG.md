@@ -115,6 +115,14 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 
 ## Context and retained sessions
 
+- Native request construction expands submitted attachment snapshots and
+  attributes standalone tool context without rewriting retained review items.
+  Context resets publish optional read-only attachment recall. Side forks
+  reuse parent cache routing. Answer-only forks reject compaction before
+  making a provider request; BTW caps supported effort at low. Exact-model
+  service tier defaults and thread choices are applied before HTTP and
+  WebSocket delivery.
+
 - Context resets rebuild from current sources without a generated summary.
   `new_context` can reload selected files, skills, and captured changes. Manual
   resets are cancellable and report settlement; reset receipts retain which

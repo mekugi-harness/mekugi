@@ -136,6 +136,12 @@ func (r *Requests[T]) ApplySideSettings(s *Side, plan SettingsPlan) error {
 
 // SideThreadSource distinguishes retained internal forks from selectable sessions.
 const SideThreadSource = "mekugi_side"
+const questionThreadSource = "mekugi_side_question"
+const BTWThreadSource = "mekugi_btw"
+
+func IsSideSource(source string) bool {
+	return source == SideThreadSource || source == BTWThreadSource || source == questionThreadSource
+}
 
 // StartSide receives acquired Conversation input and uses the one request ledger.
 // Source: apps/mekugi/internal/router/app_server_btw.go:68:128@0d7819f3.
@@ -165,15 +171,13 @@ func (r *Requests[T]) StartSide(s *Side, main SideMain, now time.Time) (SideUpda
 			}
 		}
 		s.Source, s.Model, s.Effort, s.Tier = main.Thread, main.Model, main.Effort, main.Tier
-		s.cacheKey = ""
-		r.sidesMu.RLock()
-		if r.cacheThread == main.Thread {
-			s.cacheKey = r.cacheKey
-		}
-		r.sidesMu.RUnlock()
 		s.Starting, s.Status = true, "Branching…"
 		params := map[string]any{"threadId": main.Thread, "threadSource": SideThreadSource, "excludeTurns": true}
 		if !s.OneOff {
+			params["threadSource"] = questionThreadSource
+			if s.LowReasoning {
+				params["threadSource"] = BTWThreadSource
+			}
 			params["sandbox"], params["approvalPolicy"] = "read-only", "never"
 		}
 		if main.Model != "" {

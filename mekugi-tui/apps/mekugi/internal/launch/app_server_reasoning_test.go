@@ -311,18 +311,18 @@ func TestAppServerPendingStatusPulses(t *testing.T) {
 			u.attached.presentation.Status.Set(status, false)
 			start := time.Unix(0, 0)
 			dim, bright, dimAgain := u.sessionLabel(start), u.sessionLabel(start.Add(time.Second)), u.sessionLabel(start.Add(2*time.Second))
-			if !publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Animating || dim == bright || dim != dimAgain || ansi.Strip(dim) != ansi.Strip(bright) {
+			if !publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Animating || dim == bright || dim != dimAgain || ansi.Strip(dim) != ansi.Strip(bright) {
 				t.Fatalf("pending status does not pulse: %q %q %q", dim, bright, dimAgain)
 			}
 			u.attached.presentation.Status.Alert = true
-			if publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Animating || u.sessionLabel(start) != u.sessionLabel(start.Add(time.Second)) {
+			if publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Animating || u.sessionLabel(start) != u.sessionLabel(start.Add(time.Second)) {
 				t.Fatal("alert animates")
 			}
 			u.restoring = nil
 			u.LeaveThread()
 			u.Thread = "main"
 			u.attached.presentation.Status.Set("Ready", false)
-			if publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Animating || u.sessionLabel(start) != u.sessionLabel(start.Add(time.Second)) {
+			if publishTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side).Status.Animating || u.sessionLabel(start) != u.sessionLabel(start.Add(time.Second)) {
 				t.Fatal("idle animates")
 			}
 		})

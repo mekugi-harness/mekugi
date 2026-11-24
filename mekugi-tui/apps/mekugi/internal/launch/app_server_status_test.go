@@ -482,11 +482,11 @@ func TestAppServerStatusSelectionCopy(t *testing.T) {
 
 // Fixtures publish source transitions before driving the actual terminal owner.
 func (u *appServerUI) statusPanelFrame(width, height int) []string {
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	return u.shell.Main.Panel.Render(&u.shell.Transcript.Painter.Painter, width, height)
 }
 func (u *appServerUI) statusPanelKey(key string) bool {
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	if !u.shell.Main.Panel.Open() {
 		return false
 	}
@@ -496,6 +496,6 @@ func (u *appServerUI) statusPanelKey(key string) bool {
 	}
 	applyPanelAction(&u.attached, u.clock, &u.statusPanel, u.sessionCapture, action)
 	u.dirty = true
-	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.serviceTiers, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
+	settleTestPresentation(&u.attached, u.shell, &u.Client, &u.picker, &u.Editor, u.settings, u.title, u.backendVersion, u.restoring != nil, u.side, u.clock, &u.questions, &u.approvals, u.statusPanel != nil || u.resumePicker != nil)
 	return true
 }

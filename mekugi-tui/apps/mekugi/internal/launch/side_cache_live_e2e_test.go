@@ -5,6 +5,8 @@ package launch
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/providers/openai"
@@ -170,6 +174,38 @@ func TestSideCacheEligibilityLiveOpenAI(t *testing.T) {
 				}
 				terminal.stopCanceled()
 			})
+		}
+	}
+}
+
+func assertSideCachePrefix(t *testing.T, mainBody, sideBody []byte) {
+	t.Helper()
+	main, err := codexresponses.ParseRequest(mainBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	side, err := codexresponses.ParseRequest(sideBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"instructions", "tools", "model", "reasoning", "prompt_cache_key"} {
+		if !bytes.Equal(main.Fields[field], side.Fields[field]) {
+			t.Fatalf("fork changed shared %s", field)
+		}
+	}
+	var mainItems, sideItems []jsontext.Value
+	if err := json.Unmarshal(main.Fields["input"], &mainItems); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(side.Fields["input"], &sideItems); err != nil {
+		t.Fatal(err)
+	}
+	if len(mainItems) == 0 || len(sideItems) <= len(mainItems) {
+		t.Fatal("fork lost inherited input history or its new question")
+	}
+	for i := range mainItems {
+		if !responses.SameJSONValue(mainItems[i], sideItems[i]) {
+			t.Fatalf("fork changed inherited input item %d", i)
 		}
 	}
 }

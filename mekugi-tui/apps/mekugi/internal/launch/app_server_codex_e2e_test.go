@@ -178,7 +178,7 @@ func runAppServerPreviewWith(t *testing.T, provider inferencegateway.Forwarder, 
 	if options.integration != nil {
 		integration = *options.integration
 	}
-	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, cmd, terminal, terminal, integration, options.issues, "", true, nil, nil, nil, "", nil, &observations, options.approvals)
+	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, cmd, terminal, terminal, integration, options.issues, "", true, nil, nil, "", nil, &observations, options.approvals)
 	if err != nil {
 		t.Fatal(err)
 	}

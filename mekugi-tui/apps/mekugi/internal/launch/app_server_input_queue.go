@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inferencegateway"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
@@ -99,10 +97,10 @@ func (session *nativeSession) flushInput(attached *attachedPresentation, picker 
 		picker.refreshPicker(attached, clock, session.Client.Requests, (*editor), parent, session.skillEnvironment)
 		return nil
 	}
-	return sendConversationInput(attached, &session.Client, picker, &session.questions, &session.approvals, clock, session.settings.Model, session.serviceTiers, session.skillEnvironment, session.ownedImages, next.Batch.Parts, next.Steer)
+	return sendConversationInput(attached, &session.Client, picker, &session.questions, &session.approvals, clock, session.settings.Model, session.skillEnvironment, session.ownedImages, next.Batch.Parts, next.Steer)
 }
 
-func sendConversationInput(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, questions *nativeQuestionDock, approvals *nativeApprovalDock, clock func() time.Time, model string, tiers *inferencegateway.Tiers, environment []string, owned map[string]bool, parts []conversationmodel.Input, steer bool) error {
+func sendConversationInput(attached *attachedPresentation, control *sessioncontrol.Client[appServerRequest], picker *composerPicker, questions *nativeQuestionDock, approvals *nativeApprovalDock, clock func() time.Time, model string, environment []string, owned map[string]bool, parts []conversationmodel.Input, steer bool) error {
 	defer attached.presentation.PruneInput(&control.Live, attached.conversation)
 	if len(parts) == 1 && parts[0].Compact != nil {
 		intent := sessioncontrol.CompactIntent(*parts[0].Compact)
@@ -130,7 +128,6 @@ func sendConversationInput(attached *attachedPresentation, control *sessioncontr
 	if steer {
 		request.Turn = control.Turn
 	} else {
-		request.Tier = selectedServiceTier(tiers, model, control.Thread)
 		if len(parts) > 0 && len(binding.QuestionReplies(s.Text)) == 0 {
 			echo := attached.source.LastSeq + 1
 			attached.source.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{{Seq: echo, Agent: "You", Kind: "text", Text: s.Text, Observed: presentationTime(clock),

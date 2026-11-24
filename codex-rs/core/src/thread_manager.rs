@@ -1969,6 +1969,20 @@ impl ThreadManager {
             InitialHistory::Forked(_) => history.forked_from_id(),
             InitialHistory::New | InitialHistory::Cleared => None,
         };
+        if options
+            .thread_source
+            .as_ref()
+            .and_then(crate::client::SideFork::from_source)
+            .is_some()
+            && let Some(source) = source_thread_id
+            && let Ok(parent) = self.get_thread(source).await
+        {
+            options.prompt_cache_key = parent
+                .session
+                .services
+                .model_client
+                .prompt_cache_key_policy();
+        }
         // Capture the live source before later startup work can unload it. Keep
         // the fork's own providers, not the source's task-bound callback.
         let instructions = self

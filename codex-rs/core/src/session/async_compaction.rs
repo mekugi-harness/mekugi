@@ -39,9 +39,10 @@ pub(crate) struct AsyncCompactionState {
     shutdown_cancellation: CancellationToken,
 }
 
-pub(super) fn enabled(turn_context: &TurnContext) -> bool {
+pub(super) fn enabled(sess: &Session, turn_context: &TurnContext) -> bool {
     let features = &turn_context.config.features;
-    features.enabled(Feature::AsyncCompaction)
+    !sess.services.model_client.answer_only()
+        && features.enabled(Feature::AsyncCompaction)
         && !(features.enabled(Feature::AsyncCompactionRootOnly)
             && turn_context.session_source.is_non_root_agent())
         && !features.enabled(Feature::TokenBudget)
@@ -65,7 +66,7 @@ pub(super) async fn maybe_start(
     if matches!(phase, CompactionPhase::PreTurn) && turn_state.is_none() {
         return;
     }
-    if !enabled(turn_context)
+    if !enabled(sess, turn_context)
         || sess.work_budget().is_exhausted()
         || token_status.token_limit_reached
         || (matches!(phase, CompactionPhase::PostTurn)
@@ -157,7 +158,7 @@ pub(super) async fn take_ready(
     sess: &Session,
     turn_context: &TurnContext,
 ) -> Option<Box<BackgroundCompactionCandidate>> {
-    if !enabled(turn_context) {
+    if !enabled(sess, turn_context) {
         return None;
     }
     let mut state = sess.state.lock().await;
@@ -178,7 +179,7 @@ pub(crate) async fn wait_for_pending(
     sess: &Session,
     step_context: &StepContext,
 ) -> Option<Box<BackgroundCompactionCandidate>> {
-    if !enabled(&step_context.turn) {
+    if !enabled(sess, &step_context.turn) {
         return None;
     }
     let result = {
