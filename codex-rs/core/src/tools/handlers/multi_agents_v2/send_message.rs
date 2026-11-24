@@ -45,36 +45,26 @@ impl Handler {
         // Keep only the authored question, not sources expanded in the recipient context.
         let observed_question = (args.btw && plaintext_message_source(&invocation.source))
             .then(|| args.message.clone());
-        if let Some(target) = super::foreign::target(&invocation, &args.target) {
-            use codex_app_server_protocol::{
-                AgentForeignOperation as Operation, AgentForeignResponse as Response,
-            };
+        if let Some(recipient) = super::foreign::target(&invocation, &args.target).await? {
             let message = message_content(args.message)?;
             let sources = crate::context_sources::has_message_sources(&message);
+            let target = recipient.id();
             analytics.set_receiver(target);
-            let operation = if args.btw {
-                Operation::SideQuestion { question: message }
-            } else {
-                Operation::Message { message }
-            };
-            let response = super::foreign::route(&invocation, target, operation).await?;
-            let text = match response {
-                Response::Message {
-                    target_thread_id,
-                    accepted: true,
-                    ..
-                } if !args.btw && target_thread_id == target => String::new(),
-                Response::SideQuestion {
-                    target_thread_id,
-                    answer,
-                } if args.btw && target_thread_id == target => {
-                    if let Some(question) = observed_question {
-                        observe_side_answer(&invocation, target.to_string(), question, &answer)
-                            .await;
-                    }
-                    answer
+            let text = if args.btw {
+                let answer = recipient
+                    .answer(&message)
+                    .await
+                    .map_err(|e| collab_v2_agent_error(target, e))?;
+                if let Some(question) = observed_question {
+                    observe_side_answer(&invocation, target.to_string(), question, &answer).await;
                 }
-                _ => return Err(super::foreign::invalid_response()),
+                answer
+            } else {
+                recipient
+                    .message(&message, &invocation.turn.sub_id, &invocation.call_id)
+                    .await
+                    .map_err(|e| collab_v2_agent_error(target, e))?;
+                String::new()
             };
             invocation
                 .session

@@ -2,6 +2,7 @@ package launch
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/moduletest"
 
@@ -89,7 +90,9 @@ func TestNativeSourceOutputsProduceLiveAndRestoredAttachmentReceipts(t *testing.
 	header := "\nSource \"@/workspace/source.rs\":\n"
 	body := "original source\nSource \"@literal\":\n"
 	failure := "\nSource \"$missing\": CONTENT NOT ATTACHED: \"native skill unavailable\"\n"
-	output := attachments.SourceRanges(header+body+"\n"+failure, []attachments.SourceRange{{Start: len(header), End: len(header) + len(body)}})
+	payload := header + body + "\n" + failure
+	output := fmt.Sprintf("<mekugi-source-v1 bytes=\"%d\" bodies=\"%d:%d\">\n%s\n</mekugi-source-v1>",
+		len(payload), len(header), len(header)+len(body), payload)
 	raw, err := json.Marshal(output)
 	if err != nil {
 		t.Fatal(err)

@@ -4171,20 +4171,15 @@ async fn multi_agent_v2_public_preload_rejects_full_history_before_child_admissi
 async fn rejected_btw_records_rejection_without_message_acceptance() {
     let (session, turn) = make_session_and_context().await;
     let facts = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut resources =
-        crate::agent::host_resources::tests::admission_resources(Arc::new(|_, _| {
-            Box::pin(async { panic!("not spawning") })
-        }));
-    resources.record_feature_use = Some(Arc::new({
-        let facts = facts.clone();
-        move |fact| facts.lock().unwrap().push(fact)
-    }));
     assert!(
         session
             .services
             .local_agent_runtime
-            .host_resources
-            .set(resources)
+            .feature_use
+            .set(Arc::new({
+                let facts = facts.clone();
+                move |fact| facts.lock().unwrap().push(fact)
+            }))
             .is_ok()
     );
     let result = SendMessageHandlerV2
@@ -4201,95 +4196,5 @@ async fn rejected_btw_records_rejection_without_message_acceptance() {
     assert_eq!(
         facts[0].event,
         codex_protocol::feature_use::FeatureUseEvent::SideQuestionRejected
-    );
-}
-
-#[tokio::test]
-async fn foreign_tools_route_exact_ids_without_local_error_fallback() {
-    use codex_app_server_protocol::{AgentForeignOperation, AgentForeignResponse};
-    let (session, turn) = make_session_and_context().await;
-    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut resources =
-        crate::agent::host_resources::tests::admission_resources(Arc::new(|_, _| {
-            Box::pin(async { panic!("not spawning") })
-        }));
-    resources.route_foreign = Some(Arc::new({
-        let requests = requests.clone();
-        move |request, _| {
-            requests.lock().unwrap().push(request.clone());
-            Box::pin(async move {
-                match request.operation {
-                    AgentForeignOperation::Message { .. } => Ok(AgentForeignResponse::Message {
-                        target_thread_id: request.target_thread_id,
-                        delivery_id: "delivery".into(),
-                        accepted: true,
-                    }),
-                    AgentForeignOperation::SideQuestion { .. } => {
-                        Ok(AgentForeignResponse::SideQuestion {
-                            target_thread_id: request.target_thread_id,
-                            answer: "independent answer".into(),
-                        })
-                    }
-                    _ => panic!("unexpected operation"),
-                }
-            })
-        }
-    }));
-    assert!(
-        session
-            .services
-            .local_agent_runtime
-            .host_resources
-            .set(resources)
-            .is_ok()
-    );
-    let session = Arc::new(session);
-    let turn = Arc::new(turn);
-    let target = ThreadId::new();
-    for btw in [false, true] {
-        SendMessageHandlerV2
-            .handle(invocation(
-                session.clone(),
-                turn.clone(),
-                "send_message",
-                function_payload(
-                    json!({"target":target.to_string(), "message":"@recipient-source", "btw":btw}),
-                ),
-            ))
-            .await
-            .unwrap();
-    }
-    for target in [
-        "missing-local-name".to_string(),
-        session.thread_id.to_string(),
-        target.to_string().to_uppercase(),
-    ] {
-        let _ = SendMessageHandlerV2
-            .handle(invocation(
-                session.clone(),
-                turn.clone(),
-                "send_message",
-                function_payload(json!({"target":target, "message":"local failures stay local"})),
-            ))
-            .await;
-    }
-    let _ = FollowupTaskHandlerV2
-        .handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "followup_task",
-            function_payload(json!({"target":target.to_string(), "message":"no foreign control"})),
-        ))
-        .await;
-    let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].source.actor_id, session.thread_id);
-    assert_eq!(requests[0].source.root_thread_id, session.thread_id);
-    assert_eq!(requests[0].source.turn_id, turn.sub_id);
-    assert_eq!(
-        requests[0].operation,
-        AgentForeignOperation::Message {
-            message: "@recipient-source".into()
-        }
     );
 }

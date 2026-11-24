@@ -942,11 +942,6 @@ client_request_definitions! {
         manual_payload_conversion: manual,
         response: v2::ThreadListResponse,
     },
-    AgentForeignReceive => "agent/foreign/receive" {
-        params: v2::AgentForeignRequest,
-        serialization: None,
-        response: v2::AgentForeignResponse,
-    },
     AgentEnd => "agent/end" {
         params: v2::AgentEndParams,
         serialization: thread_id(params.root_thread_id),
@@ -1960,37 +1955,6 @@ impl TryFrom<JSONRPCRequest> for ServerRequest {
 }
 
 server_request_definitions! {
-    AgentForeignRoute => "agent/foreign/route" {
-        params: v2::AgentForeignRequest,
-        response: v2::AgentForeignResponse,
-    },
-    AgentPrepareChildHost => "agent/hostAdmission/prepare" {
-        params: v2::ChildHostAdmissionRequest,
-        response: v2::ChildHostAdmissionResponse,
-    },
-    AgentFreezeProgress => "agent/progress/freeze" {
-        params: v2::ProgressFreezeRequest,
-        response: v2::ProgressFreezeResponse,
-    },
-    AgentPrepareProgressOutput => "agent/progress/prepareOutput" {
-        params: v2::ProgressOutputRequest,
-        response: v2::ProgressOutputResponse,
-    },
-    AgentPrepareFinalCapture => "agent/finalCapture/prepare" {
-        params: v2::FinalCaptureRequest,
-        response: v2::FinalCaptureResponse,
-    },
-    AgentProjectFinalCapture => "agent/finalCapture/project" {
-        params: v2::FinalCaptureProjectRequest,
-        response: v2::FinalCaptureProjectResponse,
-    },
-    /// Notify a registered capture observer immediately before executing
-    /// `exec_command` (`Bash`) or `apply_patch` within a bounded fail-open window.
-    ExecutionBeforeTool => "execution/beforeTool" {
-        params: v2::ExecutionBeforeToolParams,
-        response: v2::ExecutionBeforeToolResponse,
-    },
-
     /// NEW APIs
     /// Sent when approval is requested for a specific command execution.
     /// This request is used for Turns started via turn/start.
@@ -3004,7 +2968,6 @@ mod tests {
                     explicit_gateway_oauth: false,
                     experimental_api: true,
                     request_attestation: true,
-                    observe_before_tool: false,
                     mcp_server_openai_form_elicitation: true,
                     opt_out_notification_methods: Some(vec![
                         "thread/started".to_string(),
@@ -3094,7 +3057,6 @@ mod tests {
                         explicit_gateway_oauth: false,
                         experimental_api: true,
                         request_attestation: true,
-                        observe_before_tool: false,
                         mcp_server_openai_form_elicitation: true,
                         opt_out_notification_methods: Some(vec![
                             "thread/started".to_string(),

@@ -58,10 +58,6 @@ pub struct InitializeCapabilities {
     /// Opt into `attestation/generate` requests for upstream `x-oai-attestation`.
     #[serde(default)]
     pub request_attestation: bool,
-    /// Opt into `execution/beforeTool` pre-execution observation barriers for
-    /// local `exec_command` (`Bash`) and `apply_patch` calls.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub observe_before_tool: bool,
     /// Legacy opt-in for the `openai/form` MCP extension.
     ///
     /// New clients should declare `openai/form` in [`Self::extensions`].

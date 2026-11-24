@@ -87,15 +87,6 @@ func (r *Requests[T]) callHost(ctx context.Context, scope, method string, params
 	}
 }
 
-func (r *Requests[T]) ExternalForeignReceive(ctx context.Context, root string, request appserver.AgentForeignRequest) (appserver.AgentForeignResponse, error) {
-	var response appserver.AgentForeignResponse
-	raw, err := r.callInspection(ctx, root, "agent/foreign/receive", request)
-	if err == nil {
-		err = json.Unmarshal(raw, &response)
-	}
-	return response, err
-}
-
 // Dispatch runs only on the ledger's event-loop owner. Sending failures are
 // uncertain because a transport may fail after writing part or all of a request.
 func (r *Requests[T]) Dispatch(call *HostCall) bool {

@@ -6,15 +6,14 @@ use crate::thread_input::subscribe_input_activity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use codex_protocol::ThreadId;
-use codex_protocol::agent_capture::PreparedProgressAgent;
 use codex_protocol::agent_capture::ProgressActor;
 use codex_protocol::agent_capture::ProgressOutputResponse;
-use codex_protocol::agent_capture::SummaryResult;
 use codex_tools::ToolSpec;
 use futures::StreamExt;
 use futures::stream::SelectAll;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -172,10 +171,9 @@ impl Handler {
         let wait_started = Instant::now();
         let (result, status) = {
             // The losing collection future is dropped before publishing the native
-            // outcome. Its request token cancels callbacks and private BTW tasks.
+            // outcome. Its request token cancels private BTW tasks.
             let progress = collect_progress(
                 &session,
-                &call_id,
                 progress_actors,
                 args.yield_time_ms,
                 cancellation_token.child_token(),
@@ -369,7 +367,6 @@ impl WaitAgentResult {
 
 async fn collect_progress(
     session: &Session,
-    operation_id: &str,
     selected: Vec<ProgressActor>,
     yield_time_ms: Option<i64>,
     cancellation: CancellationToken,
@@ -380,30 +377,21 @@ async fn collect_progress(
     };
     loop {
         tokio::time::sleep(Duration::from_millis(yield_time_ms as u64)).await;
-        let Some(frozen) = session
-            .select_progress_ranges(operation_id, selected.clone(), cancellation.clone())
-            .await?
-        else {
-            continue;
-        };
-        // Empty intervals never spend an auxiliary inference or wake the parent.
-        let changed: Vec<_> = frozen
-            .agents
-            .iter()
-            .filter(|agent| !agent.intervals.is_empty())
-            .collect();
+        let changed = session.select_progress_ranges(selected.clone()).await?;
         if changed.is_empty() {
             continue;
         }
         let agents = futures::future::join_all(changed.into_iter().map(|agent| {
             let cancellation = cancellation.child_token();
             async move {
-                let question = format!(
-                    "Summarize substantive progress for these retained change intervals: {}",
-                    serde_json::to_string(&agent.intervals)
-                        .expect("capture interval metadata is serializable"),
-                );
-                let summary = match session
+                let ids = agent
+                    .intervals
+                    .iter()
+                    .map(|interval| interval.change_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let question = format!("Summarize substantive progress for mchanges:{ids}.");
+                let summary = session
                     .services
                     .local_agent_runtime
                     .answer_recipient_progress_question(
@@ -411,24 +399,36 @@ async fn collect_progress(
                         question,
                         cancellation,
                     )
-                    .await
-                {
-                    Ok(text) => SummaryResult::Available { text },
-                    Err(error) => SummaryResult::Unavailable {
-                        reason: error.to_string(),
-                    },
-                };
-                PreparedProgressAgent {
-                    actor: agent.actor.clone(),
-                    intervals: agent.intervals.clone(),
-                    summary,
-                }
+                    .await;
+                (agent, ids, summary)
             }
         }))
         .await;
-        return session
-            .prepare_progress_output(operation_id, frozen, agents, cancellation.clone())
-            .await;
+        let mut text = String::new();
+        let mut references = Vec::new();
+        let mut delivered_intervals = Vec::new();
+        for (agent, ids, summary) in agents {
+            writeln!(text, "{}: mchanges:{ids}", agent.actor.task_name)?;
+            references.push(ids);
+            match summary {
+                Ok(summary) => {
+                    writeln!(text, "{summary}")?;
+                    delivered_intervals.extend(agent.intervals);
+                }
+                Err(error) => writeln!(text, "Progress summary unavailable: {error}")?,
+            }
+        }
+        if text.len() > 12 * 1024 {
+            text = format!(
+                "Progress exceeds the summary budget. Read mchanges:{}.",
+                references.join(",")
+            );
+            delivered_intervals.clear();
+        }
+        return Ok(ProgressOutputResponse {
+            text,
+            delivered_intervals,
+        });
     }
 }
 

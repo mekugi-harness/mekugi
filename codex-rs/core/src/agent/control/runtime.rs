@@ -218,6 +218,9 @@ impl Drop for AgentTreeTeardownGuard {
     }
 }
 
+pub(crate) type FeatureUseRecorder =
+    Arc<dyn Fn(codex_protocol::feature_use::FeatureUseFact) + Send + Sync>;
+
 /// Local tree state, kept separate from the shared agent operation interface.
 #[derive(Clone)]
 pub(crate) struct LocalAgentRuntime {
@@ -241,8 +244,7 @@ pub(crate) struct LocalAgentRuntime {
     pub(super) mailboxes: Arc<super::mailbox::Mailboxes>,
     /// Shared by every session in this tree, including private delegates.
     pub(crate) shutdown: CancellationToken,
-    /// One resource owner for the native tree; renderer subscriptions never replace it.
-    pub(crate) host_resources: Arc<OnceLock<crate::AgentHostResources>>,
+    pub(crate) feature_use: Arc<OnceLock<FeatureUseRecorder>>,
     shutdown_state: Arc<AgentTreeShutdownState>,
 }
 
@@ -260,7 +262,7 @@ impl LocalAgentRuntime {
             unconfirmed_results: Arc::default(),
             mailboxes: Arc::default(),
             shutdown: CancellationToken::new(),
-            host_resources: Arc::default(),
+            feature_use: Arc::default(),
             shutdown_state: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
@@ -279,11 +281,7 @@ impl LocalAgentRuntime {
         operation: impl Into<String>,
         event: codex_protocol::feature_use::FeatureUseEvent,
     ) {
-        if let Some(record) = self
-            .host_resources
-            .get()
-            .and_then(|host| host.record_feature_use.as_ref())
-        {
+        if let Some(record) = self.feature_use.get() {
             record(codex_protocol::feature_use::FeatureUseFact {
                 thread_id: thread_id.to_string(),
                 operation: operation.into(),

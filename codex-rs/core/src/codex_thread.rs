@@ -319,19 +319,16 @@ impl CodexThread {
         self.session.session_id().into()
     }
 
-    /// Install the authenticated resource host once for this native tree.
-    pub fn install_agent_host_resources(&self, resources: crate::AgentHostResources) -> bool {
+    pub fn install_feature_use_recorder(
+        &self,
+        record: impl Fn(codex_protocol::feature_use::FeatureUseFact) + Send + Sync + 'static,
+    ) -> bool {
         self.session
             .services
             .local_agent_runtime
-            .host_resources
-            .set(resources)
+            .feature_use
+            .set(Arc::new(record))
             .is_ok()
-    }
-
-    /// Cancellation belongs to the native tree, not an observing renderer.
-    pub fn agent_tree_shutdown_token(&self) -> tokio_util::sync::CancellationToken {
-        self.session.services.local_agent_runtime.shutdown.clone()
     }
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {

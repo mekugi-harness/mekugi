@@ -210,7 +210,7 @@ func (c *Client) Shutdown() error {
 func (c *Client) Initialize() (string, error) {
 	return c.Send("initialize", map[string]any{
 		"clientInfo":   map[string]any{"name": "mekugi", "version": "app-server-preview"},
-		"capabilities": map[string]any{"experimentalApi": true, "observeBeforeTool": true},
+		"capabilities": map[string]any{"experimentalApi": true},
 	}, true)
 }
 

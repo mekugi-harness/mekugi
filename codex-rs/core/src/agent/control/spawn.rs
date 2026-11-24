@@ -925,26 +925,6 @@ impl LocalAgentControl {
         }));
         pending_spawn.wait_for_edge().await?;
         let edge_write = edge_write_started_at.elapsed();
-        if let Some(parent_thread_id) = parent_thread_id {
-            self.runtime
-                .prepare_child_host(
-                    codex_protocol::agent_capture::ChildHostAdmissionRequest {
-                        root_thread_id: self.session_id.into(),
-                        parent_thread_id,
-                        thread_id: child_thread_id,
-                        local_cwd: start_options
-                            .inherited_environments
-                            .as_ref()
-                            .map_or_else(
-                                || Some(config.cwd.clone()),
-                                |environments| environments.local_environment_cwd(),
-                            )
-                            .map(|cwd| cwd.to_string_lossy().into_owned()),
-                    },
-                    self.runtime.shutdown.child_token(),
-                )
-                .await?;
-        }
         let child_create_started_at = Instant::now();
         let new_thread = state
             .spawn_child_thread(

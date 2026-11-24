@@ -240,7 +240,6 @@ async fn initialize_opt_out_notification_methods_filters_notifications() -> Resu
                 version: "0.1.0".to_string(),
             },
             Some(InitializeCapabilities {
-                observe_before_tool: false,
                 required_human_approval: false,
                 explicit_gateway_oauth: false,
                 experimental_api: true,

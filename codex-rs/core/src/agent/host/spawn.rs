@@ -140,25 +140,7 @@ pub(super) async fn create_spawn(
     if let Some(accounting) = reservation.usage_accounting {
         options.thread_extension_init.insert(accounting);
     }
-    let cancellation = invocation.lock_active()?.child_token();
-    runtime
-        .prepare_child_host(
-            codex_protocol::agent_capture::ChildHostAdmissionRequest {
-                root_thread_id: session_id.into(),
-                parent_thread_id: caller,
-                thread_id: reservation.thread_id,
-                local_cwd: options
-                    .inherited_environments
-                    .as_ref()
-                    .map_or_else(
-                        || Some(options.config.cwd.clone()),
-                        |environments| environments.local_environment_cwd(),
-                    )
-                    .map(|cwd| cwd.to_string_lossy().into_owned()),
-            },
-            cancellation,
-        )
-        .await?;
+    drop(invocation.lock_active()?);
     let child = state
         .spawn_host_child_thread(
             options,

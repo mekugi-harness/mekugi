@@ -30,6 +30,7 @@ enum CommandMode {
 struct ParsedArgs {
     mode: CommandMode,
     mine: bool,
+    for_recipient: bool,
     include_history_in_list: bool,
     store_dir: Option<PathBuf>,
     thread_id: Option<String>,
@@ -154,6 +155,7 @@ fn resolve_store_dir(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
 fn parse_args(args: &[String]) -> Result<Option<ParsedArgs>, String> {
     let mut mode = CommandMode::Diff;
     let mut mine = false;
+    let mut for_recipient = false;
     let mut include_history_in_list = false;
     let mut store_dir = None;
     let mut thread_id = None;
@@ -210,6 +212,7 @@ fn parse_args(args: &[String]) -> Result<Option<ParsedArgs>, String> {
                     mode = CommandMode::History;
                 }
             }
+            "--for-recipient" => for_recipient = true,
             "--mine" => {
                 if matches!(mode, CommandMode::Revert | CommandMode::Apply) {
                     return Err(
@@ -254,6 +257,7 @@ fn parse_args(args: &[String]) -> Result<Option<ParsedArgs>, String> {
     Ok(Some(ParsedArgs {
         mode,
         mine,
+        for_recipient,
         include_history_in_list,
         store_dir,
         thread_id,
@@ -367,11 +371,26 @@ fn run_review(
         };
     }
 
-    let records = match store.load_records(&ids) {
+    let mut records = match store.load_records(&ids) {
         Ok(records) => records,
         Err(err) => return err_output(err),
     };
 
+    if parsed.for_recipient {
+        let Some(recipient) = thread_id else {
+            return err_output("recipient identity unavailable");
+        };
+        records.retain(|record| {
+            record.metadata.thread_id != recipient && record.metadata.source_kind.is_authored()
+        });
+        if records.is_empty() {
+            return ToolOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+                exit_code: 0,
+            };
+        }
+    }
     match view {
         ReviewView::Diff => match compose_diff(store, &records, &parsed.paths) {
             Ok(diffs) => {

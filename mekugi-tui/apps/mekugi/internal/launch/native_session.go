@@ -43,7 +43,6 @@ type nativeSession struct {
 	nativeRosterResponse string
 	nativeRosterRoot     string
 	preparer             *executionobservation.Preparer
-	finalCaptures        *nativeFinalCaptures
 	attached             attachedPresentation
 	reviewSource         *changecapture.Service
 	*composer.Editor

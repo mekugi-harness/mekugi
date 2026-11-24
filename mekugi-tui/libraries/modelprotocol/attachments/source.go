@@ -9,30 +9,12 @@ import (
 const sourcePrefix = "<mekugi-source-v1 bytes=\""
 const sourceSuffix = "\n</mekugi-source-v1>"
 
-// SourceRange identifies supplied bytes, excluding reader framing/diagnostics.
-type SourceRange struct{ Start, End int }
-
-// SourceRanges retains exact body boundaries in a message's final attachment.
-// Lengths delimit arbitrary literal text, including marker lookalikes.
-func SourceRanges(text string, bodies []SourceRange) string {
-	if len(bodies) == 0 {
-		return text
-	}
-	var ranges strings.Builder
-	for i, body := range bodies {
-		if i > 0 {
-			ranges.WriteByte(',')
-		}
-		ranges.WriteString(strconv.Itoa(body.Start))
-		ranges.WriteByte(':')
-		ranges.WriteString(strconv.Itoa(body.End))
-	}
-	return sourcePrefix + strconv.Itoa(len(text)) + "\" bodies=\"" + ranges.String() + "\">\n" + text + sourceSuffix
-}
+// sourceRange identifies supplied bytes, excluding reader framing/diagnostics.
+type sourceRange struct{ Start, End int }
 
 // sourceEnvelope accepts only a complete terminal attachment. Earlier quoted
 // envelopes and unselected diagnostics stay outside its source ranges.
-func sourceEnvelope(text string) (start, body, n int, ranges []SourceRange, valid bool) {
+func sourceEnvelope(text string) (start, body, n int, ranges []sourceRange, valid bool) {
 	if !strings.HasSuffix(text, sourceSuffix) {
 		return
 	}
@@ -68,7 +50,7 @@ func sourceEnvelope(text string) (start, body, n int, ranges []SourceRange, vali
 			if !ok || leftErr != nil || rightErr != nil || strconv.Itoa(left) != first || strconv.Itoa(right) != last || left < end || right < left || right > n || left < n && !utf8.RuneStart(text[body+left]) || right < n && !utf8.RuneStart(text[body+right]) {
 				return 0, 0, 0, nil, false
 			}
-			ranges = append(ranges, SourceRange{left, right})
+			ranges = append(ranges, sourceRange{left, right})
 			end = right
 		}
 		return start, body, n, ranges, true

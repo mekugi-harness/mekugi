@@ -790,6 +790,95 @@ fn compaction_config(server_uri: &str, auto_compact_limit: i64) -> MockResponses
 }
 
 #[tokio::test]
+async fn new_context_and_child_preload_acquire_native_patch_bytes_by_retained_id() -> Result<()> {
+    use app_test_support::write_models_cache_with_models;
+    use codex_models_manager::model_info::model_info_from_slug;
+    use codex_protocol::openai_models::ApplyPatchToolType;
+    skip_if_no_network!(Ok(()));
+    let provider = responses::start_mock_server().await;
+    let home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    compaction_config(&provider.uri(), 1_000_000)
+        .with_model("gpt-5.4")
+        .with_sandbox_mode("danger-full-access")
+        .enable_feature(Feature::CodeModeOnly)
+        .enable_feature(Feature::TokenBudget)
+        .enable_feature(Feature::MultiAgentV2)
+        .write(home.path())?;
+    let mut model = model_info_from_slug("gpt-5.4");
+    model.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    write_models_cache_with_models(home.path(), vec![model]).await?;
+    let mock = responses::mount_sse_sequence(&provider, vec![
+        responses::sse(vec![responses::ev_custom_tool_call("edit", "exec", r#"await tools.apply_patch("*** Begin Patch\n*** Add File: captured.txt\n+immutable reset bytes\n*** End Patch");"#), responses::ev_completed("edit")]),
+        responses::sse(vec![responses::ev_assistant_message("edited", "Edited."), responses::ev_completed("edited")]),
+        responses::sse(vec![responses::ev_function_call("reset", "new_context", r#"{"reload":{"sources":["mchanges:amber1"]}}"#), responses::ev_completed("reset")]),
+        responses::sse(vec![responses::ev_assistant_message("done", "Reloaded."), responses::ev_completed("done")]),
+    ]).await;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let request = server
+        .send_thread_start_request(ThreadStartParams {
+            cwd: Some(workspace.path().display().to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let thread: codex_app_server_protocol::ThreadStartResponse =
+        server.read_response(request).await?;
+    let id = thread.thread.id;
+    send_turn_and_wait(&mut server, &id, "Create the file.").await?;
+    let file = workspace.path().join("captured.txt");
+    assert_eq!(std::fs::read_to_string(&file)?, "immutable reset bytes\n");
+    std::fs::write(file, "unrelated live bytes")?;
+    send_turn_and_wait(&mut server, &id, "Reload the captured edit.").await?;
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[3].body_contains_text("+immutable reset bytes"));
+    assert!(!requests[3].body_contains_text("unrelated live bytes"));
+    let spawn = r#"await tools.collaboration__spawn_agent({task_name:"review",message:"Review the edit.",fork_turns:"none",preload:{sources:["mchanges:amber1"]}}); text(await tools.collaboration__wait_agent({}));"#;
+    responses::mount_sse_once_match(
+        &provider,
+        wiremock::matchers::header("thread-id", id.as_str()),
+        responses::sse(vec![
+            responses::ev_custom_tool_call("spawn", "exec", spawn),
+            responses::ev_completed("spawn"),
+        ]),
+    )
+    .await;
+    let root = id.clone();
+    let child = responses::mount_sse_once_match(
+        &provider,
+        move |request: &wiremock::Request| {
+            request
+                .headers
+                .get("thread-id")
+                .is_some_and(|id| id != root.as_str())
+        },
+        responses::sse(vec![
+            responses::ev_assistant_message("review", "Reviewed."),
+            responses::ev_completed("review"),
+        ]),
+    )
+    .await;
+    responses::mount_sse_once_match(
+        &provider,
+        wiremock::matchers::header("thread-id", id.as_str()),
+        responses::sse(vec![
+            responses::ev_assistant_message("finish", "Done."),
+            responses::ev_completed("finish"),
+        ]),
+    )
+    .await;
+    send_turn_and_wait(&mut server, &id, "Delegate a review.").await?;
+    let child_request = child.single_request();
+    assert!(child_request.body_contains_text("+immutable reset bytes"));
+    assert!(!child_request.body_contains_text("unrelated live bytes"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn self_reset_feature_facts_are_native_and_read_only() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
