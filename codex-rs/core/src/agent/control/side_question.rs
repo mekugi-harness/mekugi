@@ -179,7 +179,18 @@ async fn prepare_side_question(
     let mut config = context.config.as_ref().clone();
     let (model, effort) = context.capture_current_model_settings();
     config.model = Some(model.slug.clone());
-    config.model_reasoning_effort = effort;
+    config.model_reasoning_effort = match effort {
+        Some(effort) => Some(crate::client::downgrade_ultra_effort(&model, effort)),
+        None if model.default_reasoning_level
+            == Some(codex_protocol::openai_models::ReasoningEffort::Ultra) =>
+        {
+            Some(crate::client::downgrade_ultra_effort(
+                &model,
+                codex_protocol::openai_models::ReasoningEffort::Ultra,
+            ))
+        }
+        None => None,
+    };
     let instructions = target.get_base_instructions().await;
     config.base_instructions = Some(instructions.text);
     config.base_instructions_provenance = instructions.provenance;

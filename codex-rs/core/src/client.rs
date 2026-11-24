@@ -384,6 +384,26 @@ impl SideFork {
     }
 }
 
+pub(crate) fn downgrade_ultra_effort(
+    model: &ModelInfo,
+    effort: ReasoningEffortConfig,
+) -> ReasoningEffortConfig {
+    if effort == ReasoningEffortConfig::Ultra {
+        if model.supported_reasoning_levels.is_empty()
+            || model
+                .supported_reasoning_levels
+                .iter()
+                .any(|level| level.effort == ReasoningEffortConfig::Max)
+        {
+            ReasoningEffortConfig::Max
+        } else {
+            model.resolve_reasoning_effort(effort)
+        }
+    } else {
+        effort
+    }
+}
+
 /// A turn-scoped streaming session created from a [`ModelClient`].
 ///
 /// The session establishes a Responses WebSocket connection lazily and reuses it across multiple
@@ -737,27 +757,32 @@ impl ModelClient {
         self
     }
 
-    pub(crate) fn cap_btw_effort(
+    pub(crate) fn cap_side_fork_effort(
         &self,
         model: &ModelInfo,
         effort: ReasoningEffortConfig,
     ) -> ReasoningEffortConfig {
-        if self.side_fork == Some(SideFork::Btw)
-            && matches!(
-                effort,
-                ReasoningEffortConfig::Medium
-                    | ReasoningEffortConfig::High
-                    | ReasoningEffortConfig::XHigh
-                    | ReasoningEffortConfig::Max
-            )
-            && model
-                .supported_reasoning_levels
-                .iter()
-                .any(|level| level.effort == ReasoningEffortConfig::Low)
-        {
-            ReasoningEffortConfig::Low
-        } else {
-            effort
+        match self.side_fork {
+            Some(SideFork::Btw) => {
+                if matches!(
+                    effort,
+                    ReasoningEffortConfig::Medium
+                        | ReasoningEffortConfig::High
+                        | ReasoningEffortConfig::XHigh
+                        | ReasoningEffortConfig::Max
+                        | ReasoningEffortConfig::Ultra
+                ) && model
+                    .supported_reasoning_levels
+                    .iter()
+                    .any(|level| level.effort == ReasoningEffortConfig::Low)
+                {
+                    ReasoningEffortConfig::Low
+                } else {
+                    downgrade_ultra_effort(model, effort)
+                }
+            }
+            Some(SideFork::OneOff | SideFork::Question) => downgrade_ultra_effort(model, effort),
+            None => effort,
         }
     }
 
@@ -1391,12 +1416,14 @@ impl ModelClient {
                 }
             }
         }
-        let mut reasoning = self.build_reasoning(model_info, effort, summary);
-        if !self.reasoning_effort_override_enabled(model_info) {
-            reasoning.effort = reasoning
-                .effort
-                .map(|effort| self.cap_btw_effort(model_info, effort));
-        }
+        let effective_effort = if !self.reasoning_effort_override_enabled(model_info) {
+            effort
+                .or_else(|| model_info.default_reasoning_level.clone())
+                .map(|effort| self.cap_side_fork_effort(model_info, effort))
+        } else {
+            effort
+        };
+        let reasoning = self.build_reasoning(model_info, effective_effort, summary);
         let stream_options = (self.state.concurrent_reasoning_summaries_enabled
             && is_openai
             && reasoning.summary.is_some())

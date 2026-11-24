@@ -3504,3 +3504,88 @@ async fn mekugi_side_forks_share_provider_affinity_and_cap_only_btw_effort() -> 
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prediction_fork_inherits_updated_service_tier_after_typed_startup_override() -> Result<()>
+{
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        [("parent", 20), ("prediction", 20)]
+            .into_iter()
+            .map(|(id, tokens)| {
+                responses::sse(vec![responses::ev_completed_with_tokens(id, tokens)])
+            })
+            .collect(),
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_model("gpt-5.5")
+        .enable_feature(Feature::FastMode)
+        .write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("gpt-5.5".to_string()),
+            service_tier: Some(Some("priority".to_string())),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(parent.service_tier.as_deref(), Some("priority"));
+    let parent_id = parent.thread.id;
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: parent_id.clone(),
+        input: vec![UserInput::Text {
+            text: "Hello".to_owned(),
+            text_elements: vec![],
+        }],
+        ..Default::default()
+    })
+    .await?;
+
+    // Change tier via /tier (thread/settings/update) from typed startup "priority" to "flex".
+    let update_id = mcp
+        .send_thread_settings_update_request(
+            codex_app_server_protocol::ThreadSettingsUpdateParams {
+            thread_id: parent_id.clone(),
+            service_tier: Some(Some("flex".to_string())),
+            ..Default::default()
+            },
+        )
+        .await?;
+    let _: codex_app_server_protocol::ThreadSettingsUpdateResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(update_id)).await??;
+
+    // Fork a prediction thread and verify it inherits "flex", not the stale startup "priority".
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: parent_id,
+            ephemeral: true,
+            exclude_turns: true,
+            experimental_prediction_mode: true,
+            ..Default::default()
+        })
+        .await?;
+    let forked: ThreadForkResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(fork_id)).await??;
+    assert_eq!(forked.service_tier.as_deref(), Some("flex"));
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: forked.thread.id,
+        input: vec![UserInput::Text {
+            text: "Predict next".to_owned(),
+            text_elements: vec![],
+        }],
+        ..Default::default()
+    })
+    .await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body_json()["service_tier"], json!("priority"));
+    assert_eq!(requests[1].body_json()["service_tier"], json!("flex"));
+    Ok(())
+}

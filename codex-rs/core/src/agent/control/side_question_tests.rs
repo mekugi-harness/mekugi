@@ -287,3 +287,22 @@ async fn cancelled_auxiliary_joins_without_cancelling_primary_or_sibling() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn preparation_downgrades_ultra_reasoning_effort_to_max() {
+    let (target, context, _events) =
+        crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+            codex_login::CodexAuth::from_api_key("Test API Key"),
+            Vec::new(),
+            |config| {
+                config.model_reasoning_effort =
+                    Some(codex_protocol::openai_models::ReasoningEffort::Ultra);
+            },
+        )
+        .await;
+    let prepared = prepare_side_question(&target, &context, "status?".to_owned(), None, None).await;
+    assert_eq!(
+        prepared.config.model_reasoning_effort,
+        Some(codex_protocol::openai_models::ReasoningEffort::Max),
+    );
+}

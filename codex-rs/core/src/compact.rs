@@ -317,7 +317,7 @@ async fn run_compact_task_inner_impl(
             )
             .await;
         sess.record_output_deduplication(projected.savings);
-        let mut turn_input = projected.into_items();
+        let mut turn_input = projected.into_request_items();
         sess.services
             .executed_tool_calls
             .attach_to_compaction_prompt(&mut turn_input);

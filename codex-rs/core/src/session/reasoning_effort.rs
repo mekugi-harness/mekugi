@@ -10,6 +10,7 @@
 use super::session::Session;
 use super::step_context::StepContext;
 use super::step_settings::ResolvedStepSettings;
+use crate::client::downgrade_ultra_effort;
 use crate::state::ReasoningEffortPin;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
@@ -29,15 +30,26 @@ impl Session {
     /// Establishes the selected effort in surviving history, independent of replayed settings.
     pub(crate) async fn record_reasoning_effort_override(&self, step_context: &StepContext) {
         let settings = &step_context.settings;
-        let Some(effort) = self.effort_for_configuration_update(settings) else {
-            return;
-        };
-        // Record a BTW cap with the ordinary step update so continuations retain
-        // the exact sampled prefix and the parent window's request-effort pin.
-        let effort = self
+        if !self
             .services
             .model_client
-            .cap_btw_effort(&settings.model_info, effort);
+            .reasoning_effort_override_enabled(&settings.model_info)
+        {
+            return;
+        }
+        let Some(selected) = settings.effective_reasoning_effort() else {
+            return;
+        };
+        // Record side-fork caps with the ordinary step update so continuations retain
+        // the exact sampled prefix and the parent window's request-effort pin.
+        let capped = self
+            .services
+            .model_client
+            .cap_side_fork_effort(&settings.model_info, selected);
+        let Some(effort) = normalize_configuration_update_effort(&settings.model_info, capped)
+        else {
+            return;
+        };
         let should_skip = {
             let mut state = self.state.lock().await;
             if matches!(state.reasoning_effort_pin, ReasoningEffortPin::Compacted) {
@@ -105,6 +117,16 @@ impl Session {
         usage: RequestEffortUsage,
     ) -> Option<ReasoningEffort> {
         let selected_effort = settings.reasoning_effort().cloned();
+        let compaction_selected_effort = || match selected_effort.clone() {
+            Some(effort) => Some(downgrade_ultra_effort(&settings.model_info, effort)),
+            None if settings.model_info.default_reasoning_level == Some(ReasoningEffort::Ultra) => {
+                Some(downgrade_ultra_effort(
+                    &settings.model_info,
+                    ReasoningEffort::Ultra,
+                ))
+            }
+            None => None,
+        };
         if !self
             .services
             .model_client
@@ -113,9 +135,12 @@ impl Session {
             if usage == RequestEffortUsage::Sampling {
                 self.state.lock().await.reasoning_effort_pin = ReasoningEffortPin::Unset;
             }
-            return selected_effort;
+            return match usage {
+                RequestEffortUsage::Sampling => selected_effort,
+                RequestEffortUsage::Compaction => compaction_selected_effort(),
+            };
         }
-        let effort = self.effort_for_configuration_update(settings);
+        let effort = self.effort_for_configuration_update(settings, usage);
         let mut state = self.state.lock().await;
         if let Some(pinned) = state.reasoning_effort_pin.get(&settings.model_info.slug) {
             let model = &settings.model_info;
@@ -132,27 +157,31 @@ impl Session {
                     state.reasoning_effort_pin = ReasoningEffortPin::Unset;
                 }
             } else if usage == RequestEffortUsage::Compaction {
-                return Some(pinned);
+                return Some(downgrade_ultra_effort(&settings.model_info, pinned));
             }
         }
         let Some(effort) = effort else {
             if usage == RequestEffortUsage::Sampling {
                 state.reasoning_effort_pin = ReasoningEffortPin::Unset;
             }
-            return selected_effort;
+            return match usage {
+                RequestEffortUsage::Sampling => selected_effort,
+                RequestEffortUsage::Compaction => compaction_selected_effort(),
+            };
         };
         Some(match usage {
             RequestEffortUsage::Sampling => state
                 .reasoning_effort_pin
                 .pin(&settings.model_info.slug, effort),
             // Failed compaction and fallback-model lookups must not mutate the live pin.
-            RequestEffortUsage::Compaction => effort,
+            RequestEffortUsage::Compaction => downgrade_ultra_effort(&settings.model_info, effort),
         })
     }
 
     fn effort_for_configuration_update(
         &self,
         settings: &ResolvedStepSettings,
+        usage: RequestEffortUsage,
     ) -> Option<ReasoningEffort> {
         if !self
             .services
@@ -161,16 +190,28 @@ impl Session {
         {
             return None;
         }
-        let effort = settings
-            .model_info
-            .resolve_reasoning_effort(settings.effective_reasoning_effort()?);
-        // Persistent normalizes to "disabled". Keep unknown custom values out of
-        // durable updates so injected items stay bounded to known backend modes.
-        if matches!(&effort, ReasoningEffort::Custom(value) if value != "disabled") {
-            return None;
-        }
-        Some(effort)
+        let selected = settings.effective_reasoning_effort()?;
+        let selected = match usage {
+            RequestEffortUsage::Sampling => selected,
+            RequestEffortUsage::Compaction => {
+                downgrade_ultra_effort(&settings.model_info, selected)
+            }
+        };
+        normalize_configuration_update_effort(&settings.model_info, selected)
     }
+}
+
+fn normalize_configuration_update_effort(
+    model: &codex_protocol::openai_models::ModelInfo,
+    effort: ReasoningEffort,
+) -> Option<ReasoningEffort> {
+    let effort = model.resolve_reasoning_effort(effort);
+    // Persistent normalizes to "disabled". Keep unknown custom values out of
+    // durable updates so injected items stay bounded to known backend modes.
+    if matches!(&effort, ReasoningEffort::Custom(value) if value != "disabled") {
+        return None;
+    }
+    Some(effort)
 }
 
 #[cfg(test)]
