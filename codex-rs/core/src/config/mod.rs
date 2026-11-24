@@ -671,6 +671,11 @@ pub struct Config {
     /// Request tier defaults keyed by the exact model ID.
     pub service_tiers: Arc<BTreeMap<String, String>>,
 
+    /// Explicit tier for the model chosen at startup.
+    pub service_tier_choice: Option<String>,
+    /// Explicit choices already recorded by this thread, not config defaults.
+    pub retained_service_tier_choices: Arc<BTreeMap<String, String>>,
+
     /// Model used specifically for review sessions.
     pub review_model: Option<String>,
 
@@ -4391,17 +4396,21 @@ impl Config {
 
         let model = model.or(cfg.model);
         let notices = cfg.notice.unwrap_or_default();
-        let mut service_tiers: BTreeMap<_, _> = cfg.service_tiers.unwrap_or_default().into_iter().map(|(model, tier)| {
-            let tier = ServiceTier::from_request_value(&tier).map_or(tier, |tier| tier.request_value().to_string());
-            (model, tier)
-        }).collect();
-        // A fork or resume may explicitly select a tier over this model's invocation default.
-        if let Some(tier) = &service_tier_override
-            && let Some(configured) = model.as_ref().and_then(|model| service_tiers.get_mut(model))
-        {
+        let service_tiers = cfg
+            .service_tiers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(model, tier)| {
+                let tier = ServiceTier::from_request_value(&tier)
+                    .map_or(tier, |tier| tier.request_value().to_owned());
+                (model, tier)
+            })
+            .collect();
+        let service_tier_choice = service_tier_override.as_ref().map(|tier| {
             let tier = tier.as_deref().unwrap_or(SERVICE_TIER_DEFAULT_REQUEST_VALUE);
-            *configured = ServiceTier::from_request_value(tier).map_or_else(|| tier.to_owned(), |tier| tier.request_value().to_owned());
-        }
+            ServiceTier::from_request_value(tier)
+                .map_or_else(|| tier.to_owned(), |tier| tier.request_value().to_owned())
+        });
         let service_tier = match service_tier_override {
             Some(Some(service_tier)) => Some(service_tier),
             Some(None) => Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
@@ -4765,6 +4774,8 @@ impl Config {
             daybreak_enabled: cfg.daybreak.unwrap_or(false),
             service_tier,
             service_tiers: Arc::new(service_tiers),
+            service_tier_choice,
+            retained_service_tier_choices: Arc::default(),
             review_model,
             model_context_window: cfg.model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,

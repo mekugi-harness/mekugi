@@ -3,8 +3,6 @@ mod media_availability;
 mod normalize;
 mod output_deduplication;
 mod request_input;
-pub(crate) use request_input::attachment_frames;
-pub(crate) use request_input::legacy_skill_name;
 mod sampling;
 pub(crate) mod updates;
 

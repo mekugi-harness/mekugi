@@ -135,22 +135,7 @@ func TestAppServerBTWCompactionNativeCodexE2E(t *testing.T) {
 	proxy := newManagedMekugiProxy(t)
 	attachTestReplayStore(t, proxy)
 	provider := &btwCompactionProvider{}
-	var observationsMu sync.Mutex
-	rejectedSideCompactions := 0
-	handler := testResponsesHandler(t.Context(), time.Minute, provider, nil, proxy)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		metadata, valid := codexresponses.DecodeTurnMetadata(r.Header)
-		thread := r.Header.Get(codexresponses.ThreadIDHeader)
-		if thread == "" {
-			thread = metadata.ThreadID
-		}
-		if valid && metadata.RequestKind == "compaction" && proxy.IsSideThread(thread) {
-			observationsMu.Lock()
-			rejectedSideCompactions++
-			observationsMu.Unlock()
-		}
-		handler(w, r)
-	}))
+	server := httptest.NewServer(testResponsesHandler(t.Context(), time.Minute, provider, nil, proxy))
 	defer server.Close()
 	environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
 	terminal := startAppResumeTerminalWithIntegration(t, func(ctx context.Context) *exec.Cmd {
@@ -176,14 +161,10 @@ func TestAppServerBTWCompactionNativeCodexE2E(t *testing.T) {
 	terminal.await("Main after rejected side.")
 	terminal.await("completed")
 	terminal.quit()
-	observationsMu.Lock()
-	rejected := rejectedSideCompactions
-	observationsMu.Unlock()
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	// Codex may retry its local compaction request. Every retry must remain
-	// rejected, and none may start another side inference or reach upstream.
-	if rejected < 1 || provider.compactions != 0 || provider.sideTurns != 1 || provider.mainTurns != 2 {
-		t.Fatalf("compaction isolation: rejected=%d forwarded=%d side turns=%d Main turns=%d", rejected, provider.compactions, provider.sideTurns, provider.mainTurns)
+	// The native boundary rejects the reset without sending another request.
+	if provider.compactions != 0 || provider.sideTurns != 1 || provider.mainTurns != 2 {
+		t.Fatalf("compaction isolation: forwarded=%d side turns=%d Main turns=%d", provider.compactions, provider.sideTurns, provider.mainTurns)
 	}
 }

@@ -129,8 +129,8 @@ func (s *Startup) Latest(result jsontext.Value) (string, error) {
 	return "", fmt.Errorf("no resumable Mekugi thread found for %s", s.Workspace)
 }
 
-// Resume uses evidence acquired before the host can checkpoint invocation
-// defaults. Explicit per-field overrides remain unchanged for later switches.
+// Resume restores model and effort evidence without turning the previously
+// applied tier into an override of the current native configuration.
 // Source: apps/mekugi/internal/router/app_server_resume.go:55:94,357:372@5ce9382b.
 func (r *Requests[T]) Resume(s *Startup, control *Live, evidence preferences.Evidence, approvals bool) error {
 	config := make(map[string]any, len(s.Config)+3)
@@ -141,12 +141,6 @@ func (r *Requests[T]) Resume(s *Startup, control *Live, evidence preferences.Evi
 		saved = map[string]any{"model": evidence.Model, "model_reasoning_effort": nil}
 		if evidence.Effort != "" {
 			saved["model_reasoning_effort"] = evidence.Effort
-		}
-		if evidence.TierKnown {
-			saved["service_tier"] = nil
-			if evidence.Tier != "" {
-				saved["service_tier"] = evidence.Tier
-			}
 		}
 	}
 	params := ThreadPermissions(map[string]any{"threadId": s.Target(control), "config": config, "modelProvider": config["model_provider"]}, approvals)

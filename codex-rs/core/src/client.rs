@@ -357,7 +357,6 @@ pub struct ModelClient {
     http_client_factory: HttpClientFactory,
     restored_history: bool,
     side_fork: Option<SideFork>,
-    configured_model_tiers: Arc<std::collections::BTreeMap<String, String>>,
     child_reply_summary: bool,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     budget_policy: Option<crate::rollout_budget::ThreadBudgetPolicy>,
@@ -720,7 +719,6 @@ impl ModelClient {
             http_client_factory,
             restored_history: false,
             side_fork: None,
-            configured_model_tiers: Default::default(),
             child_reply_summary: false,
             request_contributors,
             budget_policy: None,
@@ -731,18 +729,11 @@ impl ModelClient {
         }
     }
 
-    pub(crate) fn with_request_shaping(
+    pub(crate) fn with_side_fork(
         mut self,
         thread_source: Option<&codex_protocol::protocol::ThreadSource>,
-        config: &crate::config::Config,
     ) -> Self {
-        self.side_fork = match &self.state.session_source {
-            SessionSource::SubAgent(SubAgentSource::Other(tag)) if tag == "side_question" => {
-                Some(SideFork::Btw)
-            }
-            _ => thread_source.and_then(SideFork::from_source),
-        };
-        self.configured_model_tiers = Arc::clone(&config.service_tiers);
+        self.side_fork = thread_source.and_then(SideFork::from_source);
         self
     }
 
@@ -772,16 +763,6 @@ impl ModelClient {
 
     pub(crate) fn answer_only(&self) -> bool {
         matches!(self.side_fork, Some(SideFork::Question | SideFork::Btw))
-    }
-
-    pub(crate) fn check_compaction(&self) -> Result<()> {
-        if self.answer_only() {
-            return Err(CodexErr::InvalidRequest(
-                "Side question requires compaction. Close this answer, compact Main, then retry."
-                    .into(),
-            ));
-        }
-        Ok(())
     }
 
     pub(crate) fn with_child_reply_summary(mut self, enabled: bool) -> Self {
@@ -1278,27 +1259,6 @@ impl ModelClient {
         request_telemetry
     }
 
-    fn service_tier_for_request(
-        &self,
-        model_info: &ModelInfo,
-        service_tier: Option<String>,
-    ) -> Option<String> {
-        if self.configured_model_tiers.contains_key(&model_info.slug) {
-            service_tier
-        } else {
-            model_info.service_tier_for_request(service_tier)
-        }
-        .filter(|tier| {
-            // Bedrock requires an advertised tier, including for flex, which the
-            // generic OpenAI resolver permits without catalog support.
-            !self.state.provider.info().is_amazon_bedrock()
-                || model_info
-                    .service_tiers
-                    .iter()
-                    .any(|supported| supported.id == *tier)
-        })
-    }
-
     fn build_reasoning(
         &self,
         model_info: &ModelInfo,
@@ -1352,14 +1312,14 @@ impl ModelClient {
         }
         let is_openai = self.state.provider.info().is_openai();
         // These prompt-only items are rebuilt on every request. Hash their visible payloads
-        // within the thread so retries and resumed sessions preserve their identity.
-        let prefix_namespace = Uuid::new_v5(
-            &Uuid::NAMESPACE_OID,
-            self.session_id_override
-                .as_deref()
-                .map_or_else(|| self.state.thread_id.to_string(), str::to_owned)
-                .as_bytes(),
-        );
+        // within the thread, or share the source namespace for Mekugi's UI forks.
+        let thread_id = self.state.thread_id.to_string();
+        let prefix_identity = self
+            .session_id_override
+            .as_deref()
+            .filter(|_| self.side_fork.is_some())
+            .unwrap_or(&thread_id);
+        let prefix_namespace = Uuid::new_v5(&Uuid::NAMESPACE_OID, prefix_identity.as_bytes());
         let mut prefix = Vec::new();
         let tools = if model_info.use_responses_lite {
             if !prompt.tools.is_empty() {
@@ -1463,7 +1423,17 @@ impl ModelClient {
             &prompt.output_schema,
             prompt.output_schema_strict,
         );
-        let service_tier = self.service_tier_for_request(model_info, service_tier);
+        let service_tier = model_info
+            .service_tier_for_request(service_tier)
+            .filter(|tier| {
+                // Bedrock requires an advertised tier, including for flex, which the
+                // generic OpenAI resolver permits without catalog support.
+                !self.state.provider.info().is_amazon_bedrock()
+                    || model_info
+                        .service_tiers
+                        .iter()
+                        .any(|supported| supported.id == *tier)
+            });
         if !include_internal {
             let captures_result_bodies = self.captures_result_bodies();
             for item in &mut input {
@@ -1998,8 +1968,8 @@ impl ModelClientSession {
                 client_setup.auth.as_ref(),
                 &responses_headers,
                 &model_info.slug,
-                self.client
-                    .service_tier_for_request(model_info, service_tier.clone())
+                model_info
+                    .service_tier_for_request(service_tier.clone())
                     .as_deref(),
             );
             match self

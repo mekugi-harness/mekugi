@@ -132,6 +132,7 @@ pub(super) fn prepare_update(
             collaboration_mode,
             reasoning_summary: summary,
             service_tier,
+            service_tier_choices: None,
             personality,
             approval_policy,
             approvals_reviewer,

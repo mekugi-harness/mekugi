@@ -2693,8 +2693,9 @@ impl ThreadRequestProcessor {
         if let Some(collaboration_mode) = settings.collaboration_mode.as_ref() {
             config.model = Some(collaboration_mode.model().to_string());
         }
-        if let Some(service_tier) = settings.service_tier.as_ref() {
-            config.service_tier.clone_from(service_tier);
+        if let Some(choices) = &settings.service_tier_choices {
+            config.retained_service_tier_choices = Arc::clone(choices);
+            config.service_tier_choice = None;
         }
         config.personality = settings.personality;
         let thread_id_string = thread_id.to_string();
@@ -4670,9 +4671,6 @@ impl ThreadRequestProcessor {
                         .insert("model_reasoning_effort".into(), serde_json::json!(effort));
                 }
             }
-            if restore_service_tier && let Some(tier) = &settings.service_tier {
-                typesafe_overrides.service_tier = Some(tier.clone());
-            }
         }
         let config_state = ResumeConfigState {
             history_cwd: history_cwd.clone(),
@@ -4740,14 +4738,40 @@ impl ThreadRequestProcessor {
         if clear_reasoning_effort {
             config.model_reasoning_effort = None;
         }
-        if let Some(settings) = persisted_model_settings {
-            if restore_service_tier
-                && !retained_settings
-                    .as_ref()
-                    .is_some_and(|s| s.service_tier.is_some())
+        if let Some(choices) =
+            history_settings.and_then(|settings| settings.service_tier_choices.as_ref())
+        {
+            config.retained_service_tier_choices = Arc::new(choices.clone());
+        }
+        let selected_model = config
+            .model
+            .as_deref()
+            .or_else(|| persisted_model_settings.map(|settings| settings.model.as_str()));
+        if restore_service_tier
+            && !selected_model.is_some_and(|model| config.service_tiers.contains_key(model))
+        {
+            // Older clients can supply tier evidence before a native checkpoint exists.
+            // For old rollouts without provenance, keep their single-model selection.
+            if let Some(tier) = retained_settings
+                .as_ref()
+                .and_then(|settings| settings.service_tier.as_ref())
             {
+                if selected_model
+                    .is_none_or(|model| !config.retained_service_tier_choices.contains_key(model))
+                {
+                    config.service_tier_choice =
+                        Some(tier.clone().unwrap_or_else(|| "default".to_owned()));
+                }
+            } else if let Some(settings) =
+                persisted_model_settings.filter(|settings| settings.service_tier_choices.is_none())
+            {
+                config
+                    .service_tier_choice
+                    .clone_from(&settings.service_tier);
                 config.service_tier.clone_from(&settings.service_tier);
             }
+        }
+        if let Some(settings) = persisted_model_settings {
             if restore_summary {
                 config.model_reasoning_summary = settings.reasoning_summary;
             }

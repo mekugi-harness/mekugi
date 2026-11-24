@@ -2694,6 +2694,11 @@ pub struct ThreadSettingsSnapshot {
     pub model_provider_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// Explicit model choices. An empty map follows current defaults; absence
+    /// identifies older checkpoints that recorded only the tier in use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub service_tier_choices: Option<BTreeMap<String, String>>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
     /// Original selection before managed policy resolved the effective reviewer.

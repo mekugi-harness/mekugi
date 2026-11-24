@@ -37,6 +37,7 @@ fn settings_item(
                 model: "gpt-5".to_string(),
                 model_provider_id: "openai".to_string(),
                 service_tier: None,
+                service_tier_choices: None,
                 approval_policy,
                 approvals_reviewer,
                 requested_approvals_reviewer: None,

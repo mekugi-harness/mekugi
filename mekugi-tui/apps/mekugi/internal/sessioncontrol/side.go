@@ -8,11 +8,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
 )
 
-// ForkClassifier lends request preparation the authoritative auxiliary ledger.
-type ForkClassifier interface {
-	IsSideThread(string) bool
-}
-
 // Side owns live side-thread admission and cleanup independently of Main.
 // Closing its presentation does not retire pending fork/start acknowledgements.
 type Side struct {

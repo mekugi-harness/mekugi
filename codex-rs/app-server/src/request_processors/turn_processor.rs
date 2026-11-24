@@ -980,6 +980,7 @@ impl TurnRequestProcessor {
                     effort: effort.clone(),
                     summary,
                     service_tier: service_tier.clone(),
+                    service_tier_choices: None,
                     collaboration_mode: collaboration_mode.clone(),
                     personality,
                 })

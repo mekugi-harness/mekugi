@@ -679,6 +679,90 @@ async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
 }
 
 #[tokio::test]
+async fn cold_resume_uses_current_exact_tier_unless_user_selected_it() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    let write_config = |tier| {
+        mock_responses_config(&server.uri())
+            .enable_feature(Feature::FastMode)
+            .with_extra_config(&format!("[service_tiers]\n{:?} = {tier:?}", "gpt-5.5"))
+            .write(codex_home.path())
+    };
+    write_config("priority")?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let mut threads = Vec::new();
+    for explicit in [false, true] {
+        let start_id = mcp
+            .send_thread_start_request_with_auto_env(ThreadStartParams {
+                model: Some("gpt-5.5".to_string()),
+                ..Default::default()
+            })
+            .await?;
+        let started: ThreadStartResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+        assert_eq!(started.service_tier.as_deref(), Some("priority"));
+        let thread_id = started.thread.id;
+        if explicit {
+            let update_id = mcp
+                .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+                    thread_id: thread_id.clone(),
+                    service_tier: Some(Some("priority".to_string())),
+                    ..Default::default()
+                })
+                .await?;
+            let _: ThreadSettingsUpdateResponse =
+                timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(update_id)).await??;
+        }
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+        threads.push(thread_id);
+    }
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+
+    write_config("flex")?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    for (thread_id, tier) in threads.into_iter().zip(["flex", "priority"]) {
+        let resume_id = mcp
+            .send_thread_resume_request(ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                ..Default::default()
+            })
+            .await?;
+        let resumed: ThreadResumeResponse =
+            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+        assert_eq!(resumed.service_tier.as_deref(), Some(tier));
+        mcp.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id,
+            ..Default::default()
+        })
+        .await?;
+    }
+    let requests = responses::received_responses_requests(&server).await;
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.body_json()["service_tier"].clone())
+            .collect::<Vec<_>>(),
+        [
+            json!("priority"),
+            json!("priority"),
+            json!("flex"),
+            json!("priority")
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_resume_running_thread_uses_cached_instruction_sources() -> Result<()> {
     skip_if_remote!(
         Ok(()),

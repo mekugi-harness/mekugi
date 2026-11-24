@@ -307,22 +307,11 @@ func TestAppServerSettingsChoicesRenderedInPicker(t *testing.T) {
 	}
 }
 
-func TestAppServerSettingsTierAliasNoop(t *testing.T) {
-	for _, turn := range []string{"", "active"} {
-		u, w := newAppServerTestUI()
-		u.settings.Tier, u.Turn = "priority", turn
-		appServerTestKeys(t, u, "/tier fast\r")
-		if turn != "" {
-			assertAppServerSettingsRequest(t, w, "turn/settings/update", map[string]any{"threadId": "main", "turnId": "active", "serviceTier": "fast"})
-			appServerTestMessage(t, u, `{"id":1,"result":{"status":"applied"}}`)
-		} else if w.Len() != 0 {
-			t.Fatal("alias queued unchanged thread settings")
-		}
-		appServerTestKeys(t, u, "prompt\r")
-		if u.Settings.Pending() || u.attached.conversation.Submitted[u.Submission().ID].Text != "prompt" {
-			t.Fatal("alias no-op blocked prompt")
-		}
-	}
+func TestAppServerSettingsPinsCurrentTier(t *testing.T) {
+	u, w := newAppServerTestUI()
+	u.settings.Tier = "priority"
+	appServerTestKeys(t, u, "/tier fast\r")
+	assertAppServerSettingsRequest(t, w, "thread/settings/update", map[string]any{"threadId": "main", "serviceTier": "fast"})
 }
 
 func TestAppServerSettingsPickerSelection(t *testing.T) {

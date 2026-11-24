@@ -36,7 +36,6 @@ type appServerIntegration struct {
 	preparer            *executionobservation.Preparer
 	controlSocket       chan<- string
 	controlObservations *sessioncontrol.Observations
-	bindForks           func(*sessionapi.Server)
 	usage               *accounting.Service
 	audience            *sessioncontrol.Audience
 	review              *sessionreview.Review
@@ -88,9 +87,6 @@ func startAppServerUI(terminalViews terminalsession.Views, reviewSource *changec
 			wait, err := (&nativeSession{preparer: integration.preparer, reviewSource: reviewSource, presentationState: views, conversationState: conversation, activity: activity, history: service, segments: segments, ctx: runtimeContext, controlObservations: integration.controlObservations, usage: integration.usage, audience: integration.audience, review: integration.review, execWindows: integration.execWindows, nativeTrace: integration.nativeTrace, retained: integration.retained, changeSource: integration.changeSource, snapshots: integration.snapshots, publishChanges: integration.publishChanges, captureNotice: integration.captureNotice, execTrack: integration.execTrack, issues: issues, sessionCapture: capture, resumeArgv: resumeArgv, replayDebugDirectory: debugDirectory, titleGenerator: generator, observations: observations, approvalMode: approvals}).start(prefs, cmd, integration.skillsManager, resumeThread, nil, api, false, threads)
 			if err != nil {
 				return err
-			}
-			if integration.bindForks != nil {
-				integration.bindForks(api)
 			}
 			return wait()
 		}}

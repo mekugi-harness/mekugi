@@ -509,7 +509,7 @@ pub(crate) async fn run_turn(
         .await;
     }
 
-    if super::async_compaction::enabled(&sess, &turn_context) {
+    if super::async_compaction::enabled(&turn_context) {
         let token_status = super::context_window::context_window_token_status(
             sess.as_ref(),
             turn_context.as_ref(),
@@ -865,7 +865,8 @@ pub(crate) async fn run_turn(
                         }
                         Ok(false) => {}
                         Err(err) => {
-                            if sess.services.model_client.answer_only()
+                            if (turn_context.config.features.enabled(Feature::TokenBudget)
+                                && sess.services.model_client.answer_only())
                                 || crate::tasks::ends_turn_as_interrupted(&err)
                             {
                                 return Err(err);
@@ -945,7 +946,6 @@ pub(crate) async fn run_turn(
                     // policy. Keep summarizing compaction in this task to serialize history updates.
                     let config = &turn_context.config;
                     if auto_summarization_enabled
-                        && !sess.services.model_client.answer_only()
                         && config.model_post_turn_compact_threshold_percent > 0
                         && !sess.input_queue.has_pending_input(&sess.active_turn).await
                         && !cancellation_token.is_cancelled()
@@ -1217,14 +1217,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
                     let text: Vec<_> = content
                         .iter()
                         .filter_map(|part| match part {
-                            ResolvedUserInput::Text { text, .. }
-                                if !(content.len() > 1
-                                    && text.starts_with("\n\n---\nUser selections:\n"))
-                                    && crate::context_manager::attachment_frames(text)
-                                        .is_none() =>
-                            {
-                                Some(text.as_str())
-                            }
+                            ResolvedUserInput::Text { text, .. } => Some(text.as_str()),
                             _ => None,
                         })
                         .collect();
@@ -1935,7 +1928,13 @@ async fn run_auto_compact(
     cancellation_token: &CancellationToken,
 ) -> CodexResult<bool> {
     let turn_context = &step_context.turn;
-    sess.services.model_client.check_compaction()?;
+    let resets_without_summary = turn_context.config.features.enabled(Feature::TokenBudget);
+    if resets_without_summary && sess.services.model_client.answer_only() {
+        return Err(CodexErr::InvalidRequest(
+            "Side question requires compaction. Close this answer, compact Main, then retry."
+                .into(),
+        ));
+    }
     if !sess.inline_compaction_allowed(turn_context)? {
         return Ok(false);
     }
@@ -1956,7 +1955,7 @@ async fn run_auto_compact(
         conversation.id = %sess.thread_id,
         turn.id = %turn_context.sub_id,
     );
-    if turn_context.config.features.enabled(Feature::TokenBudget) {
+    if resets_without_summary {
         // This reset has no provider send. Recheck after preparing its world state.
         if !sess.inline_compaction_allowed(turn_context)? {
             return Ok(false);

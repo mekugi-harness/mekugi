@@ -128,7 +128,7 @@ fn message(
 
 // The renderer's persisted v1 and v2 envelope formats. Partial, malformed,
 // over-budget or quoted envelopes are ordinary user text.
-pub(crate) fn attachment_frames(text: &str) -> Option<Vec<String>> {
+fn attachment_frames(text: &str) -> Option<Vec<String>> {
     #[derive(serde::Deserialize)]
     struct Snapshot {
         id: String,
@@ -208,7 +208,7 @@ fn valid_frame(frame: &str) -> bool {
         || legacy_skill_name(frame).is_some()
 }
 
-pub(crate) fn legacy_skill_name(frame: &str) -> Option<String> {
+fn legacy_skill_name(frame: &str) -> Option<String> {
     fn take_quoted(text: &str) -> Option<(String, &str)> {
         let mut values = serde_json::Deserializer::from_str(text).into_iter::<String>();
         let value = values.next()?.ok()?;

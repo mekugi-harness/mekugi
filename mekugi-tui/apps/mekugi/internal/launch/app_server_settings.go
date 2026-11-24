@@ -60,7 +60,7 @@ func selectedSettings(attached *attachedPresentation, requests *sessioncontrol.R
 	return nil, main
 }
 
-func settingsChoices(command string, models []appServerModel, applied preferences.Applied, thread string) ([]string, string) {
+func settingsChoices(command string, models []appServerModel, applied preferences.Applied) ([]string, string) {
 	var choices []string
 	current := applied.Model
 	switch command {
@@ -94,7 +94,7 @@ func refreshSettingsPicker(p *composerPicker, thread string, models []appServerM
 		p.Loading, p.Problem = false, problem
 		return
 	}
-	choices, current := settingsChoices(p.Setting, models, applied, thread)
+	choices, current := settingsChoices(p.Setting, models, applied)
 	p.showSettingsPicker(false, p.Setting, choices, current)
 }
 
@@ -144,9 +144,6 @@ func updateSettingsForTurn(attached *attachedPresentation, control *sessioncontr
 	switch decision.Action {
 	case sessioncontrol.SettingsUnchanged:
 		setNotice(&attached.feedback, presentationTime(clock), "Settings unchanged", false)
-		if decision.ChooseTier {
-			setNotice(&attached.feedback, presentationTime(clock), "Service tier updated", false)
-		}
 	case sessioncontrol.SettingsTurn:
 		setNotice(&attached.feedback, presentationTime(clock), "Updating active turn…", false)
 	case sessioncontrol.SettingsThread:
@@ -245,7 +242,7 @@ func (session *nativeSession) settingsCommand(attached *attachedPresentation, pi
 		setNotice(&attached.feedback, presentationTime(clock), "Settings update pending", false)
 		return true, nil
 	}
-	choices, current := settingsChoices(command, session.models, selected, session.Client.Thread)
+	choices, current := settingsChoices(command, session.models, selected)
 	if len(fields) == 1 {
 		session.deleteDraftRange(attached, picker, editor, side, clock, overlay, 0, len((*editor).Text))
 		picker.showSettingsPicker(session.modelsLoading, command, choices, current)
