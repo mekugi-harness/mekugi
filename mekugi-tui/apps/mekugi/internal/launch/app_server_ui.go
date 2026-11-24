@@ -1569,6 +1569,17 @@ func (session *nativeSession) observedEvent(attached *attachedPresentation, pick
 		attached.session.Caller(p.Thread.ID)
 		attached.session.Activity().Agent(p.Thread.ID).Isolated = true
 	}
+	if method == "thread/started" && session.review != nil && p.Thread.ID != "" {
+		if p.Thread.SessionID != "" {
+			session.review.SetSession(p.Thread.SessionID)
+		}
+		session.review.SetCaller(p.Thread.ID, attached.session.Caller(p.Thread.ID))
+		session.review.Observe(cmp.Or(p.Thread.Cwd, attached.cwd), p.Thread.ID, p.Thread.ParentThreadID, false)
+	}
+	if session.review != nil && (method == "turn/completed" ||
+		method == "item/completed" && p.Item.Type != "" && p.Item.Type != "userMessage" && p.Item.Type != "agentMessage" && p.Item.Type != "reasoning") {
+		session.review.RefreshNative()
+	}
 	if handled, err := session.sessionEvent(attached, clock, method, p); handled || err != nil {
 		return err
 	}

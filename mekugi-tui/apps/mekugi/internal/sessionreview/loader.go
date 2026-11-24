@@ -3,6 +3,7 @@ package sessionreview
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 )
 
@@ -29,7 +30,7 @@ type Loader struct {
 }
 
 func NewLoader(ctx context.Context, state Projection) *Loader {
-	if state.Retained.Store == nil {
+	if state.Retained.Store == nil && state.NativeDir == "" {
 		return nil
 	}
 	l := &Loader{slots: make(chan struct{}, 2), results: make(chan Result, 2)}
@@ -72,7 +73,7 @@ func (l *Loader) Enqueue(event Event) error {
 	if err := validateEvent(event); err != nil {
 		return err
 	}
-	if event.Kind != "scope" && event.Kind != "change" {
+	if event.Kind != "scope" && event.Kind != "change" && event.Kind != "native" {
 		return nil
 	}
 	if event.Kind == "scope" && event.Resync {
@@ -80,6 +81,11 @@ func (l *Loader) Enqueue(event Event) error {
 		l.pending, l.resync = nil, false
 	} else if l.resync {
 		return nil
+	}
+	if event.Kind == "native" && len(l.pending) > 0 && l.pending[len(l.pending)-1].Kind == "native" {
+		event.Callers = maps.Clone(event.Callers)
+		l.pending[len(l.pending)-1] = event
+		return l.start()
 	}
 	if len(l.pending) == 32 {
 		// Reuse the subscription's durable resync barrier rather than dropping
@@ -90,6 +96,9 @@ func (l *Loader) Enqueue(event Event) error {
 	if event.Scope != nil {
 		scope := CloneScope(*event.Scope)
 		event.Scope = &scope
+	}
+	if event.Callers != nil {
+		event.Callers = maps.Clone(event.Callers)
 	}
 	event.Changes = slices.Clone(event.Changes)
 	for i := range event.Changes {

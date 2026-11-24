@@ -68,7 +68,7 @@ func (r *Review) Ready() bool {
 
 // Restoring reports retained evidence still needed by the selected membership.
 func (r *Review) Restoring() bool {
-	if r.Projection.Retained.Store == nil || r.Failure != "" {
+	if r.Projection.Retained.Store == nil && r.Projection.NativeDir == "" || r.Failure != "" {
 		return false
 	}
 	if r.Loader.Pending() {

@@ -124,9 +124,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   requires an endpoint, cannot redirect inference or catalog requests, and has
   no built-in price. Native exchange measurements feed launch-wide diagnostics
   without retaining prompts, tool input, or response text in the private log.
-- Native code-mode input events feed provisional live diffs. Legacy saved Diff
-  does not include newly native-captured edits; use native `mchanges` and
-  Activity patch details to review them.
+- Native code-mode input events feed provisional live diffs, and Saved Diff
+  reads the session's native capture store alongside legacy captures and
+  client-side user shell edits so newly native-captured edits appear in the
+  Diff pane.
 - When session naming is enabled, new persistent Main threads can receive a
   native title from a one-shot, untooled request on their selected provider.
   An existing manual name wins; title failure does not fail the turn.
