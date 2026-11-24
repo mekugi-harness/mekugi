@@ -181,7 +181,7 @@ func (c *nativeClient) inputAvailable() bool {
 
 func (r *nativeClientRuntime) schedule() {
 	c := r.active
-	if c.reattach != "" && !c.attaching {
+	if c.reattach != "" && c.attaching == "" {
 		var retained *nativeClient
 		for _, owner := range r.owners {
 			if owner != c && !owner.closed && owner.event.Frame.View.Main.ID == c.reattach {
@@ -351,8 +351,12 @@ func (r *nativeClientRuntime) activate(c *nativeClient) {
 
 func (r *nativeClientRuntime) reattach(result nativeClientReattached, stdout *os.File) {
 	c := result.owner
+	// Repeating the same selection does not supersede its in-flight view.
+	if c.reattach == c.attaching {
+		c.reattach = ""
+	}
 	if c.closed || c != r.active || c.reattach != "" {
-		c.attaching = false
+		c.attaching = ""
 		if result.connection != nil {
 			result.connection.Close()
 		}
@@ -372,7 +376,7 @@ func (r *nativeClientRuntime) reattach(result nativeClientReattached, stdout *os
 
 func (r *nativeClientRuntime) retire() {
 	for _, c := range r.owners {
-		if c == r.active || c == r.pasteOwner || c.closed || c.attaching || c.handoff != nil || c.clipboardPending || len(c.calls) != 0 || !c.effectsSettled() {
+		if c == r.active || c == r.pasteOwner || c.closed || c.attaching != "" || c.handoff != nil || c.clipboardPending || len(c.calls) != 0 || !c.effectsSettled() {
 			continue
 		}
 		if len(c.event.Frame.Questions) > 0 || len(c.event.Frame.Approvals) > 0 {

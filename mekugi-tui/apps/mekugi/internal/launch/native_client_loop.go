@@ -222,9 +222,8 @@ type nativeClient struct {
 	ownedImages            map[string]bool
 	clipboardPending       bool
 	restoration            *nativeRestoredEffect
-	reattach               string
+	reattach, attaching    string
 	attachOperation        *sessionapi.NativeOperation
-	attaching              bool
 	quit, dirty, hydrating bool
 }
 
@@ -422,6 +421,9 @@ func (c *nativeClient) run(ctx context.Context, stdin, stdout *os.File) (*native
 					}
 					c.stagePreferences(false)
 					c.writeTerminalStatus(now)
+					if switching := c.reattach != "" || c.attaching != ""; switching != c.renderer.switchingAgent {
+						c.renderer.switchingAgent, c.dirty = switching, true
+					}
 					width, height, err := term.GetSize(int(stdout.Fd()))
 					if err != nil {
 						return err

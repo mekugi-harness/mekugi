@@ -111,7 +111,7 @@ func TestNativeRosterReturnToMain(t *testing.T) {
 	for _, tc := range []struct{ name, child, keys string }{
 		{"Main selector", "worker11", "\x021"},
 		{"toggle", "worker11", "\x023a"},
-		{"previous", "worker00", "\x023p"},
+		{"previous", "worker00", "\x023\x1b[A"},
 		{"parent", "worker00", "\x1b[A"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,13 +135,7 @@ func TestNativeRosterReturnToMain(t *testing.T) {
 			if err := u.testPaint(io.Discard, 100, 30); err != nil {
 				t.Fatal(err)
 			}
-			if tc.keys == "\x1b[A" {
-				if err := terminalTest(u).send(tc.keys); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				keys(tc.keys)
-			}
+			keys(tc.keys)
 			if err := u.testPaint(io.Discard, 100, 30); err != nil {
 				t.Fatal(err)
 			}

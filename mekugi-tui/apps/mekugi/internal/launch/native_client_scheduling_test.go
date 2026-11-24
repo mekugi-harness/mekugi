@@ -124,10 +124,11 @@ func TestNativeClientRosterArrowNavigation(t *testing.T) {
 		key, thread, parent string
 		open                bool
 		frozenTranscript    bool
+		repeatClick         bool
 	}{
 		{key: "\x1b[B", thread: "main", open: true},
 		{key: "\x1b[A", thread: "main", open: true},
-		{key: "\x1b[B", thread: "parent", open: true, frozenTranscript: true},
+		{key: "\x1b[B", thread: "parent", open: true, frozenTranscript: true, repeatClick: true},
 		{key: "j", thread: "parent", open: true},
 		{key: "k", thread: "parent", open: true},
 		{key: "n", thread: "parent", open: true},
@@ -167,6 +168,29 @@ func TestNativeClientRosterArrowNavigation(t *testing.T) {
 		r.active.drainInput()
 		if step.frozenTranscript && r.active.renderer.terminal.Selection != nil {
 			t.Fatalf("key %q went to the frozen transcript instead of the roster", step.key)
+		}
+		if step.repeatClick {
+			// Click the same row while Down's attachment is still in flight.
+			source := r.active
+			r.schedule()
+			roster := source.renderer.terminal.Layout.Roster
+			click := fmt.Sprintf("\x1b[<0;%d;%dM", roster.X+5, roster.Y+2)
+			for i := range len(click) {
+				r.decode(click[i], now)
+			}
+			source.drainInput()
+			if source.reattach != "parent" {
+				t.Fatal("click did not resolve to the same destination as Down")
+			}
+			select {
+			case result := <-r.reattached:
+				r.reattach(result, nil)
+			case <-time.After(5 * time.Second):
+				t.Fatal("roster attachment stalled")
+			}
+			if r.active.event.Frame.View.Displayed.ID != "parent" {
+				t.Fatal("clicking the same agent discarded its first attachment")
+			}
 		}
 		switch step.key {
 		case "j", "k", "n", "p", "\t", "\r":

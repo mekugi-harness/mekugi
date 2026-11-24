@@ -41,7 +41,7 @@ type nativeClientReattached struct {
 
 func (c *nativeClient) attachDestination(ctx context.Context, done chan<- nativeClientReattached) {
 	source, thread := c.connection, c.reattach
-	c.reattach, c.attaching = "", true
+	c.reattach, c.attaching = "", thread
 	c.workers.Go(func() {
 		result := nativeClientReattached{owner: c, source: source}
 		result.connection, result.err = source.Attach(ctx, thread)
@@ -65,7 +65,7 @@ func (c *nativeClient) attachDestination(ctx context.Context, done chan<- native
 }
 
 func (c *nativeClient) applyReattachment(result nativeClientReattached) *nativeClient {
-	c.attaching = false
+	c.attaching = ""
 	if result.err != nil {
 		c.attachOperation = nil
 		c.feedback.Set(result.err.Error(), true, time.Now())
@@ -91,7 +91,7 @@ func (c *nativeClient) displayThread(thread sessionpresentation.Thread) {
 	family := c.event.Frame.Family
 	if c.runtime != nil && family != nil && c.event.Frame.View.ReadOnly != sessionpresentation.Replay {
 		if thread.ID == family.Root || slices.Contains(family.Threads, thread.ID) {
-			if thread.ID != c.event.Frame.View.Main.ID || c.attaching {
+			if thread.ID != c.event.Frame.View.Main.ID || c.attaching != "" {
 				c.reattach = thread.ID
 			} else if c.event.Frame.View.Displayed.ID != thread.ID {
 				c.enqueue(sessionapi.NativeOperation{Display: &sessionpresentation.DisplayIntent{Version: c.event.Frame.View.Version, Thread: thread}}, nil, nil)

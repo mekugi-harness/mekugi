@@ -19,12 +19,13 @@ import (
 // The caller owns draft/prompt editors; this binding owns no semantic source,
 // history store, acquisition callback or host request ledger.
 type nativeClientRenderer struct {
-	terminal    *terminalsession.Attachment
-	views       terminalsession.Views
-	frame       sessionapi.NativeFrame
-	attachment  uint64
-	noticeClaim string
-	noticeRows  map[uint64]bool
+	terminal       *terminalsession.Attachment
+	views          terminalsession.Views
+	frame          sessionapi.NativeFrame
+	attachment     uint64
+	noticeClaim    string
+	noticeRows     map[uint64]bool
+	switchingAgent bool
 }
 
 func (c *nativeClientRenderer) update(frame sessionapi.NativeFrame, draft conversation.DraftView, prompt conversation.PromptDraftView, now time.Time) {
@@ -169,6 +170,7 @@ func (c *nativeClientRenderer) render(ctx context.Context, out io.Writer, now ti
 	}
 	in.FileLinks = c.frame.FileLinks
 	in.NoticeEntries = c.frame.NoticeEntries
+	in.SwitchingAgent = c.switchingAgent
 	frame, err := u.Frame.Render(ctx, in)
 	if err != nil || len(frame.Demands) > 0 {
 		return frame, err

@@ -36,6 +36,7 @@ type FrameInput struct {
 	Version                string
 	FamilyRoot             string // Main of the live family, not necessarily of the attachment.
 	LiveHidden, DiffUnseen bool
+	SwitchingAgent         bool
 	Prefix, Playback       bool
 	PlaybackBar            string
 	FileLinks              map[string]bool
@@ -252,7 +253,11 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 				}
 				controls := sheetControls(iw-4, "↑↓ agent · "+next, "↑↓ agent", "↑↓")
 				roster = append(roster, terminalui.Dim+controls+terminalui.Undim)
-				counts := strings.Join(summary.Counts, terminalui.Dim+" · "+terminalui.Undim)
+				labels := summary.Counts
+				if in.SwitchingAgent {
+					labels = append([]string{"Switching…"}, labels...)
+				}
+				counts := strings.Join(labels, terminalui.Dim+" · "+terminalui.Undim)
 				legend := in.Agents.RoleLegend(max(0, iw-4-ansi.StringWidth(shell.RosterLabel+" · "+counts)-10))
 				roster[0] = terminalui.PanelHeading(shell.Theme.Accent(), shell.RosterLabel, counts, legend, iw-4)
 				ih -= len(roster) + 1

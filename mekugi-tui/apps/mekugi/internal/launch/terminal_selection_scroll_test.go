@@ -241,7 +241,7 @@ func TestSelectionScrolledClickUsesDocumentTarget(t *testing.T) {
 			"id": fmt.Sprintf("answer-%d", i), "type": "agentMessage", "text": fmt.Sprintf("step %d", i),
 		}})
 	}
-	for _, key := range []byte("\x023j") {
+	for _, key := range []byte("\x023\x1b[B") {
 		if err := terminalTest(u).key(key); err != nil {
 			t.Fatal(err)
 		}
