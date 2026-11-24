@@ -29,6 +29,7 @@ pub async fn resolve_amazon_bedrock_region(
         managed_auth.as_ref(),
         &provider.aws,
         provider.endpoint,
+        provider.info.caller_environment.as_ref(),
         &factory,
     )
     .await

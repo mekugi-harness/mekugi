@@ -1,6 +1,7 @@
 use codex_aws_auth::AwsAuthConfig;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderAwsAuthInfo;
+use codex_protocol::config_types::CallerEnvironment;
 use codex_protocol::error::Result;
 
 use super::BedrockEndpoint;
@@ -26,6 +27,7 @@ pub(super) async fn bedrock_runtime_base_url(
     source: BedrockAuthSource,
     managed_auth: Option<&CodexAuth>,
     aws: &ModelProviderAwsAuthInfo,
+    caller_environment: Option<&CallerEnvironment>,
     http_client_factory: &codex_http_client::HttpClientFactory,
 ) -> Result<String> {
     let region = resolve_region(
@@ -33,6 +35,7 @@ pub(super) async fn bedrock_runtime_base_url(
         managed_auth,
         aws,
         BedrockEndpoint::Runtime,
+        caller_environment,
         http_client_factory,
     )
     .await?;
