@@ -1414,10 +1414,17 @@ impl ModelClient {
 
     fn prepare_response_items_for_request(&self, input: &mut [ResponseItem]) {
         for item in input {
+            // Notice IDs track local milestones and can exceed provider limits.
+            let local_notice = matches!(
+                &*item,
+                ResponseItem::Message { id: Some(id), role, .. }
+                    if role == "developer" && id.starts_with("context-usage_")
+            );
             // A provider can echo a bare reserved prefix or return an opaque ID.
-            if item
-                .id()
-                .is_some_and(|id| id.allocation().is_none() && !id.is_prefixed())
+            if local_notice
+                || item
+                    .id()
+                    .is_some_and(|id| id.allocation().is_none() && !id.is_prefixed())
             {
                 item.set_id(/*new_id*/ None);
             }

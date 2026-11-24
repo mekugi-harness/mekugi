@@ -153,6 +153,16 @@ async fn context_usage_notice_reaches_sampled_input_and_survives_resume() -> Res
     let home = test.home.clone();
     let path = test.codex.rollout_path().unwrap();
     test.codex.shutdown_and_wait().await?;
+    let saved_notices = std::fs::read_to_string(&path)?
+        .lines()
+        .filter_map(|line| codex_rollout::parse_rollout_line(line).ok())
+        .filter(|line| {
+            matches!(&line.item, RolloutItem::ResponseItem(envelope)
+                if envelope.item.id().is_some_and(|id| id.starts_with("context-usage_")))
+        })
+        .count();
+    assert_eq!(saved_notices, 1);
+
     let resumed = test_codex().resume(&server, home, path).await?;
     resumed.submit_turn("third").await?;
     resumed.codex.shutdown_and_wait().await?;
@@ -168,6 +178,7 @@ async fn context_usage_notice_reaches_sampled_input_and_survives_resume() -> Res
             .collect();
         assert_eq!(notices.len(), usize::from(index > 0));
         if index > 0 {
+            assert!(notices[0].get("id").is_none());
             assert!(notices[0].to_string().contains("60000/"));
             assert!(!notices[0].to_string().contains("system-reminder"));
         }

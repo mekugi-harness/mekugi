@@ -143,8 +143,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   a concise unchanged notice on directory-only changes), falling back to full
   replacement for complete rewrites or legacy sessions without a baseline.
   Context usage notices and deduplication savings come from native observations
-  instead of host prompt rewriting. Mekugi only promises resume for Mekugi
-  sessions.
+  instead of host prompt rewriting. Notice IDs stay in local history, including
+  on resume, so full-history requests don't hit provider ID length limits.
+  Mekugi only promises resume for Mekugi sessions.
 - Migration 63 records completed compactions in Mekugi state. The upstream
   0.171.0 state migrations were moved to 64 and 65 to preserve the recorded
   checksum in existing Mekugi databases.
