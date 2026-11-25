@@ -416,6 +416,40 @@ func decodeDirectApprovalView(id, method string, params jsontext.Value) prompt.A
 		view.Title = "Approve file change"
 	case "item/permissions/requestApproval":
 		view.Title = "Approve permissions"
+		var permEnv struct {
+			Permissions jsontext.Value `json:"permissions"`
+		}
+		if json.Unmarshal(params, &permEnv) == nil && len(permEnv.Permissions) > 0 {
+			var profile struct {
+				FileSystem *struct {
+					Read  []string `json:"read"`
+					Write []string `json:"write"`
+				} `json:"fileSystem"`
+				Network *struct {
+					Enabled bool `json:"enabled"`
+				} `json:"network"`
+			}
+			added := false
+			if json.Unmarshal(permEnv.Permissions, &profile) == nil {
+				if fs := profile.FileSystem; fs != nil {
+					if len(fs.Read) > 0 {
+						view.Details = append(view.Details, "Read: "+strings.Join(fs.Read, ", "))
+						added = true
+					}
+					if len(fs.Write) > 0 {
+						view.Details = append(view.Details, "Write: "+strings.Join(fs.Write, ", "))
+						added = true
+					}
+				}
+				if net := profile.Network; net != nil && net.Enabled {
+					view.Details = append(view.Details, "Network access: enabled")
+					added = true
+				}
+			}
+			if !added && string(permEnv.Permissions) != "{}" && string(permEnv.Permissions) != "null" {
+				view.Details = append(view.Details, "Permissions: "+string(permEnv.Permissions))
+			}
+		}
 	case "shellGuard/requestApproval":
 		view.Title = "Approve guarded shell command"
 		var sg struct {

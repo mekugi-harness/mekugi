@@ -90,10 +90,16 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 	if text == "" && !hasAttachments {
 		return nil
 	}
-	if !hasAttachments && strings.HasPrefix(text, "/") {
+	if strings.HasPrefix(text, "/") {
+		if hasAttachments {
+			return errors.New("attachments are not supported with slash commands")
+		}
 		return c.handleSlashCommand(ctx, text)
 	}
-	if !hasAttachments && strings.HasPrefix(text, "!") {
+	if strings.HasPrefix(text, "!") {
+		if hasAttachments {
+			return errors.New("attachments are not supported with shell commands")
+		}
 		cmd := strings.TrimSpace(strings.TrimPrefix(text, "!"))
 		if cmd == "" {
 			return nil
@@ -250,6 +256,16 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 }
 
 func (c *directNativeConnection) resolveLatestTurnID(ctx context.Context, threadID string) (string, error) {
+	c.mu.Lock()
+	records := c.items[threadID]
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].turnID != "" {
+			turnID := records[i].turnID
+			c.mu.Unlock()
+			return turnID, nil
+		}
+	}
+	c.mu.Unlock()
 	var resp struct {
 		Thread directWireThread `json:"thread"`
 	}
@@ -258,14 +274,6 @@ func (c *directNativeConnection) resolveLatestTurnID(ctx context.Context, thread
 			if resp.Thread.Turns[i].ID != "" {
 				return resp.Thread.Turns[i].ID, nil
 			}
-		}
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	records := c.items[threadID]
-	for i := len(records) - 1; i >= 0; i-- {
-		if records[i].turnID != "" {
-			return records[i].turnID, nil
 		}
 	}
 	return "", errors.New("no turns available to rewind")
@@ -352,22 +360,26 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 	}
 	c.mu.Lock()
 	mainID := c.mainThread
+	btwID := c.btwThread
 	c.mu.Unlock()
 	if mainID == "" {
 		return errors.New("no active thread")
 	}
-	var resp directThreadStartResponse
-	if err := c.wire.Call(ctx, "thread/fork", map[string]any{
-		"threadId":       mainID,
-		"threadSource":   "btw",
-		"excludeTurns":   true,
-		"sandbox":        "read-only",
-		"approvalPolicy": "never",
-	}, &resp); err != nil {
-		return fmt.Errorf("fork one-off thread: %w", err)
+	if btwID == "" {
+		var resp directThreadStartResponse
+		if err := c.wire.Call(ctx, "thread/fork", map[string]any{
+			"threadId":       mainID,
+			"threadSource":   "mekugi_btw",
+			"excludeTurns":   true,
+			"sandbox":        "read-only",
+			"approvalPolicy": "never",
+		}, &resp); err != nil {
+			return fmt.Errorf("fork one-off thread: %w", err)
+		}
+		btwID = resp.Thread.ID
 	}
 	c.mu.Lock()
-	c.btwThread = resp.Thread.ID
+	c.btwThread = btwID
 	c.btwExchangeID++
 	c.btwQuestion = question
 	c.btwAnswer.Reset()
@@ -375,7 +387,7 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 	c.publishLocked()
 	c.mu.Unlock()
 	return c.wire.Call(ctx, "turn/start", map[string]any{
-		"threadId":     resp.Thread.ID,
+		"threadId":     btwID,
 		"input":        appserver.Input(question),
 		"environments": []any{},
 	}, nil)

@@ -108,6 +108,7 @@ type directNativeConnection struct {
 	errCh  chan error
 
 	mu              sync.Mutex
+	closed          bool
 	revision        uint64
 	seq             uint64
 	mainThread      string
@@ -388,7 +389,12 @@ func (c *directNativeConnection) finish(err error) {
 }
 
 func (c *directNativeConnection) eventLoop() {
-	defer close(c.events)
+	defer func() {
+		c.mu.Lock()
+		c.closed = true
+		close(c.events)
+		c.mu.Unlock()
+	}()
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -407,6 +413,9 @@ func (c *directNativeConnection) eventLoop() {
 }
 
 func (c *directNativeConnection) publishLocked() {
+	if c.closed {
+		return
+	}
 	c.revision++
 	ev := c.buildEventLocked()
 	select {
