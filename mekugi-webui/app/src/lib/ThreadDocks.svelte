@@ -22,11 +22,19 @@
     {#if queued.length}
       <div class="rounded-control border border-rule bg-raised px-3 py-2 text-small">
         <p class="font-medium text-muted">Queued ({queued.length})</p>
-        <ul class="mt-1 grid max-h-36 gap-1 overflow-y-auto">
-          {#each queued as item (item.id)}
-            <li class="truncate text-ink">{preview(item)}</li>
-          {/each}
-        </ul>
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
+        <div
+          tabindex="0"
+          role="region"
+          aria-label="Queued messages"
+          class="mt-1 max-h-36 overflow-y-auto"
+        >
+          <ul class="grid gap-1">
+            {#each queued as item (item.id)}
+              <li class="truncate text-ink">{preview(item)}</li>
+            {/each}
+          </ul>
+        </div>
       </div>
     {/if}
   </div>
