@@ -2,7 +2,6 @@ package launch
 
 import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
@@ -65,21 +64,21 @@ const (
 	codeModeCarrierFunction   = "function"
 )
 
-func retainedReviewFiles(files []diffmodel.ReviewFile) []legacycall.ReviewFile {
-	result := make([]legacycall.ReviewFile, len(files))
+func retainedReviewFiles(files []diffmodel.ReviewFile) []history.ReviewFile {
+	result := make([]history.ReviewFile, len(files))
 	for i, f := range files {
-		result[i] = legacycall.ReviewFile(f)
+		result[i] = history.ReviewFile(f)
 	}
 	return result
 }
-func reviewFiles(files []legacycall.ReviewFile) []diffmodel.ReviewFile {
+func reviewFiles(files []history.ReviewFile) []diffmodel.ReviewFile {
 	result := make([]diffmodel.ReviewFile, len(files))
 	for i, f := range files {
 		result[i] = diffmodel.ReviewFile(f)
 	}
 	return result
 }
-func receiptEvidence(h legacycall.History) changepresentation.ReceiptEvidence {
+func receiptEvidence(h history.History) changepresentation.ReceiptEvidence {
 	result := changepresentation.ReceiptEvidence{Files: reviewFiles(h.ReviewFiles), Source: binding.EditReceiptSource(h.ToolName, h.Source), ChangeID: h.ChangeID}
 	if h.ExecOutcome != nil {
 		result.Labels = h.ExecOutcome.Labels

@@ -11,7 +11,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
@@ -38,7 +38,7 @@ func TestSupportedSnapshotGeneratorRetainsInitialCreation(t *testing.T) {
 	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "generate", history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0)}}}); err != nil {
 		t.Fatal(err)
 	}
-	record, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("generate", false))
+	record, found, err := f.store.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID("generate", false))
 	if err != nil || !found || len(record.ReviewFiles) != 2 || record.ChangeID == "" {
 		t.Fatalf("generator capture missing: %+v, %v", record, err)
 	}
@@ -89,7 +89,7 @@ func TestPythonTemporaryWriteAndRestoreRetainsIncompleteHistory(t *testing.T) {
 	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "temporary", history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0), Text: output}}}); err != nil {
 		t.Fatal(err)
 	}
-	record, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("temporary", false))
+	record, found, err := f.store.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID("temporary", false))
 	if err != nil || !found || record.ChangeID != "" || len(record.ReviewFiles) != 0 {
 		t.Fatalf("attempt vanished or fabricated intermediate diff: %+v, %v", record, err)
 	}

@@ -20,7 +20,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 
@@ -244,7 +244,7 @@ func TestExecReceiptWriterBoundaryLiveAndRetained(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, found, err := lookupObservation(f.ctx, proxy.Retained, f.workspace, legacycall.ExecCallID("writer", false))
+	record, found, err := lookupObservation(f.ctx, proxy.Retained, f.workspace, sessionhistory.ExecCallID("writer", false))
 	if err != nil || !found || record.sourceAnchor != want || record.ChangeID == "" || record.ExecOutcome.Exit == nil || *record.ExecOutcome.Exit != 7 {
 		t.Fatalf("retained capture lost boundary or failure: found=%v err=%v record=%+v", found, err, record)
 	}

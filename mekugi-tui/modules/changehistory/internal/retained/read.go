@@ -17,7 +17,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
@@ -233,7 +233,7 @@ func (s *store) readChangeViewLocked(ctx context.Context, options changeReadOpti
 		selectedIDs := slices.DeleteFunc(readable, func(id string) bool { return options.unavailable[id] != nil })
 		for _, id := range selectedIDs {
 			for _, call := range index.Changes[id].Calls {
-				names = append(names, legacycall.Name(index.workspaceFor(id), call.ID, false))
+				names = append(names, sessionhistory.Name(index.workspaceFor(id), call.ID, false))
 			}
 		}
 		if retainErr := retain(names...); retainErr != nil {

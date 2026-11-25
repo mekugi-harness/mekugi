@@ -321,11 +321,7 @@ func allowedImport(directory, pkg, imported string) error {
 		if !local || target == owner || strings.HasPrefix(target, owner+"/") {
 			return nil
 		}
-		if owner == "libraries/legacycall" && target == "contracts/recordkind" {
-			return nil
-		}
 		allowed := map[string][]string{
-			"legacycall":           {"persistence"},
 			"commandanalysis":      {"sourceanalysis", "commandargs"},
 			"shellinstrumentation": {"commandanalysis", "commandargs"},
 			"diffrender":           {"diffmodel", "pathdisplay", "textsanitize"},

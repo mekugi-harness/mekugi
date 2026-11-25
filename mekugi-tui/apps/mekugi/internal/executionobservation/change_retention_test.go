@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
 )
@@ -26,7 +26,7 @@ func TestChangeRetirementPreparationPreservesSnapshotAndWireBytes(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := recordkind.Retirement{Deleted: map[string]bool{legacycall.Name("/w<&>", "first", false): true}}
+	first := recordkind.Retirement{Deleted: map[string]bool{history.Name("/w<&>", "first", false): true}}
 	want := `{"Sequence":2,"Version":1,"Workspace":"/w<&>","Streams":[{"Name":"a","Thread":"old","Next":1}],"Changes":{"amber1":{"Correlation":"<&>","Calls":[{"Sequence":2,"Thread":"other","ID":"last","Managed":true}],"RetiredCalls":1}}}`
 	for range 2 {
 		update, err := prepare(t.Context(), first)
@@ -36,7 +36,7 @@ func TestChangeRetirementPreparationPreservesSnapshotAndWireBytes(t *testing.T) 
 		if string(update.Data) != want {
 			t.Fatalf("replacement bytes:\n%s\nwant:\n%s", update.Data, want)
 		}
-		last, err := update.Next(t.Context(), recordkind.Retirement{Deleted: map[string]bool{legacycall.Name("/w<&>", "last", false): true}})
+		last, err := update.Next(t.Context(), recordkind.Retirement{Deleted: map[string]bool{history.Name("/w<&>", "last", false): true}})
 		if err != nil || last == nil {
 			t.Fatalf("prepare next: update=%v err=%v", last, err)
 		}

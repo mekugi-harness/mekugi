@@ -11,7 +11,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/recordtransactions"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
@@ -47,7 +46,7 @@ func publishObservations(ctx context.Context, selected changes.Scope, source cha
 
 // The application classifies capture eligibility; Session History owns merging,
 // ordering and publication of the neutral retained envelope.
-func publishObservation(tx *history.Transaction, selected changes.Scope, record legacycall.Record) error {
+func publishObservation(tx *history.Transaction, selected changes.Scope, record history.Record) error {
 	failed := record.History.ExecOutcome != nil && record.History.ExecOutcome.Status == string(changecapture.StatusFailed) && record.History.ExecOutcome.SharedWith == ""
 	ordered := record.History.ChangeID != "" && len(record.History.ReviewFiles) > 0 || failed
 	err := tx.PublishHostCall(selected.Thread, selected.Limits, record, ordered)

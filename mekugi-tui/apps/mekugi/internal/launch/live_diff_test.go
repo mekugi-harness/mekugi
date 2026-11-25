@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	previewmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 
@@ -71,14 +71,14 @@ func liveDiffTestChange(t *testing.T, store *mekugiReplayStore, workspace, call,
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := legacycall.History{
+	h := history.History{
 		ChangeID: id, CorrelationID: call,
 		ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{
 			BeforePath: path, AfterPath: path,
 			Diff: "update\n--- \"" + path + "\"\n+++ \"" + path + "\"\n@@ -1,80 +1,80 @@\n" + strings.Repeat("-old\n+new\n", 80),
 		}}),
 	}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{call: h}); err != nil {
+	if err := store.put(t.Context(), workspace, map[string]history.History{call: h}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -95,61 +95,11 @@ func TestLiveDiffStoreRestartAndMissingEvidence(t *testing.T) {
 	if err != nil || len(files) != 1 || len(files[0].Chunks) != 1 || files[0].Chunks[0].Status != "" {
 		t.Fatalf("Files: %#v, %v", files, err)
 	}
-	if err := os.Rename(filepath.Join(store.directory, legacycall.Name(workspace, "one", false)), filepath.Join(store.directory, "removed-record")); err != nil {
+	if err := os.Rename(filepath.Join(store.directory, history.Name(workspace, "one", false)), filepath.Join(store.directory, "removed-record")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reopened.liveDiffSnapshotFiles(t.Context(), previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: nil}}); err == nil {
 		t.Fatal("missing evidence treated as an empty view")
-	}
-}
-
-func TestLiveDiffLegacyChangeFlagsDoNotAffectSavedEdits(t *testing.T) {
-	var viewPublication presentation.Publication
-	workspace := t.TempDir()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	liveDiffTestChange(t, store, workspace, "one", "x.go")
-	indices, err := filepath.Glob(filepath.Join(store.directory, "changes-v3-*.json"))
-	if err != nil || len(indices) != 1 {
-		t.Fatalf("legacy index fixture: %v, %v", indices, err)
-	}
-	for _, fixture := range []struct{ path, before, after string }{
-		{filepath.Join(store.directory, legacycall.Name(workspace, "one", false)), `"History":{`, `"History":{"Applied":false,"ExecObservation":{"Sweep":true,"Class":"scoped","Commands":[{"Command":"python3 edit.py"}]},`},
-		{indices[0], `"ID":"one"`, `"Confirmed":false,"ID":"one"`},
-	} {
-		data, err := os.ReadFile(fixture.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		legacy := strings.Replace(string(data), fixture.before, fixture.after, 1)
-		if legacy == string(data) {
-			t.Fatalf("legacy fixture missing %q", fixture.before)
-		}
-		if err := os.WriteFile(fixture.path, []byte(legacy), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	reopened := testReplayStore(mekugiReplayStore{directory: store.directory})
-	record, found, err := reopened.read(workspace, "one", false)
-	if err != nil || !found || record.History.ExecObservation == nil || record.History.ExecObservation.Class != "scoped" || len(record.History.ExecObservation.Commands) != 1 {
-		t.Fatalf("legacy capture scope lost: %+v found=%v err=%v", record.History.ExecObservation, found, err)
-	}
-	files, err := reopened.liveDiffSnapshotFiles(t.Context(), previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: nil}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	view := changeview.View{}
-	viewPublication = viewPublication.With(files)
-	view.Update(viewPublication)
-	view.RefreshVisible()
-	if len(view.Files) != 1 {
-		t.Fatalf("legacy files: %+v", view.Files)
-	}
-	visible := view.Visible[view.Files[0].Key()]
-	if len(visible.Chunks) != 1 || visible.Chunks[0].Status != "" || !strings.Contains(visible.Chunks[0].Review.Diff, "-old\n+new\n") {
-		t.Fatalf("legacy flags changed applied diff: %+v", visible)
 	}
 }
 
@@ -194,10 +144,10 @@ func TestLiveDiffDoesNotInferPrivateScopeFromScriptText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := legacycall.History{ChangeID: id, CorrelationID: "private", Script: "in @shell/private\n",
+	h := history.History{ChangeID: id, CorrelationID: "private", Script: "in @shell/private\n",
 		ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{AfterPath: "private-script", Diff: "private-content\n"}}),
 	}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{"private": h}); err != nil {
+	if err := store.put(t.Context(), workspace, map[string]history.History{"private": h}); err != nil {
 		t.Fatal(err)
 	}
 	files, err := store.liveDiffSnapshotFiles(t.Context(), previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: nil}})
@@ -235,8 +185,8 @@ func liveDiffIdentityCapture(t *testing.T, store *mekugiReplayStore, workspace, 
 			diff += "+" + after
 		}
 	}
-	h := legacycall.History{ChangeID: id, CorrelationID: call, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{BeforePath: from, AfterPath: to, Diff: diff}})}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{call: h}); err != nil {
+	h := history.History{ChangeID: id, CorrelationID: call, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{BeforePath: from, AfterPath: to, Diff: diff}})}
+	if err := store.put(t.Context(), workspace, map[string]history.History{call: h}); err != nil {
 		t.Fatal(err)
 	}
 }

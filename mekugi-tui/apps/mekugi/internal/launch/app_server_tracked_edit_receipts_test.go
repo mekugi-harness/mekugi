@@ -14,7 +14,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
@@ -346,7 +346,7 @@ func TestObservedEditReceiptsBeforeHostRows(t *testing.T) {
 				path, call := fmt.Sprintf("a%d.go", i), fmt.Sprintf("cmd%d", i)
 				file := diffmodel.RenderReviewFile(path, path, strings.Repeat(fmt.Sprintf("before source %d\n", i), tc.lines), strings.Repeat(fmt.Sprintf("after source %d\n", i), tc.lines))
 				broker.Update(previewmodel.Preview{ID: call, Workspace: u.attached.cwd, Thread: "main", Complete: true,
-					HostItems: []string{call}, Files: []diffmodel.ReviewFile{file}, EditReceipt: presentation.ReceiptText(u.attached.cwd, receiptEvidence(legacycall.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file}), ExecOutcome: &legacycall.Outcome{Labels: []string{"cat"}}}))}, false)
+					HostItems: []string{call}, Files: []diffmodel.ReviewFile{file}, EditReceipt: presentation.ReceiptText(u.attached.cwd, receiptEvidence(sessionhistory.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file}), ExecOutcome: &sessionhistory.Outcome{Labels: []string{"cat"}}}))}, false)
 				events := testReview(broker).TakePreviews(sub)
 				if len(events) != 1 || events[0].Preview == nil {
 					t.Fatal("completion was not published")
@@ -398,7 +398,7 @@ func TestObservedEditReceiptsBeforeHostRows(t *testing.T) {
 func TestPendingObservedEditReceiptsStayBounded(t *testing.T) {
 	u := newAppServerSessionTestUI(t, t.TempDir())
 	file := diffmodel.RenderReviewFile("a.go", "a.go", strings.Repeat("before "+strings.Repeat("x", 90)+"\n", 100), "after\n")
-	receipt := presentation.ReceiptText(u.attached.cwd, receiptEvidence(legacycall.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file}), ExecOutcome: &legacycall.Outcome{Labels: []string{"cat"}}}))
+	receipt := presentation.ReceiptText(u.attached.cwd, receiptEvidence(sessionhistory.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file}), ExecOutcome: &sessionhistory.Outcome{Labels: []string{"cat"}}}))
 	for i := range 256 {
 		call := fmt.Sprintf("cmd%d", i)
 		applyTestPreview(&u.attached, u.shell, u.review, &u.pendingEditReceipts, presentationTime(u.clock), previewmodel.Preview{ID: call, Workspace: u.attached.cwd, Thread: "main", Complete: true, HostItems: []string{call}, EditReceipt: receipt}, false)

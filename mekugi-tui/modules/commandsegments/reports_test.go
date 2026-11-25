@@ -2,9 +2,7 @@ package commandsegments_test
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -16,7 +14,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory"
@@ -31,8 +28,7 @@ func composedReports(t *testing.T, extra ...recordkind.Spec) (*reports.Service, 
 	kinds := append([]recordkind.Spec{}, commandsegments.Module.Contributes.RecordKinds...)
 	kinds = append(kinds, extra...)
 	kinds = append(kinds,
-		recordkind.Spec{ID: "call", Match: func(name string) bool { return strings.HasPrefix(name, "call-") && strings.HasSuffix(name, ".json") }, Dependencies: func(r recordkind.Record) ([]string, error) { return legacycall.Dependencies(r.Name, r.Data) }},
-		recordkind.Spec{ID: "snapshot", Match: legacycall.ValidSnapshotName})
+		recordkind.Spec{ID: "call", Match: func(name string) bool { return strings.HasPrefix(name, "call-") && strings.HasSuffix(name, ".json") }, Dependencies: func(r recordkind.Record) ([]string, error) { return history.HostDependencies(r.Name, r.Data) }})
 	owner := moduletest.New(t, sessionhistory.Module, sessionhistory.Deps{}, module.Slots{RecordKinds: kinds}, nil)
 	service := moduletest.New(t, commandsegments.Module, commandsegments.Deps{History: owner}, module.Slots{}, nil)
 	return service.Reports, owner
@@ -65,26 +61,14 @@ func writeFile(t *testing.T, directory, name string, data []byte) {
 
 // Independently spelled historical mixed record, including unrelated filesystem
 // facts. Neither the report encoder nor the legacy encoder constructs this wire.
-func historical(t *testing.T, scope reports.Scope, id string) (string, []byte) {
+func historical(t *testing.T, scope reports.Scope, id string) []byte {
 	t.Helper()
-	manifest := []byte(`{"Exec":[{"Path":"a","Content":"retained baseline"}]}`)
-	snapshot := fmt.Sprintf("snapshot-%x.json.gz", sha256.Sum256(manifest))
-	var compressed bytes.Buffer
-	z := gzip.NewWriter(&compressed)
-	if _, err := z.Write(manifest); err != nil {
-		t.Fatal(err)
-	}
-	if err := z.Close(); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, scope.Store.Directory(), snapshot, compressed.Bytes())
-	wire := []byte(fmt.Sprintf(`{"Version":2,"Workspace":%q,"CallID":%q,
- "History":{"ToolName":"exec","Applied":true,"Report":"unrelated history",
- "ExecObservation":{"Sweep":true},
- "CommandSegments":{"Command":"echo ok","Output":[7,8],"Parts":[{"Source":"echo ok","Output":"ok"}]}},
- "Snapshots":{"ExecFiles":%q}}`, scope.Workspace, id, snapshot))
-	writeFile(t, scope.Store.Directory(), legacycall.Name(scope.Workspace, id, false), wire)
-	return snapshot, wire
+	wire := []byte(fmt.Sprintf(`{"Version":1,"Workspace":%q,"CallID":%q,
+ "History":{"ToolName":"exec","Report":"unrelated history",
+ "ExecObservation":{"Files":[{"Path":"a","Content":"retained baseline"}]},
+ "CommandSegments":{"Command":"echo ok","Output":[7,8],"Parts":[{"Source":"echo ok","Output":"ok"}]}}}`, scope.Workspace, id))
+	writeFile(t, scope.Store.Directory(), history.Name(scope.Workspace, id, false), wire)
+	return wire
 }
 
 func catalogHas(t *testing.T, owner *history.Service, scope reports.Scope, names ...string) {
@@ -159,8 +143,8 @@ func TestHistoricalOnlyRetryReusesMixedRecordAndDependencies(t *testing.T) {
 	service, owner := composedReports(t)
 	scope := selected(t, owner)
 	id := reports.ID("old-turn", "old-item")
-	snapshot, wire := historical(t, scope, id)
-	name := legacycall.Name(scope.Workspace, id, false)
+	wire := historical(t, scope, id)
+	name := history.Name(scope.Workspace, id, false)
 	if err := service.Publish(t.Context(), scope, id, evidence()); err != nil {
 		t.Fatal(err)
 	}
@@ -171,10 +155,10 @@ func TestHistoricalOnlyRetryReusesMixedRecordAndDependencies(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(scope.Store.Directory(), reports.Name(scope.Workspace, id))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("created duplicate report: %v", err)
 	}
-	catalogHas(t, owner, scope, name, snapshot)
+	catalogHas(t, owner, scope, name)
 	before := tree(t, scope.Store.Directory())
 	inspection, found, err := service.Inspect(scope.Store.Directory(), scope.Workspace, id)
-	if err != nil || !found || inspection.Legacy == nil || len(inspection.Data) != 0 || !reflect.DeepEqual(inspection.Dependencies, []string{snapshot}) {
+	if err != nil || !found || inspection.Legacy == nil || len(inspection.Data) != 0 || len(inspection.Dependencies) != 0 {
 		t.Fatalf("inspection=%+v found=%v err=%v", inspection, found, err)
 	}
 	if got := inspection.Legacy.History; got.Report != "unrelated history" || got.ExecObservation == nil || len(got.ExecObservation.Files) != 1 || got.ExecObservation.Files[0].Content != "retained baseline" {
@@ -189,11 +173,11 @@ func TestHistoricalOnlyRetryReusesMixedRecordAndDependencies(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(restored[id], new(evidence())) {
 		t.Fatalf("restored=%v err=%v", restored, err)
 	}
-	catalogHas(t, owner, scope, name, snapshot)
+	catalogHas(t, owner, scope, name)
 }
 
 func TestReportsValidateBothPresentFormsAndWholeMixedRecord(t *testing.T) {
-	for _, state := range []string{"agree", "conflict", "corrupt-current", "corrupt-mixed", "unknown-mixed-field", "missing-snapshot", "corrupt-snapshot"} {
+	for _, state := range []string{"agree", "conflict", "corrupt-current", "unknown-mixed-field"} {
 		t.Run(state, func(t *testing.T) {
 			service, owner := composedReports(t)
 			scope := selected(t, owner)
@@ -201,24 +185,16 @@ func TestReportsValidateBothPresentFormsAndWholeMixedRecord(t *testing.T) {
 			if err := service.Publish(t.Context(), scope, id, evidence()); err != nil {
 				t.Fatal(err)
 			}
-			snapshot, wire := historical(t, scope, id)
+			wire := historical(t, scope, id)
 			switch state {
 			case "conflict":
 				wire = bytes.Replace(wire, []byte(`"Output":"ok"`), []byte(`"Output":"different"`), 1)
 			case "corrupt-current":
 				writeFile(t, scope.Store.Directory(), reports.Name(scope.Workspace, id), []byte("{"))
-			case "corrupt-mixed":
-				wire = bytes.Replace(wire, []byte(`"Applied":true`), []byte(`"Applied":"true"`), 1)
 			case "unknown-mixed-field":
-				wire = bytes.Replace(wire, []byte(`"Sweep":true`), []byte(`"Sweep":true,"Future":null`), 1)
-			case "missing-snapshot":
-				if err := os.Remove(filepath.Join(scope.Store.Directory(), snapshot)); err != nil {
-					t.Fatal(err)
-				}
-			case "corrupt-snapshot":
-				writeFile(t, scope.Store.Directory(), snapshot, []byte("invalid gzip"))
+				wire = bytes.Replace(wire, []byte(`"Report":"unrelated history"`), []byte(`"Report":"unrelated history","Future":null`), 1)
 			}
-			writeFile(t, scope.Store.Directory(), legacycall.Name(scope.Workspace, id, false), wire)
+			writeFile(t, scope.Store.Directory(), history.Name(scope.Workspace, id, false), wire)
 			inspection, found, inspectErr := service.Inspect(scope.Store.Directory(), scope.Workspace, id)
 			restored, restoreErr := service.Restore(t.Context(), scope, []reports.Completed{completed(id, evidence())})
 			publishErr := service.Publish(t.Context(), scope, id, evidence())

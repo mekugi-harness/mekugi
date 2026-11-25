@@ -13,7 +13,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
@@ -85,7 +85,7 @@ func hydrateReview(ctx context.Context, retained changes.Scope, builder *present
 			// A writer interval becomes visible only with its terminal membership.
 			// Borrow that operation's real host identity without altering the
 			// earlier immutable boundary or fabricating an intermediate completion.
-			terminal, found, err := retained.Store.ReadAttachedHostCall(event.Workspace, legacycall.ExecCallID(writer, codeMode), false)
+			terminal, found, err := retained.Store.ReadAttachedHostCall(event.Workspace, sessionhistory.ExecCallID(writer, codeMode), false)
 			if err != nil {
 				return err
 			}
@@ -170,13 +170,13 @@ func reconcileReview(ctx context.Context, retained changes.Scope, service change
 
 // CapturedReceipt correlates retained command identity for live annotations and
 // restored review publications before producing feature presentation.
-func CapturedReceipt(workspace string, value legacycall.History, files []diffmodel.ReviewFile) *presentation.Receipt {
+func CapturedReceipt(workspace string, value sessionhistory.History, files []diffmodel.ReviewFile) *presentation.Receipt {
 	return capturedReceipt(workspace, value, presentation.ReceiptEvidence{Files: files})
 }
 
 // CapturedRetainedReceipt detaches a bounded excerpt and exact counts. It never
 // expands a large captured batch just to publish its Activity receipt.
-func CapturedRetainedReceipt(workspace string, value legacycall.History, reviews []evidence.Review) (*presentation.Receipt, error) {
+func CapturedRetainedReceipt(workspace string, value sessionhistory.History, reviews []evidence.Review) (*presentation.Receipt, error) {
 	files, counts, truncated, err := evidence.ReceiptFiles(reviews, presentation.MaxReceiptDiffBytes)
 	if err != nil {
 		return nil, err
@@ -184,7 +184,7 @@ func CapturedRetainedReceipt(workspace string, value legacycall.History, reviews
 	return capturedReceipt(workspace, value, presentation.ReceiptEvidence{Files: files, Counts: counts, Truncated: truncated}), nil
 }
 
-func capturedReceipt(workspace string, value legacycall.History, input presentation.ReceiptEvidence) *presentation.Receipt {
+func capturedReceipt(workspace string, value sessionhistory.History, input presentation.ReceiptEvidence) *presentation.Receipt {
 	if value.ExecOutcome == nil && value.ToolName != "apply_patch" {
 		return nil
 	}

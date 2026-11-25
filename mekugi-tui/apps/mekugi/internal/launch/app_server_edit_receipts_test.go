@@ -12,7 +12,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 
@@ -38,8 +38,8 @@ func TestCapturedEditInvocationCountWithoutWriterLabel(t *testing.T) {
 				call := fmt.Sprint(i)
 				v.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{{Seq: uint64(i + 1), Agent: "Main", Kind: "tool", CallID: call,
 					Native: &sessionpresentation.NativeItem{Thread: "main", Item: call, Phase: "item/completed", Live: true}}}})
-				history := legacycall.History{ToolName: "exec_command", Source: "exec_command", ExecutingThread: "main", CorrelationID: call + "\x00exec",
-					ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "old\n", "new\n")}), ExecOutcome: &legacycall.Outcome{}}
+				history := sessionhistory.History{ToolName: "exec_command", Source: "exec_command", ExecutingThread: "main", CorrelationID: call + "\x00exec",
+					ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "old\n", "new\n")}), ExecOutcome: &sessionhistory.Outcome{}}
 				if writer != "" {
 					history.ExecOutcome.Labels = []string{writer}
 				}
@@ -75,8 +75,8 @@ func TestUISnapshotAppServerGitDiagnosticReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := legacycall.History{ToolName: "exec_command", ExecutingThread: "main", CorrelationID: "git\x00exec", ChangeID: id, Root: workspace, ReviewFiles: retainedReviewFiles(files), ExecOutcome: &legacycall.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact}}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{history.CorrelationID: history}); err != nil {
+	history := sessionhistory.History{ToolName: "exec_command", ExecutingThread: "main", CorrelationID: "git\x00exec", ChangeID: id, Root: workspace, ReviewFiles: retainedReviewFiles(files), ExecOutcome: &sessionhistory.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact}}
+	if err := store.put(t.Context(), workspace, map[string]sessionhistory.History{history.CorrelationID: history}); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.liveDiffSnapshot(t.Context(), previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {"main": true}}})
@@ -143,9 +143,9 @@ func TestUISnapshotAppServerTemporaryCaptureWithoutWriterLabel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := legacycall.History{ToolName: "exec_command", Source: "exec_command", ExecutingThread: "main", CorrelationID: "cmd\x00exec", ChangeID: id, Root: workspace, ReviewFiles: retainedReviewFiles(files),
-		ExecOutcome: &legacycall.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact}}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{history.CorrelationID: history}); err != nil {
+	history := sessionhistory.History{ToolName: "exec_command", Source: "exec_command", ExecutingThread: "main", CorrelationID: "cmd\x00exec", ChangeID: id, Root: workspace, ReviewFiles: retainedReviewFiles(files),
+		ExecOutcome: &sessionhistory.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact}}
+	if err := store.put(t.Context(), workspace, map[string]sessionhistory.History{history.CorrelationID: history}); err != nil {
 		t.Fatal(err)
 	}
 	// Reload only durable capture evidence, without relying on a live producer.
@@ -244,15 +244,15 @@ func TestUISnapshotAppServerCapturedEditReceipts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		history := legacycall.History{
+		history := sessionhistory.History{
 			ToolName: nativeExecCommandToolName, Root: workspace, ExecutingThread: cmd.thread,
 			CorrelationID: cmd.carrier, ChangeID: id,
 			ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(cmd.path, cmd.path, "old\n", "new\n")}),
-			ExecOutcome: &legacycall.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact,
+			ExecOutcome: &sessionhistory.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact,
 				CodeMode: cmd.codeMode, Labels: []string{cmd.program}},
 		}
 		if cmd.codeMode {
-			history.HostResults = []legacycall.HostResult{
+			history.HostResults = []sessionhistory.HostResult{
 				{CallID: cmd.item, Tool: nativeExecCommandToolName, Status: "completed"},
 				{CallID: "sibling-call", Tool: nativeExecCommandToolName, Status: "completed"},
 			}
@@ -260,7 +260,7 @@ func TestUISnapshotAppServerCapturedEditReceipts(t *testing.T) {
 			history.ExecOutcome.Status = changecapture.StatusFailed
 			history.ExecOutcome.Exit = new(2)
 		}
-		if err := store.put(t.Context(), workspace, map[string]legacycall.History{cmd.carrier: history}); err != nil {
+		if err := store.put(t.Context(), workspace, map[string]sessionhistory.History{cmd.carrier: history}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -575,7 +575,7 @@ func TestAppServerUserShellCaptureRetainsCommandOutcome(t *testing.T) {
 }
 
 // Assemble captured-effect values for renderer-only fixtures.
-func testCapturedEditActivity(workspace string, history legacycall.History) *changepresentation.Receipt {
+func testCapturedEditActivity(workspace string, history sessionhistory.History) *changepresentation.Receipt {
 	if history.ExecOutcome == nil {
 		return nil
 	}

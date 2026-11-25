@@ -5,15 +5,14 @@ import (
 	"errors"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 // CallEvidence interprets immutable host evidence at the backend boundary.
 // Query logic sees decisions, never protocol envelopes or execution handles.
 type CallEvidence interface {
-	Verify(legacycall.History) error
-	EmptyPoll(*legacycall.History) bool
+	Verify(history.History) error
+	EmptyPoll(*history.History) bool
 	Commands() []string
 }
 

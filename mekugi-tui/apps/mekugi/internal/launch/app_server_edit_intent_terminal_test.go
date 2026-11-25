@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 
@@ -86,15 +86,15 @@ func TestAppServerEditIntentTerminalFrames(t *testing.T) {
 	if strings.Contains(frame, "a.go") || strings.Contains(frame, "PRIVATE_CAT_BODY") || !strings.Contains(frame, "PRIVATE_PY_BODY") || !strings.Contains(frame, "via python3") || strings.Contains(frame, "python3 - <<") {
 		t.Fatalf("terminal lost inline source or exposed the non-interpreter edit body:\n%s", frame)
 	}
-	history := legacycall.History{ExecutingThread: "main", CorrelationID: "cmd\x00exec", ChangeID: "c1",
-		ExecOutcome: &legacycall.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact, Labels: []string{"cat", "python3"}},
+	history := sessionhistory.History{ExecutingThread: "main", CorrelationID: "cmd\x00exec", ChangeID: "c1",
+		ExecOutcome: &sessionhistory.Outcome{Status: changecapture.StatusCompleted, Coverage: changecapture.CoverageExact, Labels: []string{"cat", "python3"}},
 		ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{
 			diffmodel.RenderReviewFile("a.go", "a.go", "old\n", "new\n"),
 			diffmodel.RenderReviewFile("b.go", "b.go", "old\n", "first\nsecond\n"),
 		})}
 	for i := range 8 {
 		path := fmt.Sprintf("PRIVATE_UNKNOWN_FILE_%02d.go", i)
-		history.ReviewFiles = append(history.ReviewFiles, legacycall.ReviewFile{BeforePath: path, AfterPath: path, Incomplete: "unavailable"})
+		history.ReviewFiles = append(history.ReviewFiles, sessionhistory.ReviewFile{BeforePath: path, AfterPath: path, Incomplete: "unavailable"})
 	}
 	receipt := testCapturedEditActivity(workspace, history)
 	if receipt == nil {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 
@@ -223,7 +223,7 @@ func TestExecTrackCapturesMktempCreation(t *testing.T) {
 			proxy := newManagedMekugiProxy(t)
 			attachTestReplayStore(t, proxy)
 			proxy.execWindows.Reports = shell.hub.Observer
-			run := func(call, script string) (execTrackRun, legacycall.History, context.Context) {
+			run := func(call, script string) (execTrackRun, sessionhistory.History, context.Context) {
 				t.Helper()
 				operation, ctx := startShellObservationTest(t, proxy, workspace, "thread", "turn", call+"-host", script)
 				key := [3]string{"thread", "turn", call + "-host"}

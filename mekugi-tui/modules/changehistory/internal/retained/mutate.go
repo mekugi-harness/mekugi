@@ -17,7 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/sourceparse"
@@ -91,7 +91,7 @@ func (s *store) loadChangeCaptures(ctx context.Context, workspace string, index 
 		var selected changes.FrozenCapture
 		var bounded bool
 		if ranges != nil {
-			selected, bounded = ranges[legacycall.Name(index.workspaceFor(id), call, false)]
+			selected, bounded = ranges[sessionhistory.Name(index.workspaceFor(id), call, false)]
 		}
 		if bounded && (record.CaptureOrder != selected.Order || record.History.Caller != selected.Caller) {
 			return capturedRecord{}, fmt.Errorf("change %s has an inconsistent frozen record", id)

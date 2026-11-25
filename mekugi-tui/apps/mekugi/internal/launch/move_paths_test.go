@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
@@ -24,7 +24,7 @@ import (
 func TestUISnapshotMoveActivityAndDialog(t *testing.T) {
 	workspace := "/workspace"
 	file := diffmodel.RenderReviewFile(workspace+"/internal/router/old.txt.new", workspace+"/internal/router/old.txt", "same\n", "same\n")
-	text := presentation.ReceiptText(workspace, receiptEvidence(legacycall.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file})}))
+	text := presentation.ReceiptText(workspace, receiptEvidence(sessionhistory.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file})}))
 	u := newAppServerSessionTestUI(t, t.TempDir())
 	u.shell.Transcript.Painter.Theme = diffrender.DarkTheme
 	u.testActivity(u.shell.Transcript).Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{{Seq: 1, Agent: "Main", Kind: "tool", Text: text, Native: &sessionpresentation.NativeItem{Thread: "main", Item: "move"}}}})
@@ -69,7 +69,7 @@ func TestMChangesMoveWorkspacePaths(t *testing.T) {
 	id := f.reserve(t, f.thread, "move")
 	before, after := filepath.Join(f.workspace, "internal", "old.txt"), filepath.Join(f.workspace, "internal", "new.txt")
 	file := diffmodel.RenderReviewFile(before, after, "same\n", "same\n")
-	f.publish(t, id, "move", "move", legacycall.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file})})
+	f.publish(t, id, "move", "move", sessionhistory.History{ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file})})
 	for _, mode := range []string{"", "--history", "--net"} {
 		stdout, stderr, status := f.run(t, "mchanges "+id+" "+mode)
 		if status != 0 || stderr != "" || !strings.Contains(stdout, "move \"internal/old.txt\" -> \"internal/new.txt\"\n") || strings.Contains(stdout, f.workspace) {

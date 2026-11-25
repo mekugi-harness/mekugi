@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 
@@ -43,8 +43,8 @@ func TestTerminalUIDiffSelectionUsesLastPaintedEvidence(t *testing.T) {
 					t.Fatal(err)
 				}
 				path := filepath.Join(workspace, name+".go")
-				history := legacycall.History{ChangeID: id, CorrelationID: name, ExecutingThread: "main", Caller: "/root", ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "", liveDiffLinesFile(name, 80))})}
-				if err := store.put(t.Context(), workspace, map[string]legacycall.History{name: history}); err != nil {
+				history := sessionhistory.History{ChangeID: id, CorrelationID: name, ExecutingThread: "main", Caller: "/root", ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "", liveDiffLinesFile(name, 80))})}
+				if err := store.put(t.Context(), workspace, map[string]sessionhistory.History{name: history}); err != nil {
 					t.Fatal(err)
 				}
 			}

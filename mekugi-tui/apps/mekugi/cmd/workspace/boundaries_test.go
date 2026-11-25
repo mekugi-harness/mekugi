@@ -23,11 +23,7 @@ func TestWorkspaceImportBoundaries(t *testing.T) {
 		owner, pkg, target string
 		allowed            bool
 	}{
-		{"mekugi-tui/libraries/legacycall", ".", "mekugi-tui/libraries/persistence", true},
-		{"mekugi-tui/libraries/legacycall", ".", "mekugi-tui/contracts/recordkind", true},
-		{"mekugi-tui/libraries/legacycall", ".", "mekugi-tui/contracts/command", false},
 		{"mekugi-tui/libraries/persistence", ".", "mekugi-tui/contracts/recordkind", false},
-		{"mekugi-tui/libraries/persistence", ".", "mekugi-tui/libraries/legacycall", false},
 		{"mekugi-tui/libraries/terminalui", ".", "mekugi-tui/libraries/sourceanalysis/markdownsyntax", true},
 		{"mekugi-tui/libraries/sourceanalysis", "markdownsyntax", "mekugi-tui/libraries/terminalui", false},
 		{"mekugi-tui/libraries/diffrender", ".", "mekugi-tui/libraries/textsanitize", true},

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 )
@@ -81,7 +81,7 @@ func (f *mchangesSliceFixture) reserve(t *testing.T, thread, correlation string)
 	return id
 }
 
-func (f *mchangesSliceFixture) publish(t *testing.T, id, correlation, callID string, history legacycall.History) {
+func (f *mchangesSliceFixture) publish(t *testing.T, id, correlation, callID string, history sessionhistory.History) {
 	t.Helper()
 	history.ChangeID, history.CorrelationID = id, correlation
 	if history.ToolName == "" {
@@ -90,7 +90,7 @@ func (f *mchangesSliceFixture) publish(t *testing.T, id, correlation, callID str
 	if history.Script == "" {
 		history.Script = callID
 	}
-	if err := f.store.put(f.ctx, f.workspace, map[string]legacycall.History{callID: history}); err != nil {
+	if err := f.store.put(f.ctx, f.workspace, map[string]sessionhistory.History{callID: history}); err != nil {
 		t.Fatal(err)
 	}
 }

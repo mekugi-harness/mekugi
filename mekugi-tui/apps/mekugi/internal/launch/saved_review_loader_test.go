@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 
@@ -99,10 +99,10 @@ func TestSavedReviewLoaderPublishesImmutableAtomicReceiptData(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(workspace, "receipt.go")
-	history := legacycall.History{ChangeID: id, CorrelationID: call, ExecutingThread: "main", ToolName: nativeExecCommandToolName,
+	history := sessionhistory.History{ChangeID: id, CorrelationID: call, ExecutingThread: "main", ToolName: nativeExecCommandToolName,
 		ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "before\n", "after\n")}),
-		ExecOutcome: &legacycall.Outcome{Status: changecapture.StatusFailed, Coverage: changecapture.CoverageExact, Exit: new(2)}}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{call: history}); err != nil {
+		ExecOutcome: &sessionhistory.Outcome{Status: changecapture.StatusFailed, Coverage: changecapture.CoverageExact, Exit: new(2)}}
+	if err := store.put(t.Context(), workspace, map[string]sessionhistory.History{call: history}); err != nil {
 		t.Fatal(err)
 	}
 	savedReviewLoaderEnqueue(t, loader, savedReviewLoaderScope(workspace, true, "main"))

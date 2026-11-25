@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
 
@@ -78,7 +78,7 @@ func (*service) ProjectFrozen(ctx context.Context, selected changes.Scope, froze
 		if capture.Workspace == "" || capture.Correlation == "" || capture.CallID == "" || capture.FirstChunk == 0 || capture.FirstChunk-1 > capture.LastChunk {
 			return changes.ProjectedCapture{}, errors.New("invalid frozen capture range")
 		}
-		name := legacycall.Name(capture.Workspace, capture.CallID, false)
+		name := history.Name(capture.Workspace, capture.CallID, false)
 		if _, exists := ranges[name]; exists {
 			return changes.ProjectedCapture{}, errors.New("duplicate frozen capture record")
 		}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	callhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	sessionreview "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 
@@ -45,9 +45,9 @@ func liveDiffScopeCapture(t *testing.T, store *mekugiReplayStore, workspace, thr
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := legacycall.History{ChangeID: id, CorrelationID: call, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{BeforePath: path, AfterPath: path,
+	history := callhistory.History{ChangeID: id, CorrelationID: call, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{BeforePath: path, AfterPath: path,
 		Diff: "--- \"" + path + "\"\n+++ \"" + path + "\"\n@@ -1 +1 @@\n-" + before + "\n+" + after + "\n"}})}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{call: history}); err != nil {
+	if err := store.put(t.Context(), workspace, map[string]callhistory.History{call: history}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -148,8 +148,8 @@ func TestLiveDiffFreshSnapshotComposesCrossStreamCaptures(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		history := legacycall.History{ChangeID: id, CorrelationID: capture.call, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{BeforePath: path, AfterPath: path, Diff: capture.diff}})}
-		if err := store.put(t.Context(), workspace, map[string]legacycall.History{capture.call: history}); err != nil {
+		history := callhistory.History{ChangeID: id, CorrelationID: capture.call, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{{BeforePath: path, AfterPath: path, Diff: capture.diff}})}
+		if err := store.put(t.Context(), workspace, map[string]callhistory.History{capture.call: history}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -58,10 +56,10 @@ func (*service) PrepareFork(selected changes.Scope, source, dest, fork string) (
 		}
 		for _, change := range index.Changes {
 			for _, id := range change.Dependencies {
-				plan.names = append(plan.names, legacycall.Name(index.Workspace, id, false))
+				plan.names = append(plan.names, history.Name(index.Workspace, id, false))
 			}
 			for _, call := range change.Calls {
-				plan.names = append(plan.names, legacycall.Name(index.Workspace, call.ID, false))
+				plan.names = append(plan.names, history.Name(index.Workspace, call.ID, false))
 			}
 		}
 		index.Namespace = dest

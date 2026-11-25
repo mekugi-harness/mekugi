@@ -29,7 +29,7 @@
 
 ## Current approach (replaceable)
 
-- Historical mixed-call records use the frozen `libraries/legacycall` codec validated whole before
-  feature projection; new features publish owner-typed records with neutral dependency graphs.
+- Retained host call records live in `modules/sessionhistory/history`; new features publish
+  owner-typed records with neutral dependency graphs.
 - Fork initialization retains inherited records before cloning indexes and publishes the new
   namespace last so interrupted setup is retryable.

@@ -33,8 +33,8 @@ use std::path::PathBuf;
 use test_case::test_case;
 
 #[tokio::test]
-async fn rollout_reconstruction_preserves_legacy_async_questions() {
-    let line = codex_rollout::parse_rollout_line(r#"{"timestamp":"2025-01-03T12:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Please choose.","delivery":"async","questions":[{"title":"Continue?","options":["Yes","No"]},{"id":"authored-id","title":"Why?"},{"id":"q8","question":"New?"},{"id":"q+99","title":"Legacy authored ID?"}]}}"#).unwrap();
+async fn rollout_reconstruction_tracks_async_question_id_high_water_mark() {
+    let line = codex_rollout::parse_rollout_line(r#"{"timestamp":"2025-01-03T12:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Please choose.","delivery":"async","questions":[{"id":"q1","question":"Continue?","options":[{"label":"Yes","description":""},{"label":"No","description":""}]},{"id":"authored-id","question":"Why?"},{"id":"q8","question":"New?"},{"id":"q+99","question":"Non-numeric authored ID?"}]}}"#).unwrap();
     let RolloutItem::EventMsg(EventMsg::AgentMessage(message)) = &line.item else {
         panic!("expected saved agent message")
     };

@@ -4,12 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 // Keep this wire fixture independent of the current encoder: these are the
@@ -31,39 +28,7 @@ func commandSegmentsCompatEnvelope(workspace, id string) string {
 
 func writeCommandSegmentsCompatEnvelope(t *testing.T, store *mekugiReplayStore, workspace, id, wire string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(store.directory, legacycall.Name(workspace, id, false)), []byte(wire), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(store.directory, sessionhistory.Name(workspace, id, false)), []byte(wire), 0600); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestCommandSegmentsHistoricalCompatMixedHistory(t *testing.T) {
-	workspace := t.TempDir()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, _ := batchCommandSegmentsFixture("mixed")
-	id := reports.ID("turn", item.ID)
-	wire := strings.Replace(commandSegmentsCompatEnvelope(workspace, id), `"History":{`, `"TaskPath":"old/task","History":{"Applied":true,"JournalIDs":["old-item"],"ToolName":"exec","Report":"retained report","ReviewFiles":[{"AfterPath":"a","CreatedPath":"/old/a","Diff":"saved diff"}],"UpstreamItem":{"provider_extension":{"opaque":[1,"two"]}},`, 1)
-	writeCommandSegmentsCompatEnvelope(t, store, workspace, id, wire)
-	before, found, err := store.read(workspace, id, false)
-	if err != nil || !found {
-		t.Fatalf("mixed historical record read: found %v, %v", found, err)
-	}
-	if before.History.ToolName != "exec" || before.History.Report != "retained report" || string(before.History.UpstreamItem["provider_extension"]) != `{"opaque":[1,"two"]}` {
-		t.Fatalf("lost unrelated mixed history: %#v", before.History)
-	}
-	if !reflect.DeepEqual(before.History.ReviewFiles, []legacycall.ReviewFile{{AfterPath: "a", Diff: "saved diff"}}) {
-		t.Fatalf("retired creation metadata changed review: %#v", before.History.ReviewFiles)
-	}
-	// Migrate a decoded mixed record through the writer without discarding its
-	// non-segment facts or the opaque provider extension.
-	copyID := reports.ID("copy-turn", item.ID)
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{copyID: before.History}); err != nil {
-		t.Fatal(err)
-	}
-	after, found, err := store.read(workspace, copyID, false)
-	if err != nil || !found || !reflect.DeepEqual(after.History, before.History) {
-		t.Fatalf("mixed history round trip: found %v, error %v; got %#v", found, err, after.History)
 	}
 }

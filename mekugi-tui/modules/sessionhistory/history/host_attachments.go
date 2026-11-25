@@ -6,14 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 )
 
-// HostRecord adds owner-supplied dependencies without changing the frozen
-// historical codec. The host owner interprets no feature attachment payload.
+// HostRecord adds owner-supplied dependencies to a retained host record.
+// The host owner interprets no feature attachment payload.
 type HostRecord struct {
-	legacycall.Record
+	Record
 	Attachments []string `json:",omitempty"`
 }
 
@@ -21,7 +19,7 @@ type HostRecord struct {
 // open their selected attachments separately, without expanding unrelated text.
 func ReadHostRecord(directory, workspace, callID string, commentary bool) (HostRecord, bool, error) {
 	var result HostRecord
-	name := legacycall.Name(workspace, callID, commentary)
+	name := Name(workspace, callID, commentary)
 	data, err := ReadRecord(filepath.Join(directory, name))
 	if errors.Is(err, os.ErrNotExist) {
 		return result, false, nil
@@ -33,14 +31,17 @@ func ReadHostRecord(directory, workspace, callID string, commentary bool) (HostR
 	if err := json.Unmarshal(data, &header); err != nil {
 		return result, false, err
 	}
-	if header.Version != 3 {
-		record, err := legacycall.Decode(directory, workspace, callID, commentary, data, MaxRecordBytes)
+	if header.Version == 1 {
+		record, err := DecodeRecord(workspace, callID, commentary, data, MaxRecordBytes)
 		return HostRecord{Record: record}, err == nil, err
+	}
+	if header.Version != 3 {
+		return result, false, errors.New("replay record identity/version mismatch")
 	}
 	if err := json.Unmarshal(data, &result, jsonv1.DefaultOptionsV1(), json.RejectUnknownMembers(true)); err != nil {
 		return result, false, err
 	}
-	if result.Workspace != workspace || result.CallID != callID || result.Commentary != commentary || result.Snapshots != nil {
+	if result.Workspace != workspace || result.CallID != callID || result.Commentary != commentary {
 		return result, false, errors.New("host attachment record identity mismatch")
 	}
 	if _, err := HostDependencies(name, data); err != nil {
@@ -53,8 +54,9 @@ func (s *Store) ReadAttachedHostCall(workspace, callID string, commentary bool) 
 	return ReadHostRecord(s.directory, workspace, callID, commentary)
 }
 
-// HostDependencies preserves historical dependency interpretation at its codec.
-// Version 3 only names feature roots; their registered owners supply the graph.
+// HostDependencies validates host record identity and returns attachment roots.
+// Version 1 has no external dependencies; version 3 names feature roots whose
+// registered owners supply the remaining graph.
 func HostDependencies(name string, data []byte) ([]string, error) {
 	var value struct {
 		Version           int
@@ -65,10 +67,16 @@ func HostDependencies(name string, data []byte) ([]string, error) {
 	if err := json.Unmarshal(data, &value); err != nil {
 		return nil, err
 	}
-	if value.Version != 3 {
-		return legacycall.Dependencies(name, data)
+	if value.Version == 1 {
+		if Name(value.Workspace, value.CallID, value.Commentary) != name || len(value.Attachments) > 0 {
+			return nil, errors.New("invalid host record identity")
+		}
+		return nil, nil
 	}
-	if legacycall.Name(value.Workspace, value.CallID, value.Commentary) != name {
+	if value.Version != 3 {
+		return nil, errors.New("invalid host record version")
+	}
+	if Name(value.Workspace, value.CallID, value.Commentary) != name {
 		return nil, errors.New("invalid host attachment identity")
 	}
 	seen := make(map[string]bool)

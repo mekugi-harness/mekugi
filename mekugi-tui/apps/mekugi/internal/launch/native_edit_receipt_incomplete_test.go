@@ -7,7 +7,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 
@@ -17,16 +17,16 @@ import (
 func TestEditReceiptGroupsCaptureGapsWithoutClaimingEdits(t *testing.T) {
 	for _, known := range []bool{false, true} {
 		t.Run(fmt.Sprint(known), func(t *testing.T) {
-			history := legacycall.History{ChangeID: "amber1", ExecOutcome: &legacycall.Outcome{Labels: []string{"python3"}}}
+			history := sessionhistory.History{ChangeID: "amber1", ExecOutcome: &sessionhistory.Outcome{Labels: []string{"python3"}}}
 			if known {
-				history.ReviewFiles = append(history.ReviewFiles, legacycall.ReviewFile(diffmodel.RenderReviewFile("edited.go", "edited.go", "old\n", "new\n")))
+				history.ReviewFiles = append(history.ReviewFiles, sessionhistory.ReviewFile(diffmodel.RenderReviewFile("edited.go", "edited.go", "old\n", "new\n")))
 			}
 			for i := range 100 {
 				file := diffmodel.RenderIncompleteReviewFile(fmt.Sprintf("unknown-%d.go", i), fmt.Sprintf("unknown-%d.go", i), "capture limit")
 				if i%2 == 0 {
 					file.Origin = "generator"
 				}
-				history.ReviewFiles = append(history.ReviewFiles, legacycall.ReviewFile(file))
+				history.ReviewFiles = append(history.ReviewFiles, sessionhistory.ReviewFile(file))
 			}
 			text := changepresentation.ReceiptText(t.TempDir(), receiptEvidence(history))
 			blocks := parseLiveActivity(sessionpresentation.ActivityEntry{Kind: "tool", Text: text})
@@ -50,11 +50,11 @@ func TestEditReceiptGroupsCaptureGapsWithoutClaimingEdits(t *testing.T) {
 }
 
 func TestEditReceiptCaptureReasonsAreBoundedAndRetained(t *testing.T) {
-	history := legacycall.History{ChangeID: "amber1"}
+	history := sessionhistory.History{ChangeID: "amber1"}
 	reasons := []string{"capture deadline", "capture deadline", "capture budget exhausted", "a read error\n\x1b[31m", strings.Repeat("b long error ", 100)}
 	for i, reason := range reasons {
 		path := fmt.Sprintf("candidate-%d.go", i)
-		history.ReviewFiles = append(history.ReviewFiles, legacycall.ReviewFile(diffmodel.RenderIncompleteReviewFile(path, path, reason)))
+		history.ReviewFiles = append(history.ReviewFiles, sessionhistory.ReviewFile(diffmodel.RenderIncompleteReviewFile(path, path, reason)))
 	}
 	text := changepresentation.ReceiptText("", receiptEvidence(history))
 	blocks := parseLiveActivity(sessionpresentation.ActivityEntry{Kind: "tool", Text: text})

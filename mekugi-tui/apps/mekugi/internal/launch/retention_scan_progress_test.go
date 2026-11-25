@@ -12,7 +12,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 // Retained calls are shared by fork catalogs. Planning needs their envelope
@@ -23,9 +23,9 @@ func retentionScanProgressFixture(tb testing.TB, owners int) *mekugiReplayStore 
 	if err != nil {
 		tb.Fatal(err)
 	}
-	histories := make(map[string]legacycall.History)
+	histories := make(map[string]history.History)
 	for i := range 8 {
-		histories[fmt.Sprint(i)] = legacycall.History{ToolName: "shell", Script: "true", Report: strings.Repeat("retained output\n", 1<<16)}
+		histories[fmt.Sprint(i)] = history.History{ToolName: "shell", Script: "true", Report: strings.Repeat("retained output\n", 1<<16)}
 	}
 	for i := range owners {
 		ctx, release, err := store.beginSession(tb.Context(), fmt.Sprint("fork-", i), "router")
@@ -111,7 +111,7 @@ func TestRetentionWorkerCoalescesPublicationConflicts(t *testing.T) {
 						t.Fatalf("stale plan published sweep marker: %v", err)
 					}
 					for i := range 8 {
-						if _, err := os.Stat(filepath.Join(store.directory, legacycall.Name("/w", fmt.Sprint(i), false))); err != nil {
+						if _, err := os.Stat(filepath.Join(store.directory, history.Name("/w", fmt.Sprint(i), false))); err != nil {
 							t.Fatal(err)
 						}
 					}

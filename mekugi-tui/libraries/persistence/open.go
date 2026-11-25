@@ -12,7 +12,6 @@ import (
 // overlapped reparse-point handles. The WASI and portable fallback openers expose
 // no open-time nonblocking flag here, so a concurrent special-file replacement
 // may block opening on those targets before descriptor validation can run.
-// Source: libraries/legacycall/open.go:8:24@[e448711c] openRetained
 func OpenRetained(path string, limit int) (*os.File, error) {
 	file, err := openRetainedFile(path)
 	if err != nil {

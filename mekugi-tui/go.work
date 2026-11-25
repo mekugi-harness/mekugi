@@ -10,7 +10,6 @@ use (
 	./libraries/diffmodel
 	./libraries/diffrender
 	./libraries/httptransport
-	./libraries/legacycall
 	./libraries/mcptransport
 	./libraries/modelprotocol
 	./libraries/pathdisplay

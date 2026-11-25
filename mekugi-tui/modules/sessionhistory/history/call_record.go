@@ -1,11 +1,21 @@
-package legacycall
+package history
 
 import (
+	"bytes"
+	"crypto/sha256"
 	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
 	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
 )
 
-// Source: internal/router/mekugi_store.go:43:51@[ff834f05] replayRecord
+// Record is a retained host call envelope stored in sessionhistory.
 type Record struct {
 	Version      int
 	Workspace    string
@@ -13,10 +23,8 @@ type Record struct {
 	Commentary   bool
 	CaptureOrder uint64 `json:",omitzero"`
 	History      History
-	Snapshots    *Snapshots `json:",omitempty"`
 }
 
-// Source: internal/router/mekugi_history.go:26:67@[ff834f05] mekugiHistory
 type History struct {
 	ToolName             string
 	PluginID             string
@@ -47,7 +55,6 @@ type History struct {
 	AlreadySatisfied     bool
 }
 
-// Source: review.go:14:34@[ff834f05] ReviewFile
 type ReviewFile struct {
 	BeforePath string
 	AfterPath  string
@@ -61,13 +68,11 @@ type ReviewFile struct {
 	OriginNote string `json:",omitzero"`
 }
 
-// Source: internal/router/native_apply_patch.go:27:30@[ff834f05] nativePatchObservation
 type NativePatch struct {
 	Input string
 	Files []NativeFile
 }
 
-// Source: internal/router/native_apply_patch.go:32:41@[ff834f05] nativePatchFileSnapshot
 type NativeFile struct {
 	BeforePath   string `json:",omitempty"`
 	AfterPath    string `json:",omitempty"`
@@ -79,7 +84,6 @@ type NativeFile struct {
 	TargetError  string `json:",omitempty"`
 }
 
-// Source: internal/router/resolved_stock_edits.go:11:17@[ff834f05] resolvedStockBaseline
 type Baseline struct {
 	Root      string
 	Shell     string
@@ -88,14 +92,12 @@ type Baseline struct {
 	Inventory *Inventory `json:",omitempty"`
 }
 
-// Source: internal/router/exec_observation.go:55:59@[ff834f05] execCommandInput
 type Command struct {
 	Command string
 	Workdir string
 	Shell   string `json:",omitempty"`
 }
 
-// Source: internal/router/exec_observation.go:79:99@[ff834f05] execFileSnapshot
 type File struct {
 	Origin      string `json:",omitempty"`
 	AlsoManaged string `json:",omitempty"`
@@ -110,7 +112,6 @@ type File struct {
 	CopyOf      string `json:",omitempty"`
 }
 
-// Source: internal/router/exec_observation.go:102:109@[ff834f05] execOmission
 type Omission struct {
 	Origin   string `json:",omitempty"`
 	Path     string
@@ -118,7 +119,6 @@ type Omission struct {
 	Deferred bool `json:",omitzero"`
 }
 
-// Source: internal/router/exec_observation.go:113:145@[ff834f05] execObservation
 type Observation struct {
 	Commands       []Command
 	CommandClasses []string `json:",omitempty"`
@@ -142,7 +142,6 @@ type Observation struct {
 	Checkpoints    map[string]string `json:",omitempty"`
 }
 
-// Source: internal/router/exec_observation.go:164:186@[ff834f05] execOutcome
 type Outcome struct {
 	DeletedDirectories []string `json:",omitempty"`
 	OutputRef          string   `json:",omitempty"`
@@ -160,14 +159,12 @@ type Outcome struct {
 	SharedWith         string   `json:",omitempty"`
 }
 
-// Source: internal/router/exec_observation.go:505:510@[ff834f05] execListing
 type Listing struct {
 	Origin  string `json:",omitempty"`
 	Root    string
 	Entries map[string]string `json:",omitempty"`
 }
 
-// Source: internal/router/exec_inventory.go:16:36@[ff834f05] execInventory
 type Inventory struct {
 	Version      int                       `json:",omitzero"`
 	Directories  map[string]DirectoryStamp `json:",omitempty"`
@@ -180,7 +177,6 @@ type Inventory struct {
 	Omitted      []Omission        `json:",omitempty"`
 }
 
-// Source: internal/router/exec_inventory.go:9:14@[ff834f05] execDirectoryStamp
 type DirectoryStamp struct {
 	Exists   bool
 	Stamp    string
@@ -188,14 +184,12 @@ type DirectoryStamp struct {
 	Complete bool
 }
 
-// Source: internal/execscope/shell.go:97:105@[ff834f05] Program
 type Program struct {
 	Label  string
 	Direct bool `json:",omitzero"`
 	VCS    bool `json:",omitzero"`
 }
 
-// Source: internal/router/native_tool_trace.go:50:55@[ff834f05] nativeToolResult
 type HostResult struct {
 	CallID   string
 	Tool     string
@@ -203,7 +197,6 @@ type HostResult struct {
 	ExitCode *int `json:",omitempty"`
 }
 
-// Source: internal/router/command_segments.go:19:24@[ff834f05] retainedCommandSegments
 type Segments struct {
 	Command string
 	Exit    int
@@ -211,7 +204,6 @@ type Segments struct {
 	Parts   []Segment
 }
 
-// Source: internal/router/command_segments.go:26:32@[ff834f05] retainedCommandSegment
 type Segment struct {
 	Timing  Timing `json:",omitzero"`
 	Source  string
@@ -220,9 +212,54 @@ type Segment struct {
 	Output  *string
 }
 
-// Source: internal/execsegment/report.go:12:16@[ff834f05] Timing
 type Timing struct {
 	Started   time.Time `json:"started,omitzero"`
 	Ended     time.Time `json:"ended,omitzero"`
 	ElapsedNS int64     `json:"elapsed_ns,omitzero"`
+}
+
+func PatchCallID(callID string, index int) string {
+	return callID + ":apply:" + strconv.Itoa(index+1)
+}
+
+func ExecCallID(callID string, codeMode bool) string {
+	if codeMode {
+		return callID + ":effects"
+	}
+	return callID + ":exec:1"
+}
+
+func Name(workspace, callID string, commentary bool) string {
+	prefix := "call-"
+	if commentary {
+		prefix = "commentary-"
+	}
+	return prefix + fmt.Sprintf("%x.json", sha256.Sum256(fmt.Appendf(nil, "%t\x00%s\x00%s", commentary, workspace, callID)))
+}
+
+func ValidName(name string, commentary bool) bool {
+	prefix := "call-"
+	if commentary {
+		prefix = "commentary-"
+	}
+	return recordkind.HashedName(prefix, ".json")(name)
+}
+
+// DecodeRecord validates a version-1 call envelope against its expected identity.
+func DecodeRecord(workspace, callID string, commentary bool, data []byte, limit int) (Record, error) {
+	if len(data) > limit {
+		return Record{}, errors.New("replay record exceeds size limit")
+	}
+	var r Record
+	dec := jsontext.NewDecoder(bytes.NewReader(data))
+	if err := json.UnmarshalDecode(dec, &r, jsonv1.DefaultOptionsV1(), json.RejectUnknownMembers(true)); err != nil {
+		return r, fmt.Errorf("decode replay record: %w", err)
+	}
+	if err := json.UnmarshalDecode(dec, new(any), jsonv1.DefaultOptionsV1()); !errors.Is(err, io.EOF) {
+		return r, errors.New("trailing replay record data")
+	}
+	if r.Version != 1 || r.Workspace != workspace || r.CallID != callID || r.Commentary != commentary {
+		return r, errors.New("replay record identity/version mismatch")
+	}
+	return r, nil
 }

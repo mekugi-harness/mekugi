@@ -3,7 +3,6 @@ package sessionhistory
 import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
@@ -28,11 +27,10 @@ var Module = module.Descriptor[Deps, *history.Service, module.NoBindings, module
 		history.FrozenResourceRecord,
 		history.LegacyOutputRecord,
 		history.LegacyCursorRecord,
-		{ID: "call", Match: func(name string) bool { return legacycall.ValidName(name, false) }, Dependencies: func(record recordkind.Record) ([]string, error) {
+		{ID: "call", Match: func(name string) bool { return history.ValidName(name, false) }, Dependencies: func(record recordkind.Record) ([]string, error) {
 			return history.HostDependencies(record.Name, record.Data)
 		}},
-		{ID: "snapshot", Match: legacycall.ValidSnapshotName},
-		{ID: "commentary", Match: func(name string) bool { return legacycall.ValidName(name, true) }, SeparateBudget: true, Limit: 16 << 20},
+		{ID: "commentary", Match: func(name string) bool { return history.ValidName(name, true) }, SeparateBudget: true, Limit: 16 << 20},
 	}},
 	New: newService,
 }

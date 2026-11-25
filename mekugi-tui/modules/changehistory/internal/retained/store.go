@@ -8,7 +8,6 @@ import (
 	"errors"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
@@ -59,11 +58,11 @@ func marshalIndex(value any) ([]byte, error) {
 }
 
 type capturedHistory struct {
-	legacycall.History
+	history.History
 	ReviewFiles []evidence.Review
 }
 type capturedRecord struct {
-	legacycall.Record
+	history.Record
 	History capturedHistory
 }
 
@@ -93,7 +92,7 @@ func (s *store) read(workspace, call string, commentary bool) (capturedRecord, b
 			return capturedRecord{}, false, err
 		}
 		if len(manifest.Observation) != 0 {
-			observation := new(legacycall.Observation)
+			observation := new(history.Observation)
 			if err := json.Unmarshal(manifest.Observation, observation, json.RejectUnknownMembers(true)); err != nil {
 				return capturedRecord{}, false, err
 			}
@@ -102,7 +101,7 @@ func (s *store) read(workspace, call string, commentary bool) (capturedRecord, b
 				return capturedRecord{}, false, err
 			}
 			for _, file := range files {
-				observation.Files = append(observation.Files, legacycall.File{Path: file.Path, Kind: string(file.Kind), Link: file.Link})
+				observation.Files = append(observation.Files, history.File{Path: file.Path, Kind: string(file.Kind), Link: file.Link})
 			}
 			projected.ExecObservation = observation
 		}

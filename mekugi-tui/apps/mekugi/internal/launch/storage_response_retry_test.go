@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 func TestReplayStorageDefaultIsFourGiB(t *testing.T) {
@@ -24,7 +24,7 @@ func TestReplayStorageDefaultIsFourGiB(t *testing.T) {
 		}
 	}
 	for number := range 33 {
-		name := legacycall.Name("/w", "existing-"+strconv.Itoa(number), false)
+		name := history.Name("/w", "existing-"+strconv.Itoa(number), false)
 		file, err := os.Create(filepath.Join(store.directory, name))
 		if err != nil {
 			t.Fatal(err)

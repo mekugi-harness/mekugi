@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	sessionreview "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 
@@ -40,9 +40,9 @@ func TestUISnapshotSavedDiffDependencyHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 				ids = append(ids, id)
-				history := legacycall.History{ChangeID: id, CorrelationID: call, Caller: "/root", ExecutingThread: "stock-thread", Source: "exec",
-					ExecOutcome: &legacycall.Outcome{Coverage: changecapture.CoveragePartial}, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file})}
-				if err := store.put(t.Context(), "/w", map[string]legacycall.History{call: history}); err != nil {
+				history := sessionhistory.History{ChangeID: id, CorrelationID: call, Caller: "/root", ExecutingThread: "stock-thread", Source: "exec",
+					ExecOutcome: &sessionhistory.Outcome{Coverage: changecapture.CoveragePartial}, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{file})}
+				if err := store.put(t.Context(), "/w", map[string]sessionhistory.History{call: history}); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -13,18 +13,16 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
-func batchCommandSegmentsFixture(id string) (binding.ThreadItem, *legacycall.Segments) {
+func batchCommandSegmentsFixture(id string) (binding.ThreadItem, *history.Segments) {
 	item := binding.ThreadItem{ID: id, Type: "commandExecution", Status: "completed", Command: "bash -lc 'echo one; false'", AggregatedOutput: new("one\n"), ExitCode: new(1)}
-	record := &legacycall.Segments{
+	record := &history.Segments{
 		Command: item.Command, Exit: 1, Output: sha256.Sum256([]byte(*item.AggregatedOutput)),
-		Parts: []legacycall.Segment{{Source: "echo one", Output: new("one")}, {Source: "false", Exit: 1, Output: new("")}},
+		Parts: []history.Segment{{Source: "echo one", Output: new("one")}, {Source: "false", Exit: 1, Output: new("")}},
 	}
 	return item, record
 }
@@ -36,7 +34,7 @@ func TestCommandSegmentsBatchMixedCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn := binding.HistoryTurn{ID: "turn", Status: "completed"}
-	histories := make(map[string]legacycall.History)
+	histories := make(map[string]history.History)
 	valid := make(map[string]bool)
 	// Span multiple bounded batches, with invalid records among valid ones.
 	for i := range 150 {
@@ -75,16 +73,16 @@ func TestCommandSegmentsBatchMixedCandidates(t *testing.T) {
 		}
 		turn.Items = append(turn.Items, item)
 		if record != nil {
-			histories[reports.ID(turn.ID, item.ID)] = legacycall.History{CommandSegments: record}
+			histories[reports.ID(turn.ID, item.ID)] = history.History{CommandSegments: record}
 		}
 	}
 	corrupt, record := batchCommandSegmentsFixture("corrupt")
 	turn.Items = slices.Insert(turn.Items, 1, corrupt)
-	histories[reports.ID(turn.ID, corrupt.ID)] = legacycall.History{CommandSegments: record}
+	histories[reports.ID(turn.ID, corrupt.ID)] = history.History{CommandSegments: record}
 	if err := store.put(t.Context(), workspace, histories); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(store.directory, legacycall.Name(workspace, reports.ID(turn.ID, corrupt.ID), false)), []byte("broken"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(store.directory, history.Name(workspace, reports.ID(turn.ID, corrupt.ID), false)), []byte("broken"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	u := appServerTestFeatures(&appServerUI{nativeSession: nativeSession{activity: new(activitymodel.Service), segments: testReports(), ctx: t.Context(), Thread: "unrelated-current-thread", retained: store.changeScope(), changeSource: store.changes, snapshots: store.snapshots, publishChanges: store.liveDiff}})
@@ -97,7 +95,7 @@ func TestCommandSegmentsBatchMixedCandidates(t *testing.T) {
 		if (got[item.ID] != nil) != valid[item.ID] {
 			t.Errorf("%s: accepted = %v, want %v", item.ID, got[item.ID] != nil, valid[item.ID])
 		}
-		name := legacycall.Name(workspace, reports.ID(turn.ID, item.ID), false)
+		name := history.Name(workspace, reports.ID(turn.ID, item.ID), false)
 		if catalog.Files[name] != valid[item.ID] {
 			t.Errorf("%s: durable ownership = %v, want %v", item.ID, catalog.Files[name], valid[item.ID])
 		}
@@ -122,7 +120,7 @@ func TestCommandSegmentsBatchRejectsUnretainedRecords(t *testing.T) {
 	}
 	item, record := batchCommandSegmentsFixture("item")
 	turn := binding.HistoryTurn{ID: "turn", Items: []binding.ThreadItem{item}}
-	if err := store.put(t.Context(), workspace, map[string]legacycall.History{reports.ID(turn.ID, item.ID): {CommandSegments: record}}); err != nil {
+	if err := store.put(t.Context(), workspace, map[string]history.History{reports.ID(turn.ID, item.ID): {CommandSegments: record}}); err != nil {
 		t.Fatal(err)
 	}
 	// Reading is possible, but ownership cannot be persisted for this target.
@@ -202,11 +200,11 @@ func BenchmarkCommandSegmentsBatchLargeHistory(b *testing.B) {
 				b.Fatal(err)
 			}
 			turn := binding.HistoryTurn{ID: "turn", Status: "completed"}
-			histories := make(map[string]legacycall.History, count)
+			histories := make(map[string]history.History, count)
 			for i := range count {
 				item, record := batchCommandSegmentsFixture(fmt.Sprintf("item-%d", i))
 				turn.Items = append(turn.Items, item)
-				histories[reports.ID(turn.ID, item.ID)] = legacycall.History{CommandSegments: record}
+				histories[reports.ID(turn.ID, item.ID)] = history.History{CommandSegments: record}
 			}
 			if err := store.put(b.Context(), workspace, histories); err != nil {
 				b.Fatal(err)

@@ -12,7 +12,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
@@ -80,7 +80,7 @@ func finalizeExecObservations(selected changes.Scope, source changes.Service, sn
 		if member.history.ExecObservation == nil || !member.result.Terminal {
 			continue
 		}
-		derived := legacycall.ExecCallID(member.callID, member.history.ExecObservation.CodeMode)
+		derived := sessionhistory.ExecCallID(member.callID, member.history.ExecObservation.CodeMode)
 		retained, found, err := lookupObservation(ctx, selected, workspace, derived)
 		if err != nil {
 			return err
@@ -148,7 +148,7 @@ func finalizeExecObservations(selected changes.Scope, source changes.Service, sn
 	}
 	first := members[0]
 	thread := first.history.ExecutingThread
-	derivedCallID := legacycall.ExecCallID(first.callID, first.history.ExecObservation.CodeMode)
+	derivedCallID := sessionhistory.ExecCallID(first.callID, first.history.ExecObservation.CodeMode)
 	correlation := first.callID + "\x00exec"
 	refs := make([]string, 0, len(members))
 	observations := make([]changecapture.Member, 0, len(members))
@@ -269,7 +269,7 @@ func finalizeExecObservations(selected changes.Scope, source changes.Service, sn
 	}
 	for _, member := range members[1:] {
 		memberObservation := *member.history.ExecObservation
-		memberCallID := legacycall.ExecCallID(member.callID, memberObservation.CodeMode)
+		memberCallID := sessionhistory.ExecCallID(member.callID, memberObservation.CodeMode)
 		memberScript := execObservationScript(memberObservation)
 		memberArguments := string(responses.MustMarshalJSON(map[string]string{"cmd": memberScript}))
 		records[memberCallID] = mekugiHistory{

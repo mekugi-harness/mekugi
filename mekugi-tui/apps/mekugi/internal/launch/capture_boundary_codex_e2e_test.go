@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 )
@@ -139,7 +139,7 @@ func TestCaptureDynamicWorkdirNativeCodex(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer release()
-			receipt, found, err := store.scoped(ctx).lookup(ctx, parent.dir, legacycall.ExecCallID(provider.callID, true))
+			receipt, found, err := store.scoped(ctx).lookup(ctx, parent.dir, sessionhistory.ExecCallID(provider.callID, true))
 			if err != nil || !found || receipt.ExecOutcome == nil || receipt.ExecOutcome.Exit == nil || *receipt.ExecOutcome.Exit != 0 {
 				t.Fatalf("missing terminal outcome: %+v, %v", receipt.ExecOutcome, err)
 			}
@@ -225,10 +225,10 @@ func TestCaptureTerminalWriterBoundaryNativeCodex(t *testing.T) {
 			}
 			defer release()
 			for _, cell := range []string{provider.callID, provider.callID + "-later"} {
-				id := legacycall.ExecCallID(cell, true)
+				id := sessionhistory.ExecCallID(cell, true)
 				patchWriter := (mode == "patch" || strings.HasSuffix(mode, "dynamic-patch")) && cell != provider.callID
 				if patchWriter {
-					id = legacycall.PatchCallID(cell, 0)
+					id = sessionhistory.PatchCallID(cell, 0)
 				}
 				writer, found, err := store.scoped(ctx).lookup(ctx, workspace, id)
 				if err != nil || !found || !patchWriter && (writer.ExecOutcome == nil || writer.ExecOutcome.Coverage != changecapture.CoverageExact) {
@@ -250,7 +250,7 @@ func TestCaptureTerminalWriterBoundaryNativeCodex(t *testing.T) {
 					t.Fatalf("no-op writer %s retained changes: %+v", cell, writer)
 				}
 			}
-			edited, found, err := store.scoped(ctx).lookup(ctx, workspace, legacycall.PatchCallID(provider.callID+"-overlap", 0))
+			edited, found, err := store.scoped(ctx).lookup(ctx, workspace, sessionhistory.PatchCallID(provider.callID+"-overlap", 0))
 			if err != nil || !found || edited.ChangeID == "" {
 				t.Fatalf("patch missing: found=%t err=%v history=%+v", found, err, edited)
 			}

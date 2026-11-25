@@ -9,7 +9,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
@@ -247,7 +247,7 @@ func TestMChangesCorruptLaterAttemptKeepsSiblingAndRecoveryStrict(t *testing.T) 
 				})
 			}
 			options := changes.Query{Workspace: f.workspace, IDs: []string{broken, valid}, View: view}
-			if err := os.WriteFile(filepath.Join(f.store.directory, legacycall.Name(f.workspace, "later", false)), []byte("{"), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(f.store.directory, sessionhistory.Name(f.workspace, "later", false)), []byte("{"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			output, err := f.store.changes.Read(f.ctx, f.store.scoped(f.ctx).changeScope(), options)

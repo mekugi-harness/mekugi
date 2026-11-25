@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -60,7 +59,7 @@ type retained struct {
 	report  *Report
 	names   []string
 	current *record
-	legacy  *legacycall.Record
+	legacy  *history.Record
 }
 
 // read checks every present representation. Neither a good new report nor a
@@ -110,7 +109,7 @@ func read(directory, workspace, id string) (retained, error) {
 		return result, errors.New("conflicting durable command segment reports")
 	}
 	result.legacy = &old.Record
-	result.names = append(result.names, legacycall.Name(workspace, id, false))
+	result.names = append(result.names, history.Name(workspace, id, false))
 	if result.report == nil {
 		result.report = &report
 	}
@@ -202,7 +201,7 @@ func (s *Service) Restore(ctx context.Context, scope Scope, completed []Complete
 type Inspection struct {
 	Name         string
 	Data         []byte
-	Legacy       *legacycall.Record
+	Legacy       *history.Record
 	Dependencies []string
 }
 

@@ -8,8 +8,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
@@ -23,7 +21,6 @@ type replayRecord struct {
 	Commentary   bool
 	CaptureOrder uint64 `json:",omitzero"`
 	History      mekugiHistory
-	Snapshots    *legacycall.Snapshots `json:",omitempty"`
 }
 
 func (s *mekugiReplayStore) read(workspace, callID string, commentary bool) (replayRecord, bool, error) {
@@ -74,7 +71,7 @@ func (s *mekugiReplayStore) write(r replayRecord) error {
 	if r.Version == 3 {
 		return publishCapturedObservation(s.transaction, s.changeScope(), r.Workspace, r.CallID, r.History)
 	}
-	return publishObservation(s.transaction, s.changeScope(), legacycall.Record{Version: r.Version, Workspace: r.Workspace, CallID: r.CallID, Commentary: r.Commentary, CaptureOrder: r.CaptureOrder, History: retainedHistory(r.History), Snapshots: r.Snapshots})
+	return publishObservation(s.transaction, s.changeScope(), history.Record{Version: r.Version, Workspace: r.Workspace, CallID: r.CallID, Commentary: r.Commentary, CaptureOrder: r.CaptureOrder, History: retainedHistory(r.History)})
 }
 
 // Readers acquire this lease before store.lock; cleanup only tries it without

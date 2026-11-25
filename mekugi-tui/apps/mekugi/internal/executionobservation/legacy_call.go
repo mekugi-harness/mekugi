@@ -5,7 +5,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/execscope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 )
 
@@ -19,16 +19,16 @@ type resolvedStockBaseline struct {
 	Omitted []changecapture.Omission `json:",omitempty"`
 }
 
-func legacyBaseline(v legacycall.Baseline) resolvedStockBaseline {
+func legacyBaseline(v history.Baseline) resolvedStockBaseline {
 	return resolvedStockBaseline{
 		Root:    v.Root,
 		Shell:   v.Shell,
 		Files:   legacySlice(v.Files, legacyFile),
-		Omitted: legacySlice(v.Omitted, func(v legacycall.Omission) changecapture.Omission { return changecapture.Omission(v) }),
+		Omitted: legacySlice(v.Omitted, func(v history.Omission) changecapture.Omission { return changecapture.Omission(v) }),
 	}
 }
 
-func legacyFile(v legacycall.File) changecapture.File {
+func legacyFile(v history.File) changecapture.File {
 	return changecapture.File{
 		Origin:      v.Origin,
 		AlsoManaged: v.AlsoManaged,
@@ -44,7 +44,7 @@ func legacyFile(v legacycall.File) changecapture.File {
 	}
 }
 
-func legacyHistory(v legacycall.History) mekugiHistory {
+func legacyHistory(v history.History) mekugiHistory {
 	result := mekugiHistory{
 		ToolName:             v.ToolName,
 		PluginID:             v.PluginID,
@@ -54,12 +54,12 @@ func legacyHistory(v legacycall.History) mekugiHistory {
 		Caller:               v.Caller,
 		Source:               v.Source,
 		ChangeID:             v.ChangeID,
-		ReviewFiles:          legacySlice(v.ReviewFiles, func(v legacycall.ReviewFile) diffmodel.ReviewFile { return diffmodel.ReviewFile(v) }),
+		ReviewFiles:          legacySlice(v.ReviewFiles, func(v history.ReviewFile) diffmodel.ReviewFile { return diffmodel.ReviewFile(v) }),
 		NativePatches:        legacySlice(v.NativePatches, legacyNativePatch),
 		ResolvedBaseline:     legacyPointer(v.ResolvedBaseline, legacyBaseline),
 		ExecObservation:      legacyPointer(v.ExecObservation, legacyObservation),
 		ExecOutcome:          legacyPointer(v.ExecOutcome, legacyOutcome),
-		HostResults:          legacySlice(v.HostResults, func(v legacycall.HostResult) binding.ToolResult { return binding.ToolResult(v) }),
+		HostResults:          legacySlice(v.HostResults, func(v history.HostResult) binding.ToolResult { return binding.ToolResult(v) }),
 		CommandSegments:      v.CommandSegments,
 		CarrierName:          v.CarrierName,
 		CarrierKind:          codeModeCarrierKind(v.CarrierKind),
@@ -78,7 +78,7 @@ func legacyHistory(v legacycall.History) mekugiHistory {
 	return result
 }
 
-func legacyMetadata(v legacycall.History) *legacycall.History {
+func legacyMetadata(v history.History) *history.History {
 	if v.ExecObservation != nil && v.ExecObservation.Inventory != nil ||
 		v.ResolvedBaseline != nil && v.ResolvedBaseline.Inventory != nil ||
 		v.ExecOutcome != nil && v.ExecOutcome.Unswept != "" {
@@ -87,30 +87,30 @@ func legacyMetadata(v legacycall.History) *legacycall.History {
 	return nil
 }
 
-func legacyNativePatch(v legacycall.NativePatch) changecapture.PatchObservation {
+func legacyNativePatch(v history.NativePatch) changecapture.PatchObservation {
 	return changecapture.PatchObservation{
 		Input: v.Input,
-		Files: legacySlice(v.Files, func(v legacycall.NativeFile) changecapture.PatchFile {
+		Files: legacySlice(v.Files, func(v history.NativeFile) changecapture.PatchFile {
 			return changecapture.PatchFile{BeforePath: v.BeforePath, AfterPath: v.AfterPath, Before: v.Before, Exists: v.Exists, Error: v.Error, TargetBefore: v.TargetBefore, TargetExists: v.TargetExists, TargetError: v.TargetError}
 		}),
 	}
 }
 
-func legacyObservation(v legacycall.Observation) changecapture.Observation {
+func legacyObservation(v history.Observation) changecapture.Observation {
 	return changecapture.Observation{
-		Commands:       legacySlice(v.Commands, func(v legacycall.Command) commandanalysis.Command { return commandanalysis.Command(v) }),
+		Commands:       legacySlice(v.Commands, func(v history.Command) commandanalysis.Command { return commandanalysis.Command(v) }),
 		CommandClasses: v.CommandClasses,
 		Class:          v.Class,
 		Labels:         v.Labels,
 		Reason:         v.Reason,
 		Unresolved:     v.Unresolved,
 		Files:          legacySlice(v.Files, legacyFile),
-		Omitted:        legacySlice(v.Omitted, func(v legacycall.Omission) changecapture.Omission { return changecapture.Omission(v) }),
-		Listings:       legacySlice(v.Listings, func(v legacycall.Listing) changecapture.Listing { return changecapture.Listing(v) }),
+		Omitted:        legacySlice(v.Omitted, func(v history.Omission) changecapture.Omission { return changecapture.Omission(v) }),
+		Listings:       legacySlice(v.Listings, func(v history.Listing) changecapture.Listing { return changecapture.Listing(v) }),
 		CodeMode:       v.CodeMode,
 		Roots:          v.Roots,
 		WindowStart:    v.WindowStart,
-		Programs:       legacySlice(v.Programs, func(v legacycall.Program) execscope.Program { return execscope.Program(v) }),
+		Programs:       legacySlice(v.Programs, func(v history.Program) execscope.Program { return execscope.Program(v) }),
 		Group:          v.Group,
 		Excluded:       v.Excluded,
 		RepeatedPaths:  v.RepeatedPaths,
@@ -140,17 +140,17 @@ func legacyPointer[A, B any](value *A, convert func(A) B) *B {
 
 // Typed neutral publication and cache conversion; live-only fields stay local.
 // Source: apps/mekugi/internal/router/legacy_call.go:14:143@d002a0dc, inverse conversion.
-func retainedBaseline(v resolvedStockBaseline) legacycall.Baseline {
-	return legacycall.Baseline{
+func retainedBaseline(v resolvedStockBaseline) history.Baseline {
+	return history.Baseline{
 		Root:    v.Root,
 		Shell:   v.Shell,
 		Files:   legacySlice(v.Files, retainedFile),
-		Omitted: legacySlice(v.Omitted, func(v changecapture.Omission) legacycall.Omission { return legacycall.Omission(v) }),
+		Omitted: legacySlice(v.Omitted, func(v changecapture.Omission) history.Omission { return history.Omission(v) }),
 	}
 }
 
-func retainedFile(v changecapture.File) legacycall.File {
-	return legacycall.File{
+func retainedFile(v changecapture.File) history.File {
+	return history.File{
 		Origin:      v.Origin,
 		AlsoManaged: v.AlsoManaged,
 		Path:        v.Path,
@@ -165,8 +165,8 @@ func retainedFile(v changecapture.File) legacycall.File {
 	}
 }
 
-func retainedHistory(v mekugiHistory) legacycall.History {
-	result := legacycall.History{
+func retainedHistory(v mekugiHistory) history.History {
+	result := history.History{
 		ToolName:             v.ToolName,
 		PluginID:             v.PluginID,
 		Script:               v.Script,
@@ -175,12 +175,12 @@ func retainedHistory(v mekugiHistory) legacycall.History {
 		Caller:               v.Caller,
 		Source:               v.Source,
 		ChangeID:             v.ChangeID,
-		ReviewFiles:          legacySlice(v.ReviewFiles, func(v diffmodel.ReviewFile) legacycall.ReviewFile { return legacycall.ReviewFile(v) }),
+		ReviewFiles:          legacySlice(v.ReviewFiles, func(v diffmodel.ReviewFile) history.ReviewFile { return history.ReviewFile(v) }),
 		NativePatches:        legacySlice(v.NativePatches, retainedNativePatch),
 		ResolvedBaseline:     legacyPointer(v.ResolvedBaseline, retainedBaseline),
 		ExecObservation:      legacyPointer(v.ExecObservation, retainedObservation),
 		ExecOutcome:          legacyPointer(v.ExecOutcome, retainedOutcome),
-		HostResults:          legacySlice(v.HostResults, func(v binding.ToolResult) legacycall.HostResult { return legacycall.HostResult(v) }),
+		HostResults:          legacySlice(v.HostResults, func(v binding.ToolResult) history.HostResult { return history.HostResult(v) }),
 		CommandSegments:      v.CommandSegments,
 		CarrierName:          v.CarrierName,
 		CarrierKind:          string(v.CarrierKind),
@@ -205,7 +205,7 @@ func retainedHistory(v mekugiHistory) legacycall.History {
 		}
 		if old.ExecOutcome != nil && old.ExecOutcome.Unswept != "" {
 			if result.ExecOutcome == nil {
-				result.ExecOutcome = new(legacycall.Outcome)
+				result.ExecOutcome = new(history.Outcome)
 			}
 			result.ExecOutcome.Unswept = old.ExecOutcome.Unswept
 		}
@@ -213,30 +213,30 @@ func retainedHistory(v mekugiHistory) legacycall.History {
 	return result
 }
 
-func retainedNativePatch(v changecapture.PatchObservation) legacycall.NativePatch {
-	return legacycall.NativePatch{
+func retainedNativePatch(v changecapture.PatchObservation) history.NativePatch {
+	return history.NativePatch{
 		Input: v.Input,
-		Files: legacySlice(v.Files, func(v changecapture.PatchFile) legacycall.NativeFile {
-			return legacycall.NativeFile{BeforePath: v.BeforePath, AfterPath: v.AfterPath, Before: v.Before, Exists: v.Exists, Error: v.Error, TargetBefore: v.TargetBefore, TargetExists: v.TargetExists, TargetError: v.TargetError}
+		Files: legacySlice(v.Files, func(v changecapture.PatchFile) history.NativeFile {
+			return history.NativeFile{BeforePath: v.BeforePath, AfterPath: v.AfterPath, Before: v.Before, Exists: v.Exists, Error: v.Error, TargetBefore: v.TargetBefore, TargetExists: v.TargetExists, TargetError: v.TargetError}
 		}),
 	}
 }
 
-func retainedObservation(v changecapture.Observation) legacycall.Observation {
-	return legacycall.Observation{
-		Commands:       legacySlice(v.Commands, func(v commandanalysis.Command) legacycall.Command { return legacycall.Command(v) }),
+func retainedObservation(v changecapture.Observation) history.Observation {
+	return history.Observation{
+		Commands:       legacySlice(v.Commands, func(v commandanalysis.Command) history.Command { return history.Command(v) }),
 		CommandClasses: v.CommandClasses,
 		Class:          v.Class,
 		Labels:         v.Labels,
 		Reason:         v.Reason,
 		Unresolved:     v.Unresolved,
 		Files:          legacySlice(v.Files, retainedFile),
-		Omitted:        legacySlice(v.Omitted, func(v changecapture.Omission) legacycall.Omission { return legacycall.Omission(v) }),
-		Listings:       legacySlice(v.Listings, func(v changecapture.Listing) legacycall.Listing { return legacycall.Listing(v) }),
+		Omitted:        legacySlice(v.Omitted, func(v changecapture.Omission) history.Omission { return history.Omission(v) }),
+		Listings:       legacySlice(v.Listings, func(v changecapture.Listing) history.Listing { return history.Listing(v) }),
 		CodeMode:       v.CodeMode,
 		Roots:          v.Roots,
 		WindowStart:    v.WindowStart,
-		Programs:       legacySlice(v.Programs, func(v execscope.Program) legacycall.Program { return legacycall.Program(v) }),
+		Programs:       legacySlice(v.Programs, func(v execscope.Program) history.Program { return history.Program(v) }),
 		Group:          v.Group,
 		Excluded:       v.Excluded,
 		RepeatedPaths:  v.RepeatedPaths,
@@ -246,7 +246,7 @@ func retainedObservation(v changecapture.Observation) legacycall.Observation {
 	}
 }
 
-func legacyOutcome(v legacycall.Outcome) changecapture.Outcome {
+func legacyOutcome(v history.Outcome) changecapture.Outcome {
 	return changecapture.Outcome{
 		DeletedDirectories: v.DeletedDirectories,
 		Status:             v.Status,
@@ -263,8 +263,8 @@ func legacyOutcome(v legacycall.Outcome) changecapture.Outcome {
 	}
 }
 
-func retainedOutcome(v changecapture.Outcome) legacycall.Outcome {
-	return legacycall.Outcome{
+func retainedOutcome(v changecapture.Outcome) history.Outcome {
+	return history.Outcome{
 		DeletedDirectories: v.DeletedDirectories,
 		Status:             v.Status,
 		Exit:               v.Exit,

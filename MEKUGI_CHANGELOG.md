@@ -108,9 +108,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   async replies use `<question_answers>`, without expansion after context reset.
   The v2 response now carries an ordered answer vector, not a string-answer map;
   clients must migrate. Catalog parameter overrides cannot replace this schema.
-  Persisted pre-upgrade async questions still decode title/string-option records;
-  serialization uses only the new shape and retained authored IDs do not reset
-  the runtime question counter.
+  Async questions decode and serialize only the canonical rich-option shape, and
+  retained authored IDs do not reset the runtime question counter.
 
 - Tool, unified-exec, and code-mode output uses stock upstream middle
   truncation and spills the omitted portion to
