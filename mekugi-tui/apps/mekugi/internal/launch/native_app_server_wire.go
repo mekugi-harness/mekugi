@@ -15,18 +15,15 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/connector"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 )
 
 // nativeAppServerSocketPath returns the private, user-local Unix socket path
-// used by the direct native mekugi-app-server daemon.
+// shared by direct native mekugi-app-server launches and the remote connector.
 func nativeAppServerSocketPath() (string, error) {
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("locate cache directory for native app-server: %w", err)
-	}
-	return filepath.Join(cache, "mekugi", "app-server.sock"), nil
+	return connector.NativeSocketPath()
 }
 
 // ensureNativeAppServer coordinates single-instance startup of mekugi-app-server

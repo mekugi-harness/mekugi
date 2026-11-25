@@ -22,6 +22,8 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
 use base64::Engine;
+use codex_app_server_protocol::DynamicToolCallOutputContentItem;
+use codex_app_server_protocol::GeneratedImageRef;
 use codex_app_server_protocol::ImageReference;
 use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadReadParams;
@@ -32,7 +34,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use tokio::io::AsyncReadExt;
 
-use crate::message_processor::MessageProcessor;
+use crate::request_processors::ThreadRequestProcessor;
 
 const PROTOCOL_HEADER: &str = "Mekugi-Protocol";
 const PROTOCOL_VERSION: &str = "9";
@@ -43,7 +45,7 @@ const ENVELOPE_OVERHEAD: usize = 64 << 10;
 
 #[derive(Clone)]
 struct ResourceState {
-    processor: Arc<OnceLock<Arc<MessageProcessor>>>,
+    thread_processor: Arc<OnceLock<Arc<ThreadRequestProcessor>>>,
 }
 
 #[derive(Serialize)]
@@ -103,11 +105,11 @@ struct AttachmentImageBody {
     workspace: String,
 }
 
-pub(crate) fn router(processor: Arc<OnceLock<Arc<MessageProcessor>>>) -> Router {
+pub(crate) fn router(thread_processor: Arc<OnceLock<Arc<ThreadRequestProcessor>>>) -> Router {
     Router::new()
         .route("/api/version", get(version_handler))
         .route("/api/resources/{kind}", post(resource_handler))
-        .with_state(ResourceState { processor })
+        .with_state(ResourceState { thread_processor })
 }
 
 fn base_headers() -> HeaderMap {
@@ -176,6 +178,7 @@ fn check_protocol_header(headers: &HeaderMap) -> Result<(), Response> {
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 async fn version_handler(headers: HeaderMap) -> Response {
     if let Err(response) = check_protocol_header(&headers) {
         return response;
@@ -186,6 +189,7 @@ async fn version_handler(headers: HeaderMap) -> Response {
     }))
 }
 
+#[tracing::instrument(skip_all, fields(kind = %kind))]
 async fn resource_handler(
     AxumPath(kind): AxumPath<String>,
     State(state): State<ResourceState>,
@@ -222,21 +226,24 @@ async fn resource_handler(
             );
         }
     }
-    let Some(processor) = state.processor.get() else {
+    let Some(thread_processor) = state.thread_processor.get() else {
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "App server is still starting.",
         );
     };
     match kind.as_str() {
-        "content" => handle_content(processor, params).await,
-        "image" => handle_image(processor, params).await,
-        "attachment-image" => handle_attachment_image(processor, params).await,
+        "content" => handle_content(thread_processor, params).await,
+        "image" => handle_image(thread_processor, params).await,
+        "attachment-image" => handle_attachment_image(thread_processor, params).await,
         _ => error_response(StatusCode::NOT_FOUND, "Unknown resource endpoint."),
     }
 }
 
-async fn handle_content(processor: &MessageProcessor, params: ResourceParams) -> Response {
+async fn handle_content(
+    thread_processor: &ThreadRequestProcessor,
+    params: ResourceParams,
+) -> Response {
     let body_value = params.body.unwrap_or_else(|| serde_json::json!({}));
     let content_body: ContentBody = match serde_json::from_value(body_value) {
         Ok(parsed) => parsed,
@@ -249,8 +256,7 @@ async fn handle_content(processor: &MessageProcessor, params: ResourceParams) ->
     } else {
         return error_response(StatusCode::BAD_REQUEST, "A thread id is required.");
     };
-    let response = match processor
-        .thread_processor()
+    let response = match thread_processor
         .thread_read_response_inner(ThreadReadParams {
             thread_id,
             include_turns: true,
@@ -317,7 +323,10 @@ fn image_identity(source: &str) -> String {
     out
 }
 
-async fn handle_image(processor: &MessageProcessor, params: ResourceParams) -> Response {
+async fn handle_image(
+    thread_processor: &ThreadRequestProcessor,
+    params: ResourceParams,
+) -> Response {
     let Some(body_value) = params.body else {
         return error_response(StatusCode::BAD_REQUEST, "Invalid image request.");
     };
@@ -328,8 +337,7 @@ async fn handle_image(processor: &MessageProcessor, params: ResourceParams) -> R
     if params.thread.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "A thread id is required.");
     }
-    let response = match processor
-        .thread_processor()
+    let response = match thread_processor
         .thread_read_response_inner(ThreadReadParams {
             thread_id: params.thread,
             include_turns: true,
@@ -345,38 +353,7 @@ async fn handle_image(processor: &MessageProcessor, params: ResourceParams) -> R
         }
     };
     let workspace = PathBuf::from(response.thread.cwd.as_str());
-    let mut matched_source: Option<String> = None;
-    'outer: for turn in &response.thread.turns {
-        for item in &turn.items {
-            let ThreadItemPayload::UserMessage { id, content, .. } = &item.payload else {
-                continue;
-            };
-            if let Some(ref expected_item_id) = image_body.item_id
-                && id != expected_item_id
-            {
-                continue;
-            }
-            let mut image_index = 0usize;
-            for input in content {
-                let candidate = match input {
-                    UserInput::LocalImage { path, .. } => path.to_string_lossy().into_owned(),
-                    UserInput::Image {
-                        image: ImageReference::Inline { url },
-                        ..
-                    } => url.clone(),
-                    _ => continue,
-                };
-                let index_ok = image_body.index.is_none_or(|idx| idx == image_index);
-                let identity_ok =
-                    image_body.image.is_empty() || image_identity(&candidate) == image_body.image;
-                if index_ok && identity_ok {
-                    matched_source = Some(candidate);
-                    break 'outer;
-                }
-                image_index += 1;
-            }
-        }
-    }
+    let matched_source = find_published_image_source(&response.thread.turns, &image_body);
     let Some(source) = matched_source else {
         return error_response(
             StatusCode::NOT_FOUND,
@@ -386,7 +363,113 @@ async fn handle_image(processor: &MessageProcessor, params: ResourceParams) -> R
     read_image_source(&workspace, &source).await
 }
 
-async fn handle_attachment_image(processor: &MessageProcessor, params: ResourceParams) -> Response {
+fn extract_item_image_sources(payload: &ThreadItemPayload) -> Vec<String> {
+    let mut sources = Vec::new();
+    match payload {
+        ThreadItemPayload::UserMessage { content, .. } => {
+            for input in content {
+                match input {
+                    UserInput::LocalImage { path, .. } => {
+                        sources.push(path.to_string_lossy().into_owned());
+                    }
+                    UserInput::Image {
+                        image: ImageReference::Inline { url },
+                        ..
+                    } => {
+                        sources.push(url.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ThreadItemPayload::ImageView { path, .. } => {
+            sources.push(path.as_str().to_string());
+        }
+        ThreadItemPayload::ImageGeneration(item) => {
+            if let Some(saved_path) = &item.saved_path {
+                sources.push(saved_path.to_string_lossy().into_owned());
+            }
+            if let GeneratedImageRef::Inline { result } = &item.image
+                && !result.is_empty()
+            {
+                if result.starts_with("data:") {
+                    sources.push(result.clone());
+                } else {
+                    sources.push(format!("data:image/png;base64,{result}"));
+                }
+            }
+        }
+        ThreadItemPayload::DynamicToolCall {
+            content_items: Some(items),
+            ..
+        } => {
+            for item in items {
+                if let DynamicToolCallOutputContentItem::InputImage { image_url } = item {
+                    sources.push(image_url.clone());
+                }
+            }
+        }
+        ThreadItemPayload::McpToolCall {
+            result: Some(result),
+            ..
+        } => {
+            for block in &result.content {
+                let Some(obj) = block.as_object() else {
+                    continue;
+                };
+                if obj.get("type").and_then(serde_json::Value::as_str) != Some("image") {
+                    continue;
+                }
+                if let Some(data) = obj.get("data").and_then(serde_json::Value::as_str) {
+                    let mime = obj
+                        .get("mimeType")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("image/png");
+                    sources.push(format!("data:{mime};base64,{data}"));
+                } else if let Some(url) = obj
+                    .get("url")
+                    .or_else(|| obj.get("imageUrl"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    sources.push(url.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    sources
+}
+
+fn find_published_image_source(
+    turns: &[codex_app_server_protocol::Turn],
+    image_body: &ImageBody,
+) -> Option<String> {
+    for turn in turns {
+        for item in &turn.items {
+            if let Some(ref expected_item_id) = image_body.item_id
+                && item.id() != expected_item_id
+            {
+                continue;
+            }
+            for (image_index, candidate) in
+                extract_item_image_sources(&item.payload).into_iter().enumerate()
+            {
+                let index_ok = image_body.index.is_none_or(|idx| idx == image_index);
+                let identity_ok =
+                    image_body.image.is_empty() || image_identity(&candidate) == image_body.image;
+                if index_ok && identity_ok {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn handle_attachment_image(
+    thread_processor: &ThreadRequestProcessor,
+    params: ResourceParams,
+) -> Response {
     let Some(body_value) = params.body else {
         return error_response(StatusCode::BAD_REQUEST, "Invalid attachment image request.");
     };
@@ -412,8 +495,7 @@ async fn handle_attachment_image(processor: &MessageProcessor, params: ResourceP
                 "Attachment previews require the live thread's workspace.",
             );
         }
-        let response = match processor
-            .thread_processor()
+        let response = match thread_processor
             .thread_read_response_inner(ThreadReadParams {
                 thread_id: params.thread,
                 include_turns: false,
@@ -548,5 +630,113 @@ mod tests {
         assert_eq!(detect_raster_mime(b"RIFF0000WEBP"), Some("image/webp"));
         assert_eq!(detect_raster_mime(b"<svg></svg>"), None);
         assert_eq!(detect_raster_mime(b"plain text"), None);
+    }
+
+    #[test]
+    fn finds_published_user_and_generated_and_tool_images() {
+        use codex_app_server_protocol::ImageGenerationItem;
+        use codex_app_server_protocol::McpToolCallResult;
+        use codex_app_server_protocol::McpToolCallStatus;
+        use codex_app_server_protocol::ThreadItem;
+        use codex_app_server_protocol::Turn;
+        use codex_app_server_protocol::TurnStatus;
+
+        let user_url = "data:image/png;base64,iVBORw0KGgo=".to_string();
+        let gen_b64 = "iVBORw0KGgoAAAANSUhEUg==".to_string();
+        let gen_url = format!("data:image/png;base64,{gen_b64}");
+        let mcp_url = "data:image/jpeg;base64,/9j/4AAQ".to_string();
+
+        let turn = Turn {
+            id: "turn-1".to_string(),
+            root_turn_id: None,
+            items: vec![
+                ThreadItem::untimed(ThreadItemPayload::UserMessage {
+                    id: "user-1".to_string(),
+                    client_id: None,
+                    content: vec![UserInput::Image {
+                        image: ImageReference::Inline {
+                            url: user_url.clone(),
+                        },
+                        detail: None,
+                    }],
+                }),
+                ThreadItem::untimed(ThreadItemPayload::ImageGeneration(ImageGenerationItem {
+                    id: "gen-1".to_string(),
+                    status: "completed".to_string(),
+                    revised_prompt: None,
+                    image: GeneratedImageRef::Inline { result: gen_b64 },
+                    transparent_background: None,
+                    failure: None,
+                    saved_path: None,
+                    input_images: Vec::new(),
+                    imagegen_request_id: None,
+                    generation_id: None,
+                })),
+                ThreadItem::untimed(ThreadItemPayload::McpToolCall {
+                    id: "mcp-1".to_string(),
+                    server: "srv".to_string(),
+                    environment_id: None,
+                    tool: "render".to_string(),
+                    status: McpToolCallStatus::Completed,
+                    arguments: serde_json::json!({}),
+                    app_context: None,
+                    mcp_app_resource_uri: None,
+                    mcp_app_ui: None,
+                    plugin_id: None,
+                    read_only_hint: None,
+                    result: Some(Box::new(McpToolCallResult {
+                        content: vec![serde_json::json!({
+                            "type": "image",
+                            "mimeType": "image/jpeg",
+                            "data": "/9j/4AAQ"
+                        })],
+                        structured_content: None,
+                        meta: None,
+                    })),
+                    error: None,
+                    duration_ms: None,
+                }),
+            ],
+            items_view: Default::default(),
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: None,
+            completed_at: None,
+            duration_ms: None,
+        };
+
+        assert_eq!(
+            find_published_image_source(
+                std::slice::from_ref(&turn),
+                &ImageBody {
+                    item_id: Some("user-1".to_string()),
+                    index: Some(0),
+                    image: image_identity(&user_url),
+                }
+            ),
+            Some(user_url)
+        );
+        assert_eq!(
+            find_published_image_source(
+                std::slice::from_ref(&turn),
+                &ImageBody {
+                    item_id: Some("gen-1".to_string()),
+                    index: Some(0),
+                    image: image_identity(&gen_url),
+                }
+            ),
+            Some(gen_url)
+        );
+        assert_eq!(
+            find_published_image_source(
+                std::slice::from_ref(&turn),
+                &ImageBody {
+                    item_id: Some("mcp-1".to_string()),
+                    index: Some(0),
+                    image: image_identity(&mcp_url),
+                }
+            ),
+            Some(mcp_url)
+        );
     }
 }

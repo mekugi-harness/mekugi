@@ -809,7 +809,9 @@ pub async fn run_main_with_transport_options(
     let graceful_signal_restart_enabled =
         runtime_options.install_shutdown_signal_handler && !single_client_mode;
     let mut app_server_client_name_rx = None;
-    let http_resource_processor = Arc::new(std::sync::OnceLock::<Arc<MessageProcessor>>::new());
+    let http_resource_thread_processor = Arc::new(std::sync::OnceLock::<
+        Arc<crate::request_processors::ThreadRequestProcessor>,
+    >::new());
 
     match &transport {
         AppServerTransport::Stdio => {
@@ -837,7 +839,9 @@ pub async fn run_main_with_transport_options(
                     DaemonShutdownAccess::Disabled
                 },
                 websocket_compression,
-                Some(http_resources::router(Arc::clone(&http_resource_processor))),
+                Some(http_resources::router(Arc::clone(
+                    &http_resource_thread_processor,
+                ))),
             )
             .await?;
             transport_accept_handles.push(accept_handle);
@@ -1026,7 +1030,7 @@ pub async fn run_main_with_transport_options(
         });
         processor.remote_control_processor.daemon_settings_file = daemon_settings_file;
         let processor = Arc::new(processor);
-        let _ = http_resource_processor.set(Arc::clone(&processor));
+        let _ = http_resource_thread_processor.set(Arc::clone(processor.thread_processor()));
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
         let mut active_admissions_rx = processor.turn_admission.subscribe_active();

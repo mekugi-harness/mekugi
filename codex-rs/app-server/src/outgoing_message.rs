@@ -643,7 +643,9 @@ impl OutgoingMessageSender {
         id: RequestId,
         result: Result,
     ) {
-        let entry = self.take_connection_callback(connection_id, &id).await;
+        let entry = self
+            .take_connection_callback_for_response(connection_id, &id, Some(&result))
+            .await;
 
         match entry {
             Some((id, entry)) => {
@@ -737,6 +739,16 @@ impl OutgoingMessageSender {
         connection_id: ConnectionId,
         id: &RequestId,
     ) -> Option<(RequestId, PendingCallbackEntry)> {
+        self.take_connection_callback_for_response(connection_id, id, /*result*/ None)
+            .await
+    }
+
+    async fn take_connection_callback_for_response(
+        &self,
+        connection_id: ConnectionId,
+        id: &RequestId,
+        result: Option<&Result>,
+    ) -> Option<(RequestId, PendingCallbackEntry)> {
         let human_approval = self
             .human_approval_connections
             .lock()
@@ -753,6 +765,16 @@ impl OutgoingMessageSender {
             warn!(
                 ?connection_id,
                 "rejecting remote-human response to local-only secret request {id:?}"
+            );
+            return None;
+        }
+        if is_remote_human
+            && let Some(result) = result
+            && is_disallowed_remote_human_approval_response(&entry.request, result)
+        {
+            warn!(
+                ?connection_id,
+                "rejecting persistent/session-wide approval decision from remote-human connection for {id:?}"
             );
             return None;
         }
@@ -1153,6 +1175,43 @@ pub(crate) fn requires_local_secret_authority(request: &ServerRequest) -> bool {
         ServerRequest::ToolRequestUserInput { params, .. } => {
             params.questions.iter().any(|question| question.is_secret)
         }
+        _ => false,
+    }
+}
+
+/// Remote-human connections may only approve or deny a single command/action.
+/// Reject session-wide approvals and policy amendments from remote-human peers.
+fn is_disallowed_remote_human_approval_response(
+    request: &ServerRequest,
+    result: &serde_json::Value,
+) -> bool {
+    let decision_is_persistent = |decision: &serde_json::Value| -> bool {
+        match decision {
+            serde_json::Value::String(value) => matches!(
+                value.as_str(),
+                "acceptForSession" | "allowForSession" | "approved_for_session"
+            ),
+            serde_json::Value::Object(map) => {
+                map.contains_key("acceptWithExecpolicyAmendment")
+                    || map.contains_key("applyNetworkPolicyAmendment")
+                    || map.contains_key("approved_execpolicy_amendment")
+                    || map.contains_key("network_policy_amendment")
+            }
+            _ => false,
+        }
+    };
+    match request {
+        ServerRequest::CommandExecutionRequestApproval { .. }
+        | ServerRequest::FileChangeRequestApproval { .. }
+        | ServerRequest::ShellGuardRequestApproval { .. }
+        | ServerRequest::ExecCommandApproval { .. }
+        | ServerRequest::ApplyPatchApproval { .. } => {
+            result.get("decision").is_some_and(decision_is_persistent)
+        }
+        ServerRequest::PermissionsRequestApproval { .. } => result
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|scope| scope.eq_ignore_ascii_case("session")),
         _ => false,
     }
 }
@@ -2108,5 +2167,116 @@ mod tests {
             .notify_client_response(remote_conn, plain_q_id, serde_json::json!({ "answers": {} }))
             .await;
         assert!(plain_q_waiter.await.expect("remote non-secret answer resolves").is_ok());
+    }
+
+    #[tokio::test]
+    async fn remote_human_connection_rejects_session_wide_and_policy_amendment_approvals() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(16);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let remote_conn = ConnectionId(42);
+        outgoing.register_remote_human_connection(remote_conn).await;
+        let thread_id = ThreadId::new();
+
+        let (cmd_id, mut cmd_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::CommandExecutionRequestApproval(
+                    codex_app_server_protocol::CommandExecutionRequestApprovalParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: "item-1".to_string(),
+                        approval_id: None,
+                        reason: None,
+                        network_approval_context: None,
+                        command: Some("ls".to_string()),
+                        cwd: None,
+                        command_actions: None,
+                        additional_permissions: None,
+                        proposed_execpolicy_amendment: None,
+                        proposed_network_policy_amendments: None,
+                        available_decisions: None,
+                        started_at_ms: 0,
+                        environment_id: None,
+                        kind: codex_app_server_protocol::CommandExecutionApprovalKind::Command,
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+
+        for disallowed in [
+            serde_json::json!({ "decision": "acceptForSession" }),
+            serde_json::json!({ "decision": "allowForSession" }),
+            serde_json::json!({
+                "decision": {
+                    "acceptWithExecpolicyAmendment": {
+                        "execpolicy_amendment": ["ls"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "decision": {
+                    "applyNetworkPolicyAmendment": {
+                        "network_policy_amendment": { "host": "example.com", "action": "allow" }
+                    }
+                }
+            }),
+        ] {
+            outgoing
+                .notify_client_response(remote_conn, cmd_id.clone(), disallowed)
+                .await;
+            assert!(
+                cmd_waiter.try_recv().is_err(),
+                "session-wide or policy-amendment approval must not resolve"
+            );
+        }
+
+        // One-time approval still succeeds.
+        outgoing
+            .notify_client_response(remote_conn, cmd_id, serde_json::json!({ "decision": "accept" }))
+            .await;
+        assert!(cmd_waiter.await.expect("one-time accept should resolve").is_ok());
+
+        // Session-scoped permission grant is also rejected on remote-human.
+        let (perm_id, mut perm_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::PermissionsRequestApproval(
+                    codex_app_server_protocol::PermissionsRequestApprovalParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-2".to_string(),
+                        item_id: "item-2".to_string(),
+                        reason: None,
+                        cwd: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("absolute path")
+                            .into(),
+                        environment_id: None,
+                        started_at_ms: 0,
+                        permissions: codex_app_server_protocol::RequestPermissionProfile {
+                            network: None,
+                            file_system: None,
+                        },
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+        outgoing
+            .notify_client_response(
+                remote_conn,
+                perm_id.clone(),
+                serde_json::json!({ "permissions": {}, "scope": "session" }),
+            )
+            .await;
+        assert!(perm_waiter.try_recv().is_err());
+        outgoing
+            .notify_client_response(
+                remote_conn,
+                perm_id,
+                serde_json::json!({ "permissions": {}, "scope": "turn" }),
+            )
+            .await;
+        assert!(perm_waiter.await.expect("turn-scoped grant should resolve").is_ok());
     }
 }

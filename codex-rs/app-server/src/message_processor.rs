@@ -170,7 +170,7 @@ pub(crate) struct MessageProcessor {
     pub(super) remote_control_processor: RemoteControlRequestProcessor,
     search_processor: SearchRequestProcessor,
     thread_queue_processor: ThreadQueueRequestProcessor,
-    thread_processor: ThreadRequestProcessor,
+    thread_processor: Arc<ThreadRequestProcessor>,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
@@ -498,7 +498,7 @@ impl MessageProcessor {
             outgoing.clone(),
             Arc::clone(&thread_list_state_permit),
         );
-        let thread_processor = ThreadRequestProcessor::new(
+        let thread_processor = Arc::new(ThreadRequestProcessor::new(
             auth_manager,
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -516,7 +516,7 @@ impl MessageProcessor {
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
             config_warnings.clone(),
             sample_responses,
-        );
+        ));
         let turn_processor = TurnRequestProcessor::new(
             Arc::clone(&thread_manager),
             outgoing.clone(),
@@ -630,7 +630,7 @@ impl MessageProcessor {
     ) {
         let request_method = request.method.as_str();
         if session.origin == crate::transport::ConnectionOrigin::RemoteHuman
-            && is_blocked_for_remote_human(request_method)
+            && !is_allowed_for_remote_human(request_method)
         {
             let request_id = ConnectionRequestId {
                 connection_id,
@@ -941,7 +941,7 @@ impl MessageProcessor {
             .await;
     }
 
-    pub(crate) fn thread_processor(&self) -> &ThreadRequestProcessor {
+    pub(crate) fn thread_processor(&self) -> &Arc<ThreadRequestProcessor> {
         &self.thread_processor
     }
 
@@ -2130,26 +2130,72 @@ impl MessageProcessor {
     }
 }
 
-/// Methods that invoke native startup or host-local process/daemon authority
-/// and must never be admitted over the restricted remote-human endpoint.
-fn is_blocked_for_remote_human(method: &str) -> bool {
+/// Explicit allowlist of session, thread, turn, and catalog methods admitted
+/// over the restricted remote-human endpoint. All other methods (including
+/// `fs/*`, `git/*`, `config/*`, `account/*`, `plugin/*`, `mcp*`,
+/// `command/*`, `process/*`, `remoteControl/*`, `native/*`,
+/// `source/*`, and `session/redraw`) require local native authority.
+fn is_allowed_for_remote_human(method: &str) -> bool {
     matches!(
         method,
-        "native/start"
-            | "source/skills"
-            | "session/redraw"
-            | "process/spawn"
-            | "process/writeStdin"
-            | "process/kill"
-            | "process/resizePty"
-            | "command/exec"
-            | "command/exec/write"
-            | "command/exec/terminate"
-            | "command/exec/resize"
-            | "remoteControl/enable"
-            | "remoteControl/disable"
-            | "remoteControl/pairing/start"
-            | "remoteControl/client/revoke"
+        "initialize"
+            | "model/list"
+            | "skills/list"
+            | "review/start"
+            | "turn/start"
+            | "turn/steer"
+            | "turn/interrupt"
+            | "turn/settings/update"
+            | "thread/start"
+            | "thread/resume"
+            | "thread/fork"
+            | "thread/archive"
+            | "thread/unarchive"
+            | "thread/delete"
+            | "thread/unsubscribe"
+            | "thread/name/set"
+            | "thread/prediction/request"
+            | "thread/goal/set"
+            | "thread/goal/get"
+            | "thread/goal/clear"
+            | "thread/queue/add"
+            | "thread/queue/list"
+            | "thread/queue/update"
+            | "thread/queue/delete"
+            | "thread/queue/reorder"
+            | "thread/queue/start"
+            | "thread/metadata/update"
+            | "thread/attachment/add"
+            | "thread/attachment/list"
+            | "thread/attachmentOwner/list"
+            | "thread/attachment/remove"
+            | "thread/section/move"
+            | "thread/settings/update"
+            | "thread/compact/start"
+            | "thread/compact/cancel"
+            | "thread/shellCommand"
+            | "thread/approveGuardianDeniedAction"
+            | "thread/backgroundTerminals/clean"
+            | "thread/backgroundTerminals/list"
+            | "thread/backgroundTerminals/terminate"
+            | "thread/revert"
+            | "thread/list"
+            | "thread/search"
+            | "thread/search/stream"
+            | "thread/search/cancel"
+            | "thread/search/stream/cancel"
+            | "thread/searchOccurrences"
+            | "thread/loaded/list"
+            | "thread/inspect"
+            | "thread/subtree/list"
+            | "thread/changes/read"
+            | "thread/read"
+            | "thread/readState/update"
+            | "thread/turns/list"
+            | "thread/items/list"
+            | "thread/items/read"
+            | "thread/timeline/list"
+            | "thread/prepareApprovedPlan"
     )
 }
 
@@ -2171,11 +2217,25 @@ mod workspace_routing_tests;
 
 #[cfg(test)]
 mod remote_human_authority_tests {
-    use super::is_blocked_for_remote_human;
+    use super::is_allowed_for_remote_human;
 
     #[test]
-    fn blocks_native_startup_and_host_process_methods_only() {
+    fn remote_human_allowlist_blocks_host_and_native_methods() {
         for blocked in [
+            "fs/readFile",
+            "fs/writeFile",
+            "fs/readDirectory",
+            "fs/remove",
+            "gitDiffToRemote",
+            "config/read",
+            "config/value/write",
+            "account/read",
+            "account/login/start",
+            "plugin/list",
+            "plugin/install",
+            "mcpServer/tool/call",
+            "mcpServer/resource/read",
+            "fuzzyFileSearch",
             "native/start",
             "source/skills",
             "session/redraw",
@@ -2193,12 +2253,13 @@ mod remote_human_authority_tests {
             "remoteControl/client/revoke",
         ] {
             assert!(
-                is_blocked_for_remote_human(blocked),
+                !is_allowed_for_remote_human(blocked),
                 "expected {blocked} to be blocked for remote-human connections"
             );
         }
         for allowed in [
             "initialize",
+            "model/list",
             "thread/start",
             "thread/resume",
             "thread/read",
@@ -2211,7 +2272,7 @@ mod remote_human_authority_tests {
             "turn/interrupt",
         ] {
             assert!(
-                !is_blocked_for_remote_human(allowed),
+                is_allowed_for_remote_human(allowed),
                 "expected {allowed} to be allowed for remote-human connections"
             );
         }
