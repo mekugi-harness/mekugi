@@ -7,14 +7,25 @@ import argparse
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 fallback
+    tomllib = None  # type: ignore[assignment]
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GO_WORKSPACE_FILES = frozenset({"go.work", "go.work.sum", "go.mod", "go.sum"})
+# Crates whose integration tests spawn companion workspace binaries via cargo_bin().
+RUST_COMPANION_PACKAGES: dict[str, tuple[str, ...]] = {
+    "codex-core": ("codex-code-mode-host",),
+    "codex-app-server": ("codex-code-mode-host",),
+    "codex-app-server-subprocess-tests": ("codex-app-server", "codex-code-mode-host"),
+}
 
 
 @dataclass(frozen=True)
@@ -32,11 +43,16 @@ class VerificationPlan:
         if self.go_packages:
             commands.append([just_bin, "test", *self.go_packages])
         if self.rust_fallback:
-            commands.append([just_bin, "test-rust"])
+            commands.append([just_bin, "test-rust", "--locked", "--workspace"])
         elif self.rust_packages:
-            pkg_flags = [arg for pkg in self.rust_packages for arg in ("-p", pkg)]
+            build_packages = set(self.rust_packages)
+            for pkg in self.rust_packages:
+                build_packages.update(RUST_COMPANION_PACKAGES.get(pkg, ()))
+            pkg_flags = [arg for pkg in sorted(build_packages) for arg in ("-p", pkg)]
             filter_expr = " | ".join(f"package({pkg})" for pkg in self.rust_packages)
-            commands.append([just_bin, "test-rust", *pkg_flags, "-E", filter_expr])
+            commands.append(
+                [just_bin, "test-rust", "--locked", *pkg_flags, "-E", filter_expr]
+            )
         return commands
 
 
@@ -61,9 +77,9 @@ def collect_changed_files(repo_root: Path, base: str) -> list[str]:
     """Return sorted unique repo-relative paths from base...HEAD and local edits."""
     paths: set[str] = set()
     queries = (
-        ["diff", "-z", "--name-only", f"{base}...HEAD"],
-        ["diff", "-z", "--name-only", "--cached"],
-        ["diff", "-z", "--name-only"],
+        ["diff", "-z", "--name-only", "--no-renames", f"{base}...HEAD"],
+        ["diff", "-z", "--name-only", "--no-renames", "--cached"],
+        ["diff", "-z", "--name-only", "--no-renames"],
         ["ls-files", "-z", "--others", "--exclude-standard"],
     )
     for query in queries:
@@ -75,19 +91,61 @@ def _normalize_rel_path(path: str) -> str:
     return path.replace("\\", "/").lstrip("./")
 
 
+def _parse_toml_section(text: str, section: str) -> str:
+    """Extract the body of a top-level TOML table for Python 3.10 fallback."""
+    header_re = re.compile(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$")
+    lines: list[str] = []
+    in_section = False
+    for line in text.splitlines():
+        match = header_re.match(line)
+        if match:
+            in_section = match.group(1).strip() == section
+            continue
+        if in_section:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _read_workspace_excludes(text: str) -> list[str]:
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return []
+        excluded = data.get("workspace", {}).get("exclude", [])
+        return [item for item in excluded if isinstance(item, str)]
+    body = _parse_toml_section(text, "workspace")
+    match = re.search(r"(?m)^\s*exclude\s*=\s*\[(.*?)\]", body, re.DOTALL)
+    if not match:
+        return []
+    return [a or b for a, b in re.findall(r'"([^"]+)"|\'([^\']+)\'', match.group(1))]
+
+
+def _read_package_name(text: str) -> str | None:
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return None
+        package_name = data.get("package", {}).get("name")
+        return package_name if isinstance(package_name, str) and package_name else None
+    body = _parse_toml_section(text, "package")
+    match = re.search(r'(?m)^\s*name\s*=\s*(?:"([^"]+)"|\'([^\']+)\')', body)
+    if not match:
+        return None
+    return match.group(1) or match.group(2)
+
+
 def _load_rust_excluded_dirs(repo_root: Path) -> frozenset[str]:
     manifest = repo_root / "codex-rs" / "Cargo.toml"
     if not manifest.is_file():
         return frozenset()
     try:
-        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+        text = manifest.read_text(encoding="utf-8")
+    except OSError:
         return frozenset()
-    excluded = data.get("workspace", {}).get("exclude", [])
     return frozenset(
-        str(item).replace("\\", "/").strip("/")
-        for item in excluded
-        if isinstance(item, str)
+        item.replace("\\", "/").strip("/") for item in _read_workspace_excludes(text)
     )
 
 
@@ -159,13 +217,10 @@ def resolve_rust_package(
             if _is_excluded_rust_dir(rel_member, excluded_dirs):
                 return None
             try:
-                data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-            except (OSError, tomllib.TOMLDecodeError):
+                text = manifest.read_text(encoding="utf-8")
+            except OSError:
                 return None
-            package_name = data.get("package", {}).get("name")
-            if isinstance(package_name, str) and package_name:
-                return package_name
-            return None
+            return _read_package_name(text)
         cur = cur.parent
     return None
 

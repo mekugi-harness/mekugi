@@ -141,10 +141,38 @@ class AffectedPlanTests(unittest.TestCase):
                 self.assertEqual(plan.commands(), [["just", "test", "@workspace"]])
 
     def test_rust_single_and_multiple_crates(self):
-        single = AFFECTED.plan_affected(["codex-rs/core/src/lib.rs"], self.repo)
+        single = AFFECTED.plan_affected(["codex-rs/protocol/src/lib.rs"], self.repo)
         self.assertEqual(
             single.commands(),
-            [["just", "test-rust", "-p", "codex-core", "-E", "package(codex-core)"]],
+            [
+                [
+                    "just",
+                    "test-rust",
+                    "--locked",
+                    "-p",
+                    "codex-protocol",
+                    "-E",
+                    "package(codex-protocol)",
+                ]
+            ],
+        )
+
+        core_only = AFFECTED.plan_affected(["codex-rs/core/src/lib.rs"], self.repo)
+        self.assertEqual(
+            core_only.commands(),
+            [
+                [
+                    "just",
+                    "test-rust",
+                    "--locked",
+                    "-p",
+                    "codex-code-mode-host",
+                    "-p",
+                    "codex-core",
+                    "-E",
+                    "package(codex-core)",
+                ]
+            ],
         )
 
         multi = AFFECTED.plan_affected(
@@ -157,6 +185,9 @@ class AffectedPlanTests(unittest.TestCase):
                 [
                     "just",
                     "test-rust",
+                    "--locked",
+                    "-p",
+                    "codex-code-mode-host",
                     "-p",
                     "codex-core",
                     "-p",
@@ -178,7 +209,9 @@ class AffectedPlanTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 plan = AFFECTED.plan_affected(changed, self.repo)
                 self.assertTrue(plan.rust_fallback)
-                self.assertEqual(plan.commands(), [["just", "test-rust"]])
+                self.assertEqual(
+                    plan.commands(), [["just", "test-rust", "--locked", "--workspace"]]
+                )
 
     def test_mixed_diff_runs_all_affected_targets(self):
         plan = AFFECTED.plan_affected(
@@ -194,7 +227,17 @@ class AffectedPlanTests(unittest.TestCase):
             [
                 ["just", "webui-check"],
                 ["just", "test", "./mekugi-tui/modules/usage"],
-                ["just", "test-rust", "-p", "codex-core", "-E", "package(codex-core)"],
+                [
+                    "just",
+                    "test-rust",
+                    "--locked",
+                    "-p",
+                    "codex-code-mode-host",
+                    "-p",
+                    "codex-core",
+                    "-E",
+                    "package(codex-core)",
+                ],
             ],
         )
 
@@ -247,8 +290,11 @@ class AffectedPlanTests(unittest.TestCase):
                 [
                     "just",
                     "test-rust",
+                    "--locked",
                     "-p",
                     "codex-app-server",
+                    "-p",
+                    "codex-code-mode-host",
                     "-p",
                     "codex-core",
                     "-E",
@@ -256,6 +302,29 @@ class AffectedPlanTests(unittest.TestCase):
                 ],
             ],
         )
+
+    def test_python310_toml_fallback_parses_package_and_excludes(self):
+        with patch.object(AFFECTED, "tomllib", None):
+            plan = AFFECTED.plan_affected(
+                ["codex-rs/protocol/src/lib.rs"],
+                self.repo,
+            )
+            self.assertEqual(
+                plan.commands(),
+                [
+                    [
+                        "just",
+                        "test-rust",
+                        "--locked",
+                        "-p",
+                        "codex-protocol",
+                        "-E",
+                        "package(codex-protocol)",
+                    ]
+                ],
+            )
+            excluded = AFFECTED.plan_affected(["codex-rs/tui/src/lib.rs"], self.repo)
+            self.assertTrue(excluded.rust_fallback)
 
     def test_collect_changed_files_catches_committed_staged_unstaged_and_untracked(
         self,
@@ -309,6 +378,38 @@ class AffectedPlanTests(unittest.TestCase):
                 "mekugi-tui/modules/usage/usage.go",
                 "mekugi-webui/app/src/App.svelte",
             ],
+        )
+
+    def test_collect_changed_files_reports_both_sides_of_rename(self):
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", *args],
+                cwd=self.repo,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env={
+                    "GIT_AUTHOR_NAME": "Test",
+                    "GIT_AUTHOR_EMAIL": "test@example.com",
+                    "GIT_COMMITTER_NAME": "Test",
+                    "GIT_COMMITTER_EMAIL": "test@example.com",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_GLOBAL": "/dev/null",
+                    "PATH": "/usr/bin:/bin:/usr/local/bin",
+                },
+            )
+
+        (self.repo / "codex-rs/core/src/moved.rs").write_text("pub fn moved() {}\n")
+        git("init", "-b", "main")
+        git("add", ".")
+        git("commit", "-m", "base")
+        git("checkout", "-b", "feat")
+        git("mv", "codex-rs/core/src/moved.rs", "codex-rs/protocol/src/moved.rs")
+
+        changed = AFFECTED.collect_changed_files(self.repo, "main")
+        self.assertEqual(
+            changed,
+            ["codex-rs/core/src/moved.rs", "codex-rs/protocol/src/moved.rs"],
         )
 
 
