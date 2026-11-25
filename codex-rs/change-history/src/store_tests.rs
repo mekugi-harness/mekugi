@@ -674,3 +674,45 @@ fn revert_refuses_to_follow_replacement_symlink() {
         "symlink target must remain untouched"
     );
 }
+
+#[test]
+fn user_shell_source_kind_is_authored_and_roundtrips() {
+    assert!(ChangeSourceKind::UserShell.is_authored());
+    assert_eq!(ChangeSourceKind::UserShell.label(), "user_shell");
+    let json = serde_json::to_string(&ChangeSourceKind::UserShell).expect("serialize");
+    assert_eq!(json, "\"user_shell\"");
+    let parsed: ChangeSourceKind = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(parsed, ChangeSourceKind::UserShell);
+
+    let ws = TempDir::new().expect("ws");
+    let store = ChangeHistoryStore::open(ws.path().join("store")).expect("open");
+    let path = ws.path().join("note.txt");
+
+    let rec = store
+        .record_change(
+            test_metadata(ws.path(), "t-user", "call-user", ChangeSourceKind::UserShell),
+            vec![PendingFileChange {
+                rel_path: "note.txt".to_string(),
+                abs_path: path,
+                moved_from: None,
+                before: FileSnapshot::Missing,
+                after: FileSnapshot::Present(b"from user shell\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("record user_shell");
+
+    let entries = store.list_entries().expect("list entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source_kind, ChangeSourceKind::UserShell);
+    assert!(entries[0].source_kind.is_authored());
+
+    let loaded = store.get_record(&rec.id).expect("get record");
+    assert_eq!(loaded.metadata.source_kind, ChangeSourceKind::UserShell);
+
+    let history = crate::render_history(&[loaded], &[]);
+    assert!(
+        history.contains("[user_shell]"),
+        "expected [user_shell] label in history: {history}"
+    );
+}

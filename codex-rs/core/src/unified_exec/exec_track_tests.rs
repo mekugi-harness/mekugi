@@ -139,3 +139,52 @@ async fn exec_track_attachment_deduplicates_against_existing_apply_patch_claim()
     );
     assert_eq!(entries[0].source_kind, ChangeSourceKind::ApplyPatch);
 }
+
+#[tokio::test]
+async fn exec_track_attachment_persists_user_shell_source_kind() {
+    let ws = TempDir::new().expect("ws tempdir");
+    let store_dir = TempDir::new().expect("store tempdir");
+
+    let script = "printf 'user-edit' > user_file.txt";
+    let prepared = ExecTrackAttachment::prepare_for_shell_with_source(
+        script,
+        ws.path(),
+        /*session_tmp*/ None,
+        ws.path().to_path_buf(),
+        None,
+        &ShellType::Bash,
+        /*tty*/ false,
+        store_dir.path().to_path_buf(),
+        "thread-user-1".to_string(),
+        "sess-user-1".to_string(),
+        "turn-user-1".to_string(),
+        "call-user-1".to_string(),
+        ChangeSourceKind::UserShell,
+    );
+
+    let instrumented = prepared
+        .instrumented_script
+        .as_deref()
+        .unwrap_or(script);
+    let output = Command::new("/bin/bash")
+        .arg("-c")
+        .arg(instrumented)
+        .current_dir(ws.path())
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .expect("run user shell bash");
+    assert!(output.status.success());
+
+    prepared.attachment.settle_once(output.status.code());
+
+    let store = ChangeHistoryStore::open_existing(store_dir.path()).expect("open store");
+    let entries = store.list_entries().expect("list entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source_kind, ChangeSourceKind::UserShell);
+
+    let record = store.get_record(&entries[0].id).expect("get record");
+    assert_eq!(record.metadata.source_kind, ChangeSourceKind::UserShell);
+    assert_eq!(record.files.len(), 1);
+    assert_eq!(record.files[0].rel_path, "user_file.txt");
+}

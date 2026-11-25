@@ -15,6 +15,8 @@ pub enum ChangeSourceKind {
     ApplyPatch,
     /// Captured from shell-write observation (MEKUGI-801).
     ShellWrite,
+    /// Captured from interactive user-shell (`!`) execution.
+    UserShell,
     /// Captured from `mchanges revert`.
     MchangesRevert,
     /// Captured from `mchanges apply`.
@@ -27,9 +29,11 @@ impl ChangeSourceKind {
     /// Whether this record counts as an authored edit (included in default review and counts).
     pub fn is_authored(self) -> bool {
         match self {
-            Self::ApplyPatch | Self::ShellWrite | Self::MchangesRevert | Self::MchangesApply => {
-                true
-            }
+            Self::ApplyPatch
+            | Self::ShellWrite
+            | Self::UserShell
+            | Self::MchangesRevert
+            | Self::MchangesApply => true,
             Self::VcsDiagnostic => false,
         }
     }
@@ -39,6 +43,7 @@ impl ChangeSourceKind {
         match self {
             Self::ApplyPatch => "apply_patch",
             Self::ShellWrite => "shell_write",
+            Self::UserShell => "user_shell",
             Self::MchangesRevert => "mchanges_revert",
             Self::MchangesApply => "mchanges_apply",
             Self::VcsDiagnostic => "vcs_diagnostic",

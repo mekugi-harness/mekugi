@@ -281,6 +281,59 @@ func TestNativeStoreHydratesAndRefreshesSavedDiff(t *testing.T) {
 	}
 }
 
+func TestNativeStoreMapsUserShellProvenance(t *testing.T) {
+	workspace := t.TempDir()
+	f := newNativeStoreFixture(t)
+	f.publish("a", nativeChangeRecord{
+		ID: "amber1",
+		Metadata: nativeChangeMetadata{
+			ThreadID:      "main",
+			SessionID:     "sess-user-shell",
+			CallID:        "user-shell-call-1",
+			SourceKind:    "user_shell",
+			WorkspaceRoot: workspace,
+		},
+		Files: []nativeFileEvidence{
+			{
+				RelPath:  "user_note.txt",
+				AbsPath:  filepath.Join(workspace, "user_note.txt"),
+				Kind:     nativeFileChangeKind{Kind: "add"},
+				Before:   nativeFileState{State: "missing"},
+				After:    f.blob([]byte("hello from !shell\n"), false),
+				Coverage: nativeCoverageStatus{Status: "complete"},
+			},
+		},
+	})
+
+	proj := Projection{
+		NativeDir: f.dir,
+		Data:      new(presentation.Snapshot),
+		Scope:     previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {"main": true}}},
+	}
+	changed, err := proj.Apply(t.Context(), Event{Kind: "native", NativeDir: f.dir})
+	if err != nil {
+		t.Fatalf("Apply(native): %v", err)
+	}
+	if !changed {
+		t.Fatal("expected native user_shell record to hydrate")
+	}
+	if len(proj.Data.Publication.Files) != 1 || filepath.Base(proj.Data.Publication.Files[0].Path) != "user_note.txt" {
+		t.Fatalf("expected 1 authored file (user_note.txt), got %+v", proj.Data.Publication.Files)
+	}
+	if len(proj.Data.Publication.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics for user_shell edit, got %d", len(proj.Data.Publication.Diagnostics))
+	}
+	var gotSource string
+	for attempt := range proj.Data.Attempts() {
+		for _, chunk := range attempt.Chunks {
+			gotSource = chunk.Origin.Source
+		}
+	}
+	if gotSource != "userShell" {
+		t.Fatalf("expected Origin.Source = %q for native user_shell record, got %q", "userShell", gotSource)
+	}
+}
+
 func TestNativeStoreDeduplicatesLegacyUserShellCall(t *testing.T) {
 	workspace := t.TempDir()
 	f := newNativeStoreFixture(t)
@@ -290,7 +343,7 @@ func TestNativeStoreDeduplicatesLegacyUserShellCall(t *testing.T) {
 			ThreadID:      "main",
 			SessionID:     "sess-dedup",
 			CallID:        "shell-call-1",
-			SourceKind:    "shell_write",
+			SourceKind:    "user_shell",
 			WorkspaceRoot: workspace,
 		},
 		Files: []nativeFileEvidence{
