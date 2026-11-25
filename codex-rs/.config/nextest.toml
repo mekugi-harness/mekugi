@@ -25,6 +25,9 @@ max-threads = 4
 [test-groups.core_apply_patch_cli_integration]
 max-threads = 1
 
+[test-groups.windows_sandbox_legacy_sessions]
+max-threads = 1
+
 [test-groups.windows_sandbox_accounts]
 max-threads = 1
 
@@ -68,9 +71,16 @@ test-group = 'core_apply_patch_cli_integration'
 platform = 'cfg(windows)'
 filter = '''
     (package(codex-core) & binary(windows_sandbox)) |
-    (package(codex-exec-server) & test(file_system_elevated_relative_read_denial_uses_policy_cwd))
+    (package(codex-exec-server) & test(file_system_elevated_relative_read_denial_uses_policy_cwd)) |
+    (package(codex-windows-sandbox) & test(elevated_non_tty_cmd_forwards_env_output_and_exit))
 '''
 test-group = 'windows_sandbox_accounts'
+
+[[profile.default.overrides]]
+# These tests create restricted-token Windows child processes and private desktops.
+# Serialize them to avoid exhausting Windows session/global desktop resources in CI.
+filter = 'package(codex-windows-sandbox) & test(legacy_)'
+test-group = 'windows_sandbox_legacy_sessions'
 
 [[profile.default.overrides]]
 # This Codex-home startup path still exceeded the broader Windows-heavy ceiling
