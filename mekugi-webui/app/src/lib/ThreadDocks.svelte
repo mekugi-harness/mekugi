@@ -5,6 +5,26 @@
 
   const queued = $derived(semantic.queued);
   const error = $derived(semantic.error);
+  let queueScroller = $state<HTMLDivElement>();
+  let queueScrollable = $state(false);
+
+  $effect(() => {
+    const node = queueScroller;
+    void queued.length;
+    if (!node) {
+      queueScrollable = false;
+      return;
+    }
+    const measure = () => {
+      queueScrollable = node.scrollHeight > node.clientHeight;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+    return () => observer.disconnect();
+  });
+
   const preview = (item: QueuedSubmission) =>
     item.input
       .map((part) =>
@@ -24,7 +44,8 @@
         <p class="font-medium text-muted">Queued ({queued.length})</p>
         <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
         <div
-          tabindex="0"
+          bind:this={queueScroller}
+          tabindex={queueScrollable ? 0 : undefined}
           role="region"
           aria-label="Queued messages"
           class="mt-1 max-h-36 overflow-y-auto"
