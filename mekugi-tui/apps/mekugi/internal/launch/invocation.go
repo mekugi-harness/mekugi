@@ -2,14 +2,11 @@ package launch
 
 import (
 	"context"
-	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -248,29 +245,13 @@ func runInvocation(views *sessionpresentation.Service, conversation *conversatio
 		return 1, err
 	}
 
-	if len(config.ServiceTiers) != 0 {
-		var entries []string
-		for _, model := range slices.Sorted(maps.Keys(config.ServiceTiers)) {
-			key, err := json.Marshal(model)
-			if err != nil {
-				return 1, fmt.Errorf("invalid model ID in service tiers: %w", err)
-			}
-			entries = append(entries, string(key)+"="+strconv.Quote(config.ServiceTiers[model]))
-		}
-		args = append([]string{"-c", "service_tiers={" + strings.Join(entries, ",") + "}"}, args...)
+	args, err = prependServiceTiers(args, config.ServiceTiers)
+	if err != nil {
+		return 1, err
 	}
 	cmd := exec.CommandContext(ctx, executable, nativeAppServerArgs(args)...)
 	if summary, ok := options.ChildReplySummaryOverride(config.Features); ok {
 		cmd.Args = append(cmd.Args, "-c", "features.child_reply_summary="+strconv.FormatBool(summary))
-	}
-	if threads.headless != nil {
-		// Headless automation cannot answer interactive approvals or secret prompts.
-		// Append after user CLI overrides so headless runs are always unguarded.
-		index := slices.Index(cmd.Args, "--")
-		if index < 0 {
-			index = len(cmd.Args)
-		}
-		cmd.Args = slices.Insert(cmd.Args, index, "-c", "features.shell_guard=false")
 	}
 	self, err := os.Executable()
 	if err != nil {

@@ -51,7 +51,7 @@ func TestHeadlessWrapRedirectedEntryPoint(t *testing.T) {
 		t.Fatalf("missing terminal event: %s", output)
 	}
 	methods, err := os.ReadFile(filepath.Join(dir, "rpc"))
-	const startup = "initialize\ninitialized\nenvironment/info\nthread/start\nmodel/list\nconfig/read\nthread/subtree/list\nturn/start\n"
+	const startup = "initialize\ninitialized\nenvironment/info\nthread/start\nturn/start\n"
 	tail, ok := strings.CutPrefix(string(methods), startup)
 	// Started/completed native facts invalidate the same coalesced observation.
 	// A response between them can require a second read, never a new model turn.
@@ -131,7 +131,7 @@ func TestHeadlessAdmittedOutputFailureAndCancellation(t *testing.T) {
 }
 
 func TestHeadlessAdmittedFailures(t *testing.T) {
-	for _, scenario := range []string{"startup", "approval", "question", "disconnect", "failed", "interrupted"} {
+	for _, scenario := range []string{"startup", "approval", "shell-guard", "question", "disconnect", "failed", "interrupted"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir, workspace := installHeadlessFixture(t)
 			t.Setenv("MEKUGI_AUTO_WRAP_HEADLESS_SCENARIO", scenario)
@@ -153,7 +153,7 @@ func TestHeadlessAdmittedFailures(t *testing.T) {
 				want = "fixture: invalid model configuration"
 			case "disconnect":
 				want = "fixture: host transport ended"
-			case "approval", "question":
+			case "approval", "shell-guard", "question":
 				want = "continue interactively"
 			}
 			if !strings.Contains(stderr.String(), want) {
@@ -295,6 +295,176 @@ func TestHeadlessPreservesNoGuardPolicy(t *testing.T) {
 			}
 			if lastDisable < 0 || lastDisable <= lastEnable {
 				t.Fatalf("headless did not force features.shell_guard=false after user overrides: %q", args)
+			}
+		})
+	}
+}
+
+func TestHeadlessWaitsForFamilyJoinBeforeCompleted(t *testing.T) {
+	dir, workspace := installHeadlessFixture(t)
+	t.Chdir(workspace)
+	t.Setenv("MEKUGI_AUTO_WRAP_HEADLESS_SCENARIO", "family-join")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	code, err := runHeadless(ctx, nil, []string{"--yolo"}, strings.NewReader("delegate work"), &output)
+	if code != 0 || err != nil {
+		t.Fatalf("family join failed: code=%d err=%v\n%s", code, err, &output)
+	}
+	var methods []string
+	childCompletedIdx, completedIdx := -1, -1
+	for i, row := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
+		var message appserver.Message
+		if err := json.Unmarshal(row, &message); err != nil {
+			t.Fatalf("non-JSON stdout: %q: %v", row, err)
+		}
+		methods = append(methods, message.Method)
+		if message.Method == "turn/completed" && bytes.Contains(message.Params, []byte("child-1")) {
+			childCompletedIdx = i
+		}
+		if message.Method == "mekugi/headless/completed" {
+			completedIdx = i
+		}
+	}
+	if childCompletedIdx < 0 || completedIdx < 0 || childCompletedIdx >= completedIdx || completedIdx != len(methods)-1 {
+		t.Fatalf("completed emitted before family joined: childCompleted=%d completed=%d total=%d\n%s", childCompletedIdx, completedIdx, len(methods), &output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rpc.joined")); err != nil {
+		t.Fatalf("host shutdown not joined before completion: %v", err)
+	}
+}
+
+func TestHeadlessDrainsDelegateEventsAfterTerminalSubtree(t *testing.T) {
+	dir, workspace := installHeadlessFixture(t)
+	t.Chdir(workspace)
+	t.Setenv("MEKUGI_AUTO_WRAP_HEADLESS_SCENARIO", "late-delegate-event")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	code, err := runHeadless(ctx, nil, []string{"--yolo"}, strings.NewReader("delegate work"), &output)
+	if code != 0 || err != nil {
+		t.Fatalf("late delegate drain failed: code=%d err=%v\n%s", code, err, &output)
+	}
+	var methods []string
+	childCompletedIdx, completedIdx := -1, -1
+	for i, row := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
+		var message appserver.Message
+		if err := json.Unmarshal(row, &message); err != nil {
+			t.Fatalf("non-JSON stdout: %q: %v", row, err)
+		}
+		methods = append(methods, message.Method)
+		if message.Method == "turn/completed" && bytes.Contains(message.Params, []byte("child-1")) {
+			childCompletedIdx = i
+		}
+		if message.Method == "mekugi/headless/completed" {
+			completedIdx = i
+		}
+	}
+	if childCompletedIdx < 0 || completedIdx < 0 || childCompletedIdx >= completedIdx || completedIdx != len(methods)-1 {
+		t.Fatalf("dropped trailing delegate event: childCompleted=%d completed=%d total=%d\n%s", childCompletedIdx, completedIdx, len(methods), &output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rpc.joined")); err != nil {
+		t.Fatalf("host shutdown not joined: %v", err)
+	}
+}
+
+func TestHeadlessRetriesAfterSubtreeRPCError(t *testing.T) {
+	dir, workspace := installHeadlessFixture(t)
+	t.Chdir(workspace)
+	t.Setenv("MEKUGI_AUTO_WRAP_HEADLESS_SCENARIO", "subtree-retry")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	code, err := runHeadless(ctx, nil, []string{"--yolo"}, strings.NewReader("ordinary prompt"), &output)
+	if code != 0 || err != nil || !strings.Contains(output.String(), "mekugi/headless/completed") {
+		t.Fatalf("did not recover from transient subtree error: code=%d err=%v\n%s", code, err, &output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rpc.joined")); err != nil {
+		t.Fatalf("host shutdown not joined: %v", err)
+	}
+}
+
+func TestHeadlessOutputCleanupFailurePreventsCompletion(t *testing.T) {
+	_, workspace := installHeadlessFixture(t)
+	t.Chdir(workspace)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cleanupErr := errors.New("capture flush failed")
+	var output bytes.Buffer
+	code, err := runHeadlessSession(ctx, headlessSessionConfig{
+		args:      []string{"--yolo"},
+		workspace: workspace,
+		prompt:    "ordinary prompt",
+		output:    &output,
+		finalize:  func() error { return cleanupErr },
+	})
+	if code != 1 || !errors.Is(err, cleanupErr) {
+		t.Fatalf("cleanup failure did not fail exit: code=%d err=%v", code, err)
+	}
+	if strings.Contains(output.String(), "mekugi/headless/completed") {
+		t.Fatalf("emitted completed despite cleanup failure:\n%s", &output)
+	}
+}
+
+func TestEvaluateHeadlessFamily(t *testing.T) {
+	cases := []struct {
+		name          string
+		raw           string
+		wantDone      bool
+		wantRootDone  bool
+		wantErrSubstr string
+	}{
+		{
+			name:         "root running",
+			raw:          `{"data":[{"id":"root","agentStatus":"running"}]}`,
+			wantDone:     false,
+			wantRootDone: false,
+		},
+		{
+			name:         "root completed with running child",
+			raw:          `{"data":[{"id":"root","agentStatus":"completed"},{"id":"child","parentThreadId":"root","agentStatus":"running"}]}`,
+			wantDone:     false,
+			wantRootDone: true,
+		},
+		{
+			name:         "root completed with pending_init child",
+			raw:          `{"data":[{"id":"root","agentStatus":"completed"},{"id":"child","parentThreadId":"root","agentStatus":"pending_init"}]}`,
+			wantDone:     false,
+			wantRootDone: true,
+		},
+		{
+			name:         "root and children completed",
+			raw:          `{"data":[{"id":"root","agentStatus":"completed"},{"id":"child","parentThreadId":"root","agentStatus":"completed"}]}`,
+			wantDone:     true,
+			wantRootDone: true,
+		},
+		{
+			name:          "root errored",
+			raw:           `{"data":[{"id":"root","agentStatus":"errored"}]}`,
+			wantErrSubstr: "errored",
+		},
+		{
+			name:          "root interrupted",
+			raw:           `{"data":[{"id":"root","agentStatus":"interrupted"}]}`,
+			wantErrSubstr: "interrupted",
+		},
+		{
+			name:          "root shutdown",
+			raw:           `{"data":[{"id":"root","agentStatus":"shutdown"}]}`,
+			wantErrSubstr: "shutdown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			done, rootDone, err := evaluateHeadlessFamily("root", []byte(tc.raw))
+			if tc.wantErrSubstr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErrSubstr) {
+					t.Fatalf("err=%v, want substring %q", err, tc.wantErrSubstr)
+				}
+				return
+			}
+			if err != nil || done != tc.wantDone || rootDone != tc.wantRootDone {
+				t.Fatalf("got done=%v rootDone=%v err=%v; want done=%v rootDone=%v", done, rootDone, err, tc.wantDone, tc.wantRootDone)
 			}
 		})
 	}

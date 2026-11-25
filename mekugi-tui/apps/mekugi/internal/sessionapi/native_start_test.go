@@ -255,27 +255,3 @@ func TestNativeStartupDisconnectAndJoinedOutcome(t *testing.T) {
 		t.Fatalf("joined runtime outcome: %+v", outcome)
 	}
 }
-
-func TestRunNativeCancellationJoinsRuntime(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	joined := make(chan struct{})
-	launcher := &nativeStartupLauncher{run: func(ctx context.Context, _ Start, server *Server) error {
-		cancel()
-		<-ctx.Done()
-		close(joined)
-		return ctx.Err()
-	}}
-	hub := NewHub(t.Context(), launcher)
-	defer hub.Close()
-	_, err := hub.RunNative(ctx, NativeStart{Workspace: t.TempDir()}, "literal")
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err=%v", err)
-	}
-	select {
-	case <-joined:
-	default:
-		t.Fatal("runtime cleanup not joined")
-	}
-}

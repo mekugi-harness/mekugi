@@ -13,13 +13,11 @@ import (
 	"sync"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
 )
 
 type serverLauncher struct {
-	headless     *headless.Stream
 	workers      frontends.WorkerImage
 	hub          *sessionapi.Hub
 	sourceSocket string
@@ -118,18 +116,12 @@ func (l *serverLauncher) Run(ctx context.Context, start sessionapi.Start, api *s
 	if start.Replay != nil {
 		return runServerReplay(ctx, *start.Replay, api)
 	}
-	execution := &threadExecution{hub: l.hub, workers: &l.workers, sourceSocket: l.sourceSocket, headless: l.headless}
+	execution := &threadExecution{hub: l.hub, workers: &l.workers, sourceSocket: l.sourceSocket}
 	if start.Native != nil {
 		if start.Native.Environment != nil {
 			ctx = context.WithValue(ctx, invocationEnvironmentKey{}, start.Native.Environment)
 		}
 		code, err := runServerSession(ctx, start.Native.RouterArgs, start.Native.Args, api, start.Workspace, execution)
-		if l.headless != nil {
-			if err == nil && code != 0 {
-				err = fmt.Errorf("session exited with status %d", code)
-			}
-			return err
-		}
 		outcome := &sessionapi.NativeExit{Code: code}
 		if err != nil {
 			outcome.Message = err.Error()

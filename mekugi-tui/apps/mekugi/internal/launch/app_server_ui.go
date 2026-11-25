@@ -37,7 +37,7 @@ import (
 )
 
 func (session *nativeSession) start(prefs *preferences.Service, cmd *exec.Cmd, skillsManager bool, resumeThread string, predictionProvider *openai.Client, api *sessionapi.Server, options launchoptions.Config, threads *threadExecution) (func() error, error) {
-	session.reviewHooks = threads.headless == nil
+	session.reviewHooks = true
 	if api == nil {
 		return nil, errors.New("server session requires a control API")
 	}
@@ -162,7 +162,6 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 	var latestResponse *appserver.Message
 
 	session.dispatch = func(m appserver.Message) error {
-		response, correlated := session.Client.Requests.Lookup(string(m.ID))
 		if session.Client.CompleteCall(m) {
 			return nil
 		}
@@ -222,9 +221,6 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 		err := session.dispatchHostMessage(&session.attached, &session.picker, &session.Editor, session.clock, &session.side, &session.statusPanel, &session.resumePicker, session.ctx, m)
 		adoptStartupChooser()
 		predictions.observe(m, session.Client.Thread)
-		if err == nil && threads.headless != nil && correlated && m.Method == "" && m.Error != nil && (response.Method == "turn/start" || response.Method == "turn/steer") {
-			return fmt.Errorf("%s: %s", response.Method, m.Error.Message)
-		}
 		return err
 	}
 	live := &apiLive{server: api, native: session.connection, started: time.Now()}

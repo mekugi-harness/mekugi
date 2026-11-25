@@ -22,9 +22,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
 
@@ -447,10 +445,6 @@ func TestProfileLaunchProcess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		stream := headless.NewStream(os.Stdout, cancel)
-		launcher := &serverLauncher{headless: stream}
-		hub := sessionapi.NewHub(ctx, launcher)
-		launcher.hub = hub
 		args := []string{"-pwork", "--yolo", "-c", "features.plugins=false", "-c", "bypass_hook_trust=true"}
 		if resume != "" {
 			args = append(args, "resume", resume)
@@ -464,14 +458,17 @@ func TestProfileLaunchProcess(t *testing.T) {
 			os.Unsetenv("PROFILE_FIXTURE_TOKEN")
 			os.Unsetenv("PROFILE_HEADER")
 		}
-		thread, err := hub.RunNative(ctx, sessionapi.NativeStart{Workspace: workspace, RouterArgs: []string{"--capture-output", os.Getenv("MEKUGI_PROFILE_CAPTURE")}, Args: args, Environment: admitted}, "Continue the fixture task")
-		hub.Close()
-		launcher.workers.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := stream.Complete(thread); err != nil {
-			t.Fatal(err)
+		code, err := runHeadlessSession(ctx, headlessSessionConfig{
+			routerArgs:  []string{"--capture-output", os.Getenv("MEKUGI_PROFILE_CAPTURE")},
+			args:        args,
+			workspace:   workspace,
+			environment: admitted,
+			prompt:      "Continue the fixture task",
+			output:      os.Stdout,
+			allowResume: resume != "",
+		})
+		if err != nil || code != 0 {
+			t.Fatalf("code=%d err=%v", code, err)
 		}
 		return
 	}

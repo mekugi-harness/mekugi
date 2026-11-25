@@ -6,7 +6,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
 
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
@@ -19,7 +18,6 @@ import (
 // no process registry, request ledger, or retained thread state.
 type threadExecution struct {
 	native       *nativeConnection
-	headless     *headless.Stream
 	workers      *frontends.WorkerImage
 	sourceSocket string
 	hub          *sessionapi.Hub
