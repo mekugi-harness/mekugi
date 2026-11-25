@@ -438,7 +438,8 @@ fn linux_background_descendant_write_succeeds_after_settle() {
     let sock_path = obs.dir_path().join("observe.sock");
 
     let script = format!(
-        "(while [ ! -f '{}' ]; do sleep 0.02; done; printf 'ok' > '{}' && mv '{}' '{}') >/dev/null 2>&1 &",
+        "(i=0; while [ ! -f '{}' ] && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.02; done; [ -f '{}' ] && printf 'ok' > '{}' && mv '{}' '{}') >/dev/null 2>&1 &",
+        bg_go.display(),
         bg_go.display(),
         bg_tmp.display(),
         bg_tmp.display(),
