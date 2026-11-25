@@ -22,6 +22,7 @@ use codex_rollout::find_thread_path_by_id_str;
 use codex_rollout::remove_thread_name_entries;
 
 use super::LocalThreadStore;
+use super::helpers::prune_thread_truncated_output;
 use super::helpers::scoped_rollout_path;
 use super::helpers::validated_rollout_file_name;
 use crate::DeleteThreadParams;
@@ -130,6 +131,7 @@ pub(super) async fn delete_thread(
         };
     let deleted_state_rows = delete_state_rows(store, &[thread_id]).await?;
     if found_rollout || deleted_state_rows > 0 {
+        prune_thread_truncated_output(thread_id);
         Ok(())
     } else {
         Err(ThreadStoreError::ThreadNotFound { thread_id })
@@ -178,6 +180,9 @@ pub(super) async fn delete_threads(
     }
     // Retain the complete retry graph until every rollout has been removed.
     delete_state_rows(store, &thread_ids).await?;
+    for thread_id in thread_ids {
+        prune_thread_truncated_output(thread_id);
+    }
     Ok(())
 }
 
@@ -928,5 +933,32 @@ SELECT
         .expect("parse session metadata");
         session_meta["payload"]["id"] = serde_json::to_value(thread_id).expect("thread id");
         std::fs::write(path, format!("{session_meta}\n")).expect("write session file");
+    }
+
+    #[tokio::test]
+    async fn delete_thread_prunes_session_truncated_output_dir() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::now_v7();
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+
+        let session_tmp = codex_protocol::shell_environment::session_tmp_path(
+            codex_protocol::SessionId::from(thread_id),
+        );
+        let spill_dir = codex_utils_output_truncation::truncated_output_dir(&session_tmp);
+        std::fs::create_dir_all(&spill_dir).expect("create spill dir");
+        let spill_id =
+            codex_utils_output_truncation::spill_truncated_output(&spill_dir, "spilled output")
+                .expect("write spill");
+        assert!(spill_dir.join(spill_id).exists());
+
+        store
+            .delete_thread(DeleteThreadParams { thread_id })
+            .await
+            .expect("delete thread");
+
+        assert!(!spill_dir.exists());
+        let _ = std::fs::remove_dir_all(&session_tmp);
     }
 }

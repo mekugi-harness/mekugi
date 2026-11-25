@@ -5,6 +5,11 @@ use std::collections::HashMap;
 
 pub const CODEX_SESSION_ID_ENV_VAR: &str = "CODEX_SESSION_ID";
 pub const SESSION_TMP_ENV_VAR: &str = "SESSION_TMP";
+
+/// Returns the per-session temporary directory path (`$SESSION_TMP`).
+pub fn session_tmp_path(session_id: crate::SessionId) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("mekugi-session-{session_id}"))
+}
 pub const CODEX_THREAD_ID_ENV_VAR: &str = "CODEX_THREAD_ID";
 pub const CODEX_TOOL_CALL_ID_ENV_VAR: &str = "CODEX_TOOL_CALL_ID";
 pub const CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR: &str = "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN";
