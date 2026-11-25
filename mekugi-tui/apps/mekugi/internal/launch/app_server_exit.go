@@ -44,11 +44,6 @@ func writeExitSummary(usage binding.TokenUsage, archived bool, thread string, re
 		}
 		command := commandLine(append(argv, "resume", thread))
 		fmt.Fprintf(&text, "To continue this session, run:\n  %s\n", command)
-		replay := []string{argv[0], "replay-session", "--session", thread}
-		if debugDirectory != "" {
-			replay = append(replay, "--debug-dir", debugDirectory)
-		}
-		fmt.Fprintf(&text, "To replay this session offline, run:\n  %s\n", commandLine(replay))
 	}
 	if text.Len() == 0 {
 		return nil

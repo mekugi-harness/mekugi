@@ -62,22 +62,6 @@ func testCompletionSourcesBrowser(t *testing.T, publish func(*activity.Publicati
 	run("wait", "--fn", `(() => { const transcript = document.querySelector('[aria-label="Transcript"]'); if (transcript.textContent.includes('Restored answer 000')) return true; const s = transcript.querySelector('.overflow-y-auto'); s.dispatchEvent(new WheelEvent('wheel', {bubbles:true})); s.scrollTop = 0; s.dispatchEvent(new Event('scroll')); return false; })()`)
 	run("wait", "--text", completionTestTrailer)
 	capture("restored")
-	// Replay text uses the same detached publication, including backward seek.
-	// This harness publishes Main feeds, not browser replay navigation frames.
-	p := completionTestReplay(t)
-	for _, at := range []time.Duration{8 * time.Second, 10 * time.Second, 8 * time.Second} {
-		if err := p.seek(at); err != nil {
-			t.Fatal(err)
-		}
-		publish(p.ui.source.Publication(p.ui.presentation, nil))
-		run("wait", "--text", "Repaint diagnosis")
-		if at == 10*time.Second {
-			run("wait", "--text", completionTestTrailer)
-			capture("replay")
-		} else {
-			run("wait", "--text", completionTestTrailer[:16])
-		}
-	}
 	u = newAppServerSessionTestUI(t, t.TempDir())
 	completionTestFinish(t, u, "Quoted example: `"+completionTestTrailer+"`")
 	publish(publication())

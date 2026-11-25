@@ -13,10 +13,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
-
 	"github.com/charmbracelet/x/ansi"
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
@@ -205,36 +202,12 @@ func TestHookObservationRestartResumeAndReplay(t *testing.T) {
 	if err != nil || len(foreign.Runs) != 0 {
 		t.Fatal("workspace scope leaked hook observations")
 	}
-	rollout := replayTestWrite(t, t.TempDir(), "rollout-main.jsonl", replayTestMeta("main"))
-	source, err := replayReadTest(t, new(transportcapture.Service), t.Context(), rollout, "", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	playback := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-	t.Cleanup(playback.close)
-	if err := playback.advance(playback.Until); err != nil {
-		t.Fatal(err)
-	}
-	if len(playback.ui.source.Entries) != 2 || playback.ui.testActivity(playback.ui.view).blocks(1)[0].Running {
-		t.Fatal("offline replay lost hooks or acquired live resources")
-	}
 	fresh.clock = u.clock
 	end := hookTestRun(u.attached.cwd, "completed")
 	end["id"] = "unfinished"
 	appServerTestNotify(t, fresh, "hook/completed", map[string]any{"threadId": "main", "run": end})
 	if len(fresh.attached.source.Entries) != 2 || fresh.testActivity(fresh.shell.Transcript).blocks(1)[0].RowVerb() != "Hook Ran" {
 		t.Fatal("a fresh host completion could not settle a restored unknown hook")
-	}
-	// Corrupt optional hook history is disclosed without losing the host replay.
-	if err := os.WriteFile(filepath.Join(directory, history.HookObservationsName(u.attached.cwd, "main")), []byte("invalid"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	rollout = replayTestWrite(t, t.TempDir(), "rollout-main.jsonl", replayTestMeta("main"),
-		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "t"}),
-		replayTestRecord("event_msg", replayTestEpoch+3000, map[string]any{"type": "task_complete", "turn_id": "t"}))
-	source, err = replayReadTest(t, new(transportcapture.Service), t.Context(), rollout, "", 1)
-	if err != nil || len(source.HookUnavailable) != 1 || len(source.Events) != 2 {
-		t.Fatalf("invalid hook history blocked host replay or hid the gap: %v, %+v", err, source)
 	}
 }
 

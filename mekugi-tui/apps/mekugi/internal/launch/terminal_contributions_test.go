@@ -15,7 +15,6 @@ import (
 	activityview "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
 )
 
 func TestNativeAuxiliaryAbsencePreservesMainAndReviewSource(t *testing.T) {
@@ -47,21 +46,6 @@ func TestNativeAuxiliaryAbsencePreservesMainAndReviewSource(t *testing.T) {
 	}
 	if state := shell.Shell.Preferences(shell.main.shell.Main); state.Focus != 0 || state.DiffOpen || state.NavigatorColumns != 0 {
 		t.Fatalf("absent preference: %+v", state)
-	}
-}
-
-func TestReplayAuxiliaryAbsenceSurvivesReset(t *testing.T) {
-	owner, _ := newAppServerTestUI()
-	start := time.Unix(1, 0)
-	p := newUIReplayPlayback(terminalsession.Views{}, replayOwners{owner.presentationState, owner.conversationState, owner.observations, owner.activity}, t.Context(), &playback.Source{Thread: "main", Start: start, End: start.Add(time.Second)}, 1)
-	defer p.close()
-	p.ui.shell.Focus, p.ui.shell.DiffOpen = 3, true
-	p.reset()
-	if p.ui.shell.Auxiliary != nil || p.ui.shell.RosterLabel != "" || p.ui.shell.Focus != 0 || p.ui.shell.DiffOpen {
-		t.Fatal("replay recreated an absent contribution")
-	}
-	if err := p.paint(io.Discard, 120, 24); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -167,11 +151,5 @@ func TestNativeRosterConstructorReplacementAndReplay(t *testing.T) {
 	}
 	if terminalTest(u).Layout.Roster.H == 0 {
 		t.Fatal("declared roster did not reach painting")
-	}
-	p := newUIReplayPlayback(runtime.Terminal, replayOwners{u.presentationState, u.conversationState, u.observations, u.activity}, t.Context(), replayPlaybackTestSource(), 1)
-	defer p.close()
-	p.reset()
-	if len(created) != 4 || p.ui.agents != created[3] {
-		t.Fatal("replay reset bypassed descriptor")
 	}
 }

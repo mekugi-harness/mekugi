@@ -1,10 +1,7 @@
 package launch
 
 import (
-	"context"
 	"encoding/base64"
-	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +10,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
@@ -159,35 +155,5 @@ func TestMarkdownFileCapacityAndReadErrors(t *testing.T) {
 		if text == "" || u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(text))+"\x07" {
 			t.Fatalf("%s error was not copyable", name)
 		}
-	}
-}
-
-func TestSessionUIReplayPausedMarkdownFileCompletion(t *testing.T) {
-	p := replayPlaybackTestNew(t)
-	p.Paused = true
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	p.ctx = ctx
-	p.ui.cwd = t.TempDir()
-	p.publish()
-	path := filepath.Join(p.ui.cwd, "source.go")
-	if err := os.WriteFile(path, []byte("package replay_file\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	p.ui.detailFiles.openTerminalMarkdownFile(&p.ui.session, p.ui.presentation, p.ui.cwd, p.ui.source, p.ui.shell, p.ui.view, "source.go")
-	frames := 0
-	err := p.run(make(chan byte), func() error {
-		var frame strings.Builder
-		if err := p.paint(&frame, 100, 24); err != nil {
-			return err
-		}
-		frames++
-		if strings.Contains(ansi.Strip(frame.String()), "package replay_file") {
-			cancel()
-		}
-		return nil
-	}, false, io.Discard)
-	if !errors.Is(err, context.Canceled) || frames != 3 {
-		t.Fatalf("paused replay needed further input to paint completion: frames=%d err=%v", frames, err)
 	}
 }

@@ -1,16 +1,12 @@
 package launch
 
 import (
-	"bytes"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	inspectioncli "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inspectioncli"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
@@ -90,10 +86,6 @@ func TestUISnapshotDebugHandoffAfterCodexExit(t *testing.T) {
 			argv := strings.Split(strings.TrimSpace(string(resolved)), "\n")
 			if len(argv) != 5 || argv[0] != "inspect-session" || argv[1] != "--debug-dir" || argv[3] != "--field" || argv[4] != "diagnostic" {
 				t.Fatalf("diagnostic handoff is not a session inspection command: %q", resolved)
-			}
-			var diagnosticErrors bytes.Buffer
-			if code := inspectioncli.RunSessionInspection(testComposition(t).Inspection, testComposition(t).Diagnostics, t.Context(), argv[1:], io.Discard, &diagnosticErrors); code != 0 {
-				t.Fatalf("printed diagnostic command failed: %d: %s", code, &diagnosticErrors)
 			}
 			normalized := strings.ReplaceAll(after, commandargs.Quote(argv[2]), "'/tmp/mekugi-debug-session'")
 			uisnapshot.Assert(t, filepath.Join(fixtures, "debug-handoff.txt"), normalized)

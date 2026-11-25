@@ -284,7 +284,7 @@ func allowedImport(directory, pkg, imported string) error {
 	}
 	if owner == "apps/mekugi" {
 		area, _, _ := strings.Cut(strings.TrimPrefix(pkg, "internal/"), "/")
-		neutral := area == "sessioncontrol" || area == "sessionpresentation" || area == "headless" || area == "inspectioncli" || area == "sessionapi"
+		neutral := area == "sessioncontrol" || area == "sessionpresentation" || area == "headless" || area == "sessionapi"
 		if neutral && (terminalImport(imported) || strings.HasPrefix(target, "modules/") && strings.Contains(target, "/terminalview")) {
 			return deny()
 		}
@@ -294,8 +294,7 @@ func allowedImport(directory, pkg, imported string) error {
 		}
 		if rest, ok := strings.CutPrefix(target, owner+"/internal/"); ok {
 			dependency, _, _ := strings.Cut(rest, "/")
-			if area == "inspectioncli" && dependency != area ||
-				neutral && (dependency == "launch" || dependency == "terminalsession") ||
+			if neutral && (dependency == "launch" || dependency == "terminalsession") ||
 				area == "headless" && dependency == "sessionpresentation" ||
 				area == "frontends" && slices.Contains([]string{"composition", "launch"}, dependency) {
 				return deny()

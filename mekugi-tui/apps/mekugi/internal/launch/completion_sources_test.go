@@ -7,8 +7,6 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 )
 
 const completionTestTrailer = "Captured changes: mchanges:blue1..blue10."
@@ -72,24 +70,6 @@ func TestNativeCompletionSourcesRenderedDelivery(t *testing.T) {
 	if !strings.Contains(paint(), completionTestTrailer) {
 		t.Fatal("quoted example was suppressed")
 	}
-}
-
-func completionTestReplay(t *testing.T) *uiReplayPlayback {
-	t.Helper()
-	source := replayPlaybackTestSource()
-	for i := range source.Events {
-		if source.Events[i].Item.Type == "agentMessage" {
-			if source.Events[i].Kind == observation.ItemCompleted {
-				source.Events[i].Item.Text += "\n" + completionTestTrailer
-			}
-			if source.Events[i].Kind == observation.AgentDelta {
-				source.Events[i].Delta += "\n" + completionTestTrailer[:16]
-			}
-		}
-	}
-	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-	t.Cleanup(p.close)
-	return p
 }
 
 func completionTestHistory(count int) []binding.HistoryTurn {

@@ -73,22 +73,6 @@ func TestNativeUIExpansionFocus(t *testing.T) {
 			t.Fatal("view hint is missing")
 		}
 	}
-	playback := replayPlaybackTestNew(t)
-	for _, focus := range []int{0, 2} {
-		playback.ui.shell.Focus = 0
-		playback.ui.testActivity(playback.ui.agents).setDisplayFilter(focus == 2, "/root/worker")
-		view := playback.ui.testActivity(playback.ui.view)
-		if focus != 0 {
-			view = playback.ui.testActivity(playback.ui.agents)
-		}
-		before := view.Expansion
-		if _, err := playback.key(5); err != nil {
-			t.Fatal(err)
-		}
-		if view.Expansion != (before+1)%3 {
-			t.Fatal("replay ignored the focused pane shortcut")
-		}
-	}
 }
 
 func TestLiveActivityExpansionViewportCache(t *testing.T) {

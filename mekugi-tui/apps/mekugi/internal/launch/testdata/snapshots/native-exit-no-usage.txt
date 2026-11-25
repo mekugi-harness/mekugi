@@ -1,4 +1,2 @@
 To continue this session, run:
   mekugi codex --yolo resume saved
-To replay this session offline, run:
-  mekugi replay-session --session saved
