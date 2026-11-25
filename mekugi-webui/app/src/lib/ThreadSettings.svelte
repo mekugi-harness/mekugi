@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { ReasoningEffort } from "./protocol";
   import { semantic } from "./semantic.svelte";
   import { stream } from "./stream.svelte";
@@ -7,6 +8,15 @@
 
   let { disabled = false }: { disabled?: boolean } = $props();
   let busy = $state(false);
+  let loadedForMachine = $state<string | undefined>();
+
+  $effect(() => {
+    const target = stream.machine;
+    if (!target || target.connection !== "open") return;
+    if (target.models.length || loadedForMachine === target.id) return;
+    loadedForMachine = target.id;
+    untrack(() => void target.refreshModels());
+  });
 
   const session = $derived(stream.session);
   const models = $derived(stream.machine?.models ?? []);

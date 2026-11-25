@@ -20,7 +20,8 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 - **Go (`mekugi-tui/`)**: terminal UI renderer (keys, local editing, geometry, painting),
   direct native `mekugi-app-server` Unix-socket client, headless client,
   and remote connector/WebUI assets host (`connector`, `web`).
-- **Browser (`mekugi-webui/`)**: Svelte renderer, generated Session API types, and
+- **Browser (`mekugi-webui/`)**: Svelte renderer, native protocol types imported from
+  `codex-rs/app-server-protocol/schema/typescript`, and
   assets-only Go host. `mekugi-webui/DESIGN.md` owns visual and interaction rules.
 
 ## Application owners (`mekugi-tui/apps/mekugi/internal/`)
@@ -32,7 +33,7 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 | `headless` | Noninteractive automation client and JSONL host evidence |
 | `sessioncontrol` | Minimal headless request correlation and shared interrupt/thread types |
 | `sessionpresentation` | Detached presentation view/intent types and native replay projection |
-| `sessionapi` | Wire protocol DTOs, `mekugi-webui/protocol.ts` schema generator, and peer-checked Unix control transport |
+| `sessionapi` | Wire protocol constants and peer-checked Unix control transport |
 | `connector` | Remote bearer-token/origin admission and WebSocket/HTTP forwarding to the local native `mekugi-app-server` socket |
 | `terminalsession` | Terminal attachment, input precedence, geometry, frozen selection, detached views, and frame delivery |
 | `inspectioncli` | Native `mekugi-app-server` CLI dispatch for `inspect-session`, `inspect-sessions`, and `inspect-storage` |

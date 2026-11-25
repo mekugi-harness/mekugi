@@ -99,7 +99,7 @@ test("mixed File and path inputs retain order, bytes and cumulative progress", a
   await readers[1].finish();
   assert.deepEqual(await result, [
     { source: "path", path: "before.txt" },
-    { source: "upload", name: "notes.txt", data: "aGk=" },
+    { source: "upload", name: "notes.txt", mime: "text/plain", data: "aGk=" },
     { source: "path", path: "middle.txt" },
     { source: "upload", name: "binary.dat", data: "AP8B" },
     { source: "path", path: "after.txt" },

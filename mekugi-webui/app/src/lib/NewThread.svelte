@@ -99,10 +99,6 @@
       if (!options) throw new Error(`Wait for ${target.label}'s workspaces and models.`);
       if (mode === "new" && !text.trim() && !items.length)
         throw new Error("Write a first message or attach something.");
-      if (/^[!/]/.test(text.trimStart()))
-        throw new Error(
-          "Start with a message. Slash commands and shell input work once the thread runs.",
-        );
       const attachments = await prepareAttachments(
         items,
         pending.signal,

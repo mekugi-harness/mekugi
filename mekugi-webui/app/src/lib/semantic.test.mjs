@@ -95,16 +95,67 @@ test("toNativeUserInput converts text and attachments to native UserInput items"
   const input = toNativeUserInput("Hello", [
     { source: "path", path: "docs/diagram.png" },
     { source: "upload", name: "shot.png", data: "data:image/png;base64,AA==" },
+    { source: "upload", name: "clip.png", mime: "image/png", data: "iVBORw==" },
+    { source: "upload", name: "photo.jpg", data: "/9j/4A==" },
   ]);
   assert.deepEqual(input, [
     { type: "text", text: "Hello", text_elements: [] },
     { type: "localImage", path: "docs/diagram.png" },
     { type: "image", url: "data:image/png;base64,AA==" },
+    { type: "image", url: "data:image/png;base64,iVBORw==" },
+    { type: "image", url: "data:image/jpeg;base64,/9j/4A==" },
   ]);
 });
 
+test("queued sendInput supplies clientUserMessageId and refreshQueue reads response.data", async () => {
+  const queuedItem = {
+    id: "q1",
+    input: [{ type: "text", text: "Run tests", text_elements: [] }],
+    clientUserMessageId: "c1",
+    createdAt: 1700000000,
+  };
+  const machine = fakeMachine({
+    "thread/queue/list": () => ({ data: [queuedItem], nextCursor: null }),
+    "thread/queue/add": () => ({ queuedSubmission: queuedItem }),
+  });
+  const control = new ThreadControl();
+  control.connect("t1", machine);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(control.queued.length, 1);
+  assert.equal(control.queued[0].id, "q1");
+
+  const err = await control.sendInput("Run tests", [], { queue: true });
+  assert.equal(err, undefined);
+  const addReq = machine.requests.find((r) => r.method === "thread/queue/add");
+  assert.ok(addReq);
+  assert.equal(addReq.params.threadId, "t1");
+  assert.equal(typeof addReq.params.clientUserMessageId, "string");
+  assert.ok(addReq.params.clientUserMessageId.length > 0);
+  control.release();
+});
+
+test("shellGuard/requestApproval preserves argument boundaries with shell quoting", () => {
+  const prompt = serverRequestToPrompt(
+    {
+      id: 21,
+      method: "shellGuard/requestApproval",
+      params: {
+        threadId: "t1",
+        turnId: "turn1",
+        startedAtMs: 1000,
+        executable: "rm",
+        argv: ["-rf", "/tmp/a b", "it's", ""],
+        cwd: "/repo",
+      },
+    },
+    "t1",
+  );
+  assert.equal(prompt?.kind, "approval");
+  assert.equal(prompt.approval.subject, "rm -rf '/tmp/a b' 'it'\\''s' ''");
+});
+
 test("one-time approvals never offer session-wide grants and reply with accept/decline only", () => {
-  const machine = fakeMachine({ "thread/queue/list": () => ({ submissions: [] }) });
+  const machine = fakeMachine({ "thread/queue/list": () => ({ data: [], nextCursor: null }) });
   const control = new ThreadControl();
   control.connect("t1", machine);
 
@@ -148,7 +199,7 @@ test("secret user-input prompts are blocked from remote answering and shellGuard
   );
   assert.equal(secretReq, undefined);
 
-  const machine = fakeMachine({ "thread/queue/list": () => ({ submissions: [] }) });
+  const machine = fakeMachine({ "thread/queue/list": () => ({ data: [], nextCursor: null }) });
   const control = new ThreadControl();
   control.connect("t1", machine);
   machine.emitServerRequest({
@@ -294,5 +345,51 @@ test("Stream hydrates via thread/resume and applies live ServerNotification delt
   });
   assert.equal(s.main.order.length, 1);
   assert.equal(s.main.entries[1].text, "Hello!");
+
+  machine.emitNotification({
+    method: "thread/started",
+    params: {
+      thread: {
+        id: "t-child",
+        sessionId: "s2",
+        forkedFromId: null,
+        parentThreadId: "t1",
+        preview: "Child task",
+        ephemeral: true,
+        section: null,
+        sectionEnteredAt: null,
+        projectId: null,
+        historyMode: "full",
+        modelProvider: "openai",
+        model: "gpt-5",
+        reasoningEffort: "medium",
+        serviceTier: null,
+        contextTokens: 0,
+        contextWindow: 128000,
+        completedCompactions: 0,
+        agentStatus: null,
+        createdAt: 1700000002,
+        updatedAt: 1700000002,
+        recencyAt: null,
+        status: { type: "active", activeFlags: [] },
+        path: null,
+        cwd: "/repo",
+        cliVersion: "0.1",
+        originator: null,
+        source: "subagent",
+        threadSource: null,
+        agentNickname: "worker",
+        agentRole: "worker",
+        gitInfo: null,
+        name: "worker",
+        turns: [],
+      },
+    },
+  });
+  assert.ok(s.roster.agents.some((a) => a.thread === "t-child"));
+
   s.close();
+  assert.ok(
+    machine.requests.some((r) => r.method === "thread/unsubscribe" && r.params.threadId === "t1"),
+  );
 });

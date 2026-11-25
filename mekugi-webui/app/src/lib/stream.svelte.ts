@@ -460,7 +460,10 @@ export class Stream {
       this.connection = "open";
       this.error = undefined;
       this.#applyThread(thread, model, effort, serviceTier);
-      void this.#loadSubtree(id, machine, signal);
+      const subtreeRoot = this.family?.threads.includes(id)
+        ? this.family.root
+        : (thread.parentThreadId ?? id);
+      void this.#loadSubtree(subtreeRoot, machine, signal);
       void this.#loadChanges(id, machine, signal);
     } catch (err) {
       if (signal.aborted) return;
@@ -541,19 +544,46 @@ export class Stream {
     const machine = this.#machine;
     if (!id || !machine) return;
     switch (notification.method) {
+      case "thread/started": {
+        const started = notification.params.thread;
+        const parent = started.parentThreadId;
+        if (
+          parent &&
+          (parent === id || parent === this.family?.root || this.family?.threads.includes(parent))
+        ) {
+          const rootId = this.family?.root ?? parent;
+          const threads = this.family?.threads ?? [rootId];
+          if (!threads.includes(started.id)) {
+            this.family = { root: rootId, threads: [...threads, started.id] };
+          }
+          const nextAgent = threadToAgent(started, 1);
+          const existingIdx = this.roster.agents.findIndex((a) => a.thread === started.id);
+          const agents =
+            existingIdx >= 0
+              ? this.roster.agents.map((a, idx) => (idx === existingIdx ? nextAgent : a))
+              : [...this.roster.agents, nextAgent];
+          this.roster = { total: agents.length, agents };
+          this.#observeRoles();
+        }
+        break;
+      }
       case "thread/status/changed": {
-        if (notification.params.threadId !== id) return;
-        const status = threadStatusToStatus(notification.params.status);
-        this.status = status;
-        this.input = { ...this.input, stoppable: !!status.running || !!this.activeTurnId };
-        this.roster = {
-          ...this.roster,
-          agents: this.roster.agents.map((a) =>
-            a.thread === id
-              ? { ...a, state: threadStatusToAgentState(notification.params.status) }
-              : a,
-          ),
-        };
+        const targetId = notification.params.threadId;
+        if (targetId === id) {
+          const status = threadStatusToStatus(notification.params.status);
+          this.status = status;
+          this.input = { ...this.input, stoppable: !!status.running || !!this.activeTurnId };
+        }
+        if (this.roster.agents.some((a) => a.thread === targetId)) {
+          this.roster = {
+            ...this.roster,
+            agents: this.roster.agents.map((a) =>
+              a.thread === targetId
+                ? { ...a, state: threadStatusToAgentState(notification.params.status) }
+                : a,
+            ),
+          };
+        }
         break;
       }
       case "thread/name/updated": {
@@ -755,11 +785,18 @@ export class Stream {
   }
 
   close(): void {
+    const prevId = this.#id;
+    const prevMachine = this.#machine;
+    this.#id = undefined;
+    this.#machine = undefined;
     this.#stopNotifications?.();
     this.#stopNotifications = undefined;
     this.#stopOpen?.();
     this.#stopOpen = undefined;
     this.#requests.abort();
+    if (prevId && prevMachine && prevMachine.connection === "open") {
+      void prevMachine.request("thread/unsubscribe", { threadId: prevId }).catch(() => {});
+    }
   }
 
   #observeRoles(): void {

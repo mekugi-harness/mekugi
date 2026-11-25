@@ -262,7 +262,7 @@
       </div>
 
       {#if panel}
-        <aside class="w-80 flex-none border-l border-rule bg-ground max-lg:hidden">
+        {#snippet panelContent()}
           {#if panel === "agents"}
             <div class="h-full overflow-y-auto px-3 pb-4">
               <Roster
@@ -285,7 +285,44 @@
               }}
             />
           {/if}
+        {/snippet}
+        <aside class="w-80 flex-none border-l border-rule bg-ground max-lg:hidden">
+          {@render panelContent()}
         </aside>
+        <div
+          class="fixed inset-0 z-40 flex justify-end lg:hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-label={panel === "agents" ? "Agents" : panel === "changes" ? "Changes" : "Details"}
+        >
+          <button
+            type="button"
+            class="flex-1 bg-black/40"
+            aria-label="Close panel"
+            onclick={() => (panel = undefined)}
+          ></button>
+          <div
+            class="flex h-full w-[min(22rem,90vw)] flex-col border-l border-rule bg-ground shadow-lg"
+          >
+            <header
+              class="flex flex-none items-center justify-between border-b border-rule px-3 py-2"
+            >
+              <h2 class="text-small font-medium">
+                {panel === "agents" ? "Agents" : panel === "changes" ? "Changes" : "Details"}
+              </h2>
+              <Button
+                variant="quiet"
+                size="sm"
+                icon="close"
+                label="Close panel"
+                onclick={() => (panel = undefined)}
+              />
+            </header>
+            <div class="min-h-0 flex-1 overflow-y-auto">
+              {@render panelContent()}
+            </div>
+          </div>
+        </div>
       {/if}
     </div>
   {/if}

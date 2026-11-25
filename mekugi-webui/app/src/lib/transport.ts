@@ -11,7 +11,6 @@ import {
   type ServerRequest,
   type TurnStartParams,
   type TurnSteerParams,
-  type VersionResourceResponse,
 } from "./protocol";
 
 export type { RemoteHumanMethod, ServerNotification, ServerRequest } from "./protocol";
@@ -525,33 +524,6 @@ export class Connector {
       return this.#channel().request<T>(method, params, signal);
     if (!this.#bulk || this.#bulk.closed) this.#bulk = new Channel(this.endpoint, this.#token);
     return this.#bulk.request<T>(method, params, signal);
-  }
-
-  async version(options: RequestOptions = {}): Promise<VersionResourceResponse> {
-    if (this.#disposed || options.signal?.aborted) throw canceled();
-    const signal = AbortSignal.any([
-      this.#lifetime.signal,
-      ...(options.signal ? [options.signal] : []),
-    ]);
-    try {
-      const response = await fetch(`${this.endpoint}/api/version`, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${this.#token}`,
-          "Mekugi-Protocol": protocolVersion,
-        },
-        credentials: "omit",
-        redirect: "error",
-        cache: "no-store",
-        signal,
-      });
-      if (!response.ok) throw await resourceError(response);
-      return (await response.json()) as VersionResourceResponse;
-    } catch (error) {
-      if (signal.aborted) throw canceled();
-      if (error instanceof TransportError) throw error;
-      throw new TransportError(unreachable, "network");
-    }
   }
 
   async resource<T>(

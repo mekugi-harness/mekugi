@@ -41,7 +41,6 @@ export type QuestionDraft = {
   choice: number | "skip" | undefined;
   text: string;
   note: string;
-  items: PendingAttachment[];
   sending: boolean;
   accepted: boolean;
 };
@@ -62,7 +61,6 @@ export function questionDraft(question: Question): QuestionDraft {
     choice: recommended >= 0 ? recommended : question.options?.length ? undefined : 0,
     text: "",
     note: "",
-    items: [],
     sending: false,
     accepted: false,
   };
@@ -78,11 +76,7 @@ export function questionAnswers(
   return questions.map((q) => {
     const draft = drafts[q.id];
     const written = draft?.choice === (q.options?.length ?? 0);
-    if (
-      !draft ||
-      draft.choice === undefined ||
-      (written && !draft.text.trim() && !draft.items.length)
-    ) {
+    if (!draft || draft.choice === undefined || (written && !draft.text.trim())) {
       throw new Error(
         call.blocking
           ? "Answer every question or skip it."
@@ -100,6 +94,46 @@ export function questionAnswers(
   });
 }
 
+function inferImageMime(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "bmp":
+      return "image/bmp";
+    case "avif":
+      return "image/avif";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function newClientMessageId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `msg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  );
+}
+
+export function formatShellArg(arg: string): string {
+  if (arg === "") return "''";
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)) return arg;
+  for (let i = 0; i < arg.length; i++) {
+    const code = arg.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return JSON.stringify(arg);
+  }
+  return `'${arg.replaceAll("'", "'\\''")}'`;
+}
+
 export function toNativeUserInput(text: string, attachments: Attachment[] = []): UserInput[] {
   const items: UserInput[] = [];
   if (text.trim()) {
@@ -109,7 +143,10 @@ export function toNativeUserInput(text: string, attachments: Attachment[] = []):
     if (att.source === "path") {
       items.push({ type: "localImage", path: att.path });
     } else if (att.source === "upload") {
-      items.push({ type: "image", url: att.data });
+      const url = att.data.startsWith("data:")
+        ? att.data
+        : `data:${att.mime || inferImageMime(att.name)};base64,${att.data}`;
+      items.push({ type: "image", url });
     } else if (att.source === "selection") {
       items.push({ type: "text", text: att.data, text_elements: [] });
     }
@@ -174,7 +211,7 @@ export function serverRequestToPrompt(
     }
     case "shellGuard/requestApproval": {
       if (req.params.threadId !== threadId) return undefined;
-      const command = [req.params.executable, ...req.params.argv].join(" ");
+      const command = [req.params.executable, ...req.params.argv].map(formatShellArg).join(" ");
       return {
         kind: "approval",
         approval: {
@@ -345,7 +382,7 @@ export class ThreadControl {
       const response = await this.#machine.request<ThreadQueueListResponse>("thread/queue/list", {
         threadId: this.#id,
       });
-      this.queued = response.submissions ?? [];
+      this.queued = response.data ?? [];
     } catch {
       // Queue listing is optional.
     }
@@ -365,7 +402,11 @@ export class ThreadControl {
     this.error = undefined;
     try {
       if (options.queue) {
-        const params: ThreadQueueAddParams = { threadId: id, input };
+        const params: ThreadQueueAddParams = {
+          threadId: id,
+          input,
+          clientUserMessageId: newClientMessageId(),
+        };
         await machine.request("thread/queue/add", params, { signal: options.signal });
         void this.#refreshQueue();
       } else if (stream.activeTurnId) {

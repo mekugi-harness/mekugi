@@ -119,7 +119,7 @@ export type ThreadSettingsUpdateParams = {
 export type ThreadQueueAddParams = {
   threadId: string;
   input: Array<UserInput>;
-  clientUserMessageId?: string | null;
+  clientUserMessageId: string;
 };
 
 export type ThreadQueueListParams = {
@@ -127,13 +127,8 @@ export type ThreadQueueListParams = {
 };
 
 export type ThreadQueueListResponse = {
-  submissions: Array<QueuedSubmission>;
-};
-
-// HTTP resource payloads aligned with codex-rs/app-server/src/http_resources.rs.
-export type VersionResourceResponse = {
-  ready: boolean;
-  version: string;
+  data: Array<QueuedSubmission>;
+  nextCursor?: string | null;
 };
 
 export type ContentResourceRequest = {
@@ -585,5 +580,5 @@ export type Start = {
 
 export type Attachment =
   | { source: "path"; path: string }
-  | { source: "upload"; name: string; data: string }
+  | { source: "upload"; name: string; data: string; mime?: string }
   | { source: "selection"; name: string; data: string; path?: string; inline?: boolean };

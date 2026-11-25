@@ -21,7 +21,6 @@ import type {
   ThreadStartParams,
   ThreadStartResponse,
   ThreadStatus,
-  VersionResourceResponse,
 } from "./protocol";
 import {
   Connector,
@@ -130,10 +129,6 @@ export class Machine {
     return this.#connector.request<T>(method, params, options);
   }
 
-  version(options?: RequestOptions): Promise<VersionResourceResponse> {
-    return this.#connector.version(options);
-  }
-
   resource<T>(kind: ResourceKind, params: ResourceRequest, options?: RequestOptions): Promise<T> {
     return this.#connector.resource<T>(kind, params, options);
   }
@@ -161,13 +156,33 @@ export class Machine {
 
   async refreshThreads(): Promise<void> {
     try {
-      const response = await this.request<ThreadListResponse>("thread/list", {
-        limit: 100,
-        archived: false,
-      });
-      this.sessions = (response.data ?? []).map(threadToListed);
+      const all: Listed[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const response = await this.request<ThreadListResponse>("thread/list", {
+          limit: 100,
+          archived: false,
+          ...(cursor ? { cursor } : {}),
+        });
+        for (const thread of response.data ?? []) all.push(threadToListed(thread));
+        const next = response.nextCursor ?? undefined;
+        if (!next || next === cursor) break;
+        cursor = next;
+      }
+      this.sessions = all;
     } catch {
       // Transient refresh failures are surfaced through the connection state.
+    }
+  }
+
+  async refreshModels(): Promise<void> {
+    try {
+      const response = await this.request<ModelListResponse>("model/list", {
+        includeHidden: false,
+      });
+      this.models = response.data ?? [];
+    } catch {
+      // Model catalog refresh is optional.
     }
   }
 
@@ -393,11 +408,13 @@ class Hub {
     signal?: AbortSignal,
   ): Promise<{ id: string } | { error: string }> {
     try {
+      const config = start.effort ? { model_reasoning_effort: start.effort } : null;
       if (start.resume) {
         const params: ThreadResumeParams = {
           threadId: start.resume,
           cwd: start.workspace || null,
           model: start.model || null,
+          ...(config ? { config } : {}),
         };
         const response = await machine.request<ThreadResumeResponse>("thread/resume", params, {
           signal,
@@ -407,6 +424,7 @@ class Hub {
       const params: ThreadStartParams = {
         cwd: start.workspace || null,
         model: start.model || null,
+        ...(config ? { config } : {}),
       };
       const response = await machine.request<ThreadStartResponse>("thread/start", params, {
         signal,

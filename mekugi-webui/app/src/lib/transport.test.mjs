@@ -267,16 +267,10 @@ test("attachment-bearing turn/start uses a separate bulk channel", async () => {
   connector.close();
 });
 
-test("HTTP resources send Mekugi-Protocol header and bearer token for version, content, and image", async () => {
+test("HTTP resources send Mekugi-Protocol header and bearer token for content and image", async () => {
   const calls = [];
   globalThis.fetch = async (url, options) => {
     calls.push({ url: String(url), options });
-    if (String(url).endsWith("/api/version")) {
-      return new Response(JSON.stringify({ ready: true, version: protocolVersion }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
     if (String(url).endsWith("/api/resources/content")) {
       return new Response(
         JSON.stringify({
@@ -297,10 +291,6 @@ test("HTTP resources send Mekugi-Protocol header and bearer token for version, c
   };
 
   const connector = new Connector("https://box.example", "tok");
-  const ver = await connector.version();
-  assert.equal(ver.ready, true);
-  assert.equal(ver.version, protocolVersion);
-
   const content = await connector.resource("content", {
     thread: "t1",
     body: { thread: "t1", turnId: "turn1", itemId: "i1" },
