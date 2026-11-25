@@ -67,6 +67,14 @@ struct SourceInsert {
     text: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct QuotedHeredocSpan {
+    redir_start: usize,
+    redir_end: usize,
+    body_start: usize,
+    full_end: usize,
+}
+
 /// Parses a shell script with `tree-sitter-bash`, returning `None` if the grammar
 /// cannot be initialized or parsing fails.
 pub fn parse_bash(script: &str) -> Option<Tree> {
@@ -84,18 +92,53 @@ pub fn parse_bash(script: &str) -> Option<Tree> {
 /// Bare guarded commands (`git push`, `sudo id`, `gpg --sign`) in a normal environment
 /// are left completely untouched so `PATH` shims handle them with zero AST rewriting.
 pub fn rewrite_script(script: &str, config: &RewriteConfig<'_>) -> String {
-    let Some(tree) = parse_bash(script) else {
+    let mut current = script.to_owned();
+    let mut all_spans = Vec::new();
+    let mut final_tree = None;
+
+    for _ in 0..64 {
+        let Some(tree) = parse_bash(&current) else {
+            return script.to_owned();
+        };
+        let new_spans = quoted_heredoc_spans_from_tree(&current, &tree);
+        if new_spans.is_empty() {
+            final_tree = Some(tree);
+            break;
+        }
+        current = mask_quoted_heredocs(&current, &new_spans);
+        all_spans.extend(new_spans);
+    }
+
+    let Some(tree) = final_tree.or_else(|| parse_bash(&current)) else {
         return script.to_owned();
     };
-    rewrite_script_tree(script, &tree, config)
+    rewrite_script_tree_with_spans(script, &tree, config, &all_spans)
 }
 
-/// Rewrites executable words in an already-parsed `tree-sitter-bash` syntax tree.
+/// Rewrites executable words in an already-parsed tree-sitter-bash syntax tree.
 pub fn rewrite_script_tree(script: &str, tree: &Tree, config: &RewriteConfig<'_>) -> String {
+    let quoted_spans = quoted_heredoc_spans_from_tree(script, tree);
+    rewrite_script_tree_with_spans(script, tree, config, &quoted_spans)
+}
+
+fn rewrite_script_tree_with_spans(
+    script: &str,
+    tree: &Tree,
+    config: &RewriteConfig<'_>,
+    quoted_spans: &[QuotedHeredocSpan],
+) -> String {
     let root = tree.root_node();
-    let script_mutates_path = config.force_rewrite_bare || has_script_path_mutation(root, script);
+    let script_mutates_path =
+        config.force_rewrite_bare || has_script_path_mutation(root, script, quoted_spans);
     let mut edits = Vec::new();
-    collect_edits(root, script, config, script_mutates_path, &mut edits);
+    collect_edits(
+        root,
+        script,
+        config,
+        script_mutates_path,
+        quoted_spans,
+        &mut edits,
+    );
     apply_inserts(script, edits)
 }
 
@@ -215,7 +258,10 @@ fn unescape_double_quoted(text: &str) -> String {
     }
     out
 }
-fn has_script_path_mutation(node: Node<'_>, src: &str) -> bool {
+fn has_script_path_mutation(node: Node<'_>, src: &str, quoted_spans: &[QuotedHeredocSpan]) -> bool {
+    if is_offset_in_quoted_heredoc(node.start_byte(), quoted_spans) {
+        return false;
+    }
     match node.kind() {
         "variable_assignment" => {
             if let Some(name) = node.child_by_field_name("name")
@@ -253,7 +299,7 @@ fn has_script_path_mutation(node: Node<'_>, src: &str) -> bool {
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if has_script_path_mutation(child, src) {
+        if has_script_path_mutation(child, src, quoted_spans) {
             return true;
         }
     }
@@ -265,8 +311,12 @@ fn collect_edits(
     src: &str,
     config: &RewriteConfig<'_>,
     script_mutates_path: bool,
+    quoted_spans: &[QuotedHeredocSpan],
     edits: &mut Vec<SourceInsert>,
 ) {
+    if is_offset_in_quoted_heredoc(node.start_byte(), quoted_spans) {
+        return;
+    }
     if node.kind() == "command" {
         let mut cursor = node.walk();
         let local_path_override = node.children(&mut cursor).any(|child| {
@@ -297,7 +347,9 @@ fn collect_edits(
                             || script_mutates_path
                     }
                 };
-                if needs_rewrite {
+                if needs_rewrite
+                    && !is_offset_in_quoted_heredoc(word_node.start_byte(), quoted_spans)
+                {
                     let prefix = build_helper_prefix(kind, unwrapped.default_path, config);
                     edits.push(SourceInsert {
                         offset: word_node.start_byte(),
@@ -310,8 +362,759 @@ fn collect_edits(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_edits(child, src, config, script_mutates_path, edits);
+        collect_edits(child, src, config, script_mutates_path, quoted_spans, edits);
     }
+}
+
+fn is_offset_in_quoted_heredoc(offset: usize, spans: &[QuotedHeredocSpan]) -> bool {
+    spans
+        .iter()
+        .any(|span| offset >= span.body_start && offset < span.full_end)
+}
+
+/// Replaces non-newline bytes of quoted heredoc redirections, bodies, and
+/// terminating delimiter lines with ASCII spaces while preserving exact byte
+/// offsets (and backslash-newline continuations inside redirections) so
+/// tree-sitter-bash neither misparses literal heredoc bodies as commands nor
+/// loses track of commands that follow a heredoc after list/pipeline operators.
+fn mask_quoted_heredocs(script: &str, spans: &[QuotedHeredocSpan]) -> String {
+    let mut bytes = script.as_bytes().to_vec();
+    for span in spans {
+        let mut idx = span.redir_start;
+        while idx < span.redir_end {
+            if bytes[idx] == b'\\' && bytes.get(idx + 1) == Some(&b'\n') {
+                idx += 2;
+            } else if bytes[idx] == b'\\'
+                && bytes.get(idx + 1) == Some(&b'\r')
+                && bytes.get(idx + 2) == Some(&b'\n')
+            {
+                idx += 3;
+            } else if bytes[idx] == b'\n' || bytes[idx] == b'\r' {
+                idx += 1;
+            } else {
+                bytes[idx] = b' ';
+                idx += 1;
+            }
+        }
+        for byte in &mut bytes[span.body_start..span.full_end] {
+            if *byte != b'\n' && *byte != b'\r' {
+                *byte = b' ';
+            }
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| script.to_owned())
+}
+
+#[derive(Debug, Clone)]
+struct HeredocEntry {
+    redir_start: usize,
+    redir_end: usize,
+    delimiter: String,
+    strip_tabs: bool,
+    is_quoted: bool,
+    absorbed_redirect: bool,
+}
+
+/// Uses tree-sitter-bash's own heredoc_start AST nodes to locate quoted
+/// here-document spans without re-implementing a full Bash lexer.
+fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSpan> {
+    let mut start_nodes = Vec::new();
+    let mut error_nodes = Vec::new();
+    collect_heredoc_candidates(tree.root_node(), &mut start_nodes, &mut error_nodes);
+    if start_nodes.is_empty() && error_nodes.is_empty() {
+        return Vec::new();
+    }
+    start_nodes.sort_by_key(Node::start_byte);
+
+    // Group heredoc_start nodes by their logical command line (body_start).
+    let mut line_groups: Vec<(usize, Vec<HeredocEntry>)> = Vec::new();
+    let mut push_entry = |body_start: usize, entry: HeredocEntry| {
+        if let Some((_, entries)) = line_groups.iter_mut().find(|(b, _)| *b == body_start) {
+            if !entries.iter().any(|e| e.redir_start == entry.redir_start) {
+                entries.push(entry);
+            }
+        } else {
+            line_groups.push((body_start, vec![entry]));
+        }
+    };
+
+    for node in start_nodes {
+        if node.parent().is_some_and(|p| p.kind() == "ERROR") {
+            continue;
+        }
+        let Some((redir_start, strip_tabs)) = find_heredoc_operator_before(src, node.start_byte())
+        else {
+            continue;
+        };
+        let word_end = scan_shell_word_end(src.as_bytes(), node.start_byte(), src.len());
+        let word_text = &src[node.start_byte()..word_end];
+        let Some((delimiter, is_quoted)) = parse_heredoc_word(word_text) else {
+            continue;
+        };
+        let body_start = find_heredoc_body_start(src, tree, word_end);
+        push_entry(
+            body_start,
+            HeredocEntry {
+                redir_start,
+                redir_end: word_end,
+                delimiter,
+                strip_tabs,
+                is_quoted,
+                absorbed_redirect: node.end_byte() > word_end,
+            },
+        );
+    }
+
+    // Recover heredoc redirects that tree-sitter-bash placed inside ERROR nodes
+    // (e.g. prefix FD redirects like 3<<'EOF' cmd or mixed multi-heredoc lines).
+    for err in error_nodes {
+        if inside_non_heredoc_context(err) {
+            continue;
+        }
+        let scan_start = err
+            .parent()
+            .filter(|p| p.kind() == "file_redirect")
+            .map_or(err.start_byte(), |p| p.start_byte());
+        let scan_end = find_heredoc_body_start(src, tree, err.start_byte());
+        for entry in scan_error_line_heredocs(src, scan_start, scan_end) {
+            let body_start = find_heredoc_body_start(src, tree, entry.redir_end);
+            push_entry(body_start, entry);
+        }
+    }
+
+    let mut spans = Vec::new();
+    for (body_start, mut entries) in line_groups {
+        if !entries.iter().any(|e| e.is_quoted) {
+            continue;
+        }
+        entries.sort_by_key(|e| e.redir_start);
+        let mut pos = body_start;
+        for entry in entries {
+            let entry_body_start = pos;
+            let (full_end, terminated) = advance_past_heredoc_body(src, &mut pos, &entry);
+            let mask_unquoted_redirect_bug = !entry.is_quoted
+                && entry.absorbed_redirect
+                && terminated
+                && !src.as_bytes()[entry_body_start..full_end]
+                    .iter()
+                    .any(|&b| matches!(b, b'$' | b'\x60'));
+            if entry.is_quoted || mask_unquoted_redirect_bug {
+                spans.push(QuotedHeredocSpan {
+                    redir_start: entry.redir_start,
+                    redir_end: entry.redir_end,
+                    body_start: entry_body_start,
+                    full_end,
+                });
+            }
+        }
+    }
+    spans
+}
+
+fn collect_heredoc_candidates<'a>(
+    node: Node<'a>,
+    starts: &mut Vec<Node<'a>>,
+    errors: &mut Vec<Node<'a>>,
+) {
+    match node.kind() {
+        "heredoc_start" => {
+            starts.push(node);
+            return;
+        }
+        "ERROR" => {
+            errors.push(node);
+            return;
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_heredoc_candidates(child, starts, errors);
+    }
+}
+
+fn inside_non_heredoc_context(mut node: Node<'_>) -> bool {
+    while let Some(parent) = node.parent() {
+        if matches!(
+            parent.kind(),
+            "command_substitution" | "process_substitution"
+        ) {
+            return false;
+        }
+        if matches!(
+            parent.kind(),
+            "expansion"
+                | "arithmetic_expansion"
+                | "string"
+                | "raw_string"
+                | "ansi_c_string"
+                | "heredoc_body"
+        ) {
+            return true;
+        }
+        node = parent;
+    }
+    false
+}
+
+/// Finds the << or <<- operator (and optional leading FD digits) immediately
+/// preceding a heredoc_start node.
+fn find_heredoc_operator_before(src: &str, word_start: usize) -> Option<(usize, bool)> {
+    let bytes = src.as_bytes();
+    let mut i = word_start;
+    while i > 0 {
+        if bytes[i - 1] == b' ' || bytes[i - 1] == b'\t' {
+            i -= 1;
+        } else if i >= 2 && bytes[i - 1] == b'\n' && bytes[i - 2] == b'\\' {
+            i -= 2;
+        } else if i >= 3 && bytes[i - 1] == b'\n' && bytes[i - 2] == b'\r' && bytes[i - 3] == b'\\'
+        {
+            i -= 3;
+        } else {
+            break;
+        }
+    }
+    let strip_tabs = i > 0 && bytes[i - 1] == b'-';
+    if strip_tabs {
+        i -= 1;
+    }
+    if i < 2 || bytes[i - 1] != b'<' || bytes[i - 2] != b'<' {
+        return None;
+    }
+    let op_start = i - 2;
+    if op_start > 0 && bytes[op_start - 1] == b'<' {
+        return None;
+    }
+    Some((leading_fd_start(bytes, op_start), strip_tabs))
+}
+
+fn leading_fd_start(bytes: &[u8], op_start: usize) -> usize {
+    let mut start = op_start;
+    while start > 0 && bytes[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    if start == op_start {
+        return op_start;
+    }
+    let at_boundary = start == 0
+        || matches!(
+            bytes[start - 1],
+            b' ' | b'\t' | b'\n' | b'\r' | b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>'
+        );
+    if at_boundary { start } else { op_start }
+}
+
+/// Finds the byte offset immediately after the newline that terminates the
+/// logical command line containing heredoc_start, skipping backslash-newline
+/// continuations and multiline strings or command substitutions on that line.
+fn find_heredoc_body_start(src: &str, tree: &Tree, after_word: usize) -> usize {
+    let bytes = src.as_bytes();
+    let mut pos = after_word;
+    while pos < bytes.len() {
+        let Some(rel_nl) = bytes[pos..].iter().position(|&b| b == b'\n') else {
+            return bytes.len();
+        };
+        let nl = pos + rel_nl;
+        if is_line_continuation(bytes, tree, nl) {
+            pos = nl + 1;
+            continue;
+        }
+        if let Some(skip_end) = enclosing_multiline_construct_end(tree, after_word, nl) {
+            pos = skip_end.max(nl + 1);
+            continue;
+        }
+        return nl + 1;
+    }
+    bytes.len()
+}
+
+fn is_line_continuation(bytes: &[u8], tree: &Tree, nl: usize) -> bool {
+    let prev = if nl > 0 && bytes[nl - 1] == b'\r' {
+        nl - 1
+    } else {
+        nl
+    };
+    if prev == 0 || bytes[prev - 1] != b'\\' {
+        return false;
+    }
+    if let Some(mut node) = tree
+        .root_node()
+        .descendant_for_byte_range(prev - 1, prev - 1)
+    {
+        loop {
+            if node.kind() == "comment" {
+                return false;
+            }
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            node = parent;
+        }
+    }
+    let trailing_backslashes = bytes[..prev]
+        .iter()
+        .rev()
+        .take_while(|&&b| b == b'\\')
+        .count();
+    trailing_backslashes % 2 == 1
+}
+
+fn enclosing_multiline_construct_end(tree: &Tree, after_word: usize, nl: usize) -> Option<usize> {
+    let mut node = tree.root_node().descendant_for_byte_range(nl, nl)?;
+    loop {
+        if matches!(
+            node.kind(),
+            "command_substitution"
+                | "process_substitution"
+                | "string"
+                | "raw_string"
+                | "ansi_c_string"
+        ) && node.start_byte() >= after_word
+            && node.end_byte() > nl
+        {
+            return Some(node.end_byte());
+        }
+        node = node.parent()?;
+    }
+}
+
+fn scan_error_line_heredocs(src: &str, start: usize, end: usize) -> Vec<HeredocEntry> {
+    let bytes = src.as_bytes();
+    let mut out = Vec::new();
+    let mut i = start;
+    while i < end {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(end),
+            b'\'' => {
+                i += 1;
+                while i < end && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                i = (i + 1).min(end);
+            }
+            b'"' => {
+                i += 1;
+                while i < end {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(end),
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'<' if i + 1 < end && bytes[i + 1] == b'<' => {
+                if i + 2 < end && bytes[i + 2] == b'<' {
+                    i += 3;
+                    continue;
+                }
+                let redir_start = leading_fd_start(bytes, i);
+                i += 2;
+                let strip_tabs = i < end && bytes[i] == b'-';
+                if strip_tabs {
+                    i += 1;
+                }
+                while i < end && matches!(bytes[i], b' ' | b'\t') {
+                    i += 1;
+                }
+                let word_start = i;
+                i = scan_shell_word_end(bytes, word_start, end);
+                if word_start < i
+                    && let Some((delimiter, is_quoted)) = parse_heredoc_word(&src[word_start..i])
+                {
+                    out.push(HeredocEntry {
+                        redir_start,
+                        redir_end: i,
+                        delimiter,
+                        strip_tabs,
+                        is_quoted,
+                        absorbed_redirect: matches!(bytes.get(i), Some(b'>' | b'<')),
+                    });
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+fn scan_shell_word_end(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit {
+        if matches!(bytes[i], b'<' | b'>' | b'$') && bytes.get(i + 1) == Some(&b'(') {
+            i = skip_balanced_parens(bytes, i + 2, limit);
+            continue;
+        }
+        if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+            i = skip_balanced_param_exp(bytes, i + 2, limit);
+            continue;
+        }
+        if bytes[i] == b'`' {
+            i = skip_backtick(bytes, i + 1, limit);
+            continue;
+        }
+        if matches!(
+            bytes[i],
+            b' ' | b'\t' | b'\n' | b'\r' | b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>'
+        ) {
+            break;
+        }
+        i = skip_word_atom(bytes, i, limit);
+    }
+    i
+}
+
+fn skip_word_atom(bytes: &[u8], i: usize, limit: usize) -> usize {
+    match bytes[i] {
+        b'\\' => (i + 2).min(limit),
+        b'\'' => skip_single_quoted(bytes, i + 1, limit),
+        b'"' => skip_double_quoted(bytes, i + 1, limit),
+        b'$' if bytes.get(i + 1) == Some(&b'\'') => skip_ansi_c_quoted(bytes, i + 2, limit),
+        _ => i + 1,
+    }
+}
+
+fn skip_single_quoted(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit && bytes[i] != b'\'' {
+        i += 1;
+    }
+    (i + 1).min(limit)
+}
+
+fn skip_ansi_c_quoted(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(limit),
+            b'\'' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    limit
+}
+
+fn skip_double_quoted(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(limit),
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    limit
+}
+
+fn skip_backtick(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(limit),
+            b'`' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    limit
+}
+
+fn skip_balanced_parens(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    let mut depth = 1usize;
+    while i < limit && depth > 0 {
+        if matches!(bytes[i], b'<' | b'>' | b'$') && bytes.get(i + 1) == Some(&b'(') {
+            i = skip_balanced_parens(bytes, i + 2, limit);
+        } else if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+            i = skip_balanced_param_exp(bytes, i + 2, limit);
+        } else if bytes[i] == b'`' {
+            i = skip_backtick(bytes, i + 1, limit);
+        } else {
+            match bytes[i] {
+                b'(' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b')' => {
+                    depth -= 1;
+                    i += 1;
+                }
+                _ => i = skip_word_atom(bytes, i, limit),
+            }
+        }
+    }
+    i
+}
+
+fn skip_balanced_param_exp(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    let mut depth = 1usize;
+    while i < limit && depth > 0 {
+        if matches!(bytes[i], b'<' | b'>' | b'$') && bytes.get(i + 1) == Some(&b'(') {
+            i = skip_balanced_parens(bytes, i + 2, limit);
+        } else if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+            depth += 1;
+            i += 2;
+        } else if bytes[i] == b'`' {
+            i = skip_backtick(bytes, i + 1, limit);
+        } else if bytes[i] == b'}' {
+            depth -= 1;
+            i += 1;
+        } else {
+            i = skip_word_atom(bytes, i, limit);
+        }
+    }
+    i
+}
+
+fn advance_past_heredoc_body(src: &str, pos: &mut usize, entry: &HeredocEntry) -> (usize, bool) {
+    let bytes = src.as_bytes();
+    while *pos < bytes.len() {
+        let line_start = *pos;
+        let rel_nl = bytes[line_start..].iter().position(|&b| b == b'\n');
+        let (line_end, next_pos) = match rel_nl {
+            Some(offset) => (line_start + offset, line_start + offset + 1),
+            None => (src.len(), src.len()),
+        };
+        let raw_line = &src[line_start..line_end];
+        let candidate = if entry.strip_tabs {
+            raw_line.trim_start_matches('\t')
+        } else {
+            raw_line
+        };
+        *pos = next_pos;
+        if candidate == entry.delimiter {
+            return (next_pos, true);
+        }
+    }
+    (src.len(), false)
+}
+
+/// Decodes a heredoc delimiter word and returns (delimiter, is_quoted).
+fn parse_heredoc_word(word: &str) -> Option<(String, bool)> {
+    let bytes = word.as_bytes();
+    let mut pos = 0;
+    let mut out = String::new();
+    let mut is_quoted = false;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'\'' => {
+                is_quoted = true;
+                pos += 1;
+                let start = pos;
+                while pos < bytes.len() && bytes[pos] != b'\'' {
+                    pos += 1;
+                }
+                out.push_str(&word[start..pos]);
+                pos = (pos + 1).min(bytes.len());
+            }
+            b'"' => {
+                is_quoted = true;
+                pos += 1;
+                parse_double_quoted_delimiter(word, &mut pos, &mut out);
+            }
+            b'$' if bytes.get(pos + 1) == Some(&b'\'') => {
+                is_quoted = true;
+                pos += 2;
+                if !parse_ansi_c_delimiter(word, &mut pos, &mut out) {
+                    return None;
+                }
+            }
+            b'$' if bytes.get(pos + 1) == Some(&b'"') => {
+                is_quoted = true;
+                pos += 2;
+                parse_double_quoted_delimiter(word, &mut pos, &mut out);
+            }
+            b'\\' => {
+                if bytes.get(pos + 1) == Some(&b'\n') {
+                    pos += 2;
+                    continue;
+                }
+                if bytes.get(pos + 1) == Some(&b'\r') && bytes.get(pos + 2) == Some(&b'\n') {
+                    pos += 3;
+                    continue;
+                }
+                is_quoted = true;
+                pos += 1;
+                if let Some(ch) = word[pos..].chars().next() {
+                    out.push(ch);
+                    pos += ch.len_utf8();
+                }
+            }
+            _ => {
+                if let Some(ch) = word[pos..].chars().next() {
+                    out.push(ch);
+                    pos += ch.len_utf8();
+                }
+            }
+        }
+    }
+    Some((out, is_quoted))
+}
+
+fn parse_double_quoted_delimiter(src: &str, pos: &mut usize, out: &mut String) {
+    let bytes = src.as_bytes();
+    while *pos < bytes.len() {
+        match bytes[*pos] {
+            b'"' => {
+                *pos += 1;
+                break;
+            }
+            b'\\' => {
+                *pos += 1;
+                if *pos >= bytes.len() {
+                    out.push('\\');
+                    break;
+                }
+                match bytes[*pos] {
+                    b'\n' => *pos += 1,
+                    b'\r' if bytes.get(*pos + 1) == Some(&b'\n') => *pos += 2,
+                    b'"' | b'\\' | b'$' | b'`' => {
+                        out.push(bytes[*pos] as char);
+                        *pos += 1;
+                    }
+                    _ => {
+                        out.push('\\');
+                        if let Some(ch) = src[*pos..].chars().next() {
+                            out.push(ch);
+                            *pos += ch.len_utf8();
+                        }
+                    }
+                }
+            }
+            _ => {
+                if let Some(ch) = src[*pos..].chars().next() {
+                    out.push(ch);
+                    *pos += ch.len_utf8();
+                }
+            }
+        }
+    }
+}
+
+fn parse_ansi_c_delimiter(src: &str, pos: &mut usize, out: &mut String) -> bool {
+    let bytes = src.as_bytes();
+    let mut raw = Vec::new();
+    let mut nul = false;
+    while *pos < bytes.len() {
+        match bytes[*pos] {
+            b'\'' => {
+                *pos += 1;
+                break;
+            }
+            b'\\' => {
+                *pos += 1;
+                let Some(&esc) = bytes.get(*pos) else {
+                    if !nul {
+                        raw.push(b'\\');
+                    }
+                    break;
+                };
+                match esc {
+                    b'a' | b'b' | b'e' | b'E' | b'f' | b'n' | b'r' | b't' | b'v' | b'\\'
+                    | b'\'' | b'"' | b'?' => {
+                        *pos += 1;
+                        if !nul {
+                            raw.push(match esc {
+                                b'a' => 0x07,
+                                b'b' => 0x08,
+                                b'e' | b'E' => 0x1b,
+                                b'f' => 0x0c,
+                                b'n' => b'\n',
+                                b'r' => b'\r',
+                                b't' => b'\t',
+                                b'v' => 0x0b,
+                                other => other,
+                            });
+                        }
+                    }
+                    b'0'..=b'7' => {
+                        let mut val = 0u32;
+                        for _ in 0..3 {
+                            let Some(&b @ b'0'..=b'7') = bytes.get(*pos) else {
+                                break;
+                            };
+                            val = (val << 3) | u32::from(b - b'0');
+                            *pos += 1;
+                        }
+                        push_ansi_byte(&mut raw, &mut nul, (val & 0xff) as u8);
+                    }
+                    b'x' => {
+                        *pos += 1;
+                        match read_hex(bytes, pos, 2) {
+                            Some(val) => push_ansi_byte(&mut raw, &mut nul, (val & 0xff) as u8),
+                            None if !nul => raw.extend_from_slice(b"\\x"),
+                            None => {}
+                        }
+                    }
+                    b'u' | b'U' => {
+                        *pos += 1;
+                        match read_hex(bytes, pos, if esc == b'u' { 4 } else { 8 }) {
+                            Some(0) => nul = true,
+                            Some(val) => {
+                                let Some(ch) = char::from_u32(val) else {
+                                    return false;
+                                };
+                                if !nul {
+                                    let mut buf = [0u8; 4];
+                                    raw.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                                }
+                            }
+                            None if !nul => raw.extend_from_slice(&[b'\\', esc]),
+                            None => {}
+                        }
+                    }
+                    b'c' => {
+                        *pos += 1;
+                        if let Some(&ctrl) = bytes.get(*pos) {
+                            *pos += 1;
+                            let byte = if ctrl == b'?' { 0x7f } else { ctrl & 0x1f };
+                            push_ansi_byte(&mut raw, &mut nul, byte);
+                        } else if !nul {
+                            raw.extend_from_slice(b"\\c");
+                        }
+                    }
+                    other => {
+                        *pos += 1;
+                        if !nul {
+                            raw.push(b'\\');
+                            raw.push(other);
+                        }
+                    }
+                }
+            }
+            byte => {
+                *pos += 1;
+                if !nul {
+                    raw.push(byte);
+                }
+            }
+        }
+    }
+    let Ok(decoded) = String::from_utf8(raw) else {
+        return false;
+    };
+    out.push_str(&decoded);
+    true
+}
+
+fn push_ansi_byte(raw: &mut Vec<u8>, nul: &mut bool, byte: u8) {
+    if byte == 0 {
+        *nul = true;
+    } else if !*nul {
+        raw.push(byte);
+    }
+}
+
+fn read_hex(bytes: &[u8], pos: &mut usize, max_digits: usize) -> Option<u32> {
+    let mut val = 0u32;
+    let mut count = 0;
+    while count < max_digits {
+        let digit = match bytes.get(*pos).copied() {
+            Some(b @ b'0'..=b'9') => u32::from(b - b'0'),
+            Some(b @ b'a'..=b'f') => u32::from(b - b'a' + 10),
+            Some(b @ b'A'..=b'F') => u32::from(b - b'A' + 10),
+            _ => break,
+        };
+        val = (val << 4) | digit;
+        *pos += 1;
+        count += 1;
+    }
+    (count > 0).then_some(val)
 }
 
 /// Locate the command string, not a script filename or its positional args.

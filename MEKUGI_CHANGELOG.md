@@ -36,7 +36,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   runs) prepends the staged guard directories in `codex-core` after user
   `PreToolUse` hooks run and applies a minimal `tree-sitter-bash` executable-word
   rewriter for explicit paths, `env -i`, `command -p`, `PATH` overrides, and
-  nested `-c` shells without a patched shell or `BASH_ENV` function injection.
+  nested `-c` shells without a patched shell or `BASH_ENV` function injection,
+  preserving quoted here-document bodies verbatim across list and pipeline
+  operators (`MEKUGI-825`).
   The session tracking hook instruments the command selected by user hooks;
   competing user rewrites still resolve in native completion order.
   Shims communicate over a session-private Unix socket (`codex-uds`) bridged by
