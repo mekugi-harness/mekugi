@@ -17,9 +17,9 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
   (`context_sources*.rs`, `compact_token_budget.rs`, `ext/skills`), OS/Git environment facts
   (`environment_facts.rs`), `SESSION_TMP` (`exec_env.rs`), and detached model-input projection
   (`context_manager/{output_deduplication,request_input}.rs`).
-- **Go (`mekugi-tui/`)**: server/session lifetime, terminal UI,
-  native event presentation, the frontend catalog, approval dock, session grants and
-  private secret dialogs, retained session history, inspection, replay, usage/diagnostics.
+- **Go (`mekugi-tui/`)**: terminal UI renderer (keys, local editing, geometry, painting),
+  direct native `mekugi-app-server` Unix-socket client, headless client,
+  and remote connector/WebUI assets host (`connector`, `web`).
 - **Browser (`mekugi-webui/`)**: Svelte renderer, generated Session API types, and
   assets-only Go host. `mekugi-webui/DESIGN.md` owns visual and interaction rules.
 
@@ -27,20 +27,15 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 
 | Owner | Responsibility |
 | --- | --- |
-| `composition` | Selected descriptors/bindings; `contracts` holds shared interfaces; `testsupport/moduletest` holds harness |
-| `launch` | CLI dispatch, profile selection, server/connector startup and native attachment |
-| `frontends` | Authenticated executable catalog/PATH, worker pinning, and leases |
+| `composition` | Renderer-only module view selection (`NativeRenderer`); `contracts` holds shared interfaces; `testsupport/moduletest` holds harness |
+| `launch` | CLI dispatch, profile selection, direct native `mekugi-app-server` startup/attachment, connector, web, and headless |
 | `headless` | Noninteractive automation client and JSONL host evidence |
-| `requestexecution` | Client failure notices and private storage diagnostics |
-| `executionobservation` | User-shell capture and legacy edit review |
-| `sessioncontrol` | Sole host app-server connection/request ledger; submission, compaction, approvals, prompts, presets, side threads |
-| `sessionpresentation` | Scoped live/replay admission, turn/input/activity reduction, detached publications, metrics projection |
-| `sessionapi` | Server-owned runtime admission, versioned Unix/WS control protocol, detached projections, HTTP resources |
-| `connector` | Remote bearer-token/origin admission and WebSocket/HTTP forwarding to the local server |
+| `sessioncontrol` | Minimal headless request correlation and shared interrupt/thread types |
+| `sessionpresentation` | Detached presentation view/intent types and native replay projection |
+| `sessionapi` | Wire protocol DTOs, `mekugi-webui/protocol.ts` schema generator, and peer-checked Unix control transport |
+| `connector` | Remote bearer-token/origin admission and WebSocket/HTTP forwarding to the local native `mekugi-app-server` socket |
 | `terminalsession` | Terminal attachment, input precedence, geometry, frozen selection, detached views, and frame delivery |
-| `sessionreview` | Authorized retained membership, async immutable review hydration, and rewind boundary selection |
-| `recordtransactions` | Cross-owner publication, retained-input adoption, and fork initialization |
-| `inspectioncli` | Offline `inspect-session`, `inspect-sessions`, and `inspect-storage` command dispatch |
+| `inspectioncli` | Native `mekugi-app-server` CLI dispatch for `inspect-session`, `inspect-sessions`, and `inspect-storage` |
 
 ## Key non-obvious boundaries
 
@@ -48,7 +43,6 @@ Go owner paths below are relative to `mekugi-tui/`; shared contracts are at root
 
 - `backends/codex/{appserver,binding,rollout,responses,shellhook,messagehistory,nativetrace}`
   owns Codex RPC, protocol decoding, rollout reads and shell hook protocols.
-- `providers/openai` serves composer predictions. Inference uses the native model provider.
 - `apps/mekugi/cmd/workspace` owns workspace enumeration and import checks,
   plus `just docs-check`, the module index, and `just integrate`
   (`docs/contributing/development.md#integrate-reviewed-work`).

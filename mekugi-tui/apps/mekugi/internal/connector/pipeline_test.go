@@ -116,9 +116,24 @@ func TestPipelinedObservationRetainsInitializationAdmission(t *testing.T) {
 		t.Run(admission, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
-			hub := sessionapi.NewHub(ctx, nil)
-			defer hub.Close()
-			socket, _ := upstream(t, sessionapi.Versioned(hub.Handler()))
+			socket := rpcUpstream(t, func(conn *websocket.Conn) {
+				for {
+					_, data, err := conn.Read(ctx)
+					if err != nil {
+						return
+					}
+					var req sessionapi.RPCMessage
+					if json.Unmarshal(data, &req) != nil {
+						return
+					}
+					if req.Method == "session/subscribe" {
+						resp, _ := json.Marshal(sessionapi.RPCMessage{JSONRPC: "2.0", ID: req.ID, Result: []byte("{}")})
+						_ = conn.Write(ctx, websocket.MessageText, resp)
+						ev, _ := json.Marshal(sessionapi.RPCMessage{JSONRPC: "2.0", Method: "subscription/event", Params: []byte("{}")})
+						_ = conn.Write(ctx, websocket.MessageText, ev)
+					}
+				}
+			})
 			bridge, tokenPath := connect(t, socket)
 			server := httptest.NewServer(bridge)
 			defer server.Close()

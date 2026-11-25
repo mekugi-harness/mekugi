@@ -166,7 +166,7 @@ Captures exclude prompts, patches, and credentials.
   only if you want to hide the automatic catalog.
   See [guidance](../reference/agent-guidance.md).
 - **Recovery:** see [compaction](sessions.md#compaction-and-recovery) and [storage](sessions.md#replay-storage).
-- **Frontend commands:** [compiled helpers](../../mekugi-tui/apps/mekugi/internal/frontends/SPEC.md) run through stock
+- **Frontend commands:** native `mekugi-app-server` (`codex-arg0`) helpers run through stock
   execution. JavaScript plugin loading has been removed; existing plugin files
   are left untouched.
 - **Environment:** router/executor must share paths/runtime directory; `MEKUGI_RUNTIME_DIR`

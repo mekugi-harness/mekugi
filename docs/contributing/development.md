@@ -349,28 +349,13 @@ mekugi inspect-session --debug-dir /path/to/debug --field diagnostic --limit 5 -
 Narrow debug reports by `--request-id` and paginate with `--offset`. Select JSON fields rather
 than line-limiting minified output.
 
-See [session inspection](../../mekugi-tui/modules/sessioninspection/SPEC.md) and [AX evidence](../../mekugi-tui/modules/agentmetrics/SPEC.md).
+See native retained inspection (`mekugi inspect-session`) and [AX evidence](../../mekugi-tui/modules/agentmetrics/SPEC.md).
 
-### Replay a session
-
-```sh
-mekugi replay-session --session SESSION_ID
-```
-
-Use the literal full session ID from `CODEX_HOME` sessions/archives, not a path. Replay makes no provider, command,
-or approval calls; it simulates retained text/timing, not original inputs or live
-previews. Missing evidence is reported; private content may appear on screen. `p`
-pauses, `+`/`-` changes speed, `[`/`]` seeks, `r` restarts, `q` quits. Use `--from 5m
---until 6m` for intervals or `--headless --width 160 --height 48 --seed 1 --speed 1` for
-repeatable timing. Fix inputs, speed, and dimensions for comparisons. Replay measures rendering,
-not terminal backpressure or live host/provider latency. See
-[replay](../../mekugi-tui/modules/sessionreplay/SPEC.md).
-
-## Profile live sessions and replay
+## Profile live sessions
 
 For reported live CPU/RAM faults, identify the affected binary, retained history/store scale,
 and lifecycle phase. Sample the actual process within the authorized isolation boundary, or
-reproduce those dimensions in an isolated process. Fresh sessions and replay cannot establish
+reproduce those dimensions in an isolated process. Fresh sessions cannot establish
 coverage of missing retained process state.
 
 `just mekugi-pprof` builds a separate optimized executable with symbols and the
@@ -378,8 +363,7 @@ coverage of missing retained process state.
 normal command. Launch arguments, worker dispatch and hooks retain their behavior.
 The normal build starts no profiling listener.
 
-Launch or [replay](../../mekugi-tui/modules/sessionreplay/SPEC.md) with `bin/mekugi-pprof`. For rendering profiles,
-use `bin/mekugi-pprof replay-session --session ID --headless --width 160 --height 48`.
+Launch with `bin/mekugi-pprof`.
 Each owning process binds its own OS-assigned IPv4 loopback port and prints
 `mekugi-pprof: http://127.0.0.1:PORT/debug/pprof/` to stderr before UI handoff.
 The native interactive client opens its listener before connecting to the server;

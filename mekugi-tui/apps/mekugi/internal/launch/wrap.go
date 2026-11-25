@@ -349,6 +349,25 @@ func frontendShellEnvironment(environment []string, directory, helper string, re
 		"BASH_ENV="+path, userBashEnvEnvironment+"="+previous), nil
 }
 
+func serverEnvironment(environment []string) []string {
+	terminal := ""
+	result := make([]string, 0, len(environment))
+	for _, entry := range withoutInheritedFrontend(environment) {
+		key, value, _ := strings.Cut(entry, "=")
+		if key == "TERM" {
+			terminal = value
+		}
+		if slices.Contains([]string{"MEKUGI_BASE_URL", "MEKUGI_RUNTIME_DIR", "TMUX", "TMUX_PANE", "TERM"}, key) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	if terminal == "" || terminal == "dumb" {
+		terminal = "xterm-256color"
+	}
+	return append(result, "TERM="+terminal)
+}
+
 // Only session arguments may enter the native interactive client.
 func interactiveCodexArgs(args []string) bool {
 	for i := 0; i < len(args); i++ {

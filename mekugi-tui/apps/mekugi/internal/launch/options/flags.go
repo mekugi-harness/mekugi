@@ -57,7 +57,6 @@ func newFlags(stderr io.Writer, config *Config) *flag.FlagSet {
 		fmt.Fprintln(stderr, "Usage: mekugi [flags] [Codex arguments...]")
 		fmt.Fprintln(stderr, "       mekugi [flags] codex [Codex arguments...]")
 		fmt.Fprintln(stderr, "       mekugi [flags] codex headless --yolo [-m MODEL] [-c KEY=VALUE] < prompt.txt")
-		fmt.Fprintln(stderr, "       mekugi server [--socket PATH]")
 		fmt.Fprintln(stderr, "       mekugi connector [--listen ADDRESS] [--socket PATH] [--token-file PATH] [--origin URL]")
 		fmt.Fprintln(stderr, "       mekugi web [--listen ADDRESS]")
 		flags.PrintDefaults()

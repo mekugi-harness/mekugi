@@ -32,7 +32,7 @@ type mockNativeAppServer struct {
 
 func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer {
 	t.Helper()
-	listener, err := sessionapi.ListenControl(socket)
+	listener, err := listenPrivateUnix(socket)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,6 @@ package launch
 import (
 	"cmp"
 	"context"
-	json "encoding/json/v2"
 	"fmt"
 	"slices"
 	"strconv"
@@ -13,7 +12,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
@@ -158,28 +156,6 @@ func (session *nativeSession) observeResponse(params []byte) error {
 		capture.ObserveResponse(event.ThreadID, event.TurnID, event.Model, counts, duration)
 	}
 	return nil
-}
-
-func decodeResponseCompleted(params []byte) (binding.ResponseCompleted, inference.Usage, time.Duration, bool, error) {
-	var event binding.ResponseCompleted
-	if err := json.Unmarshal(params, &event); err != nil {
-		return binding.ResponseCompleted{}, inference.Usage{}, 0, false, err
-	}
-	if event.ThreadID == "" || event.ResponseID == "" {
-		return event, inference.Usage{}, 0, false, nil
-	}
-	var counts inference.Usage
-	if u := event.Usage; u != nil {
-		counts = inference.Usage{TotalsKnown: true, InputTokens: u.InputTokens,
-			UncachedInputTokens: u.InputTokens - min(u.CachedInputTokens, u.InputTokens),
-			CacheWriteTokens:    u.CacheWriteInputTokens, OutputTokens: u.OutputTokens,
-			ReasoningTokens:     u.ReasoningOutputTokens,
-			Incomplete: event.UsageMetadata == nil || event.UsageMetadata.Metadata.Input.Cached == nil ||
-				event.UsageMetadata.Metadata.Output.Reasoning == nil,
-			Inconsistent: u.CachedInputTokens > u.InputTokens || u.ReasoningOutputTokens > u.OutputTokens,
-		}
-	}
-	return event, counts, time.Duration(event.RequestDurationMS) * time.Millisecond, true, nil
 }
 
 // observeCost reads all consumption metrics from the same canonical owner.

@@ -29,7 +29,6 @@ documented by their code and tests rather than standalone specs.
 
 - [Launch](../mekugi-tui/apps/mekugi/internal/launch/SPEC.md): CLI invocation, profiles, server lifecycle,
   and host wiring.
-- [Executable frontends](../mekugi-tui/apps/mekugi/internal/frontends/SPEC.md): authenticated session helpers
   and recovery delivery.
 - [Headless client](../mekugi-tui/apps/mekugi/internal/headless/SPEC.md): noninteractive automation and JSONL
   output.
