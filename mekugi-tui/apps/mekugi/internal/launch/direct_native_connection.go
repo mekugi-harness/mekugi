@@ -320,6 +320,9 @@ func (c *directNativeConnection) resumeThread(ctx context.Context, threadID stri
 }
 
 func (c *directNativeConnection) applyThreadBootstrapLocked(threadID, cwd, name, model, effort, tier string) {
+	if c.mainThread != threadID {
+		c.activeTurn = ""
+	}
 	c.mainThread = threadID
 	c.displayedThread = threadID
 	c.inputThread = threadID

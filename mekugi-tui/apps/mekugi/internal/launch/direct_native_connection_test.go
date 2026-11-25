@@ -451,6 +451,7 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 	forkParams := slices.Clone(mock.params["thread/fork"])
 	turnStartParams := slices.Clone(mock.params["turn/start"])
 	listParams := slices.Clone(mock.params["thread/list"])
+	turnsListParams := slices.Clone(mock.params["thread/turns/list"])
 	mock.mu.Unlock()
 	for _, want := range []string{"initialize", "thread/start", "thread/subtree/list", "thread/changes/read", "turn/steer", "thread/queue/add", "thread/settings/update", "thread/revert", "thread/fork", "turn/start", "thread/list"} {
 		if !slices.Contains(methods, want) {
@@ -486,5 +487,23 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 	}
 	if len(listParams) == 0 || !strings.Contains(string(listParams[0]), `"cwd":"/tmp/ws"`) {
 		t.Fatalf("thread/list missing cwd workspace filter: %s", listParams)
+	}
+	if len(turnsListParams) == 0 || !strings.Contains(string(turnsListParams[0]), `"sortDirection":"desc"`) {
+		t.Fatalf("thread/turns/list missing sortDirection=desc: %s", turnsListParams)
+	}
+}
+
+func TestDirectNativeNewClearsActiveTurnBeforeRewind(t *testing.T) {
+	conn := &directNativeConnection{
+		mainThread:    "thr-a",
+		activeTurn:    "turn-a-1",
+		threadCallers: map[string]string{"thr-a": "main"},
+	}
+	conn.applyThreadBootstrapLocked("thr-b", "/tmp/ws", "Fresh Session", "gpt-5", "medium", "standard")
+	if conn.mainThread != "thr-b" {
+		t.Fatalf("expected mainThread=thr-b, got %q", conn.mainThread)
+	}
+	if conn.activeTurn != "" {
+		t.Fatalf("expected activeTurn cleared on main thread switch, got %q", conn.activeTurn)
 	}
 }

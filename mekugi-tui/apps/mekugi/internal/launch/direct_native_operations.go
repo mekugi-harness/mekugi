@@ -263,10 +263,10 @@ func (c *directNativeConnection) resolveLatestTurnID(ctx context.Context, thread
 		} `json:"data"`
 	}
 	if err := c.wire.Call(ctx, "thread/turns/list", map[string]any{
-		"threadId":  threadID,
-		"order":     "desc",
-		"limit":     1,
-		"itemsView": "notLoaded",
+		"threadId":      threadID,
+		"sortDirection": "desc",
+		"limit":         1,
+		"itemsView":     "notLoaded",
 	}, &page); err == nil && len(page.Data) > 0 && page.Data[0].ID != "" {
 		return page.Data[0].ID, nil
 	}
