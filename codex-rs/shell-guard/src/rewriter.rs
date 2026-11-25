@@ -445,18 +445,17 @@ fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSp
         else {
             continue;
         };
-        let Ok(word_text) = node.utf8_text(src.as_bytes()) else {
-            continue;
-        };
+        let word_end = scan_shell_word_end(src.as_bytes(), node.start_byte(), src.len());
+        let word_text = &src[node.start_byte()..word_end];
         let Some((delimiter, is_quoted)) = parse_heredoc_word(word_text) else {
             continue;
         };
-        let body_start = find_heredoc_body_start(src, tree, node.end_byte());
+        let body_start = find_heredoc_body_start(src, tree, word_end);
         push_entry(
             body_start,
             HeredocEntry {
                 redir_start,
-                redir_end: node.end_byte(),
+                redir_end: word_end,
                 delimiter,
                 strip_tabs,
                 is_quoted,
@@ -528,7 +527,10 @@ fn collect_heredoc_candidates<'a>(
 
 fn inside_non_heredoc_context(mut node: Node<'_>) -> bool {
     while let Some(parent) = node.parent() {
-        if parent.kind() == "command_substitution" {
+        if matches!(
+            parent.kind(),
+            "command_substitution" | "process_substitution"
+        ) {
             return false;
         }
         if matches!(
@@ -605,9 +607,7 @@ fn find_heredoc_body_start(src: &str, tree: &Tree, after_word: usize) -> usize {
             return bytes.len();
         };
         let nl = pos + rel_nl;
-        let is_escaped = (nl > 0 && bytes[nl - 1] == b'\\')
-            || (nl > 1 && bytes[nl - 1] == b'\r' && bytes[nl - 2] == b'\\');
-        if is_escaped {
+        if is_line_continuation(bytes, tree, nl) {
             pos = nl + 1;
             continue;
         }
@@ -620,12 +620,47 @@ fn find_heredoc_body_start(src: &str, tree: &Tree, after_word: usize) -> usize {
     bytes.len()
 }
 
+fn is_line_continuation(bytes: &[u8], tree: &Tree, nl: usize) -> bool {
+    let prev = if nl > 0 && bytes[nl - 1] == b'\r' {
+        nl - 1
+    } else {
+        nl
+    };
+    if prev == 0 || bytes[prev - 1] != b'\\' {
+        return false;
+    }
+    if let Some(mut node) = tree
+        .root_node()
+        .descendant_for_byte_range(prev - 1, prev - 1)
+    {
+        loop {
+            if node.kind() == "comment" {
+                return false;
+            }
+            let Some(parent) = node.parent() else {
+                break;
+            };
+            node = parent;
+        }
+    }
+    let trailing_backslashes = bytes[..prev]
+        .iter()
+        .rev()
+        .take_while(|&&b| b == b'\\')
+        .count();
+    trailing_backslashes % 2 == 1
+}
+
 fn enclosing_multiline_construct_end(tree: &Tree, after_word: usize, nl: usize) -> Option<usize> {
     let mut node = tree.root_node().descendant_for_byte_range(nl, nl)?;
     loop {
         if matches!(
             node.kind(),
-            "command_substitution" | "string" | "raw_string" | "ansi_c_string"
+            "command_substitution"
+                | "process_substitution"
+                | "string"
+                | "raw_string"
+                | "ansi_c_string"
         ) && node.start_byte() >= after_word
             && node.end_byte() > nl
         {
@@ -677,46 +712,7 @@ fn scan_error_line_heredocs(src: &str, start: usize, end: usize) -> Vec<HeredocE
                     i += 1;
                 }
                 let word_start = i;
-                while i < end
-                    && !matches!(
-                        bytes[i],
-                        b' ' | b'\t'
-                            | b'\n'
-                            | b'\r'
-                            | b';'
-                            | b'&'
-                            | b'|'
-                            | b'('
-                            | b')'
-                            | b'<'
-                            | b'>'
-                    )
-                {
-                    match bytes[i] {
-                        b'\\' => i = (i + 2).min(end),
-                        b'\'' => {
-                            i += 1;
-                            while i < end && bytes[i] != b'\'' {
-                                i += 1;
-                            }
-                            i = (i + 1).min(end);
-                        }
-                        b'"' => {
-                            i += 1;
-                            while i < end {
-                                match bytes[i] {
-                                    b'\\' => i = (i + 2).min(end),
-                                    b'"' => {
-                                        i += 1;
-                                        break;
-                                    }
-                                    _ => i += 1,
-                                }
-                            }
-                        }
-                        _ => i += 1,
-                    }
-                }
+                i = scan_shell_word_end(bytes, word_start, end);
                 if word_start < i
                     && let Some((delimiter, is_quoted)) = parse_heredoc_word(&src[word_start..i])
                 {
@@ -733,6 +729,54 @@ fn scan_error_line_heredocs(src: &str, start: usize, end: usize) -> Vec<HeredocE
         }
     }
     out
+}
+
+fn scan_shell_word_end(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit
+        && !matches!(
+            bytes[i],
+            b' ' | b'\t' | b'\n' | b'\r' | b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>'
+        )
+    {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(limit),
+            b'\'' => {
+                i += 1;
+                while i < limit && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                i = (i + 1).min(limit);
+            }
+            b'"' => {
+                i += 1;
+                while i < limit {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(limit),
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'$' if bytes.get(i + 1) == Some(&b'\'') => {
+                i += 2;
+                while i < limit {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(limit),
+                        b'\'' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    i
 }
 
 fn advance_past_heredoc_body(src: &str, pos: &mut usize, entry: &HeredocEntry) -> usize {

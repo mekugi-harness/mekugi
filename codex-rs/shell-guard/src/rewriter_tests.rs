@@ -399,6 +399,26 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
     let case_in_args =
         "cat <<'EOF' > \"$(printf '%s-%s.sh' case in)\" &&\nsh -c 'echo hi'\nEOF\necho ok";
     assert_eq!(rewrite_script(case_in_args, &config), case_in_args);
+
+    // Trailing comment backslash and escaped double-backslash must not skip the heredoc opening newline.
+    for literal_bs in [
+        "cat <<'SCRIPT' && # note \\\nsh -c 'echo hello'\nSCRIPT\necho ok",
+        "cat <<'SCRIPT' && echo \\\\\nsh -c 'echo hello'\nSCRIPT",
+    ] {
+        assert_eq!(rewrite_script(literal_bs, &config), literal_bs);
+    }
+
+    // Quoted prefix concatenated with unquoted suffix ('END'MARKER) must not terminate early on END.
+    let concat_delim = "cat <<'END'MARKER &&\nEND\nsh -c 'echo hello'\nENDMARKER\necho ok";
+    assert_eq!(rewrite_script(concat_delim, &config), concat_delim);
+
+    // Multiline process substitution on a quoted heredoc line must still rewrite its inner command.
+    let proc_subst = "cat <<'OUTER' <(\n/usr/bin/git push\n)\nOUTER";
+    let rewritten_proc = rewrite_script(proc_subst, &config);
+    assert!(
+        rewritten_proc.contains(ARG1_VCS_COMMAND),
+        "process substitution bypassed approval: {rewritten_proc}"
+    );
 }
 
 #[cfg(unix)]
