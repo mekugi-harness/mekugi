@@ -9,46 +9,38 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 )
 
-func TestPredictionCleanupFailureRetainsCompletedResult(t *testing.T) {
-	for _, failure := range []string{"send", "acknowledgement"} {
-		t.Run(failure, func(t *testing.T) {
-			transport := &requestTransport{id: "unsubscribe"}
-			r := NewRequests[struct{}](transport)
-			client := &Client[struct{}]{Requests: r}
-			p := &Prediction{Thread: "prediction", Completed: true, Text: "Show tests"}
-			r.predictions = map[string]*Prediction{p.Thread: p}
-			if failure == "send" {
-				transport.err = errors.New("write failed")
-			}
-			if err := r.releasePrediction(p); (err != nil) != (failure == "send") {
-				t.Fatal(err)
-			}
-			if failure == "acknowledgement" {
-				request, _ := r.Take("unsubscribe")
-				if _, err := client.ObservePrediction(appserver.Message{Error: &appserver.Error{Message: "rejected"}}, request); err != nil {
-					t.Fatal(err)
-				}
-			}
-			transport.err = nil
-			if err := r.ClosePrediction(p); err != nil || transport.sends[len(transport.sends)-1].method != "thread/unsubscribe" {
-				t.Fatal("failed prediction cleanup cannot retry")
-			}
-			// A close notification can precede the cleanup acknowledgement.
-			if _, err := client.ObservePrediction(appserver.Message{Method: "thread/closed", Params: []byte(`{"threadId":"prediction"}`)}, Request[struct{}]{}); err != nil {
-				t.Fatal(err)
-			}
-			request, _ := r.Take("unsubscribe")
-			if _, err := client.ObservePrediction(appserver.Message{}, request); err != nil || r.PredictionPending() || p.Text != "Show tests" || !p.Completed {
-				t.Fatal("late cleanup acknowledgement lost the result or correlation")
-			}
-		})
+func TestPredictionCancelFailureCanRetry(t *testing.T) {
+	transport := &requestTransport{id: "cancel"}
+	r := NewRequests[struct{}](transport)
+	client := &Client[struct{}]{Requests: r}
+	p := &Prediction{sampleRequestID: "42"}
+	transport.err = errors.New("write failed")
+	if err := r.ClosePrediction(p); err == nil {
+		t.Fatal("expected send error")
+	}
+	transport.err = nil
+	if err := r.ClosePrediction(p); err != nil || len(transport.sends) != 2 || transport.sends[1].method != "thread/sample/cancel" {
+		t.Fatalf("cancel retry failed: err=%v sends=%+v", err, transport.sends)
+	}
+	params := transport.sends[1].params.(map[string]any)
+	if string(params["requestId"].(jsontext.Value)) != "42" {
+		t.Fatalf("unexpected cancel requestId: %#v", params["requestId"])
+	}
+	request, _ := r.Take("cancel")
+	if handled, err := client.ObservePrediction(appserver.Message{}, request); !handled || err != nil || r.PredictionPending() {
+		t.Fatalf("cancel acknowledgement failed: handled=%v err=%v pending=%v", handled, err, r.PredictionPending())
 	}
 }
 
 func TestPredictionHostCapabilityAndEligibility(t *testing.T) {
-	for version, want := range map[string]bool{"": false, "0.161.0": false, "0.162.0-alpha.19": false, "0.162.0-alpha.20": true, "0.162.0": true, "0.163.0": true} {
-		if PredictionForkSupported(version) != want {
+	for version, want := range map[string]bool{"": false, "0.163.0": false, "0.164.0-alpha.10": false, "0.164.0-alpha.11": true, "0.164.0": true, "0.172.0": true} {
+		if PredictionSampleSupported(version) != want {
 			t.Fatalf("capability %q", version)
+		}
+	}
+	for version, want := range map[string]bool{"": false, "0.166.0": false, "0.167.0-alpha.0": false, "0.167.0-alpha.1": true, "0.167.0": true, "0.172.0": true} {
+		if PredictionInterruptOnCancelSupported(version) != want {
+			t.Fatalf("interruptOnCancel capability %q", version)
 		}
 	}
 	for _, gate := range []string{"provider", "unsupported-model", "plan", "source-turn"} {
@@ -77,19 +69,19 @@ func TestPredictionHostCapabilityAndEligibility(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !p.Closed || len(transport.sends) != 1 {
-				t.Fatal("ineligible source forked")
+				t.Fatal("ineligible source sampled")
 			}
 		})
 	}
 }
 
-func TestPredictionLifecycleAndLateCompletion(t *testing.T) {
-	for _, closeAt := range []string{"", "resume", "fork", "start"} {
+func TestPredictionSampleLifecycle(t *testing.T) {
+	for _, closeAt := range []string{"", "resume", "sample"} {
 		t.Run(closeAt, func(t *testing.T) {
 			transport := &requestTransport{id: "request"}
 			requests := NewRequests[struct{}](transport)
 			client := &Client[struct{}]{Requests: requests}
-			p := &Prediction{SourceThread: "main", SourceTurn: "source", Prompt: "remote", Trigger: "live"}
+			p := &Prediction{SourceThread: "main", SourceTurn: "source", Prompt: "remote", Trigger: "live", Effort: "low", InterruptOnCancel: true}
 			if err := requests.StartPrediction(p); err != nil {
 				t.Fatal(err)
 			}
@@ -111,77 +103,34 @@ func TestPredictionLifecycleAndLateCompletion(t *testing.T) {
 			reply(`{"thread":{"id":"main","turns":[{"id":"source","status":"completed"}]},"model":"gpt-6-astra","modelProvider":"openai"}`)
 			if closeAt == "resume" {
 				if last() != "thread/resume" {
-					t.Fatal("closed request forked")
+					t.Fatal("closed request sampled")
 				}
 				return
 			}
-			if last() != "thread/fork" {
-				t.Fatal("did not fork")
+			if last() != "thread/sample" {
+				t.Fatal("did not sample")
 			}
 			params := transport.sends[len(transport.sends)-1].params.(map[string]any)
-			if len(params) != 5 || params["experimentalPredictionMode"] != true || params["ephemeral"] != true {
-				t.Fatal("prediction fork lost host mode or added overrides")
+			if params["threadId"] != "main" || params["expectedTurnId"] != "source" || params["prompt"] != "remote" || params["threadSource"] != "composer_predictions" || params["turnTrigger"] != "composer_predictions" || params["disableMcp"] != true || params["interruptOnCancel"] != true || params["effort"] != "low" {
+				t.Fatalf("unexpected thread/sample params: %+v", params)
 			}
-			if closeAt == "fork" {
-				_ = requests.ClosePrediction(p)
-			}
-			reply(`{"thread":{"id":"prediction"}}`)
-			if closeAt == "fork" {
-				if last() != "thread/unsubscribe" {
-					t.Fatal("closed fork sampled")
-				}
-				reply(`{}`)
-				return
-			}
-			if !requests.IsSideThread("prediction") || last() != "turn/start" {
-				t.Fatal("prediction not isolated before sampling")
-			}
-			if closeAt == "start" {
-				_ = requests.ClosePrediction(p)
-				reply(`{"turn":{"id":"turn"}}`)
-				if last() != "turn/interrupt" {
-					t.Fatal("late start not interrupted")
-				}
-				reply(`{}`)
-				if last() != "thread/unsubscribe" {
-					t.Fatal("interrupted fork not released")
-				}
-				return
-			}
-			// Completion may precede the start acknowledgement.
-			for _, m := range []appserver.Message{{Method: "item/completed", Params: []byte(`{"threadId":"prediction","turnId":"turn","item":{"type":"agentMessage","text":"{\"suggestion\":\"Show tests\"}"}}`)}, {Method: "turn/completed", Params: []byte(`{"threadId":"prediction","turn":{"id":"turn","status":"completed"}}`)}} {
-				if handled, err := client.ObservePrediction(m, Request[struct{}]{}); !handled || err != nil {
+			if closeAt == "sample" {
+				if err := requests.ClosePrediction(p); err != nil {
 					t.Fatal(err)
 				}
+				if last() != "thread/sample/cancel" {
+					t.Fatal("closed sample did not cancel")
+				}
+				reply(`{}`)
+				return
 			}
-			reply(`{"turn":{"id":"turn"}}`)
-			if p.Text != "Show tests" || !p.Completed || p.Closed || last() != "thread/unsubscribe" {
-				t.Fatalf("lost result/cleanup %+v", p)
+			reply(`{"sourceTurnId":"source","responseId":"resp-1","text":"{\"suggestion\":\"Show tests\",\"confidence_score\":0.9}"}`)
+			if p.Text != "Show tests" || !p.Completed || p.Closed {
+				t.Fatalf("lost sample result: %+v", p)
 			}
-			reply(`{}`)
-			if requests.IsSideThread("prediction") || requests.Pending() {
+			if requests.PredictionPending() || requests.Pending() {
 				t.Fatal("prediction resources retained")
 			}
 		})
-	}
-}
-
-func TestPredictionCompletedResultRejectsLateItems(t *testing.T) {
-	transport := &requestTransport{id: "request"}
-	requests := NewRequests[struct{}](transport)
-	client := &Client[struct{}]{Requests: requests}
-	p := &Prediction{Thread: "prediction", Turn: "turn", Text: `{"suggestion":"Show tests"}`}
-	requests.predictions = map[string]*Prediction{"prediction": p}
-	for _, event := range []appserver.Message{
-		{Method: "turn/completed", Params: []byte(`{"threadId":"prediction","turn":{"id":"turn","status":"completed"}}`)},
-		{Method: "item/completed", Params: []byte(`{"threadId":"prediction","turnId":"turn","item":{"type":"agentMessage","text":"{\"suggestion\":\"late replacement\"}"}}`)},
-		{Method: "item/agentMessage/delta", Params: []byte(`{"threadId":"prediction","turnId":"turn","delta":"late delta"}`)},
-	} {
-		if handled, err := client.ObservePrediction(event, Request[struct{}]{}); !handled || err != nil {
-			t.Fatal(err)
-		}
-	}
-	if p.Text != "Show tests" {
-		t.Fatal("completed result changed", p.Text)
 	}
 }
