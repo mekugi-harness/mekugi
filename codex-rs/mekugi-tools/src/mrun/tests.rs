@@ -367,3 +367,307 @@ fn reads_pty_stdin_and_retires_descendants() {
         "PTY helper failed with {status}; transcript:\n{transcript}"
     );
 }
+
+#[cfg(unix)]
+fn spawn_in_pty(cmd: &mut std::process::Command) -> (std::fs::File, std::process::Child) {
+    use std::os::fd::FromRawFd;
+    use std::os::fd::RawFd;
+    use std::os::unix::process::CommandExt;
+
+    let mut master_fd: RawFd = -1;
+    let mut slave_fd: RawFd = -1;
+    // SAFETY: `openpty` writes valid descriptors into `master_fd` and `slave_fd` on success.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master_fd,
+            &mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 0, "openpty failed: {}", std::io::Error::last_os_error());
+
+    // SAFETY: `openpty` returned two unique owned file descriptors.
+    let master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+    let slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+
+    // SAFETY: Post-fork child setup invokes only async-signal-safe POSIX functions to attach the
+    // PTY slave as the new session's controlling terminal.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0 as libc::c_int) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            for target_fd in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+                if libc::dup2(slave_fd, target_fd) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if slave_fd > libc::STDERR_FILENO {
+                libc::close(slave_fd);
+            }
+            libc::close(master_fd);
+            Ok(())
+        });
+    }
+
+    let child = cmd.spawn().expect("spawn command inside PTY");
+    drop(slave);
+    (master, child)
+}
+
+#[cfg(unix)]
+fn drive_pty_until_exit<F>(
+    master: &mut std::fs::File,
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    mut on_output: F,
+) -> (std::process::ExitStatus, String)
+where
+    F: FnMut(&str, &mut std::fs::File),
+{
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::time::Instant;
+
+    let master_fd = master.as_raw_fd();
+    let deadline = Instant::now() + timeout;
+    let mut captured = Vec::new();
+    let mut exit_status = None;
+
+    while Instant::now() < deadline {
+        if exit_status.is_none()
+            && let Some(status) = child.try_wait().expect("poll PTY child")
+        {
+            exit_status = Some(status);
+        }
+
+        let mut pollfd = libc::pollfd {
+            fd: master_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `pollfd` points to a valid single-element `pollfd` struct.
+        let ready = unsafe { libc::poll(&mut pollfd, 1, 50) };
+        if ready > 0 && (pollfd.revents & (libc::POLLIN | libc::POLLHUP)) != 0 {
+            let mut buf = [0u8; 1024];
+            match master.read(&mut buf) {
+                Ok(0) => {
+                    if exit_status.is_some() {
+                        break;
+                    }
+                }
+                Ok(n) => {
+                    captured.extend_from_slice(&buf[..n]);
+                    let transcript = String::from_utf8_lossy(&captured);
+                    on_output(&transcript, master);
+                }
+                Err(err) if err.raw_os_error() == Some(libc::EIO) => {
+                    if exit_status.is_some() {
+                        break;
+                    }
+                }
+                Err(err) => panic!("read PTY master failed: {err}"),
+            }
+        } else if exit_status.is_some() {
+            break;
+        }
+    }
+
+    let transcript = String::from_utf8_lossy(&captured).into_owned();
+    let status = match exit_status {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("PTY child timed out; transcript:\n{transcript}");
+        }
+    };
+    (status, transcript)
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "internal helper invoked under a real PTY by ctrl_c tests"]
+fn pty_sleep_helper() {
+    if std::env::var_os(PTY_HELPER_ENV).is_none() {
+        return;
+    }
+    let out = execute(&s(&[
+        "-n",
+        "5",
+        "sh",
+        "-c",
+        "printf 'READY\\n' > /dev/tty; sleep 60",
+    ]));
+    std::process::exit(out.exit_code);
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_interrupts_shell_command_list_and_pipeline_under_pty() {
+    use std::io::Write;
+    use std::process::Command;
+    use std::time::Duration;
+
+    let current_exe = std::env::current_exe().expect("resolve current test binary");
+
+    // 1. Noninteractive shell command list: Ctrl-C must abort before running the next command.
+    let mut list_cmd = Command::new("bash");
+    list_cmd
+        .args([
+            "-c",
+            "\"$1\" --exact mrun::tests::pty_sleep_helper --ignored --nocapture; printf 'CONTINUED\\n'",
+            "bash",
+            current_exe.to_str().expect("utf8 test binary path"),
+        ])
+        .env(PTY_HELPER_ENV, "1");
+    let (mut master, mut child) = spawn_in_pty(&mut list_cmd);
+    let mut sent_ctrl_c = false;
+    let (status, transcript) = drive_pty_until_exit(
+        &mut master,
+        &mut child,
+        Duration::from_secs(10),
+        |out, m| {
+            if !sent_ctrl_c && out.contains("READY") {
+                m.write_all(&[0x03]).expect("send Ctrl-C");
+                m.flush().expect("flush Ctrl-C");
+                sent_ctrl_c = true;
+            }
+        },
+    );
+    assert!(sent_ctrl_c, "never saw READY; transcript:\n{transcript}");
+    assert!(
+        !status.success(),
+        "outer shell should not succeed after Ctrl-C; transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("CONTINUED"),
+        "outer shell ran command after Ctrl-C; transcript:\n{transcript}"
+    );
+
+    // 2. Interactive pipeline: Ctrl-C must interrupt downstream pipeline stage too (status 130, not 0).
+    let mut pipe_cmd = Command::new("bash");
+    pipe_cmd
+        .args(["--norc", "--noprofile", "-i"])
+        .env(PTY_HELPER_ENV, "1")
+        .env("PS1", "PROMPT> ");
+    let (mut master, mut child) = spawn_in_pty(&mut pipe_cmd);
+    let exe_str = current_exe.to_str().expect("utf8 test binary path");
+    let pipeline = format!(
+        "\"{exe_str}\" --exact mrun::tests::pty_sleep_helper --ignored --nocapture | tee /dev/null\n"
+    );
+    let mut stage = 0u8;
+    let (status, transcript) = drive_pty_until_exit(
+        &mut master,
+        &mut child,
+        Duration::from_secs(10),
+        |out, m| {
+            if stage == 0 && out.contains("PROMPT> ") {
+                m.write_all(pipeline.as_bytes()).expect("send pipeline");
+                m.flush().expect("flush pipeline");
+                stage = 1;
+            } else if stage == 1 && out.contains("READY") {
+                m.write_all(&[0x03]).expect("send Ctrl-C");
+                m.flush().expect("flush Ctrl-C");
+                stage = 2;
+            } else if stage == 2 && out.matches("PROMPT> ").count() >= 2 {
+                m.write_all(b"printf 'PIPE_STATUS=%s\\n' \"$?\"; exit\n")
+                    .expect("query pipeline status");
+                m.flush().expect("flush status query");
+                stage = 3;
+            }
+        },
+    );
+    assert_eq!(
+        stage, 3,
+        "interactive pipeline Ctrl-C stopped at stage {stage}; transcript:\n{transcript}"
+    );
+    assert!(
+        status.success(),
+        "interactive bash failed with {status}; transcript:\n{transcript}"
+    );
+    assert!(
+        transcript.contains("PIPE_STATUS=130"),
+        "interrupted pipeline did not report status 130; transcript:\n{transcript}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "internal helper invoked under a real PTY by ctrl_z_suspends_and_resumes_under_pty"]
+fn pty_ctrl_z_helper() {
+    if std::env::var_os(PTY_HELPER_ENV).is_none() {
+        return;
+    }
+    let out = execute(&s(&[
+        "-n",
+        "5",
+        "sh",
+        "-c",
+        "printf 'READY\\n' > /dev/tty; IFS= read -r value; printf 'resumed=%s\\n' \"$value\"",
+    ]));
+    print!("DONE:{}", out.stdout);
+    std::process::exit(out.exit_code);
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_z_suspends_and_resumes_under_pty() {
+    use std::io::Write;
+    use std::process::Command;
+    use std::time::Duration;
+
+    let current_exe = std::env::current_exe().expect("resolve current test binary");
+    let exe_str = current_exe.to_str().expect("utf8 test binary path");
+
+    let mut cmd = Command::new("bash");
+    cmd.args(["--norc", "--noprofile", "-i"])
+        .env(PTY_HELPER_ENV, "1")
+        .env("PS1", "PROMPT> ");
+    let (mut master, mut child) = spawn_in_pty(&mut cmd);
+
+    let run_line =
+        format!("\"{exe_str}\" --exact mrun::tests::pty_ctrl_z_helper --ignored --nocapture\n");
+    let mut stage = 0u8;
+    let (status, transcript) = drive_pty_until_exit(
+        &mut master,
+        &mut child,
+        Duration::from_secs(10),
+        |out, m| {
+            if stage == 0 && out.contains("PROMPT> ") {
+                m.write_all(run_line.as_bytes()).expect("launch helper");
+                m.flush().expect("flush helper");
+                stage = 1;
+            } else if stage == 1 && out.contains("READY") {
+                m.write_all(&[0x1a]).expect("send Ctrl-Z");
+                m.flush().expect("flush Ctrl-Z");
+                stage = 2;
+            } else if stage == 2 && out.contains("Stopped") {
+                m.write_all(b"fg\n").expect("send fg");
+                m.flush().expect("flush fg");
+                stage = 3;
+            } else if stage == 3 && out.contains("fg\r\n") {
+                m.write_all(b"after-fg\n").expect("send line after fg");
+                m.flush().expect("flush line after fg");
+                stage = 4;
+            } else if stage == 4 && out.contains("DONE:resumed=after-fg") {
+                m.write_all(b"exit\n").expect("send exit");
+                m.flush().expect("flush exit");
+                stage = 5;
+            }
+        },
+    );
+    assert_eq!(
+        stage, 5,
+        "Ctrl-Z/fg flow stopped at stage {stage}; transcript:\n{transcript}"
+    );
+    assert!(
+        status.success(),
+        "interactive bash failed with {status}; transcript:\n{transcript}"
+    );
+}
