@@ -32,6 +32,8 @@
     owner,
     views,
     thoughts,
+    groupWorkdir,
+    workspace,
     onload,
     onclip,
     ondetails,
@@ -43,6 +45,8 @@
     owner: string;
     views?: Entry[];
     thoughts?: Entry[];
+    groupWorkdir?: string;
+    workspace?: string;
     onload?: () => unknown;
     onclip?: (clipped?: boolean) => void;
     ondetails?: () => unknown;
@@ -367,7 +371,7 @@
           class="grid grid-cols-[max-content_minmax(0,1fr)_auto] gap-x-3 max-sm:grid-cols-[minmax(0,1fr)_auto]"
         >
           {#if views.length === 1}
-            <ValueRow value={entry.values![0]} />
+            <ValueRow value={entry.values![0]} {groupWorkdir} {workspace} />
           {:else}
             <div class="col-span-full grid grid-cols-subgrid items-baseline py-[5px]">
               <span class="text-small font-medium text-kind-read max-sm:col-span-full"
@@ -468,7 +472,7 @@
                 >
                   {#each entry.content ? [] : hidden as file, i (i)}{#if i && edits.via.has(index + i)}{@render via(
                         index + i,
-                      )}{/if}<ValueRow value={file} {onload} />{/each}
+                      )}{/if}<ValueRow value={file} {onload} {groupWorkdir} {workspace} />{/each}
                 </div>
               </details>
             {:else if value.kind === "attachments"}
@@ -476,11 +480,19 @@
                 <ValueRow
                   value={{ ...param, verb: parameter === 0 ? "Attach" : "" }}
                   {onload}
+                  {groupWorkdir}
+                  {workspace}
                   outputLang={outputLanguage(value.params ?? [], parameter)}
                 />
               {/each}
             {:else if !pending(value)}
-              <ValueRow {value} {onload} outputLang={outputLanguage(entry.values, index)} />
+              <ValueRow
+                {value}
+                {onload}
+                {groupWorkdir}
+                {workspace}
+                outputLang={outputLanguage(entry.values, index)}
+              />
             {/if}
           {/each}
         </Trace.Root>
