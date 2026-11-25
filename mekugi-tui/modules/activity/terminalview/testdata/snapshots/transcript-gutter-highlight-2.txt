@@ -1,0 +1,4 @@
+"\x1b[38;2;86;212;221;48;2;62;72;86m└ \x1b[m  \x1b[38;5;114;1mEdited\x1b[m \x1b[1ma.go\x1b[m                                             "
+"\x1b[2m  \x1b[m         \x1b[1mb.go\x1b[m                                             "
+"                                                            "
+"plain after transcript gutter                               "

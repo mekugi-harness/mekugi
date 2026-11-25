@@ -279,3 +279,58 @@ func TestFrameRenderKeepsTranscriptLinksWhenSelectionHiddenByDialog(t *testing.T
 		t.Fatalf("hidden selection under dialog stripped transcript hyperlink:\n%s", strings.Join(rendered.Rows, "\n"))
 	}
 }
+
+func TestDialogEventNavArrowsAcrossTabsAndBoundaries(t *testing.T) {
+	var d Dialog
+	d.EventNav = true
+	d.SetPages([]DialogTab{
+		{ID: "a", Name: "Edit", Path: "a.go"},
+		{ID: "b", Name: "Edit", Path: "b.go"},
+	})
+	frame := paintDialogTest(t, &d, dialogTestDocument(false, 2), 100, 12)
+	if !strings.Contains(frame, "←/→ event") || !strings.Contains(frame, "esc close") || strings.Contains(frame, "← back") {
+		t.Fatalf("unexpected EventNav footer:\n%s", frame)
+	}
+	// At first tab, Left steps to previous event instead of closing.
+	if intent := d.Key(keyLeft); intent.Action != DialogPrevEvent || d.Page != 0 {
+		t.Fatalf("Left at tab 0 = %+v (page=%d), want DialogPrevEvent", intent, d.Page)
+	}
+	// Right advances to second tab.
+	if intent := d.Key("\x1b[C"); intent.Action != 0 || d.Page != 1 {
+		t.Fatalf("Right at tab 0 = %+v (page=%d), want tab 1", intent, d.Page)
+	}
+	// Right at last tab steps to next event.
+	if intent := d.Key("\x1b[C"); intent.Action != DialogNextEvent || d.Page != 1 {
+		t.Fatalf("Right at tab 1 = %+v (page=%d), want DialogNextEvent", intent, d.Page)
+	}
+	// Left at second tab moves back to first tab.
+	if intent := d.Key(keyLeft); intent.Action != 0 || d.Page != 0 {
+		t.Fatalf("Left at tab 1 = %+v (page=%d), want tab 0", intent, d.Page)
+	}
+	// Esc still closes.
+	if intent := d.Key("\x1b"); intent.Action != DialogClose {
+		t.Fatalf("Esc did not close EventNav dialog: %+v", intent)
+	}
+}
+
+func TestContentDialogEventNavLeftDoesNotInterceptModelVisible(t *testing.T) {
+	d := ContentDialog{View: activityui.NewView()}
+	d.EventNav = true
+	d.Pages = []sessionpresentation.DetailItem{
+		{ID: "first", Kind: "op", Verb: "Run", Code: "echo 1", Prepared: &activitypresentation.PreparedContent{ID: "p1", Text: "prepared 1"}},
+		{ID: "second", Kind: "op", Verb: "Run", Code: "echo 2", Prepared: &activitypresentation.PreparedContent{ID: "p2", Text: "prepared 2"}},
+	}
+	d.Update(sessionpresentation.DetailView{Pages: d.Pages})
+	d.Paint(make([]string, 16), Rect{W: 80, H: 16})
+	// Enable model-visible on tab 0, then Left should still navigate to previous event (not toggle original).
+	d.Key("o")
+	if intent := d.Key(keyLeft); intent.Action != DialogPrevEvent {
+		t.Fatalf("Left in model-visible EventNav tab 0 = %+v, want DialogPrevEvent", intent)
+	}
+	// On tab 1 with model-visible enabled, Left moves to tab 0.
+	d.Key("\x1b[C")
+	d.Key("o")
+	if intent := d.Key(keyLeft); intent.Action != 0 || d.Page != 0 {
+		t.Fatalf("Left in model-visible EventNav tab 1 = %+v (page=%d), want tab 0", intent, d.Page)
+	}
+}

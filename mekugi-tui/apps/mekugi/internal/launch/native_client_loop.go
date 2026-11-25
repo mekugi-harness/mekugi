@@ -209,6 +209,7 @@ type nativeClient struct {
 	prediction             [3]string
 	predictionRevision     uint64
 	detailHydrating        bool
+	detailNav              transcriptDetailNav
 	resumePaging           bool
 	localDetails           sessionpresentation.Details
 	localDetailID          sessionpresentation.DetailID
@@ -324,6 +325,7 @@ func (c *nativeClient) refreshView(now time.Time) {
 		frame.View.Status.SetFeedback(sessionpresentation.Label{Text: c.feedback.Text, Alert: c.feedback.Alert}, 0)
 	}
 	c.renderer.update(frame, draft, prompt, now)
+	c.syncDetailNav(frame)
 	c.dirty = true
 }
 

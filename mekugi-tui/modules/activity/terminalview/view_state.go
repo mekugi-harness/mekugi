@@ -42,6 +42,8 @@ func (v *View) FreezeTranscript() *View {
 	frozen.Painter.Clock = frozen.Clock
 	frozen.Painter.Syntax = diffrender.Renderer{}
 	frozen.Runs, frozen.QuestionRows, frozen.outputDemands = nil, nil, nil
+	frozen.FeedTargets = nil
+	frozen.ActiveDetail, frozen.ActiveDetailReveal = DetailTarget{}, false
 	frozen.runGeneration = 0
 	frozen.conversationItems, frozen.conversationOrdered, frozen.conversationHeld = nil, nil, nil
 	frozen.syntaxWindow, frozen.commandFrames, frozen.reasoningFrames = nil, nil, nil
