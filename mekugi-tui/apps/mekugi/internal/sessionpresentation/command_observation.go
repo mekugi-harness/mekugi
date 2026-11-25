@@ -25,14 +25,16 @@ func effectiveCommand(command, baseDir string) (display, dir string, stripped bo
 	return display, baseDir, false
 }
 
-// cdFailed reports whether an unsuccessful command's output indicates that
-// the leading cd itself failed before the shell entered the target directory.
-func cdFailed(item observation.Item) bool {
+// cdFailed reports whether a command's leading output line is an outer-shell
+// diagnostic for the leading cd target itself (including zero-exit semicolon
+// or newline lists such as "cd missing; pwd"), without matching child script
+// cd errors inside the entered directory.
+func cdFailed(item observation.Item, display string) bool {
 	if item.AggregatedOutput == nil {
 		return false
 	}
-	failed := item.Status == "failed" || item.ExitCode != nil && *item.ExitCode != 0
-	if !failed {
+	operand, ok := shellsyntax.LeadingCdOperand(display)
+	if !ok {
 		return false
 	}
 	for line := range strings.SplitSeq(*item.AggregatedOutput, "\n") {
@@ -40,14 +42,41 @@ func cdFailed(item observation.Item) bool {
 		if line == "" {
 			continue
 		}
-		return strings.HasPrefix(line, "cd: ") || strings.Contains(line, ": cd: ") || strings.Contains(line, ":cd:")
+		return isOuterShellCdError(line, operand)
+	}
+	return false
+}
+
+func isOuterShellCdError(line, operand string) bool {
+	if after, ok := strings.CutPrefix(line, "cd: "); ok {
+		return strings.Contains(after, operand)
+	}
+	prefix, rest, ok := strings.Cut(line, ":")
+	if !ok {
+		return false
+	}
+	shell := shellsyntax.InterpreterIdentity(prefix)
+	switch shell {
+	case "bash", "sh", "dash", "zsh", "ash", "ksh":
+	default:
+		return false
+	}
+	if _, after, found := strings.Cut(rest, ": cd: "); found {
+		return strings.Contains(after, operand)
+	}
+	if after, found := strings.CutPrefix(rest, " cd: "); found {
+		return strings.Contains(after, operand)
+	}
+	if after, found := strings.CutPrefix(rest, "cd:"); found {
+		return strings.Contains(after, operand)
 	}
 	return false
 }
 
 func effectiveItemCommand(item observation.Item) (display, dir string, stripped bool) {
-	if cdFailed(item) {
-		return frontends.ShellDisplaySource(DisplayCommand(item.Command)), item.Cwd, false
+	display = frontends.ShellDisplaySource(DisplayCommand(item.Command))
+	if cdFailed(item, display) {
+		return display, item.Cwd, false
 	}
 	return effectiveCommand(item.Command, item.Cwd)
 }

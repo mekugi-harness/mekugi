@@ -84,6 +84,41 @@ func andChain(stmt *syntax.Stmt) ([]*syntax.Stmt, bool) {
 }
 
 func leadingCdTarget(stmt *syntax.Stmt, directory string) (string, bool) {
+	target, ok := leadingCdOperand(stmt)
+	if !ok {
+		return "", false
+	}
+	if !filepath.IsAbs(target) {
+		if !filepath.IsAbs(directory) {
+			return "", false
+		}
+		target = filepath.Join(directory, target)
+	}
+	return filepath.Clean(target), true
+}
+
+// LeadingCdOperand returns the raw literal directory operand of a leading cd
+// statement without resolving it against a base directory.
+func LeadingCdOperand(script string) (string, bool) {
+	if strings.TrimSpace(script) == "" || strings.HasPrefix(strings.TrimLeft(script, " \t"), "#!") {
+		return "", false
+	}
+	program, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(script), "")
+	if err != nil || len(program.Stmts) == 0 {
+		return "", false
+	}
+	first := program.Stmts[0]
+	if len(program.Stmts) == 1 {
+		steps, ok := andChain(first)
+		if !ok || len(steps) < 2 {
+			return "", false
+		}
+		first = steps[0]
+	}
+	return leadingCdOperand(first)
+}
+
+func leadingCdOperand(stmt *syntax.Stmt) (string, bool) {
 	call, ok := stmt.Cmd.(*syntax.CallExpr)
 	if !ok || stmt.Background || stmt.Coprocess || stmt.Disown || stmt.Negated ||
 		len(stmt.Redirs) != 0 || len(call.Assigns) != 0 {
@@ -110,13 +145,7 @@ func leadingCdTarget(stmt *syntax.Stmt, directory string) (string, bool) {
 			return "", false
 		}
 	}
-	if !filepath.IsAbs(target) {
-		if !filepath.IsAbs(directory) {
-			return "", false
-		}
-		target = filepath.Join(directory, target)
-	}
-	return filepath.Clean(target), true
+	return target, true
 }
 
 func containsDirChange(stmt *syntax.Stmt) bool {

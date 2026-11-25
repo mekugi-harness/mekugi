@@ -42,8 +42,8 @@ func CommandReport(invocation *activitypresentation.Invocation, track segments.R
 	canonical := invocation.Snapshot()
 	for index, observed := range track.Segments {
 		analysis := frontends.ShellDisplaySource(observed.Source)
-		if len(track.Segments) == 1 && canonical.Display != "" && canonical.Display != analysis {
-			if rest, _, ok := shellsyntax.StripLeadingCd(analysis, directory); ok && rest == canonical.Display {
+		if len(track.Segments) == 1 && canonical.Display != "" && strings.TrimRight(canonical.Display, "\r\n") != strings.TrimRight(analysis, "\r\n") {
+			if rest, _, ok := shellsyntax.StripLeadingCd(analysis, directory); ok && strings.TrimRight(rest, "\r\n") == strings.TrimRight(canonical.Display, "\r\n") {
 				analysis = rest
 			}
 		}

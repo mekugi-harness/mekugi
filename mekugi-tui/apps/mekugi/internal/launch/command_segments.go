@@ -140,8 +140,8 @@ func restoreCommandSegments(parent context.Context, retained changes.Scope, segm
 	cwd := cmp.Or(entry.Native.CommandCwd, sessionpresentation.CommandDirectory(item.Observation(), workspace))
 	for _, part := range record.Parts {
 		display := frontends.ShellDisplaySource(part.Source)
-		if len(record.Parts) == 1 && entry.Native.CommandDisplay != "" && entry.Native.CommandDisplay != display {
-			if rest, _, ok := shellsyntax.StripLeadingCd(display, item.Cwd); ok && rest == entry.Native.CommandDisplay {
+		if len(record.Parts) == 1 && entry.Native.CommandDisplay != "" && strings.TrimRight(entry.Native.CommandDisplay, "\r\n") != strings.TrimRight(display, "\r\n") {
+			if rest, _, ok := shellsyntax.StripLeadingCd(display, item.Cwd); ok && strings.TrimRight(rest, "\r\n") == strings.TrimRight(entry.Native.CommandDisplay, "\r\n") {
 				display = rest
 			}
 		}

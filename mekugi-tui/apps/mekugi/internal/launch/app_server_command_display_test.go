@@ -16,6 +16,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 
@@ -569,41 +570,117 @@ func TestLeadingCdSearchResultsAndVCSCommitDirectory(t *testing.T) {
 
 func TestLeadingCdFailedCdKeepsOriginalCommandAndWorkdir(t *testing.T) {
 	workspace := t.TempDir()
-	cdErr := "bash: line 1: cd: missing: No such file or directory\n"
-	failedCd := binding.ThreadItem{
-		ID: "cd-fail", Type: "commandExecution", Command: "cd missing && go test ./...",
-		Cwd: workspace, Status: "failed", ExitCode: new(1), AggregatedOutput: &cdErr,
-	}
-	live, restored := newAppServerSessionTestUI(t, workspace), newAppServerSessionTestUI(t, workspace)
-	for _, method := range []string{"item/started", "item/completed"} {
-		appServerTestNotify(t, live, method, map[string]any{"threadId": "main", "turnId": "t", "item": failedCd})
-	}
-	restored.restoreHistory([]binding.HistoryTurn{{ID: "t", Status: "completed", Items: []binding.ThreadItem{failedCd}}})
-	for _, ui := range []*appServerUI{live, restored} {
-		entry := ui.attached.source.Entries[0].Source
-		if entry.Native.Workdir != "" || !strings.Contains(entry.Text, "cd missing && go test ./...") {
-			t.Fatalf("failed cd should retain original command and workspace cwd, got workdir=%q text=%q", entry.Native.Workdir, entry.Text)
-		}
+	for _, tc := range []struct {
+		name        string
+		command     string
+		status      string
+		exitCode    int
+		output      string
+		wantWorkdir string
+		wantText    string
+	}{
+		{
+			name:        "and chain cd failure",
+			command:     "cd missing && go test ./...",
+			status:      "failed",
+			exitCode:    1,
+			output:      "bash: line 1: cd: missing: No such file or directory\n",
+			wantWorkdir: "",
+			wantText:    "cd missing && go test ./...",
+		},
+		{
+			name:        "semicolon cd failure with zero exit",
+			command:     "cd missing; pwd",
+			status:      "completed",
+			exitCode:    0,
+			output:      "bash: line 1: cd: missing: No such file or directory\n" + workspace + "\n",
+			wantWorkdir: "",
+			wantText:    "cd missing; pwd",
+		},
+		{
+			name:        "nested child script cd error preserves outer workdir",
+			command:     "cd sub && ./build.sh",
+			status:      "failed",
+			exitCode:    1,
+			output:      "./build.sh: line 2: cd: generated: No such file or directory\n",
+			wantWorkdir: "sub",
+			wantText:    "./build.sh",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := tc.output
+			item := binding.ThreadItem{
+				ID: "cmd", Type: "commandExecution", Command: tc.command,
+				Cwd: workspace, Status: tc.status, ExitCode: new(tc.exitCode), AggregatedOutput: &out,
+			}
+			live, restored := newAppServerSessionTestUI(t, workspace), newAppServerSessionTestUI(t, workspace)
+			for _, method := range []string{"item/started", "item/completed"} {
+				appServerTestNotify(t, live, method, map[string]any{"threadId": "main", "turnId": "t", "item": item})
+			}
+			restored.restoreHistory([]binding.HistoryTurn{{ID: "t", Status: "completed", Items: []binding.ThreadItem{item}}})
+			for _, ui := range []*appServerUI{live, restored} {
+				entry := ui.attached.source.Entries[0].Source
+				if entry.Native.Workdir != tc.wantWorkdir || !strings.Contains(entry.Text, tc.wantText) {
+					t.Fatalf("got workdir=%q text=%q; want workdir=%q containing %q", entry.Native.Workdir, entry.Text, tc.wantWorkdir, tc.wantText)
+				}
+			}
+		})
 	}
 }
 
 func TestLeadingCdTrackedSingleSegmentOmitsCd(t *testing.T) {
 	workspace := t.TempDir()
-	item := (binding.ThreadItem{
-		ID: "tracked", Type: "commandExecution", Command: "cd sub && go test ./...",
-		Cwd: workspace, Status: "completed", ExitCode: new(0),
-	}).Observation()
-	dir := sessionpresentation.CommandDirectory(item, workspace)
-	display := sessionpresentation.CommandDisplaySource(item)
-	inv := activitypresentation.NewInvocation(activitypresentation.CommandSource{
-		Script: item.Command, Display: display, Directory: dir,
-	}, time.Time{}, nil)
-	report := sessionpresentation.CommandReport(inv, commandsegments.Report{
-		Terminal: true, Done: true, Code: 0,
-		Segments: []commandsegments.Segment{{Source: "cd sub && go test ./...", Began: true, Ended: true, Code: 0}},
-	}, dir)
-	if len(report.Segments) != 1 || report.Segments[0].Analysis != "go test ./..." || strings.Contains(report.Segments[0].Text, "cd sub") {
-		t.Fatalf("tracked single segment re-exposed leading cd: %+v", report.Segments)
+	// Multi-segment tracked command: Split produces [cd sub, go test ./...],
+	// and SegmentValues omits the successful leading cd segment while keeping
+	// a failed cd segment visible.
+	for _, script := range []string{"cd sub && go test ./...", "cd sub; go test ./...", "cd sub\ngo test ./...\n"} {
+		parts, ok := shellinstrumentation.Split(script)
+		if !ok || len(parts) != 2 {
+			t.Fatalf("Split(%q) = (%+v, %v); want 2 segments", script, parts, ok)
+		}
+		item := (binding.ThreadItem{
+			ID: "tracked", Type: "commandExecution", Command: script,
+			Cwd: workspace, Status: "completed", ExitCode: new(0),
+		}).Observation()
+		dir := sessionpresentation.CommandDirectory(item, workspace)
+		display := sessionpresentation.CommandDisplaySource(item)
+		cmd := activitypresentation.Command{
+			Source: 1, Script: item.Command, Display: display, Directory: dir,
+			Segments: []activitypresentation.CommandSegment{
+				{Source: parts[0].Source, Display: parts[0].Source, Text: activitypresentation.RunSource(parts[0].Source), ExitCode: 0},
+				{Source: parts[1].Source, Display: parts[1].Source, Text: activitypresentation.RunSource(parts[1].Source), ExitCode: 0},
+			},
+		}
+		values := cmd.SegmentValues(false)
+		if len(values) != 1 || strings.Contains(values[0].Code, "cd sub") || strings.Contains(values[0].Label, "cd sub") {
+			t.Fatalf("SegmentValues(%q) = %+v; want only go test without cd sub", script, values)
+		}
+		// Failed cd segment must remain visible.
+		cmd.Segments[0].ExitCode = 1
+		cmd.Segments[1].Skipped = true
+		failedValues := cmd.SegmentValues(false)
+		if len(failedValues) < 1 || !strings.Contains(failedValues[0].Code+failedValues[0].Label, "cd sub") {
+			t.Fatalf("failed cd segment was unexpectedly hidden: %+v", failedValues)
+		}
+	}
+	// Single-segment tracked command with trailing newline trimmed by Split.
+	for _, script := range []string{"cd sub && go test ./...\n", "cd sub\ngo test ./...\n"} {
+		item := (binding.ThreadItem{
+			ID: "tracked", Type: "commandExecution", Command: script,
+			Cwd: workspace, Status: "completed", ExitCode: new(0),
+		}).Observation()
+		dir := sessionpresentation.CommandDirectory(item, workspace)
+		display := sessionpresentation.CommandDisplaySource(item)
+		inv := activitypresentation.NewInvocation(activitypresentation.CommandSource{
+			Script: item.Command, Display: display, Directory: dir,
+		}, time.Time{}, nil)
+		report := sessionpresentation.CommandReport(inv, commandsegments.Report{
+			Terminal: true, Done: true, Code: 0,
+			Segments: []commandsegments.Segment{{Source: strings.TrimRight(script, "\r\n"), Began: true, Ended: true, Code: 0}},
+		}, dir)
+		if len(report.Segments) != 1 || strings.TrimRight(report.Segments[0].Analysis, "\r\n") != "go test ./..." || strings.Contains(report.Segments[0].Text, "cd sub") {
+			t.Fatalf("tracked single segment for %q re-exposed leading cd: %+v", script, report.Segments)
+		}
 	}
 }
 

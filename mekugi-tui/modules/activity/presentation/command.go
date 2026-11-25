@@ -259,6 +259,12 @@ func (c Command) SegmentValues(detail bool) []Value {
 		if segment.Text == "" && hiddenCommandSource(cmp.Or(segment.Display, segment.Source)) {
 			continue
 		}
+		if segmentIndex == 0 && len(c.Segments) > 1 && !segment.Skipped && !segment.Pending && segment.ExitCode == 0 &&
+			c.Display != "" && strings.TrimRight(c.Display, "\r\n") != strings.TrimRight(c.Script, "\r\n") {
+			if rest, _, ok := shellsyntax.StripLeadingCd(c.Script, c.Directory); ok && strings.TrimRight(rest, "\r\n") == strings.TrimRight(c.Display, "\r\n") {
+				continue
+			}
+		}
 		if classified && !segment.Skipped && segment.ExitCode == 0 {
 			following := ""
 			if segmentIndex+1 < len(c.Segments) {
