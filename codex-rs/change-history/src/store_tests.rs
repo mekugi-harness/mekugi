@@ -855,3 +855,62 @@ fn compose_diff_and_summary_flag_discontinuous_baseline_from_external_write() {
     assert_eq!(diffs.len(), 1);
     assert!(diffs[0].unified_diff.contains("discontinuous baseline"));
 }
+
+#[test]
+fn mutate_skips_net_noop_added_then_deleted_files() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let keep = ws.join("keep.rs");
+    let temp = ws.join("temp.rs");
+
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![
+                PendingFileChange {
+                    rel_path: "keep.rs".to_string(),
+                    abs_path: keep.clone(),
+                    moved_from: None,
+                    before: FileSnapshot::Present(b"old\n".to_vec()),
+                    after: FileSnapshot::Present(b"new\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+                PendingFileChange {
+                    rel_path: "temp.rs".to_string(),
+                    abs_path: temp.clone(),
+                    moved_from: None,
+                    before: FileSnapshot::Missing,
+                    after: FileSnapshot::Present(b"scratch\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+            ],
+        )
+        .expect("r1");
+    let r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::ApplyPatch),
+            vec![PendingFileChange {
+                rel_path: "temp.rs".to_string(),
+                abs_path: temp.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"scratch\n".to_vec()),
+                after: FileSnapshot::Missing,
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r2");
+
+    // Live workspace has keep.rs at "new\n" and temp.rs recreated externally.
+    fs::write(&keep, b"new\n").expect("write keep");
+    fs::write(&temp, b"recreated-later\n").expect("write recreated temp");
+
+    let outcome = store
+        .mutate_workspace(MutationDirection::Revert, &[r1.id, r2.id], &[], "t1", "s1")
+        .expect("net-zero temp.rs must not block reverting keep.rs");
+    assert_eq!(outcome.affected_paths, vec!["keep.rs"]);
+    assert_eq!(fs::read(&keep).expect("read keep"), b"old\n");
+    assert_eq!(fs::read(&temp).expect("read temp"), b"recreated-later\n");
+}

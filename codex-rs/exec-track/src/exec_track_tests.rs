@@ -1184,3 +1184,139 @@ fn worktree_formatter_and_git_restore_compose_cleanly() {
         summary.files[0].coverage_notes
     );
 }
+
+#[test]
+fn directory_git_restore_and_rustfmt_child_modules_are_captured() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(dir.path()).expect("canonicalize");
+    let src = root.join("src");
+    let git_dir = root.join(".git");
+    fs::create_dir_all(&src).expect("mkdir src");
+    fs::create_dir_all(&git_dir).expect("mkdir .git");
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("write .git/HEAD");
+
+    let lib_rs = src.join("lib.rs");
+    let child_rs = src.join("child.rs");
+    fs::write(&lib_rs, "pub mod child;\n").expect("write lib.rs");
+    fs::write(&child_rs, "pub fn f() {}\n").expect("write child.rs");
+
+    let restore_all = extract_static_write_paths("git restore .", &root);
+    assert_eq!(restore_all, vec![child_rs.clone(), lib_rs.clone()]);
+
+    let checkout_src = extract_static_write_paths("git checkout -- src/", &root);
+    assert_eq!(checkout_src, vec![child_rs.clone(), lib_rs.clone()]);
+
+    let rustfmt_with_children = extract_static_write_paths("rustfmt src/lib.rs", &root);
+    assert_eq!(rustfmt_with_children, vec![child_rs, lib_rs.clone()]);
+
+    let rustfmt_skip_children =
+        extract_static_write_paths("rustfmt --skip-children src/lib.rs", &root);
+    assert_eq!(rustfmt_skip_children, vec![lib_rs]);
+}
+
+#[test]
+fn mixed_command_and_user_shell_vcs_provenance_separation() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(dir.path()).expect("canonicalize");
+    let store_dir = dir.path().join("store");
+    let a_go = root.join("a.go");
+    let b_go = root.join("b.go");
+    fs::write(&a_go, "package p\n").expect("write a.go");
+    fs::write(&b_go, "package p // dirty\n").expect("write b.go");
+
+    // Case 1: Mixed command where formatter changes nothing and only git restore changes b.go.
+    let cap1 = ShellWriteCapture::prepare("gofmt -w a.go && git restore b.go", &root);
+    fs::write(&b_go, "package p\n").expect("simulate git restore");
+    let r1 = cap1
+        .finalize_and_persist(
+            &store_dir,
+            ChangeMetadata {
+                thread_id: "t-prov".to_string(),
+                session_id: "s-prov".to_string(),
+                turn_id: "turn-1".to_string(),
+                call_id: "call-1".to_string(),
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: root.clone(),
+                created_at: 1_700_000_200,
+                exit_code: Some(0),
+                summary: Some("gofmt -w a.go && git restore b.go".to_string()),
+                claim_key: Some(shell_write_claim_key("t-prov", "call-1")),
+            },
+            &[],
+        )
+        .expect("persist r1")
+        .expect("record r1");
+    assert_eq!(r1.metadata.source_kind, ChangeSourceKind::VcsDiagnostic);
+    assert_eq!(r1.files.len(), 1);
+    assert_eq!(r1.files[0].rel_path, "b.go");
+
+    // Case 2: Mixed command where both a.go (authored) and b.go (VCS) change -> split records.
+    let cap2 = ShellWriteCapture::prepare("gofmt -w a.go && git restore b.go", &root);
+    fs::write(&a_go, "package p\n// formatted\n").expect("simulate gofmt");
+    fs::write(&b_go, "package p // restored\n").expect("simulate git restore");
+    let r2 = cap2
+        .finalize_and_persist(
+            &store_dir,
+            ChangeMetadata {
+                thread_id: "t-prov".to_string(),
+                session_id: "s-prov".to_string(),
+                turn_id: "turn-2".to_string(),
+                call_id: "call-2".to_string(),
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: root.clone(),
+                created_at: 1_700_000_201,
+                exit_code: Some(0),
+                summary: Some("gofmt -w a.go && git restore b.go".to_string()),
+                claim_key: Some(shell_write_claim_key("t-prov", "call-2")),
+            },
+            &[],
+        )
+        .expect("persist r2")
+        .expect("record r2");
+    assert_eq!(r2.metadata.source_kind, ChangeSourceKind::ShellWrite);
+    assert_eq!(r2.files.len(), 1);
+    assert_eq!(r2.files[0].rel_path, "a.go");
+
+    // Case 3: Interactive UserShell (!git restore b.go) must also classify as VcsDiagnostic.
+    let cap3 = ShellWriteCapture::prepare("git restore b.go", &root);
+    fs::write(&b_go, "package p\n").expect("simulate !git restore");
+    let r3 = cap3
+        .finalize_and_persist(
+            &store_dir,
+            ChangeMetadata {
+                thread_id: "t-prov".to_string(),
+                session_id: "s-prov".to_string(),
+                turn_id: "turn-3".to_string(),
+                call_id: "call-3".to_string(),
+                source_kind: ChangeSourceKind::UserShell,
+                workspace_root: root,
+                created_at: 1_700_000_202,
+                exit_code: Some(0),
+                summary: Some("git restore b.go".to_string()),
+                claim_key: Some(shell_write_claim_key("t-prov", "call-3")),
+            },
+            &[],
+        )
+        .expect("persist r3")
+        .expect("record r3");
+    assert_eq!(r3.metadata.source_kind, ChangeSourceKind::VcsDiagnostic);
+
+    let store = ChangeHistoryStore::open(&store_dir).expect("open store");
+    let entries = store.list_entries().expect("list entries");
+    // r1 (vcs), r2_vcs (vcs), r2_authored (shell_write), r3 (vcs)
+    assert_eq!(entries.len(), 4);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.source_kind.is_authored())
+            .count(),
+        1
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.source_kind == ChangeSourceKind::VcsDiagnostic)
+            .count(),
+        3
+    );
+}

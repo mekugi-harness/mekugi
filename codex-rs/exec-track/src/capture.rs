@@ -12,6 +12,7 @@ use codex_change_history::ChangeHistoryError;
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeMetadata;
 use codex_change_history::ChangeRecord;
+use codex_change_history::ChangeSourceKind;
 use codex_change_history::CoverageStatus;
 use codex_change_history::FileSnapshot;
 use codex_change_history::PendingFileChange;
@@ -28,6 +29,12 @@ use crate::session::MktempCreation;
 const MAX_CAPTURE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// Maximum files walked inside one mktemp -d directory tree.
 const MAX_MKTEMP_TREE_FILES: usize = 1024;
+/// Maximum files walked when expanding directory targets (e.g. `git restore .`, `gofmt -w dir`).
+const MAX_DIR_TARGET_FILES: usize = 1024;
+/// Maximum child module files followed from a `rustfmt` root file.
+const MAX_RUSTFMT_CHILD_MODULES: usize = 256;
+/// Maximum file size scanned for `mod <name>;` child module declarations.
+const MAX_RUSTFMT_MODULE_SCAN_BYTES: u64 = 1024 * 1024;
 
 /// Compute the shared deduplication claim_key for (thread_id, call_id) so
 /// overlapping apply_patch and ShellWrite observers claim the same logical
@@ -40,15 +47,34 @@ pub fn shell_write_claim_key(thread_id: &str, call_id: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct ShellWriteCapture {
     cwd: PathBuf,
-    baselines: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus)>,
-    vcs_only: bool,
+    baselines: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus, TargetProvenance)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TargetProvenance {
+    Authored,
+    Vcs,
+    Mixed,
+}
+
+impl TargetProvenance {
+    fn merge(self, other: Self) -> Self {
+        if self == other { self } else { Self::Mixed }
+    }
 }
 
 #[derive(Default)]
 struct ExtractedWriteTargets {
-    paths: BTreeSet<PathBuf>,
-    has_authored: bool,
-    has_vcs: bool,
+    paths: BTreeMap<PathBuf, TargetProvenance>,
+}
+
+impl ExtractedWriteTargets {
+    fn insert(&mut self, path: PathBuf, provenance: TargetProvenance) {
+        self.paths
+            .entry(path)
+            .and_modify(|existing| *existing = existing.merge(provenance))
+            .or_insert(provenance);
+    }
 }
 
 impl ShellWriteCapture {
@@ -68,17 +94,16 @@ impl ShellWriteCapture {
     ) -> Self {
         let extracted = extract_write_targets(script, cwd, session_tmp);
         let mut baselines = BTreeMap::new();
-        for path in extracted.paths {
+        for (path, provenance) in extracted.paths {
             if !can_read(&path) {
                 continue;
             }
-            let snapshot = read_bounded_snapshot(&path);
-            baselines.insert(path, snapshot);
+            let (snapshot, coverage) = read_bounded_snapshot(&path);
+            baselines.insert(path, (snapshot, coverage, provenance));
         }
         Self {
             cwd: cwd.to_path_buf(),
             baselines,
-            vcs_only: extracted.has_vcs && !extracted.has_authored,
         }
     }
 
@@ -90,7 +115,11 @@ impl ShellWriteCapture {
     /// True when all statically recognized write targets came from diagnostic
     /// VCS restore operations (e.g. `git restore`, `git checkout --`).
     pub fn is_vcs_only(&self) -> bool {
-        self.vcs_only
+        !self.baselines.is_empty()
+            && self
+                .baselines
+                .values()
+                .all(|(_, _, prov)| *prov == TargetProvenance::Vcs)
     }
 
     /// Observe post-execution bytes for all statically recognized paths plus
@@ -120,7 +149,7 @@ impl ShellWriteCapture {
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
         let workspace_root = metadata.workspace_root.clone();
         let allowed_roots = allowed_mktemp_roots(&workspace_root, &self.cwd);
-        let mut all_paths: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus)> =
+        let mut all_paths: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus, TargetProvenance)> =
             self.baselines.clone();
 
         for created in mktemp_creations {
@@ -149,17 +178,32 @@ impl ShellWriteCapture {
                     }
                     all_paths
                         .entry(canonical_file)
-                        .or_insert((FileSnapshot::Missing, CoverageStatus::Complete));
+                        .and_modify(|(_, _, prov)| {
+                            *prov = prov.merge(TargetProvenance::Authored);
+                        })
+                        .or_insert((
+                            FileSnapshot::Missing,
+                            CoverageStatus::Complete,
+                            TargetProvenance::Authored,
+                        ));
                 }
             } else {
                 all_paths
                     .entry(canonical)
-                    .or_insert((FileSnapshot::Missing, CoverageStatus::Complete));
+                    .and_modify(|(_, _, prov)| {
+                        *prov = prov.merge(TargetProvenance::Authored);
+                    })
+                    .or_insert((
+                        FileSnapshot::Missing,
+                        CoverageStatus::Complete,
+                        TargetProvenance::Authored,
+                    ));
             }
         }
 
-        let mut pending_files = Vec::new();
-        for (abs_path, (before, before_cov)) in all_paths {
+        let mut authored_files = Vec::new();
+        let mut vcs_files = Vec::new();
+        for (abs_path, (before, before_cov, provenance)) in all_paths {
             if !can_read(&abs_path)
                 || fs::canonicalize(&abs_path)
                     .ok()
@@ -173,22 +217,60 @@ impl ShellWriteCapture {
                 continue;
             }
             let rel_path = display_rel_path(&workspace_root, &abs_path);
-            pending_files.push(PendingFileChange {
+            let change = PendingFileChange {
                 rel_path,
                 abs_path,
                 moved_from: None,
                 before,
                 after,
                 coverage,
-            });
+            };
+            match provenance {
+                TargetProvenance::Vcs => vcs_files.push(change),
+                TargetProvenance::Authored | TargetProvenance::Mixed => authored_files.push(change),
+            }
         }
 
-        if pending_files.is_empty() {
+        if authored_files.is_empty() && vcs_files.is_empty() {
             return Ok(None);
         }
 
         let store = ChangeHistoryStore::open(store_dir)?;
-        let record = store.record_change(metadata, pending_files)?;
+        let can_reclassify_vcs = matches!(
+            metadata.source_kind,
+            ChangeSourceKind::ShellWrite
+                | ChangeSourceKind::UserShell
+                | ChangeSourceKind::VcsDiagnostic
+        );
+
+        if authored_files.is_empty() {
+            let mut vcs_meta = metadata;
+            if can_reclassify_vcs {
+                vcs_meta.source_kind = ChangeSourceKind::VcsDiagnostic;
+            }
+            let record = store.record_change(vcs_meta, vcs_files)?;
+            return Ok(Some(record));
+        }
+
+        if !vcs_files.is_empty() && can_reclassify_vcs {
+            let mut vcs_meta = metadata.clone();
+            vcs_meta.source_kind = ChangeSourceKind::VcsDiagnostic;
+            if let Some(claim) = &vcs_meta.claim_key
+                && !claim.is_empty()
+            {
+                vcs_meta.claim_key = Some(format!("{claim}:vcs"));
+            } else if !vcs_meta.call_id.is_empty() {
+                vcs_meta.claim_key = Some(format!(
+                    "call:{}:{}:vcs",
+                    vcs_meta.thread_id, vcs_meta.call_id
+                ));
+            }
+            let _ = store.record_change(vcs_meta, vcs_files)?;
+        } else {
+            authored_files.extend(vcs_files);
+        }
+
+        let record = store.record_change(metadata, authored_files)?;
         Ok(Some(record))
     }
 }
@@ -198,7 +280,7 @@ impl ShellWriteCapture {
 pub fn extract_static_write_paths(script: &str, cwd: &Path) -> Vec<PathBuf> {
     extract_write_targets(script, cwd, None)
         .paths
-        .into_iter()
+        .into_keys()
         .collect()
 }
 
@@ -282,8 +364,7 @@ fn collect_scratch_redirects(
                 {
                     let path = resolve_canonical_path(Path::new(&path));
                     if path != session_tmp && path.starts_with(&session_tmp) {
-                        targets.paths.insert(path);
-                        targets.has_authored = true;
+                        targets.insert(path, TargetProvenance::Authored);
                     }
                 }
             }
@@ -359,9 +440,10 @@ fn collect_write_paths(
                 && let Some(raw) = static_word_value(dest, script)
                 && is_capturable_path(&raw)
             {
-                out.paths
-                    .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(&raw))));
-                out.has_authored = true;
+                out.insert(
+                    resolve_canonical_path(&resolve_path(cwd, Path::new(&raw))),
+                    TargetProvenance::Authored,
+                );
             }
         }
         "command" => {
@@ -424,9 +506,10 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut Extract
         "tee" | "rm" | "touch" => {
             for arg in positional_args(args) {
                 if is_capturable_path(arg) {
-                    out.paths
-                        .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
-                    out.has_authored = true;
+                    out.insert(
+                        resolve_canonical_path(&resolve_path(cwd, Path::new(arg))),
+                        TargetProvenance::Authored,
+                    );
                 }
             }
         }
@@ -445,9 +528,10 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut Extract
                     continue;
                 }
                 if is_capturable_path(arg) {
-                    out.paths
-                        .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
-                    out.has_authored = true;
+                    out.insert(
+                        resolve_canonical_path(&resolve_path(cwd, Path::new(arg))),
+                        TargetProvenance::Authored,
+                    );
                 }
             }
         }
@@ -456,17 +540,19 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut Extract
             if let Some(dest) = pos.last()
                 && is_capturable_path(dest)
             {
-                out.paths
-                    .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(dest))));
-                out.has_authored = true;
+                out.insert(
+                    resolve_canonical_path(&resolve_path(cwd, Path::new(dest))),
+                    TargetProvenance::Authored,
+                );
             }
         }
         "mv" => {
             for arg in positional_args(args) {
                 if is_capturable_path(arg) {
-                    out.paths
-                        .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
-                    out.has_authored = true;
+                    out.insert(
+                        resolve_canonical_path(&resolve_path(cwd, Path::new(arg))),
+                        TargetProvenance::Authored,
+                    );
                 }
             }
         }
@@ -498,9 +584,10 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut Extract
                         continue;
                     }
                     if is_capturable_path(arg) {
-                        out.paths
-                            .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
-                        out.has_authored = true;
+                        out.insert(
+                            resolve_canonical_path(&resolve_path(cwd, Path::new(arg))),
+                            TargetProvenance::Authored,
+                        );
                     }
                 }
             }
@@ -554,9 +641,18 @@ fn extract_gofmt_write_targets(args: &[String], cwd: &Path, out: &mut ExtractedW
     }
     for arg in paths {
         if is_capturable_path(arg) {
-            out.paths
-                .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
-            out.has_authored = true;
+            let resolved = resolve_canonical_path(&resolve_path(cwd, Path::new(arg)));
+            if resolved.is_dir() {
+                let mut dir_files = Vec::new();
+                collect_dir_files_filtered(&resolved, &mut dir_files, MAX_DIR_TARGET_FILES, |p| {
+                    p.extension().is_some_and(|ext| ext == "go")
+                });
+                for file in dir_files {
+                    out.insert(file, TargetProvenance::Authored);
+                }
+            } else {
+                out.insert(resolved, TargetProvenance::Authored);
+            }
         }
     }
 }
@@ -566,6 +662,7 @@ fn extract_rustfmt_write_targets(args: &[String], cwd: &Path, out: &mut Extracte
     let mut expect_emit_value = false;
     let mut after_dashdash = false;
     let mut read_only = false;
+    let mut skip_children = false;
     let mut paths = Vec::new();
 
     for arg in args {
@@ -601,6 +698,10 @@ fn extract_rustfmt_write_targets(args: &[String], cwd: &Path, out: &mut Extracte
                 read_only = true;
                 continue;
             }
+            if arg == "--skip-children" {
+                skip_children = true;
+                continue;
+            }
             if arg == "--emit" {
                 expect_emit_value = true;
                 continue;
@@ -631,13 +732,112 @@ fn extract_rustfmt_write_targets(args: &[String], cwd: &Path, out: &mut Extracte
     if read_only {
         return;
     }
+    let mut visited_modules = BTreeSet::new();
     for arg in paths {
         if is_capturable_path(arg) {
-            out.paths
-                .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
-            out.has_authored = true;
+            let resolved = resolve_canonical_path(&resolve_path(cwd, Path::new(arg)));
+            out.insert(resolved.clone(), TargetProvenance::Authored);
+            if !skip_children {
+                collect_rustfmt_child_modules(
+                    &resolved,
+                    out,
+                    &mut visited_modules,
+                    MAX_RUSTFMT_CHILD_MODULES,
+                );
+            }
         }
     }
+}
+
+fn collect_rustfmt_child_modules(
+    file_path: &Path,
+    out: &mut ExtractedWriteTargets,
+    visited: &mut BTreeSet<PathBuf>,
+    limit: usize,
+) {
+    if visited.len() >= limit || !visited.insert(file_path.to_path_buf()) {
+        return;
+    }
+    let Ok(meta) = fs::metadata(file_path) else {
+        return;
+    };
+    if !meta.is_file() || meta.len() > MAX_RUSTFMT_MODULE_SCAN_BYTES {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(file_path) else {
+        return;
+    };
+    let Some(parent_dir) = file_path.parent() else {
+        return;
+    };
+    let file_stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let is_dir_root = matches!(file_stem, "lib" | "main" | "mod");
+
+    for line in text.lines() {
+        if visited.len() >= limit {
+            break;
+        }
+        let Some(mod_name) = parse_out_of_line_mod_decl(line) else {
+            continue;
+        };
+        let mut candidates = Vec::with_capacity(4);
+        if is_dir_root {
+            candidates.push(parent_dir.join(format!("{mod_name}.rs")));
+            candidates.push(parent_dir.join(mod_name).join("mod.rs"));
+        } else {
+            candidates.push(parent_dir.join(file_stem).join(format!("{mod_name}.rs")));
+            candidates.push(parent_dir.join(file_stem).join(mod_name).join("mod.rs"));
+            candidates.push(parent_dir.join(format!("{mod_name}.rs")));
+            candidates.push(parent_dir.join(mod_name).join("mod.rs"));
+        }
+        for candidate in candidates {
+            if candidate.is_file() {
+                let canonical = resolve_canonical_path(&candidate);
+                out.insert(canonical.clone(), TargetProvenance::Authored);
+                collect_rustfmt_child_modules(&canonical, out, visited, limit);
+                break;
+            }
+        }
+    }
+}
+
+fn parse_out_of_line_mod_decl(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with("//") {
+        return None;
+    }
+    let rest = if let Some(after_pub) = trimmed.strip_prefix("pub") {
+        let after_pub = after_pub.trim_start();
+        if let Some(after_paren) = after_pub.strip_prefix('(') {
+            let close = after_paren.find(')')?;
+            after_paren[close + 1..].trim_start()
+        } else if trimmed
+            .as_bytes()
+            .get(3)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            after_pub
+        } else {
+            return None;
+        }
+    } else {
+        trimmed
+    };
+    let after_mod = rest.strip_prefix("mod")?;
+    if !after_mod
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_whitespace)
+    {
+        return None;
+    }
+    let name_and_semi = after_mod.trim_start();
+    let semi_idx = name_and_semi.find(';')?;
+    let name = name_and_semi[..semi_idx].trim();
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    Some(name)
 }
 
 fn extract_git_restore_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
@@ -737,11 +937,7 @@ fn extract_git_restore_targets(args: &[String], cwd: &Path, out: &mut ExtractedW
             }
             for arg in paths {
                 if is_capturable_path(arg) {
-                    out.paths.insert(resolve_canonical_path(&resolve_path(
-                        &git_cwd,
-                        Path::new(arg),
-                    )));
-                    out.has_vcs = true;
+                    insert_git_restore_target(&git_cwd, arg, out);
                 }
             }
         }
@@ -751,15 +947,24 @@ fn extract_git_restore_targets(args: &[String], cwd: &Path, out: &mut ExtractedW
             };
             for arg in &sub_args[dashdash_pos + 1..] {
                 if is_capturable_path(arg) {
-                    out.paths.insert(resolve_canonical_path(&resolve_path(
-                        &git_cwd,
-                        Path::new(arg),
-                    )));
-                    out.has_vcs = true;
+                    insert_git_restore_target(&git_cwd, arg, out);
                 }
             }
         }
         _ => {}
+    }
+}
+
+fn insert_git_restore_target(git_cwd: &Path, arg: &str, out: &mut ExtractedWriteTargets) {
+    let resolved = resolve_canonical_path(&resolve_path(git_cwd, Path::new(arg)));
+    if resolved.is_dir() {
+        let mut dir_files = Vec::new();
+        collect_dir_files_filtered(&resolved, &mut dir_files, MAX_DIR_TARGET_FILES, |_| true);
+        for file in dir_files {
+            out.insert(file, TargetProvenance::Vcs);
+        }
+    } else {
+        out.insert(resolved, TargetProvenance::Vcs);
     }
 }
 
@@ -866,6 +1071,15 @@ fn admit_mktemp_path(path: &Path, allowed_roots: &[PathBuf]) -> Option<PathBuf> 
 }
 
 fn collect_dir_files(dir: &Path, out: &mut Vec<PathBuf>, limit: usize) {
+    collect_dir_files_filtered(dir, out, limit, |_| true);
+}
+
+fn collect_dir_files_filtered(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    limit: usize,
+    include_file: impl Fn(&Path) -> bool + Copy,
+) {
     if out.len() >= limit {
         return;
     }
@@ -878,12 +1092,15 @@ fn collect_dir_files(dir: &Path, out: &mut Vec<PathBuf>, limit: usize) {
         if out.len() >= limit {
             break;
         }
+        if path.file_name().is_some_and(|name| name == ".git") {
+            continue;
+        }
         let Ok(meta) = fs::symlink_metadata(&path) else {
             continue;
         };
         if meta.file_type().is_dir() {
-            collect_dir_files(&path, out, limit);
-        } else if meta.file_type().is_file() {
+            collect_dir_files_filtered(&path, out, limit, include_file);
+        } else if meta.file_type().is_file() && include_file(&path) {
             out.push(path);
         }
     }

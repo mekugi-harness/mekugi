@@ -56,7 +56,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   shells, and backs the native `mchanges` CLI (`--list`, composed diff review,
   `--summary`, `--history`, and path-scoped `revert`/`apply` preserving
   unrelated edits and failing explicitly on drift or corrupt/missing evidence
-  without conflict markers).
+  without conflict markers). Composed range diffs, summaries, and workspace
+  mutations omit continuous net-zero transitions (`before == after` without
+  rename or incomplete coverage) and surface discontinuous baselines from
+  unobserved external writes via coverage notes (`MEKUGI-827`).
 - Native exec tracking and shell-write / `mktemp` observation (`codex-exec-track`,
   `MEKUGI-801`): `codex-core` selects authored command spans with
   `codex-shell-guard::parse_bash` for supported Bash and Linux `dash`-backed
@@ -69,7 +72,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   shell writes (including writes before nonzero exits) to `codex-change-history`
   under `ChangeSourceKind::ShellWrite` for agent commands and
   `ChangeSourceKind::UserShell` (`"user_shell"`, authored) for interactive `!`
-  user-shell commands with shared `claim_key` deduplication. Downgrade note:
+  user-shell commands with shared `claim_key` deduplication, while capturing
+  in-place formatters (`gofmt -w`, `goimports -w`, `rustfmt`) as authored
+  writes and Git worktree restores (`git restore`, `git checkout --`) under
+  `ChangeSourceKind::VcsDiagnostic` (`MEKUGI-827`). Downgrade note:
   older runtimes deserialize `ChangeSourceKind` strictly and will reject a
   session's `change-history/index.json` once a `user_shell` entry is recorded.
 - Subprocess regression tests are in a separate
