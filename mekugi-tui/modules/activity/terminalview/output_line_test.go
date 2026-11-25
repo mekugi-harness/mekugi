@@ -9,14 +9,9 @@ import (
 )
 
 func TestOutputConsumersSplitCRLFAndOverwrite(t *testing.T) {
-	var retained activitymodel.Output
 	var tail OutputTail
 	for _, chunk := range []string{"\r", "\n\r", "\nA\r", "\n10%\r", "100%\r", "\nlast"} {
-		retained.Write(chunk)
 		tail.Write(chunk)
-	}
-	if got := retained.View().Lines; !slices.Equal(got, []string{"", "", "A", "100%", "last"}) {
-		t.Fatalf("retained lines = %q", got)
 	}
 	if tail.Pending() != 2 {
 		t.Fatalf("tail pending = %d, want two nonblank complete lines", tail.Pending())
@@ -31,16 +26,10 @@ func TestOutputConsumersSplitCRLFAndOverwrite(t *testing.T) {
 }
 
 func TestOutputConsumersKeepDistinctLineLimits(t *testing.T) {
-	var retained activitymodel.Output
 	var tail OutputTail
 	long := strings.Repeat("x", activitymodel.OutputLineBytes+4)
 	for _, chunk := range []string{long[:OutputTailBytes+1], long[OutputTailBytes+1:], "\r", "\nend\n"} {
-		retained.Write(chunk)
 		tail.Write(chunk)
-	}
-	view := retained.View()
-	if !view.Truncated || view.Dropped != 0 || !slices.Equal(view.Lines, []string{strings.Repeat("x", activitymodel.OutputLineBytes) + "…", "end"}) {
-		t.Fatalf("retained lines have incorrect limit/reset: lengths %v, truncated %v, dropped %d", lineLengths(view.Lines), view.Truncated, view.Dropped)
 	}
 	if tail.Pending() != 2 {
 		t.Fatalf("tail pending = %d, want two complete lines", tail.Pending())

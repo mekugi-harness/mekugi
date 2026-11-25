@@ -13,6 +13,11 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/sourceparse"
 )
 
+const (
+	maxInspectionBytes     = 64 << 20
+	maxInspectionLineBytes = 32 << 20
+)
+
 // Read only the bounded metadata header during discovery. Full rollout validation
 // remains with the inspector; unreadable candidates cannot certify uniqueness.
 func HeaderIdentity(path string) (string, error) {

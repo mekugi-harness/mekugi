@@ -1,18 +1,12 @@
 package preferences
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"encoding/json/jsontext"
-	json "encoding/json/v2"
+
 	"errors"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
+
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/sourceparse"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
@@ -38,147 +32,12 @@ type Snapshot struct {
 	Presentation   jsontext.Value `json:",embed"`
 }
 
-type record struct {
-	Version int `json:"version"`
-	Snapshot
-}
-
-func recordPath(scope Scope) (string, error) {
-	if !filepath.IsAbs(scope.Workspace) || scope.Thread == "" {
-		return "", errors.New("session preferences require a host workspace and thread")
-	}
-	base, err := history.StateDirectory()
-	if err != nil {
-		return "", err
-	}
-	key := sha256.Sum256([]byte(scope.Workspace + "\x00" + scope.Thread))
-	return filepath.Join(base, "ui", fmt.Sprintf("panes-%x.json", key)), nil
-}
-
-// Read never retargets an attachment or creates files. The renderer must validate
-// Presentation before accepting any part of the snapshot.
-func (s *Service) Read(scope Scope) (Snapshot, error) {
-	path, err := recordPath(scope)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	f, err := sourceparse.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return Snapshot{}, nil
-	}
-	if err != nil {
-		return Snapshot{}, err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return Snapshot{}, errors.New("pane state must be a regular file")
-	}
-	data, err := io.ReadAll(io.LimitReader(f, 4097))
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if len(data) > 4096 {
-		return Snapshot{}, errors.New("pane state exceeds size limit")
-	}
-	var state record
-	if err := json.Unmarshal(data, &state); err != nil {
-		return Snapshot{}, err
-	}
-	if state.Version != 1 {
-		return Snapshot{}, errors.New("invalid or unsupported pane state")
-	}
-	if state.Settings != (Applied{}) && (state.Settings.Model == "" || state.Settings.Observed.IsZero()) {
-		return Snapshot{}, errors.New("incomplete applied settings snapshot")
-	}
-	if len(state.Presentation) == 0 {
-		state.Presentation = jsontext.Value("{}")
-	}
-	return state.Snapshot, nil
-}
-
 // Attachment has one write target and is owned by the attached session's
 // serialized presentation owner. It starts no goroutine and opens no file.
 type Attachment struct {
-	service     *Service
-	scope       Scope
-	path        string
-	state, last Snapshot
-	pending     bool
-	due         time.Time
-}
-
-func (s *Service) Attach(scope Scope, initial jsontext.Value) (*Attachment, error) {
-	path, err := recordPath(scope)
-	if err != nil {
-		return nil, err
-	}
-	a := &Attachment{service: s, scope: scope, path: path}
-	a.Restore(Snapshot{Presentation: initial})
-	return a, nil
-}
-
-func (a *Attachment) Scope() Scope { return a.scope }
-
-// Snapshot publishes the actual staged preference state without exposing mutable
-// presentation bytes or transferring the attached writer's authority.
-func (a *Attachment) Snapshot() Snapshot {
-	state := a.state
-	state.Presentation = bytes.Clone(state.Presentation)
-	return state
-}
-
-// Restore accepts a validated snapshot and establishes a no-write baseline.
-// The renderer supplies its normalized presentation after applying the record.
-func (a *Attachment) Restore(state Snapshot) {
-	state.Presentation = bytes.Clone(state.Presentation)
-	a.state, a.last, a.pending = state, state, false
-}
-
-func (a *Attachment) Apply(settings Applied) {
-	a.state.Settings = settings
-	a.state.ResumeObserved, a.state.ResumeEvidence = time.Time{}, Evidence{}
-}
-
-func (a *Attachment) Recover(evidence Evidence, observed time.Time) {
-	a.state.ResumeEvidence, a.state.ResumeObserved = evidence, observed
-}
-
-// StagePresentation admits detached renderer state without scheduling or writing.
-func (a *Attachment) StagePresentation(presentation jsontext.Value) {
-	if !bytes.Equal(presentation, a.state.Presentation) {
-		a.state.Presentation = bytes.Clone(presentation)
-	}
 }
 
 // Write is one immutable publication prepared by the selected preference owner.
 // Callers serialize publications; acquiring it does not perform storage I/O.
 type Write struct {
-	service *Service
-	path    string
-	data    []byte
-}
-
-func (w *Write) Publish() error { return w.service.history.PublishFile(w.path, w.data) }
-
-// PrepareSave coalesces layout bursts; applied/recovery changes and exit use flush.
-// Failed saves are reported once, rather than retried on every animation frame.
-// Callers prepare only when their writer is idle, retaining later stages here.
-func (a *Attachment) PrepareSave(now time.Time, flush bool) (*Write, error) {
-	if a.state.Settings != a.last.Settings || a.state.ResumeObserved != a.last.ResumeObserved || a.state.ResumeEvidence != a.last.ResumeEvidence || !bytes.Equal(a.state.Presentation, a.last.Presentation) {
-		a.last, a.pending, a.due = a.state, true, now.Add(250*time.Millisecond)
-	}
-	if !a.pending || !flush && now.Before(a.due) {
-		return nil, nil
-	}
-	a.pending = false
-	state := record{Version: 1, Snapshot: a.state}
-	data, err := json.Marshal(&state)
-	if err != nil {
-		return nil, err
-	}
-	return &Write{service: a.service, path: a.path, data: data}, nil
 }

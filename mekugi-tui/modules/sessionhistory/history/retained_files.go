@@ -52,12 +52,6 @@ func LegacyOutputName(name string) bool {
 	return ok
 }
 
-// LegacyRecoveryName reports whether name is a retired pre-switch
-// outputrecovery record.
-func LegacyRecoveryName(name string) bool {
-	return LegacyOutputName(name) || LegacyCursorName(name)
-}
-
 func validFrozenKind(kind string) bool {
 	if len(kind) == 0 || len(kind) > 32 {
 		return false

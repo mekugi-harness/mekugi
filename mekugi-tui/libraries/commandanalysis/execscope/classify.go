@@ -14,8 +14,3 @@ type Input struct {
 	Changes      ChangeResolver
 	AuthoredOnly bool
 }
-
-// Classify keeps unknown effects distinct from known write operands.
-func Classify(input Input) Result {
-	return classifyExecShellSource(input.Command, input.Directory, input.Shell, input.Deadline, 0, input.Changes, input.AuthoredOnly)
-}

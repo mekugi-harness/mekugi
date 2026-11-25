@@ -7,7 +7,6 @@ import (
 
 var Module = module.Descriptor[Deps, *diagnostic.Service, module.NoBindings, module.NoViews]{
 	ID: "diagnostics", Summary: "Retain and inspect private diagnostic evidence",
-	Requires: []module.ID{"sessionhistory", "sessioninspection"}, Lifetime: module.Invocation,
+	Requires: []module.ID{"sessionhistory"}, Lifetime: module.Invocation,
 	HostsDiagnosticSections: true, New: newService,
-	Contributes: module.Contributions[*diagnostic.Service]{RecordKinds: diagnostic.RecordKinds()},
 }

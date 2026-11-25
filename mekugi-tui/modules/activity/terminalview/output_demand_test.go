@@ -1,7 +1,6 @@
 package terminalview
 
 import (
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -11,10 +10,16 @@ import (
 )
 
 func TestOutputContextDemandBoundsAndExpansion(t *testing.T) {
-	output := new(feed.Retention).New()
-	output.Finish(new(strings.Repeat("retained context\n", 20000)+"var answer = 42"), new(0))
+	fullLines := make([]string, 20001)
+	for i := range 20000 {
+		fullLines[i] = "retained context"
+	}
+	fullLines[20000] = "var answer = 42"
+	full := feed.OutputView{Lines: fullLines, Done: true, Exited: true}
+	contextLines := fullLines[len(fullLines)-100:]
+	context := feed.OutputView{Lines: contextLines, Dropped: len(fullLines) - len(contextLines), Done: true, Exited: true}
 	v := NewView()
-	v.Update(&presentation.Publication{Entries: []presentation.Entry{{Seq: 7, Outputs: map[int]int{1: output.Version()}}}}, Display{})
+	v.Update(&presentation.Publication{Entries: []presentation.Entry{{Seq: 7, Outputs: map[int]int{1: 1}}}}, Display{})
 	block := Block{Kind: "op", Source: 7, Output: 1, Tail: []string{"var answer = 42"}, TailOmitted: 20000}
 	for _, excluded := range []string{"layout", "collapsed", "empty", "changes"} {
 		candidate := block
@@ -34,16 +39,14 @@ func TestOutputContextDemandBoundsAndExpansion(t *testing.T) {
 	v.Painter.LayoutOnly = false
 	v.outputContext(block)
 	v.outputContext(block)
-	want := presentation.OutputDemand{Source: 7, Output: 1, Version: output.Version(), Bytes: OutputContextBytes}
+	want := presentation.OutputDemand{Source: 7, Output: 1, Version: 1, Bytes: OutputContextBytes}
 	if got := v.OutputDemands(); !slices.Equal(got, []presentation.OutputDemand{want}) || len(v.OutputDemands()) != 0 {
 		t.Fatalf("context demand was not deduplicated and drained: %+v", got)
 	}
-	context, limited := output.Context(OutputContextBytes)
-	v.Hydrate([]presentation.OutputResult{{Demand: want, View: context, Limited: limited}})
+	v.Hydrate([]presentation.OutputResult{{Demand: want, View: context, Limited: true}})
 	got := v.outputContext(block)
 	if got.OutputSnapshot == nil || !got.OutputContextLimited || len(got.OutputSnapshot.Lines) == 0 ||
-		len(got.OutputSnapshot.Lines) >= 20000 || len(strings.Join(got.OutputSnapshot.Lines, "\n")) > OutputContextBytes ||
-		!reflect.ValueOf(output).Elem().FieldByName("snapshot").IsNil() {
+		len(got.OutputSnapshot.Lines) >= 20000 || len(strings.Join(got.OutputSnapshot.Lines, "\n")) > OutputContextBytes {
 		t.Fatal("feed context was unbounded or populated the full retained snapshot")
 	}
 	if !slices.Equal(got.Tail, block.Tail) || got.TailOmitted != block.TailOmitted || len(v.OutputDemands()) != 0 {
@@ -55,7 +58,6 @@ func TestOutputContextDemandBoundsAndExpansion(t *testing.T) {
 	if got := v.OutputDemands(); !slices.Equal(got, []presentation.OutputDemand{want}) {
 		t.Fatalf("bounded context satisfied a full expansion: %+v", got)
 	}
-	full := output.View()
 	v.Hydrate([]presentation.OutputResult{{Demand: want, View: full}})
 	expanded := v.discloseBlock(block)
 	if !expanded.Expanded || expanded.Collapsed || expanded.TailOmitted != 0 || !slices.Equal(expanded.Tail, full.Lines) || len(expanded.Tail) != 20001 {

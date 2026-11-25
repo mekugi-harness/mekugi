@@ -1,44 +1,14 @@
 package binding
 
-import (
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-)
+import "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
 
 // Bindings declares existing Codex connections. Factories receive the constructed
 // service during registration; reference collection never invokes them.
 type Bindings[S any] struct {
 	Observation func(S) Observation
 	Frontends   bool // Exposes the descriptor's command contributions.
-	Rollout     func(S, RolloutSource) error
 
 	MCP func(S) MCPServer
-}
-
-func (b Bindings[S]) Register(r Registrar, service S, commands []command.Definition[S]) error {
-	if b.MCP != nil {
-		if err := r.MCP(b.MCP(service)); err != nil {
-			return err
-		}
-	}
-	if b.Frontends {
-		for _, definition := range commands {
-			if err := r.Frontend(definition.Spec); err != nil {
-				return err
-			}
-		}
-	}
-	if b.Rollout != nil {
-		if err := r.Rollout(func(source RolloutSource) error { return b.Rollout(service, source) }); err != nil {
-			return err
-		}
-	}
-	if b.Observation != nil {
-		if err := r.Observation(b.Observation(service)); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (b Bindings[S]) Reference() module.BindingReference {
@@ -48,7 +18,6 @@ func (b Bindings[S]) Reference() module.BindingReference {
 		declared  bool
 	}{
 		{"executable-frontend", b.Frontends},
-		{"rollout", b.Rollout != nil},
 		{"observation", b.Observation != nil},
 		{"mcp-tools", b.MCP != nil},
 	} {

@@ -4,26 +4,23 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
-	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
-	notice "github.com/mekugi-harness/mekugi/mekugi-tui/modules/notifications/presentation"
 )
 
 func TestPreparedChildHumanControls(t *testing.T) {
-	var model sessionpresentation.Model
-	model.Attach(sessionpresentation.Thread{ID: "child", Caller: "/root/worker"}, false)
-	model.RestrictChildInput(true)
-	var conv conversation.Session
 	call := &prompt.Call{ID: "ask", Thread: "child", Sync: true, Questions: []prompt.Question{{ID: "q", Question: "VISIBLE_CHILD_QUESTION"}}}
-	conv.Questions.Add(call, false)
-	conv.Questions.Open(call)
-	var live sessioncontrol.Live
-	live.Thread = "child"
-	live.Started("turn")
-	v := model.Publish(sessionpresentation.MainInputs{Control: &live, Feedback: &notice.Model{}, Conversation: &conv}, sessionpresentation.Caption{})
+	var questions prompt.Questions
+	questions.Calls = append(questions.Calls, call)
+	questions.Open(call)
+	v := sessionpresentation.View{
+		Main:               sessionpresentation.Thread{ID: "child", Caller: "/root/worker"},
+		Displayed:          sessionpresentation.Thread{ID: "child", Caller: "/root/worker"},
+		Admission:          sessionpresentation.InputAdmission{ReadOnly: true},
+		Questions:          questions.View("child"),
+		InterruptAvailable: true,
+	}
 	var main Main
 	main.Update(v)
 	transcript := activityui.NewView()

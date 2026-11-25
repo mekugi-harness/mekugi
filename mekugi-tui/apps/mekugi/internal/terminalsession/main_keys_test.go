@@ -20,7 +20,7 @@ func TestMainKeyContinuationTargetsLatestPublication(t *testing.T) {
 			if dock == "question" {
 				call := &prompt.Call{ID: "ask", Thread: "main", Questions: []prompt.Question{{ID: "choice"}}}
 				var questions prompt.Questions
-				questions.Add(call, false)
+				questions.Calls = append(questions.Calls, call)
 				questions.Open(call)
 				view.Questions = questions.View("main")
 				view.Draft = conversationmodel.DraftView{}

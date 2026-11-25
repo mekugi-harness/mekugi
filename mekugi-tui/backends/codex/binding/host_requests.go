@@ -1,9 +1,5 @@
 package binding
 
-import (
-	"fmt"
-)
-
 type DispatchOutcome string
 
 const (
@@ -19,8 +15,3 @@ type DispatchError struct {
 	Method  string
 	Cause   error
 }
-
-func (e *DispatchError) Error() string {
-	return fmt.Sprintf("%s (%s): %v", e.Method, e.Outcome, e.Cause)
-}
-func (e *DispatchError) Unwrap() error { return e.Cause }

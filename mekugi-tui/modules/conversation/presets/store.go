@@ -37,18 +37,3 @@ func Validate(input string) error {
 	}
 	return nil
 }
-
-// ValidateLabel accepts the trimmed label a menu row can show. Codex leaves
-// labels unconstrained and shows only their first line, so Mekugi keeps them
-// single-line rather than saving text the menu would hide.
-// Source: codex-rs/config/src/types.rs:832@0df4aa677 QuickDial::label and
-// codex-rs/tui/src/chatwidget/quick_dials.rs:39@0df4aa677 quick_dial_label.
-func ValidateLabel(label string) error {
-	switch {
-	case !utf8.ValidString(label):
-		return errors.New("Preset label must be valid UTF-8")
-	case strings.ContainsAny(label, "\r\n"):
-		return errors.New("Preset label must be a single line")
-	}
-	return nil
-}

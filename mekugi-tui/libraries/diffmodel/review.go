@@ -144,50 +144,6 @@ func RenderReviewFile(beforePath, afterPath, before, after string) ReviewFile {
 	return renderReviewGroups(ReviewFile{BeforePath: beforePath, AfterPath: afterPath}, a, b, 0, 0, difflib.NewMatcher(a, b).GetGroupedOpCodes(contextLines))
 }
 
-// RenderReviewPreviewFile projects provisional before/after content with compact
-// context. It is display-only, not completed historical capture evidence.
-func RenderReviewPreviewFile(beforePath, afterPath, before, after string) ReviewFile {
-	return renderReviewFile(ReviewFile{BeforePath: beforePath, AfterPath: afterPath}, reviewLines(before), reviewLines(after), 0, 0)
-}
-
-// RenderBinaryReviewFile reviews intact non-text content without source rows,
-// in the spirit of git's "Binary files differ".
-func RenderBinaryReviewFile(beforePath, afterPath string, beforeSize, afterSize int64, beforeHash, afterHash string) ReviewFile {
-	file := RenderReviewFile(beforePath, afterPath, "", "")
-	file.Binary = true
-	side := func(path string, size int64, hash string) string {
-		if path == "" {
-			return "absent"
-		}
-		if len(hash) > 12 {
-			hash = hash[:12]
-		}
-		return fmt.Sprintf("%d bytes, sha256 %s", size, hash)
-	}
-	file.Diff += fmt.Sprintf("Binary files %s and %s differ (%s -> %s)\n",
-		reviewPath(beforePath), reviewPath(afterPath), side(beforePath, beforeSize, beforeHash), side(afterPath, afterSize, afterHash))
-	return file
-}
-
-// RenderIncompleteReviewFile retains an applied operation's identity without
-// inventing source rows when its contents could not be captured.
-func RenderIncompleteReviewFile(beforePath, afterPath, reason string) ReviewFile {
-	file := RenderReviewFile(beforePath, afterPath, "", "")
-	file.Incomplete = reason
-	file.Diff += "incomplete history: " + reason + "\n"
-	return file
-}
-
-// RenderUnbasedReviewFile shows a file's current content when its prior
-// content is unknown. The rows are context for review, not a diff against an
-// empty file, so line counts stay unavailable.
-func RenderUnbasedReviewFile(path, after, reason string) ReviewFile {
-	file := renderReviewFile(ReviewFile{BeforePath: path, AfterPath: path}, nil, reviewLines(after), 0, 0)
-	file.Incomplete = reason
-	file.Diff += "incomplete history: " + reason + "\n"
-	return file
-}
-
 // renderReviewFile also renders sparse composed regions, without pretending that
 // uncaptured source outside a region is known.
 func renderReviewFile(file ReviewFile, a, b []string, beforeOffset, afterOffset int) ReviewFile {

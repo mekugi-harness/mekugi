@@ -1,49 +1,8 @@
 package presentation
 
 import (
-	"slices"
 	"strconv"
-	"strings"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
 )
-
-// ContributedDetails preserves provider identities and frozen source separately
-// from live feed refresh, whose Source identities belong to Activity itself.
-func ContributedDetails(pages []activitydetail.Page) []DetailPage {
-	result := make([]DetailPage, len(pages))
-	for i, page := range pages {
-		result[i] = DetailPage{ID: page.ID, DisplayPath: page.DisplayPath, Kind: "op", Verb: page.Verb, Code: page.Code, Lang: page.Language, Fenced: true, Path: page.Path}
-	}
-	return result
-}
-
-// OrderEditDetails follows the visible operation order while retaining the
-// contributed pages and their identities. Unmatched pages remain available.
-func OrderEditDetails(pages []DetailPage, values []Value) []DetailPage {
-	var rows []Value
-	for _, value := range values {
-		for _, original := range Originals(value) {
-			if original.EditOperation() && original.EditPath() != "" {
-				rows = append(rows, original)
-			}
-		}
-	}
-	ordered := slices.Clone(pages)
-	rank := func(page DetailPage) int {
-		for i, row := range rows {
-			path := row.EditPath()
-			if path == page.Path || path == page.DisplayPath || row.DirectoryDeletion() && strings.HasPrefix(page.Path, strings.TrimSuffix(path, "/")+"/") {
-				return i
-			}
-		}
-		return len(rows)
-	}
-	slices.SortStableFunc(ordered, func(a, b DetailPage) int {
-		return rank(a) - rank(b)
-	})
-	return ordered
-}
 
 // DetailPage retains original operation identity independently of feed grouping.
 // Output remains an identity within Source; the attached owner resolves its snapshot.

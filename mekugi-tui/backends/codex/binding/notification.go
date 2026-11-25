@@ -134,21 +134,3 @@ func (p Notification) Observation(method string, at time.Time) observation.Event
 	}
 	return e
 }
-
-// DecodeNotification preserves native payloads while sharing command normalization
-// with pre-queue evidence consumers. It never dispatches or changes the input.
-// Source: apps/mekugi/internal/router/app_server_ui.go:856:866@1bcbdd5a.
-func DecodeNotification(method string, raw jsontext.Value) (Notification, error) {
-	var p Notification
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return Notification{}, err
-	}
-	if command, ok := DecodeCommandObservation(method, raw); ok {
-		p.Command = &command
-		p.Delta = command.Delta
-		if p.Item.Type == "commandExecution" {
-			p.Item.Command, p.Item.AggregatedOutput, p.Item.ExitCode = command.Command, command.Output, command.Exit
-		}
-	}
-	return p, nil
-}

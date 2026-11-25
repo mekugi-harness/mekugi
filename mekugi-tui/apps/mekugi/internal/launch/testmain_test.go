@@ -1,12 +1,9 @@
 package launch
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,24 +25,10 @@ func listenPrivateUnix(path string) (net.Listener, error) {
 	return l, nil
 }
 
-// Provider selection must not depend on credentials in the developer's shell.
-// Empty overrides also disable credentials from the local configuration file.
 func TestMain(m *testing.M) {
-	if os.Getenv("MEKUGI_NATIVE_SERVER_FIXTURE") != "" && len(os.Args) > 1 && (os.Args[1] == "server" || os.Args[1] == "--listen") {
+	if os.Getenv("MEKUGI_NATIVE_SERVER_FIXTURE") != "" && len(os.Args) > 1 && os.Args[1] == "--listen" {
 		runNativeServerFixture()
 	}
-	if os.Getenv("MEKUGI_INVOCATION_FIXTURE") == "1" {
-		runInvocationFixtureChild()
-	}
-	if os.Getenv(routerTestWorkerEnvironment) == "1" {
-		if handled, code := runToolPluginWorkerInHostProcess(testHistory(), testCommands(),
-			context.Background(), os.Args[0], os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
-		); handled {
-			os.Exit(code)
-		}
-	}
-	// macOS temporary paths can start with /var -> /private/var. Use the
-	// canonical root for fixtures, not weaker production state-directory checks.
 	temporary, err := filepath.Abs(os.TempDir())
 	if err == nil {
 		temporary, err = filepath.EvalSymlinks(temporary)
@@ -57,14 +40,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "resolve test temporary directory: %v\n", err)
 		os.Exit(1)
 	}
-	// Keep test publications and configuration outside the user's directories,
-	// including parallel cases. Tests that need settings supply their own config.
-	// Tool managers need the host configuration to resolve installed browsers.
-	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") == "1" || os.Getenv("MEKUGI_TEST_CONTROL_BROWSER") == "1" {
-		browserFixtureExecutable, browserFixtureError = resolveBrowserFixtureExecutable(os.Getenv("MEKUGI_TEST_AGENT_BROWSER"))
-	}
 	var stateDirectory string
-	// Child test executables must retain their parent's authenticated store path.
 	if os.Getenv("MEKUGI_LAUNCHER_TEST_STATE_ISOLATED") == "" {
 		stateDirectory, err = os.MkdirTemp("", "mekugi-test-state-")
 		if err == nil {
@@ -81,8 +57,6 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
-	// Chroma lexers set regexp2 match timeouts, which lazily start one shared
-	// clock goroutine. Start it here so a synctest bubble never owns it.
 	clock := regexp2.MustCompile("x", regexp2.None)
 	clock.MatchTimeout = 1000 * time.Hour
 	if _, err := clock.MatchString("x"); err != nil {
@@ -95,41 +69,10 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	if stateDirectory != "" {
-		err = os.RemoveAll(stateDirectory)
-	}
-	for _, fixture := range []*proxyRegistryFixture{&proxyTestFixture} {
-		if fixture.registry != nil {
-			err = errors.Join(err, fixture.registry.Close())
+		if err := os.RemoveAll(stateDirectory); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "clean up launch test state: %v\n", err)
+			code = 1
 		}
-		if fixture.directory != "" {
-			err = errors.Join(err, os.RemoveAll(fixture.directory))
-		}
-	}
-	if execTrackHelperDirectory != "" {
-		err = errors.Join(err, os.RemoveAll(execTrackHelperDirectory))
-	}
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "clean up launch test fixtures: %v\n", err)
-		code = 1
 	}
 	os.Exit(code)
-}
-
-func TestLauncherFixturesWithSymlinkTempDirectory(t *testing.T) {
-	root := t.TempDir()
-	real := filepath.Join(root, "real")
-	if err := os.Mkdir(real, 0700); err != nil {
-		t.Fatal(err)
-	}
-	alias := filepath.Join(root, "alias")
-	if err := os.Symlink(real, alias); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("TMPDIR", alias)
-	// The debug fixture uses TestMain's state beneath a temporary-directory alias.
-	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^(TestUISnapshotDebugHandoffAfterCodexExit)$", "-test.count=1")
-	command.Env = append(os.Environ(), "MEKUGI_LAUNCHER_TEST_STATE_ISOLATED=")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("launch fixtures under symlink TMPDIR: %v\n%s", err, output)
-	}
 }

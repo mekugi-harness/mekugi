@@ -1,14 +1,11 @@
 package presentation
 
 import (
-	"cmp"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
+
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
 
@@ -70,92 +67,18 @@ type Record[S Source] struct {
 // Model owns one semantic feed. The renderer keeps disclosure, animation, layout and selection.
 // Main and child feeds share an attached Session but never duplicate their records.
 type Model[S Source, A AgentSource] struct {
-	reasoningPrevious   map[int]int
-	Entries             []Record[S]
-	Agents              []A
-	Revision, LastSeq   uint64
-	LineCounts          map[string]diffmodel.Counts
-	NetCounts           *diffmodel.Counts
-	retiredSkills       map[string]SkillSet
-	skillHistory        map[string]bool
-	skills              map[string]SkillSet
-	skillsRevision      uint64
-	publicationEntries  []Entry
-	publicationRevision uint64
-	latest              map[string]int
-	summaries           map[string]Summary
+	Entries           []Record[S]
+	Agents            []A
+	Revision, LastSeq uint64
+	LineCounts        map[string]diffmodel.Counts
+	NetCounts         *diffmodel.Counts
 }
 type Session[S Source, A AgentSource] struct {
 	Main, Children Model[S, A]
 	Commits        *CommitReader
-	agents         scope.Key[AgentLifecycle]
-	roster         []A
-	sequence       uint64
-}
-
-var attachedSession scope.Key[any]
-
-// Attached returns the existing presentation session for this attachment. A
-// binding uses one source/agent type pair throughout its attachment. Native
-// transcript and wait facts remain available without optional output retention.
-// Source: modules/activity/feed/service.go:52:63@1bcbdd5a.
-func Attached[S Source, A AgentSource](store *scope.Store) *Session[S, A] {
-	slot := attachedSession.Value(store)
-	if *slot == nil {
-		*slot = new(Session[S, A])
-	}
-	return (*slot).(*Session[S, A])
-}
-
-// Lifecycle owns admitted observations in the supplied thread scope. Copies
-// published into roster records remain detached from this authoritative value.
-func (s *Session[S, A]) Lifecycle(thread *scope.Store) *AgentLifecycle {
-	return s.agents.Value(thread)
 }
 
 const FeedLimit = 2000
-
-func (m *Model[S, A]) Append(source S, values []Value) {
-	Identify(values, source.ActivityFacts().Seq)
-	m.Revision++
-	m.Entries = append(m.Entries, Record[S]{source, values, m.Revision})
-}
-func (m *Model[S, A]) Replace(index int, source S, values []Value) {
-	Identify(values, source.ActivityFacts().Seq)
-	m.Entries[index] = Record[S]{Source: source, Values: values}
-	m.Revise(index)
-}
-func (m *Model[S, A]) Mutate(index int, mutate func(*Record[S])) {
-	m.Entries[index].Values = CloneValues(m.Entries[index].Values)
-	mutate(&m.Entries[index])
-	m.Revise(index)
-}
-func (m *Model[S, A]) Revise(index int) { m.Revision++; m.Entries[index].Revision = m.Revision }
-func (m *Model[S, A]) Remove(from, to int) {
-	m.Revision++
-	m.Entries = slices.Delete(m.Entries, from, to)
-	m.skills = nil
-}
-func (m *Model[S, A]) Latest(name string) int {
-	m.PublishedEntries()
-	if latest, exists := m.latest[name]; exists {
-		return latest
-	}
-	return -1
-}
-
-// Status reports only observed activity, not host task completion.
-func (m *Model[S, A]) Status(agent A) string {
-	facts := agent.ActivityAgent()
-	if facts.Paused || facts.Waiting || facts.Responding {
-		return facts.ObservedStatus("")
-	}
-	kind := ""
-	if latest := m.Latest(facts.Name); latest >= 0 {
-		kind = m.publicationEntries[latest].Kind
-	}
-	return facts.ObservedStatus(kind)
-}
 
 // ObservedStatus keeps detached roster publications consistent with feed models.
 func (facts AgentFacts) ObservedStatus(latestKind string) string {
@@ -182,61 +105,6 @@ type RosterRow[A AgentSource] struct {
 	Depth int
 }
 
-// Source: internal/router/live_activity_view.go:497:531@[ebde9ad5].
-// Roster keeps active siblings before idle and completed work, preserving
-// observation order within each state and promoting unobserved parents' children.
-func (m *Model[S, A]) Roster() []RosterRow[A] {
-	known := make(map[string]bool, len(m.Agents))
-	for _, agent := range m.Agents {
-		known[agent.ActivityAgent().Name] = true
-	}
-	parent := func(name string) string {
-		if prefix, _, ok := strings.CutLast(name, "/"); ok && known[prefix] {
-			return prefix
-		}
-		return ""
-	}
-	priorities := make(map[string]int, len(m.Agents))
-	for _, agent := range m.Agents {
-		facts := agent.ActivityAgent()
-		priority := 1
-		if facts.Responding || facts.Waiting {
-			priority = 0
-		} else if facts.Final {
-			priority = 2
-		}
-		priorities[facts.Name] = priority
-	}
-	// Keep a completed ancestor beside its active descendants rather than
-	// relegating the entire branch below later siblings.
-	for _, agent := range m.Agents {
-		name := agent.ActivityAgent().Name
-		priority := priorities[name]
-		for under := parent(name); under != ""; under = parent(under) {
-			priorities[under] = min(priorities[under], priority)
-		}
-	}
-	agents := slices.Clone(m.Agents)
-	slices.SortStableFunc(agents, func(a, b A) int {
-		return cmp.Compare(priorities[a.ActivityAgent().Name], priorities[b.ActivityAgent().Name])
-	})
-	children := make(map[string][]A, len(agents))
-	for _, agent := range agents {
-		under := parent(agent.ActivityAgent().Name)
-		children[under] = append(children[under], agent)
-	}
-	var rows []RosterRow[A]
-	var visit func(string, int)
-	visit = func(under string, depth int) {
-		for _, agent := range children[under] {
-			rows = append(rows, RosterRow[A]{agent, depth})
-			visit(agent.ActivityAgent().Name, depth+1)
-		}
-	}
-	visit("", 0)
-	return rows
-}
-
 // Identify moves stable entry and operation identity with flat group membership.
 func Identify(values []Value, source uint64) {
 	for i := range values {
@@ -255,52 +123,10 @@ func Identify(values []Value, source uint64) {
 	}
 }
 
-// Accept deduplicates host publications independently of display order.
-func (m *Model[S, A]) Accept(seq uint64) bool {
-	if seq <= m.LastSeq {
-		return false
-	}
-	m.LastSeq = seq
-	return true
-}
-
-// Trim protects live invocations and folds retired context evidence before removal.
-func (m *Model[S, A]) Trim(limit int) []uint64 {
-	var retired []uint64
-	for i, extra := 0, len(m.Entries)-limit; extra > 0 && i < len(m.Entries); {
-		if facts := m.Entries[i].Source.ActivityFacts(); facts.Running || facts.Retained {
-			i++
-			continue
-		}
-		m.retireSkills(m.Entries[i : i+1])
-		retired = append(retired, m.Entries[i].Source.ActivityFacts().Seq)
-		m.Remove(i, i+1)
-		extra--
-	}
-	return retired
-}
-
 // Summary selects the latest meaningful observation, including a root-directed
 // message. Earlier reasoning sections stay tied to their own agent across traffic.
 type Summary struct {
 	Index    int
 	Earlier  []int
 	Incoming bool
-}
-
-func (m *Model[S, A]) Summary(owner string, root bool) Summary {
-	m.PublishedEntries()
-	selected, exists := m.summaries[owner]
-	if incoming, found := m.summaries[""]; root && found && (!exists || incoming.Index > selected.Index) {
-		selected, exists = incoming, true
-	}
-	if !exists {
-		return Summary{Index: -1}
-	}
-	if m.publicationEntries[selected.Index].Kind == "reasoning" {
-		for i, found := m.reasoningPrevious[selected.Index]; found; i, found = m.reasoningPrevious[i] {
-			selected.Earlier = append(selected.Earlier, i)
-		}
-	}
-	return selected
 }

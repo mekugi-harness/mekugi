@@ -153,31 +153,9 @@ func TestExternalEditPreservesBindingsAtomically(t *testing.T) {
 	}
 }
 
-func TestHistoryRestorationPreservesRepeatedOccurrencesAndSources(t *testing.T) {
-	for _, sharedFirst := range []bool{false, true} {
-		e := Editor{}
-		persisted := []HistoryEntry{
-			{Text: "same", Source: "other"},
-			{Text: "same", Source: "session"},
-			{Text: "same", Source: "session"},
-		}
-		if sharedFirst {
-			e.PrependHistory(persisted)
-		}
-		e.RestoreHistory("session", Draft{Text: "same", Skills: []Token{{Name: "first"}}})
-		e.RestoreHistory("session", Draft{Text: "same", Skills: []Token{{Name: "second"}}})
-		if !sharedFirst {
-			e.PrependHistory(persisted)
-		}
-		if len(e.InputHistory) != 3 || e.InputHistory[0].Source != "other" || e.InputHistory[1].Skills[0].Name != "first" || e.InputHistory[2].Skills[0].Name != "second" {
-			t.Fatalf("sharedFirst=%v history=%+v", sharedFirst, e.InputHistory)
-		}
-	}
-}
-
 func TestHistoryMergeRebasesParkedAndUndoNavigation(t *testing.T) {
 	e := Editor{Text: "draft", CursorBack: 2}
-	e.RestoreHistory("main", Draft{Text: "old"})
+	e.InputHistory = append(e.InputHistory, HistoryEntry{Draft: Draft{Text: "old"}, Source: "main", Restored: true})
 	e.Recall(true)
 	parked := e.Park()
 	e.Recall(false)

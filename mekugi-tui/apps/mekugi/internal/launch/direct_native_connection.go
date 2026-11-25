@@ -32,27 +32,6 @@ type nativeSessionConnection interface {
 	Close() error
 }
 
-// sessionapiConnAdapter adapts a legacy *sessionapi.NativeConnection to
-// nativeSessionConnection for existing unit tests until Slices 10-12 retire it.
-type sessionapiConnAdapter struct {
-	*sessionapi.NativeConnection
-}
-
-func wrapSessionAPIConnection(conn *sessionapi.NativeConnection) nativeSessionConnection {
-	if conn == nil {
-		return nil
-	}
-	return sessionapiConnAdapter{NativeConnection: conn}
-}
-
-func (a sessionapiConnAdapter) Attach(ctx context.Context, thread string) (nativeSessionConnection, error) {
-	next, err := a.NativeConnection.Attach(ctx, thread)
-	if err != nil {
-		return nil, err
-	}
-	return sessionapiConnAdapter{NativeConnection: next}, nil
-}
-
 type directPendingServerRequest struct {
 	id         jsontext.Value
 	method     string

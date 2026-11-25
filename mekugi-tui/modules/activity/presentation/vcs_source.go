@@ -706,22 +706,10 @@ func vcsOutputStatement(statement *syntax.Stmt) (vcsCall, bool) {
 	return vcsStatement(statement)
 }
 
-// VCSOutputSource recognizes a tracked segment whose observed output has change rows.
-func VCSOutputSource(source string) bool {
-	call, ok := vcsOutputCall(source)
-	return ok && call.kind != vcsStage && call.kind != vcsCheck
-}
-
 // VCSStatement describes literal source without evaluating it or establishing execution.
 func VCSStatement(statement *syntax.Stmt) (string, bool) {
 	call, ok := vcsStatement(statement)
 	return call.display, ok
-}
-
-// VCSPreservesDirectory reports a literal command that cannot change its parent shell cwd.
-func VCSPreservesDirectory(source string) bool {
-	_, ok := vcsOutputCall(source)
-	return ok
 }
 
 // vcsIdentity resolves a literal git or svn command's structured tool,

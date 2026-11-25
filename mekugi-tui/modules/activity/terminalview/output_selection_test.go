@@ -156,9 +156,7 @@ func TestSearchOutputSelectedTailSkipsOffscreenTokenization(t *testing.T) {
 }
 
 func selectedOutputBlock(block Block, rows []string, start int) Block {
-	output := new(activitymodel.Output)
-	output.Write(strings.Join(rows, "\n"))
-	block.OutputSnapshot = new(output.View())
+	block.OutputSnapshot = &activitymodel.OutputView{Lines: slices.Clone(rows)}
 	block.TailOmitted = start
 	for _, row := range rows[start:] {
 		if text := outputText([]byte(row)); text != "" {

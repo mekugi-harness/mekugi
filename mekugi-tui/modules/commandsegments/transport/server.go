@@ -111,25 +111,6 @@ func Listen(ctx context.Context) (*Server, error) {
 	return s, nil
 }
 
-func (s *Server) Endpoints() Endpoints { return s.endpoints }
-
-// Register installs the invocation's only consumer. It cannot be replaced.
-func (s *Server) Register(claim Claim) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.ctx.Err(); err != nil {
-		return err
-	}
-	if s.claim != nil {
-		return errors.New("segment report consumer already registered")
-	}
-	if claim == nil {
-		return errors.New("missing segment report consumer")
-	}
-	s.claim = claim
-	return nil
-}
-
 func (s *Server) Close() {
 	if s == nil {
 		return

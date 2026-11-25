@@ -5,20 +5,18 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/diagnosticsection"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessioninspection/query"
 )
 
 type Service struct {
-	history    *history.Service
-	inspection *query.Service
-	sections   diagnosticsection.Contribution
+	history  *history.Service
+	sections diagnosticsection.Contribution
 }
 
-func New(history *history.Service, inspection *query.Service, contributions []diagnosticsection.Contribution) (*Service, error) {
-	if history == nil || inspection == nil {
-		return nil, errors.New("diagnostics requires history and session inspection")
+func New(history *history.Service, contributions []diagnosticsection.Contribution) (*Service, error) {
+	if history == nil {
+		return nil, errors.New("diagnostics requires history")
 	}
-	s := &Service{history: history, inspection: inspection}
+	s := &Service{history: history}
 	for _, c := range contributions {
 		if c.Transport == nil && c.PrepareReads == nil && c.ReadSnapshot == nil {
 			return nil, errors.New("empty diagnostic contribution")

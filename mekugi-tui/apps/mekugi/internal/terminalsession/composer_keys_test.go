@@ -26,7 +26,7 @@ func TestComposerKeyReturnsVersionedIntentAndKeepsSecretsLocal(t *testing.T) {
 	}
 	call := &prompt.Call{ID: "secret", Thread: "main", Questions: []prompt.Question{{IsSecret: true}}}
 	var questions prompt.Questions
-	questions.Add(call, false)
+	questions.Calls = append(questions.Calls, call)
 	questions.Open(call)
 	view.Questions = questions.View("main")
 	view.PromptDraft = conversationmodel.PromptDraftView{Call: "secret", Question: view.Questions.Call.Questions[0].ID}

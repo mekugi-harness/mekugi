@@ -1,9 +1,7 @@
 package sessionapi
 
 import (
-	"context"
 	"encoding/json/jsontext"
-	"slices"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -318,60 +316,3 @@ type NativeMutation struct {
 // that stream and retires the scope independently of execution. Context bounds
 // the individual admission request, including attachment acquisition.
 // Reply is buffered so completing an admitted operation never waits for a client.
-type NativeRequest struct {
-	authority         viewAuthority
-	Attach            bool
-	Attachment        string
-	Startup           string
-	Thread, Workspace string
-	Context           context.Context
-	ViewContext       context.Context
-	Version           sessionpresentation.Version
-	Operation         NativeOperation
-	Prepared          *PreparedInput
-	Reply             chan string
-}
-
-// RemoteHuman reports authority established by the public route, never request JSON.
-func (r NativeRequest) RemoteHuman() bool { return r.authority == remoteHumanView }
-
-func (f NativeFrame) withoutEditors() NativeFrame {
-	f.View.Draft = conversation.DraftView{Available: f.View.Draft.Available, Prediction: f.View.Draft.Prediction}
-	f.View.PromptDraft = conversation.PromptDraftView{
-		Call: f.View.PromptDraft.Call, Question: f.View.PromptDraft.Question, Request: f.View.PromptDraft.Request,
-	}
-	if call := f.View.Questions.Call; call != nil {
-		call = new(*call)
-		call.Questions = slices.Clone(call.Questions)
-		for i := range call.Questions {
-			if call.Questions[i].Secret {
-				call.Questions[i].Answer = nil
-			}
-		}
-		f.View.Questions.Call = call
-	}
-	f.Questions = slices.Clone(f.Questions)
-	for i := range f.Questions {
-		f.Questions[i].Questions = slices.Clone(f.Questions[i].Questions)
-		for j := range f.Questions[i].Questions {
-			if f.Questions[i].Questions[j].Secret {
-				f.Questions[i].Questions[j].Answer = nil
-			}
-		}
-	}
-	return f
-}
-
-func (o NativeOperation) valid() bool {
-	count := 0
-	for _, present := range []bool{o.SaveDraft != nil, o.Completion != nil, o.Preferences != nil, o.Focused != nil, o.Command != nil, o.Composer != nil, o.Menu != nil, o.Resume != nil,
-		o.Panel != nil, o.Display != nil, o.Interrupt != nil, o.StopProcess != nil,
-		o.Side != nil, o.BTW != nil, o.Answers != nil,
-		o.Approval != nil, o.Output != nil, o.DetailOutput != nil, o.Details != nil,
-		o.CloseDetails != nil, o.Notice != nil, o.Receipt != nil, o.Reference != nil, o.Recovery != nil} {
-		if present {
-			count++
-		}
-	}
-	return count == 1
-}

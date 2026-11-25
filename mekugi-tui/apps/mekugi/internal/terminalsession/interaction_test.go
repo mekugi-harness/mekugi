@@ -82,11 +82,9 @@ func TestPrefixResizeRepeatCancellation(t *testing.T) {
 				dispatch(Input{})
 				in.Dialog = nil
 			case "escape":
-				for range in.Send(&state, "\x1b") {
-				}
+				dispatch(Input{Kind: KeyInput, Text: "\x1b"})
 			case "pane":
-				for range in.SelectPane(&state, 0) {
-				}
+				in.selectPane(&state, 0, func(InputEffect) bool { return true })
 			}
 			keys := 0
 			for effect := range in.Dispatch(&state, Input{KeyInput, "\x1b[C"}) {
@@ -138,12 +136,12 @@ func TestOuterReferenceRetainsSelectionOnRejectedEffect(t *testing.T) {
 	selection.Move(7, 0, true)
 	state := Interaction{Selection: &SourceSelection{Selection: selection, Mention: "message"}}
 	in := FrameInput{Main: &main, Shell: &Shell{}}
-	for effect := range in.Send(&state, "r") {
+	in.send(&state, "r", func(effect InputEffect) bool {
 		if effect.Reference == nil || effect.Reference.Text != "retained" {
 			t.Fatalf("wrong reference: %+v", effect)
 		}
-		break // Application rejects admission, consuming the input.
-	}
+		return false // Application rejects admission, consuming the input.
+	})
 	if state.Selection == nil || state.Selection.Text() != "retained" {
 		t.Fatal("rejected Reference lost its frozen source")
 	}
@@ -156,14 +154,15 @@ func TestOuterEscapeUsesPublishedInterruptionAdmission(t *testing.T) {
 	view := activityui.NewView()
 	in := FrameInput{Main: &main, Prompts: &Prompts{}, Transcript: view, Shell: &Shell{}}
 	interrupts := 0
-	for effect := range in.Send(&Interaction{}, "\x1b") {
+	in.send(&Interaction{}, "\x1b", func(effect InputEffect) bool {
 		if effect.Interrupt != nil {
 			interrupts++
 			if effect.Interrupt.Version != v.Version {
 				t.Fatal("interrupt target lost its publication")
 			}
 		}
-	}
+		return true
+	})
 	if interrupts != 1 {
 		t.Fatal("empty visible queues suppressed admitted interruption")
 	}
@@ -182,9 +181,9 @@ func TestOuterEscapeDisplayedSide(t *testing.T) {
 			main.InterruptLocked = kind == "locked"
 			in := FrameInput{Main: &main, Prompts: &Prompts{}, Transcript: activityui.NewView(), Shell: &Shell{}}
 			seen := false
-			for effect := range in.Send(&Interaction{}, "\x1b") {
+			in.send(&Interaction{}, "\x1b", func(effect InputEffect) bool {
 				if effect.Menu != nil {
-					continue
+					return true
 				}
 				seen = true
 				switch kind {
@@ -201,7 +200,8 @@ func TestOuterEscapeDisplayedSide(t *testing.T) {
 						t.Fatal("idle side lost Escape close")
 					}
 				}
-			}
+				return true
+			})
 			if !seen {
 				t.Fatal("Escape produced no effect")
 			}

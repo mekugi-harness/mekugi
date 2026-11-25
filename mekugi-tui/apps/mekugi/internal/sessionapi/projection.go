@@ -1,12 +1,9 @@
 package sessionapi
 
 import (
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	changepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
@@ -118,13 +115,6 @@ type listed struct {
 	Waiting      int    `json:"waiting,omitzero"`
 }
 
-func projectSummary(s Summary) listed {
-	return listed{
-		Replay: s.Replay, Thread: s.Thread, Title: textsanitize.Safe(s.Title, false),
-		Workspace: s.Workspace, Started: millis(s.Started), Status: projectStatus(s.Status), Waiting: s.Waiting,
-	}
-}
-
 type Playback struct {
 	Position  int64   `json:"position"` // Recorded milliseconds.
 	Until     int64   `json:"until"`
@@ -139,17 +129,6 @@ type status struct {
 	Alert     bool   `json:"alert,omitzero"`
 	Running   bool   `json:"running,omitzero"`
 	Completed *int64 `json:"completed,omitzero"`
-}
-
-func projectStatus(label sessionpresentation.Label) status {
-	s := status{Text: label.Text, Alert: label.Alert, Running: label.Running}
-	if label.FailureKnown {
-		s.Failure = label.Failure
-	}
-	if label.CompletionKnown {
-		s.Completed = new(label.Completion.Milliseconds())
-	}
-	return s
 }
 
 type entry struct {
@@ -292,208 +271,7 @@ type agent struct {
 	Items         []string                            `json:"items,omitzero"`
 }
 
-func millis(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.UnixMilli()
-}
-
 // projectEntry carries child reply summaries only when summaries is set.
-func projectEntry(e activitypresentation.Entry, summaries bool, caller, owner string) entry {
-	e = publicEntry(e)
-	p := entry{
-		Seq: e.Seq, Revision: e.Revision, Agent: sessionpresentation.PresentAgent(e.Agent, caller).Name, Kind: e.Kind, Outcome: e.Outcome, Text: e.Text, Observed: millis(e.Observed), Running: e.Running,
-		Assignment: e.Assignment, AssignmentTo: e.AssignmentTo, AssignmentText: e.AssignmentText,
-		Values: projectValues(e.Values, summaries), Spans: e.Spans,
-		Identities: sessionpresentation.PresentEntryAgents(e, caller),
-	}
-	var first activitypresentation.Value
-	if len(e.Values) > 0 {
-		first = e.Values[0]
-	}
-	if traffic := e.Traffic(first, caller, owner); traffic != nil && !traffic.OwnAnswer {
-		p.Traffic = traffic
-	}
-	for i := range p.Values {
-		p.Values[i].From, p.Values[i].To = e.Values[i].Endpoints(caller)
-		if disclosure := p.Values[i].DetailsAvailable; disclosure != nil && disclosure.Owner != "" {
-			disclosure.Owner = sessionpresentation.PresentAgent(disclosure.Owner, caller).Name
-		}
-	}
-	for _, source := range e.Images {
-		p.Images = append(p.Images, imageIdentity(source))
-	}
-	// A compound invocation ends in one result row for its exit and output,
-	// which the terminal labels generically. Under the classified steps the
-	// browser shows only the result, since the steps already show what ran; a
-	// result row with no steps shows the command that ran.
-	command := ""
-	if c := e.Command; c != nil {
-		command = c.Command.Display
-		if command == "" && c.Details != nil {
-			command = c.Details.CommandText
-		}
-		command = textsanitize.Safe(command, false)
-	}
-	for i := len(e.Values) - 1; i >= 0; i-- {
-		if !e.Values[i].BatchExit || e.Values[i].Code != "" {
-			continue
-		}
-		// A step that already shows the whole command takes the result.
-		if j := slices.IndexFunc(p.Values, func(v value) bool { return v.Label == "" && v.Code == command }); command != "" && j >= 0 {
-			own, batch := &p.Values[j], p.Values[i]
-			own.Duration, own.ExitCode, own.Running = batch.Duration, batch.ExitCode, batch.Running
-			own.Tail, own.TailOmitted, own.TailClipped = batch.Tail, batch.TailOmitted, batch.TailClipped
-			if batch.DetailsAvailable != nil {
-				own.DetailsAvailable = batch.DetailsAvailable
-			}
-			p.Values = slices.Delete(p.Values, i, i+1)
-			continue
-		}
-		if slices.ContainsFunc(e.Values, func(v activitypresentation.Value) bool { return !v.BatchExit }) {
-			p.Values[i].Label = ""
-		} else if command != "" {
-			p.Values[i].Label, p.Values[i].Code, p.Values[i].Lang, p.Values[i].Fenced = "", command, "bash", true
-			p.Values[i].SourceOmitted = false
-			original := e.Values[i]
-			original.Code, original.Lang, original.SourceOmitted = command, "bash", false
-			preview, _, _ := strings.Cut(original.PreviewCode(), "\n")
-			p.Values[i].CodePreview = preview
-			p.Values[i].DetailsAvailable = original.Disclosure()
-		}
-	}
-	return p
-}
-
-func humanEntry(agent string) bool { return agent == "You" || strings.HasSuffix(agent, " · user") }
-
-func projectValues(values []activitypresentation.Value, summaries bool) []value {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]value, len(values))
-	for i, v := range values {
-		p := value{
-			DetailsAvailable: v.Disclosure(),
-			Failed:           v.FailedOutcome(),
-			DetailCode:       v.DetailCode,
-			Path:             v.Path, AutoReload: v.AutoReload, Approval: v.Approval,
-			Kind: v.Kind, Verb: v.Verb, BatchExit: v.BatchExit, Label: v.Label, Code: v.Code, Lang: v.Lang, Fenced: v.Fenced, Body: v.Body,
-			Subsumed: v.Subsumed, Effect: v.Effect, Pending: v.Pending, Skipped: v.Skipped, FoldSource: v.TemporarySource(), Duration: v.Duration.Milliseconds(), Thought: v.Thought.Milliseconds(), From: v.From, To: v.To,
-			WaitReason: v.ProgressReason(), WaitTimeout: v.WaitTimeout,
-			EditOutcome: v.EditOutcome, Running: v.Running, Live: v.Live, Tail: v.Tail, TailOmitted: v.TailOmitted, TailClipped: v.TailClipped, SourceOmitted: v.SourceOmitted,
-		}
-		if v.Kind == "attachments" {
-			p.Params = projectValues(v.Members, summaries)
-		}
-		if preview := v.PreviewCode(); preview != v.Code {
-			p.CodePreview, _, _ = strings.Cut(preview, "\n")
-		}
-		if summaries {
-			p.Summary, p.Details = v.ReplySummary, v.ReplyDetails
-		}
-		if v.EditSource != "" {
-			p.Label, p.Sources = v.EditLabel(), strings.Split(v.EditSource, ", ")
-		}
-		if v.ShowWorkdir {
-			p.Workdir = v.Workdir
-		}
-		if v.Exited {
-			p.ExitCode = new(v.ExitCode)
-		}
-		for _, r := range v.Reads {
-			p.Reads = append(p.Reads, read{Path: r.Path, Ranges: r.Ranges})
-		}
-		for _, q := range v.Questions {
-			p.Questions = append(p.Questions, question{Text: q.Text, Answer: q.Answer})
-		}
-		for _, w := range v.WaitTargets {
-			p.Waits = append(p.Waits, wait{Name: w.Name, Status: w.Status})
-		}
-		for _, c := range v.Changes {
-			p.Changes = append(p.Changes, change{Verb: c.Verb, Code: c.Code, Label: c.Label, Added: c.Added, Removed: c.Removed, Note: c.Note, Footer: c.Footer})
-		}
-		if h := v.Hook; h != nil {
-			p.Hook = &hook{Status: h.Status, HasError: h.HasError}
-		}
-		out[i] = p
-	}
-	grouped := activitypresentation.GroupOperations(values)
-	for start := 0; start < len(grouped); {
-		n, shown := activitypresentation.FoldedEditRun(grouped[start:])
-		if hidden := n - shown; hidden > 0 {
-			out[start+shown].HiddenEdits = hidden
-		}
-		start += max(1, n)
-	}
-	return out
-}
 
 // projectRoster follows the terminal roster's facts: display names, the
 // lifecycle state, work timers, usage and the lines each agent edited.
-func projectRoster(p *activitypresentation.Publication, caller string) roster {
-	r := roster{Agents: make([]agent, 0, len(p.Roster))}
-	if n := p.NetCounts; n != nil && n.Added >= 0 && n.Removed >= 0 {
-		r.Added, r.Removed = n.Added, n.Removed
-	}
-	for _, row := range p.Roster {
-		a := row.Agent
-		x := agent{
-			AgentIdentity: sessionpresentation.PresentAgent(a.Name, caller), Thread: a.Thread, Depth: row.Depth,
-			NonAttachable: a.NonAttachable,
-			Turns:         a.Turns, Roundtrips: a.Roundtrips, Skills: a.Skills,
-		}
-		// Main's role is implied by its name.
-		if x.Name != "/root" {
-			x.Role = textsanitize.Safe(a.Role, false)
-		}
-		x.State = a.Status
-		switch x.State {
-		case "responding":
-			x.State = "working"
-		case "answered":
-			x.State = "done"
-		case "", "Unavailable":
-			x.State = "idle"
-		}
-		if x.State == "waiting" && a.Wait != nil {
-			x.Wait = new(projectValues([]activitypresentation.Value{*a.Wait}, false)[0])
-			x.Identities = sessionpresentation.PresentEntryAgents(activitypresentation.Entry{Values: []activitypresentation.Value{*a.Wait}}, caller)
-		}
-		if len(a.Summary) > 0 {
-			summaries := publicEntries(a.Summary)
-			latest := summaries[len(summaries)-1]
-			x.Activity = &entry{Kind: latest.Kind, Observed: millis(latest.Observed)}
-			x.Activity.Values = projectValues(activitypresentation.CompactRoster(summaries, caller), false)
-			for i := range x.Activity.Values {
-				x.Activity.Values[i].DetailsAvailable = nil
-			}
-			for _, entry := range summaries {
-				x.Identities = append(x.Identities, sessionpresentation.PresentEntryAgents(entry, caller)...)
-			}
-
-		}
-		if !a.Started.IsZero() && a.WorkKnown {
-			x.Work, x.WorkSince = new(a.WorkElapsed.Milliseconds()), millis(a.WorkSince)
-			x.LastResponse = millis(a.LastResponse)
-		}
-		if a.CostKnown && a.Turns > 0 {
-			x.Cost, x.CostPartial = new(a.Cost), a.CostPartial
-		}
-		if a.TokensKnown || a.InputTokens > 0 || a.OutputTokens > 0 {
-			x.InputTokens, x.OutputTokens, x.UsagePartial = new(a.InputTokens), new(a.OutputTokens), a.UsagePartial
-		}
-		if a.ContextKnown {
-			x.Context, x.Window = new(a.ContextTokens), a.ContextWindow
-		}
-		if lines, ok := p.LineCounts[a.Name]; ok && lines.Added >= 0 && lines.Removed >= 0 {
-			x.Added, x.Removed = new(lines.Added), new(lines.Removed)
-		}
-		for _, item := range a.StatusItems {
-			x.Items = append(x.Items, item.Text)
-		}
-		r.Agents = append(r.Agents, x)
-	}
-	return r
-}

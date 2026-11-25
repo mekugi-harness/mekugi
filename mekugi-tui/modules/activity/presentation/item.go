@@ -336,21 +336,6 @@ func (entry ItemContent) Values() (blocks []Value) {
 	return []Value{{Kind: "text", Body: source}}
 }
 
-// Source: apps/mekugi/internal/router/live_activity_blocks.go:184:242@35fd8de4.
-// RetainBatchResult preserves the outcome and output across receipt reparses,
-// replacing a synthesized timing row rather than duplicating the invocation.
-func RetainBatchResult(blocks []Value, batch Value) []Value {
-	if at := slices.IndexFunc(blocks, func(b Value) bool { return b.BatchExit }); at >= 0 {
-		if blocks[at].Code != "" {
-			batch.Code, batch.Lang, batch.Fenced, batch.Label = blocks[at].Code, blocks[at].Lang, blocks[at].Fenced, blocks[at].Label
-			batch.SourceOmitted = blocks[at].SourceOmitted
-		}
-		blocks[at] = batch
-		return blocks
-	}
-	return append(blocks, batch)
-}
-
 // ApplyApproval puts a compound invocation's state on its aggregate row.
 func ApplyApproval(blocks []Value, outcome string) {
 	if len(blocks) == 0 {
@@ -364,50 +349,4 @@ func ApplyApproval(blocks []Value, outcome string) {
 		}
 	}
 	blocks[at].Approval = outcome
-}
-
-// CommandExit keeps a combined shell failure separate from classified
-// operations: without a complete segment report none owns the batch's exit.
-func CommandExit(blocks []Value, source string, code int, tail []string, omitted int, clipped bool) []Value {
-	last, count, batch := -1, 0, -1
-	var output int
-	for i, block := range blocks {
-		if block.Effect {
-			continue
-		}
-		if block.UserShell {
-			blocks[i].ExitCode, blocks[i].Exited = code, true
-			blocks[i].Tail, blocks[i].TailOmitted, blocks[i].TailClipped = tail, omitted, clipped
-			return blocks
-		}
-		output = cmp.Or(output, block.Output)
-		if block.Segment {
-			return blocks // Confirmed segment outcomes already own their statuses.
-		}
-		if block.BatchExit {
-			batch = i
-		} else if block.Kind == "op" || block.Kind == "reads" {
-			last, count = i, count+1
-		}
-	}
-	if last < 0 && batch < 0 {
-		return blocks
-	}
-	if count > 1 || batch >= 0 {
-		if batch < 0 {
-			batch = len(blocks)
-			blocks = append(blocks, Value{
-				Kind: "op", Verb: "Run", Label: "combined output", BatchExit: true,
-				SourceOmitted: source != "", Workdir: blocks[last].Workdir,
-			})
-		}
-		// Any streamed tail was combined too; move it to the batch result.
-		for i := range blocks {
-			blocks[i].Tail, blocks[i].TailOmitted, blocks[i].TailClipped, blocks[i].Output = nil, 0, false, 0
-		}
-		last = batch
-	}
-	blocks[last].ExitCode, blocks[last].Exited = code, true
-	blocks[last].Tail, blocks[last].TailOmitted, blocks[last].TailClipped, blocks[last].Output = tail, omitted, clipped, output
-	return blocks
 }

@@ -31,16 +31,6 @@ type FeatureMetrics struct {
 	Unavailable bool
 }
 
-// NewFeatureMetrics projects native launch counts over the admitted threads.
-// Failed native reads are not measured zeros.
-func NewFeatureMetrics(name string, use FeatureSnapshot) *FeatureMetrics {
-	metrics := FeatureMetrics{Thread: name, Unavailable: use.Err != nil}
-	metrics.Self.FeatureUse, metrics.Descendants.FeatureUse = use.Self, use.Descendants
-	descendants := use.Threads
-	metrics.Agents = len(descendants)
-	return &metrics
-}
-
 // featureFields compares Self with Descendants in one table per feature family.
 // Each family's first row is its total; later rows count subsets or failed attempts.
 func featureFields(f *FeatureMetrics) (fields []StatusField) {

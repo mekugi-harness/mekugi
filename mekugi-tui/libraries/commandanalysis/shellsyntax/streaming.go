@@ -1,7 +1,6 @@
 package shellsyntax
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -68,28 +67,6 @@ func Sequence(statements []*syntax.Stmt) []*syntax.Stmt {
 	return sequence
 }
 
-// LiteralCd returns the directory a literal `cd` selects for later
-// steps. Home-relative, previous-directory, and computed targets do not match.
-func LiteralCd(stmt *syntax.Stmt, directory string) (string, bool) {
-	call, ok := stmt.Cmd.(*syntax.CallExpr)
-	if !ok || stmt.Background || stmt.Coprocess || stmt.Disown || stmt.Negated ||
-		len(stmt.Redirs) != 0 || len(call.Assigns) != 0 || len(call.Args) != 2 {
-		return "", false
-	}
-	name, literal := Literal(call.Args[0])
-	target, targetLiteral := Literal(call.Args[1])
-	if !literal || name != "cd" || !targetLiteral || target == "" || target == "-" || strings.HasPrefix(target, "~") {
-		return "", false
-	}
-	if !filepath.IsAbs(target) {
-		if !filepath.IsAbs(directory) {
-			return "", false
-		}
-		target = filepath.Join(directory, target)
-	}
-	return filepath.Clean(target), true
-}
-
 var streamingHeredocOpener = regexp.MustCompile(`<<(-?)[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))`)
 
 func completeStreamingHeredoc(input string) (string, bool) {
@@ -125,11 +102,4 @@ func completeStreamingHeredoc(input string) (string, bool) {
 	// Always add a synthetic newline. The heredoc reader removes exactly
 	// this newline, preserving a real received newline at the source tip.
 	return input + "\n" + delimiter + "\n", true
-}
-
-func FilePath(directory, path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return directory + string(os.PathSeparator) + path
 }

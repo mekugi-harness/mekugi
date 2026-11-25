@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -36,8 +35,7 @@ func TestUISnapshotOperationOutcomes(t *testing.T) {
 
 	// MCP calls: completed, failed and running remain three distinct rows.
 	mcp := func(seq uint64, status string, running bool) presentation.ItemContent {
-		item := observation.Item{Type: "mcpToolCall", Server: "docs", Tool: "search", Status: status}
-		return presentation.ItemContent{Seq: seq, Kind: "tool", Text: presentation.MCPText(item),
+		return presentation.ItemContent{Seq: seq, Kind: "tool", Text: "MCP `docs` · `search`",
 			Command: presentation.Command{Source: seq, Running: running}, Details: &presentation.ItemDetails{Status: status}}
 	}
 	var calls []Block
