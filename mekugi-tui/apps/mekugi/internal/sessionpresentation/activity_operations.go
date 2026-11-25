@@ -9,7 +9,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/segments"
 )
@@ -42,10 +41,8 @@ func CommandReport(invocation *activitypresentation.Invocation, track segments.R
 	canonical := invocation.Snapshot()
 	for index, observed := range track.Segments {
 		analysis := frontends.ShellDisplaySource(observed.Source)
-		if len(track.Segments) == 1 && canonical.Display != "" && strings.TrimRight(canonical.Display, "\r\n") != strings.TrimRight(analysis, "\r\n") {
-			if rest, _, ok := shellsyntax.StripLeadingCd(analysis, directory); ok && strings.TrimRight(rest, "\r\n") == strings.TrimRight(canonical.Display, "\r\n") {
-				analysis = rest
-			}
+		if len(track.Segments) == 1 {
+			analysis = SingleSegmentDisplay(observed.Source, canonical.Display, directory)
 		}
 		text := invocation.SegmentText(index)
 		if text == "" {

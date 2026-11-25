@@ -17,14 +17,6 @@ import (
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
 
-func effectiveCommand(command, baseDir string) (display, dir string, stripped bool) {
-	display = frontends.ShellDisplaySource(DisplayCommand(command))
-	if rest, target, ok := shellsyntax.StripLeadingCd(display, baseDir); ok {
-		return rest, target, true
-	}
-	return display, baseDir, false
-}
-
 // cdFailed reports whether a command's leading output line is an outer-shell
 // diagnostic for the leading cd target itself (including zero-exit semicolon
 // or newline lists such as "cd missing; pwd"), without matching child script
@@ -38,11 +30,9 @@ func cdFailed(item observation.Item, display string) bool {
 		return false
 	}
 	for line := range strings.SplitSeq(*item.AggregatedOutput, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+		if line = strings.TrimSpace(line); line != "" {
+			return isOuterShellCdError(line, operand)
 		}
-		return isOuterShellCdError(line, operand)
 	}
 	return false
 }
@@ -55,32 +45,42 @@ func isOuterShellCdError(line, operand string) bool {
 	if !ok {
 		return false
 	}
-	shell := shellsyntax.InterpreterIdentity(prefix)
-	switch shell {
+	switch shellsyntax.InterpreterIdentity(prefix) {
 	case "bash", "sh", "dash", "zsh", "ash", "ksh":
 	default:
 		return false
 	}
-	if _, after, found := strings.Cut(rest, ": cd: "); found {
-		return strings.Contains(after, operand)
-	}
-	if after, found := strings.CutPrefix(rest, " cd: "); found {
-		return strings.Contains(after, operand)
-	}
-	if after, found := strings.CutPrefix(rest, "cd:"); found {
-		return strings.Contains(after, operand)
+	for _, marker := range []string{": cd: ", " cd: ", "cd:"} {
+		if _, after, found := strings.Cut(rest, marker); found {
+			return strings.Contains(after, operand)
+		}
 	}
 	return false
 }
 
 func effectiveItemCommand(item observation.Item) (display, dir string, stripped bool) {
 	display = frontends.ShellDisplaySource(DisplayCommand(item.Command))
-	if cdFailed(item, display) {
-		return display, item.Cwd, false
+	if !cdFailed(item, display) {
+		if rest, target, ok := shellsyntax.StripLeadingCd(display, item.Cwd); ok {
+			return rest, target, true
+		}
 	}
-	return effectiveCommand(item.Command, item.Cwd)
+	return display, item.Cwd, false
 }
 
+// SingleSegmentDisplay applies a command's leading-cd omission to a single
+// tracked segment source when it matches expectedDisplay (ignoring trailing
+// newlines trimmed by shellinstrumentation.Split).
+func SingleSegmentDisplay(source, expectedDisplay, dir string) string {
+	display := frontends.ShellDisplaySource(source)
+	trimmedExpected := strings.TrimRight(expectedDisplay, "\r\n")
+	if trimmedExpected != "" && trimmedExpected != strings.TrimRight(display, "\r\n") {
+		if rest, _, ok := shellsyntax.StripLeadingCd(display, dir); ok && strings.TrimRight(rest, "\r\n") == trimmedExpected {
+			return rest
+		}
+	}
+	return display
+}
 // CommandDisplaySource returns the display shell source for a command item,
 // omitting a safe leading literal cd <dir> && prefix when its directory can be
 // resolved.

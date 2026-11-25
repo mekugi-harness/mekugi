@@ -22,7 +22,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
 	commandsegments "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/segments"
@@ -140,10 +139,8 @@ func restoreCommandSegments(parent context.Context, retained changes.Scope, segm
 	cwd := cmp.Or(entry.Native.CommandCwd, sessionpresentation.CommandDirectory(item.Observation(), workspace))
 	for _, part := range record.Parts {
 		display := frontends.ShellDisplaySource(part.Source)
-		if len(record.Parts) == 1 && entry.Native.CommandDisplay != "" && strings.TrimRight(entry.Native.CommandDisplay, "\r\n") != strings.TrimRight(display, "\r\n") {
-			if rest, _, ok := shellsyntax.StripLeadingCd(display, item.Cwd); ok && strings.TrimRight(rest, "\r\n") == strings.TrimRight(entry.Native.CommandDisplay, "\r\n") {
-				display = rest
-			}
+		if len(record.Parts) == 1 {
+			display = sessionpresentation.SingleSegmentDisplay(part.Source, entry.Native.CommandDisplay, item.Cwd)
 		}
 		segment := sessionpresentation.ActivitySegment{Timing: segmenttransport.Timing(part.Timing), Source: part.Source, Text: (activitypresentation.CommandSource{Script: part.Source, Display: display, Directory: cwd}).SegmentText(), Skipped: part.Skipped, Exit: part.Exit}
 		if separate && !part.Skipped {

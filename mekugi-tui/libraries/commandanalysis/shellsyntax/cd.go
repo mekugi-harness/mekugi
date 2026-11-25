@@ -16,6 +16,28 @@ import (
 // than --, redirects, inline env assignments, shebangs, and commands that
 // change directory again later in the remaining statements are left intact.
 func StripLeadingCd(script, directory string) (rest, target string, ok bool) {
+	operand, rest, ok := parseLeadingCd(script)
+	if !ok {
+		return "", "", false
+	}
+	target = operand
+	if !filepath.IsAbs(target) {
+		if !filepath.IsAbs(directory) {
+			return "", "", false
+		}
+		target = filepath.Join(directory, target)
+	}
+	return rest, filepath.Clean(target), true
+}
+
+// LeadingCdOperand returns the raw literal directory operand of a leading cd
+// statement without resolving it against a base directory.
+func LeadingCdOperand(script string) (string, bool) {
+	operand, _, ok := parseLeadingCd(script)
+	return operand, ok
+}
+
+func parseLeadingCd(script string) (operand, rest string, ok bool) {
 	if strings.TrimSpace(script) == "" || strings.HasPrefix(strings.TrimLeft(script, " \t"), "#!") {
 		return "", "", false
 	}
@@ -23,16 +45,14 @@ func StripLeadingCd(script, directory string) (rest, target string, ok bool) {
 	if err != nil || len(program.Stmts) == 0 {
 		return "", "", false
 	}
-	var steps []*syntax.Stmt
+	steps := program.Stmts
 	if len(program.Stmts) == 1 {
 		steps, ok = andChain(program.Stmts[0])
 		if !ok || len(steps) < 2 {
 			return "", "", false
 		}
-	} else {
-		steps = program.Stmts
 	}
-	target, ok = leadingCdTarget(steps[0], directory)
+	operand, ok = leadingCdOperand(steps[0])
 	if !ok {
 		return "", "", false
 	}
@@ -49,26 +69,17 @@ func StripLeadingCd(script, directory string) (rest, target string, ok bool) {
 	if strings.TrimSpace(rest) == "" {
 		return "", "", false
 	}
-	return rest, target, true
+	return operand, rest, true
 }
 
-// andChain flattens a pure foreground a && b && ... statement without
-// surrounding redirects, negation, or background modifiers.
 func andChain(stmt *syntax.Stmt) ([]*syntax.Stmt, bool) {
-	if stmt == nil || stmt.Background || stmt.Coprocess || stmt.Disown || stmt.Negated || len(stmt.Redirs) != 0 {
-		return nil, false
-	}
-	binary, ok := stmt.Cmd.(*syntax.BinaryCmd)
-	if !ok || binary.Op != syntax.AndStmt {
-		return nil, false
-	}
 	var steps []*syntax.Stmt
 	var collect func(*syntax.Stmt) bool
 	collect = func(node *syntax.Stmt) bool {
 		if node == nil {
 			return false
 		}
-		if bin, isBin := node.Cmd.(*syntax.BinaryCmd); isBin && bin.Op == syntax.AndStmt {
+		if bin, ok := node.Cmd.(*syntax.BinaryCmd); ok && bin.Op == syntax.AndStmt {
 			if node.Background || node.Coprocess || node.Disown || node.Negated || len(node.Redirs) != 0 {
 				return false
 			}
@@ -77,45 +88,10 @@ func andChain(stmt *syntax.Stmt) ([]*syntax.Stmt, bool) {
 		steps = append(steps, node)
 		return true
 	}
-	if !collect(stmt) {
+	if !collect(stmt) || len(steps) < 2 {
 		return nil, false
 	}
 	return steps, true
-}
-
-func leadingCdTarget(stmt *syntax.Stmt, directory string) (string, bool) {
-	target, ok := leadingCdOperand(stmt)
-	if !ok {
-		return "", false
-	}
-	if !filepath.IsAbs(target) {
-		if !filepath.IsAbs(directory) {
-			return "", false
-		}
-		target = filepath.Join(directory, target)
-	}
-	return filepath.Clean(target), true
-}
-
-// LeadingCdOperand returns the raw literal directory operand of a leading cd
-// statement without resolving it against a base directory.
-func LeadingCdOperand(script string) (string, bool) {
-	if strings.TrimSpace(script) == "" || strings.HasPrefix(strings.TrimLeft(script, " \t"), "#!") {
-		return "", false
-	}
-	program, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(script), "")
-	if err != nil || len(program.Stmts) == 0 {
-		return "", false
-	}
-	first := program.Stmts[0]
-	if len(program.Stmts) == 1 {
-		steps, ok := andChain(first)
-		if !ok || len(steps) < 2 {
-			return "", false
-		}
-		first = steps[0]
-	}
-	return leadingCdOperand(first)
 }
 
 func leadingCdOperand(stmt *syntax.Stmt) (string, bool) {
@@ -124,26 +100,23 @@ func leadingCdOperand(stmt *syntax.Stmt) (string, bool) {
 		len(stmt.Redirs) != 0 || len(call.Assigns) != 0 {
 		return "", false
 	}
-	if len(call.Args) != 2 && len(call.Args) != 3 {
+	if len(call.Args) < 2 || len(call.Args) > 3 {
 		return "", false
 	}
-	name, literal := Literal(call.Args[0])
-	if !literal || name != "cd" {
+	if name, ok := Literal(call.Args[0]); !ok || name != "cd" {
 		return "", false
 	}
-	var target string
-	var targetLiteral bool
-	if len(call.Args) == 2 {
-		target, targetLiteral = Literal(call.Args[1])
-		if !targetLiteral || target == "" || strings.HasPrefix(target, "-") || strings.HasPrefix(target, "~") {
+	arg := call.Args[1]
+	allowDash := false
+	if len(call.Args) == 3 {
+		if sep, ok := Literal(call.Args[1]); !ok || sep != "--" {
 			return "", false
 		}
-	} else {
-		sep, sepLiteral := Literal(call.Args[1])
-		target, targetLiteral = Literal(call.Args[2])
-		if !sepLiteral || sep != "--" || !targetLiteral || target == "" || strings.HasPrefix(target, "~") {
-			return "", false
-		}
+		arg, allowDash = call.Args[2], true
+	}
+	target, ok := Literal(arg)
+	if !ok || target == "" || strings.HasPrefix(target, "~") || !allowDash && strings.HasPrefix(target, "-") {
+		return "", false
 	}
 	return target, true
 }

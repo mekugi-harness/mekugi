@@ -2,13 +2,11 @@ package sessionpresentation
 
 import (
 	"cmp"
-	"strings"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
@@ -59,10 +57,8 @@ func CommandPresentation(entry ActivityEntry) activitypresentation.Command {
 			break
 		}
 		segmentDisplay := frontends.ShellDisplaySource(segment.Source)
-		if len(n.Segments) == 1 && c.Display != "" && strings.TrimRight(c.Display, "\r\n") != strings.TrimRight(segmentDisplay, "\r\n") {
-			if rest, _, ok := shellsyntax.StripLeadingCd(segmentDisplay, cmp.Or(n.CommandCwd, c.Directory)); ok && strings.TrimRight(rest, "\r\n") == strings.TrimRight(c.Display, "\r\n") {
-				segmentDisplay = rest
-			}
+		if len(n.Segments) == 1 {
+			segmentDisplay = SingleSegmentDisplay(segment.Source, c.Display, cmp.Or(n.CommandCwd, c.Directory))
 		}
 		value := activitypresentation.CommandSegment{
 			Source: segment.Source, Display: segmentDisplay, Text: segment.Text, Running: segment.Running, Skipped: segment.Skipped, Pending: segment.Pending, ExitCode: segment.Exit,
