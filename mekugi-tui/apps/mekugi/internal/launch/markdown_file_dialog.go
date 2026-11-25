@@ -23,6 +23,7 @@ import (
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/sourcekind"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/sourceparse"
@@ -32,17 +33,24 @@ import (
 
 // markdownFileTarget resolves local destinations lexically. Relative paths
 // require the selected workspace metadata.
-func markdownFileTarget(workspace, target string) (path string, ok bool) {
+func markdownFileTarget(workspace, target string) (selection markdownFileSelection, ok bool) {
 	target = strings.TrimPrefix(target, "@")
-	path = target
+	path := target
 	if strings.HasPrefix(target, "file:") {
 		parsed, err := url.Parse(target)
-		if err != nil || parsed.Host != "" && parsed.Host != "localhost" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		if err != nil || parsed.Host != "" && parsed.Host != "localhost" || parsed.RawQuery != "" || parsed.Opaque != "" {
 			return
 		}
 		path = parsed.Path
+		if parsed.Fragment != "" {
+			first, last, valid := attachments.ParseLineSpan(parsed.Fragment)
+			if !valid {
+				return
+			}
+			selection.location, selection.first, selection.last = "#"+parsed.Fragment, first, last
+		}
 	} else {
-		candidate, _, _, _ := markdownFileLocation(target)
+		candidate, _, _, _ := markdownLinkLocation(target)
 		if !filepath.IsAbs(candidate) && (candidate == "" || strings.HasPrefix(candidate, "#") || strings.HasPrefix(candidate, "?") || strings.Contains(strings.SplitN(candidate, "/", 2)[0], ":")) {
 			return
 		}
@@ -56,7 +64,27 @@ func markdownFileTarget(workspace, target string) (path string, ok bool) {
 		}
 		path = filepath.Join(workspace, path)
 	}
-	return path, true
+	selection.path = path
+	return selection, true
+}
+
+type markdownFileSelection struct {
+	path, location string
+	first, last    int
+}
+
+// Raw destinations can be literal filenames. Strip a location only if the
+// literal name is absent. An explicit file URL fragment is already separate.
+func (s markdownFileSelection) stat() (markdownFileSelection, os.FileInfo, error) {
+	info, err := os.Stat(s.path)
+	if s.first == 0 && os.IsNotExist(err) {
+		base, location, first, last := markdownLinkLocation(s.path)
+		if first > 0 {
+			s = markdownFileSelection{path: base, location: location, first: first, last: last}
+			info, err = os.Stat(base)
+		}
+	}
+	return s, info, err
 }
 
 // Capture only detached workspace metadata for lexical rendering admission.
@@ -87,31 +115,30 @@ type detailFiles struct {
 }
 
 type markdownFileResult struct {
-	summary      bool
-	id           sessionpresentation.DetailID
-	workspace    string
-	path, source string
-	location     string
-	first, last  int
-	err          error
-	classified   bool
-	copyPath     bool
-	image        bool
+	markdownFileSelection
+	summary    bool
+	id         sessionpresentation.DetailID
+	workspace  string
+	source     string
+	err        error
+	classified bool
+	copyPath   bool
+	image      bool
 }
 
 // openMarkdownFile admits a selection before starting one bounded physical read.
 // Its loading dialog remains hidden until the path is known to be regular.
 // Retiring a dialog cannot release the slot of a still-blocked filesystem call.
 func (u *detailFiles) openMarkdownFile(session *sessionpresentation.Attachment, model *sessionpresentation.Model, workspace string, source *sessionpresentation.ActivitySource, target string) bool {
-	path, ok := markdownFileTarget(workspace, target)
+	selection, ok := markdownFileTarget(workspace, target)
 	if !ok {
 		return false
 	}
-	display := pathdisplay.ForWorkspace(workspace, path)
+	display := pathdisplay.ForWorkspace(workspace, selection.path)
 	u.openDetailSelection(session, model.View().Version, source, activitypresentation.DetailPages([]activitypresentation.Value{{Kind: "reads", Verb: "Read", Path: display, Body: "Loading…"}}), false)
 	u.pendingFile = true
 	u.file = &activitypresentation.DetailFile{Path: display}
-	result := markdownFileResult{id: u.id, workspace: workspace, path: path}
+	result := markdownFileResult{id: u.id, workspace: workspace, markdownFileSelection: selection}
 	if u.fileReadSlot == nil {
 		u.fileReadSlot = make(chan struct{}, 1)
 	}
@@ -133,14 +160,8 @@ func (u *detailFiles) openMarkdownFile(session *sessionpresentation.Attachment, 
 	u.fileReads = results
 	images := !u.textOnly
 	go func(slot chan struct{}) {
-		info, err := os.Stat(path)
-		if os.IsNotExist(err) {
-			base, location, first, last := markdownFileLocation(path)
-			if first > 0 {
-				result.path, result.location, result.first, result.last = base, location, first, last
-				info, err = os.Stat(base)
-			}
-		}
+		resolved, info, err := selection.stat()
+		result.markdownFileSelection = resolved
 		if err == nil {
 			err = ctx.Err()
 		}
@@ -228,9 +249,13 @@ func (u *detailFiles) finishMarkdownFile(session *sessionpresentation.Attachment
 	return true
 }
 
-// A location is optional. Opening tries the exact name before removing it,
-// preserving files whose names end in a colon and digits.
-func markdownFileLocation(path string) (base, location string, first, last int) {
+// Accept the canonical fragment and legacy colon suffixes.
+func markdownLinkLocation(path string) (base, location string, first, last int) {
+	if hash := strings.LastIndexByte(path, '#'); hash >= 0 {
+		if first, last, ok := attachments.ParseLineSpan(path[hash+1:]); ok {
+			return path[:hash], path[hash:], first, last
+		}
+	}
 	colon := strings.LastIndexByte(path, ':')
 	if colon < 0 {
 		return path, "", 0, 0

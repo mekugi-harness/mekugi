@@ -606,6 +606,7 @@ func testWebUISemanticBrowser(t *testing.T, lane webUISemanticLane) {
 	waitAction(`Array.from(document.querySelectorAll('.prose a')).find(a => a.textContent === 'Workspace notes')`)
 	run("find", "role", "link", "click", "--name", "Workspace notes", "--exact")
 	run("wait", "--text", "Browser file details fixture")
+	run("wait", "--text", "notes.md#L3")
 	run("wait", "--fn", `Array.from(document.querySelectorAll('[aria-labelledby="details-heading"] pre')).every(pre => pre.querySelector('span[style]') && pre.textContent.includes('**Highlighted file content**'))`)
 	button("Close details")
 	run("wait", "--fn", `!document.querySelector('#details-heading')`)
@@ -630,7 +631,7 @@ func testWebUISemanticBrowser(t *testing.T, lane webUISemanticLane) {
 				run("screenshot", filepath.Join(artifacts, "file-details-"+size.name+"-"+theme+".png"))
 			}
 			closeDetailsPanel()
-			waitAction(`document.querySelector('a[data-run-link$=":130-132"]')`)
+			waitAction(`document.querySelector('a[data-run-link$="#L130-L132"]')`)
 			run("find", "role", "link", "click", "--name", "Run output", "--exact")
 			run("wait", "--fn", `(() => {
 				const pane = document.querySelector('[aria-labelledby="details-heading"] > .overflow-y-auto');
@@ -644,7 +645,7 @@ func testWebUISemanticBrowser(t *testing.T, lane webUISemanticLane) {
 		}
 	}
 	viewport("1280", "720")
-	waitAction(`document.querySelector('a[data-run-link$=":900"]')`)
+	waitAction(`document.querySelector('a[data-run-link$="#L900"]')`)
 	run("find", "role", "link", "click", "--name", "Unavailable run line", "--exact")
 	run("wait", "--text", "The referenced output lines are unavailable.")
 	run("wait", "--fn", `(() => {
@@ -1416,8 +1417,8 @@ func serveWebUISemanticHost(t *testing.T) {
 			history := binding.HistoryTurn{ID: id, Status: "completed", Items: []binding.ThreadItem{{ID: fmt.Sprintf("user-%d", inputs), Type: "userMessage", Content: content}, {ID: fmt.Sprintf("answer-%d", inputs), Type: "agentMessage", Text: answer}}}
 			if inputs == 1 && key == "browser first input" {
 				const runID = "exec-00000000-0000-4000-8000-000000000042"
-				history.Items[1].Text += "\n\nAutomatic https://example.com/auto and [Website](https://example.com/markdown). [Workspace notes](notes.md)" +
-					"\n\n[Run output](mekugi:run/" + runID + ":130-132) [Unavailable run line](mekugi:run/" + runID + ":900)"
+				history.Items[1].Text += "\n\nAutomatic https://example.com/auto and [Website](https://example.com/markdown). [Workspace notes](notes.md#L3)" +
+					"\n\n[Run output](mekugi:run/" + runID + "#L130-L132) [Unavailable run line](mekugi:run/" + runID + "#L900)"
 				var output strings.Builder
 				for line := 1; line <= 180; line++ {
 					fmt.Fprintf(&output, "Browser run line %d\n", line)

@@ -19,7 +19,7 @@ func commandRunTarget(target string) (id string, first, last int, ok bool) {
 	if !found {
 		return "", 0, 0, false
 	}
-	id, _, first, last = markdownFileLocation(ref)
+	id, _, first, last = markdownLinkLocation(ref)
 	return id, first, last, commandRunID.MatchString(id)
 }
 

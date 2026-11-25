@@ -51,5 +51,8 @@ this file does not trigger expansion): files (`\@path`, `\@path#L2-L4`), skills 
 `\$skill/references/file.md`), and composed captured changes (`\mchanges:blue1,blue3..7`). Quoted
 paths preserve spaces and trailing punctuation; `AGENTS.md` is always excluded (Codex supplies it).
 
+Markdown links to files and command runs use the same line and range suffixes:
+`#L2` and `#L2-L4`. The attachment marker `@` is not needed in a link destination.
+
 Preload and reload take `{"sources":[...]}` with string entries only, for example
 `{"sources":["\u0040file#L2-L4","\u0024skill-name","\u006dchanges:blue1,blue3..7,birch2"]}`.

@@ -164,7 +164,8 @@ Redirected sessions keep Codex input/output. See
 
 Click output/errors/excerpts for retained content; `Ctrl-B !` opens the newest error.
 Command output links in replies open the output sheet. Links to retained lines
-jump to those lines.
+jump to those lines. Local file and command output links use `#L12` for one
+line or `#L12-L18` for an inclusive range. Older colon-suffixed links still work.
 With `mekugi-exec`, supported Bash and Linux dash-backed sh command lists show each
 command's streamed output, exit status and timing; missing boundaries are labeled
 combined. Supported single commands and pipelines, including Bash timed commands,

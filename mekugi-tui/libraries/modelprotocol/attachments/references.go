@@ -102,19 +102,28 @@ func referenceRanges(suffix string) ([][2]int, error) {
 	}
 	var ranges [][2]int
 	for span := range strings.SplitSeq(suffix, ",") {
-		span, ok := strings.CutPrefix(span, "L")
-		first, last, pair := strings.Cut(span, "-L")
-		if !pair {
-			last = first
-		}
-		start, startErr := strconv.Atoi(first)
-		end, endErr := strconv.Atoi(last)
-		if !ok || startErr != nil || endErr != nil || start < 1 || end < start || strconv.Itoa(start) != first || strconv.Itoa(end) != last {
+		start, end, ok := ParseLineSpan(span)
+		if !ok {
 			return nil, fmt.Errorf("invalid line ranges")
 		}
 		ranges = append(ranges, [2]int{start, end})
 	}
 	return ranges, nil
+}
+
+// ParseLineSpan recognizes one inclusive, 1-based span: L2 or L2-L4.
+func ParseLineSpan(span string) (start, end int, ok bool) {
+	span, ok = strings.CutPrefix(span, "L")
+	first, last, pair := strings.Cut(span, "-L")
+	if !pair {
+		last = first
+	}
+	start, startErr := strconv.Atoi(first)
+	end, endErr := strconv.Atoi(last)
+	if !ok || startErr != nil || endErr != nil || start < 1 || end < start || strconv.Itoa(start) != first || strconv.Itoa(end) != last {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 // The retained-change owner validates actual handle words and chain identity.

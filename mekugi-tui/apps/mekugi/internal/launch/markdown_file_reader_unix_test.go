@@ -29,7 +29,7 @@ func TestReadMarkdownFileRejectsReplacedDevice(t *testing.T) {
 	if err := os.Symlink(os.DevNull, path); err != nil {
 		t.Fatal(err)
 	}
-	data, _, err := readMarkdownFile(t.Context(), selected, true)
+	data, _, err := readMarkdownFile(t.Context(), selected.path, true)
 	if err == nil || !strings.Contains(err.Error(), "regular file") || len(data) != 0 {
 		t.Fatalf("replacement device was not rejected: data=%q err=%v", data, err)
 	}

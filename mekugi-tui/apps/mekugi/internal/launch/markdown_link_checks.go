@@ -2,7 +2,6 @@ package launch
 
 import (
 	"context"
-	"os"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 )
@@ -52,7 +51,7 @@ func (c *markdownLinkChecks) request(ctx context.Context, scope terminalsession.
 		if len(c.pending) == cap(c.results) || ctx.Err() != nil {
 			return // A completion repaints and requests remaining visible targets.
 		}
-		path, ok := markdownFileTarget(scope.Workspace, target)
+		selection, ok := markdownFileTarget(scope.Workspace, target)
 		if !ok {
 			c.finish(markdownLinkResult{key: key})
 			continue
@@ -60,12 +59,7 @@ func (c *markdownLinkChecks) request(ctx context.Context, scope terminalsession.
 		c.pending[key] = true
 		results := c.results
 		go func() {
-			_, err := os.Stat(path)
-			if os.IsNotExist(err) {
-				if base, _, first, _ := markdownFileLocation(path); first > 0 {
-					_, err = os.Stat(base)
-				}
-			}
+			_, _, err := selection.stat()
 			select {
 			case results <- markdownLinkResult{key, err == nil}:
 			case <-ctx.Done():

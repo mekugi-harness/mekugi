@@ -307,7 +307,7 @@ func TestCommandRunLinkOpensCombinedOutput(t *testing.T) {
 	u.startSession("main", "/workspace")
 	firstID := "exec-11111111-1111-4111-8111-111111111111"
 	secondID := "exec-22222222-2222-4222-8222-222222222222"
-	rangedLink := "mekugi:run/" + secondID + ":2-3"
+	rangedLink := "mekugi:run/" + secondID + "#L2-L3"
 	outputs := u.activity.Outputs(u.attached.session.Scope())
 	first, second, segment := outputs.New(), outputs.New(), outputs.New()
 	first.Finish(new("other run\n"), new(0))
@@ -388,7 +388,15 @@ func TestCommandRunLinkOpensCombinedOutput(t *testing.T) {
 		t.Fatalf("incorrect terminal output highlight: %q", highlighted)
 	}
 
-	request.Path = "mekugi:run/" + secondID + ":9"
+	request.Path = "mekugi:run/" + secondID + ":2-3"
+	if refusal := view.openDetails(request); refusal != "" {
+		t.Fatal(refusal)
+	}
+	if detail := nativeDetailFrame(view).Details; detail.RunRange == nil || *detail.RunRange != want {
+		t.Fatalf("legacy run range changed: %+v", detail.RunRange)
+	}
+
+	request.Path = "mekugi:run/" + secondID + "#L9"
 	if refusal := view.openDetails(request); refusal != "" {
 		t.Fatal(refusal)
 	}

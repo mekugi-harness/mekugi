@@ -16,20 +16,22 @@ test("automatic and Markdown web links navigate safely", () => {
 
 test("machine-local Markdown links retain the shared file target", () => {
   const html = block(
-    "[Source](</workspace/a b.go:12>) [Relative](src/a%20b.go) [File](file:///workspace/source.go)",
+    "[Source](</workspace/a b.go#L12-L14>) [Relative](src/a%20b.go#L12) " +
+      "[File](file:///workspace/source.go#L12) [Legacy](/workspace/source.go:12)",
   );
-  assert.match(html, /href="#" data-file-link="\/workspace\/a b.go:12"/);
-  assert.match(html, /data-file-link="src\/a b.go"/);
-  assert.match(html, /data-file-link="file:\/\/\/workspace\/source.go"/);
+  assert.match(html, /href="#" data-file-link="\/workspace\/a b.go#L12-L14"/);
+  assert.match(html, /data-file-link="src\/a b.go#L12"/);
+  assert.match(html, /data-file-link="file:\/\/\/workspace\/source.go#L12"/);
+  assert.match(html, /data-file-link="\/workspace\/source.go:12"/);
   assert.doesNotThrow(() => block("[Literal](a%ZZ.md)"));
 });
 
 test("run Markdown links retain the native detail target without browser navigation", () => {
   const run = "mekugi:run/exec-00000000-0000-4000-8000-000000000042";
   const html = block(
-    `[Run](${run}) [Line](${run}:3) [Range](${run}:3-5) [Other](mekugi:other/call_42)`,
+    `[Run](${run}) [Line](${run}#L3) [Range](${run}#L3-L5) [Legacy](${run}:3-5) [Other](mekugi:other/call_42)`,
   );
-  for (const suffix of ["", ":3", ":3-5"])
+  for (const suffix of ["", "#L3", "#L3-L5", ":3-5"])
     assert.ok(html.includes(`href="#panel-content" data-run-link="${run}${suffix}"`));
   assert.doesNotMatch(html, /href="mekugi:|data-file-link|data-run-link="mekugi:other/);
 });

@@ -60,12 +60,36 @@ func TestMarkdownFileLinkClickAndDrag(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(path+"#L27", []byte("literal hash filename\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	fileURL := (&url.URL{Scheme: "file", Path: path}).String()
 	main, _ := newAppServerTestUI()
 	main.attached.cwd = workspace
 	settleTestPresentation(&main.attached, main.shell, &main.Client, &main.picker, &main.Editor, main.settings, main.title, main.backendVersion, main.restoring != nil, main.side, main.clock, &main.questions, &main.approvals, main.statusPanel != nil || main.resumePicker != nil)
 	painter := activityui.Painter{FileLink: markdownFileLinks(main.attached.cwd)}
-	for _, target := range []string{"src/source #1?%.go", "@src/source #1?%.go", path + ":26", "@" + path + ":26", fileURL + ":26", "src/source #1?%.go:26-27", "@src/source #1?%.go:26-27", fileURL + ":26-27", "`" + path + ":26`", "`@" + path + ":26`"} {
+	for _, tc := range []struct {
+		target, location string
+		first, last      int
+	}{
+		{"src/source #1?%.go", "", 0, 0},
+		{"@src/source #1?%.go", "", 0, 0},
+		{path + "#L26", "#L26", 26, 26},
+		{path + "#L27", "", 0, 0},          // The literal file wins for a raw path.
+		{fileURL + "#L27", "#L27", 27, 27}, // A URL fragment names a line.
+		{"@src/source #1?%.go#L26-L27", "#L26-L27", 26, 27},
+		{fileURL + "#L26-L27", "#L26-L27", 26, 27},
+		{"`@" + path + "#L26`", "#L26", 26, 26},
+		{path + ":26", ":26", 26, 26},
+		{"@" + path + ":26", ":26", 26, 26},
+		{fileURL + ":26", ":26", 26, 26},
+		{"src/source #1?%.go:26-27", ":26-27", 26, 27},
+		{"@src/source #1?%.go:26-27", ":26-27", 26, 27},
+		{fileURL + ":26-27", ":26-27", 26, 27},
+		{"`" + path + ":26`", ":26", 26, 26},
+		{"`@" + path + ":26`", ":26", 26, 26},
+	} {
+		target := tc.target
 		t.Run(target, func(t *testing.T) {
 			row := painter.Inline("[source](<" + target + ">)")
 			if strings.HasPrefix(target, "`") {
@@ -84,14 +108,22 @@ func TestMarkdownFileLinkClickAndDrag(t *testing.T) {
 			awaitMarkdownFile(t, u)
 			u.Width, u.Height = 80, 18
 			frame := drawOutputDialog(u)
-			if u.Dialog.File.Path != "src/source #1?%.go" || u.Dialog.File.First > 0 && !strings.Contains(frame, "package target") {
+			expectedPath := "src/source #1?%.go"
+			if target == path+"#L27" {
+				expectedPath += "#L27"
+			}
+			if u.Dialog.File.Path != expectedPath || u.Dialog.File.First != tc.first ||
+				u.Dialog.File.Last != tc.last || tc.first > 0 && !strings.Contains(frame, "package target") {
 				t.Fatalf("path or line destination lost: %q", frame)
 			}
 			if u.Dialog.File.First > 0 {
-				if !strings.Contains(ansi.Strip(u.Dialog.Document.Title), target[strings.LastIndexByte(target, ':'):]) {
+				if !strings.Contains(ansi.Strip(u.Dialog.Document.Title), tc.location) {
 					t.Fatal("title lost the original location")
 				}
 				return // Copy and drag share one path after destination resolution.
+			}
+			if target == path+"#L27" {
+				return
 			}
 			u.outputKey("y")
 			if u.Frame.Clipboard != "\x1b]52;c;"+base64.StdEncoding.EncodeToString([]byte(content))+"\x07" {
@@ -111,12 +143,12 @@ func TestMarkdownFileLinkClickAndDrag(t *testing.T) {
 
 func TestMarkdownPrefixedFileTargets(t *testing.T) {
 	for _, workspace := range []string{"/workspace", ""} {
-		for _, target := range []string{"sample.go", "./src/sample.go:2-3", "../sample.go:2", "/workspace/sample.go:2", "file:///workspace/a%20b.go:2-3", "file://remote/sample.go", "https://example.com", "javascript:alert", "#heading", "?query", "", "bad\x00.go", "bad\n.go"} {
+		for _, target := range []string{"sample.go", "./src/sample.go:2-3", "../sample.go:2", "/workspace/sample.go:2", "file:///workspace/a%20b.go#L2-L3", "file://remote/sample.go", "https://example.com", "javascript:alert", "#heading", "?query", "", "bad\x00.go", "bad\n.go"} {
 			t.Run(workspace+"/"+target, func(t *testing.T) {
 				path, ok := markdownFileTarget(workspace, target)
 				prefixed, admitted := markdownFileTarget(workspace, "@"+target)
 				if admitted != ok || ok && prefixed != path {
-					t.Fatalf("prefix changed resolution: (%q, %t) != (%q, %t)", prefixed, admitted, path, ok)
+					t.Fatalf("prefix changed resolution: (%+v, %t) != (%+v, %t)", prefixed, admitted, path, ok)
 				}
 			})
 		}
@@ -129,7 +161,7 @@ func TestMarkdownPrefixedRawFileClick(t *testing.T) {
 	if err := os.WriteFile(path, []byte("package sample\n// selected line\n// last line\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{"sample.go:2-3", "./sample.go:2-3", path + ":2-3"} {
+	for _, target := range []string{"sample.go#L2-L3", "./sample.go#L2-L3", path + "#L2-L3"} {
 		for _, prefix := range []string{"", "@"} {
 			t.Run(prefix+target, func(t *testing.T) {
 				p := activityui.Painter{FileLink: markdownFileLinks(workspace), DeferFileLinks: true}

@@ -106,8 +106,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - Exec guidance tells agents to summarize or interpret visible command output
   without copying it into replies unless requested there.
 - Code-mode shell results expose `event_call_id` for Markdown run links. These
-  open retained command output in the terminal or browser, with optional
-  `:line` or `:first-last` locations.
+  open retained command output in the terminal or browser. Run links, local
+  file links, and source references share `#L12` and `#L12-L18` locations.
+  Existing colon-suffixed links still work.
 - Code-mode waits can hold the observer while a native wait pauses the cell
   deadline. The paired host and runtime exchange observation liveness separately
   from stream heartbeats. Instant-interrupt steering defers stream preemption

@@ -57,7 +57,7 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
 - Summarize or interpret visible command output without copying it into the
   reply unless the user asks for it there.
 - To cite a run, print its `ret.event_call_id` with the tool result and link to
-  `[output](mekugi:run/<id>)`, optionally adding `:line` or `:first-last`.
+  `[output](mekugi:run/<id>)`, optionally adding `#L12` or `#L12-L18`.
   Cite lines only when you know their positions in the full run output.
 
 - Global helpers:
