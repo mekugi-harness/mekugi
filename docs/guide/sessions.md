@@ -11,7 +11,7 @@ workspace picker. Type to search, Tab for all workspaces, Enter to resume. Insid
 idle session, `/resume` opens the picker or `/resume THREAD_ID` switches directly. Saved
 model/effort/tier, layout, roster, child history, and retained Diff return; explicit
 `-m`/`-c` overrides named settings. Drafts, selections, filters, and scroll positions do
-not return. See [session preferences](../../mekugi-tui/modules/sessionpreferences/SPEC.md).
+not return.
 
 While idle, `/fork` takes no arguments and creates a saved branch of the completed
 conversation, then switches to it with current settings and pending input. The
@@ -77,4 +77,4 @@ after **14 inactive days**; capacity cleanup removes oldest inactive sessions, n
 running work. **Codex chats/workspace files are never deleted.** Cleanup invalidates
 references; power loss can lose recent records. If retention fails, free space and retry
 retention, not the operation. Stop wrappers before moving storage aside. Use `mekugi
-inspect-storage`; see [storage details](../../mekugi-tui/modules/sessionhistory/SPEC.md).
+inspect-storage` for storage details.

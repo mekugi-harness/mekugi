@@ -15,7 +15,7 @@
   own counters; inherited context is not spending.
 - Reference prices apply per OpenAI response, including returned service tier and applicable
   long-context and cache rates. Custom providers and unknown prices do not acquire an estimate.
-- The client retains these values in [session history](../sessionhistory/SPEC.md).
+- The native runtime retains these values in session history.
   Reopened records retain their reported totals and are marked partial.
 - Composer captions and roster rows share the output throughput measurement. Context occupancy
   remains separate from cumulative provider usage.

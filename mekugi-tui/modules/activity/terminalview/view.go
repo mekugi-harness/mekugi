@@ -1665,13 +1665,6 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 	return lines
 }
 
-func (v *View) ExpireFlash(now time.Time) bool {
-	if v.FlashQuestion == 0 || now.Before(v.FlashUntil) {
-		return false
-	}
-	v.FlashQuestion, v.FlashUntil = 0, time.Time{}
-	return true
-}
 
 func (v *View) Footer(width int) string {
 	mode, toggle := "ALL", "a only"

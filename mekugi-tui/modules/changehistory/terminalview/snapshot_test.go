@@ -19,9 +19,9 @@ func assertRowsSnapshot(t *testing.T, name string, rows []string) {
 func snapshotFiles() []presentation.File {
 	const workspace = "/workspace/"
 	reviews := []diffmodel.ReviewFile{
-		diffmodel.RenderReviewFile("", workspace+"docs/guide.md", "", "# Guide\n"),
-		diffmodel.RenderReviewFile(workspace+"src/old.go", workspace+"src/main.go", "package old\n", "package main\n"),
-		diffmodel.RenderReviewFile(workspace+"src/obsolete.go", "", "package old\n", ""),
+		uisnapshot.RenderReviewFile("", workspace+"docs/guide.md", "", "# Guide\n"),
+		uisnapshot.RenderReviewFile(workspace+"src/old.go", workspace+"src/main.go", "package old\n", "package main\n"),
+		uisnapshot.RenderReviewFile(workspace+"src/obsolete.go", "", "package old\n", ""),
 		{BeforePath: workspace + "data/cache.bin", AfterPath: workspace + "data/cache.bin", Incomplete: "baseline unavailable"},
 	}
 	var files []presentation.File
@@ -103,7 +103,7 @@ func TestUISnapshotDependencyDirectoryNavigation(t *testing.T) {
 func TestUISnapshotWordDiff(t *testing.T) {
 	const before = "Keep each listed task small and bounded. Record results as they become known.\n"
 	const after = "Keep each listed task small and checkable. At 70% context use, split the current slice. Record results as they become known.\n"
-	review := diffmodel.RenderReviewFile("guidance.txt", "guidance.txt", before, after)
+	review := uisnapshot.RenderReviewFile("guidance.txt", "guidance.txt", before, after)
 	render, err := new(Renderer).Render(t.Context(), diffrender.DarkTheme,
 		[]presentation.File{{Path: "guidance.txt", Chunks: []presentation.Chunk{{Review: review}}}}, "", 60)
 	if err != nil {

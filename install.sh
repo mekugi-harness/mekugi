@@ -45,7 +45,7 @@ case "$mekugi_platform" in
 esac
 
 tar -xzf "$mekugi_archive"
-set -- mekugi mekugi-exec mekugi-app-server codex-code-mode-host
+set -- mekugi mekugi-app-server codex-code-mode-host
 case "$mekugi_platform" in
   linux_*) set -- "$@" bwrap ;;
 esac

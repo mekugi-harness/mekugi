@@ -21,13 +21,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/diagnosticsection"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
 type headlessRequestKind uint8
@@ -139,12 +133,9 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	}
 	var readLogPath string
 	for _, entry := range environment {
-		if value, ok := strings.CutPrefix(entry, evidence.AXReadOutputEnvironment+"="); ok {
+		if value, ok := strings.CutPrefix(entry, axReadOutputEnvironment+"="); ok {
 			readLogPath = value
 		}
-	}
-	if err := evidence.ValidateOutputAliases(readLogPath, options.CaptureOutput); err != nil {
-		return 1, err
 	}
 	executable, err := invocationExecutable("mekugi-app-server", environment, workspace)
 	if err != nil {
@@ -152,10 +143,8 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	}
 	environment = serverEnvironment(environment)
 
-	var debug *diagnostic.Bundle
-	var writes *persistence.Counter
-	var capture *transportcapture.Recorder
-	var metricsFile *os.File
+	var debug *debugSession
+	var capture *headlessCapture
 	outputsClosed := false
 	finalizeOutputs := func() error {
 		if outputsClosed {
@@ -165,12 +154,12 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 		var errs []error
 		if capture != nil {
 			errs = append(errs, capture.Close())
-			if metricsFile != nil {
-				errs = append(errs, capture.WriteMetrics(writes.Writer(metricsFile)), metricsFile.Close())
+			if debug != nil {
+				errs = append(errs, capture.WriteMetrics(debug.MetricsPath()))
 			}
 		}
 		if debug != nil {
-			debug.Event(map[string]any{"event": "router_stop", "failed": runErr != nil, "storage_writes": debug.Writes().Snapshot()})
+			debug.Event(map[string]any{"event": "router_stop", "failed": runErr != nil})
 			errs = append(errs, debug.Close())
 		}
 		if cfg.finalize != nil {
@@ -186,25 +175,10 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	}()
 
 	if options.Debug {
-		evidenceSvc := new(evidence.Service)
-		diagSvc, err := diagnostic.New(new(history.Service), []diagnosticsection.Contribution{
-			{Transport: &diagnosticsection.Transport{
-				Record:  transportcapture.DiagnosticRecord,
-				Metrics: transportcapture.DiagnosticMetrics,
-			}},
-			{
-				PrepareReads: evidenceSvc.PrepareDiagnosticReads,
-				ReadSnapshot: evidenceSvc.DiagnosticReads,
-			},
-		})
+		debug, err = openDebugOutput(true, options.CaptureOutput, readLogPath)
 		if err != nil {
 			return 1, err
 		}
-		debug, err = openDebugOutput(diagSvc, true, options.CaptureOutput, readLogPath)
-		if err != nil {
-			return 1, err
-		}
-		writes = debug.Writes()
 	}
 
 	capturePath := options.CaptureOutput
@@ -218,15 +192,9 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 				return 1, fmt.Errorf("resolve capture output: %w", err)
 			}
 		}
-		capture, err = new(transportcapture.Service).Open(transportcapture.Config{Output: capturePath, Writes: writes})
+		capture, err = openHeadlessCapture(capturePath)
 		if err != nil {
 			return 1, fmt.Errorf("initialize capture: %w", err)
-		}
-		if debug != nil {
-			metricsFile, err = os.OpenFile(debug.MetricsPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-			if err != nil {
-				return 1, fmt.Errorf("open metrics output: %w", err)
-			}
 		}
 	}
 
@@ -253,7 +221,7 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	cmd.Dir = workspace
 	cmd.Env = codexEnvironmentCapability(environment)
 	if debug != nil {
-		cmd.Env = append(cmd.Env, evidence.AXReadOutputEnvironment+"="+debug.ReadLogPath())
+		cmd.Env = append(cmd.Env, axReadOutputEnvironment+"="+debug.ReadLogPath())
 	}
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 5 * time.Second
@@ -275,7 +243,7 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	return 0, nil
 }
 
-func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.Config, resumeThread, prompt string, stream *headless.Stream, capture *transportcapture.Recorder) (rootThread string, runErr error) {
+func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.Config, resumeThread, prompt string, stream *headless.Stream, capture *headlessCapture) (rootThread string, runErr error) {
 	host, err := appserver.Start(cmd)
 	if err != nil {
 		return "", fmt.Errorf("launch codex: %w", err)
@@ -549,7 +517,7 @@ func headlessWriteErr(ctx context.Context, err error) error {
 	return err
 }
 
-func observeHeadlessCapture(capture *transportcapture.Recorder, message appserver.Message) error {
+func observeHeadlessCapture(capture *headlessCapture, message appserver.Message) error {
 	if capture == nil {
 		return nil
 	}

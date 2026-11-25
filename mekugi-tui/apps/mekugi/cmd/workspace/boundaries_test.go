@@ -23,7 +23,7 @@ func TestWorkspaceImportBoundaries(t *testing.T) {
 		owner, pkg, target string
 		allowed            bool
 	}{
-		{"mekugi-tui/libraries/persistence", ".", "mekugi-tui/contracts/recordkind", false},
+		{"mekugi-tui/libraries/persistence", ".", "mekugi-tui/contracts/observation", false},
 		{"mekugi-tui/libraries/terminalui", ".", "mekugi-tui/libraries/sourceanalysis/markdownsyntax", true},
 		{"mekugi-tui/libraries/sourceanalysis", "markdownsyntax", "mekugi-tui/libraries/terminalui", false},
 		{"mekugi-tui/libraries/diffrender", ".", "mekugi-tui/libraries/textsanitize", true},
@@ -31,13 +31,13 @@ func TestWorkspaceImportBoundaries(t *testing.T) {
 		{"mekugi-tui/libraries/textsanitize", ".", "mekugi-tui/libraries/diffrender", false},
 		{"mekugi-tui/modules/activity", "presentation", "mekugi-tui/libraries/textsanitize", true},
 		{"mekugi-tui/libraries/pathdisplay", ".", "mekugi-tui/libraries/persistence", false},
-		{"mekugi-tui/backends/codex", "binding", "mekugi-tui/contracts/command", true},
+		{"mekugi-tui/backends/codex", "binding", "mekugi-tui/contracts/observation", true},
 		{"mekugi-tui/backends/codex", "binding", "mekugi-tui/providers/openai", false},
 		{"mekugi-tui/providers/openai", ".", "mekugi-tui/libraries/persistence", true},
 		{"mekugi-tui/providers/openai", ".", "mekugi-tui/backends/codex/binding", false},
-		{"mekugi-tui/contracts", "command", "mekugi-tui/modules/reader", false},
-		{"mekugi-tui/testsupport/moduletest", ".", "mekugi-tui/backends/codex/binding", true},
-		{"mekugi-tui/apps/mekugi", "internal/composition", "mekugi-tui/testsupport/moduletest", false},
+		{"mekugi-tui/contracts", "observation", "mekugi-tui/modules/reader", false},
+		{"mekugi-tui/testsupport/uisnapshot", ".", "mekugi-tui/backends/codex/binding", true},
+		{"mekugi-tui/apps/mekugi", "internal/composition", "mekugi-tui/testsupport/uisnapshot", false},
 		{"mekugi-tui/apps/mekugi", "internal/composition", "mekugi-tui/apps/mekugi/internal/launch", true},
 		{"mekugi-tui/apps/mekugi", "internal/sessioncontrol", "mekugi-tui/backends/codex/appserver", true},
 		{"mekugi-tui/apps/mekugi", "internal/sessioncontrol", "mekugi-tui/apps/mekugi/internal/launch", false},
@@ -73,13 +73,6 @@ func TestWorkspaceImportBoundaries(t *testing.T) {
 				t.Fatalf("allowedImport error=%v want allowed=%v", err, tt.allowed)
 			}
 			workspaceFixture(t, []string{"./" + tt.owner}, map[string]string{tt.owner: prefix + "/" + tt.owner})
-			if strings.HasPrefix(tt.owner, "mekugi-tui/modules/") {
-				writeWorkspaceSource(t, filepath.Join(tt.owner, "module.go"), `package reader
-import "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-type Deps struct{}
-var Module = module.Descriptor[Deps, int, int, int]{}
-`)
-			}
 			path := filepath.Join(tt.owner, tt.pkg, "source.go")
 			writeWorkspaceSource(t, path, fmt.Sprintf("package fixture\nimport _ %q\n", target))
 			err := checkImports([]member{{tt.owner, prefix + "/" + tt.owner}})
@@ -146,49 +139,5 @@ func TestWorkspaceChecksAllProductionPlatformsButNotTests(t *testing.T) {
 	writeWorkspaceSource(t, tagged, "//go:build plan9\n\n"+source)
 	if err := checkImports([]member{{owner, prefix + "/" + owner}}); err == nil || !strings.Contains(err.Error(), tagged) {
 		t.Fatalf("platform-specific production import escaped: %v", err)
-	}
-}
-
-func TestModuleRequiresMatchesImportsAndTypedDeps(t *testing.T) {
-	const owner = "mekugi-tui/modules/reader"
-	const template = `package reader
-import (
- "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
- retained "github.com/mekugi-harness/mekugi/mekugi-tui/modules/history/publication"
-)
-type Deps struct{%s}
-var Module = module.Descriptor[Deps, int, int, int]{Requires: %s}
-`
-	for _, tt := range []struct{ name, deps, requires, extra, reason string }{
-		{"matching", "History retained.Publisher", `[]module.ID{"history"}`, "", ""},
-		{"missing requirement", "History retained.Publisher", `[]module.ID{}`, "", "must match"},
-		{"pure module API", "", `[]module.ID{"history"}`, "", ""},
-		{"extra requirement", "History retained.Publisher", `[]module.ID{"history","extra"}`, "", "must match"},
-		{"platform import", "History retained.Publisher", `[]module.ID{"history"}`, "platform", "must match"},
-		{"test import ignored", "History retained.Publisher", `[]module.ID{"history"}`, "test", ""},
-		{"repeated requirement", "History retained.Publisher", `[]module.ID{"history","history"}`, "", "repeated requirement"},
-		{"computed requirements", "History retained.Publisher", `requiredModules`, "", "Requires must be a literal list"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			workspaceFixture(t, []string{"./" + owner}, map[string]string{owner: prefix + "/" + owner})
-			writeWorkspaceSource(t, filepath.Join(owner, "module.go"), fmt.Sprintf(template, tt.deps, tt.requires))
-			if tt.extra != "" {
-				file := "extra_test.go"
-				tag := ""
-				if tt.extra == "platform" {
-					file = "extra_plan9.go"
-					tag = "//go:build plan9\n\n"
-				}
-				writeWorkspaceSource(t, filepath.Join(owner, "internal", file), tag+"package internal\nimport _ \"github.com/mekugi-harness/mekugi/mekugi-tui/modules/extra/api\"\n")
-			}
-			err := checkImports([]member{{owner, prefix + "/" + owner}})
-			if tt.reason == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
-			} else if err == nil || !strings.Contains(err.Error(), tt.reason) {
-				t.Fatalf("error=%v, want %q", err, tt.reason)
-			}
-		})
 	}
 }

@@ -13,7 +13,7 @@
 ### Capture and storage
 
 - Works with [Change evidence](../../../docs/contracts/change-evidence.md) and
-  [Session history](../sessionhistory/SPEC.md) to acquire bounded pre-edit baselines, reconcile
+  native session history to acquire bounded pre-edit baselines, reconcile
   endpoint differences (plus private Git workspace checkpoints), allocate stream-scoped IDs (e.g.
   `amber1`), and persist per-file chunked evidence before exposing IDs.
 - Diagnostic VCS operations (e.g. `git checkout`/`merge`) are retained under `--history` only and

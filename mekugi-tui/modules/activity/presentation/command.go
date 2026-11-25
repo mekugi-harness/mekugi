@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"mvdan.cc/sh/v3/syntax"
@@ -433,7 +432,7 @@ func (c Command) DetailValues() []Value {
 		}
 		classified := Operations(ShellSource(c.Display, c.Directory))
 		if slices.ContainsFunc(classified, func(value Value) bool { return value.EditSource != "" }) {
-			if segments, ok := shellinstrumentation.Split(c.Display); ok {
+			if segments, ok := splitShellSegments(c.Display); ok {
 				classified = nil
 				for _, segment := range segments {
 					text := ShellSource(segment.Source, c.Directory)

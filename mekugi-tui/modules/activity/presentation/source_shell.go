@@ -13,7 +13,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"mvdan.cc/sh/v3/syntax"
 )
@@ -33,11 +32,11 @@ func ClassifyShell(script, cwd string) (string, bool) {
 	}
 	// Error-handling options require one execution segment, but do not hide
 	// independently recognizable presentation operations.
-	hasSetup := shellinstrumentation.HasShellSetup(program)
+	hasSetup := hasShellSetup(program)
 	if hasSetup {
 		setupProgram := *program
 		setupProgram.Stmts = slices.DeleteFunc(shellsyntax.Sequence(program.Stmts), shellsyntax.ShellOptions)
-		if len(setupProgram.Stmts) > 0 && !shellinstrumentation.HasShellSetup(&setupProgram) {
+		if len(setupProgram.Stmts) > 0 && !hasShellSetup(&setupProgram) {
 			hasSetup = false
 			for _, statement := range setupProgram.Stmts {
 				display, ok := sourceStatement(script, statement, cwd, nil)

@@ -2,52 +2,42 @@ package main
 
 import (
 	"bytes"
-	json "encoding/json/v2"
-	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"text/template"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
 )
 
+var markdownLinkPattern = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+
 const (
-	indexTemplate    = "mekugi-tui/apps/mekugi/cmd/workspace/modules.md.tmpl"
-	indexOutput      = "docs/reference/modules.md"
-	indexComposition = "mekugi-tui/apps/mekugi/internal/composition/modules.go"
+	indexTemplate = "mekugi-tui/apps/mekugi/cmd/workspace/modules.md.tmpl"
+	indexOutput   = "docs/reference/modules.md"
 )
 
 type indexData struct {
-	Modules       []indexModule
-	SelectedCount int
+	Modules []indexModule
 }
 
 type indexModule struct {
-	Directory  string
-	Selected   bool
-	Descriptor module.Reference
-	Binding    module.BindingReference
+	ID        string
+	Directory string
+	Summary   string
+	Packages  []string
 }
 
 func moduleIndex(members []member, check bool) error {
-	selected, err := applicationSelection(indexComposition, members)
-	if err != nil {
-		return err
-	}
 	entries, err := collectModuleReferences(members)
 	if err != nil {
 		return err
 	}
-	data := indexData{Modules: entries, SelectedCount: len(selected)}
-	for i := range data.Modules {
-		data.Modules[i].Selected = selected[data.Modules[i].Directory]
-	}
+	data := indexData{Modules: entries}
 	slices.SortFunc(data.Modules, func(a, b indexModule) int {
-		return strings.Compare(string(a.Descriptor.ID), string(b.Descriptor.ID))
+		return strings.Compare(a.ID, b.ID)
 	})
 	tmpl, err := template.ParseFiles(indexTemplate)
 	if err != nil {
@@ -73,53 +63,80 @@ func moduleIndex(members []member, check bool) error {
 	return os.WriteFile(indexOutput, output.Bytes(), 0644)
 }
 
-// collectModuleReferences imports descriptors selected by workspace membership.
-// Only package initialization and callback-free Reference methods execute.
 func collectModuleReferences(members []member) ([]indexModule, error) {
-	var features []member
-	for _, m := range members {
-		if strings.HasPrefix(filepath.ToSlash(m.directory), "mekugi-tui/modules/") {
-			features = append(features, m)
-		}
-	}
-	var source strings.Builder
-	source.WriteString("package main\nimport (\n json \"encoding/json/v2\"\n \"os\"\n \"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module\"\n")
-	for i, m := range features {
-		fmt.Fprintf(&source, " feature%d %q\n", i, m.path)
-	}
-	source.WriteString(")\ntype entry struct { Directory string; Descriptor module.Reference; Binding module.BindingReference }\nfunc main() {\n entries := []entry{\n")
-	for i, m := range features {
-		fmt.Fprintf(&source, " {Directory: %q, Descriptor: feature%d.Module.Reference(), Binding: feature%d.Module.Bindings.Reference()},\n", filepath.ToSlash(m.directory), i, i)
-	}
-	source.WriteString("}\n data, err := json.Marshal(entries); if err != nil { panic(err) }; if _, err := os.Stdout.Write(data); err != nil { panic(err) }\n}\n")
-	directory, err := os.MkdirTemp("", "mekugi-module-reference-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(directory)
-	collector := filepath.Join(directory, "main.go")
-	if err := os.WriteFile(collector, []byte(source.String()), 0600); err != nil {
-		return nil, err
-	}
-	command := exec.Command("go", "run", "-trimpath", collector)
-	output, err := command.Output()
-	if err != nil {
-		if failure, ok := errors.AsType[*exec.ExitError](err); ok {
-			return nil, fmt.Errorf("collect module references: %w: %s", err, strings.TrimSpace(string(failure.Stderr)))
-		}
-		return nil, fmt.Errorf("collect module references: %w", err)
-	}
 	var entries []indexModule
-	if err := json.Unmarshal(output, &entries); err != nil {
-		return nil, fmt.Errorf("decode module references: %w", err)
-	}
-	if len(entries) != len(features) {
-		return nil, fmt.Errorf("collected %d module references for %d workspace modules", len(entries), len(features))
-	}
-	for i, entry := range entries {
-		if entry.Descriptor.ID != module.ID(filepath.Base(features[i].directory)) {
-			return nil, fmt.Errorf("%s: descriptor identity %q must match workspace member", entry.Directory, entry.Descriptor.ID)
+	for _, m := range members {
+		dir := filepath.ToSlash(m.directory)
+		if !strings.HasPrefix(dir, "mekugi-tui/modules/") {
+			continue
 		}
+		id := filepath.Base(dir)
+		summary := readSpecSummary(filepath.Join(m.directory, "SPEC.md"))
+		pkgs, err := modulePackages(m.directory)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, indexModule{
+			ID:        id,
+			Directory: dir,
+			Summary:   summary,
+			Packages:  pkgs,
+		})
 	}
 	return entries, nil
+}
+
+func readSpecSummary(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var lines []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if len(lines) > 0 {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		lines = append(lines, trimmed)
+	}
+	return markdownLinkPattern.ReplaceAllString(strings.Join(lines, " "), "$1")
+}
+
+func modulePackages(root string) ([]string, error) {
+	seen := make(map[string]bool)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != root && (strings.HasPrefix(entry.Name(), ".") || entry.Name() == "testdata") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		seen[filepath.ToSlash(rel)] = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	pkgs := make([]string, 0, len(seen))
+	for pkg := range seen {
+		pkgs = append(pkgs, pkg)
+	}
+	slices.Sort(pkgs)
+	return pkgs, nil
 }

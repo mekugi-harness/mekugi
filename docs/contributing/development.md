@@ -302,7 +302,7 @@ additional browser/live-provider QA remain unchanged.
 `~/.local/state/mekugi/debug`). **Bundles contain private content and are not
 sanitized.** Inactive bundles expire after 14 days; copy elsewhere to keep one. Exit
 prints a diagnosis command. Codex tracing uses uncapped private temporary storage;
-shutdown removes it, forced kills may leave it. See [diagnostics](../../mekugi-tui/modules/diagnostics/SPEC.md).
+shutdown removes it, forced kills may leave it.
 
 Automatically started local servers also retain private stderr and start/exit
 records under `$XDG_STATE_HOME/mekugi/server` (default
@@ -310,8 +310,6 @@ records under `$XDG_STATE_HOME/mekugi/server` (default
 Inspect `process.jsonl` for timestamps, PID, build and exit evidence; read
 `stderr.previous.log` before `stderr.log` for the retained tail. Stderr is bounded
 to 1 MiB per server. These files are unsanitized and expire after 14 inactive days.
-See [diagnostics](../../mekugi-tui/modules/diagnostics/SPEC.md)
-for collection limits.
 
 ### Inspect a session
 
@@ -331,7 +329,7 @@ provider output and completion. Missing phases, including unpairable tool-result
 readiness, are unknown rather than zero. First output is observed transport data,
 not a first-token measurement. This bounded window does not establish lifetime
 coverage or attribute every gap to Mekugi; see
-[transport diagnostics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md).
+the [responses transport contract](../contracts/responses-transport.md).
 
 Inspection runs no recorded operations. Rollout and debug-bundle reports omit private
 text unless `--field` selects it; `--field instructions` selects only retained instruction text.
@@ -349,7 +347,7 @@ mekugi inspect-session --debug-dir /path/to/debug --field diagnostic --limit 5 -
 Narrow debug reports by `--request-id` and paginate with `--offset`. Select JSON fields rather
 than line-limiting minified output.
 
-See native retained inspection (`mekugi inspect-session`) and [AX evidence](../../mekugi-tui/modules/agentmetrics/SPEC.md).
+See native retained inspection (`mekugi inspect-session`).
 
 ## Profile live sessions
 

@@ -147,7 +147,6 @@ Left/Right or Tab switches tabs; Up/Down/PgUp/PgDn scrolls, `[`/`]` selects exch
 usage. Throughput divides reported output tokens by measured provider request
 time, excluding tools and idle time. Missing measurements stay unavailable.
 Costs are reference API estimates, not subscription charges or billing figures.
-See [metrics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md).
 
 ```sh
 mekugi --capture-output capture.jsonl codex

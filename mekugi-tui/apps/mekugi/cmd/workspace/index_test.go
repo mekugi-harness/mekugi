@@ -1,57 +1,21 @@
 package main
 
 import (
-	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestModuleIndexWriteCheckAndDrift(t *testing.T) {
-	contracts, err := filepath.Abs("../../../../contracts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	workspaceFixture(t, []string{"./mekugi-tui/contracts", "./mekugi-tui/modules/second", "./mekugi-tui/modules/first"}, map[string]string{
-		"mekugi-tui/contracts": prefix + "/mekugi-tui/contracts", "mekugi-tui/modules/first": prefix + "/mekugi-tui/modules/first", "mekugi-tui/modules/second": prefix + "/mekugi-tui/modules/second",
+	workspaceFixture(t, []string{"./mekugi-tui/modules/second", "./mekugi-tui/modules/first"}, map[string]string{
+		"mekugi-tui/modules/first":  prefix + "/mekugi-tui/modules/first",
+		"mekugi-tui/modules/second": prefix + "/mekugi-tui/modules/second",
 	})
-	packages, err := os.ReadDir(contracts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, pkg := range packages {
-		if pkg.IsDir() {
-			if err := os.CopyFS(filepath.Join("mekugi-tui/contracts", pkg.Name()), os.DirFS(filepath.Join(contracts, pkg.Name()))); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
 	for _, id := range []string{"first", "second"} {
-		writeWorkspaceSource(t, filepath.Join("mekugi-tui/modules", id, "module.go"), fmt.Sprintf(`package %s
-import (
-    "context"
-    "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-    "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
-)
-var Module = module.Descriptor[struct{}, int, module.NoBindings, module.NoViews]{
-    ID: %q, Summary: "fixture", Lifetime: module.Stateless,
-    Contributes: module.Contributions[int]{RecordKinds: records()},
-    New: func(struct{}, module.Slots) (int, error) { panic("constructor executed") },
-    Start: func(context.Context, int) error { panic("lifecycle executed") },
-    Stop: func(context.Context, int) error { panic("lifecycle executed") },
-}
-func records() []recordkind.Spec { return []recordkind.Spec{{ID: %q + "-record", Match: func(string) bool { panic("record callback executed") }}} }
-`, id, id, id))
+		writeWorkspaceSource(t, "mekugi-tui/modules/"+id+"/SPEC.md", "# "+id+"\n\nSummary for "+id+".\n")
+		writeWorkspaceSource(t, "mekugi-tui/modules/"+id+"/presentation/model.go", "package presentation\n")
 	}
-	writeWorkspaceSource(t, indexComposition, `package composition
-import feature "github.com/mekugi-harness/mekugi/mekugi-tui/modules/first"
-func frontendDeclarations() (*Composition, func()) {
-    var c Composition
-    c.Add(feature.Module, func() int { panic("dependencies executed") })
-    return &c, nil
-}`)
-	writeWorkspaceSource(t, indexTemplate, `{{.SelectedCount}}/{{len .Modules}}{{range .Modules}} {{.Descriptor.ID}}:{{.Selected}}:{{range .Descriptor.Records}}{{.}}{{end}}{{end}}`)
+	writeWorkspaceSource(t, indexTemplate, "{{len .Modules}}{{range .Modules}} {{.ID}}:{{.Summary}}:{{range .Packages}}{{.}}{{end}}{{end}}")
 	members, err := workspaceMembers()
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +27,7 @@ func frontendDeclarations() (*Composition, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "1/2 first:true:first-record second:false:second-record"; string(got) != want {
+	if want := "2 first:Summary for first.:presentation second:Summary for second.:presentation"; string(got) != want {
 		t.Fatalf("index=%q, want %q", got, want)
 	}
 	if err := moduleIndex(members, true); err != nil {
@@ -82,7 +46,7 @@ func frontendDeclarations() (*Composition, func()) {
 	if regenerated, err := os.ReadFile(indexOutput); err != nil || string(regenerated) != string(got) {
 		t.Fatalf("regeneration=%q, %v; want %q", regenerated, err, got)
 	}
-	writeWorkspaceSource(t, "go.work", "go 1.27.0\nuse (\n./mekugi-tui/contracts\n./mekugi-tui/modules/first\n)\n")
+	writeWorkspaceSource(t, "go.work", "go 1.27.0\nuse (\n./mekugi-tui/modules/first\n)\n")
 	members, err = workspaceMembers()
 	if err != nil {
 		t.Fatal(err)
@@ -90,30 +54,7 @@ func frontendDeclarations() (*Composition, func()) {
 	if err := moduleIndex(members, false); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(indexOutput); err != nil || string(got) != "1/1 first:true:first-record" {
+	if got, err := os.ReadFile(indexOutput); err != nil || string(got) != "1 first:Summary for first.:presentation" {
 		t.Fatalf("workspace removal was not reflected: %q, %v", got, err)
-	}
-}
-
-func TestModuleIndexSelectionRejectsUnsupportedShapes(t *testing.T) {
-	for _, tt := range []struct{ name, body string }{
-		{"conditional", "if enabled { c.Add(feature.Module, deps) }"},
-		{"helper", "addModules(&c)"},
-		{"descriptor variable", "c.Add(selected, deps)"},
-		{"computed descriptor", "c.Add(feature.Descriptor(), deps)"},
-		{"unknown member", "c.Add(other.Module, deps)"},
-		{"shadowed import", "feature := alternate; c.Add(feature.Module, deps)"},
-		{"other method", "c.AddModules(feature.Module)"},
-		{"activation", "c.Add(feature.Module, deps); c.Activate()"},
-		{"replacement", "c = another"},
-		{"duplicate", "c.Add(feature.Module, deps); c.Add(feature.Module, deps)"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "modules.go")
-			writeWorkspaceSource(t, path, "package composition\nimport feature \""+prefix+"/mekugi-tui/modules/first\"\nfunc frontendDeclarations() (*Composition, func()) { var c Composition; "+tt.body+"; return &c, nil }")
-			if _, err := applicationSelection(path, []member{{"mekugi-tui/modules/first", prefix + "/mekugi-tui/modules/first"}}); err == nil {
-				t.Fatal("unsupported composition accepted")
-			}
-		})
 	}
 }

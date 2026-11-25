@@ -62,4 +62,4 @@ Captured edits are not a live Git diff. Named ignored files are included; unknow
 commands capture observed effects, possibly from other writers. Previews are
 provisional; missing evidence is labeled. Ignored untracked files require explicit named
 targets to be retained and reverted/reapplied. Revert merges later edits, may create conflicts, and
-is captured too. See [changes](../../mekugi-tui/modules/changehistory/SPEC.md), [capture coverage](../contracts/change-evidence.md), and [retained session history](../../mekugi-tui/modules/sessionhistory/SPEC.md).
+is captured too. See [changes](../../mekugi-tui/modules/changehistory/SPEC.md) and [capture coverage](../contracts/change-evidence.md).

@@ -287,15 +287,3 @@ func appendTerminated(output, lines []string) []string {
 	return output
 }
 
-// Consistent reports whether content agrees with every source line the
-// composition has learned at its current positions. An edit made outside the
-// composed captures breaks this, even when no captured hunk would touch it.
-func (c *ReviewComposition) Consistent(content string) bool {
-	lines := reviewLines(content)
-	for position, line := range c.current {
-		if position >= len(lines) || lines[position] != line {
-			return false
-		}
-	}
-	return true
-}
