@@ -386,11 +386,7 @@ impl UnifiedExecProcess {
     pub(super) async fn from_spawned_with_exec_track(
         spawned: SpawnedPty,
         sandbox_type: SandboxType,
-        #[cfg(unix)] exec_track: Option<(
-            Arc<ExecTrackAttachment>,
-            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
-        )>,
-        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
+        exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<Self, UnifiedExecError> {
         let SpawnedPty {
             session: process_handle,
@@ -403,22 +399,12 @@ impl UnifiedExecProcess {
             Some(sandbox_type),
             OutputDrainPolicy::BoundedAfterExit,
         );
-        #[cfg(unix)]
-        let (exec_track_attachment, drain_rx) = match exec_track {
-            Some((attachment, drain_rx)) => (Some(attachment), drain_rx),
-            None => (None, None),
-        };
-        #[cfg(not(unix))]
-        let exec_track_attachment = exec_track;
-        managed.exec_track = exec_track_attachment.clone();
+        managed.exec_track = exec_track;
         managed.output_task = Some(Self::spawn_local_output_task(
             stdout_rx,
             stderr_rx,
             managed.output_handles().clone(),
             managed.output_tx.clone(),
-            exec_track_attachment,
-            #[cfg(unix)]
-            drain_rx,
         ));
 
         match exit_rx.try_recv() {
@@ -466,27 +452,14 @@ impl UnifiedExecProcess {
     pub(super) async fn from_exec_server_started_with_exec_track(
         started: StartedExecProcess,
         output_drain_policy: OutputDrainPolicy,
-        #[cfg(unix)] exec_track: Option<(
-            Arc<ExecTrackAttachment>,
-            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
-        )>,
-        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
+        exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<Self, UnifiedExecError> {
         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
         // Older peers do not report this field. In that case, skip local
         // classification rather than attributing a violation to a guessed backend.
         let sandbox_type = started.sandbox_type;
         let mut managed = Self::new(process_handle, sandbox_type, output_drain_policy);
-        #[cfg(unix)]
-        let (exec_track_attachment, drain_rx) = match exec_track {
-            Some((attachment, drain_rx)) => (Some(attachment), drain_rx),
-            None => (None, None),
-        };
-        #[cfg(not(unix))]
-        let exec_track_attachment = exec_track;
-        #[cfg(unix)]
-        drop(drain_rx);
-        managed.exec_track = exec_track_attachment.clone();
+        managed.exec_track = exec_track;
         let output_handles = managed.output_handles().clone();
         managed.output_task = Some(Self::spawn_exec_server_output_task(
             started,
@@ -495,7 +468,6 @@ impl UnifiedExecProcess {
             managed.output_tx.clone(),
             managed.state_tx.clone(),
             managed.interaction_lock(),
-            exec_track_attachment,
         ));
 
         let mut state_rx = managed.state_rx.clone();
@@ -526,7 +498,6 @@ impl UnifiedExecProcess {
         output_tx: broadcast::Sender<Vec<u8>>,
         state_tx: watch::Sender<ProcessState>,
         interaction_lock: Arc<Mutex<()>>,
-        exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -678,9 +649,6 @@ impl UnifiedExecProcess {
                         }
                         last_seq = chunk.seq;
                         let bytes = chunk.chunk.into_inner();
-                        if let Some(exec_track) = &exec_track {
-                            exec_track.push_output(chunk.stream, &bytes);
-                        }
                         let mut guard = output_buffer.lock().await;
                         guard.push_chunk(chunk.stream, &bytes);
                         drop(guard);
@@ -742,10 +710,6 @@ impl UnifiedExecProcess {
         mut stderr: tokio::sync::mpsc::Receiver<Vec<u8>>,
         output_handles: OutputHandles,
         output_tx: broadcast::Sender<Vec<u8>>,
-        exec_track: Option<Arc<ExecTrackAttachment>>,
-        #[cfg(unix)] mut drain_rx: Option<
-            tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>,
-        >,
     ) -> JoinHandle<()> {
         let OutputHandles {
             output_buffer,
@@ -762,90 +726,18 @@ impl UnifiedExecProcess {
             let mut stdout_open = true;
             let mut stderr_open = true;
             while stdout_open || stderr_open {
-                #[cfg(unix)]
-                {
-                    enum LocalEvent {
-                        Chunk(ExecOutputStream, Option<Vec<u8>>),
-                        Drain(Option<codex_exec_track::DrainRequest>),
-                    }
-                    let event = tokio::select! {
-                        biased;
-                        chunk = stdout.recv(), if stdout_open => LocalEvent::Chunk(ExecOutputStream::Stdout, chunk),
-                        chunk = stderr.recv(), if stderr_open => LocalEvent::Chunk(ExecOutputStream::Stderr, chunk),
-                        req = async {
-                            match drain_rx.as_mut() {
-                                Some(rx) => rx.recv().await,
-                                None => std::future::pending().await,
-                            }
-                        }, if drain_rx.is_some() => LocalEvent::Drain(req),
-                    };
-                    match event {
-                        LocalEvent::Chunk(stream, Some(chunk)) => {
-                            if let Some(exec_track) = &exec_track {
-                                exec_track.push_output(stream, &chunk);
-                            }
-                            output_buffer.lock().await.push_chunk(stream, &chunk);
-                            let _ = output_tx.send(chunk);
-                            output_notify.notify_waiters();
-                        }
-                        LocalEvent::Chunk(
-                            ExecOutputStream::Stdout | ExecOutputStream::Pty,
-                            None,
-                        ) => {
-                            stdout_open = false;
-                        }
-                        LocalEvent::Chunk(ExecOutputStream::Stderr, None) => {
-                            stderr_open = false;
-                        }
-                        LocalEvent::Drain(Some(req)) => {
-                            tokio::task::yield_now().await;
-                            while let Ok(chunk) = stdout.try_recv() {
-                                if let Some(exec_track) = &exec_track {
-                                    exec_track.push_output(ExecOutputStream::Stdout, &chunk);
-                                }
-                                output_buffer
-                                    .lock()
-                                    .await
-                                    .push_chunk(ExecOutputStream::Stdout, &chunk);
-                                let _ = output_tx.send(chunk);
-                                output_notify.notify_waiters();
-                            }
-                            while let Ok(chunk) = stderr.try_recv() {
-                                if let Some(exec_track) = &exec_track {
-                                    exec_track.push_output(ExecOutputStream::Stderr, &chunk);
-                                }
-                                output_buffer
-                                    .lock()
-                                    .await
-                                    .push_chunk(ExecOutputStream::Stderr, &chunk);
-                                let _ = output_tx.send(chunk);
-                                output_notify.notify_waiters();
-                            }
-                            req.complete();
-                        }
-                        LocalEvent::Drain(None) => {
-                            drain_rx = None;
-                        }
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    let (stream, chunk) = tokio::select! {
-                        chunk = stdout.recv(), if stdout_open => (ExecOutputStream::Stdout, chunk),
-                        chunk = stderr.recv(), if stderr_open => (ExecOutputStream::Stderr, chunk),
-                    };
-                    if let Some(chunk) = chunk {
-                        if let Some(exec_track) = &exec_track {
-                            exec_track.push_output(stream, &chunk);
-                        }
-                        output_buffer.lock().await.push_chunk(stream, &chunk);
-                        let _ = output_tx.send(chunk);
-                        output_notify.notify_waiters();
-                    } else if stream == ExecOutputStream::Stdout {
-                        stdout_open = false;
-                    } else {
-                        stderr_open = false;
-                    }
+                let (stream, chunk) = tokio::select! {
+                    chunk = stdout.recv(), if stdout_open => (ExecOutputStream::Stdout, chunk),
+                    chunk = stderr.recv(), if stderr_open => (ExecOutputStream::Stderr, chunk),
+                };
+                if let Some(chunk) = chunk {
+                    output_buffer.lock().await.push_chunk(stream, &chunk);
+                    let _ = output_tx.send(chunk);
+                    output_notify.notify_waiters();
+                } else if stream == ExecOutputStream::Stdout {
+                    stdout_open = false;
+                } else {
+                    stderr_open = false;
                 }
             }
         })

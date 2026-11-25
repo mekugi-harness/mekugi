@@ -487,8 +487,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             Some(
                 crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
                     &prepared.hook_command,
-                    native_cwd.as_path(),
-                    Some(&crate::exec_env::session_tmp_path(ctx.session.session_id())),
+                    Some(crate::exec_env::session_tmp_path(ctx.session.session_id())),
                     prepared
                         .turn_environment
                         .cwd()
@@ -502,8 +501,6 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                             .clone(),
                         attempt.sandbox_cwd.to_path_buf(),
                     )),
-                    &prepared.resolved.shell.shell.shell_type,
-                    prepared.tty,
                     crate::exec_env::change_history_dir(ctx.session.session_id()),
                     ctx.session.thread_id.to_string(),
                     ctx.session.session_id().to_string(),
@@ -514,32 +511,20 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
         } else {
             None
         };
-        let tracked_script = prepared_exec_track
-            .as_ref()
-            .and_then(|t| t.instrumented_script.as_deref())
-            .unwrap_or(&prepared.hook_command);
         #[cfg(unix)]
         let effective_hook_command = if let (Some(guard), [_, flag, script, ..]) =
             (&guard, command.as_mut_slice())
             && matches!(flag.as_str(), "-c" | "-lc")
         {
             *script = guard.rewrite(
-                tracked_script,
+                &prepared.hook_command,
                 &ctx.session.thread_id.to_string(),
                 &ctx.call_id,
                 prepared.resolved.shell.is_posix_login(),
             );
             script.clone()
-        } else if let [_, flag, script, ..] = command.as_mut_slice()
-            && matches!(flag.as_str(), "-c" | "-lc")
-            && prepared_exec_track
-                .as_ref()
-                .is_some_and(|t| t.instrumented_script.is_some())
-        {
-            *script = tracked_script.to_owned();
-            script.clone()
         } else {
-            tracked_script.to_owned()
+            prepared.hook_command.clone()
         };
         #[cfg(not(unix))]
         let effective_hook_command = prepared.hook_command.clone();
@@ -651,7 +636,8 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             windows_sandbox,
             environment_is_remote,
         );
-        let command = if matches!(requested_shell.shell_type, ShellType::PowerShell) {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut command = if matches!(requested_shell.shell_type, ShellType::PowerShell) {
             if attempt.sandbox_requested
                 && windows_sandbox == WindowsSandboxSelection::Mxc
                 && let [_, .., flag, script] = command.as_mut_slice()
@@ -687,7 +673,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             merge_permission_profiles(sidecar_permissions.as_ref(), snapshot_permissions.as_ref());
         let exec_track_permissions = prepared_exec_track
             .as_ref()
-            .and_then(|t| t.attachment.additional_permissions());
+            .and_then(|t| t.additional_permissions());
         let internal_permissions = merge_permission_profiles(
             internal_permissions.as_ref(),
             exec_track_permissions.as_ref(),
@@ -725,6 +711,20 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             permissions
         };
 
+        // On macOS, wrap the inner command before Seatbelt so `<self_exe>` runs
+        // inside `sandbox-exec` (after SIP stripping) and sets `DYLD_INSERT_LIBRARIES`.
+        #[cfg(target_os = "macos")]
+        if let Some(track) = &prepared_exec_track
+            && let Some(wrapped) = track.wrap_command(
+                &command,
+                ctx.step_context.turn.config.codex_self_exe.as_deref(),
+            )
+        {
+            command = wrapped.argv;
+            for (k, v) in wrapped.env {
+                env.insert(k, v);
+            }
+        }
         let Some((program, args)) = command.split_first() else {
             return Err(ToolError::Rejected(
                 "missing command line for PTY".to_string(),
@@ -739,7 +739,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             .map_err(|err| ToolError::Rejected(format!("invalid shell guard socket: {err}")))?;
         #[cfg(not(target_os = "macos"))]
         let runtime_socket = None;
-        let request = if executor_managed {
+        let mut request = if executor_managed {
             let mut request = attempt
                 .env_for_exec_server(
                     command,
@@ -776,10 +776,19 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 .await
                 .map_err(ToolError::Codex)?
         };
-        #[cfg(unix)]
-        let exec_track_handles = prepared_exec_track.map(|t| (t.attachment, t.drain_rx));
-        #[cfg(not(unix))]
-        let exec_track_handles = prepared_exec_track.map(|t| t.attachment);
+        // On Linux, wrap the outer command after sandbox construction so the
+        // `seccomp-unotify` wrapper connects to `observe.sock` *before* restricted
+        // network seccomp rules block `connect()`.
+        #[cfg(target_os = "linux")]
+        if let Some(track) = &prepared_exec_track
+            && let Some(wrapped) = track.wrap_command(
+                request.raw_command(),
+                ctx.step_context.turn.config.codex_self_exe.as_deref(),
+            )
+        {
+            request.wrap_outer_command(wrapped.argv, wrapped.env);
+        }
+        let exec_track_handles = prepared_exec_track;
         let process = self
             .manager
             .open_session_with_exec_env(

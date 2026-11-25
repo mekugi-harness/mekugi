@@ -17,6 +17,7 @@ anyhow = { workspace = true }
 codex-apply-patch = { workspace = true }
 codex-async-utils = { workspace = true }
 codex-exec-server = { workspace = true }
+codex-exec-track = { workspace = true }
 codex-install-context = { workspace = true }
 codex-linux-sandbox = { workspace = true }
 codex-mekugi-tools = { workspace = true }

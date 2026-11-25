@@ -2160,6 +2160,7 @@ dependencies = [
  "codex-apply-patch",
  "codex-async-utils",
  "codex-exec-server",
+ "codex-exec-track",
  "codex-install-context",
  "codex-linux-sandbox",
  "codex-mekugi-tools",
@@ -2888,15 +2889,9 @@ name = "codex-exec-track"
 version = "0.172.0"
 dependencies = [
  "codex-change-history",
- "codex-shell-guard",
  "libc",
  "pretty_assertions",
- "serde",
- "serde_json",
  "tempfile",
- "tokio",
- "tracing",
- "tree-sitter",
 ]
 
 [[package]]

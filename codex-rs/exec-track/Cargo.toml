@@ -13,17 +13,10 @@ workspace = true
 
 [dependencies]
 codex-change-history = { workspace = true }
-codex-shell-guard = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
-tracing = { workspace = true }
-tree-sitter = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

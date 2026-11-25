@@ -1032,12 +1032,11 @@ impl Session {
                 None if model_info.default_reasoning_level
                     == Some(codex_protocol::openai_models::ReasoningEffort::Ultra) =>
                 {
-                    collaboration_mode.settings.reasoning_effort = Some(
-                        crate::client::downgrade_ultra_effort(
+                    collaboration_mode.settings.reasoning_effort =
+                        Some(crate::client::downgrade_ultra_effort(
                             &model_info,
                             codex_protocol::openai_models::ReasoningEffort::Ultra,
-                        ),
-                    );
+                        ));
                 }
                 None => {}
             }
@@ -6096,8 +6095,8 @@ impl Session {
         )
         .await
         .ok()??;
-        let chatgpt_exempt = builtin_openai
-            && self.services.auth_manager.current_auth_uses_codex_backend();
+        let chatgpt_exempt =
+            builtin_openai && self.services.auth_manager.current_auth_uses_codex_backend();
         if !chatgpt_exempt {
             self.record_rollout_budget_usage(
                 turn_id,

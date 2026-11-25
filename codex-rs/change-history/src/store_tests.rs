@@ -31,6 +31,7 @@ fn test_metadata(
         session_id: "sess-1".to_string(),
         turn_id: "turn-1".to_string(),
         call_id: call_id.to_string(),
+        author: None,
         source_kind,
         workspace_root: workspace.to_path_buf(),
         created_at: 1_700_000_000,
@@ -86,6 +87,7 @@ fn monotonic_ids_per_thread_and_claim_deduplication() {
                 before: FileSnapshot::Missing,
                 after: FileSnapshot::Present(b"hello\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("record r1");
@@ -102,6 +104,7 @@ fn monotonic_ids_per_thread_and_claim_deduplication() {
                 before: FileSnapshot::Missing,
                 after: FileSnapshot::Present(b"hello\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("dedup record");
@@ -119,6 +122,7 @@ fn monotonic_ids_per_thread_and_claim_deduplication() {
                 before: FileSnapshot::Missing,
                 after: FileSnapshot::Present(b"world\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("record r2");
@@ -142,6 +146,7 @@ fn missing_or_corrupt_blob_fails_explicitly() {
                 before: FileSnapshot::Missing,
                 after: FileSnapshot::Present(b"original\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("record");
@@ -180,6 +185,7 @@ fn composed_diff_and_summary_across_multiple_records() {
                 before: FileSnapshot::Present(b"line1\nline2\n".to_vec()),
                 after: FileSnapshot::Present(b"line1\nline2-v2\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("r1");
@@ -193,6 +199,7 @@ fn composed_diff_and_summary_across_multiple_records() {
                 before: FileSnapshot::Present(b"line1\nline2-v2\n".to_vec()),
                 after: FileSnapshot::Present(b"line1\nline2-v3\nline3\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("r2");
@@ -234,6 +241,7 @@ fn path_scoped_revert_preserves_unrelated_edits_and_fails_on_drift_without_marke
                     before: FileSnapshot::Present(a_before.to_vec()),
                     after: FileSnapshot::Present(a_after.to_vec()),
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
                 PendingFileChange {
                     rel_path: "b.txt".to_string(),
@@ -242,6 +250,7 @@ fn path_scoped_revert_preserves_unrelated_edits_and_fails_on_drift_without_marke
                     before: FileSnapshot::Present(b_before.to_vec()),
                     after: FileSnapshot::Present(b_after.to_vec()),
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
             ],
         )
@@ -322,6 +331,7 @@ fn revert_and_apply_handle_creation_deletion_and_deletion_restoration() {
                     before: FileSnapshot::Missing,
                     after: FileSnapshot::Present(b"created\n".to_vec()),
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
                 PendingFileChange {
                     rel_path: "old.txt".to_string(),
@@ -330,6 +340,7 @@ fn revert_and_apply_handle_creation_deletion_and_deletion_restoration() {
                     before: FileSnapshot::Present(b"deleted\n".to_vec()),
                     after: FileSnapshot::Missing,
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
             ],
         )
@@ -393,6 +404,7 @@ fn persist_before_publish_leaves_index_clean_on_storage_failure() {
                 before: FileSnapshot::Missing,
                 after: FileSnapshot::Present(b"hello\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect_err("storage failure must surface explicitly");
@@ -419,6 +431,7 @@ fn mutate_rejects_discontinuous_non_contiguous_selection() {
                 before: FileSnapshot::Present(b"v0\n".to_vec()),
                 after: FileSnapshot::Present(b"v1\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("r1");
@@ -432,6 +445,7 @@ fn mutate_rejects_discontinuous_non_contiguous_selection() {
                 before: FileSnapshot::Present(b"v1\n".to_vec()),
                 after: FileSnapshot::Present(b"v2\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("r2");
@@ -445,6 +459,7 @@ fn mutate_rejects_discontinuous_non_contiguous_selection() {
                 before: FileSnapshot::Present(b"v2\n".to_vec()),
                 after: FileSnapshot::Present(b"v3\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("r3");
@@ -483,6 +498,7 @@ fn same_rel_path_different_abs_paths_do_not_collide() {
                 before: FileSnapshot::Present(b"a-old\n".to_vec()),
                 after: FileSnapshot::Present(b"a-new\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("r1");
@@ -496,6 +512,7 @@ fn same_rel_path_different_abs_paths_do_not_collide() {
                 before: FileSnapshot::Present(b"b-old\n".to_vec()),
                 after: FileSnapshot::Present(b"b-new\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("r2");
@@ -533,6 +550,7 @@ fn revert_rename_filtered_by_destination_restores_source() {
                     before: FileSnapshot::Present(b"original\n".to_vec()),
                     after: FileSnapshot::Missing,
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
                 PendingFileChange {
                     rel_path: "new.txt".to_string(),
@@ -541,6 +559,7 @@ fn revert_rename_filtered_by_destination_restores_source() {
                     before: FileSnapshot::Missing,
                     after: FileSnapshot::Present(b"renamed\n".to_vec()),
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
             ],
         )
@@ -590,6 +609,7 @@ fn rename_revert_filter_does_not_leak_across_working_directories() {
                     before: FileSnapshot::Present(b"a-orig\n".to_vec()),
                     after: FileSnapshot::Missing,
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
                 PendingFileChange {
                     rel_path: "new.txt".to_string(),
@@ -598,6 +618,7 @@ fn rename_revert_filter_does_not_leak_across_working_directories() {
                     before: FileSnapshot::Missing,
                     after: FileSnapshot::Present(b"a-renamed\n".to_vec()),
                     coverage: CoverageStatus::Complete,
+                    scope: crate::model::ChangeScope::Workspace,
                 },
             ],
         )
@@ -613,6 +634,7 @@ fn rename_revert_filter_does_not_leak_across_working_directories() {
                 before: FileSnapshot::Present(b"b-before\n".to_vec()),
                 after: FileSnapshot::Present(b"b-after\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("record edit in pkg/b");
@@ -657,6 +679,7 @@ fn revert_refuses_to_follow_replacement_symlink() {
                 before: FileSnapshot::Present(b"old\n".to_vec()),
                 after: FileSnapshot::Present(b"new\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("record");
@@ -703,6 +726,7 @@ fn user_shell_source_kind_is_authored_and_roundtrips() {
                 before: FileSnapshot::Missing,
                 after: FileSnapshot::Present(b"from user shell\n".to_vec()),
                 coverage: CoverageStatus::Complete,
+                scope: crate::model::ChangeScope::Workspace,
             }],
         )
         .expect("record user_shell");
@@ -735,6 +759,7 @@ fn pending_text(
         before: before.map_or(FileSnapshot::Missing, |b| FileSnapshot::Present(b.to_vec())),
         after: after.map_or(FileSnapshot::Missing, |b| FileSnapshot::Present(b.to_vec())),
         coverage: CoverageStatus::Complete,
+        scope: crate::model::ChangeScope::Workspace,
     }
 }
 
@@ -975,4 +1000,58 @@ fn mutate_skips_net_noop_added_then_deleted_files() {
         b"recreated-later
 "
     );
+}
+
+#[test]
+fn unattributed_author_allocates_shell_stream_and_ephemeral_only_index_flag() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    let stmp = tmp.path().join("session-tmp");
+    fs::create_dir_all(&ws).unwrap();
+    fs::create_dir_all(&stmp).unwrap();
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).unwrap();
+
+    let meta = ChangeMetadata {
+        thread_id: String::new(),
+        session_id: "sess-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        call_id: "call-u1".to_string(),
+        author: Some(crate::ChangeAuthor::Unattributed),
+        source_kind: ChangeSourceKind::UserShell,
+        workspace_root: ws,
+        created_at: 1_700_000_000,
+        exit_code: Some(0),
+        summary: None,
+        claim_key: None,
+    };
+    let rec1 = store
+        .record_change(
+            meta,
+            vec![PendingFileChange {
+                rel_path: "scratch.txt".to_string(),
+                abs_path: stmp.join("scratch.txt"),
+                moved_from: None,
+                before: FileSnapshot::Missing,
+                after: FileSnapshot::Present(b"tmp\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+                scope: crate::ChangeScope::Ephemeral,
+            }],
+        )
+        .unwrap();
+
+    assert_eq!(rec1.id.as_str(), "shell1");
+    assert!(rec1.id.is_unattributed());
+    assert!(rec1.metadata.is_unattributed());
+    assert_eq!(rec1.metadata.thread_id, "");
+
+    let expanded = expand_id_spec("shell1..2").unwrap();
+    assert_eq!(
+        expanded.iter().map(ChangeId::as_str).collect::<Vec<_>>(),
+        vec!["shell1", "shell2"]
+    );
+
+    let entries = store.list_entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].is_unattributed());
+    assert!(entries[0].ephemeral_only);
 }

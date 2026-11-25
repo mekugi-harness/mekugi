@@ -33,6 +33,7 @@ fn list_summary_diff_history_and_path_scoped_revert_apply() {
                 session_id: "sess-1".to_string(),
                 turn_id: "turn-1".to_string(),
                 call_id: "call-1".to_string(),
+                author: None,
                 source_kind: ChangeSourceKind::ApplyPatch,
                 workspace_root: ws,
                 created_at: 1_700_000_000,
@@ -48,6 +49,7 @@ fn list_summary_diff_history_and_path_scoped_revert_apply() {
                     before: FileSnapshot::Present(b"line1\nline2\nline3\n".to_vec()),
                     after: FileSnapshot::Present(b"line1-mod\nline2\nline3\n".to_vec()),
                     coverage: CoverageStatus::Complete,
+                    scope: codex_change_history::ChangeScope::Workspace,
                 },
                 PendingFileChange {
                     rel_path: "b.txt".to_string(),
@@ -56,6 +58,7 @@ fn list_summary_diff_history_and_path_scoped_revert_apply() {
                     before: FileSnapshot::Missing,
                     after: FileSnapshot::Present(b"brand-new\n".to_vec()),
                     coverage: CoverageStatus::Complete,
+                    scope: codex_change_history::ChangeScope::Workspace,
                 },
             ],
         )
@@ -135,6 +138,7 @@ fn range_summary_omits_reverted_files_and_flags_external_write_gaps() {
         session_id: "sess-1".to_string(),
         turn_id: format!("turn-{call}"),
         call_id: call.to_string(),
+        author: None,
         source_kind: kind,
         workspace_root: ws.clone(),
         created_at: 1_700_000_000,
@@ -149,6 +153,7 @@ fn range_summary_omits_reverted_files_and_flags_external_write_gaps() {
         before: FileSnapshot::Present(before.to_vec()),
         after: FileSnapshot::Present(after.to_vec()),
         coverage: CoverageStatus::Complete,
+        scope: codex_change_history::ChangeScope::Workspace,
     };
 
     store
@@ -196,4 +201,155 @@ fn range_summary_omits_reverted_files_and_flags_external_write_gaps() {
         sum.stdout.contains("M gap.rs") && sum.stdout.contains("amber3: discontinuous baseline")
     );
     assert!(sum.stdout.contains("Total: 2 files"));
+}
+
+#[test]
+fn mchanges_hides_ephemeral_and_unattributed_from_agent_views_but_allows_explicit_id() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    let store_dir = tmp.path().join("store");
+    fs::create_dir_all(&ws).unwrap();
+    let store = ChangeHistoryStore::open(&store_dir).unwrap();
+
+    store
+        .record_change(
+            ChangeMetadata {
+                thread_id: "agent-a".to_string(),
+                session_id: "sess-1".to_string(),
+                turn_id: "t1".to_string(),
+                call_id: "c1".to_string(),
+                author: Some(codex_change_history::ChangeAuthor::Agent {
+                    thread_id: "agent-a".to_string(),
+                }),
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: ws.clone(),
+                created_at: 1_700_000_000,
+                exit_code: Some(0),
+                summary: None,
+                claim_key: None,
+            },
+            vec![
+                PendingFileChange {
+                    rel_path: "app.rs".to_string(),
+                    abs_path: ws.join("app.rs"),
+                    moved_from: None,
+                    before: FileSnapshot::Missing,
+                    after: FileSnapshot::Present(b"fn main() {}\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                    scope: codex_change_history::ChangeScope::Workspace,
+                },
+                PendingFileChange {
+                    rel_path: "/tmp/scratch.txt".to_string(),
+                    abs_path: std::path::PathBuf::from("/tmp/scratch.txt"),
+                    moved_from: None,
+                    before: FileSnapshot::Missing,
+                    after: FileSnapshot::Present(b"tmp-only\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                    scope: codex_change_history::ChangeScope::Ephemeral,
+                },
+            ],
+        )
+        .unwrap();
+
+    store
+        .record_change(
+            ChangeMetadata {
+                thread_id: "agent-a".to_string(),
+                session_id: "sess-1".to_string(),
+                turn_id: "t2".to_string(),
+                call_id: "c2".to_string(),
+                author: None,
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: ws.clone(),
+                created_at: 1_700_000_001,
+                exit_code: Some(0),
+                summary: None,
+                claim_key: None,
+            },
+            vec![PendingFileChange {
+                rel_path: "/tmp/only.txt".to_string(),
+                abs_path: std::path::PathBuf::from("/tmp/only.txt"),
+                moved_from: None,
+                before: FileSnapshot::Missing,
+                after: FileSnapshot::Present(b"ephemeral\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+                scope: codex_change_history::ChangeScope::Ephemeral,
+            }],
+        )
+        .unwrap();
+
+    store
+        .record_change(
+            ChangeMetadata {
+                thread_id: String::new(),
+                session_id: "sess-1".to_string(),
+                turn_id: "t3".to_string(),
+                call_id: "c3".to_string(),
+                author: Some(codex_change_history::ChangeAuthor::Unattributed),
+                source_kind: ChangeSourceKind::UserShell,
+                workspace_root: ws.clone(),
+                created_at: 1_700_000_002,
+                exit_code: Some(0),
+                summary: None,
+                claim_key: None,
+            },
+            vec![PendingFileChange {
+                rel_path: "manual.txt".to_string(),
+                abs_path: ws.join("manual.txt"),
+                moved_from: None,
+                before: FileSnapshot::Missing,
+                after: FileSnapshot::Present(b"by-user\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+                scope: codex_change_history::ChangeScope::Workspace,
+            }],
+        )
+        .unwrap();
+
+    let s = store_dir.to_string_lossy().to_string();
+    let mine_list = super::execute(&[
+        "--list".into(),
+        "--mine".into(),
+        "--thread".into(),
+        "agent-a".into(),
+        "--store".into(),
+        s.clone(),
+    ]);
+    assert_eq!(mine_list.exit_code, 0);
+    assert!(mine_list.stdout.contains("amber1"), "{}", mine_list.stdout);
+    assert!(!mine_list.stdout.contains("amber2"), "{}", mine_list.stdout);
+    assert!(!mine_list.stdout.contains("shell1"), "{}", mine_list.stdout);
+
+    let default_diff = super::execute(&[
+        "--thread".into(),
+        "agent-a".into(),
+        "--store".into(),
+        s.clone(),
+    ]);
+    assert_eq!(default_diff.exit_code, 0);
+    assert!(
+        default_diff.stdout.contains("app.rs"),
+        "{}",
+        default_diff.stdout
+    );
+    assert!(
+        !default_diff.stdout.contains("tmp-only"),
+        "{}",
+        default_diff.stdout
+    );
+
+    let explicit_tmp = super::execute(&["amber2".into(), "--store".into(), s.clone()]);
+    assert_eq!(explicit_tmp.exit_code, 0);
+    assert!(
+        explicit_tmp.stdout.contains("ephemeral"),
+        "{}",
+        explicit_tmp.stdout
+    );
+
+    let explicit_shell = super::execute(&["shell1".into(), "--store".into(), s]);
+    assert_eq!(explicit_shell.exit_code, 0);
+    assert!(
+        explicit_shell.stdout.contains("by-user"),
+        "{}",
+        explicit_shell.stdout
+    );
 }

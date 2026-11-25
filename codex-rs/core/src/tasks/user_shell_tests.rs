@@ -60,3 +60,24 @@ fn user_shell_snapshot_preserves_package_path_prepend() {
         format!("{}:/snapshot/bin", package_path_dir.display())
     );
 }
+
+#[test]
+fn privilege_escalation_detection_checks_command_positions_only() {
+    assert!(command_uses_privilege_escalation("sudo apt update"));
+    assert!(command_uses_privilege_escalation("/usr/bin/sudo -E make"));
+    assert!(command_uses_privilege_escalation(
+        "FOO=1 env -i BAR=2 sudo ls"
+    ));
+    assert!(command_uses_privilege_escalation("echo hi && sudo reboot"));
+    assert!(command_uses_privilege_escalation(
+        "echo hi | doas tee /etc/foo"
+    ));
+    assert!(command_uses_privilege_escalation("pkexec true"));
+
+    assert!(!command_uses_privilege_escalation("echo ready > sudo.log"));
+    assert!(!command_uses_privilege_escalation("cat /tmp/sudo"));
+    assert!(!command_uses_privilege_escalation("grep pkexec README.md"));
+    assert!(!command_uses_privilege_escalation(
+        "printf 'sudo\\n' > out.txt"
+    ));
+}

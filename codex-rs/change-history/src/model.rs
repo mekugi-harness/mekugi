@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -6,6 +8,117 @@ use serde::Serialize;
 use crate::identity::ChangeId;
 
 pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Attribution owner for a captured change record.
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChangeAuthor {
+    /// Authored by a specific agent thread (gets its own stream, e.g. `amber1`).
+    Agent { thread_id: String },
+    /// User shell mode (`!` / `/shell`): emits a change ID (`shell1`) attributed to nobody.
+    Unattributed,
+}
+
+impl ChangeAuthor {
+    pub fn from_thread_id(thread_id: &str) -> Self {
+        if thread_id.is_empty() {
+            Self::Unattributed
+        } else {
+            Self::Agent {
+                thread_id: thread_id.to_string(),
+            }
+        }
+    }
+
+    pub fn is_unattributed(&self) -> bool {
+        matches!(self, Self::Unattributed)
+    }
+}
+
+/// Filesystem scope classification for an observed file change.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeScope {
+    /// Inside `workspace_root` / cwd.
+    #[default]
+    Workspace,
+    /// Outside `workspace_root`, non-ephemeral (e.g. sibling repo, `~/.config`).
+    External,
+    /// Ephemeral temp storage (`/tmp`, `$TMPDIR`, `$SESSION_TMP`).
+    /// Visible and clickable on the transcript, excluded from agent change history and saved Diff.
+    Ephemeral,
+}
+
+impl ChangeScope {
+    pub fn is_ephemeral(self) -> bool {
+        matches!(self, Self::Ephemeral)
+    }
+}
+
+/// Classify an absolute path as `Workspace`, `External`, or `Ephemeral`.
+///
+/// `session_tmp` is always `Ephemeral`. Otherwise, paths inside `workspace_root`
+/// are `Workspace` (even if `workspace_root` itself lives under `/tmp`), paths
+/// under system temp roots outside `workspace_root` are `Ephemeral`, and all
+/// other paths outside `workspace_root` are `External`.
+pub fn classify_change_scope(
+    abs_path: &Path,
+    workspace_root: &Path,
+    session_tmp: Option<&Path>,
+) -> ChangeScope {
+    let norm_path = canonical_or_self(abs_path);
+    if let Some(stmp) = session_tmp {
+        let norm_stmp = canonical_or_self(stmp);
+        if norm_path.starts_with(&norm_stmp) || abs_path.starts_with(stmp) {
+            return ChangeScope::Ephemeral;
+        }
+    }
+    let norm_ws = canonical_or_self(workspace_root);
+    if norm_path.starts_with(&norm_ws) || abs_path.starts_with(workspace_root) {
+        return ChangeScope::Workspace;
+    }
+    for root in ephemeral_temp_roots() {
+        let norm_root = canonical_or_self(&root);
+        if norm_path.starts_with(&norm_root) || abs_path.starts_with(&root) {
+            return ChangeScope::Ephemeral;
+        }
+    }
+    ChangeScope::External
+}
+
+fn ephemeral_temp_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::with_capacity(4);
+    if let Ok(session_tmp) = std::env::var("SESSION_TMP")
+        && !session_tmp.is_empty()
+    {
+        roots.push(PathBuf::from(session_tmp));
+    }
+    if let Ok(tmpdir) = std::env::var("TMPDIR")
+        && !tmpdir.is_empty()
+    {
+        roots.push(PathBuf::from(tmpdir));
+    }
+    roots.push(std::env::temp_dir());
+    #[cfg(unix)]
+    {
+        roots.push(PathBuf::from("/tmp"));
+        roots.push(PathBuf::from("/private/tmp"));
+    }
+    roots
+}
+
+fn canonical_or_self(path: &Path) -> PathBuf {
+    if let Ok(canon) = fs::canonicalize(path) {
+        return canon;
+    }
+    if let Some(parent) = path.parent()
+        && let Some(name) = path.file_name()
+        && let Ok(canon_parent) = fs::canonicalize(parent)
+    {
+        return canon_parent.join(name);
+    }
+    path.to_path_buf()
+}
 
 /// Provenance of a captured change record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -129,6 +242,8 @@ pub struct PendingFileChange {
     pub after: FileSnapshot,
     /// Coverage honesty marker for this file.
     pub coverage: CoverageStatus,
+    /// Filesystem scope classification (`Workspace`, `External`, or `Ephemeral`).
+    pub scope: ChangeScope,
 }
 
 /// Immutable persisted per-file change evidence inside a [`ChangeRecord`].
@@ -142,6 +257,8 @@ pub struct FileEvidence {
     pub before: FileState,
     pub after: FileState,
     pub coverage: CoverageStatus,
+    #[serde(default)]
+    pub scope: ChangeScope,
 }
 
 /// Attribution and context metadata for a [`ChangeRecord`].
@@ -151,6 +268,8 @@ pub struct ChangeMetadata {
     pub session_id: String,
     pub turn_id: String,
     pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<ChangeAuthor>,
     pub source_kind: ChangeSourceKind,
     pub workspace_root: PathBuf,
     /// Unix timestamp in seconds.
@@ -162,6 +281,20 @@ pub struct ChangeMetadata {
     /// Optional deduplication/claim key shared across patch and shell-write observers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_key: Option<String>,
+}
+
+impl ChangeMetadata {
+    /// Effective attribution owner, preserving compatibility with records written before `author`.
+    pub fn effective_author(&self) -> ChangeAuthor {
+        if let Some(author) = &self.author {
+            return author.clone();
+        }
+        ChangeAuthor::from_thread_id(&self.thread_id)
+    }
+
+    pub fn is_unattributed(&self) -> bool {
+        self.effective_author().is_unattributed()
+    }
 }
 
 /// Immutable published record for a single captured change event.
@@ -180,10 +313,28 @@ pub struct ChangeIndexEntry {
     pub id: ChangeId,
     pub sequence: u64,
     pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<ChangeAuthor>,
     pub call_id: String,
     pub source_kind: ChangeSourceKind,
     pub created_at: i64,
     pub exit_code: Option<i32>,
     pub file_paths: Vec<String>,
     pub has_incomplete_coverage: bool,
+    /// True when every file in this record is `ChangeScope::Ephemeral` (e.g. `/tmp`).
+    #[serde(default)]
+    pub ephemeral_only: bool,
+}
+
+impl ChangeIndexEntry {
+    pub fn effective_author(&self) -> ChangeAuthor {
+        if let Some(author) = &self.author {
+            return author.clone();
+        }
+        ChangeAuthor::from_thread_id(&self.thread_id)
+    }
+
+    pub fn is_unattributed(&self) -> bool {
+        self.effective_author().is_unattributed()
+    }
 }

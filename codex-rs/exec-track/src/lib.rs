@@ -1,46 +1,153 @@
-//! Native exec tracking and shell-write / `mktemp` observation for Mekugi.
+//! Process-scoped OS write observer for Mekugi shell execution.
 //!
-//! Instruments supported Bash and Linux `dash`-backed `sh` command lists inside
-//! a single real shell without occupying fixed caller FDs (3/4/7/8) or holding
-//! tracking FDs open across user commands or detached descendants.
+//! Replaces Bash AST write-path heuristics and shell script rewriting with
+//! OS-level per-process write interception:
+//! - Linux: `seccomp-unotify` (`SECCOMP_RET_USER_NOTIF` + `SECCOMP_USER_NOTIF_FLAG_CONTINUE`).
+//! - macOS: `DYLD_INSERT_LIBRARIES` (`__DATA,__interpose`) + non-SIP shell preference.
 //!
-//! - [`segment`]: Fail-closed `tree-sitter-bash` AST span selection and eligibility gate.
-//! - [`rewrite`]: Single-shell boundary and `mktemp` instrumentation.
-//! - [`session`]: Native pipe-synchronized control/ack session and report collector.
-//! - [`capture`]: Pre/post shell-write and `mktemp` file-tree capture into `codex-change-history`.
+//! Each shell command gets its own isolated observer tied to its `(thread_id, call_id)`,
+//! works on non-git directories, captures writes outside cwd, and classifies `/tmp`
+//! (`ChangeScope::Ephemeral`) separately from workspace/external edits.
 
-mod capture;
-mod rewrite;
-mod segment;
-#[cfg(unix)]
-mod session;
+mod active_writers;
+mod ipc;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+mod persist;
 
-pub use capture::ShellWriteCapture;
-pub use capture::extract_static_write_paths;
-pub use capture::shell_write_claim_key;
-pub use rewrite::RewriteOptions;
-pub use rewrite::TrackingMode;
-pub use rewrite::instrument_script;
-pub use rewrite::rewrite_segment_boundaries;
-pub use segment::SegmentSpan;
-pub use segment::ShellDialect;
-pub use segment::SplitOutcome;
-pub use segment::has_shell_setup;
-pub use segment::split_segments;
-#[cfg(unix)]
-pub use session::DrainRequest;
-#[cfg(unix)]
-pub use session::ExecTrackReport;
-#[cfg(unix)]
-pub use session::ExecTrackSession;
-#[cfg(unix)]
-pub use session::MktempCreation;
-#[cfg(unix)]
-pub use session::OutputStreamKind;
-#[cfg(unix)]
-pub use session::SegmentReport;
-#[cfg(unix)]
-pub use session::SegmentStatus;
+use std::io;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use codex_change_history::ChangeHistoryError;
+use codex_change_history::ChangeMetadata;
+use codex_change_history::ChangeRecord;
+use tempfile::TempDir;
+
+#[cfg(target_os = "linux")]
+pub use linux::run_observe_wrapper_main;
+#[cfg(target_os = "macos")]
+pub use macos::run_observe_wrapper_main;
+use persist::ObservationState;
+
+/// Internal arg1 used by `codex-arg0` to dispatch the Linux `seccomp-unotify` child wrapper.
+pub const CODEX_EXEC_OBSERVE_ARG1: &str = "--codex-exec-observe";
+
+/// Compute the shared deduplication `claim_key` for `(thread_id, call_id)` so
+/// overlapping `apply_patch` and shell observers claim the same logical call at most once.
+pub fn shell_write_claim_key(thread_id: &str, call_id: &str) -> String {
+    format!("{thread_id}:{call_id}")
+}
+
+/// Command argv and environment adjustments produced by [`WriteObserverSession::wrap_command`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrappedCommand {
+    pub argv: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+/// Active per-command process-scoped write observer.
+pub struct WriteObserverSession {
+    dir: TempDir,
+    state: Arc<Mutex<ObservationState>>,
+    #[cfg(target_os = "linux")]
+    backend: linux::LinuxObserver,
+    #[cfg(target_os = "macos")]
+    backend: macos::MacosObserver,
+}
+
+impl WriteObserverSession {
+    /// Start a new per-command write observer with a sandbox read-policy predicate.
+    pub fn start(
+        call_id: String,
+        can_read: impl Fn(&Path) -> bool + Send + Sync + 'static,
+    ) -> io::Result<Self> {
+        let dir = tempfile::Builder::new().prefix("mekugi-obs-").tempdir()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700));
+        }
+        let state = Arc::new(Mutex::new(ObservationState::new(
+            call_id,
+            dir.path().to_path_buf(),
+            Arc::new(can_read),
+        )));
+        #[cfg(target_os = "linux")]
+        let backend = linux::LinuxObserver::start(dir.path(), Arc::clone(&state))?;
+        #[cfg(target_os = "macos")]
+        let backend = macos::MacosObserver::start(dir.path(), Arc::clone(&state))?;
+        Ok(Self {
+            dir,
+            state,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            backend,
+        })
+    }
+
+    /// Private directory holding the observer's Unix socket (and macOS dylib),
+    /// granted read/write access in sandboxed commands.
+    pub fn dir_path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Wrap a shell command so its child process tree reports write syscalls to this observer.
+    pub fn wrap_command(&self, argv: &[String], self_exe: Option<&Path>) -> Option<WrappedCommand> {
+        #[cfg(target_os = "linux")]
+        {
+            self.backend.wrap_command(argv, self_exe)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.backend.wrap_command(argv, self_exe)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (argv, self_exe);
+            None
+        }
+    }
+
+    /// Stop observing new writes without discarding already-captured baselines,
+    /// so callers (e.g. timed-out command termination) can still call
+    /// `finish_and_persist` afterwards.
+    pub fn stop(&self) {
+        #[cfg(target_os = "linux")]
+        self.backend.settle();
+        #[cfg(target_os = "macos")]
+        self.backend.stop_and_join();
+    }
+
+    /// Stop the observer, read post-execution snapshots for all observed paths,
+    /// and persist durable evidence into `ChangeHistoryStore`.
+    pub fn finish_and_persist(
+        &self,
+        store_dir: &Path,
+        workspace_root: &Path,
+        session_tmp: Option<&Path>,
+        metadata: ChangeMetadata,
+    ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
+        self.stop();
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.finalize_and_persist(store_dir, workspace_root, session_tmp, metadata)
+    }
+}
+
+impl Drop for WriteObserverSession {
+    fn drop(&mut self) {
+        self.stop();
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release_active_writers();
+    }
+}
 
 #[cfg(test)]
 #[path = "exec_track_tests.rs"]

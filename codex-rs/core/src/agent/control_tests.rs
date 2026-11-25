@@ -6613,6 +6613,7 @@ async fn delegated_patch_reaches_parent_history_without_connection() -> anyhow::
                     session_id: author.session.session_id().to_string(),
                     turn_id: turn,
                     call_id: format!("patch-{}", records.len()),
+                    author: None,
                     source_kind: ChangeSourceKind::ApplyPatch,
                     workspace_root: workspace.path().into(),
                     created_at: 1,

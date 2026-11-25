@@ -259,13 +259,17 @@ async fn compaction_downgrades_ultra_to_max_without_overrides() {
     )
     .await;
     let mut model = (*turn.initial_settings.model_info).clone();
-    model.supported_reasoning_levels = [ReasoningEffort::High, ReasoningEffort::Max, ReasoningEffort::Ultra]
-        .into_iter()
-        .map(|effort| ReasoningEffortPreset {
-            description: effort.to_string(),
-            effort,
-        })
-        .collect();
+    model.supported_reasoning_levels = [
+        ReasoningEffort::High,
+        ReasoningEffort::Max,
+        ReasoningEffort::Ultra,
+    ]
+    .into_iter()
+    .map(|effort| ReasoningEffortPreset {
+        description: effort.to_string(),
+        effort,
+    })
+    .collect();
     let mut choice = turn.initial_settings.selected().clone();
     choice.collaboration_mode.settings.reasoning_effort = Some(ReasoningEffort::Ultra);
     let step = ResolvedStepSettings::new(
@@ -283,11 +287,8 @@ async fn compaction_downgrades_ultra_to_max_without_overrides() {
     // Also downgrade when Ultra comes from default_reasoning_level.
     choice.collaboration_mode.settings.reasoning_effort = None;
     model.default_reasoning_level = Some(ReasoningEffort::Ultra);
-    let default_ultra_step = ResolvedStepSettings::new(
-        Arc::new(choice),
-        Arc::new(model),
-        &Default::default(),
-    );
+    let default_ultra_step =
+        ResolvedStepSettings::new(Arc::new(choice), Arc::new(model), &Default::default());
     assert_eq!(
         session
             .reasoning_effort_for_request(&default_ultra_step, RequestEffortUsage::Compaction)

@@ -176,34 +176,35 @@ pub(crate) async fn execute_user_shell_command(
     let call_id = Uuid::new_v4().to_string();
     let raw_command = command;
     let user_shell_track =
-        crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell_with_source(
+        crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_user_shell(
             &raw_command,
-            cwd.as_path(),
-            Some(&crate::exec_env::session_tmp_path(session.session_id())),
+            Some(crate::exec_env::session_tmp_path(session.session_id())),
             cwd.as_path().to_path_buf(),
-            None,
-            &environment_shell.shell_type,
-            /*tty*/ false,
             crate::exec_env::change_history_dir(session.session_id()),
-            session.thread_id.to_string(),
             session.session_id().to_string(),
             turn_context.sub_id.clone(),
             call_id.clone(),
-            codex_change_history::ChangeSourceKind::UserShell,
         );
-    #[cfg(unix)]
-    drop(user_shell_track.drain_rx);
-    let tracked_display_command = user_shell_track
-        .instrumented_script
-        .as_deref()
-        .map(|script| environment_shell.derive_exec_args(script, use_login_shell));
-    let exec_command = prepare_user_shell_exec_command(
-        tracked_display_command.as_ref().unwrap_or(&display_command),
+    let mut exec_command = prepare_user_shell_exec_command(
+        &display_command,
         environment_shell,
         shell_snapshot_location.as_ref(),
         &shell_environment_policy.r#set,
         &mut exec_env_map,
     );
+    // Skip Linux `seccomp-unotify` wrapping (`PR_SET_NO_NEW_PRIVS`) when the user
+    // shell command invokes a privilege-escalation binary (`sudo`/`su`/`doas`/`pkexec`).
+    let skip_for_setuid =
+        cfg!(target_os = "linux") && command_uses_privilege_escalation(&raw_command);
+    if !skip_for_setuid
+        && let Some(wrapped) = user_shell_track
+            .wrap_command(&exec_command, turn_context.config.codex_self_exe.as_deref())
+    {
+        exec_command = wrapped.argv;
+        for (k, v) in wrapped.env {
+            exec_env_map.insert(k, v);
+        }
+    }
 
     let parsed_cmd = parse_command(&display_command);
     session
@@ -256,7 +257,7 @@ pub(crate) async fn execute_user_shell_command(
 
     match exec_result {
         Err(CancelErr::Cancelled) => {
-            user_shell_track.attachment.settle_once(Some(-1));
+            user_shell_track.settle_once(Some(-1));
             let aborted_message = "command aborted by user".to_string();
             let exec_output = ExecToolCallOutput {
                 exit_code: -1,
@@ -298,9 +299,7 @@ pub(crate) async fn execute_user_shell_command(
                 .await;
         }
         Ok(Ok(output)) => {
-            user_shell_track
-                .attachment
-                .settle_once(Some(output.exit_code));
+            user_shell_track.settle_once(Some(output.exit_code));
             session
                 .emit_turn_item_completed(
                     turn_context.as_ref(),
@@ -485,6 +484,109 @@ async fn persist_user_shell_output(
     session
         .inject_no_new_turn(vec![output_item], Some(turn_context))
         .await;
+}
+
+fn command_uses_privilege_escalation(raw_command: &str) -> bool {
+    fn is_env_assignment(tok: &str) -> bool {
+        let Some((name, _)) = tok.split_once('=') else {
+            return false;
+        };
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    fn check_cmd_token(tok: &str, at_cmd_pos: &mut bool, in_wrapper: &mut bool) -> bool {
+        if tok.is_empty() || !*at_cmd_pos {
+            return false;
+        }
+        if is_env_assignment(tok) {
+            return false;
+        }
+        if *in_wrapper && tok.starts_with('-') {
+            return false;
+        }
+        let base = tok.rsplit('/').next().unwrap_or(tok);
+        if matches!(base, "sudo" | "su" | "doas" | "pkexec") {
+            return true;
+        }
+        if matches!(
+            base,
+            "env" | "command" | "nohup" | "time" | "nice" | "exec" | "builtin"
+        ) {
+            *in_wrapper = true;
+            return false;
+        }
+        if matches!(
+            base,
+            "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "!"
+        ) {
+            *in_wrapper = false;
+            return false;
+        }
+        *at_cmd_pos = false;
+        *in_wrapper = false;
+        false
+    }
+
+    let mut token = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut at_cmd_pos = true;
+    let mut in_wrapper = false;
+
+    for ch in raw_command.chars() {
+        if escaped {
+            token.push(ch);
+            escaped = false;
+            continue;
+        }
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            } else {
+                token.push(ch);
+            }
+            continue;
+        }
+        if in_double {
+            if ch == '"' {
+                in_double = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else {
+                token.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            ';' | '|' | '&' | '\n' | '(' | ')' => {
+                if check_cmd_token(&token, &mut at_cmd_pos, &mut in_wrapper) {
+                    return true;
+                }
+                token.clear();
+                at_cmd_pos = true;
+                in_wrapper = false;
+            }
+            c if c.is_ascii_whitespace() => {
+                if !token.is_empty() {
+                    if check_cmd_token(&token, &mut at_cmd_pos, &mut in_wrapper) {
+                        return true;
+                    }
+                    token.clear();
+                }
+            }
+            _ => token.push(ch),
+        }
+    }
+    check_cmd_token(&token, &mut at_cmd_pos, &mut in_wrapper)
 }
 
 #[cfg(all(test, unix))]

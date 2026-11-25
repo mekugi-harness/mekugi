@@ -1,4 +1,4 @@
-//! Native exec-tracking and shell-write capture bridge for unified exec and user shell.
+//! Process-scoped OS shell-write capture bridge for unified exec and user shell.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -7,41 +7,24 @@ use std::sync::OnceLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use codex_change_history::ChangeAuthor;
 use codex_change_history::ChangeMetadata;
 use codex_change_history::ChangeSourceKind;
-use codex_exec_server::ExecOutputStream;
-#[cfg(unix)]
-use codex_exec_track::DrainRequest;
-#[cfg(unix)]
-use codex_exec_track::ExecTrackReport;
-#[cfg(unix)]
-use codex_exec_track::ExecTrackSession;
-#[cfg(unix)]
-use codex_exec_track::OutputStreamKind;
-use codex_exec_track::ShellDialect;
-use codex_exec_track::ShellWriteCapture;
-#[cfg(unix)]
-use codex_exec_track::TrackingMode;
+use codex_exec_track::WrappedCommand;
+use codex_exec_track::WriteObserverSession;
 use codex_exec_track::shell_write_claim_key;
-#[cfg(unix)]
-use codex_exec_track::split_segments;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use tokio::sync::mpsc;
 
-use crate::shell::ShellType;
-
-/// Active native exec-tracking and shell-write capture attachment bound to a
-/// single local shell process.
+/// Active per-command OS write-observer attachment bound to a single local shell process.
 pub(crate) struct ExecTrackAttachment {
-    #[cfg(unix)]
-    session: Option<Arc<ExecTrackSession>>,
-    write_capture: ShellWriteCapture,
+    observer: Option<WriteObserverSession>,
     store_dir: PathBuf,
     workspace_root: PathBuf,
-    read_policy: Option<(FileSystemSandboxPolicy, PathBuf)>,
+    session_tmp: Option<PathBuf>,
+    author: ChangeAuthor,
     thread_id: String,
     session_id: String,
     turn_id: String,
@@ -51,41 +34,28 @@ pub(crate) struct ExecTrackAttachment {
     settled: OnceLock<()>,
 }
 
-/// Prepared native exec-tracking state returned before process spawn.
-pub(crate) struct PreparedExecTrack {
-    pub(crate) attachment: Arc<ExecTrackAttachment>,
-    /// Instrumented single-shell script when AST eligibility succeeded.
-    pub(crate) instrumented_script: Option<String>,
-    #[cfg(unix)]
-    pub(crate) drain_rx: Option<mpsc::UnboundedReceiver<DrainRequest>>,
-}
-
 impl ExecTrackAttachment {
-    /// Prepare native exec tracking and pre-execution shell-write baselines for
-    /// a local shell invocation on the authored post-PreToolUse script.
+    /// Start a per-command process-scoped write observer for an agent shell call.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_for_shell(
         authored_script: &str,
-        cwd: &Path,
-        session_tmp: Option<&Path>,
+        session_tmp: Option<PathBuf>,
         workspace_root: PathBuf,
         read_policy: Option<(FileSystemSandboxPolicy, PathBuf)>,
-        shell_type: &ShellType,
-        tty: bool,
         store_dir: PathBuf,
         thread_id: String,
         session_id: String,
         turn_id: String,
         call_id: String,
-    ) -> PreparedExecTrack {
-        Self::prepare_for_shell_with_source(
+    ) -> Arc<Self> {
+        let author = ChangeAuthor::from_thread_id(&thread_id);
+        Self::prepare_with_author(
             authored_script,
-            cwd,
             session_tmp,
             workspace_root,
             read_policy,
-            shell_type,
-            tty,
             store_dir,
+            author,
             thread_id,
             session_id,
             turn_id,
@@ -94,73 +64,63 @@ impl ExecTrackAttachment {
         )
     }
 
-    /// Prepare native exec tracking and pre-execution shell-write baselines with
-    /// an explicit [`ChangeSourceKind`] provenance label.
+    /// Start a per-command write observer for interactive user-shell (`!`) mode.
+    /// Emits a real change ID (`shell1`, `shell2`, ...) attributed to nobody.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare_for_shell_with_source(
+    pub(crate) fn prepare_for_user_shell(
         authored_script: &str,
-        cwd: &Path,
-        session_tmp: Option<&Path>,
+        session_tmp: Option<PathBuf>,
+        workspace_root: PathBuf,
+        store_dir: PathBuf,
+        session_id: String,
+        turn_id: String,
+        call_id: String,
+    ) -> Arc<Self> {
+        Self::prepare_with_author(
+            authored_script,
+            session_tmp,
+            workspace_root,
+            None,
+            store_dir,
+            ChangeAuthor::Unattributed,
+            String::new(),
+            session_id,
+            turn_id,
+            call_id,
+            ChangeSourceKind::UserShell,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_with_author(
+        authored_script: &str,
+        session_tmp: Option<PathBuf>,
         workspace_root: PathBuf,
         read_policy: Option<(FileSystemSandboxPolicy, PathBuf)>,
-        shell_type: &ShellType,
-        tty: bool,
         store_dir: PathBuf,
+        author: ChangeAuthor,
         thread_id: String,
         session_id: String,
         turn_id: String,
         call_id: String,
         source_kind: ChangeSourceKind,
-    ) -> PreparedExecTrack {
-        let write_capture =
-            ShellWriteCapture::prepare_with_policy(authored_script, cwd, session_tmp, |path| {
-                Self::can_read_path(&read_policy, path)
-            });
-
-        #[cfg(unix)]
-        let (session, instrumented_script, drain_rx) = {
-            let dialect = match shell_type {
-                ShellType::Bash => Some(ShellDialect::Bash),
-                ShellType::Sh if cfg!(target_os = "linux") => Some(ShellDialect::Dash),
-                _ => None,
-            };
-            if let Some(dialect) = dialect
-                && let Some(split) = split_segments(authored_script, dialect)
-            {
-                let mode = if tty {
-                    TrackingMode::Tty
-                } else {
-                    TrackingMode::Pipe
-                };
-                match ExecTrackSession::start(split.segments.clone(), mode) {
-                    Ok((session, drain_rx)) => {
-                        let instrumented =
-                            session.instrument_script(authored_script, &split.segments, dialect);
-                        (Some(Arc::new(session)), Some(instrumented), Some(drain_rx))
-                    }
-                    Err(err) => {
-                        tracing::debug!("exec_track session start failed; falling back: {err}");
-                        (None, None, None)
-                    }
-                }
-            } else {
-                (None, None, None)
+    ) -> Arc<Self> {
+        let observer = match WriteObserverSession::start(call_id.clone(), move |path| {
+            Self::can_read_path(&read_policy, path)
+        }) {
+            Ok(obs) => Some(obs),
+            Err(err) => {
+                tracing::debug!("write observer start failed; running unobserved: {err}");
+                None
             }
         };
 
-        #[cfg(not(unix))]
-        let instrumented_script: Option<String> = {
-            let _ = (shell_type, tty);
-            None
-        };
-
-        let attachment = Arc::new(Self {
-            #[cfg(unix)]
-            session,
-            write_capture,
+        Arc::new(Self {
+            observer,
             store_dir,
             workspace_root,
-            read_policy,
+            session_tmp,
+            author,
             thread_id,
             session_id,
             turn_id,
@@ -168,113 +128,71 @@ impl ExecTrackAttachment {
             source_kind,
             summary: authored_script.to_string(),
             settled: OnceLock::new(),
-        });
+        })
+    }
 
-        PreparedExecTrack {
-            attachment,
-            instrumented_script,
-            #[cfg(unix)]
-            drain_rx,
-        }
+    /// Wrap command argv/env so the child process tree reports write syscalls to this observer.
+    pub(crate) fn wrap_command(
+        &self,
+        argv: &[String],
+        self_exe: Option<&Path>,
+    ) -> Option<WrappedCommand> {
+        self.observer.as_ref()?.wrap_command(argv, self_exe)
     }
 
     /// Filesystem permissions granting sandboxed commands read/write access to
-    /// the private per-invocation tracker directory.
+    /// the private per-invocation observer directory (Unix socket / macOS dylib).
     pub(crate) fn additional_permissions(&self) -> Option<AdditionalPermissionProfile> {
-        #[cfg(unix)]
-        {
-            let dir = self.session.as_ref()?.dir_path();
-            let abs = AbsolutePathBuf::from_absolute_path(dir).ok()?;
-            Some(AdditionalPermissionProfile {
-                file_system: Some(FileSystemPermissions::from_read_write_roots(
-                    Some(vec![abs.clone()]),
-                    Some(vec![abs]),
-                )),
-                ..Default::default()
-            })
-        }
-        #[cfg(not(unix))]
-        {
-            None
-        }
+        let dir = self.observer.as_ref()?.dir_path();
+        let abs = AbsolutePathBuf::from_absolute_path(dir).ok()?;
+        Some(AdditionalPermissionProfile {
+            file_system: Some(FileSystemPermissions::from_read_write_roots(
+                Some(vec![abs.clone()]),
+                Some(vec![abs]),
+            )),
+            ..Default::default()
+        })
     }
 
-    /// Forward output bytes from the native output collector into the active
-    /// tracked segment.
-    pub(crate) fn push_output(&self, stream: ExecOutputStream, bytes: &[u8]) {
-        #[cfg(unix)]
-        if let Some(session) = &self.session {
-            let kind = match stream {
-                ExecOutputStream::Stdout | ExecOutputStream::Pty => OutputStreamKind::Stdout,
-                ExecOutputStream::Stderr => OutputStreamKind::Stderr,
-            };
-            session.push_output(kind, bytes);
-        }
-        #[cfg(not(unix))]
-        let _ = (stream, bytes);
-    }
-
-    /// Abort owned tracker tasks and unlink FIFOs on early stop or drop.
+    /// Stop the observer background thread on early abort or drop.
     pub(crate) fn stop(&self) {
-        #[cfg(unix)]
-        if let Some(session) = &self.session {
-            session.stop();
+        if let Some(observer) = &self.observer {
+            observer.stop();
         }
     }
 
-    /// Settle tracking and persist shell-write / mktemp evidence into
-    /// ChangeHistoryStore at most once.
+    /// Settle observation and persist shell-write evidence into ChangeHistoryStore at most once.
     pub(crate) fn settle_once(&self, host_exit_code: Option<i32>) {
         if self.settled.set(()).is_err() {
             return;
         }
-        #[cfg(unix)]
-        let (mktemp_creations, _report): (
-            Vec<codex_exec_track::MktempCreation>,
-            Option<ExecTrackReport>,
-        ) = if let Some(session) = &self.session {
-            let report = session.finalize(host_exit_code);
-            if let Some(reason) = &report.fallback_reason {
-                tracing::debug!(
-                    call_id = %self.call_id,
-                    "exec_track fell back to stock combined output: {reason}"
-                );
-            }
-            let mk = report.mktemp_creations.clone();
-            (mk, Some(report))
-        } else {
-            (Vec::new(), None)
+        let Some(observer) = &self.observer else {
+            return;
         };
-
-        #[cfg(unix)]
-        {
-            if self.write_capture.candidate_count() == 0 && mktemp_creations.is_empty() {
-                return;
-            }
-            let claim_key = shell_write_claim_key(&self.thread_id, &self.call_id);
-            let metadata = ChangeMetadata {
-                thread_id: self.thread_id.clone(),
-                session_id: self.session_id.clone(),
-                turn_id: self.turn_id.clone(),
-                call_id: self.call_id.clone(),
-                source_kind: self.source_kind,
-                workspace_root: self.workspace_root.clone(),
-                created_at: unix_now_secs(),
-                exit_code: host_exit_code,
-                summary: Some(self.summary.clone()),
-                claim_key: Some(claim_key),
-            };
-            if let Err(err) = self.write_capture.finalize_and_persist_with_policy(
-                &self.store_dir,
-                metadata,
-                &mktemp_creations,
-                |path| Self::can_read_path(&self.read_policy, path),
-            ) {
-                tracing::warn!(
-                    call_id = %self.call_id,
-                    "failed to persist native shell-write change evidence: {err}"
-                );
-            }
+        let claim_key = shell_write_claim_key(&self.thread_id, &self.call_id);
+        let metadata = ChangeMetadata {
+            thread_id: self.thread_id.clone(),
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            call_id: self.call_id.clone(),
+            author: Some(self.author.clone()),
+            source_kind: self.source_kind,
+            workspace_root: self.workspace_root.clone(),
+            created_at: unix_now_secs(),
+            exit_code: host_exit_code,
+            summary: Some(self.summary.clone()),
+            claim_key: Some(claim_key),
+        };
+        if let Err(err) = observer.finish_and_persist(
+            &self.store_dir,
+            &self.workspace_root,
+            self.session_tmp.as_deref(),
+            metadata,
+        ) {
+            tracing::warn!(
+                call_id = %self.call_id,
+                "failed to persist shell-write change evidence: {err}"
+            );
         }
     }
 

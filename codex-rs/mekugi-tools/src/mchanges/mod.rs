@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeId;
+use codex_change_history::ChangeScope;
 use codex_change_history::MEKUGI_CHANGE_HISTORY_DIR_ENV_VAR;
 use codex_change_history::MutationDirection;
 use codex_change_history::compose_diff;
@@ -291,18 +292,26 @@ fn run_list(
     }
 
     let mut stdout = String::new();
+    let explicit_ids = !parsed.ids.is_empty();
     for entry in entries {
         if !parsed.include_history_in_list && !entry.source_kind.is_authored() {
             continue;
         }
-        if !parsed.ids.is_empty() && !parsed.ids.contains(&entry.id) {
+        if explicit_ids && !parsed.ids.contains(&entry.id) {
             continue;
         }
-        if parsed.mine
-            && let Some(tid) = thread_id
-            && entry.thread_id != tid
-        {
+        if !explicit_ids && entry.ephemeral_only {
             continue;
+        }
+        if parsed.mine {
+            if entry.is_unattributed() {
+                continue;
+            }
+            if let Some(tid) = thread_id
+                && entry.thread_id != tid
+            {
+                continue;
+            }
         }
         let exit_suffix = match entry.exit_code {
             Some(code) if code != 0 => format!(" exit={code}"),
@@ -338,6 +347,7 @@ fn run_review(
     thread_id: Option<&str>,
     view: ReviewView,
 ) -> ToolOutput {
+    let explicit_ids = !parsed.ids.is_empty();
     let ids = if !parsed.ids.is_empty() {
         parsed.ids.clone()
     } else {
@@ -349,11 +359,12 @@ fn run_review(
             .into_iter()
             .filter(|entry| {
                 let provenance_ok = view == ReviewView::History || entry.source_kind.is_authored();
+                let scope_ok = !entry.ephemeral_only;
                 let thread_ok = match thread_id {
-                    Some(tid) => entry.thread_id == tid,
+                    Some(tid) => !entry.is_unattributed() && entry.thread_id == tid,
                     None => true,
                 };
-                provenance_ok && thread_ok
+                provenance_ok && scope_ok && thread_ok
             })
             .map(|entry| entry.id)
             .collect()
@@ -367,10 +378,25 @@ fn run_review(
         };
     }
 
-    let records = match store.load_records(&ids) {
+    let mut records = match store.load_records(&ids) {
         Ok(records) => records,
         Err(err) => return err_output(err),
     };
+    // Default history/diff excludes ephemeral (/tmp) files; explicit ID selection
+    // (e.g. clicking a transcript change ID) shows all files including ephemeral ones.
+    if !explicit_ids {
+        for record in &mut records {
+            record.files.retain(|f| f.scope != ChangeScope::Ephemeral);
+        }
+        records.retain(|r| !r.files.is_empty());
+    }
+    if records.is_empty() {
+        return ToolOutput {
+            stdout: "No matching changes.\n".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+    }
 
     match view {
         ReviewView::Diff => match compose_diff(store, &records, &parsed.paths) {

@@ -15,6 +15,7 @@ use std::time::UNIX_EPOCH;
 
 use codex_apply_patch::AppliedPatchDelta;
 use codex_apply_patch::AppliedPatchFileChange;
+use codex_change_history::ChangeAuthor;
 use codex_change_history::ChangeHistoryError;
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeMetadata;
@@ -23,6 +24,7 @@ use codex_change_history::ChangeSourceKind;
 use codex_change_history::CoverageStatus;
 use codex_change_history::FileSnapshot;
 use codex_change_history::PendingFileChange;
+use codex_change_history::classify_change_scope;
 use codex_exec_server::ExecutorFileSystem;
 use codex_exec_server::ReadFileOptions;
 use codex_utils_path_uri::PathUri;
@@ -64,10 +66,13 @@ impl ApplyPatchCapture {
         tool_ctx: &ToolCtx,
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
         let store_dir = change_history_dir(tool_ctx.session.session_id());
+        let session_tmp = crate::exec_env::session_tmp_path(tool_ctx.session.session_id());
         let workspace_root = path_uri_to_path_buf(&request.action.cwd);
         let is_remote = request.turn_environment.environment().is_remote();
+        let thread_id = tool_ctx.session.thread_id().to_string();
         let metadata = ChangeMetadata {
-            thread_id: tool_ctx.session.thread_id().to_string(),
+            author: Some(ChangeAuthor::from_thread_id(&thread_id)),
+            thread_id,
             session_id: tool_ctx.session.session_id().to_string(),
             turn_id: tool_ctx.step_context.turn.sub_id.clone(),
             call_id: tool_ctx.call_id.clone(),
@@ -81,6 +86,7 @@ impl ApplyPatchCapture {
         self.persist_to_dir_with_locality(
             fs,
             &store_dir,
+            Some(&session_tmp),
             &request.file_paths,
             delta,
             metadata,
@@ -99,14 +105,23 @@ impl ApplyPatchCapture {
         delta: Option<&AppliedPatchDelta>,
         metadata: ChangeMetadata,
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
-        self.persist_to_dir_with_locality(fs, store_dir, candidate_paths, delta, metadata, false)
-            .await
+        self.persist_to_dir_with_locality(
+            fs,
+            store_dir,
+            None,
+            candidate_paths,
+            delta,
+            metadata,
+            false,
+        )
+        .await
     }
 
     async fn persist_to_dir_with_locality(
         self,
         fs: &dyn ExecutorFileSystem,
         store_dir: &Path,
+        session_tmp: Option<&Path>,
         candidate_paths: &[PathUri],
         delta: Option<&AppliedPatchDelta>,
         metadata: ChangeMetadata,
@@ -159,6 +174,7 @@ impl ApplyPatchCapture {
             }
             let rel_path = display_rel_path(&workspace_root, path);
             let abs_path = path_uri_to_path_buf(path);
+            let scope = classify_change_scope(&abs_path, &workspace_root, session_tmp);
             pending_files.push(PendingFileChange {
                 rel_path,
                 abs_path,
@@ -166,6 +182,7 @@ impl ApplyPatchCapture {
                 before,
                 after,
                 coverage,
+                scope,
             });
         }
 
