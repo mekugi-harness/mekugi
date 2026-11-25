@@ -57,10 +57,18 @@ type RPCInitialize struct {
 // Body uses the operation's existing input type. Subscription is selected by
 // the client before dispatch so early publications can be correlated safely.
 type RPCParams struct {
-	Thread       string         `json:"thread,omitempty"`
-	Startup      string         `json:"startup,omitempty"`
-	Subscription string         `json:"subscription,omitempty"`
-	Body         jsontext.Value `json:"body,omitempty"`
+	Thread       string              `json:"thread,omitempty"`
+	Startup      string              `json:"startup,omitempty"`
+	Subscription string              `json:"subscription,omitempty"`
+	Retain       *NativeRetainSource `json:"retain,omitzero"`
+	Body         jsontext.Value      `json:"body,omitempty"`
+}
+
+type NativeRetainSource struct {
+	Subscription   string `json:"subscription,omitempty"`
+	ReviewRevision uint64 `json:"reviewRevision,omitzero"`
+	FamilyRoot     string `json:"familyRoot,omitempty"`
+	FamilyRevision uint64 `json:"familyRevision,omitzero"`
 }
 
 type RPCSubscribed struct {

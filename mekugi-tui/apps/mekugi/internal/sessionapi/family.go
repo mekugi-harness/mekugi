@@ -25,6 +25,7 @@ type Family struct {
 	Live      []preview.Preview            `json:"-"`
 	LiveScope preview.Scope                `json:"-"`
 	Root      string                       `json:"root"`
+	Revision  uint64                       `json:"revision,omitzero"`
 	Threads   []string                     `json:"threads"`
 	Agents    *activity.Publication        `json:"agents"`
 	Status    sessionpresentation.Label    `json:"status"`
@@ -148,16 +149,28 @@ func (p *familyState) project(root *Frame, frames map[string]familySource, works
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	rosterSame := p.family != nil && p.family.Root == root.Session.Thread && len(p.sources) == len(frames) && slices.Equal(p.members, root.Members)
-	reviewSame := p.family != nil && len(p.sources) == len(frames)
-	liveSame := reviewSame
-	questionsSame := reviewSame
+	reviewSame := p.family != nil
+	liveSame := p.family != nil && len(p.sources) == len(frames)
+	questionsSame := liveSame
 	for id, frame := range frames {
 		old := p.sources[id]
 		questionsSame = questionsSame && old.Frame != nil && old.owner == frame.owner && old.Attachment == frame.Attachment && old.Session.Caller == frame.Session.Caller && reflect.DeepEqual(old.Questions, frame.Questions) && reflect.DeepEqual(old.Prompts, frame.Prompts)
 		liveSame = liveSame && old.Frame != nil && old.owner == frame.owner && old.Attachment == frame.Attachment && reflect.DeepEqual(old.Live, frame.Live) && reflect.DeepEqual(old.LiveScope, frame.LiveScope)
 		rosterSame = rosterSame && old.Frame != nil && old.Agents == frame.Agents &&
 			old.Session.Caller == frame.Session.Caller && old.Session.Role == frame.Session.Role
-		reviewSame = reviewSame && old.Frame != nil && old.owner == frame.owner && old.Attachment == frame.Attachment && sameFamilyReview(old.Review, frame.Review)
+		if old.Frame != nil {
+			reviewSame = reviewSame && old.owner == frame.owner && old.Attachment == frame.Attachment && sameFamilyReview(old.Review, frame.Review)
+		} else if p.review == nil || hasFamilyReviewContribution(id, root.Session.Thread, frame.Frame) {
+			reviewSame = false
+		}
+	}
+	if reviewSame {
+		for id, old := range p.sources {
+			if _, present := frames[id]; !present && hasFamilyReviewContribution(id, root.Session.Thread, old.Frame) {
+				reviewSame = false
+				break
+			}
+		}
 	}
 	if !reviewSame {
 		// Source: apps/mekugi/internal/launch/native_children.go:119:157@ab359afb publishChild.
@@ -324,6 +337,7 @@ func (p *familyState) project(root *Frame, frames map[string]familySource, works
 			}
 			family.Agents = &roster
 		}
+		family.Revision = revision.Add(1)
 		p.family = &family
 	}
 	p.sources, p.members = frames, root.Members
@@ -349,6 +363,16 @@ func (p *familyState) project(root *Frame, frames map[string]familySource, works
 	}
 	p.diffs[workspace] = &diff
 	return p.family, &diff
+}
+
+func hasFamilyReviewContribution(id, rootID string, frame *Frame) bool {
+	if frame == nil || frame.Review == nil {
+		return false
+	}
+	if id == rootID {
+		return true
+	}
+	return len(frame.Review.Files) > 0 || len(frame.Review.Diagnostics) > 0 || frame.Review.Failure != ""
 }
 
 func sameFamilyReview(a, b *changes.ReviewView) bool {

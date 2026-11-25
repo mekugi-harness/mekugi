@@ -794,8 +794,17 @@ func (c *rpcConnection) dispatch(ctx context.Context, method string, params RPCP
 				return nil, rpcFailure(409, err.Error()), nil
 			}
 		}
+		var seed *nativeSeed
+		if c.authority == localNativeView && params.Retain != nil && params.Retain.Subscription != "" {
+			c.mu.Lock()
+			sourceSub := c.subscriptions[params.Retain.Subscription]
+			c.mu.Unlock()
+			if sourceSub != nil && sourceSub.owner != nil && sourceSub.view != nil {
+				seed = sourceSub.owner.seedFrom(sourceSub.view, params.Retain)
+			}
+		}
 		return c.subscribe(ctx, params.Subscription, func(viewContext context.Context) (*rpcSubscription, *RPCError) {
-			subscription, failure := selected.server.Native().attach(ctx, viewContext, target, params.Startup, c.authority)
+			subscription, failure := selected.server.Native().attach(ctx, viewContext, target, params.Startup, c.authority, seed)
 			if failure != errNativeReleasing {
 				return subscription, failure
 			}
@@ -813,7 +822,7 @@ func (c *rpcConnection) dispatch(ctx context.Context, method string, params RPCP
 			if selected.runtime != nil && selected.server != selected.runtime.server {
 				if failure = h.attachThread(ctx, params.Thread, c.authority); failure == nil {
 					if current, denied := h.lookup(params.Thread, "", c.authority); denied == nil {
-						return current.server.Native().attach(ctx, viewContext, requestTarget{current.entry.Thread, current.entry.Workspace}, "", c.authority)
+						return current.server.Native().attach(ctx, viewContext, requestTarget{current.entry.Thread, current.entry.Workspace}, "", c.authority, seed)
 					}
 				}
 			}

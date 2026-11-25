@@ -382,6 +382,55 @@ func (c *nativeClient) run(ctx context.Context, stdin, stdout *os.File) (*native
 			}()
 			tick := time.NewTicker(33 * time.Millisecond)
 			defer tick.Stop()
+			paint := func(now time.Time) error {
+				c := runtime.active
+				c.stagePreferences(false)
+				c.writeTerminalStatus(now)
+				if switching := c.reattach != "" || c.attaching != ""; switching != c.renderer.switchingAgent {
+					c.renderer.switchingAgent, c.dirty = switching, true
+				}
+				width, height, err := term.GetSize(int(stdout.Fd()))
+				if err != nil {
+					return err
+				}
+				if width != c.renderer.terminal.Width || height != c.renderer.terminal.Height {
+					c.renderer.terminal.Width, c.renderer.terminal.Height, c.dirty = width, height, true
+				}
+				// Advance live reveals even while another animation already needs a paint.
+				if c.event.Attachment != "" && (c.renderer.terminal.Live.Tick(now) || c.dirty) {
+					in := c.renderer.terminal.FrameInput(now, mekugiVersion())
+					source := in.SourceContext()
+					linkScope := fileLinkScope(in)
+					c.links.selectAttachment(linkScope.Attachment)
+					runtime.previews.prepare(stdout, c.renderer.terminal, source)
+					c.renderer.frame.FileLinks = c.links.known(linkScope)
+					c.hydrateDetails()
+					painted, err := c.renderer.render(ctx, stdout, now, mekugiVersion())
+					if err != nil {
+						return err
+					}
+					if len(painted.Demands) > 0 && !c.hydrating {
+						c.hydrating = true
+						c.enqueue(sessionapi.NativeOperation{Output: &sessionapi.NativeOutputDemand{Agent: c.event.Frame.View.Displayed.ID != c.event.Frame.View.Main.ID, Demands: painted.Demands}}, nil, func(error) { c.hydrating = false })
+					} else if len(painted.Demands) == 0 {
+						if demand := c.renderer.terminal.Main.Resume.PageDemand(); demand.Kind != sessionpresentation.ResumeNoAction && !c.resumePaging {
+							c.resumePaging = true
+							c.enqueue(sessionapi.NativeOperation{Resume: &demand}, nil, func(error) { c.resumePaging = false })
+						}
+						if !painted.SelectionRetained && linkScope != source {
+							linkScope = source
+							c.dirty = true
+						} else {
+							c.dirty = false
+						}
+						c.links.request(c.ctx, linkScope, painted.FileLinkDemands)
+						runtime.previews.request(runtime.ctx, source, painted.ImageDemands)
+						receipt := sessionapi.NativeNoticeReceipt{Claim: c.renderer.frame.Notice, Attachment: painted.Notices.Attachment, Feedback: painted.Notices.Feedback, Composer: painted.Notices.Composer, Content: painted.Notices.Content}
+						c.stageReceipt(&receipt)
+					}
+				}
+				return nil
+			}
 			for !runtime.active.quit && runtime.active.handoff == nil {
 				runtime.schedule()
 				c := runtime.active
@@ -397,6 +446,11 @@ func (c *nativeClient) run(ctx context.Context, stdin, stdout *os.File) (*native
 					}
 				case result := <-runtime.reattached:
 					runtime.reattach(result, stdout)
+					if runtime.active.dirty {
+						if err := paint(time.Now()); err != nil {
+							return err
+						}
+					}
 				case call := <-runtime.results:
 					call.complete = true
 				case result := <-c.links.results:
@@ -418,50 +472,8 @@ func (c *nativeClient) run(ctx context.Context, stdin, stdout *os.File) (*native
 					if c.feedback.Expire(now) {
 						c.refresh(now)
 					}
-					c.stagePreferences(false)
-					c.writeTerminalStatus(now)
-					if switching := c.reattach != "" || c.attaching != ""; switching != c.renderer.switchingAgent {
-						c.renderer.switchingAgent, c.dirty = switching, true
-					}
-					width, height, err := term.GetSize(int(stdout.Fd()))
-					if err != nil {
+					if err := paint(now); err != nil {
 						return err
-					}
-					if width != c.renderer.terminal.Width || height != c.renderer.terminal.Height {
-						c.renderer.terminal.Width, c.renderer.terminal.Height, c.dirty = width, height, true
-					}
-					// Advance live reveals even while another animation already needs a paint.
-					if c.event.Attachment != "" && (c.renderer.terminal.Live.Tick(now) || c.dirty) {
-						in := c.renderer.terminal.FrameInput(now, mekugiVersion())
-						source := in.SourceContext()
-						linkScope := fileLinkScope(in)
-						c.links.selectAttachment(linkScope.Attachment)
-						runtime.previews.prepare(stdout, c.renderer.terminal, source)
-						c.renderer.frame.FileLinks = c.links.known(linkScope)
-						c.hydrateDetails()
-						painted, err := c.renderer.render(ctx, stdout, now, mekugiVersion())
-						if err != nil {
-							return err
-						}
-						if len(painted.Demands) > 0 && !c.hydrating {
-							c.hydrating = true
-							c.enqueue(sessionapi.NativeOperation{Output: &sessionapi.NativeOutputDemand{Agent: c.event.Frame.View.Displayed.ID != c.event.Frame.View.Main.ID, Demands: painted.Demands}}, nil, func(error) { c.hydrating = false })
-						} else if len(painted.Demands) == 0 {
-							if demand := c.renderer.terminal.Main.Resume.PageDemand(); demand.Kind != sessionpresentation.ResumeNoAction && !c.resumePaging {
-								c.resumePaging = true
-								c.enqueue(sessionapi.NativeOperation{Resume: &demand}, nil, func(error) { c.resumePaging = false })
-							}
-							if !painted.SelectionRetained && linkScope != source {
-								linkScope = source
-								c.dirty = true
-							} else {
-								c.dirty = false
-							}
-							c.links.request(c.ctx, linkScope, painted.FileLinkDemands)
-							runtime.previews.request(runtime.ctx, source, painted.ImageDemands)
-							receipt := sessionapi.NativeNoticeReceipt{Claim: c.renderer.frame.Notice, Attachment: painted.Notices.Attachment, Feedback: painted.Notices.Feedback, Composer: painted.Notices.Composer, Content: painted.Notices.Content}
-							c.stageReceipt(&receipt)
-						}
 					}
 				}
 				runtime.settle()

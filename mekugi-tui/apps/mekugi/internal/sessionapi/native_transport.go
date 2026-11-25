@@ -77,6 +77,8 @@ type nativeView struct {
 	family          *Family
 	state           []byte
 	reviewState     []byte
+	reviewRevision  uint64
+	seed            *nativeSeed
 	ownerBytes      [4]int
 	feeds           [2]nativeFeedState
 	reviewBytes     int
@@ -84,6 +86,37 @@ type nativeView struct {
 	detailsKey      []byte
 	details         []byte
 	detailsRevision uint64
+}
+
+type nativeSeed struct {
+	reviewState []byte
+	reviewBytes int
+	family      *Family
+	familyBytes int
+}
+
+func (n *Native) seedFrom(v *nativeView, retain *NativeRetainSource) *nativeSeed {
+	if n == nil || v == nil || retain == nil {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !v.started || v.authority != localNativeView {
+		return nil
+	}
+	var seed nativeSeed
+	if retain.ReviewRevision != 0 && v.reviewRevision == retain.ReviewRevision && len(v.reviewState) > 0 && !v.reviewLimited {
+		seed.reviewState = bytes.Clone(v.reviewState)
+		seed.reviewBytes = v.ownerBytes[2]
+	}
+	if retain.FamilyRevision != 0 && v.family != nil && v.family.Root == retain.FamilyRoot && v.family.Revision == retain.FamilyRevision {
+		seed.family = v.family
+		seed.familyBytes = v.ownerBytes[3]
+	}
+	if len(seed.reviewState) == 0 && seed.family == nil {
+		return nil
+	}
+	return &seed
 }
 
 // nativePublications retains ordered deliveries while coalescing superseded
@@ -360,21 +393,34 @@ func (n *Native) Publish(id string, frame NativeFrame) error {
 		event = "snapshot"
 	}
 	var retained nativeOwners
-	if event == "patch" && v.authority == localNativeView {
-		if v.main == main {
-			retained |= nativeMain
-		}
-		if v.agents == agents {
-			retained |= nativeAgents
-		}
-		if reviewState != nil && bytes.Equal(v.reviewState, reviewState) {
-			retained |= nativeReview
-		}
-		if v.family == family {
-			retained |= nativeFamily
+	sizes := v.ownerBytes
+	reviewBytes, reviewLimited := v.reviewBytes, false
+	if v.authority == localNativeView {
+		if event == "patch" {
+			if v.main == main {
+				retained |= nativeMain
+			}
+			if v.agents == agents {
+				retained |= nativeAgents
+			}
+			if reviewState != nil && bytes.Equal(v.reviewState, reviewState) {
+				retained |= nativeReview
+			}
+			if v.family == family {
+				retained |= nativeFamily
+			}
+		} else if !v.started && v.seed != nil {
+			if reviewState != nil && len(v.seed.reviewState) > 0 && bytes.Equal(v.seed.reviewState, reviewState) {
+				retained |= nativeReview
+				sizes[2] = v.seed.reviewBytes
+				reviewBytes = v.seed.reviewBytes
+			}
+			if family != nil && v.seed.family == family {
+				retained |= nativeFamily
+				sizes[3] = v.seed.familyBytes
+			}
 		}
 	}
-	sizes := v.ownerBytes
 	var feeds *nativeFeedEncoding
 	if v.authority == localNativeView {
 		feeds = new(nativeFeedEncoding)
@@ -392,7 +438,6 @@ func (n *Native) Publish(id string, frame NativeFrame) error {
 	}
 	var data []byte
 	var err error
-	reviewBytes, reviewLimited := v.reviewBytes, false
 	if v.reviewLimited && reviewState != nil && bytes.Equal(v.reviewState, reviewState) {
 		// Probe the original immutable review's footprint without serializing
 		// it again on each frame while a consequence or hydration is pending.
@@ -439,6 +484,12 @@ func (n *Native) Publish(id string, frame NativeFrame) error {
 			v.feeds = [2]nativeFeedState{feeds[0].state, feeds[1].state}
 		}
 		v.reviewBytes, v.reviewLimited = reviewBytes, reviewLimited
+		if frame.Review != nil && !reviewLimited {
+			v.reviewRevision = frame.Review.Revision
+		} else {
+			v.reviewRevision = 0
+		}
+		v.seed = nil
 		v.main, v.agents, v.family, v.state = main, agents, family, state
 		v.started, v.version = true, frame.View.Version
 		if frame.Switch != nil {
@@ -486,8 +537,11 @@ func (n *Native) newView(ctx context.Context, target requestTarget, startup stri
 	return subscription, request, nil
 }
 
-func (n *Native) attach(ctx, viewContext context.Context, target requestTarget, startup string, authority viewAuthority) (*rpcSubscription, *RPCError) {
+func (n *Native) attach(ctx, viewContext context.Context, target requestTarget, startup string, authority viewAuthority, seed *nativeSeed) (*rpcSubscription, *RPCError) {
 	subscription, request, failure := n.newView(viewContext, target, startup, authority)
+	if failure == nil && seed != nil {
+		subscription.view.seed = seed
+	}
 	request.Context = ctx
 	if failure != nil {
 		return nil, failure
@@ -685,7 +739,7 @@ func (s *Server) answerFromFamily(ctx context.Context, authority viewAuthority, 
 	n := s.Native()
 	waiting, stop := context.WithTimeout(ctx, answerWithin)
 	defer stop()
-	subscription, failure := n.attach(waiting, ctx, target, "", authority)
+	subscription, failure := n.attach(waiting, ctx, target, "", authority, nil)
 	if failure != nil {
 		return NativeResult{}, failure
 	}

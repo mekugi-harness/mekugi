@@ -70,6 +70,12 @@ func readRestoredRollout(info binding.ThreadInfo, agent string) restoredRollout 
 		if header := line[:min(len(line), 160)]; bytes.Contains(header, []byte(`"token_count"`)) || bytes.Contains(header, []byte(`"token_usage_record"`)) {
 			continue // Usage records are the most frequent and never read here.
 		}
+		if bytes.Contains(line[:min(len(line), 256)], []byte(`"function_call_output"`)) &&
+			!bytes.Contains(line, []byte(`"source_acquisition"`)) &&
+			!bytes.Contains(line, []byte(`"coordination"`)) &&
+			!bytes.Contains(line, []byte(`"threadcontrol"`)) {
+			continue // Ordinary tool outputs carry no rollout-only presentation evidence.
+		}
 		var record struct {
 			Timestamp time.Time `json:"timestamp"`
 			Type      string    `json:"type"`
