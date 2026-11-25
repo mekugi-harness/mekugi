@@ -451,6 +451,8 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
         "cat <<EOF${tag:-a;b}'Z' &&\nsh -c 'printf done'\nEOF${tag:-a;b}Z\n",
         "cat <<EOF`a;b`'Z' &&\nsh -c 'printf done'\nEOF`a;b`Z\n",
         "cat <<EOF${tag:-$(printf })}'Z' &&\n/bin/sh -c 'printf hello'\nEOF${tag:-$(printf })}Z\n",
+        "cat <<\"${v:-it's}\" &&\nsh -c 'echo hi'\n${v:-it's}\n",
+        "cat <<\"$(case x in x) printf %s '${';; esac)\" &&\nsh -c 'echo hi'\n$(case x in x) printf %s '${';; esac)\n",
     ] {
         let script = format!("{delim_prefix}/usr/bin/git push");
         let rewritten = rewrite_script(&script, &config);

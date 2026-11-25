@@ -798,13 +798,6 @@ fn skip_double_quoted(bytes: &[u8], mut i: usize, limit: usize) -> usize {
         match bytes[i] {
             b'\\' => i = (i + 2).min(limit),
             b'"' => return i + 1,
-            b'$' if bytes.get(i + 1) == Some(&b'(') => {
-                i = skip_balanced_parens(bytes, i + 2, limit);
-            }
-            b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                i = skip_balanced_param_exp(bytes, i + 2, limit);
-            }
-            b'`' => i = skip_backtick(bytes, i + 1, limit),
             _ => i += 1,
         }
     }
