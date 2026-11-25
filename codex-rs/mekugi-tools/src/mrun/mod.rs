@@ -301,6 +301,100 @@ fn exit_code_from_status(status: ExitStatus) -> i32 {
     1
 }
 
+#[cfg(unix)]
+struct TerminalForegroundGuard {
+    tty_fd: libc::c_int,
+    original_pgrp: libc::pid_t,
+}
+
+#[cfg(unix)]
+impl TerminalForegroundGuard {
+    /// Capture the caller's process group when stdin is our controlling terminal and we
+    /// currently own its foreground process group.
+    fn capture_if_foreground() -> Option<Self> {
+        let tty_fd = libc::STDIN_FILENO;
+        // SAFETY: `isatty`, `getpgrp`, and `tcgetpgrp` are thread-safe POSIX queries on `tty_fd`.
+        unsafe {
+            if libc::isatty(tty_fd) != 1 {
+                return None;
+            }
+            let current_pgrp = libc::getpgrp();
+            if current_pgrp <= 0 || libc::tcgetpgrp(tty_fd) != current_pgrp {
+                return None;
+            }
+            Some(Self {
+                tty_fd,
+                original_pgrp: current_pgrp,
+            })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for TerminalForegroundGuard {
+    fn drop(&mut self) {
+        // SAFETY: Blocking `SIGTTOU` on the calling thread via `pthread_sigmask` allows
+        // restoring foreground ownership from a background process group without stopping the
+        // process, and restoring `old_set` leaves thread signal state unchanged.
+        unsafe {
+            let mut block_set: libc::sigset_t = std::mem::zeroed();
+            let mut old_set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut block_set);
+            libc::sigaddset(&mut block_set, libc::SIGTTOU);
+            let masked = libc::pthread_sigmask(libc::SIG_BLOCK, &block_set, &mut old_set) == 0;
+            let _ = libc::tcsetpgrp(self.tty_fd, self.original_pgrp);
+            if masked {
+                let _ = libc::pthread_sigmask(libc::SIG_SETMASK, &old_set, std::ptr::null_mut());
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct TerminalForegroundGuard;
+
+#[cfg(not(unix))]
+impl TerminalForegroundGuard {
+    fn capture_if_foreground() -> Option<Self> {
+        None
+    }
+}
+
+/// Place the child into its own process group for whole-group cleanup, and when `mrun` owns the
+/// controlling terminal foreground, hand foreground ownership to the child's process group before
+/// `exec` so reading from PTY stdin does not stop the child with `SIGTTIN`.
+#[cfg(unix)]
+fn configure_child_process_group(cmd: &mut Command, tty_guard: Option<&TerminalForegroundGuard>) {
+    use std::os::unix::process::CommandExt;
+
+    let handoff_tty_fd = tty_guard.map(|guard| guard.tty_fd);
+    // SAFETY: Runs in the single-threaded post-`fork` child before `exec` and invokes only
+    // POSIX async-signal-safe functions.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setpgid(0, 0) == 0
+                && let Some(tty_fd) = handoff_tty_fd
+            {
+                let mut block_set: libc::sigset_t = std::mem::zeroed();
+                let mut old_set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut block_set);
+                libc::sigaddset(&mut block_set, libc::SIGTTOU);
+                let masked = libc::sigprocmask(libc::SIG_BLOCK, &block_set, &mut old_set) == 0;
+                let _ = libc::tcsetpgrp(tty_fd, libc::getpid());
+                if masked {
+                    let _ = libc::sigprocmask(libc::SIG_SETMASK, &old_set, std::ptr::null_mut());
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn configure_child_process_group(cmd: &mut Command, _tty_guard: Option<&TerminalForegroundGuard>) {
+    crate::common::configure_new_process_group(cmd);
+}
+
 pub fn execute(args: &[String]) -> ToolOutput {
     let (options, argv) = match parse_options(args) {
         Ok(parsed) => parsed,
@@ -329,7 +423,8 @@ pub fn execute(args: &[String]) -> ToolOutput {
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::common::configure_new_process_group(&mut cmd);
+    let tty_guard = TerminalForegroundGuard::capture_if_foreground();
+    configure_child_process_group(&mut cmd, tty_guard.as_ref());
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {
@@ -365,6 +460,7 @@ pub fn execute(args: &[String]) -> ToolOutput {
 
     // Terminate any descendants still holding inherited stdout/stderr pipes so draining cannot hang.
     crate::common::kill_process_group(child.id() as i32);
+    drop(tty_guard);
 
     let drain_timeout = std::time::Duration::from_secs(2);
     let _ = crate::common::recv_reader_with_timeout(out_rx, out_handle, drain_timeout);
