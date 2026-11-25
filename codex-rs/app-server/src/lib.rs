@@ -44,7 +44,7 @@ use crate::transport::TransportEvent;
 use crate::transport::acquire_app_server_startup_lock;
 use crate::transport::app_server_startup_lock_path;
 use crate::transport::route_outgoing_envelope;
-use crate::transport::start_control_socket_acceptor;
+use crate::transport::start_control_socket_acceptor_with_http_router;
 use crate::transport::start_remote_control;
 use crate::transport::start_stdio_connection;
 use crate::transport::start_websocket_acceptor;
@@ -123,6 +123,7 @@ mod filters;
 mod fs_watch;
 mod fuzzy_file_search;
 mod gateway_oauth_notifications;
+mod http_resources;
 mod image_url;
 pub mod in_process;
 mod log_write_warning;
@@ -196,6 +197,7 @@ enum OutboundControlEvent {
         initialized: Arc<AtomicBool>,
         experimental_api_enabled: Arc<AtomicBool>,
         opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
+        is_remote_human: bool,
     },
     /// Remove state for a closed/disconnected connection.
     Closed { connection_id: ConnectionId },
@@ -807,6 +809,7 @@ pub async fn run_main_with_transport_options(
     let graceful_signal_restart_enabled =
         runtime_options.install_shutdown_signal_handler && !single_client_mode;
     let mut app_server_client_name_rx = None;
+    let http_resource_processor = Arc::new(std::sync::OnceLock::<Arc<MessageProcessor>>::new());
 
     match &transport {
         AppServerTransport::Stdio => {
@@ -821,7 +824,7 @@ pub async fn run_main_with_transport_options(
             transport_accept_handles.push(handle);
         }
         AppServerTransport::UnixSocket { socket_path } => {
-            let accept_handle = start_control_socket_acceptor(
+            let accept_handle = start_control_socket_acceptor_with_http_router(
                 socket_path.clone(),
                 transport_event_tx.clone(),
                 transport_shutdown_token.clone(),
@@ -834,6 +837,7 @@ pub async fn run_main_with_transport_options(
                     DaemonShutdownAccess::Disabled
                 },
                 websocket_compression,
+                Some(http_resources::router(Arc::clone(&http_resource_processor))),
             )
             .await?;
             transport_accept_handles.push(accept_handle);
@@ -938,6 +942,7 @@ pub async fn run_main_with_transport_options(
                                 initialized,
                                 experimental_api_enabled,
                                 opted_out_notification_methods,
+                                is_remote_human,
                             } => {
                                 outbound_connections.insert(
                                     connection_id,
@@ -947,7 +952,8 @@ pub async fn run_main_with_transport_options(
                                         experimental_api_enabled,
                                         opted_out_notification_methods,
                                         disconnect_sender,
-                                    ),
+                                    )
+                                    .with_remote_human(is_remote_human),
                                 );
                             }
                             OutboundControlEvent::Closed { connection_id } => {
@@ -1020,6 +1026,7 @@ pub async fn run_main_with_transport_options(
         });
         processor.remote_control_processor.daemon_settings_file = daemon_settings_file;
         let processor = Arc::new(processor);
+        let _ = http_resource_processor.set(Arc::clone(&processor));
         let mut thread_created_rx = processor.thread_created_receiver();
         let mut running_turn_count_rx = processor.subscribe_running_assistant_turn_count();
         let mut active_admissions_rx = processor.turn_admission.subscribe_active();
@@ -1147,6 +1154,12 @@ pub async fn run_main_with_transport_options(
                                     Arc::new(AtomicBool::new(false));
                                 let outbound_opted_out_notification_methods =
                                     Arc::new(RwLock::new(HashSet::new()));
+                                let is_remote_human = origin == ConnectionOrigin::RemoteHuman;
+                                if is_remote_human {
+                                    processor
+                                        .register_remote_human_connection(connection_id)
+                                        .await;
+                                }
                                 if outbound_control_tx
                                     .send(OutboundControlEvent::Opened {
                                         connection_id,
@@ -1159,6 +1172,7 @@ pub async fn run_main_with_transport_options(
                                         opted_out_notification_methods: Arc::clone(
                                             &outbound_opted_out_notification_methods,
                                         ),
+                                        is_remote_human,
                                     })
                                     .await
                                     .is_err()

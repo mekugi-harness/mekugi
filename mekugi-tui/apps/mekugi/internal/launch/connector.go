@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/connector"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 )
 
 // RunConnector serves remote human control without acquiring session ownership.
@@ -23,7 +22,7 @@ func RunConnector(ctx context.Context, args []string, stderr io.Writer) int {
 	flags := flag.NewFlagSet("connector", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	listen := flags.String("listen", "127.0.0.1:7778", "HTTP listen address; terminate HTTPS at a reverse proxy")
-	socket := flags.String("socket", "", "private server control socket")
+	socket := flags.String("socket", "", "private app-server control socket")
 	tokenFile := flags.String("token-file", "", "private persistent bearer token file")
 	var origins []string
 	flags.Func("origin", "allowed UI origin (repeatable)", func(value string) error {
@@ -42,9 +41,9 @@ func RunConnector(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	if *socket == "" {
 		var err error
-		*socket, err = sessionapi.ControlSocketPath()
+		*socket, err = connector.NativeSocketPath()
 		if err != nil {
-			fmt.Fprintln(stderr, "mekugi connector: cannot locate server control socket")
+			fmt.Fprintln(stderr, "mekugi connector: cannot locate app-server control socket")
 			return 1
 		}
 	}

@@ -629,6 +629,30 @@ impl MessageProcessor {
         session: Arc<ConnectionSessionState>,
     ) {
         let request_method = request.method.as_str();
+        if session.origin == crate::transport::ConnectionOrigin::RemoteHuman
+            && is_blocked_for_remote_human(request_method)
+        {
+            let request_id = ConnectionRequestId {
+                connection_id,
+                request_id: request.id,
+            };
+            self.outgoing
+                .send_error(
+                    request_id,
+                    JSONRPCErrorError {
+                        code: -32000,
+                        message: format!(
+                            "Method `{request_method}` requires local native authority."
+                        ),
+                        data: Some(serde_json::json!({
+                            "status": 403,
+                            "outcome": "not_admitted",
+                        })),
+                    },
+                )
+                .await;
+            return;
+        }
         tracing::trace!(
             ?connection_id,
             request_id = ?request.id,
@@ -909,6 +933,16 @@ impl MessageProcessor {
             .connection_closed(connection_id)
             .await;
         self.thread_processor.connection_closed(connection_id).await;
+    }
+
+    pub(crate) async fn register_remote_human_connection(&self, connection_id: ConnectionId) {
+        self.outgoing
+            .register_remote_human_connection(connection_id)
+            .await;
+    }
+
+    pub(crate) fn thread_processor(&self) -> &ThreadRequestProcessor {
+        &self.thread_processor
     }
 
     pub(crate) fn subscribe_running_assistant_turn_count(&self) -> watch::Receiver<usize> {
@@ -2096,6 +2130,29 @@ impl MessageProcessor {
     }
 }
 
+/// Methods that invoke native startup or host-local process/daemon authority
+/// and must never be admitted over the restricted remote-human endpoint.
+fn is_blocked_for_remote_human(method: &str) -> bool {
+    matches!(
+        method,
+        "native/start"
+            | "source/skills"
+            | "session/redraw"
+            | "process/spawn"
+            | "process/writeStdin"
+            | "process/kill"
+            | "process/resizePty"
+            | "command/exec"
+            | "command/exec/write"
+            | "command/exec/terminate"
+            | "command/exec/resize"
+            | "remoteControl/enable"
+            | "remoteControl/disable"
+            | "remoteControl/pairing/start"
+            | "remoteControl/client/revoke"
+    )
+}
+
 #[cfg(test)]
 #[path = "message_processor_tracing_tests.rs"]
 mod message_processor_tracing_tests;
@@ -2111,3 +2168,52 @@ mod thread_lifecycle_tests;
 #[cfg(test)]
 #[path = "message_processor_workspace_routing_tests.rs"]
 mod workspace_routing_tests;
+
+#[cfg(test)]
+mod remote_human_authority_tests {
+    use super::is_blocked_for_remote_human;
+
+    #[test]
+    fn blocks_native_startup_and_host_process_methods_only() {
+        for blocked in [
+            "native/start",
+            "source/skills",
+            "session/redraw",
+            "process/spawn",
+            "process/writeStdin",
+            "process/kill",
+            "process/resizePty",
+            "command/exec",
+            "command/exec/write",
+            "command/exec/terminate",
+            "command/exec/resize",
+            "remoteControl/enable",
+            "remoteControl/disable",
+            "remoteControl/pairing/start",
+            "remoteControl/client/revoke",
+        ] {
+            assert!(
+                is_blocked_for_remote_human(blocked),
+                "expected {blocked} to be blocked for remote-human connections"
+            );
+        }
+        for allowed in [
+            "initialize",
+            "thread/start",
+            "thread/resume",
+            "thread/read",
+            "thread/list",
+            "thread/items/read",
+            "thread/attachment/add",
+            "thread/shellCommand",
+            "turn/start",
+            "turn/steer",
+            "turn/interrupt",
+        ] {
+            assert!(
+                !is_blocked_for_remote_human(allowed),
+                "expected {allowed} to be allowed for remote-human connections"
+            );
+        }
+    }
+}

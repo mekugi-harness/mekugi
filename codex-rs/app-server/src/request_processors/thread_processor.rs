@@ -3540,7 +3540,7 @@ impl ThreadRequestProcessor {
         })
     }
 
-    async fn thread_read_response_inner(
+    pub(crate) async fn thread_read_response_inner(
         &self,
         params: ThreadReadParams,
     ) -> Result<ThreadReadResponse, JSONRPCErrorError> {

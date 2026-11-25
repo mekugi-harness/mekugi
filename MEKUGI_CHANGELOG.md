@@ -223,6 +223,14 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   usage, and progress facts to Mekugi without a second agent registry.
   A subtree read during child startup returns its readable members without
   waiting for the child or reporting the parent missing.
+- The private Unix control socket serves a restricted remote-human WebSocket
+  endpoint (`/api/control`, negotiating `mekugi.control.v9` with
+  `ConnectionOrigin::RemoteHuman`) alongside authenticated HTTP resource
+  endpoints (`GET /api/version`, `POST /api/resources/{content,image,attachment-image}`).
+  Remote-human connections enforce authority at `mekugi-app-server`, blocking
+  native startup / host process RPCs and private secret prompts (`sudo`
+  password, GPG passphrase, and `is_secret` user input) while leaving active
+  turns running when the connector disconnects or restarts.
 
 ## Upstream imports
 

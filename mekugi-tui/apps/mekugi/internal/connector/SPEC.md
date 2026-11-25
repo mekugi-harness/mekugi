@@ -10,9 +10,10 @@
 
 ## Current approach (replaceable)
 
-- Forwards only the remote human-control subset of the
-  [Session API](../sessionapi/CONTRACT.md) to the execution machine's private Unix socket; local
-  native and agent-authority endpoints are unreachable through the connector.
+- Points directly at the restricted remote-human endpoint (`/api/control` and `/api/resources/*`)
+  on the execution machine's private `mekugi-app-server` Unix socket; `mekugi-app-server` enforces
+  remote-human authority, blocking native startup invocation and private secret prompts (`sudo`
+  password / GPG passphrase).
 - Generates and locks one persistent random token in a private file (never printed or put in URLs,
   cookies, or diagnostics). WebSocket connections authenticate in the bounded first `initialize`
   message; HTTP resource endpoints use `Authorization: Bearer`. Configured `--origin` values are

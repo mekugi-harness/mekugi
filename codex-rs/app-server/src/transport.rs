@@ -30,7 +30,7 @@ pub(crate) use codex_app_server_transport::TransportEvent;
 pub(crate) use codex_app_server_transport::acquire_app_server_startup_lock;
 pub use codex_app_server_transport::app_server_control_socket_path;
 pub(crate) use codex_app_server_transport::app_server_startup_lock_path;
-pub(crate) use codex_app_server_transport::start_control_socket_acceptor;
+pub(crate) use codex_app_server_transport::start_control_socket_acceptor_with_http_router;
 pub(crate) use codex_app_server_transport::start_remote_control;
 pub(crate) use codex_app_server_transport::start_stdio_connection;
 pub(crate) use codex_app_server_transport::start_websocket_acceptor;
@@ -73,6 +73,7 @@ pub(crate) struct OutboundConnectionState {
     pub(crate) opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
     pub(crate) writer: mpsc::Sender<QueuedOutgoingMessage>,
     disconnect_sender: Option<CancellationToken>,
+    is_remote_human: bool,
 }
 
 impl OutboundConnectionState {
@@ -89,7 +90,13 @@ impl OutboundConnectionState {
             opted_out_notification_methods,
             writer,
             disconnect_sender,
+            is_remote_human: false,
         }
+    }
+
+    pub(crate) fn with_remote_human(mut self, is_remote_human: bool) -> Self {
+        self.is_remote_human = is_remote_human;
+        self
     }
 
     fn can_disconnect(&self) -> bool {
@@ -149,6 +156,12 @@ async fn send_message_to_connection(
         warn!("dropping message for disconnected connection: {connection_id:?}");
         return false;
     };
+    if connection_state.is_remote_human
+        && let OutgoingMessage::Request(request) = &message
+        && crate::outgoing_message::requires_local_secret_authority(request)
+    {
+        return false;
+    }
     let message = filter_outgoing_message_for_connection(connection_state, message);
     if should_skip_notification_for_connection(connection_state, &message) {
         return false;
