@@ -412,6 +412,7 @@ struct HeredocEntry {
     delimiter: String,
     strip_tabs: bool,
     is_quoted: bool,
+    absorbed_redirect: bool,
 }
 
 /// Uses tree-sitter-bash's own heredoc_start AST nodes to locate quoted
@@ -459,6 +460,7 @@ fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSp
                 delimiter,
                 strip_tabs,
                 is_quoted,
+                absorbed_redirect: node.end_byte() > word_end,
             },
         );
     }
@@ -490,7 +492,13 @@ fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSp
         for entry in entries {
             let entry_body_start = pos;
             let full_end = advance_past_heredoc_body(src, &mut pos, &entry);
-            if entry.is_quoted {
+            let mask_unquoted_redirect_bug = !entry.is_quoted
+                && entry.absorbed_redirect
+                && !src[entry_body_start..full_end]
+                    .as_bytes()
+                    .iter()
+                    .any(|&b| matches!(b, b'$' | b'\x60'));
+            if entry.is_quoted || mask_unquoted_redirect_bug {
                 spans.push(QuotedHeredocSpan {
                     redir_start: entry.redir_start,
                     redir_end: entry.redir_end,
@@ -722,6 +730,7 @@ fn scan_error_line_heredocs(src: &str, start: usize, end: usize) -> Vec<HeredocE
                         delimiter,
                         strip_tabs,
                         is_quoted,
+                        absorbed_redirect: matches!(bytes.get(i), Some(b'>' | b'<')),
                     });
                 }
             }
@@ -766,6 +775,59 @@ fn scan_shell_word_end(bytes: &[u8], mut i: usize, limit: usize) -> usize {
                     b')' => {
                         depth -= 1;
                         i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+            i += 2;
+            let mut depth = 1usize;
+            while i < limit && depth > 0 {
+                match bytes[i] {
+                    b'\\' => i = (i + 2).min(limit),
+                    b'\'' => {
+                        i += 1;
+                        while i < limit && bytes[i] != b'\'' {
+                            i += 1;
+                        }
+                        i = (i + 1).min(limit);
+                    }
+                    b'"' => {
+                        i += 1;
+                        while i < limit {
+                            match bytes[i] {
+                                b'\\' => i = (i + 2).min(limit),
+                                b'"' => {
+                                    i += 1;
+                                    break;
+                                }
+                                _ => i += 1,
+                            }
+                        }
+                    }
+                    b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                        depth += 1;
+                        i += 2;
+                    }
+                    b'}' => {
+                        depth -= 1;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'`' {
+            i += 1;
+            while i < limit {
+                match bytes[i] {
+                    b'\\' => i = (i + 2).min(limit),
+                    b'`' => {
+                        i += 1;
+                        break;
                     }
                     _ => i += 1,
                 }

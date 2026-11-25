@@ -436,8 +436,28 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
     );
 
     // Unquoted delimiter adjacent to an output redirect (<<EOF>/dev/null) must not absorb >/dev/null.
-    let adjacent_redir = "cat <<EOF>/dev/null && cat <<'Q' > script.sh\nhello\nEOF\nvalue=$(sh -c 'printf sample')\nQ\necho AFTER";
-    assert_eq!(rewrite_script(adjacent_redir, &config), adjacent_redir);
+    let adjacent_prefix = "cat <<EOF>/dev/null && cat <<'Q' > script.sh\nhello\nEOF\nvalue=$(sh -c 'printf sample')\nQ\n";
+    let adjacent_script = format!("{adjacent_prefix}/usr/bin/git push");
+    let rewritten_adjacent = rewrite_script(&adjacent_script, &config);
+    assert!(
+        rewritten_adjacent.starts_with(adjacent_prefix)
+            && rewritten_adjacent.ends_with("-- /usr/bin/git push"),
+        "got: {rewritten_adjacent}"
+    );
+
+    // Delimiters containing balanced parameter expansions or backticks with semicolons must keep
+    // the trailing quoted fragment while still rewriting commands after the real terminator.
+    for delim_prefix in [
+        "cat <<EOF${tag:-a;b}'Z' &&\nsh -c 'printf done'\nEOF${tag:-a;b}Z\n",
+        "cat <<EOF`a;b`'Z' &&\nsh -c 'printf done'\nEOF`a;b`Z\n",
+    ] {
+        let script = format!("{delim_prefix}/usr/bin/git push");
+        let rewritten = rewrite_script(&script, &config);
+        assert!(
+            rewritten.starts_with(delim_prefix) && rewritten.ends_with("-- /usr/bin/git push"),
+            "got: {rewritten}"
+        );
+    }
 
     // Multiline process substitution on a quoted heredoc line must still rewrite its inner command.
     let proc_subst = "cat <<'OUTER' <(\n/usr/bin/git push\n)\nOUTER";
