@@ -21,10 +21,12 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/diagnosticsection"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
@@ -184,7 +186,21 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	}()
 
 	if options.Debug {
-		debug, err = openDebugOutput(new(diagnostic.Service), true, options.CaptureOutput, readLogPath)
+		evidenceSvc := new(evidence.Service)
+		diagSvc, err := diagnostic.New(new(history.Service), []diagnosticsection.Contribution{
+			{Transport: &diagnosticsection.Transport{
+				Record:  transportcapture.DiagnosticRecord,
+				Metrics: transportcapture.DiagnosticMetrics,
+			}},
+			{
+				PrepareReads: evidenceSvc.PrepareDiagnosticReads,
+				ReadSnapshot: evidenceSvc.DiagnosticReads,
+			},
+		})
+		if err != nil {
+			return 1, err
+		}
+		debug, err = openDebugOutput(diagSvc, true, options.CaptureOutput, readLogPath)
 		if err != nil {
 			return 1, err
 		}

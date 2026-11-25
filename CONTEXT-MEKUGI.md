@@ -18,8 +18,8 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
   (`environment_facts.rs`), `SESSION_TMP` (`exec_env.rs`), and detached model-input projection
   (`context_manager/{output_deduplication,request_input}.rs`).
 - **Go (`mekugi-tui/`)**: terminal UI renderer (keys, local editing, geometry, painting),
-  direct native `mekugi-app-server` Unix-socket client, headless client, native replay/inspect
-  CLI dispatch, and remote connector/WebUI assets host (`connector`, `web`).
+  direct native `mekugi-app-server` Unix-socket client, headless client,
+  and remote connector/WebUI assets host (`connector`, `web`).
 - **Browser (`mekugi-webui/`)**: Svelte renderer, generated Session API types, and
   assets-only Go host. `mekugi-webui/DESIGN.md` owns visual and interaction rules.
 
@@ -28,7 +28,7 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 | Owner | Responsibility |
 | --- | --- |
 | `composition` | Renderer-only module view selection (`NativeRenderer`); `contracts` holds shared interfaces; `testsupport/moduletest` holds harness |
-| `launch` | CLI dispatch, profile selection, direct native `mekugi-app-server` startup/attachment, connector, web, headless, and native replay |
+| `launch` | CLI dispatch, profile selection, direct native `mekugi-app-server` startup/attachment, connector, web, and headless |
 | `headless` | Noninteractive automation client and JSONL host evidence |
 | `sessioncontrol` | Minimal headless request correlation and shared interrupt/thread types |
 | `sessionpresentation` | Detached presentation view/intent types and native replay projection |
