@@ -27,7 +27,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   stages per-session `vcs-guard/` (`git`, `gh`, `hg`, `svn`, `jj`) and
   `sudo-guard/` (`sudo`, `gpg`, `gpg2`, `mekugi-sudo-askpass`) symlinks
   dispatched by `codex-shell-guard` without adding them to the process-wide
-  `PATH`.
+  `PATH`. When `mrun` owns a controlling PTY foreground process group, it hands
+  off and restores foreground terminal ownership for the wrapped process group
+  (propagating `SIGINT`/`SIGQUIT` and `SIGTSTP`/`SIGCONT`) so terminal stdin
+  reads complete without losing whole-group cleanup.
 - Native shell guarding (`codex-shell-guard`, gated by `features.shell_guard`,
   default enabled in interactive sessions and disabled for headless/internal
   runs) prepends the staged guard directories in `codex-core` after user

@@ -301,13 +301,239 @@ fn exit_code_from_status(status: ExitStatus) -> i32 {
     1
 }
 
+#[cfg(unix)]
+mod tty_handoff {
+    use std::os::unix::process::CommandExt;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Child;
+    use std::process::Command;
+    use std::process::ExitStatus;
+    use std::time::Duration;
+
+    /// Run `f` with `sig` blocked on the calling thread, then restore the previous mask.
+    /// Blocking `SIGTTOU` allows background `tcsetpgrp`; blocking a stop signal around
+    /// `kill(-pgrp, sig)` ensures synchronous stop delivery on this thread upon unblock.
+    fn with_signal_blocked(sig: libc::c_int, f: impl FnOnce()) {
+        // SAFETY: Stack-allocated `sigset_t` values with thread-local `pthread_sigmask`.
+        unsafe {
+            let mut block_set: libc::sigset_t = std::mem::zeroed();
+            let mut old_set: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut block_set);
+            libc::sigaddset(&mut block_set, sig);
+            let masked = libc::pthread_sigmask(libc::SIG_BLOCK, &block_set, &mut old_set) == 0;
+            f();
+            if masked {
+                let _ = libc::pthread_sigmask(libc::SIG_SETMASK, &old_set, std::ptr::null_mut());
+            }
+        }
+    }
+
+    fn set_foreground_pgrp(tty_fd: libc::c_int, pgrp: libc::pid_t) {
+        with_signal_blocked(libc::SIGTTOU, || {
+            // SAFETY: `tty_fd` is the controlling terminal and `pgrp` is a valid process group.
+            unsafe {
+                let _ = libc::tcsetpgrp(tty_fd, pgrp);
+            }
+        });
+    }
+
+    pub(super) struct TerminalForegroundGuard {
+        tty_fd: libc::c_int,
+        original_pgrp: libc::pid_t,
+        child_pgrp: Option<libc::pid_t>,
+    }
+
+    impl TerminalForegroundGuard {
+        /// Capture the caller's process group when stdin is our controlling terminal and we
+        /// currently own its foreground process group.
+        pub(super) fn capture_if_foreground() -> Option<Self> {
+            let tty_fd = libc::STDIN_FILENO;
+            // SAFETY: `isatty`, `getpgrp`, and `tcgetpgrp` are thread-safe POSIX queries.
+            unsafe {
+                if libc::isatty(tty_fd) != 1 {
+                    return None;
+                }
+                let current_pgrp = libc::getpgrp();
+                if current_pgrp <= 0 || libc::tcgetpgrp(tty_fd) != current_pgrp {
+                    return None;
+                }
+                Some(Self {
+                    tty_fd,
+                    original_pgrp: current_pgrp,
+                    child_pgrp: None,
+                })
+            }
+        }
+
+        pub(super) fn set_child_pgrp(&mut self, child_pid: u32) {
+            self.child_pgrp = Some(child_pid as libc::pid_t);
+        }
+
+        fn restore_if_owned(&self) -> bool {
+            // SAFETY: `tcgetpgrp` is a thread-safe POSIX query on `tty_fd`.
+            let fg_pgrp = unsafe { libc::tcgetpgrp(self.tty_fd) };
+            let should_restore = match self.child_pgrp {
+                Some(child_pgrp) => fg_pgrp == child_pgrp,
+                None => fg_pgrp != self.original_pgrp,
+            };
+            if should_restore {
+                set_foreground_pgrp(self.tty_fd, self.original_pgrp);
+            }
+            should_restore
+        }
+
+        fn handoff_to_if_foreground(&self, child_pgrp: libc::pid_t) -> bool {
+            // SAFETY: `tcgetpgrp` is a thread-safe POSIX query on `tty_fd`.
+            let is_fg = unsafe { libc::tcgetpgrp(self.tty_fd) } == self.original_pgrp;
+            if is_fg {
+                set_foreground_pgrp(self.tty_fd, child_pgrp);
+            }
+            is_fg
+        }
+
+        /// Wait for the child while forwarding Ctrl-Z (`SIGTSTP`) stops to `original_pgrp` and
+        /// restoring child foreground ownership on `fg` (including after `bg`).
+        pub(super) fn wait_child(&self, child: &mut Child) -> std::io::Result<ExitStatus> {
+            let child_pid = child.id() as libc::pid_t;
+            let mut handed_off = true;
+            loop {
+                if !handed_off {
+                    handed_off = self.handoff_to_if_foreground(child_pid);
+                }
+                let mut raw_status: libc::c_int = 0;
+                let flags = if handed_off {
+                    libc::WUNTRACED
+                } else {
+                    libc::WUNTRACED | libc::WNOHANG
+                };
+                // SAFETY: `child_pid` is a direct unwaited child and `raw_status` is valid.
+                let waited = unsafe { libc::waitpid(child_pid, &mut raw_status, flags) };
+                if waited == 0 {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                if waited == -1 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(err);
+                }
+                if libc::WIFSTOPPED(raw_status) {
+                    let stop_sig = libc::WSTOPSIG(raw_status);
+                    let _ = self.restore_if_owned();
+                    with_signal_blocked(stop_sig, || {
+                        // SAFETY: `original_pgrp > 0` and `stop_sig` came from `waitpid`.
+                        unsafe {
+                            libc::kill(-self.original_pgrp, stop_sig);
+                        }
+                    });
+                    handed_off = self.handoff_to_if_foreground(child_pid);
+                    // SAFETY: `child_pid > 0` is the child's process group leader.
+                    unsafe {
+                        libc::kill(-child_pid, libc::SIGCONT);
+                    }
+                    continue;
+                }
+                if libc::WIFEXITED(raw_status) || libc::WIFSIGNALED(raw_status) {
+                    return Ok(ExitStatus::from_raw(raw_status));
+                }
+            }
+        }
+
+        /// Restore foreground ownership if still held by the child, and propagate terminal
+        /// interrupt signals (`SIGINT` / `SIGQUIT`) back to `original_pgrp`.
+        pub(super) fn finish(self, status: ExitStatus) {
+            let restored = self.restore_if_owned();
+            let original_pgrp = self.original_pgrp;
+            std::mem::forget(self);
+            if restored
+                && let Some(sig) = status.signal()
+                && (sig == libc::SIGINT || sig == libc::SIGQUIT)
+            {
+                // SAFETY: `original_pgrp > 0` was just restored as the foreground group.
+                unsafe {
+                    libc::kill(-original_pgrp, sig);
+                }
+            }
+        }
+    }
+
+    impl Drop for TerminalForegroundGuard {
+        fn drop(&mut self) {
+            let _ = self.restore_if_owned();
+        }
+    }
+
+    /// Place the child into its own process group and, when `mrun` owns the controlling
+    /// terminal foreground, hand foreground ownership to the child before `exec` so reading
+    /// from PTY stdin does not trigger `SIGTTIN`.
+    pub(super) fn configure_child_process_group(
+        cmd: &mut Command,
+        tty_guard: Option<&TerminalForegroundGuard>,
+    ) {
+        let handoff_tty_fd = tty_guard.map(|guard| guard.tty_fd);
+        // SAFETY: Runs in the single-threaded post-`fork` child before `exec` and invokes only
+        // POSIX async-signal-safe functions.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::setpgid(0, 0) == 0
+                    && let Some(tty_fd) = handoff_tty_fd
+                {
+                    let mut block_set: libc::sigset_t = std::mem::zeroed();
+                    let mut old_set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut block_set);
+                    libc::sigaddset(&mut block_set, libc::SIGTTOU);
+                    let masked = libc::sigprocmask(libc::SIG_BLOCK, &block_set, &mut old_set) == 0;
+                    let _ = libc::tcsetpgrp(tty_fd, libc::getpid());
+                    if masked {
+                        let _ =
+                            libc::sigprocmask(libc::SIG_SETMASK, &old_set, std::ptr::null_mut());
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+}
+
+#[cfg(not(unix))]
+mod tty_handoff {
+    use std::process::Child;
+    use std::process::Command;
+    use std::process::ExitStatus;
+
+    pub(super) struct TerminalForegroundGuard;
+
+    impl TerminalForegroundGuard {
+        pub(super) fn capture_if_foreground() -> Option<Self> {
+            None
+        }
+        pub(super) fn set_child_pgrp(&mut self, _child_pid: u32) {}
+        pub(super) fn wait_child(&self, child: &mut Child) -> std::io::Result<ExitStatus> {
+            child.wait()
+        }
+        pub(super) fn finish(self, _status: ExitStatus) {}
+    }
+
+    pub(super) fn configure_child_process_group(
+        cmd: &mut Command,
+        _tty_guard: Option<&TerminalForegroundGuard>,
+    ) {
+        crate::common::configure_new_process_group(cmd);
+    }
+}
+
 pub fn execute(args: &[String]) -> ToolOutput {
     let (options, argv) = match parse_options(args) {
         Ok(parsed) => parsed,
         Err(err) => {
             return ToolOutput {
                 stdout: String::new(),
-                stderr: format!("mrun: {err}\n"),
+                stderr: format!(
+                    "mrun: {err}
+"
+                ),
                 exit_code: 2,
             };
         }
@@ -318,7 +544,11 @@ pub fn execute(args: &[String]) -> ToolOutput {
         Err(err) => {
             return ToolOutput {
                 stdout: String::new(),
-                stderr: format!("{}: {err}\n", argv[0]),
+                stderr: format!(
+                    "{}: {err}
+",
+                    argv[0]
+                ),
                 exit_code: 127,
             };
         }
@@ -329,7 +559,8 @@ pub fn execute(args: &[String]) -> ToolOutput {
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::common::configure_new_process_group(&mut cmd);
+    let mut tty_guard = tty_handoff::TerminalForegroundGuard::capture_if_foreground();
+    tty_handoff::configure_child_process_group(&mut cmd, tty_guard.as_ref());
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {
@@ -340,24 +571,38 @@ pub fn execute(args: &[String]) -> ToolOutput {
             };
             return ToolOutput {
                 stdout: String::new(),
-                stderr: format!("{}: {err}\n", argv[0]),
+                stderr: format!(
+                    "{}: {err}
+",
+                    argv[0]
+                ),
                 exit_code: code,
             };
         }
     };
+    if let Some(guard) = tty_guard.as_mut() {
+        guard.set_child_pgrp(child.id());
+    }
 
     let out_cap = Arc::new(Mutex::new(Some(OutputWindow::new(&options))));
     let err_cap = Arc::new(Mutex::new(Some(OutputWindow::new(&options))));
     let (out_rx, out_handle) = spawn_pipe_reader(child.stdout.take(), Arc::clone(&out_cap));
     let (err_rx, err_handle) = spawn_pipe_reader(child.stderr.take(), Arc::clone(&err_cap));
 
-    let status = match child.wait() {
+    let wait_result = match tty_guard.as_ref() {
+        Some(guard) => guard.wait_child(&mut child),
+        None => child.wait(),
+    };
+    let status = match wait_result {
         Ok(status) => status,
         Err(err) => {
             crate::common::retire_child_process_group(&mut child);
             return ToolOutput {
                 stdout: String::new(),
-                stderr: format!("mrun: wait child: {err}\n"),
+                stderr: format!(
+                    "mrun: wait child: {err}
+"
+                ),
                 exit_code: 1,
             };
         }
@@ -365,7 +610,9 @@ pub fn execute(args: &[String]) -> ToolOutput {
 
     // Terminate any descendants still holding inherited stdout/stderr pipes so draining cannot hang.
     crate::common::kill_process_group(child.id() as i32);
-
+    if let Some(guard) = tty_guard {
+        guard.finish(status);
+    }
     let drain_timeout = std::time::Duration::from_secs(2);
     let _ = crate::common::recv_reader_with_timeout(out_rx, out_handle, drain_timeout);
     let _ = crate::common::recv_reader_with_timeout(err_rx, err_handle, drain_timeout);
