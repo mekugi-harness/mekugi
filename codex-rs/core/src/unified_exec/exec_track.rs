@@ -46,6 +46,7 @@ pub(crate) struct ExecTrackAttachment {
     session_id: String,
     turn_id: String,
     call_id: String,
+    source_kind: ChangeSourceKind,
     summary: String,
     settled: OnceLock<()>,
 }
@@ -75,6 +76,41 @@ impl ExecTrackAttachment {
         session_id: String,
         turn_id: String,
         call_id: String,
+    ) -> PreparedExecTrack {
+        Self::prepare_for_shell_with_source(
+            authored_script,
+            cwd,
+            session_tmp,
+            workspace_root,
+            read_policy,
+            shell_type,
+            tty,
+            store_dir,
+            thread_id,
+            session_id,
+            turn_id,
+            call_id,
+            ChangeSourceKind::ShellWrite,
+        )
+    }
+
+    /// Prepare native exec tracking and pre-execution shell-write baselines with
+    /// an explicit [`ChangeSourceKind`] provenance label.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_for_shell_with_source(
+        authored_script: &str,
+        cwd: &Path,
+        session_tmp: Option<&Path>,
+        workspace_root: PathBuf,
+        read_policy: Option<(FileSystemSandboxPolicy, PathBuf)>,
+        shell_type: &ShellType,
+        tty: bool,
+        store_dir: PathBuf,
+        thread_id: String,
+        session_id: String,
+        turn_id: String,
+        call_id: String,
+        source_kind: ChangeSourceKind,
     ) -> PreparedExecTrack {
         let write_capture =
             ShellWriteCapture::prepare_with_policy(authored_script, cwd, session_tmp, |path| {
@@ -129,6 +165,7 @@ impl ExecTrackAttachment {
             session_id,
             turn_id,
             call_id,
+            source_kind,
             summary: authored_script.to_string(),
             settled: OnceLock::new(),
         });
@@ -220,7 +257,7 @@ impl ExecTrackAttachment {
                 session_id: self.session_id.clone(),
                 turn_id: self.turn_id.clone(),
                 call_id: self.call_id.clone(),
-                source_kind: ChangeSourceKind::ShellWrite,
+                source_kind: self.source_kind,
                 workspace_root: self.workspace_root.clone(),
                 created_at: unix_now_secs(),
                 exit_code: host_exit_code,

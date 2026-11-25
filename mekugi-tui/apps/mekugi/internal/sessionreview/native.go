@@ -329,7 +329,7 @@ func reconcileNativeReview(
 		if caller == "" {
 			caller = "/root"
 		}
-		source := cmp.Or(record.Metadata.SourceKind, "apply_patch")
+		source := nativeOriginSource(record.Metadata.SourceKind)
 		origin := presentation.Origin{Change: record.ID, Caller: caller, Source: source}
 		attempt := presentation.Attempt{
 			AttemptIdentity: identity,
@@ -360,6 +360,17 @@ func reconcileNativeReview(
 		added = true
 	}
 	return added, nil
+}
+
+func nativeOriginSource(sourceKind string) string {
+	switch sourceKind {
+	case "":
+		return "apply_patch"
+	case "user_shell":
+		return "userShell"
+	default:
+		return sourceKind
+	}
 }
 
 func buildNativeReviewFile(

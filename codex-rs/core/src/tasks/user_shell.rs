@@ -175,20 +175,22 @@ pub(crate) async fn execute_user_shell_command(
     }
     let call_id = Uuid::new_v4().to_string();
     let raw_command = command;
-    let user_shell_track = crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell(
-        &raw_command,
-        cwd.as_path(),
-        Some(&crate::exec_env::session_tmp_path(session.session_id())),
-        cwd.as_path().to_path_buf(),
-        None,
-        &environment_shell.shell_type,
-        /*tty*/ false,
-        crate::exec_env::change_history_dir(session.session_id()),
-        session.thread_id.to_string(),
-        session.session_id().to_string(),
-        turn_context.sub_id.clone(),
-        call_id.clone(),
-    );
+    let user_shell_track =
+        crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_shell_with_source(
+            &raw_command,
+            cwd.as_path(),
+            Some(&crate::exec_env::session_tmp_path(session.session_id())),
+            cwd.as_path().to_path_buf(),
+            None,
+            &environment_shell.shell_type,
+            /*tty*/ false,
+            crate::exec_env::change_history_dir(session.session_id()),
+            session.thread_id.to_string(),
+            session.session_id().to_string(),
+            turn_context.sub_id.clone(),
+            call_id.clone(),
+            codex_change_history::ChangeSourceKind::UserShell,
+        );
     #[cfg(unix)]
     drop(user_shell_track.drain_rx);
     let tracked_display_command = user_shell_track
