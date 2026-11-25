@@ -90,7 +90,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   truncation and spills the omitted portion to
   `$SESSION_TMP/truncated_output/{id}` (created on demand), adding only a short
   `(id: {id})` marker inline and stating the directory once in session shell
-  helper guidance.
+  helper guidance. The spill directory enforces a 64 MiB per-session
+  oldest-first ring-buffer cap (keeping the newest spill intact) and is pruned
+  automatically when a thread is archived or deleted.
 
 - Native [feature policy](codex-rs/features/src/lib.rs) fixes JavaScript code
   mode as the only model tool interface, with native V2 agents, token budgeting,

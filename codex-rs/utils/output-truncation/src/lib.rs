@@ -79,6 +79,11 @@ pub fn spill_truncated_output_with_cap(
 ) -> std::io::Result<String> {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
 
+    if let Some(parent) = dir.parent() {
+        reject_non_dir_if_present(parent)?;
+    }
+    reject_non_dir_if_present(dir)?;
+
     let mut builder = DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -87,6 +92,7 @@ pub fn spill_truncated_output_with_cap(
         builder.mode(0o700);
     }
     builder.create(dir)?;
+    ensure_regular_dir(dir)?;
 
     let pid = u64::from(std::process::id());
     let nanos = SystemTime::now()
@@ -134,7 +140,48 @@ struct SpillEntry {
     modified: SystemTime,
 }
 
+fn reject_non_dir_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "truncated output path is not a regular directory: {}",
+                path.display()
+            ),
+        )),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn ensure_regular_dir(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "truncated output path is not a regular directory: {}",
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn is_spill_id_name(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|s| {
+        s.len() == 8
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    })
+}
+
 fn evict_oldest_spills(dir: &Path, keep_file_name: &OsStr, max_bytes: u64) {
+    if !std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir()) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -142,6 +189,10 @@ fn evict_oldest_spills(dir: &Path, keep_file_name: &OsStr, max_bytes: u64) {
     let mut evictable = Vec::new();
 
     for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        if !is_spill_id_name(file_name.as_os_str()) {
+            continue;
+        }
         let path = entry.path();
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
             continue;
@@ -151,7 +202,6 @@ fn evict_oldest_spills(dir: &Path, keep_file_name: &OsStr, max_bytes: u64) {
         }
         let len = meta.len();
         total_bytes = total_bytes.saturating_add(len);
-        let file_name = entry.file_name();
         if file_name.as_os_str() != keep_file_name {
             evictable.push(SpillEntry {
                 path,

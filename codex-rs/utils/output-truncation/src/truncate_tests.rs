@@ -676,17 +676,17 @@ fn spill_truncated_output_with_cap_evicts_oldest_files_and_keeps_newest() {
     let spill_dir = truncated_output_dir(&base);
     std::fs::create_dir_all(&spill_dir).expect("create spill dir");
 
-    write_file_with_mtime(&spill_dir.join("oldest01"), &"a".repeat(10), 1_000);
-    write_file_with_mtime(&spill_dir.join("older002"), &"b".repeat(10), 2_000);
-    write_file_with_mtime(&spill_dir.join("recent03"), &"c".repeat(10), 3_000);
+    write_file_with_mtime(&spill_dir.join("00000001"), &"a".repeat(10), 1_000);
+    write_file_with_mtime(&spill_dir.join("00000002"), &"b".repeat(10), 2_000);
+    write_file_with_mtime(&spill_dir.join("00000003"), &"c".repeat(10), 3_000);
 
-    // Cap 25 bytes: existing 30 + new 10 = 40 -> must evict oldest01 and older002 (leaving 20 <= 25).
+    // Cap 25 bytes: existing 30 + new 10 = 40 -> must evict 00000001 and 00000002 (leaving 20 <= 25).
     let new_id =
         spill_truncated_output_with_cap(&spill_dir, &"d".repeat(10), 25).expect("spill with cap");
 
-    assert!(!spill_dir.join("oldest01").exists());
-    assert!(!spill_dir.join("older002").exists());
-    assert!(spill_dir.join("recent03").exists());
+    assert!(!spill_dir.join("00000001").exists());
+    assert!(!spill_dir.join("00000002").exists());
+    assert!(spill_dir.join("00000003").exists());
     assert_eq!(
         std::fs::read_to_string(spill_dir.join(&new_id)).expect("read new spill"),
         "d".repeat(10)
@@ -727,15 +727,15 @@ fn spill_truncated_output_with_cap_keeps_new_file_even_when_exceeding_cap() {
     let spill_dir = truncated_output_dir(&base);
     std::fs::create_dir_all(&spill_dir).expect("create spill dir");
 
-    write_file_with_mtime(&spill_dir.join("old00001"), &"a".repeat(10), 1_000);
-    write_file_with_mtime(&spill_dir.join("old00002"), &"b".repeat(10), 2_000);
+    write_file_with_mtime(&spill_dir.join("000000a1"), &"a".repeat(10), 1_000);
+    write_file_with_mtime(&spill_dir.join("000000a2"), &"b".repeat(10), 2_000);
 
     // New file is 30 bytes while cap is 15 bytes: all older files are evicted, new file stays intact.
     let new_id = spill_truncated_output_with_cap(&spill_dir, &"z".repeat(30), 15)
         .expect("spill oversize with cap");
 
-    assert!(!spill_dir.join("old00001").exists());
-    assert!(!spill_dir.join("old00002").exists());
+    assert!(!spill_dir.join("000000a1").exists());
+    assert!(!spill_dir.join("000000a2").exists());
     assert_eq!(
         std::fs::read_to_string(spill_dir.join(&new_id)).expect("read new oversize spill"),
         "z".repeat(30)
@@ -763,12 +763,14 @@ fn spill_truncated_output_with_cap_ignores_non_regular_entries() {
         std::os::unix::fs::symlink(&external, spill_dir.join("00000000")).expect("create symlink");
     }
 
-    write_file_with_mtime(&spill_dir.join("old00001"), &"a".repeat(15), 1_000);
+    write_file_with_mtime(&spill_dir.join("000000b1"), &"a".repeat(15), 1_000);
+    write_file_with_mtime(&spill_dir.join("notes.txt"), &"x".repeat(50), 500);
 
     let new_id = spill_truncated_output_with_cap(&spill_dir, &"n".repeat(15), 20)
         .expect("spill with non-regular entries");
 
-    assert!(!spill_dir.join("old00001").exists());
+    assert!(!spill_dir.join("000000b1").exists());
+    assert!(spill_dir.join("notes.txt").exists());
     assert!(spill_dir.join(&new_id).exists());
     assert!(nested_dir.join("keep").exists());
     #[cfg(unix)]
@@ -799,6 +801,31 @@ fn prune_truncated_output_dir_removes_spill_dir_and_preserves_siblings() {
     );
     // Calling again on missing dir is a no-op.
     prune_truncated_output_dir(&base).expect("idempotent prune");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[cfg(unix)]
+#[test]
+fn spill_truncated_output_with_cap_rejects_symlinked_spill_dir() {
+    let base = std::env::temp_dir().join(format!(
+        "codex-spill-symlink-dir-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    let outside_dir = base.join("outside");
+    let session_tmp = base.join("session");
+    std::fs::create_dir_all(&outside_dir).expect("create outside dir");
+    std::fs::create_dir_all(&session_tmp).expect("create session dir");
+    write_file_with_mtime(&outside_dir.join("00000001"), &"k".repeat(32), 1_000);
+
+    let spill_dir = truncated_output_dir(&session_tmp);
+    std::os::unix::fs::symlink(&outside_dir, &spill_dir).expect("symlink spill dir");
+
+    let err = spill_truncated_output_with_cap(&spill_dir, "payload", 10)
+        .expect_err("symlinked spill dir must be rejected");
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(outside_dir.join("00000001").exists());
 
     let _ = std::fs::remove_dir_all(&base);
 }
