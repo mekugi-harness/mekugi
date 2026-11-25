@@ -66,6 +66,7 @@ export type RPCParams = {
   "thread"?: string;
   "startup"?: string;
   "subscription"?: string;
+  "retain"?: (NativeRetainSource | null);
   "body"?: unknown;
 };
 
@@ -312,6 +313,13 @@ export type RPCError = {
   "code": number;
   "message": string;
   "data"?: (RPCErrorData | null);
+};
+
+export type NativeRetainSource = {
+  "subscription"?: string;
+  "reviewRevision"?: number;
+  "familyRoot"?: string;
+  "familyRevision"?: number;
 };
 
 export type ReplayStart = {
@@ -828,6 +836,7 @@ export type ReviewView = {
 
 export type Family = {
   "root": string;
+  "revision"?: number;
   "threads": Array<string>;
   "agents": (Publication | null);
   "status": Label;

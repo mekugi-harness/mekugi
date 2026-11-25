@@ -146,6 +146,103 @@ func TestNativeAttachRetainsFamilyAndReviewAcrossSameConnection(t *testing.T) {
 	}
 }
 
+// Pre-upgrade daemons emit revisioned Reviews but omit Family.Revision and
+// reject unknown view/attach params. Verify Attach omits Retain in that case.
+func TestNativeAttachOmitsRetainWithoutFamilyRevision(t *testing.T) {
+	workspace := t.TempDir()
+	review := &changes.ReviewView{
+		Workspace: workspace,
+		Revision:  7,
+		Publication: changes.Publication{
+			Files: []changes.File{{
+				Path: "a.go",
+				Chunks: []changes.Chunk{{
+					Workspace: workspace,
+					Key:       "chunk-a",
+					Caller:    "/root",
+					Review:    diffmodel.ReviewFile{AfterPath: workspace + "/a.go", Diff: "+a\n"},
+				}},
+			}},
+		},
+	}
+	// Revision == 0 models a pre-upgrade server that does not support retain.
+	legacyFamily := &Family{Root: "main", Threads: []string{"main", "child"}}
+
+	mainServer := NewLive()
+	childServer := NewLive()
+	_ = mainServer.SetSummary(Summary{Thread: "main", Workspace: workspace, Ready: true})
+	_ = childServer.SetSummary(Summary{Thread: "child", Workspace: workspace, Ready: true})
+
+	hub := NewHub(t.Context(), nil)
+	t.Cleanup(hub.Close)
+	hub.mu.Lock()
+	hub.sessions["main"] = &listedSession{entry: listed{Thread: "main", Workspace: workspace}, server: mainServer}
+	hub.sessions["child"] = &listedSession{entry: listed{Thread: "child", Workspace: workspace, ParentThread: "main"}, server: childServer}
+	hub.mu.Unlock()
+
+	serve := func(s *Server, id, caller string) {
+		go func() {
+			for {
+				select {
+				case <-t.Context().Done():
+					return
+				case req := <-s.Native().Requests():
+					thread := sessionpresentation.Thread{ID: id, Caller: caller}
+					frame := NativeFrame{
+						View: sessionpresentation.View{
+							Version: sessionpresentation.Version{Attachment: 1, Revision: 1},
+							Main:    thread, Displayed: thread, Input: thread,
+							Info: sessionpresentation.MainInfo{Workspace: workspace, Caller: caller},
+						},
+						Main:   &activity.Publication{Entries: []activity.Entry{{Seq: 1, Kind: "assistant", Text: id}}, LastSeq: 1},
+						Review: review,
+						Family: legacyFamily,
+					}
+					if err := s.Native().Publish(req.Attachment, frame); err != nil {
+						return
+					}
+					req.Reply <- ""
+				}
+			}
+		}()
+	}
+	serve(mainServer, "main", "/root")
+	serve(childServer, "child", "/root/worker")
+
+	httpServer := httptest.NewServer(Versioned(hub.Handler()))
+	t.Cleanup(httpServer.Close)
+
+	mainConn, err := OpenNative(t.Context(), httpServer.Client(), httpServer.URL, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mainConn.Close() })
+	mainEvent, err := mainConn.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mainEvent.Frame.Review == nil || mainEvent.Frame.Review.Revision != 7 || mainEvent.Frame.Family.Revision != 0 {
+		t.Fatalf("unexpected initial legacy frame: review=%+v family=%+v", mainEvent.Frame.Review, mainEvent.Frame.Family)
+	}
+
+	childConn, err := mainConn.Attach(t.Context(), "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = childConn.Close() })
+	childEvent, err := childConn.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without Family.Revision, Retain was omitted so the server sent a full snapshot.
+	if childEvent.Frame.Review == mainEvent.Frame.Review {
+		t.Fatal("expected full Review snapshot when Family.Revision is zero (legacy server)")
+	}
+	if childEvent.Frame.Review == nil || childEvent.Frame.Review.Revision != 7 {
+		t.Fatalf("unexpected child review: %+v", childEvent.Frame.Review)
+	}
+}
+
 func TestFamilyNewEmptyChildKeepsReviewRevision(t *testing.T) {
 	workspace := "/workspace"
 	review := &changes.ReviewView{
@@ -307,15 +404,32 @@ func BenchmarkNativeAttachLargeFamily(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for b.Loop() {
-		childConn, err := mainConn.Attach(b.Context(), "child")
-		if err != nil {
-			b.Fatal(err)
+	b.Run("WarmSameFamily", func(b *testing.B) {
+		for b.Loop() {
+			childConn, err := mainConn.Attach(b.Context(), "child")
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := childConn.Next(); err != nil {
+				b.Fatal(err)
+			}
+			_ = childConn.Close()
 		}
-		if _, err := childConn.Next(); err != nil {
-			b.Fatal(err)
+	})
+	b.Run("ColdUpdatedFamilyReviewRetained", func(b *testing.B) {
+		nextFamily := new(*family)
+		nextFamily.Revision = 2
+		family = nextFamily
+		for b.Loop() {
+			childConn, err := mainConn.Attach(b.Context(), "child")
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := childConn.Next(); err != nil {
+				b.Fatal(err)
+			}
+			_ = childConn.Close()
 		}
-		_ = childConn.Close()
-	}
+	})
 }
 

@@ -28,7 +28,7 @@ TypeScript types do not grant endpoint authority.
 
 ## Methods
 
-Request params accept optional `thread`, `startup`, `subscription`, and `body`. IDs name confirmed
+Request params accept optional `thread`, `startup`, `subscription`, `retain`, and `body`. IDs name confirmed
 logical threads, never PIDs.
 
 | Method | Scope / purpose |

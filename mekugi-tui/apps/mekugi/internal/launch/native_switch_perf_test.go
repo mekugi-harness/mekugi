@@ -198,12 +198,17 @@ func TestReadRestoredRolloutSkipsOrdinaryFunctionCallOutput(t *testing.T) {
 	fmt.Fprintf(f, "{\"timestamp\":\"2026-11-24T12:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"child-1\"}}\n")
 	fmt.Fprintf(f, "{\"timestamp\":\"2026-11-24T12:00:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_started\",\"turn_id\":\"turn-1\"}}\n")
 	fmt.Fprintf(f, "{\"timestamp\":\"2026-11-24T12:00:02Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":%q}}\n", strings.Repeat("ordinary output ", 512))
+	// Attributed threadcontrol function_call_output must NOT be skipped by the fast filter.
+	fmt.Fprintf(f, "{\"timestamp\":\"2026-11-24T12:00:02Z\",\"type\":\"response_item\",\"metadata\":{\"client_authored\":true},\"payload\":{\"type\":\"function_call_output\",\"namespace\":\"threadcontrol\",\"name\":\"wait_agent\",\"output\":\"{\\\"id\\\":\\\"child-1:wait\\\",\\\"state\\\":\\\"timeout\\\",\\\"targets\\\":[\\\"/root/worker\\\"]}\"}}\n")
 	fmt.Fprintf(f, "{\"timestamp\":\"2026-11-24T12:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"id\":\"item-1\"}}}\n")
 	_ = f.Close()
 
 	got := readRestoredRollout(binding.ThreadInfo{ID: "child-1", Path: path, Cwd: dir}, "/root/worker")
 	if _, ok := got.itemAt["item-1"]; !ok {
 		t.Fatal("rollout reader missed item_completed after skipped function_call_output")
+	}
+	if len(got.events) == 0 {
+		t.Fatal("rollout reader dropped attributed function_call_output entries")
 	}
 }
 

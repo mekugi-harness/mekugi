@@ -81,18 +81,19 @@ func (c *NativeConnection) Attach(ctx context.Context, thread string) (*NativeCo
 	seedReview, seedFamily := c.retainedReview, c.retainedFamily
 	c.retainMu.Unlock()
 	params := RPCParams{Thread: thread}
-	if c.subscription != nil && c.subscription.ID != "" {
-		var retain NativeRetainSource
+	// A nonzero Family.Revision proves the server understands retain hints.
+	// Pre-upgrade daemons emit revisioned Reviews without Family.Revision and
+	// reject unknown view/attach fields with 400.
+	if c.subscription != nil && c.subscription.ID != "" && seedFamily != nil && seedFamily.Root != "" && seedFamily.Revision != 0 {
+		retain := NativeRetainSource{
+			Subscription:   c.subscription.ID,
+			FamilyRoot:     seedFamily.Root,
+			FamilyRevision: seedFamily.Revision,
+		}
 		if seedReview != nil && seedReview.Revision != 0 {
 			retain.ReviewRevision = seedReview.Revision
 		}
-		if seedFamily != nil && seedFamily.Root != "" && seedFamily.Revision != 0 {
-			retain.FamilyRoot, retain.FamilyRevision = seedFamily.Root, seedFamily.Revision
-		}
-		if retain.ReviewRevision != 0 || retain.FamilyRevision != 0 {
-			retain.Subscription = c.subscription.ID
-			params.Retain = &retain
-		}
+		params.Retain = &retain
 	}
 	subscription, err := c.scope.rpc.Subscribe(ctx, "view/attach", params)
 	if err != nil {
