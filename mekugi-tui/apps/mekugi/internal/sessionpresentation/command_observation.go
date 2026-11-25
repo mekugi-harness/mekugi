@@ -10,23 +10,54 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/markdownsyntax"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
 
+func effectiveCommand(command, baseDir string) (display, dir string, stripped bool) {
+	display = frontends.ShellDisplaySource(DisplayCommand(command))
+	if rest, target, ok := shellsyntax.StripLeadingCd(display, baseDir); ok {
+		return rest, target, true
+	}
+	return display, baseDir, false
+}
+
+// CommandDisplaySource returns the display shell source for a command item,
+// omitting a safe leading literal cd <dir> && prefix when its directory can be
+// resolved.
+func CommandDisplaySource(item observation.Item) string {
+	display, _, _ := effectiveCommand(item.Command, item.Cwd)
+	return display
+}
+
 // CommandWorkdir is the display form of the directory the host ran
 // a command in, when it is not the workspace its activity is shown against.
 // An unknown workspace or directory gets no label.
 func CommandWorkdir(item observation.Item, workspace string) string {
-	if item.Type != "commandExecution" || !filepath.IsAbs(item.Cwd) || !filepath.IsAbs(workspace) || filepath.Clean(item.Cwd) == filepath.Clean(workspace) {
+	if item.Type != "commandExecution" || !filepath.IsAbs(workspace) {
 		return ""
 	}
-	return pathdisplay.ForWorkspace(workspace, filepath.Clean(item.Cwd))
+	dir := item.Cwd
+	if item.Command != "" {
+		if _, target, stripped := effectiveCommand(item.Command, item.Cwd); stripped {
+			dir = target
+		}
+	}
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) == filepath.Clean(workspace) {
+		return ""
+	}
+	return pathdisplay.ForWorkspace(workspace, filepath.Clean(dir))
 }
 
 func CommandDirectory(item observation.Item, workspace string) string {
+	if (item.Type == "" || item.Type == "commandExecution") && item.Command != "" {
+		if _, dir, stripped := effectiveCommand(item.Command, item.Cwd); stripped {
+			return dir
+		}
+	}
 	if filepath.IsAbs(item.Cwd) {
 		return item.Cwd
 	}
@@ -39,18 +70,32 @@ func CommandDirectory(item observation.Item, workspace string) string {
 // display relative to the directory the command ran in, which
 // CommandWorkdir labels when it differs from the workspace.
 func CommandText(item observation.Item, cwd string) string {
-	cwd = CommandDirectory(item, cwd)
+	displayCmd, effectiveDir, stripped := effectiveCommand(item.Command, item.Cwd)
+	baseCwd := item.Cwd
+	if !filepath.IsAbs(baseCwd) {
+		baseCwd = cwd
+	}
+	displayCwd := effectiveDir
+	if !filepath.IsAbs(displayCwd) {
+		displayCwd = cwd
+	}
+	actionPath := func(path string) string {
+		if stripped && path != "" && !filepath.IsAbs(path) && filepath.IsAbs(baseCwd) {
+			path = filepath.Join(baseCwd, path)
+		}
+		return pathdisplay.ForWorkspace(displayCwd, path)
+	}
 	var parts []string
 	for _, action := range item.CommandActions {
 		switch action.Type {
 		case "read":
-			parts = append(parts, "Read "+markdownsyntax.QuoteCode(pathdisplay.ForWorkspace(cwd, action.Path)))
+			parts = append(parts, "Read "+markdownsyntax.QuoteCode(actionPath(action.Path)))
 		case "listFiles":
-			parts = append(parts, "List "+markdownsyntax.QuoteCode(cmp.Or(pathdisplay.ForWorkspace(cwd, action.Path), ".")))
+			parts = append(parts, "List "+markdownsyntax.QuoteCode(cmp.Or(actionPath(action.Path), ".")))
 		case "search":
 			text := "Search " + markdownsyntax.QuoteCode(action.Query)
 			if action.Path != "" {
-				text += " in " + markdownsyntax.QuoteCode(pathdisplay.ForWorkspace(cwd, action.Path))
+				text += " in " + markdownsyntax.QuoteCode(actionPath(action.Path))
 			}
 			parts = append(parts, text)
 		default:
@@ -61,7 +106,7 @@ func CommandText(item observation.Item, cwd string) string {
 		}
 	}
 	if len(parts) == 0 {
-		return activitypresentation.ShellSource(frontends.ShellDisplaySource(DisplayCommand(item.Command)), cwd)
+		return activitypresentation.ShellSource(displayCmd, displayCwd)
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -77,7 +122,7 @@ func (s *Attachment) CompleteCommand(native *NativeItem, item observation.Item, 
 	if run := s.Commands()[[3]string{native.Thread, native.Turn, native.Item}]; run != nil {
 		native.Invocation = run.Entry.Native.Invocation
 	}
-	source := CommandSource(item.Command, native.CommandCwd)
+	source := itemCommandSource(item, native.CommandCwd)
 	if native.Invocation == nil {
 		native.Invocation = activitypresentation.NewInvocation(source, native.CommandStarted, outputs)
 	}
@@ -151,7 +196,11 @@ func SearchResults(item observation.Item) *int {
 	if item.AggregatedOutput != nil && len(*item.AggregatedOutput) >= 1<<20 {
 		return nil
 	}
-	return activitypresentation.OperationResultCount(DisplayCommand(item.Command), item.AggregatedOutput, *item.ExitCode)
+	command := DisplayCommand(item.Command)
+	if rest, _, ok := shellsyntax.StripLeadingCd(command, item.Cwd); ok {
+		command = rest
+	}
+	return activitypresentation.OperationResultCount(command, item.AggregatedOutput, *item.ExitCode)
 }
 
 func ItemDuration(item observation.Item) time.Duration {
@@ -167,8 +216,13 @@ func CommandOutputRows(item observation.Item) ([]activitypresentation.ChangeRow,
 	if item.Status == "failed" || item.Status == "interrupted" || item.ExitCode == nil || *item.ExitCode != 0 {
 		return nil, activitypresentation.CommitKey{}
 	}
-	if rows := activitypresentation.MChangesOutputRows(DisplayCommand(item.Command), item.AggregatedOutput); rows != nil || item.AggregatedOutput == nil {
+	command := DisplayCommand(item.Command)
+	if rest, _, ok := shellsyntax.StripLeadingCd(command, item.Cwd); ok {
+		command = rest
+	}
+	if rows := activitypresentation.MChangesOutputRows(command, item.AggregatedOutput); rows != nil || item.AggregatedOutput == nil {
 		return rows, activitypresentation.CommitKey{}
 	}
-	return activitypresentation.VCSOutputRows(frontends.ShellDisplaySource(DisplayCommand(item.Command)), item.Cwd, *item.AggregatedOutput)
+	displayCmd, effectiveDir, _ := effectiveCommand(item.Command, item.Cwd)
+	return activitypresentation.VCSOutputRows(displayCmd, effectiveDir, *item.AggregatedOutput)
 }

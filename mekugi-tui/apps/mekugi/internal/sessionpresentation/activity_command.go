@@ -1,9 +1,11 @@
 package sessionpresentation
 
 import (
+	"cmp"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -27,7 +29,7 @@ func CommandPresentation(entry ActivityEntry) activitypresentation.Command {
 	} else {
 		// Non-command items, including hooks, share the terminal detail surface.
 		source := CommandSource(n.Command, n.CommandCwd)
-		c.Script, c.Display, c.Directory = source.Script, source.Display, source.Directory
+		c.Script, c.Display, c.Directory = source.Script, cmp.Or(n.CommandDisplay, source.Display), source.Directory
 		if n.Output != nil {
 			snapshot, _ := n.Output.Context(0)
 			c.Output = &snapshot
@@ -81,4 +83,10 @@ func CommandSource(command, directory string) activitypresentation.CommandSource
 		script = shellinstrumentation.ShOriginal(command)
 	}
 	return activitypresentation.CommandSource{Script: script, Display: frontends.ShellDisplaySource(DisplayCommand(command)), Directory: directory}
+}
+
+func itemCommandSource(item observation.Item, directory string) activitypresentation.CommandSource {
+	source := CommandSource(item.Command, directory)
+	source.Display = CommandDisplaySource(item)
+	return source
 }

@@ -103,7 +103,7 @@ func (c Command) compound(values []Value, inline bool) bool {
 	if compound || c.Script == "" {
 		return compound
 	}
-	if program, err := syntax.NewParser().Parse(strings.NewReader(c.Script), ""); err == nil {
+	if program, err := syntax.NewParser().Parse(strings.NewReader(cmp.Or(c.Display, c.Script)), ""); err == nil {
 		if len(values) == 1 && values[0].Verb == "Run" && values[0].Code == textsanitize.Safe(shellDisplaySource(c.Display), false) {
 			return false
 		}

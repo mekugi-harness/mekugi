@@ -344,6 +344,20 @@ func TestAppServerCommandWorkdirDisplay(t *testing.T) {
 		{name: "piped read", cwd: workspace, command: "nl -ba " + quoteShellWord(workspace+"/a.go") + " | sed -n '2,4p'", text: "Read `a.go 2:4`"},
 		{name: "list", cwd: other, workdir: other, command: "ls src",
 			actions: []binding.CommandAction{{Type: "listFiles", Command: "ls src", Path: "src"}}, text: "List `src`"},
+		{name: "leading cd subdir", cwd: workspace, workdir: "sub", command: "cd sub && go test ./...", text: "Run\n```bash\ngo test ./...\n```"},
+		{name: "leading cd wrapped bash", cwd: workspace, workdir: "sub", command: "/bin/bash -lc 'cd sub && go test ./...'", text: "Run\n```bash\ngo test ./...\n```"},
+		{name: "leading cd outside", cwd: workspace, workdir: other, command: "cd " + quoteShellWord(other) + " && go test ./...", text: "Run\n```bash\ngo test ./...\n```"},
+		{name: "leading cd absolute without host cwd", workdir: other, command: "cd " + quoteShellWord(other) + " && go test ./...", text: "Run\n```bash\ngo test ./...\n```"},
+		{name: "leading cd read action", cwd: workspace, workdir: "sub", command: "cd sub && cat a.go",
+			actions: []binding.CommandAction{{Type: "read", Command: "cat a.go", Path: "sub/a.go"}}, text: "Read `a.go`"},
+		{name: "leading cd list action", cwd: workspace, workdir: "sub", command: "cd sub && ls",
+			actions: []binding.CommandAction{{Type: "listFiles", Command: "ls", Path: "sub"}}, text: "List `.`"},
+		{name: "leading cd search", cwd: workspace, workdir: "sub", command: "cd sub && rg foo src", text: "Search `foo` in `src`"},
+		{name: "leading cd back to workspace", cwd: filepath.Join(workspace, "sub"), command: "cd .. && go test ./...", text: "Run\n```bash\ngo test ./...\n```"},
+		{name: "unsafe semicolon cd kept", cwd: workspace, command: "cd sub; go test ./...", text: "Run\n```bash\ncd sub; go test ./...\n```"},
+		{name: "unsafe or cd kept", cwd: workspace, command: "cd sub && go test ./... || echo fail", text: "Run\n```bash\ncd sub && go test ./... || echo fail\n```"},
+		{name: "unsafe later cd back kept", cwd: workspace, command: "cd sub && go test ./... && cd .. && go vet ./...", text: "Run\n```bash\ncd sub && go test ./... && cd .. && go vet ./...\n```"},
+		{name: "unsafe cd dash kept", cwd: workspace, command: "cd - && go test ./...", text: "Run\n```bash\ncd - && go test ./...\n```"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.actions == nil {
@@ -361,6 +375,9 @@ func TestAppServerCommandWorkdirDisplay(t *testing.T) {
 				blocks := parseLiveActivity(u.attached.source.Entries[0].Source)
 				if len(blocks) == 0 || blocks[0].Workdir != tc.workdir {
 					t.Fatalf("blocks = %+v; want workdir %q", blocks, tc.workdir)
+				}
+				if tc.name == "leading cd search" && len(blocks) != 1 {
+					t.Fatalf("expected single classified block without compound combined-output row, got %+v", blocks)
 				}
 				// A long workdir moves to its own row, so check the whole block.
 				rows := ansi.Strip(strings.Join((&activityui.Painter{Theme: diffrender.DarkTheme}).Block(blocks[0], 200), "\n"))
@@ -448,6 +465,100 @@ func TestUISnapshotActivityWorkdirRuns(t *testing.T) {
 		if visible := view.Viewport(activity, 4); !strings.Contains(ansi.Strip(visible[0]), "In "+dir) {
 			t.Fatalf("activity pinned the wrong heading:\n%s", strings.Join(visible, "\n"))
 		}
+	}
+}
+
+func TestAppServerLeadingCdWorkdirGroupingAndParity(t *testing.T) {
+	workspace := t.TempDir()
+	dir := filepath.Join(".worktrees", "topic")
+	editPath := filepath.Join(dir, "internal", "edit.go")
+	workdir := filepath.Join(workspace, dir)
+	edit := binding.ThreadItem{ID: "edit", Type: "fileChange", Status: "completed",
+		Changes: []binding.FileChange{{Path: filepath.Join(workspace, editPath), Diff: "@@ -1 +1 @@\n-before\n+after\n"}}}
+	command := func(id, code, cwd string) binding.ThreadItem {
+		return binding.ThreadItem{ID: id, Type: "commandExecution", Command: code, Cwd: cwd, Status: "completed", ExitCode: new(0)}
+	}
+	items := []binding.ThreadItem{
+		edit,
+		command("cd-test", "cd "+dir+" && go test ./...", workspace),
+		command("native-search", "rg package internal", workdir),
+		command("cd-env", "/bin/bash -lc 'cd "+dir+" && go env GOPATH'", workspace),
+		command("root", "go version", workspace),
+		command("single-cd", "cd sub && go env GOOS", workspace),
+	}
+	live, restored := newAppServerSessionTestUI(t, workspace), newAppServerSessionTestUI(t, workspace)
+	notify := func(method string, params map[string]any) {
+		reasoningTestNotify(t, live, method, params)
+	}
+	notify("turn/started", map[string]any{"threadId": "main", "turn": map[string]any{"id": "t"}})
+	for _, item := range items {
+		notify("item/completed", map[string]any{"threadId": "main", "turnId": "t", "item": item})
+	}
+	notify("turn/completed", map[string]any{"threadId": "main", "turn": map[string]any{"id": "t", "status": "completed"}})
+	restored.restoreHistory([]binding.HistoryTurn{{ID: "t", Status: "completed", Items: items}})
+	for _, ui := range []*appServerUI{live, restored} {
+		view := ui.testActivity(ui.shell.Transcript)
+		view.Conversation = true
+		conv := view.testRenderConversation(100)
+		convRows := ansi.Strip(strings.Join(conv.Lines, "\n"))
+		if strings.Contains(convRows, "cd "+dir) || strings.Contains(convRows, "cd sub") {
+			t.Fatalf("leading cd was not omitted in conversation view:\n%s", convRows)
+		}
+		if strings.Count(convRows, "In "+dir) != 1 || strings.Contains(convRows, "· in "+dir) {
+			t.Fatalf("leading cd commands did not group under one In %s heading:\n%s", dir, convRows)
+		}
+		if !strings.Contains(convRows, "internal"+string(filepath.Separator)+"edit.go") {
+			t.Fatalf("adopted edit path was not shortened relative to %s:\n%s", dir, convRows)
+		}
+		if !strings.Contains(convRows, "· in sub") {
+			t.Fatalf("standalone leading cd command missing inline workdir label:\n%s", convRows)
+		}
+		view.Following = false
+		view.Offset = slices.IndexFunc(conv.Lines, func(line string) bool {
+			return strings.Contains(ansi.Strip(line), "Search")
+		})
+		if view.Offset < 0 {
+			t.Fatalf("missing Search row in:\n%s", convRows)
+		}
+		if visible := view.Viewport(conv, 4); !strings.Contains(ansi.Strip(visible[0]), "In "+dir) {
+			t.Fatalf("pinned heading missing for leading-cd group:\n%s", strings.Join(visible, "\n"))
+		}
+		view.Conversation = false
+		activity := view.RenderFeed(100, 40)
+		actRows := ansi.Strip(strings.Join(activity.Lines, "\n"))
+		if strings.Count(actRows, "In "+dir) != 1 || strings.Contains(actRows, "· in "+dir) || !strings.Contains(actRows, "· in sub") {
+			t.Fatalf("activity feed did not preserve leading-cd workdir behavior:\n%s", actRows)
+		}
+	}
+}
+
+func TestLeadingCdSearchResultsAndVCSCommitDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	searchOut := "a.go:1:foo\nb.go:2:foo\n"
+	searchItem := (binding.ThreadItem{
+		Type:             "commandExecution",
+		Command:          "cd sub && rg foo src",
+		Cwd:              workspace,
+		Status:           "completed",
+		ExitCode:         new(0),
+		AggregatedOutput: &searchOut,
+	}).Observation()
+	if count := sessionpresentation.SearchResults(searchItem); count == nil || *count != 2 {
+		t.Fatalf("SearchResults = %v; want 2", count)
+	}
+	commitOut := "[main abc1234] msg\n 1 file changed, 2 insertions(+), 1 deletion(-)\n"
+	commitItem := (binding.ThreadItem{
+		Type:             "commandExecution",
+		Command:          "cd sub && git commit -m msg",
+		Cwd:              workspace,
+		Status:           "completed",
+		ExitCode:         new(0),
+		AggregatedOutput: &commitOut,
+	}).Observation()
+	rows, key := sessionpresentation.CommandOutputRows(commitItem)
+	wantDir := filepath.Join(workspace, "sub")
+	if len(rows) != 1 || key.Directory != wantDir || key.Hash != "abc1234" {
+		t.Fatalf("CommandOutputRows = (%+v, %+v); want 1 row in %q hash abc1234", rows, key, wantDir)
 	}
 }
 
