@@ -25,11 +25,38 @@ func effectiveCommand(command, baseDir string) (display, dir string, stripped bo
 	return display, baseDir, false
 }
 
+// cdFailed reports whether an unsuccessful command's output indicates that
+// the leading cd itself failed before the shell entered the target directory.
+func cdFailed(item observation.Item) bool {
+	if item.AggregatedOutput == nil {
+		return false
+	}
+	failed := item.Status == "failed" || item.ExitCode != nil && *item.ExitCode != 0
+	if !failed {
+		return false
+	}
+	for line := range strings.SplitSeq(*item.AggregatedOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return strings.HasPrefix(line, "cd: ") || strings.Contains(line, ": cd: ") || strings.Contains(line, ":cd:")
+	}
+	return false
+}
+
+func effectiveItemCommand(item observation.Item) (display, dir string, stripped bool) {
+	if cdFailed(item) {
+		return frontends.ShellDisplaySource(DisplayCommand(item.Command)), item.Cwd, false
+	}
+	return effectiveCommand(item.Command, item.Cwd)
+}
+
 // CommandDisplaySource returns the display shell source for a command item,
 // omitting a safe leading literal cd <dir> && prefix when its directory can be
 // resolved.
 func CommandDisplaySource(item observation.Item) string {
-	display, _, _ := effectiveCommand(item.Command, item.Cwd)
+	display, _, _ := effectiveItemCommand(item)
 	return display
 }
 
@@ -42,7 +69,7 @@ func CommandWorkdir(item observation.Item, workspace string) string {
 	}
 	dir := item.Cwd
 	if item.Command != "" {
-		if _, target, stripped := effectiveCommand(item.Command, item.Cwd); stripped {
+		if _, target, stripped := effectiveItemCommand(item); stripped {
 			dir = target
 		}
 	}
@@ -54,7 +81,7 @@ func CommandWorkdir(item observation.Item, workspace string) string {
 
 func CommandDirectory(item observation.Item, workspace string) string {
 	if (item.Type == "" || item.Type == "commandExecution") && item.Command != "" {
-		if _, dir, stripped := effectiveCommand(item.Command, item.Cwd); stripped {
+		if _, dir, stripped := effectiveItemCommand(item); stripped {
 			return dir
 		}
 	}
@@ -70,7 +97,7 @@ func CommandDirectory(item observation.Item, workspace string) string {
 // display relative to the directory the command ran in, which
 // CommandWorkdir labels when it differs from the workspace.
 func CommandText(item observation.Item, cwd string) string {
-	displayCmd, effectiveDir, stripped := effectiveCommand(item.Command, item.Cwd)
+	displayCmd, effectiveDir, stripped := effectiveItemCommand(item)
 	baseCwd := item.Cwd
 	if !filepath.IsAbs(baseCwd) {
 		baseCwd = cwd
@@ -79,7 +106,9 @@ func CommandText(item observation.Item, cwd string) string {
 	if !filepath.IsAbs(displayCwd) {
 		displayCwd = cwd
 	}
-	actionPath := func(path string) string {
+	// The host rebases read action paths against the starting directory,
+	// while search and list operands stay relative to the effective directory.
+	readActionPath := func(path string) string {
 		if stripped && path != "" && !filepath.IsAbs(path) && filepath.IsAbs(baseCwd) {
 			path = filepath.Join(baseCwd, path)
 		}
@@ -89,13 +118,13 @@ func CommandText(item observation.Item, cwd string) string {
 	for _, action := range item.CommandActions {
 		switch action.Type {
 		case "read":
-			parts = append(parts, "Read "+markdownsyntax.QuoteCode(actionPath(action.Path)))
+			parts = append(parts, "Read "+markdownsyntax.QuoteCode(readActionPath(action.Path)))
 		case "listFiles":
-			parts = append(parts, "List "+markdownsyntax.QuoteCode(cmp.Or(actionPath(action.Path), ".")))
+			parts = append(parts, "List "+markdownsyntax.QuoteCode(cmp.Or(pathdisplay.ForWorkspace(displayCwd, action.Path), ".")))
 		case "search":
 			text := "Search " + markdownsyntax.QuoteCode(action.Query)
 			if action.Path != "" {
-				text += " in " + markdownsyntax.QuoteCode(actionPath(action.Path))
+				text += " in " + markdownsyntax.QuoteCode(pathdisplay.ForWorkspace(displayCwd, action.Path))
 			}
 			parts = append(parts, text)
 		default:
@@ -196,11 +225,8 @@ func SearchResults(item observation.Item) *int {
 	if item.AggregatedOutput != nil && len(*item.AggregatedOutput) >= 1<<20 {
 		return nil
 	}
-	command := DisplayCommand(item.Command)
-	if rest, _, ok := shellsyntax.StripLeadingCd(command, item.Cwd); ok {
-		command = rest
-	}
-	return activitypresentation.OperationResultCount(command, item.AggregatedOutput, *item.ExitCode)
+	displayCmd, _, _ := effectiveItemCommand(item)
+	return activitypresentation.OperationResultCount(displayCmd, item.AggregatedOutput, *item.ExitCode)
 }
 
 func ItemDuration(item observation.Item) time.Duration {
@@ -216,13 +242,9 @@ func CommandOutputRows(item observation.Item) ([]activitypresentation.ChangeRow,
 	if item.Status == "failed" || item.Status == "interrupted" || item.ExitCode == nil || *item.ExitCode != 0 {
 		return nil, activitypresentation.CommitKey{}
 	}
-	command := DisplayCommand(item.Command)
-	if rest, _, ok := shellsyntax.StripLeadingCd(command, item.Cwd); ok {
-		command = rest
-	}
-	if rows := activitypresentation.MChangesOutputRows(command, item.AggregatedOutput); rows != nil || item.AggregatedOutput == nil {
+	displayCmd, effectiveDir, _ := effectiveItemCommand(item)
+	if rows := activitypresentation.MChangesOutputRows(displayCmd, item.AggregatedOutput); rows != nil || item.AggregatedOutput == nil {
 		return rows, activitypresentation.CommitKey{}
 	}
-	displayCmd, effectiveDir, _ := effectiveCommand(item.Command, item.Cwd)
 	return activitypresentation.VCSOutputRows(displayCmd, effectiveDir, *item.AggregatedOutput)
 }

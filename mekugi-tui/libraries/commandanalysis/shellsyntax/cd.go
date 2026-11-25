@@ -7,24 +7,30 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 )
 
-// StripLeadingCd recognizes a safe leading literal cd <dir> && <rest>
-// command, resolves the target directory against directory, and returns the
-// remaining command text with the leading cd ... && omitted.
+// StripLeadingCd recognizes a safe leading literal cd <dir> && <rest>,
+// cd <dir>; <rest>, or newline-separated cd <dir>\n<rest> command, resolves
+// the target directory against directory, and returns the remaining command
+// text with the leading cd omitted.
 //
-// Semicolons, ||, subshells, dynamic targets, cd -, bare cd,
-// options other than --, and commands that change directory again later
-// in the remaining statements are left intact.
+// ||, subshells wrapping cd, dynamic targets, cd -, bare cd, options other
+// than --, redirects, inline env assignments, shebangs, and commands that
+// change directory again later in the remaining statements are left intact.
 func StripLeadingCd(script, directory string) (rest, target string, ok bool) {
 	if strings.TrimSpace(script) == "" || strings.HasPrefix(strings.TrimLeft(script, " \t"), "#!") {
 		return "", "", false
 	}
 	program, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(script), "")
-	if err != nil || len(program.Stmts) != 1 {
+	if err != nil || len(program.Stmts) == 0 {
 		return "", "", false
 	}
-	steps, ok := andChain(program.Stmts[0])
-	if !ok || len(steps) < 2 {
-		return "", "", false
+	var steps []*syntax.Stmt
+	if len(program.Stmts) == 1 {
+		steps, ok = andChain(program.Stmts[0])
+		if !ok || len(steps) < 2 {
+			return "", "", false
+		}
+	} else {
+		steps = program.Stmts
 	}
 	target, ok = leadingCdTarget(steps[0], directory)
 	if !ok {

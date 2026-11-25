@@ -19,7 +19,9 @@ import (
 
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 
+	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	commandsegments "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/segments"
 )
 
 func TestAppServerFrontendCommandClassification(t *testing.T) {
@@ -350,11 +352,14 @@ func TestAppServerCommandWorkdirDisplay(t *testing.T) {
 		{name: "leading cd absolute without host cwd", workdir: other, command: "cd " + quoteShellWord(other) + " && go test ./...", text: "Run\n```bash\ngo test ./...\n```"},
 		{name: "leading cd read action", cwd: workspace, workdir: "sub", command: "cd sub && cat a.go",
 			actions: []binding.CommandAction{{Type: "read", Command: "cat a.go", Path: "sub/a.go"}}, text: "Read `a.go`"},
-		{name: "leading cd list action", cwd: workspace, workdir: "sub", command: "cd sub && ls",
-			actions: []binding.CommandAction{{Type: "listFiles", Command: "ls", Path: "sub"}}, text: "List `.`"},
+		{name: "leading cd list action", cwd: workspace, workdir: "sub", command: "cd sub && ls src",
+			actions: []binding.CommandAction{{Type: "listFiles", Command: "ls src", Path: "src"}}, text: "List `src`"},
+		{name: "leading cd search action", cwd: workspace, workdir: "sub", command: "cd sub && rg foo src",
+			actions: []binding.CommandAction{{Type: "search", Command: "rg foo src", Query: "foo", Path: "src"}}, text: "Search `foo` in `src`"},
 		{name: "leading cd search", cwd: workspace, workdir: "sub", command: "cd sub && rg foo src", text: "Search `foo` in `src`"},
 		{name: "leading cd back to workspace", cwd: filepath.Join(workspace, "sub"), command: "cd .. && go test ./...", text: "Run\n```bash\ngo test ./...\n```"},
-		{name: "unsafe semicolon cd kept", cwd: workspace, command: "cd sub; go test ./...", text: "Run\n```bash\ncd sub; go test ./...\n```"},
+		{name: "leading cd semicolon", cwd: workspace, workdir: "sub", command: "cd sub; go test ./...", text: "Run\n```bash\ngo test ./...\n```"},
+		{name: "leading cd newline", cwd: workspace, workdir: "sub", command: "cd sub\ngo test ./...", text: "Run\n```bash\ngo test ./...\n```"},
 		{name: "unsafe or cd kept", cwd: workspace, command: "cd sub && go test ./... || echo fail", text: "Run\n```bash\ncd sub && go test ./... || echo fail\n```"},
 		{name: "unsafe later cd back kept", cwd: workspace, command: "cd sub && go test ./... && cd .. && go vet ./...", text: "Run\n```bash\ncd sub && go test ./... && cd .. && go vet ./...\n```"},
 		{name: "unsafe cd dash kept", cwd: workspace, command: "cd - && go test ./...", text: "Run\n```bash\ncd - && go test ./...\n```"},
@@ -559,6 +564,46 @@ func TestLeadingCdSearchResultsAndVCSCommitDirectory(t *testing.T) {
 	wantDir := filepath.Join(workspace, "sub")
 	if len(rows) != 1 || key.Directory != wantDir || key.Hash != "abc1234" {
 		t.Fatalf("CommandOutputRows = (%+v, %+v); want 1 row in %q hash abc1234", rows, key, wantDir)
+	}
+}
+
+func TestLeadingCdFailedCdKeepsOriginalCommandAndWorkdir(t *testing.T) {
+	workspace := t.TempDir()
+	cdErr := "bash: line 1: cd: missing: No such file or directory\n"
+	failedCd := binding.ThreadItem{
+		ID: "cd-fail", Type: "commandExecution", Command: "cd missing && go test ./...",
+		Cwd: workspace, Status: "failed", ExitCode: new(1), AggregatedOutput: &cdErr,
+	}
+	live, restored := newAppServerSessionTestUI(t, workspace), newAppServerSessionTestUI(t, workspace)
+	for _, method := range []string{"item/started", "item/completed"} {
+		appServerTestNotify(t, live, method, map[string]any{"threadId": "main", "turnId": "t", "item": failedCd})
+	}
+	restored.restoreHistory([]binding.HistoryTurn{{ID: "t", Status: "completed", Items: []binding.ThreadItem{failedCd}}})
+	for _, ui := range []*appServerUI{live, restored} {
+		entry := ui.attached.source.Entries[0].Source
+		if entry.Native.Workdir != "" || !strings.Contains(entry.Text, "cd missing && go test ./...") {
+			t.Fatalf("failed cd should retain original command and workspace cwd, got workdir=%q text=%q", entry.Native.Workdir, entry.Text)
+		}
+	}
+}
+
+func TestLeadingCdTrackedSingleSegmentOmitsCd(t *testing.T) {
+	workspace := t.TempDir()
+	item := (binding.ThreadItem{
+		ID: "tracked", Type: "commandExecution", Command: "cd sub && go test ./...",
+		Cwd: workspace, Status: "completed", ExitCode: new(0),
+	}).Observation()
+	dir := sessionpresentation.CommandDirectory(item, workspace)
+	display := sessionpresentation.CommandDisplaySource(item)
+	inv := activitypresentation.NewInvocation(activitypresentation.CommandSource{
+		Script: item.Command, Display: display, Directory: dir,
+	}, time.Time{}, nil)
+	report := sessionpresentation.CommandReport(inv, commandsegments.Report{
+		Terminal: true, Done: true, Code: 0,
+		Segments: []commandsegments.Segment{{Source: "cd sub && go test ./...", Began: true, Ended: true, Code: 0}},
+	}, dir)
+	if len(report.Segments) != 1 || report.Segments[0].Analysis != "go test ./..." || strings.Contains(report.Segments[0].Text, "cd sub") {
+		t.Fatalf("tracked single segment re-exposed leading cd: %+v", report.Segments)
 	}
 }
 

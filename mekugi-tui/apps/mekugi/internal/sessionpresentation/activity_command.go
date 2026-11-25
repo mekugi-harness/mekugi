@@ -7,6 +7,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/shellsyntax"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
@@ -56,8 +57,14 @@ func CommandPresentation(entry ActivityEntry) activitypresentation.Command {
 		if n.SegmentsPending {
 			break
 		}
+		segmentDisplay := frontends.ShellDisplaySource(segment.Source)
+		if len(n.Segments) == 1 && c.Display != "" && c.Display != segmentDisplay {
+			if rest, _, ok := shellsyntax.StripLeadingCd(segmentDisplay, cmp.Or(n.CommandCwd, c.Directory)); ok && rest == c.Display {
+				segmentDisplay = rest
+			}
+		}
 		value := activitypresentation.CommandSegment{
-			Source: segment.Source, Display: frontends.ShellDisplaySource(segment.Source), Text: segment.Text, Running: segment.Running, Skipped: segment.Skipped, Pending: segment.Pending, ExitCode: segment.Exit,
+			Source: segment.Source, Display: segmentDisplay, Text: segment.Text, Running: segment.Running, Skipped: segment.Skipped, Pending: segment.Pending, ExitCode: segment.Exit,
 			Started: segment.Timing.Started, Ended: segment.Timing.Ended, Duration: time.Duration(segment.Timing.ElapsedNS),
 			Tail: segment.Tail, TailOmitted: segment.Omit, TailClipped: segment.Clipped, Changes: segment.Changes, Results: segment.Results,
 		}
