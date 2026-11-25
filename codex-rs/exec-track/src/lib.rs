@@ -111,16 +111,14 @@ impl WriteObserverSession {
         }
     }
 
-    /// Stop the observer background thread without persisting.
+    /// Stop observing new writes without discarding already-captured baselines,
+    /// so callers (e.g. timed-out command termination) can still call
+    /// `finish_and_persist` afterwards.
     pub fn stop(&self) {
         #[cfg(target_os = "linux")]
         self.backend.settle();
         #[cfg(target_os = "macos")]
         self.backend.stop_and_join();
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .release_active_writers();
     }
 
     /// Stop the observer, read post-execution snapshots for all observed paths,
@@ -132,10 +130,7 @@ impl WriteObserverSession {
         session_tmp: Option<&Path>,
         metadata: ChangeMetadata,
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
-        #[cfg(target_os = "linux")]
-        self.backend.settle();
-        #[cfg(target_os = "macos")]
-        self.backend.stop_and_join();
+        self.stop();
         let mut guard = self
             .state
             .lock()
@@ -147,6 +142,10 @@ impl WriteObserverSession {
 impl Drop for WriteObserverSession {
     fn drop(&mut self) {
         self.stop();
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release_active_writers();
     }
 }
 

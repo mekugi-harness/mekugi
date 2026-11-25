@@ -84,7 +84,7 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   exits) persist to `codex-change-history` under `ChangeSourceKind::ShellWrite`
   for agent commands and `ChangeSourceKind::UserShell` (`"user_shell"`,
   unattributed `shellN`) for interactive `!` commands with shared `claim_key`
-  deduplication, while classifying Git worktree restores (`git restore`,
+  deduplication, while classifying Git worktree restores on Linux (`git restore`,
   `git checkout --`, `git reset --hard`, `git clean`) under
   `ChangeSourceKind::VcsDiagnostic` (`MEKUGI-827`). Downgrade note:
   older runtimes deserialize `ChangeSourceKind` strictly and will reject a

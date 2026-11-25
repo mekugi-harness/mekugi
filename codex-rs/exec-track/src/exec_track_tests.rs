@@ -433,11 +433,13 @@ fn linux_background_descendant_write_succeeds_after_settle() {
     let store_dir = TempDir::new().expect("store");
     let bg_out = workspace.path().join("bg_after_settle.txt");
     let bg_tmp = workspace.path().join("bg_after_settle.txt.tmp");
+    let bg_go = workspace.path().join("bg_go");
     let obs = WriteObserverSession::start("seccomp-bg".to_string(), |_| true).unwrap();
     let sock_path = obs.dir_path().join("observe.sock");
 
     let script = format!(
-        "(sleep 0.15; printf 'ok' > '{}' && mv '{}' '{}') >/dev/null 2>&1 &",
+        "(while [ ! -f '{}' ]; do sleep 0.02; done; printf 'ok' > '{}' && mv '{}' '{}') >/dev/null 2>&1 &",
+        bg_go.display(),
         bg_tmp.display(),
         bg_tmp.display(),
         bg_out.display()
@@ -460,6 +462,7 @@ fn linux_background_descendant_write_succeeds_after_settle() {
         None,
         sample_metadata("thread-bg", "seccomp-bg", workspace.path().to_path_buf()),
     );
+    fs::write(&bg_go, b"go").expect("signal background writer after settle");
 
     for _ in 0..30 {
         if bg_out.exists() {
@@ -471,4 +474,30 @@ fn linux_background_descendant_write_succeeds_after_settle() {
         fs::read(&bg_out).expect("bg output must succeed without ENOSYS"),
         b"ok"
     );
+}
+
+#[test]
+fn stop_before_finish_and_persist_preserves_pre_write_baselines() {
+    let workspace = TempDir::new().expect("workspace");
+    let store_dir = TempDir::new().expect("store");
+    let target = workspace.path().join("timed_out.txt");
+    fs::write(&target, b"before\n").unwrap();
+
+    let obs = WriteObserverSession::start("timeout-call".to_string(), |_| true).unwrap();
+    obs.state.lock().unwrap().record_pre_write(&target);
+    fs::write(&target, b"after-before-timeout\n").unwrap();
+
+    // Mimics terminate_confirmed stopping observation before process_manager persists.
+    obs.stop();
+    let record = obs
+        .finish_and_persist(
+            store_dir.path(),
+            workspace.path(),
+            None,
+            sample_metadata("thread-t", "timeout-call", workspace.path().to_path_buf()),
+        )
+        .unwrap()
+        .expect("pre-timeout write must still persist after stop()");
+    assert_eq!(record.files.len(), 1);
+    assert_eq!(record.files[0].rel_path, "timed_out.txt");
 }
