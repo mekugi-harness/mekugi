@@ -85,12 +85,22 @@ struct PendingHeredoc {
     is_quoted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum LexMode {
-    Normal,
+    Normal {
+        pending: VecDeque<PendingHeredoc>,
+    },
     DoubleQuote,
-    CmdSubst { paren_depth: usize },
-    Arith { paren_depth: usize },
+    CmdSubst {
+        paren_depth: usize,
+        pending: VecDeque<PendingHeredoc>,
+    },
+    Arith {
+        paren_depth: usize,
+    },
+    ParamExpansion {
+        brace_depth: usize,
+    },
 }
 
 /// Parses a shell script with `tree-sitter-bash`, returning `None` if the grammar
@@ -387,9 +397,20 @@ fn mask_quoted_heredocs(script: &str, spans: &[QuotedHeredocSpan]) -> Option<Str
     }
     let mut bytes = script.as_bytes().to_vec();
     for span in spans {
-        for byte in &mut bytes[span.redir_start..span.redir_end] {
-            if *byte != b'\n' && *byte != b'\r' {
-                *byte = b' ';
+        let mut idx = span.redir_start;
+        while idx < span.redir_end {
+            if bytes[idx] == b'\\' && bytes.get(idx + 1) == Some(&b'\n') {
+                idx += 2;
+            } else if bytes[idx] == b'\\'
+                && bytes.get(idx + 1) == Some(&b'\r')
+                && bytes.get(idx + 2) == Some(&b'\n')
+            {
+                idx += 3;
+            } else if bytes[idx] == b'\n' || bytes[idx] == b'\r' {
+                idx += 1;
+            } else {
+                bytes[idx] = b' ';
+                idx += 1;
             }
         }
         for byte in &mut bytes[span.body_start..span.full_end] {
@@ -406,14 +427,30 @@ fn mask_quoted_heredocs(script: &str, spans: &[QuotedHeredocSpan]) -> Option<Str
 fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
     let bytes = src.as_bytes();
     let mut spans = Vec::new();
-    let mut pending = VecDeque::new();
-    let mut modes = vec![LexMode::Normal];
+    let mut modes = vec![LexMode::Normal {
+        pending: VecDeque::new(),
+    }];
     let mut at_word_start = true;
     let mut i = 0;
 
     while i < bytes.len() {
-        match *modes.last().unwrap_or(&LexMode::Normal) {
-            LexMode::DoubleQuote => match bytes[i] {
+        enum ModeKind {
+            Normal,
+            DoubleQuote,
+            CmdSubst,
+            Arith,
+            ParamExpansion,
+        }
+        let mode_kind = match modes.last() {
+            Some(LexMode::Normal { .. }) | None => ModeKind::Normal,
+            Some(LexMode::DoubleQuote) => ModeKind::DoubleQuote,
+            Some(LexMode::CmdSubst { .. }) => ModeKind::CmdSubst,
+            Some(LexMode::Arith { .. }) => ModeKind::Arith,
+            Some(LexMode::ParamExpansion { .. }) => ModeKind::ParamExpansion,
+        };
+
+        match mode_kind {
+            ModeKind::DoubleQuote => match bytes[i] {
                 b'\\' => {
                     i = (i + 2).min(bytes.len());
                 }
@@ -426,16 +463,23 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         modes.push(LexMode::Arith { paren_depth: 2 });
                         i += 3;
                     } else {
-                        modes.push(LexMode::CmdSubst { paren_depth: 1 });
+                        modes.push(LexMode::CmdSubst {
+                            paren_depth: 1,
+                            pending: VecDeque::new(),
+                        });
                         at_word_start = true;
                         i += 2;
                     }
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                    modes.push(LexMode::ParamExpansion { brace_depth: 1 });
+                    i += 2;
                 }
                 _ => {
                     i += 1;
                 }
             },
-            LexMode::Arith { .. } => match bytes[i] {
+            ModeKind::Arith => match bytes[i] {
                 b'\\' => {
                     i = (i + 2).min(bytes.len());
                 }
@@ -468,7 +512,57 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                     i += 1;
                 }
             },
-            LexMode::Normal | LexMode::CmdSubst { .. } => match bytes[i] {
+            ModeKind::ParamExpansion => match bytes[i] {
+                b'\\' => {
+                    i = (i + 2).min(bytes.len());
+                }
+                b'\'' => {
+                    i = skip_single_quoted(bytes, i + 1);
+                }
+                b'"' => {
+                    modes.push(LexMode::DoubleQuote);
+                    i += 1;
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                    if bytes.get(i + 2) == Some(&b'(') {
+                        modes.push(LexMode::Arith { paren_depth: 2 });
+                        i += 3;
+                    } else {
+                        modes.push(LexMode::CmdSubst {
+                            paren_depth: 1,
+                            pending: VecDeque::new(),
+                        });
+                        at_word_start = true;
+                        i += 2;
+                    }
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'\'') => {
+                    i = skip_ansi_c_quoted(bytes, i + 2);
+                }
+                b'{' => {
+                    if let Some(LexMode::ParamExpansion { brace_depth }) = modes.last_mut() {
+                        *brace_depth += 1;
+                    }
+                    i += 1;
+                }
+                b'}' => {
+                    let pop =
+                        if let Some(LexMode::ParamExpansion { brace_depth }) = modes.last_mut() {
+                            *brace_depth -= 1;
+                            *brace_depth == 0
+                        } else {
+                            false
+                        };
+                    if pop {
+                        modes.pop();
+                    }
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            },
+            ModeKind::Normal | ModeKind::CmdSubst => match bytes[i] {
                 b'\\' => {
                     if bytes.get(i + 1) == Some(&b'\n') {
                         i += 2;
@@ -482,8 +576,11 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                 b'\n' => {
                     i += 1;
                     at_word_start = true;
-                    if !pending.is_empty() {
-                        consume_pending_heredocs(src, &mut i, &mut pending, &mut spans);
+                    if let Some(LexMode::Normal { pending } | LexMode::CmdSubst { pending, .. }) =
+                        modes.last_mut()
+                        && !pending.is_empty()
+                    {
+                        consume_pending_heredocs(src, &mut i, pending, &mut spans);
                     }
                 }
                 b'#' if at_word_start => {
@@ -497,10 +594,18 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         at_word_start = false;
                         i += 3;
                     } else {
-                        modes.push(LexMode::CmdSubst { paren_depth: 1 });
+                        modes.push(LexMode::CmdSubst {
+                            paren_depth: 1,
+                            pending: VecDeque::new(),
+                        });
                         at_word_start = true;
                         i += 2;
                     }
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                    modes.push(LexMode::ParamExpansion { brace_depth: 1 });
+                    at_word_start = false;
+                    i += 2;
                 }
                 b'$' if bytes.get(i + 1) == Some(&b'\'') => {
                     i = skip_ansi_c_quoted(bytes, i + 2);
@@ -520,15 +625,24 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                     at_word_start = false;
                     i += 1;
                 }
+                b'(' if at_word_start
+                    && bytes.get(i + 1) == Some(&b'(')
+                    && is_arithmetic_command(bytes, i) =>
+                {
+                    modes.push(LexMode::Arith { paren_depth: 2 });
+                    at_word_start = false;
+                    i += 2;
+                }
                 b'(' => {
-                    if let Some(LexMode::CmdSubst { paren_depth }) = modes.last_mut() {
+                    if let Some(LexMode::CmdSubst { paren_depth, .. }) = modes.last_mut() {
                         *paren_depth += 1;
                     }
                     at_word_start = true;
                     i += 1;
                 }
                 b')' => {
-                    let pop = if let Some(LexMode::CmdSubst { paren_depth }) = modes.last_mut() {
+                    let pop = if let Some(LexMode::CmdSubst { paren_depth, .. }) = modes.last_mut()
+                    {
                         *paren_depth -= 1;
                         *paren_depth == 0
                     } else {
@@ -553,6 +667,9 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         }
                         if let Some(heredoc) =
                             parse_heredoc_delimiter(src, &mut i, redir_start, strip_tabs)
+                            && let Some(
+                                LexMode::Normal { pending } | LexMode::CmdSubst { pending, .. },
+                            ) = modes.last_mut()
                         {
                             pending.push_back(heredoc);
                         }
@@ -594,6 +711,46 @@ fn skip_ansi_c_quoted(bytes: &[u8], mut i: usize) -> usize {
         }
     }
     i
+}
+
+/// Distinguishes Bash arithmetic evaluation `(( ... ))` from nested subshells
+/// `((cmd1); cmd2)`: returns true iff the `(` at `start + 1` matches a `)`
+/// immediately followed by another `)`.
+fn is_arithmetic_command(bytes: &[u8], start: usize) -> bool {
+    let mut i = start + 2;
+    let mut depth = 2usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'\'' => i = skip_single_quoted(bytes, i + 1),
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(bytes.len()),
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+                if depth == 1 {
+                    return bytes.get(i) == Some(&b')');
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    false
 }
 
 fn leading_fd_start(bytes: &[u8], op_start: usize) -> usize {
@@ -662,7 +819,9 @@ fn parse_heredoc_delimiter(
                 is_quoted = true;
                 saw_any = true;
                 *pos += 2;
-                parse_ansi_c_delimiter(src, pos, &mut delimiter);
+                if !parse_ansi_c_delimiter(src, pos, &mut delimiter) {
+                    return None;
+                }
             }
             b'$' if bytes.get(*pos + 1) == Some(&b'"') => {
                 is_quoted = true;
@@ -750,8 +909,10 @@ fn parse_double_quoted_delimiter(src: &str, pos: &mut usize, out: &mut String) {
     }
 }
 
-fn parse_ansi_c_delimiter(src: &str, pos: &mut usize, out: &mut String) {
+fn parse_ansi_c_delimiter(src: &str, pos: &mut usize, out: &mut String) -> bool {
     let bytes = src.as_bytes();
+    let mut raw = Vec::new();
+    let mut truncated_at_nul = false;
     while *pos < bytes.len() {
         match bytes[*pos] {
             b'\'' => {
@@ -761,33 +922,178 @@ fn parse_ansi_c_delimiter(src: &str, pos: &mut usize, out: &mut String) {
             b'\\' => {
                 *pos += 1;
                 if *pos >= bytes.len() {
-                    out.push('\\');
+                    if !truncated_at_nul {
+                        raw.push(b'\\');
+                    }
                     break;
                 }
                 match bytes[*pos] {
-                    b'\\' => {
-                        out.push('\\');
+                    b'a' => {
+                        if !truncated_at_nul {
+                            raw.push(0x07);
+                        }
                         *pos += 1;
                     }
-                    b'\'' => {
-                        out.push('\'');
+                    b'b' => {
+                        if !truncated_at_nul {
+                            raw.push(0x08);
+                        }
+                        *pos += 1;
+                    }
+                    b'e' | b'E' => {
+                        if !truncated_at_nul {
+                            raw.push(0x1b);
+                        }
+                        *pos += 1;
+                    }
+                    b'f' => {
+                        if !truncated_at_nul {
+                            raw.push(0x0c);
+                        }
                         *pos += 1;
                     }
                     b'n' => {
-                        out.push('\n');
+                        if !truncated_at_nul {
+                            raw.push(b'\n');
+                        }
                         *pos += 1;
                     }
                     b'r' => {
-                        out.push('\r');
+                        if !truncated_at_nul {
+                            raw.push(b'\r');
+                        }
                         *pos += 1;
                     }
                     b't' => {
-                        out.push('\t');
+                        if !truncated_at_nul {
+                            raw.push(b'\t');
+                        }
                         *pos += 1;
+                    }
+                    b'v' => {
+                        if !truncated_at_nul {
+                            raw.push(0x0b);
+                        }
+                        *pos += 1;
+                    }
+                    b'\\' => {
+                        if !truncated_at_nul {
+                            raw.push(b'\\');
+                        }
+                        *pos += 1;
+                    }
+                    b'\'' => {
+                        if !truncated_at_nul {
+                            raw.push(b'\'');
+                        }
+                        *pos += 1;
+                    }
+                    b'"' => {
+                        if !truncated_at_nul {
+                            raw.push(b'"');
+                        }
+                        *pos += 1;
+                    }
+                    b'?' => {
+                        if !truncated_at_nul {
+                            raw.push(b'?');
+                        }
+                        *pos += 1;
+                    }
+                    b'0'..=b'7' => {
+                        let mut val = 0u32;
+                        for _ in 0..3 {
+                            if let Some(&b @ b'0'..=b'7') = bytes.get(*pos) {
+                                val = (val << 3) | u32::from(b - b'0');
+                                *pos += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        let byte = (val & 0xff) as u8;
+                        if byte == 0 {
+                            truncated_at_nul = true;
+                        } else if !truncated_at_nul {
+                            raw.push(byte);
+                        }
+                    }
+                    b'x' => {
+                        *pos += 1;
+                        let mut val = 0u32;
+                        let mut digits = 0usize;
+                        while digits < 2 {
+                            if let Some(d) = bytes.get(*pos).and_then(|&b| hex_digit(b)) {
+                                val = (val << 4) | d;
+                                *pos += 1;
+                                digits += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if digits == 0 {
+                            if !truncated_at_nul {
+                                raw.extend_from_slice(b"\\x");
+                            }
+                        } else {
+                            let byte = (val & 0xff) as u8;
+                            if byte == 0 {
+                                truncated_at_nul = true;
+                            } else if !truncated_at_nul {
+                                raw.push(byte);
+                            }
+                        }
+                    }
+                    esc @ (b'u' | b'U') => {
+                        let max_digits = if esc == b'u' { 4 } else { 8 };
+                        *pos += 1;
+                        let mut val = 0u32;
+                        let mut digits = 0usize;
+                        while digits < max_digits {
+                            if let Some(d) = bytes.get(*pos).and_then(|&b| hex_digit(b)) {
+                                val = (val << 4) | d;
+                                *pos += 1;
+                                digits += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        if digits == 0 {
+                            if !truncated_at_nul {
+                                raw.push(b'\\');
+                                raw.push(esc);
+                            }
+                        } else if val == 0 {
+                            truncated_at_nul = true;
+                        } else if let Some(ch) = char::from_u32(val) {
+                            if !truncated_at_nul {
+                                let mut buf = [0u8; 4];
+                                raw.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            }
+                        } else {
+                            return false;
+                        }
+                    }
+                    b'c' => {
+                        *pos += 1;
+                        if let Some(&ctrl) = bytes.get(*pos) {
+                            *pos += 1;
+                            let byte = if ctrl == b'?' { 0x7f } else { ctrl & 0x1f };
+                            if byte == 0 {
+                                truncated_at_nul = true;
+                            } else if !truncated_at_nul {
+                                raw.push(byte);
+                            }
+                        } else if !truncated_at_nul {
+                            raw.extend_from_slice(b"\\c");
+                        }
                     }
                     _ => {
                         if let Some(ch) = src[*pos..].chars().next() {
-                            out.push(ch);
+                            if !truncated_at_nul {
+                                raw.push(b'\\');
+                                let mut buf = [0u8; 4];
+                                raw.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                            }
                             *pos += ch.len_utf8();
                         }
                     }
@@ -795,11 +1101,28 @@ fn parse_ansi_c_delimiter(src: &str, pos: &mut usize, out: &mut String) {
             }
             _ => {
                 if let Some(ch) = src[*pos..].chars().next() {
-                    out.push(ch);
+                    if !truncated_at_nul {
+                        let mut buf = [0u8; 4];
+                        raw.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                    }
                     *pos += ch.len_utf8();
                 }
             }
         }
+    }
+    let Ok(decoded) = String::from_utf8(raw) else {
+        return false;
+    };
+    out.push_str(&decoded);
+    true
+}
+
+fn hex_digit(byte: u8) -> Option<u32> {
+    match byte {
+        b'0'..=b'9' => Some(u32::from(byte - b'0')),
+        b'a'..=b'f' => Some(u32::from(byte - b'a' + 10)),
+        b'A'..=b'F' => Some(u32::from(byte - b'A' + 10)),
+        _ => None,
     }
 }
 
@@ -809,10 +1132,6 @@ fn consume_pending_heredocs(
     pending: &mut VecDeque<PendingHeredoc>,
     spans: &mut Vec<QuotedHeredocSpan>,
 ) {
-    if !pending.iter().any(|heredoc| heredoc.is_quoted) {
-        pending.clear();
-        return;
-    }
     let bytes = src.as_bytes();
     while let Some(heredoc) = pending.pop_front() {
         let body_start = *pos;

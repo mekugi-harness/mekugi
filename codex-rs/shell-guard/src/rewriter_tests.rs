@@ -291,6 +291,63 @@ fn quoted_heredoc_does_not_mutate_path_or_block_surrounding_rewrites() {
     );
 }
 
+#[test]
+fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
+    let config = cfg(false);
+
+    // Backslash-newline inside a quoted heredoc redirection must keep following args as args.
+    let continued_arg = "printf '%s\\n' <<\\\n'EOF' /usr/bin/git\ncontent\nEOF";
+    assert_eq!(rewrite_script(continued_arg, &config), continued_arg);
+
+    // Arithmetic shift inside (( ... )) must not be mistaken for a quoted heredoc.
+    let arith_shift = "((1 << \"2\"))\n/usr/bin/git push";
+    let rewritten_arith = rewrite_script(arith_shift, &config);
+    assert!(
+        rewritten_arith.contains(ARG1_VCS_COMMAND)
+            && rewritten_arith.ends_with("-- /usr/bin/git push"),
+        "got: {rewritten_arith}"
+    );
+
+    // Parameter expansion containing <<'END' must not be mistaken for a quoted heredoc.
+    let param_exp = "echo ${foo:-<<'END'}\n/usr/bin/git push";
+    let rewritten_param = rewrite_script(param_exp, &config);
+    assert!(
+        rewritten_param.contains(ARG1_VCS_COMMAND)
+            && rewritten_param.ends_with("-- /usr/bin/git push"),
+        "got: {rewritten_param}"
+    );
+
+    // Literal <<'END' inside an unquoted heredoc body must be skipped, not parsed as a heredoc.
+    let unquoted_fake = "cat <<UNQ\n<<'END'\nUNQ\n/usr/bin/git push";
+    let rewritten_fake = rewrite_script(unquoted_fake, &config);
+    assert!(
+        rewritten_fake.contains(ARG1_VCS_COMMAND)
+            && rewritten_fake.ends_with("-- /usr/bin/git push"),
+        "got: {rewritten_fake}"
+    );
+
+    // Nested unquoted heredoc inside $(...) after an outer quoted redirect keeps separate queues.
+    let nested_queues = "cat <<'OUTER' $(cat <<INNER\n$(/usr/bin/git push)\nINNER\n)\nOUTER";
+    let rewritten_nested = rewrite_script(nested_queues, &config);
+    assert!(
+        rewritten_nested.contains(ARG1_VCS_COMMAND),
+        "got: {rewritten_nested}"
+    );
+
+    // ANSI-C hex/octal/unicode escapes in heredoc delimiters must match Bash's decoded delimiter.
+    for ansi_c in [
+        "cat <<$'\\x45OF'\nhello\nEOF\n/usr/bin/git push",
+        "cat <<$'\\105OF'\nhello\nEOF\n/usr/bin/git push",
+        "cat <<$'\\u0045OF'\nhello\nEOF\n/usr/bin/git push",
+    ] {
+        let rewritten = rewrite_script(ansi_c, &config);
+        assert!(
+            rewritten.contains(ARG1_VCS_COMMAND) && rewritten.ends_with("-- /usr/bin/git push"),
+            "ANSI-C delimiter failed ({ansi_c}): {rewritten}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn generated_script_from_quoted_heredoc_executes_without_generating_host_helper() {
