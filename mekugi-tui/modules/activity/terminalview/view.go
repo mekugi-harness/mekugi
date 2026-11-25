@@ -112,6 +112,9 @@ type View struct {
 	FeedLines, FeedRows int
 	FeedSnippets        []Snippet
 	FeedQuestions       []uint64
+	FeedTargets         []DetailTarget
+	ActiveDetail        DetailTarget
+	ActiveDetailReveal  bool
 	CopyRows            [][]terminalui.CopySpan
 	QuestionRows        map[uint64]int
 	// QuestionHover is the pointed viewport row plus one; zero points at none.
@@ -570,7 +573,7 @@ func (v *View) Render(width, height int, now time.Time) []string {
 	}
 	switch {
 	case v.FeedOnly:
-		hint := !v.Following && body > 1
+		hint := !v.Following && v.ActiveDetail.Zero() && body > 1
 		feedRows := body
 		if hint {
 			feedRows--
@@ -1553,6 +1556,19 @@ func (v *View) viewportPosition(feed Feed, rows int) (int, bool) {
 	if following {
 		offset = len(feed.Lines) - rows
 	}
+	if v.ActiveDetailReveal && rows > 0 {
+		if _, start, end, ok := v.activeDetailRowMatch(feed); ok {
+			clamped := max(0, min(offset, len(feed.Lines)-rows))
+			if start < clamped || end > clamped+rows {
+				if end-start >= rows {
+					offset = start
+				} else {
+					offset = start - (rows-(end-start))/2
+				}
+				following = false
+			}
+		}
+	}
 	return max(0, min(offset, len(feed.Lines)-rows)), following
 }
 
@@ -1564,6 +1580,8 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 		return make([]string, rows)
 	}
 	v.Offset, v.Following = v.viewportPosition(feed, rows)
+	v.ActiveDetailReveal = false
+	v.FeedTargets = collectDetailTargets(feed)
 	v.imageViewport(feed, rows)
 	v.FeedSpans = feed.Spans
 	v.FeedLines, v.FeedRows = len(feed.Lines), max(1, rows)
@@ -1597,6 +1615,19 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 	if heading, ok := v.PinnedHeading(feed, rows); ok {
 		lines[0], v.FeedSnippets[0] = feed.Lines[heading], Snippet{}
 		v.FeedQuestions[0] = 0
+	}
+	if !v.ActiveDetail.Zero() {
+		exactPath, _, _, found := v.activeDetailRowMatch(feed)
+		if found {
+			for row := range lines {
+				if v.FeedSnippets[row] == (Snippet{}) && v.FeedQuestions[row] == 0 {
+					continue
+				}
+				if rowMatchesActiveDetail(feed, v.Offset+row, v.ActiveDetail, exactPath) {
+					lines[row] = highlightTranscriptGutter(lines[row], v.Painter.Theme)
+				}
+			}
+		}
 	}
 	// Activity's painter flashes its own entries; Main flashes whole items.
 	if target, ok := v.QuestionRows[v.FlashQuestion]; ok && v.Conversation && v.Now().Before(v.FlashUntil) {

@@ -64,6 +64,7 @@ type Dialog struct {
 	Selection    *Selection
 	Navigation   string
 	HideTabs     bool
+	EventNav     bool // ←/→ step across tabs and adjacent transcript events.
 	Footer       string
 	OutputToggle string
 	Mention      string
@@ -91,6 +92,8 @@ const (
 	DialogReference
 	DialogOpenLink
 	DialogStopProcess
+	DialogPrevEvent
+	DialogNextEvent
 )
 
 type DialogIntent struct {
@@ -310,7 +313,10 @@ func (d *Dialog) footer(theme diffrender.Theme, width int) string {
 	}
 	keys := []string{"↑↓ PgUp/PgDn g/G scroll"}
 	navigation := "tab/⇧tab " + d.Navigation
-	if d.tabbed() {
+	if d.EventNav {
+		navigation = "←/→ event"
+	}
+	if d.tabbed() || d.EventNav {
 		keys = append(keys, navigation)
 	}
 	find := "/ find"
@@ -321,7 +327,11 @@ func (d *Dialog) footer(theme diffrender.Theme, width int) string {
 	if d.OutputToggle != "" {
 		keys = append(keys, "o "+d.OutputToggle)
 	}
-	keys = append(keys, "y copy", sheetExit)
+	exitHint := sheetExit
+	if d.EventNav {
+		exitHint = "esc close"
+	}
+	keys = append(keys, "y copy", exitHint)
 	if d.Document.Live && !d.follow {
 		keys = append([]string{"End follows"}, keys...)
 	}
@@ -330,21 +340,21 @@ func (d *Dialog) footer(theme diffrender.Theme, width int) string {
 		footer = theme.Warning() + "no match" + terminalui.Reset + dim + " · " + undim + footer
 	}
 	if ansi.StringWidth(footer) > width-6 {
-		short := "↑↓ scroll · y copy · " + sheetExit
+		short := "↑↓ scroll · y copy · " + exitHint
 		switch {
 		case d.query != "":
-			short = "↑↓ scroll · " + find + " · y copy · " + sheetExit
+			short = "↑↓ scroll · " + find + " · y copy · " + exitHint
 		case d.OutputToggle != "":
 			short = "o " + d.OutputToggle + " · " + short
-		case d.tabbed():
+		case d.tabbed() || d.EventNav:
 			short = navigation + " · " + short
 		default:
-			short = "↑↓ scroll · " + find + " · y copy · " + sheetExit
+			short = "↑↓ scroll · " + find + " · y copy · " + exitHint
 		}
 		if ansi.StringWidth(short) > width-6 {
-			short = "↑↓ scroll · y copy · " + sheetExit
+			short = "↑↓ scroll · y copy · " + exitHint
 			if ansi.StringWidth(short) > width-6 {
-				short = sheetExit
+				short = exitHint
 			}
 		}
 		footer = dim + short + undim
@@ -383,7 +393,16 @@ func (d *Dialog) Key(key string) DialogIntent {
 		return DialogIntent{}
 	}
 	switch key {
-	case "\x1b", keyLeft, keyLeftApplication, "q", "\x03":
+	case "\x1b", "q", "\x03":
+		return DialogIntent{Action: DialogClose}
+	case keyLeft, keyLeftApplication:
+		if d.EventNav {
+			if d.Page > 0 {
+				d.ShowPage(d.Page - 1)
+				return DialogIntent{}
+			}
+			return DialogIntent{Action: DialogPrevEvent}
+		}
 		return DialogIntent{Action: DialogClose}
 	case "\x1b[A", "k":
 		d.scroll(-1)
@@ -398,8 +417,14 @@ func (d *Dialog) Key(key string) DialogIntent {
 	case "\x1b[F", "\x1b[4~", "G":
 		d.top, d.follow = d.bottom(), d.Document.Live
 	case "\x1b[Z", "h":
+		if d.EventNav && d.Page == 0 {
+			return DialogIntent{Action: DialogPrevEvent}
+		}
 		d.ShowPage(d.Page - 1)
 	case "\t", "\x1b[C", "\x1bOC", "l":
+		if d.EventNav && d.Page >= len(d.pages)-1 {
+			return DialogIntent{Action: DialogNextEvent}
+		}
 		d.ShowPage(d.Page + 1)
 	case "/":
 		d.Typing, d.draft = true, ""

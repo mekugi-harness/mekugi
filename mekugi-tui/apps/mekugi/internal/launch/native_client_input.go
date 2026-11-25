@@ -336,21 +336,7 @@ func (c *nativeClient) dispatch(event terminalsession.Input) {
 						c.details(target.Version, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeFileDetails, Path: target.Link, Displayed: sessionpresentation.Thread{ID: target.Thread}})
 					}
 				} else {
-					request := sessionapi.NativeDetailRequest{Kind: sessionapi.NativeEntryDetails, Source: target.Entry, Agent: target.View == u.Agents, Displayed: sessionpresentation.Thread{ID: target.Thread}}
-					if target.Entry == 0 {
-						request.Source, request.Path = target.Snippet.Run, target.Snippet.Path
-						request.Edit = target.Snippet.Block == activityui.EditNavigationSnippet
-						if block, ok := target.View.SnippetBlock(target.Snippet); ok {
-							request.Source, request.Output = block.Source, block.Output
-							request.Operation = block.Operation
-							for _, member := range block.Members {
-								if !slices.Contains(request.Sources, member.Source) {
-									request.Sources = append(request.Sources, member.Source)
-								}
-							}
-						}
-					}
-					c.details(target.Version, request)
+					c.openTranscriptDetail(target.Version, target.View, target.Thread, activityui.DetailTarget{Entry: target.Entry, Snippet: target.Snippet}, false)
 				}
 			}
 		case effect.Reference != nil:
@@ -615,12 +601,17 @@ func (c *nativeClient) dialog(intent terminalsession.DialogIntent) {
 			c.enqueue(sessionapi.NativeOperation{StopProcess: intent.Process}, nil, nil)
 		}
 	case terminalsession.DialogClose:
+		c.restoreDetailNav()
 		if c.closeLocalDetails() {
 			c.refresh(time.Now())
 			return
 		}
 		id := u.Dialog.ID
 		c.enqueue(sessionapi.NativeOperation{CloseDetails: &id}, nil, nil)
+	case terminalsession.DialogPrevEvent:
+		c.stepTranscriptDetail(-1)
+	case terminalsession.DialogNextEvent:
+		c.stepTranscriptDetail(1)
 	case terminalsession.DialogCopy:
 		c.notice, _ = u.Frame.CopyText(intent.Text)
 	case terminalsession.DialogOpenLink:
@@ -637,8 +628,10 @@ func (c *nativeClient) dialog(intent terminalsession.DialogIntent) {
 			agent = details.Agent
 		}
 		c.closeLocalDetails()
+		c.clearDetailNavTarget()
 		c.details(c.event.Frame.View.Version, sessionapi.NativeDetailRequest{Displayed: source, Kind: kind, Path: intent.Text, Agent: kind == sessionapi.NativeRunDetails && agent})
 	case terminalsession.DialogReference:
+		c.restoreDetailNav()
 		c.closeLocalDetails()
 		intent := u.Main.Reference(intent.Description, intent.Text, "")
 		c.enqueue(sessionapi.NativeOperation{Reference: &intent}, nil, nil)
