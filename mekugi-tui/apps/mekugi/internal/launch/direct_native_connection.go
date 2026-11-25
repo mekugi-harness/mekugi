@@ -116,6 +116,7 @@ type directNativeConnection struct {
 	inputThread     string
 	sideThread      string
 	btwThread       string
+	btwMainThread   string
 	btwExchangeID   uint64
 	btwQuestion     string
 	btwAnswer       strings.Builder

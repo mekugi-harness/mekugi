@@ -7,6 +7,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -92,13 +93,13 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 	}
 	if strings.HasPrefix(text, "/") {
 		if hasAttachments {
-			return errors.New("attachments are not supported with slash commands")
+			return &sessionapi.NativeFailure{Status: http.StatusBadRequest, Reason: "attachments are not supported with slash commands"}
 		}
 		return c.handleSlashCommand(ctx, text)
 	}
 	if strings.HasPrefix(text, "!") {
 		if hasAttachments {
-			return errors.New("attachments are not supported with shell commands")
+			return &sessionapi.NativeFailure{Status: http.StatusBadRequest, Reason: "attachments are not supported with shell commands"}
 		}
 		cmd := strings.TrimSpace(strings.TrimPrefix(text, "!"))
 		if cmd == "" {
@@ -256,16 +257,19 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 }
 
 func (c *directNativeConnection) resolveLatestTurnID(ctx context.Context, threadID string) (string, error) {
-	c.mu.Lock()
-	records := c.items[threadID]
-	for i := len(records) - 1; i >= 0; i-- {
-		if records[i].turnID != "" {
-			turnID := records[i].turnID
-			c.mu.Unlock()
-			return turnID, nil
-		}
+	var page struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
-	c.mu.Unlock()
+	if err := c.wire.Call(ctx, "thread/turns/list", map[string]any{
+		"threadId":  threadID,
+		"order":     "desc",
+		"limit":     1,
+		"itemsView": "notLoaded",
+	}, &page); err == nil && len(page.Data) > 0 && page.Data[0].ID != "" {
+		return page.Data[0].ID, nil
+	}
 	var resp struct {
 		Thread directWireThread `json:"thread"`
 	}
@@ -274,6 +278,17 @@ func (c *directNativeConnection) resolveLatestTurnID(ctx context.Context, thread
 			if resp.Thread.Turns[i].ID != "" {
 				return resp.Thread.Turns[i].ID, nil
 			}
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if threadID == c.mainThread && c.activeTurn != "" {
+		return c.activeTurn, nil
+	}
+	records := c.items[threadID]
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].turnID != "" {
+			return records[i].turnID, nil
 		}
 	}
 	return "", errors.New("no turns available to rewind")
@@ -361,9 +376,19 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 	c.mu.Lock()
 	mainID := c.mainThread
 	btwID := c.btwThread
+	btwMain := c.btwMainThread
+	btwRunning := c.btwRunning
 	c.mu.Unlock()
 	if mainID == "" {
 		return errors.New("no active thread")
+	}
+	if btwID != "" && btwMain != mainID {
+		_ = c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": btwID}, nil)
+		btwID = ""
+		btwRunning = false
+	}
+	if btwRunning {
+		return &sessionapi.NativeFailure{Status: http.StatusConflict, Reason: "wait for the current /btw answer to finish"}
 	}
 	if btwID == "" {
 		var resp directThreadStartResponse
@@ -380,6 +405,7 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 	}
 	c.mu.Lock()
 	c.btwThread = btwID
+	c.btwMainThread = mainID
 	c.btwExchangeID++
 	c.btwQuestion = question
 	c.btwAnswer.Reset()
@@ -397,6 +423,7 @@ func (c *directNativeConnection) handleCloseBTW(ctx context.Context) error {
 	c.mu.Lock()
 	btwID := c.btwThread
 	c.btwThread = ""
+	c.btwMainThread = ""
 	c.btwQuestion = ""
 	c.btwAnswer.Reset()
 	c.btwRunning = false
