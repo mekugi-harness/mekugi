@@ -15,9 +15,46 @@ import (
 
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/composition"
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 )
+
+// runLegacySessionAPIClient exercises the retained sessionapi server bridge
+// until Slices 10-12 retire RunServer and sessionapi.
+func runLegacySessionAPIClient(ctx context.Context, socket string, routerArgs, args []string, stdin, stdout *os.File) error {
+	options, err := launchoptions.Parse(routerArgs)
+	if err != nil {
+		return err
+	}
+	views, err := composition.NativeRenderer(options.ChildReplySummary)
+	if err != nil {
+		return err
+	}
+	workspace, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	transport := sessionapi.ControlTransport(socket)
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+	connection, err := sessionapi.StartNative(ctx, client, "http://mekugi", sessionapi.NativeStart{Workspace: workspace, RouterArgs: routerArgs, Args: args, Environment: os.Environ()})
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	terminal, _ := views.NewAttachment(diffrender.EnvironmentTheme(os.Getenv("COLORFGBG")))
+	c := &nativeClient{connection: wrapSessionAPIConnection(connection), renderer: nativeClientRenderer{terminal: terminal, views: views}, editors: make(map[string]*composer.Editor)}
+	c, err = c.run(ctx, stdin, stdout)
+	if diagnostic := c.event.Frame.Facts.Diagnostics; diagnostic != "" {
+		_, _ = io.WriteString(stdout, textsanitize.Safe(diagnostic, false)+"\n")
+	}
+	return err
+}
 
 // Exercise the consuming terminal against the real server owner. Only Codex is
 // replaced: its JSON-RPC ledger proves both transports use one logical thread.
@@ -69,7 +106,7 @@ func TestNativeServerAcceptance(t *testing.T) {
 	clientContext, stopClient := context.WithCancel(t.Context())
 	clientDone := make(chan error, 1)
 	go func() {
-		clientDone <- runNativeClient(clientContext, socket, []string{"--ansi-faint=off"}, []string{"--yolo", "--model", "codex"}, slave, slave)
+		clientDone <- runLegacySessionAPIClient(clientContext, socket, []string{"--ansi-faint=off"}, []string{"--yolo", "--model", "codex"}, slave, slave)
 	}()
 	joined := false
 	defer func() {

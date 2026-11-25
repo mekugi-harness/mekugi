@@ -263,7 +263,7 @@ func TestNativeClientPTYDraftAndDetach(t *testing.T) {
 	}()
 	terminal, _ := u.terminalViews.NewAttachment(diffrender.DarkTheme)
 	terminal.Transcript.Expansion = 2
-	c := nativeClient{connection: connection, renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
+	c := nativeClient{connection: wrapSessionAPIConnection(connection), renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
 	done := make(chan error, 1)
 	go func() { _, err := c.run(t.Context(), slave, slave); done <- err }()
 	screen := vt.NewEmulator(80, 24)
@@ -642,7 +642,7 @@ func TestNativeClientLoopKeepsTranscriptLinksWhenBottomSheetOpens(t *testing.T) 
 	}()
 	runCtx, cancelRun := context.WithCancel(t.Context())
 	terminal, _ := u.terminalViews.NewAttachment(diffrender.DarkTheme)
-	c := nativeClient{connection: connection, renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
+	c := nativeClient{connection: wrapSessionAPIConnection(connection), renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
 	done := make(chan error, 1)
 	go func() { _, err := c.run(runCtx, slave, slave); done <- err }()
 	defer func() {

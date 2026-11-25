@@ -1163,6 +1163,101 @@ impl ThreadRequestProcessor {
         )))
     }
 
+    pub(crate) async fn thread_changes_read(
+        &self,
+        params: codex_app_server_protocol::ThreadChangesReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|error| invalid_request(format!("invalid thread ID: {error}")))?;
+        let workspace = match self.thread_manager.get_thread(thread_id).await {
+            Ok(thread) => Some(thread.config().await.cwd.display().to_string()),
+            Err(_) => None,
+        };
+        let include_ephemeral = params.include_ephemeral.unwrap_or(false);
+        let store_dir = codex_protocol::shell_environment::session_tmp_path(thread_id.into())
+            .join("change-history");
+        if !store_dir.exists() {
+            return Ok(Some(ClientResponsePayload::ThreadChangesRead(
+                codex_app_server_protocol::ThreadChangesReadResponse {
+                    thread_id: params.thread_id,
+                    workspace,
+                    changes: Vec::new(),
+                    files: Vec::new(),
+                    total_additions: 0,
+                    total_deletions: 0,
+                },
+            )));
+        }
+        let store = codex_change_history::ChangeHistoryStore::open_existing(&store_dir).map_err(
+            |error| internal_error(format!("failed to open native change history: {error}")),
+        )?;
+        let entries = store.list_entries().map_err(|error| {
+            internal_error(format!("failed to list native change history: {error}"))
+        })?;
+        let ids: Vec<_> = entries
+            .iter()
+            .filter(|entry| include_ephemeral || !entry.ephemeral_only)
+            .map(|entry| entry.id.clone())
+            .collect();
+        let records = store.load_records(&ids).map_err(|error| {
+            internal_error(format!("failed to load native change records: {error}"))
+        })?;
+        let workspace = workspace.or_else(|| {
+            records
+                .first()
+                .map(|r| r.metadata.workspace_root.display().to_string())
+        });
+        let composed = codex_change_history::compose_diff(&store, &records, &[]).map_err(|error| {
+            internal_error(format!("failed to compose native change diffs: {error}"))
+        })?;
+        let changes = records
+            .iter()
+            .map(|record| codex_app_server_protocol::ThreadChangeOrigin {
+                change_id: record.id.to_string(),
+                sequence: record.sequence,
+                thread_id: record.metadata.thread_id.clone(),
+                source_kind: format!("{:?}", record.metadata.source_kind),
+                created_at: record.metadata.created_at,
+                paths: record.files.iter().map(|f| f.rel_path.clone()).collect(),
+                incomplete: record
+                    .files
+                    .iter()
+                    .any(|f| f.coverage != codex_change_history::CoverageStatus::Complete),
+            })
+            .collect();
+        let mut total_additions = 0i64;
+        let mut total_deletions = 0i64;
+        let files = composed
+            .into_iter()
+            .map(|diff| {
+                let additions = diff.stats.additions as i64;
+                let deletions = diff.stats.deletions as i64;
+                total_additions += additions;
+                total_deletions += deletions;
+                codex_app_server_protocol::ThreadChangeFileDiff {
+                    path: diff.rel_path,
+                    moved_from: diff.moved_from,
+                    status: diff.stats.status.to_string(),
+                    unified_diff: diff.unified_diff,
+                    additions,
+                    deletions,
+                    is_binary: diff.stats.is_binary,
+                    coverage_notes: diff.stats.coverage_notes,
+                }
+            })
+            .collect();
+        Ok(Some(ClientResponsePayload::ThreadChangesRead(
+            codex_app_server_protocol::ThreadChangesReadResponse {
+                thread_id: params.thread_id,
+                workspace,
+                changes,
+                files,
+                total_additions,
+                total_deletions,
+            },
+        )))
+    }
+
     pub(crate) async fn thread_read(
         &self,
         request_id: &ConnectionRequestId,

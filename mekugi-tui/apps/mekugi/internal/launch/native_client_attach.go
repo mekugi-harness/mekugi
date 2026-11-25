@@ -11,7 +11,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 )
 
-func (c *nativeClient) readStream(connection *sessionapi.NativeConnection) {
+func (c *nativeClient) readStream(connection nativeSessionConnection) {
 	// Hand off each frame before its following terminal outcome.
 	c.workers.Go(func() {
 		for {
@@ -34,7 +34,7 @@ func (c *nativeClient) readStream(connection *sessionapi.NativeConnection) {
 
 type nativeClientReattached struct {
 	owner              *nativeClient
-	source, connection *sessionapi.NativeConnection
+	source, connection nativeSessionConnection
 	event              sessionapi.NativeEvent
 	err                error
 }

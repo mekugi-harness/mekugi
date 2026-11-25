@@ -2521,3 +2521,60 @@ pub struct ThreadSubtreeListParams {
 pub struct ThreadInspectParams {
     pub thread_id: String,
 }
+
+/// Request composed saved changes from the native change-history store for a thread.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadChangesReadParams {
+    pub thread_id: String,
+    /// Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub include_ephemeral: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadChangeOrigin {
+    pub change_id: String,
+    #[ts(type = "number")]
+    pub sequence: u64,
+    pub thread_id: String,
+    pub source_kind: String,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    pub paths: Vec<String>,
+    pub incomplete: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadChangeFileDiff {
+    pub path: String,
+    pub moved_from: Option<String>,
+    pub status: String,
+    pub unified_diff: String,
+    #[ts(type = "number")]
+    pub additions: i64,
+    #[ts(type = "number")]
+    pub deletions: i64,
+    pub is_binary: bool,
+    pub coverage_notes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadChangesReadResponse {
+    pub thread_id: String,
+    pub workspace: Option<String>,
+    pub changes: Vec<ThreadChangeOrigin>,
+    pub files: Vec<ThreadChangeFileDiff>,
+    #[ts(type = "number")]
+    pub total_additions: i64,
+    #[ts(type = "number")]
+    pub total_deletions: i64,
+}

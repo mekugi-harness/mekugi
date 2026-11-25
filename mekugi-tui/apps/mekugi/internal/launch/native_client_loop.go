@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"sync"
 	"syscall"
@@ -59,7 +57,7 @@ func runNativeClient(ctx context.Context, socket string, routerArgs, args []stri
 		return err
 	}
 	if socket == "" {
-		socket, err = sessionapi.ControlSocketPath()
+		socket, err = nativeAppServerSocketPath()
 		if err != nil {
 			return err
 		}
@@ -67,43 +65,13 @@ func runNativeClient(ctx context.Context, socket string, routerArgs, args []stri
 	if err := ensureNativeServer(ctx, socket); err != nil {
 		return err
 	}
-	transport := sessionapi.ControlTransport(socket)
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport}
-	var connection *sessionapi.NativeConnection
 	profile, _, err := launchoptions.ProfileSelector(args)
 	if err != nil {
 		return err
 	}
-	identity := sessionapi.ProfileIdentity{Name: profile}
-	if profile != "" {
-		home := os.Getenv("CODEX_HOME")
-		if home == "" {
-			home = filepath.Join(os.Getenv("HOME"), ".codex")
-		}
-		identity.Home, err = filepath.Abs(home)
-		if err != nil {
-			return err
-		}
-	}
-	if resume != "" && resume != "--last" && resume != "--pick" {
-		connection, err = sessionapi.OpenNative(ctx, client, "http://mekugi", resume, identity)
-		if err != nil {
-			refusal, ok := errors.AsType[*sessionapi.NativeFailure](err)
-			if !ok || refusal.Status != http.StatusNotFound {
-				return err
-			}
-		}
-		if connection != nil && profile != "" {
-			fmt.Fprintln(stdout, "Keeping the running profile configuration and environment.")
-		}
-	}
-	if connection == nil {
-		start := sessionapi.NativeStart{Workspace: workspace, RouterArgs: routerArgs, Args: args, Environment: os.Environ()}
-		connection, err = sessionapi.StartNative(ctx, client, "http://mekugi", start)
-		if err != nil {
-			return err
-		}
+	connection, err := openDirectNativeConnection(ctx, socket, workspace, routerArgs, args, resume, profile)
+	if err != nil {
+		return err
 	}
 	defer connection.Close()
 	terminal, _ := views.NewAttachment(diffrender.EnvironmentTheme(os.Getenv("COLORFGBG")))
@@ -175,7 +143,7 @@ type nativeClientCall struct {
 type nativeClient struct {
 	ctx                    context.Context
 	workers                sync.WaitGroup
-	connection             *sessionapi.NativeConnection
+	connection             nativeSessionConnection
 	renderer               nativeClientRenderer
 	event                  sessionapi.NativeEvent
 	editors                map[string]*composer.Editor

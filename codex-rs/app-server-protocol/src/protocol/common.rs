@@ -942,6 +942,12 @@ client_request_definitions! {
         manual_payload_conversion: manual,
         response: v2::ThreadListResponse,
     },
+    ThreadChangesRead => "thread/changes/read" {
+        params: v2::ThreadChangesReadParams,
+        serialization: None,
+        manual_payload_conversion: manual,
+        response: v2::ThreadChangesReadResponse,
+    },
     AgentEnd => "agent/end" {
         params: v2::AgentEndParams,
         serialization: thread_id(params.root_thread_id),

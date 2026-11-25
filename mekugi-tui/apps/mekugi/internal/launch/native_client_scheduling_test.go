@@ -52,7 +52,7 @@ func nativeSchedulingRuntime(t *testing.T, u *appServerUI, connection *sessionap
 	t.Helper()
 	terminal, _ := u.terminalViews.NewAttachment(diffrender.DarkTheme)
 	terminal.Width, terminal.Height = 80, 24
-	c := &nativeClient{connection: connection, renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
+	c := &nativeClient{connection: wrapSessionAPIConnection(connection), renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
 	r := &nativeClientRuntime{ctx: t.Context(), active: c, messages: make(chan nativeClientMessage), results: make(chan *nativeClientCall, nativeCallLanes), reattached: make(chan nativeClientReattached, 1), editors: make(map[[2]string]*composer.Editor), images: make(map[string]bool)}
 	r.start(c, nil)
 	t.Cleanup(r.close)

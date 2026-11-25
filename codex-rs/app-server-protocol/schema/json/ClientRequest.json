@@ -4906,6 +4906,25 @@
       ],
       "type": "object"
     },
+    "ThreadChangesReadParams": {
+      "description": "Request composed saved changes from the native change-history store for a thread.",
+      "properties": {
+        "includeEphemeral": {
+          "description": "Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadCompactCancelParams": {
       "additionalProperties": false,
       "properties": {
@@ -7671,6 +7690,30 @@
         "params"
       ],
       "title": "Thread/subtree/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/changes/read"
+          ],
+          "title": "Thread/changes/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadChangesReadParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/changes/readRequest",
       "type": "object"
     },
     {

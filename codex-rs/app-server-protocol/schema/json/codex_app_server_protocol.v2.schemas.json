@@ -3110,6 +3110,30 @@
             },
             "method": {
               "enum": [
+                "thread/changes/read"
+              ],
+              "title": "Thread/changes/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadChangesReadParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/changes/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "agent/end"
               ],
               "title": "Agent/endRequestMethod",
@@ -21837,6 +21861,157 @@
         "threadId"
       ],
       "title": "ThreadAttachmentUpdatedNotification",
+      "type": "object"
+    },
+    "ThreadChangeFileDiff": {
+      "properties": {
+        "additions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "coverageNotes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "deletions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "isBinary": {
+          "type": "boolean"
+        },
+        "movedFrom": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "unifiedDiff": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "additions",
+        "coverageNotes",
+        "deletions",
+        "isBinary",
+        "path",
+        "status",
+        "unifiedDiff"
+      ],
+      "type": "object"
+    },
+    "ThreadChangeOrigin": {
+      "properties": {
+        "changeId": {
+          "type": "string"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "incomplete": {
+          "type": "boolean"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "sourceKind": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changeId",
+        "createdAt",
+        "incomplete",
+        "paths",
+        "sequence",
+        "sourceKind",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadChangesReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Request composed saved changes from the native change-history store for a thread.",
+      "properties": {
+        "includeEphemeral": {
+          "description": "Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadChangesReadParams",
+      "type": "object"
+    },
+    "ThreadChangesReadResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/definitions/ThreadChangeOrigin"
+          },
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/definitions/ThreadChangeFileDiff"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "totalAdditions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "totalDeletions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "changes",
+        "files",
+        "threadId",
+        "totalAdditions",
+        "totalDeletions"
+      ],
+      "title": "ThreadChangesReadResponse",
       "type": "object"
     },
     "ThreadClosedNotification": {
