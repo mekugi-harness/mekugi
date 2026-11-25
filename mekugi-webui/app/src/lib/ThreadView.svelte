@@ -706,6 +706,7 @@
               <Transcript
                 entries={side ? (frame?.conversation ?? []) : entries}
                 owner={side ? sview!.Displayed.Caller : owner}
+                {workspace}
                 retained={!side}
                 caller={recorded?.name}
                 {start}

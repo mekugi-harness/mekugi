@@ -12,10 +12,22 @@
   import { codeBlock } from "./ui/styles";
   import Tag from "./ui/Tag.svelte";
   import * as Trace from "./ui/trace";
+  import { editFullPath, editWithin, normalizeWorkdir, relativeEditLabel } from "./workdir";
 
   // outputLang names the grammar of the retained output, when known.
-  let { value, outputLang, onload }: { value: Value; outputLang?: string; onload?: () => unknown } =
-    $props();
+  let {
+    value,
+    outputLang,
+    onload,
+    groupWorkdir,
+    workspace,
+  }: {
+    value: Value;
+    outputLang?: string;
+    onload?: () => unknown;
+    groupWorkdir?: string;
+    workspace?: string;
+  } = $props();
 
   const lines = (n: number) => `${n} ${n === 1 ? "line" : "lines"}`;
   const count = (sign: string, n: string) =>
@@ -26,7 +38,26 @@
   const result = $derived(value.batchExit && !value.code);
   const verb = $derived(result ? "" : (value.verb ?? value.kind ?? ""));
   const exited = $derived(value.exitCode !== undefined && value.exitCode !== 0);
-  const labelParts = $derived(parts(value.label ?? ""));
+  const showWorkdir = $derived(
+    !!value.workdir &&
+      (!groupWorkdir || normalizeWorkdir(value.workdir, workspace) !== groupWorkdir),
+  );
+  const displayPath = $derived(
+    groupWorkdir && value.path
+      ? editWithin(value, groupWorkdir, workspace) || value.path
+      : value.path,
+  );
+  const displayLabel = $derived(
+    groupWorkdir && !value.path
+      ? relativeEditLabel(value, groupWorkdir, workspace)
+      : (value.label ?? ""),
+  );
+  const editPathTitle = $derived(
+    groupWorkdir && !value.path && displayLabel !== (value.label ?? "")
+      ? editFullPath(value)
+      : undefined,
+  );
+  const labelParts = $derived(parts(displayLabel));
   // A label ending in "failed", as an MCP call's does, states the outcome the
   // status column shows for every failed action.
   const labelFailed = $derived(labelParts.length > 1 && labelParts.at(-1) === "failed");
@@ -227,7 +258,7 @@
         >
       {/each}
     {:else if value.path}
-      <span class="font-mono text-code"><Path path={value.path} /></span>
+      <span class="font-mono text-code"><Path path={displayPath!} title={value.path} /></span>
       {#if value.label}<span class="ml-2 text-muted">{@html label}</span>{/if}
     {:else if headline !== undefined}
       <code
@@ -240,15 +271,15 @@
           >{#if annotates(value)}{"· "}{/if}{@html label}</span
         >{/if}
     {:else if value.label}
-      <span {@attach commandLabel(label)}>{@html label}</span>
+      <span title={editPathTitle} {@attach commandLabel(label)}>{@html label}</span>
     {/if}
     {#each value.sources ?? [] as source, i (i)}<Tag mono class="ml-1.5 align-[1px]">{source}</Tag
       >{/each}
     {#if value.autoReload}<span class="ml-2 inline-block whitespace-nowrap text-small text-muted"
         >(auto reloaded)</span
       >{/if}
-    {#if value.workdir}<span class="text-muted"
-        >{` in `}<span class="font-mono"><Path path={value.workdir} /></span></span
+    {#if showWorkdir}<span class="text-muted"
+        >{` in `}<span class="font-mono"><Path path={value.workdir!} /></span></span
       >{/if}
   </div>
   {#if status}<span

@@ -4,6 +4,7 @@
   import EntryView from "./EntryView.svelte";
   import { date, offset } from "./format";
   import { hasDetails, isUser, isView, responseText } from "./kinds";
+  import Path from "./Path.svelte";
   import ResponseCopy from "./ResponseCopy.svelte";
   import type { Entry } from "./protocol";
   import { stream } from "./stream.svelte";
@@ -12,6 +13,7 @@
   import { readFailure, type ReadFailure } from "./transport";
   import Icon from "./ui/Icon.svelte";
   import { emptyBox, revealed, rowAction } from "./ui/styles";
+  import { segmentWorkdirRows, workdirGroups } from "./workdir";
 
   // entries are one agent's activity, owner's; span is the recorded length,
   // so offsets keep one width; jumps counts seeks and fresh snapshots, each of
@@ -23,6 +25,7 @@
     entries,
     owner,
     caller,
+    workspace,
     start,
     span,
     jumps,
@@ -36,6 +39,7 @@
     entries: Entry[];
     owner: string;
     caller?: string;
+    workspace?: string;
     start: number;
     span: number;
     jumps: number;
@@ -115,6 +119,15 @@
         ),
   );
   const visible = $derived(rows.slice(first));
+  const groupKeys = new Map<number, string>();
+  const resolvedRows = $derived(
+    rows.map((row) => {
+      const entry = resolved(row.entry);
+      return entry === row.entry ? row : { ...row, entry };
+    }),
+  );
+  const groupDirs = $derived(workdirGroups(resolvedRows, workspace));
+  const segments = $derived(segmentWorkdirRows(visible, groupDirs.slice(first), groupKeys));
   $effect(() => {
     if (following) oldest = rows[Math.max(0, rows.length - pageSize)]?.entry.seq;
   });
@@ -137,6 +150,7 @@
     following = false;
     const container = scroller;
     const anchor = column.querySelector<HTMLElement>("[data-entry]");
+    const anchorSeq = anchor?.dataset.entry;
     const top = anchor?.getBoundingClientRect().top ?? 0;
     if (first === 0) {
       const request = nextPage;
@@ -150,8 +164,13 @@
     stalled = undefined;
     oldest = rows[Math.max(0, first - pageSize)]?.entry.seq;
     await tick();
-    if (anchor && scroller === container)
-      container.scrollTop += anchor.getBoundingClientRect().top - top;
+    const restored = anchor?.isConnected
+      ? anchor
+      : anchorSeq
+        ? column.querySelector<HTMLElement>(`[data-entry="${anchorSeq}"]`)
+        : null;
+    if (restored && scroller === container)
+      container.scrollTop += restored.getBoundingClientRect().top - top;
     paging = false;
     measure();
   }
@@ -360,6 +379,71 @@
   }
 </script>
 
+{#snippet transcriptRow(row: (typeof rows)[number], groupWorkdir?: string)}
+  {@const entry = resolved(row.entry)}
+  {@const details = !!ondetails && hasDetails(entry, owner, clipped[entry.seq])}
+  {@const response =
+    !isUser(entry) && !entry.assignment
+      ? responseText(entry.kind, entry.text, entry.values?.[0]?.body)
+      : ""}
+  <div class="group/row relative" data-entry={row.entry.seq} {@attach painted?.(row.entry.seq)}>
+    <EntryView
+      {entry}
+      at={row.at}
+      stamp={live ? "Time" : "Recorded offset"}
+      turn={row.turn}
+      views={row.views}
+      thoughts={row.thoughts?.map(resolved)}
+      {owner}
+      {groupWorkdir}
+      {workspace}
+      ondetails={ondetails ? () => ondetails?.(row.entry.seq) : undefined}
+      onload={() => void load(row.entry).catch(() => {})}
+      onclip={ondetails
+        ? (value) => {
+            if (value) clipped[entry.seq] = true;
+            else delete clipped[entry.seq];
+          }
+        : undefined}
+    />
+    {#each row.thoughts ?? [row.entry] as member (member.seq)}
+      {@const failure = contentErrors[member.seq]}
+      {#if !row.thoughts && loading[member.seq] && resolved(member) === member}<p
+          class="ml-19 text-small text-muted"
+          role="status"
+        >
+          Loading content…
+        </p>{/if}
+      {#if failure?.reference?.attachment === member.content?.attachment && failure?.reference?.revision === member.content?.revision && failure?.outcome.kind === "failed"}<Alert
+          >{failure.outcome.text}<Button
+            variant="quiet"
+            onclick={() => void load(member).catch(() => {})}>Retry</Button
+          ></Alert
+        >{/if}
+    {/each}
+    <!-- The row's actions stack in the gutter, shown on hover or focus and
+         always on touch. -->
+    {#if details}<button
+        type="button"
+        class="{rowAction} {revealed} absolute top-1 -right-9 text-muted max-sm:-right-10"
+        aria-label="Details"
+        title="Details"
+        onclick={() => ondetails?.(row.entry.seq)}><Icon name="expand" size={14} /></button
+      >{/if}
+    {#if response || (entry.content && !entry.assignment && !isUser(entry) && ["text", "final", "reply"].includes(entry.kind ?? ""))}<ResponseCopy
+        text={response}
+        gutter
+        below={details}
+        resolveText={entry.content
+          ? async () => {
+              const full = await load(row.entry);
+              return responseText(full.kind, full.text, full.values?.[0]?.body);
+            }
+          : undefined}
+      />{/if}
+  </div>
+{/snippet}
+
 <svelte:window {onkeydown} onwheel={read} ontouchstart={read} onpointerdown={read} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions (a summary handles its own keys; focus moving in holds the view) -->
@@ -385,67 +469,32 @@
     {:else if retained && entries.length && !canEarlier && stream.history(caller).loaded?.length}
       <p class="ml-19 text-small text-muted">Beginning of retained history</p>
     {/if}
-    {#each visible as row (row.entry.seq)}
-      {@const entry = resolved(row.entry)}
-      {@const details = !!ondetails && hasDetails(entry, owner, clipped[entry.seq])}
-      {@const response =
-        !isUser(entry) && !entry.assignment
-          ? responseText(entry.kind, entry.text, entry.values?.[0]?.body)
-          : ""}
-      <div class="group/row relative" data-entry={row.entry.seq} {@attach painted?.(row.entry.seq)}>
-        <EntryView
-          {entry}
-          at={row.at}
-          stamp={live ? "Time" : "Recorded offset"}
-          turn={row.turn}
-          views={row.views}
-          thoughts={row.thoughts?.map(resolved)}
-          {owner}
-          ondetails={ondetails ? () => ondetails?.(row.entry.seq) : undefined}
-          onload={() => void load(row.entry).catch(() => {})}
-          onclip={ondetails
-            ? (value) => {
-                if (value) clipped[entry.seq] = true;
-                else delete clipped[entry.seq];
-              }
-            : undefined}
-        />
-        {#each row.thoughts ?? [row.entry] as member (member.seq)}
-          {@const failure = contentErrors[member.seq]}
-          {#if !row.thoughts && loading[member.seq] && resolved(member) === member}<p
-              class="ml-19 text-small text-muted"
-              role="status"
+    {#each segments as segment (segment.key)}
+      {#if segment.kind === "group"}
+        <section
+          class="my-2 first:mt-0"
+          data-workdir-group={segment.workdir}
+          aria-label={`Working directory ${segment.workdir}`}
+        >
+          <div
+            data-workdir-heading={segment.workdir}
+            class="sticky top-0 z-10 grid max-w-[920px] grid-cols-[60px_minmax(0,1fr)] gap-x-4 bg-surface/95 py-1.5 backdrop-blur-sm max-sm:grid-cols-1"
+          >
+            <span class="max-sm:hidden" aria-hidden="true"></span>
+            <div
+              class="flex min-w-0 items-baseline gap-1.5 border-b border-rule/80 pb-1 text-small"
             >
-              Loading content…
-            </p>{/if}
-          {#if failure?.reference?.attachment === member.content?.attachment && failure?.reference?.revision === member.content?.revision && failure?.outcome.kind === "failed"}<Alert
-              >{failure.outcome.text}<Button
-                variant="quiet"
-                onclick={() => void load(member).catch(() => {})}>Retry</Button
-              ></Alert
-            >{/if}
-        {/each}
-        <!-- The row's actions stack in the gutter, shown on hover or focus and
-             always on touch. -->
-        {#if details}<button
-            type="button"
-            class="{rowAction} {revealed} absolute top-1 -right-9 text-muted max-sm:-right-10"
-            aria-label="Details"
-            title="Details"
-            onclick={() => ondetails?.(row.entry.seq)}><Icon name="expand" size={14} /></button
-          >{/if}
-        {#if response || (entry.content && !entry.assignment && !isUser(entry) && ["text", "final", "reply"].includes(entry.kind ?? ""))}<ResponseCopy
-            text={response}
-            gutter
-            below={details}
-            resolveText={entry.content
-              ? async () => {
-                  const full = await load(row.entry);
-                  return responseText(full.kind, full.text, full.values?.[0]?.body);
-                }
-              : undefined}
-          />{/if}
-      </div>
+              <span class="shrink-0 text-muted">In</span>
+              <span class="min-w-0 font-mono text-ink"><Path path={segment.workdir} /></span>
+            </div>
+          </div>
+          {#each segment.rows as row (row.entry.seq)}
+            {@render transcriptRow(row, segment.workdir)}
+          {/each}
+        </section>
+      {:else}
+        {@render transcriptRow(segment.row)}
+      {/if}
     {:else}
       <p class="{emptyBox} mt-6 ml-17 max-sm:ml-0">{empty}</p>
     {/each}
