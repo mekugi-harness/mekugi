@@ -743,6 +743,7 @@ impl OutgoingMessageSender {
             .await
     }
 
+    #[tracing::instrument(skip_all)]
     async fn take_connection_callback_for_response(
         &self,
         connection_id: ConnectionId,

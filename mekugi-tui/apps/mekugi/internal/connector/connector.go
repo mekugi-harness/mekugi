@@ -44,6 +44,12 @@ func NativeSocketPath() (string, error) {
 			return "", fmt.Errorf("locate home directory for app-server control socket: %w", err)
 		}
 		codexHome = filepath.Join(home, ".codex")
+	} else if !filepath.IsAbs(codexHome) {
+		absHome, err := filepath.Abs(codexHome)
+		if err != nil {
+			return "", fmt.Errorf("resolve CODEX_HOME for app-server control socket: %w", err)
+		}
+		codexHome = absHome
 	}
 	return filepath.Join(codexHome, "app-server-control", "app-server-control.sock"), nil
 }
