@@ -1366,11 +1366,7 @@ impl UnifiedExecProcessManager {
         windows_sandbox_proxy_settings_mode: codex_sandboxing::WindowsSandboxProxySettingsMode,
         tty: bool,
         environment: &codex_exec_server::Environment,
-        #[cfg(unix)] exec_track: Option<(
-            Arc<ExecTrackAttachment>,
-            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
-        )>,
-        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
+        exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<UnifiedExecProcess, ToolError> {
         let network_policy_decider = request
             .exec_server_network_proxy
@@ -1436,11 +1432,7 @@ impl UnifiedExecProcessManager {
         network_policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
         tty: bool,
         environment: &codex_exec_server::Environment,
-        #[cfg(unix)] exec_track: Option<(
-            Arc<ExecTrackAttachment>,
-            Option<tokio::sync::mpsc::UnboundedReceiver<codex_exec_track::DrainRequest>>,
-        )>,
-        #[cfg(not(unix))] exec_track: Option<Arc<ExecTrackAttachment>>,
+        exec_track: Option<Arc<ExecTrackAttachment>>,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
         if environment.is_remote() || request.exec_server_shell_snapshot.is_some() {
             let backend = environment.get_exec_backend();

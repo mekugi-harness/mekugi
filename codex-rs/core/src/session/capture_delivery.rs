@@ -4,8 +4,8 @@
 use super::Session;
 use crate::agent_communication::FinalCaptureAttachment;
 use codex_change_history::{
-    ChangeHistoryStore, ChangeId, ChangeIndexEntry, ChangeRecord, FileState, compose_diff,
-    expand_id_spec,
+    ChangeHistoryStore, ChangeId, ChangeIndexEntry, ChangeRecord, ChangeScope, FileState,
+    compose_diff, expand_id_spec,
 };
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::agent_capture::{CaptureCursor, CaptureInterval};
@@ -59,14 +59,18 @@ pub(crate) async fn read_change_source(
         if let Some(recipient) = recipient {
             let recipient = recipient.to_string();
             records.retain(|record| {
-                record.metadata.thread_id != recipient && record.metadata.source_kind.is_authored()
+                !record.metadata.is_unattributed()
+                    && record.metadata.thread_id != recipient
+                    && record.metadata.source_kind.is_authored()
             });
         }
-        render_composed_change_source(
-            &store,
-            &records,
-            crate::context_sources::MAX_SOURCE_BYTES,
-        )?
+        for record in &mut records {
+            record
+                .files
+                .retain(|file| file.scope != ChangeScope::Ephemeral);
+        }
+        records.retain(|record| !record.files.is_empty());
+        render_composed_change_source(&store, &records, crate::context_sources::MAX_SOURCE_BYTES)?
             .ok_or_else(|| anyhow::anyhow!("source exceeded the retained change attachment budget"))
     })
     .await
@@ -214,7 +218,11 @@ impl FinalCaptureAttachment {
                     let mut first_missing = None;
                     for id in ids {
                         if let Some(entry) = index.get(&id) {
-                            if entry.thread_id != recipient && entry.source_kind.is_authored() {
+                            if !entry.is_unattributed()
+                                && !entry.ephemeral_only
+                                && entry.thread_id != recipient
+                                && entry.source_kind.is_authored()
+                            {
                                 changes.push(interval(&id, entry.sequence));
                             }
                         } else if first_missing.is_none() {
@@ -330,6 +338,8 @@ impl Session {
                 .collect();
             for entry in ChangeHistoryStore::open_existing(dir)?.list_entries()? {
                 if entry.source_kind.is_authored()
+                    && !entry.is_unattributed()
+                    && !entry.ephemeral_only
                     && let Some(&i) = positions.get(&entry.thread_id)
                 {
                     if !seen.contains(&format!("native:{}", entry.id)) {
@@ -522,33 +532,33 @@ mod tests {
         let workspace = tempfile::tempdir()?;
         let store = ChangeHistoryStore::open(workspace.path().join("changes"))?;
         let path = workspace.path().join("notes.txt");
-        let record = |call_id: &str,
-                      before: FileSnapshot,
-                      after: FileSnapshot,
-                      coverage: CoverageStatus| {
-            store.record_change(
-                ChangeMetadata {
-                    thread_id: "worker".into(),
-                    session_id: "session".into(),
-                    turn_id: "turn".into(),
-                    call_id: call_id.into(),
-                    source_kind: ChangeSourceKind::ApplyPatch,
-                    workspace_root: workspace.path().to_path_buf(),
-                    created_at: 1,
-                    exit_code: Some(0),
-                    summary: None,
-                    claim_key: None,
-                },
-                vec![PendingFileChange {
-                    rel_path: "notes.txt".into(),
-                    abs_path: path.clone(),
-                    moved_from: None,
-                    before,
-                    after,
-                    coverage,
-                }],
-            )
-        };
+        let record =
+            |call_id: &str, before: FileSnapshot, after: FileSnapshot, coverage: CoverageStatus| {
+                store.record_change(
+                    ChangeMetadata {
+                        thread_id: "worker".into(),
+                        session_id: "session".into(),
+                        turn_id: "turn".into(),
+                        call_id: call_id.into(),
+                        author: None,
+                        source_kind: ChangeSourceKind::ApplyPatch,
+                        workspace_root: workspace.path().to_path_buf(),
+                        created_at: 1,
+                        exit_code: Some(0),
+                        summary: None,
+                        claim_key: None,
+                    },
+                    vec![PendingFileChange {
+                        rel_path: "notes.txt".into(),
+                        abs_path: path.clone(),
+                        moved_from: None,
+                        before,
+                        after,
+                        coverage,
+                        scope: codex_change_history::ChangeScope::Workspace,
+                    }],
+                )
+            };
 
         let first = record(
             "c1",
@@ -578,12 +588,9 @@ mod tests {
         )?;
 
         // Consecutive edits compose into one cumulative diff without intermediate text.
-        let consecutive = render_composed_change_source(
-            &store,
-            &[first.clone(), second.clone()],
-            16_000,
-        )?
-        .expect("within budget");
+        let consecutive =
+            render_composed_change_source(&store, &[first.clone(), second.clone()], 16_000)?
+                .expect("within budget");
         assert!(consecutive.contains("+final text"), "{consecutive}");
         assert!(!consecutive.contains("superseded draft"), "{consecutive}");
         assert!(
@@ -598,7 +605,10 @@ mod tests {
             16_000,
         )?
         .expect("within budget");
-        assert!(with_gap.contains("Incomplete capture coverage.\n"), "{with_gap}");
+        assert!(
+            with_gap.contains("Incomplete capture coverage.\n"),
+            "{with_gap}"
+        );
         assert!(with_gap.contains("+final text"), "{with_gap}");
         assert!(with_gap.contains("+after gap"), "{with_gap}");
         assert!(!with_gap.contains("superseded draft"), "{with_gap}");
@@ -607,7 +617,10 @@ mod tests {
 
         // Per-record final handoff rendering keeps coverage diagnostics and budget enforcement.
         let single = render_change_record(&store, &after_gap, 16_000)?.expect("within budget");
-        assert!(single.contains("Incomplete capture coverage.\n"), "{single}");
+        assert!(
+            single.contains("Incomplete capture coverage.\n"),
+            "{single}"
+        );
         assert!(single.contains("+after gap"), "{single}");
         assert!(render_change_record(&store, &after_gap, 10)?.is_none());
 

@@ -1459,11 +1459,12 @@ fn side_fork_effort_caps_btw_to_low_and_downgrades_ultra_to_max() {
     ];
     let base_client = test_model_client(SessionSource::Cli);
 
-    let btw = base_client
-        .clone()
-        .with_side_fork(Some(&codex_protocol::protocol::ThreadSource::Feature(
-            "mekugi_btw".to_owned(),
-        )));
+    let btw =
+        base_client
+            .clone()
+            .with_side_fork(Some(&codex_protocol::protocol::ThreadSource::Feature(
+                "mekugi_btw".to_owned(),
+            )));
     assert_eq!(
         btw.cap_side_fork_effort(&model_info, ReasoningEffort::Ultra),
         ReasoningEffort::Low

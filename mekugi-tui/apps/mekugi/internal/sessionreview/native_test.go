@@ -435,3 +435,67 @@ func TestNativeStoreRejectsInvalidIDAndCorruptBlob(t *testing.T) {
 		t.Fatalf("expected checksum mismatch error, got %v", err)
 	}
 }
+
+func TestNativeStoreUnattributedUserShellAndEphemeralFiltering(t *testing.T) {
+	workspace := t.TempDir()
+	f := newNativeStoreFixture(t)
+	wsBlob := f.blob([]byte("user-edit\n"), false)
+	tmpBlob := f.blob([]byte("tmp-only\n"), false)
+
+	f.publish("", nativeChangeRecord{
+		ID: "shell1",
+		Metadata: nativeChangeMetadata{
+			ThreadID:      "",
+			CallID:        "user-call-1",
+			SourceKind:    "user_shell",
+			WorkspaceRoot: workspace,
+		},
+		Files: []nativeFileEvidence{
+			{
+				RelPath:  "kept.txt",
+				AbsPath:  filepath.Join(workspace, "kept.txt"),
+				Kind:     nativeFileChangeKind{Kind: "add"},
+				Before:   nativeFileState{State: "missing"},
+				After:    wsBlob,
+				Coverage: nativeCoverageStatus{Status: "complete"},
+				Scope:    "workspace",
+			},
+			{
+				RelPath:  "/tmp/scratch.txt",
+				AbsPath:  "/tmp/scratch.txt",
+				Kind:     nativeFileChangeKind{Kind: "add"},
+				Before:   nativeFileState{State: "missing"},
+				After:    tmpBlob,
+				Coverage: nativeCoverageStatus{Status: "complete"},
+				Scope:    "ephemeral",
+			},
+		},
+	})
+
+	proj := Projection{NativeDir: f.dir, Data: new(presentation.Snapshot)}
+	scope := previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {"main": true}}}
+	changed, err := proj.Apply(t.Context(), Event{Kind: "scope", Scope: &scope, NativeDir: f.dir, Resync: true})
+	if err != nil {
+		t.Fatalf("Apply(scope): %v", err)
+	}
+	if !changed {
+		t.Fatal("expected unattributed shell1 record to be hydrated")
+	}
+	if proj.Data.Len() != 1 {
+		t.Fatalf("expected 1 attempt, got %d", proj.Data.Len())
+	}
+	for attempt := range proj.Data.Attempts() {
+		if attempt.Change != "shell1" {
+			t.Fatalf("expected shell1, got %q", attempt.Change)
+		}
+		if len(attempt.Chunks) != 1 {
+			t.Fatalf("expected ephemeral file to be filtered from saved diff, got %d chunks", len(attempt.Chunks))
+		}
+		if attempt.Chunks[0].Origin.Caller != "" {
+			t.Fatalf("expected empty Caller for unattributed shell1, got %q", attempt.Chunks[0].Origin.Caller)
+		}
+		if attempt.Chunks[0].Origin.Source != "userShell" {
+			t.Fatalf("expected userShell source, got %q", attempt.Chunks[0].Origin.Source)
+		}
+	}
+}

@@ -52,6 +52,7 @@ type nativeIndexEntry struct {
 	ExitCode              *int32   `json:"exit_code,omitempty"`
 	FilePaths             []string `json:"file_paths"`
 	HasIncompleteCoverage bool     `json:"has_incomplete_coverage"`
+	EphemeralOnly         bool     `json:"ephemeral_only"`
 }
 
 type nativeChangeRecord struct {
@@ -83,6 +84,7 @@ type nativeFileEvidence struct {
 	Before    nativeFileState      `json:"before"`
 	After     nativeFileState      `json:"after"`
 	Coverage  nativeCoverageStatus `json:"coverage"`
+	Scope     string               `json:"scope,omitempty"`
 }
 
 type nativeFileChangeKind struct {
@@ -149,13 +151,17 @@ func nativeStreamIndex(stream string) int {
 func admittedNativeWorkspace(scope previewmodel.Scope, thread, preferred string) string {
 	if preferred != "" {
 		clean := filepath.Clean(preferred)
-		if scope.Workspaces[clean][thread] {
+		if thread == "" {
+			if _, ok := scope.Workspaces[clean]; ok {
+				return clean
+			}
+		} else if scope.Workspaces[clean][thread] {
 			return clean
 		}
 	}
 	var fallback string
 	for _, workspace := range slices.Sorted(maps.Keys(scope.Workspaces)) {
-		if !scope.Workspaces[workspace][thread] {
+		if thread != "" && !scope.Workspaces[workspace][thread] {
 			continue
 		}
 		if preferred != "" && changes.PathWithin(filepath.Clean(preferred), filepath.Clean(workspace)) {
@@ -170,7 +176,7 @@ func admittedNativeWorkspace(scope previewmodel.Scope, thread, preferred string)
 
 func threadInScope(scope previewmodel.Scope, thread string) bool {
 	if thread == "" {
-		return false
+		return len(scope.Workspaces) > 0
 	}
 	for _, threads := range scope.Workspaces {
 		if threads[thread] {
@@ -183,7 +189,7 @@ func threadInScope(scope previewmodel.Scope, thread string) bool {
 func singleAdmittedWorkspace(scope previewmodel.Scope, thread string) string {
 	var selected string
 	for workspace, threads := range scope.Workspaces {
-		if !threads[thread] {
+		if thread != "" && !threads[thread] {
 			continue
 		}
 		if selected != "" && selected != workspace {
@@ -265,6 +271,9 @@ func reconcileNativeReview(
 		if !isValidNativeChangeID(entry.ID) {
 			return false, fmt.Errorf("native change-history has invalid change ID %q", entry.ID)
 		}
+		if entry.EphemeralOnly {
+			continue
+		}
 		if !threadInScope(scope, entry.ThreadID) {
 			continue
 		}
@@ -326,7 +335,7 @@ func reconcileNativeReview(
 
 		recordWorkspace := cmp.Or(record.Metadata.WorkspaceRoot, workspace)
 		caller := callers[record.Metadata.ThreadID]
-		if caller == "" {
+		if caller == "" && record.Metadata.ThreadID != "" {
 			caller = "/root"
 		}
 		source := nativeOriginSource(record.Metadata.SourceKind)
@@ -341,6 +350,9 @@ func reconcileNativeReview(
 			if err := ctx.Err(); err != nil {
 				return false, err
 			}
+			if file.Scope == "ephemeral" {
+				continue
+			}
 			reviewFile, err := buildNativeReviewFile(dir, record.ID, recordWorkspace, record.Metadata.SourceKind, file, &remainingBytes)
 			if err != nil {
 				return false, err
@@ -353,6 +365,9 @@ func reconcileNativeReview(
 				Review:       reviewFile,
 				Origin:       origin,
 			})
+		}
+		if len(attempt.Chunks) == 0 {
+			continue
 		}
 		if err := builder.Add(attempt); err != nil {
 			return false, err

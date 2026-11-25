@@ -3914,6 +3914,7 @@ async fn assert_reset_publishes_and_retains_source_receipt(partial_changes: bool
                     session_id: session.session_id().to_string(),
                     turn_id: turn.sub_id.clone(),
                     call_id: "partial-fixture".into(),
+                    author: None,
                     source_kind: codex_change_history::ChangeSourceKind::ApplyPatch,
                     workspace_root: directory.path().to_path_buf(),
                     created_at: 1,
@@ -3930,6 +3931,7 @@ async fn assert_reset_publishes_and_retains_source_receipt(partial_changes: bool
                         b"PRIVATE_PARTIAL_DIFF\n".to_vec(),
                     ),
                     coverage: codex_change_history::CoverageStatus::Complete,
+                    scope: codex_change_history::ChangeScope::Workspace,
                 }],
             )
             .unwrap();

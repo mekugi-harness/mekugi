@@ -13,6 +13,7 @@ use crate::model::ChangeSourceKind;
 use crate::model::CoverageStatus;
 use crate::model::FileSnapshot;
 use crate::model::PendingFileChange;
+use crate::model::classify_change_scope;
 use crate::store::ChangeHistoryStore;
 
 /// Direction for mutating the workspace from retained change evidence.
@@ -98,6 +99,7 @@ impl ChangeHistoryStore {
         for write in planned {
             apply_snapshot_to_disk(&write.abs_path, &write.target_after)?;
             affected_paths.push(write.rel_path.clone());
+            let scope = classify_change_scope(&write.abs_path, &workspace_root, None);
             pending_files.push(PendingFileChange {
                 rel_path: write.rel_path,
                 abs_path: write.abs_path,
@@ -105,6 +107,7 @@ impl ChangeHistoryStore {
                 before: write.live_before,
                 after: write.target_after,
                 coverage: CoverageStatus::Complete,
+                scope,
             });
         }
 
@@ -132,6 +135,7 @@ impl ChangeHistoryStore {
                 session_id: actor_session_id.to_string(),
                 turn_id: String::new(),
                 call_id: String::new(),
+                author: None,
                 source_kind,
                 workspace_root,
                 created_at,

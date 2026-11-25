@@ -13,11 +13,14 @@ use sha2::Sha256;
 
 use crate::error::ChangeHistoryError;
 use crate::identity::ChangeId;
+use crate::identity::UNATTRIBUTED_STREAM;
 use crate::identity::stream_name_from_index;
 use crate::model::CURRENT_SCHEMA_VERSION;
+use crate::model::ChangeAuthor;
 use crate::model::ChangeIndexEntry;
 use crate::model::ChangeMetadata;
 use crate::model::ChangeRecord;
+use crate::model::ChangeScope;
 use crate::model::FileChangeKind;
 use crate::model::FileEvidence;
 use crate::model::FileSnapshot;
@@ -112,7 +115,7 @@ impl ChangeHistoryStore {
     /// is untouched and the error is returned explicitly.
     pub fn record_change(
         &self,
-        metadata: ChangeMetadata,
+        mut metadata: ChangeMetadata,
         pending_files: Vec<PendingFileChange>,
     ) -> Result<ChangeRecord, ChangeHistoryError> {
         let _lock = self.acquire_exclusive_lock()?;
@@ -139,21 +142,33 @@ impl ChangeHistoryStore {
                 before,
                 after,
                 coverage: pending.coverage,
+                scope: pending.scope,
             });
         }
 
         // Step 2: Allocate stream and monotonic ChangeId in memory.
-        let stream = if let Some(existing) = index.thread_streams.get(&metadata.thread_id) {
-            existing.clone()
+        let author = metadata.effective_author();
+        let (stream, next_num, id) = if author.is_unattributed() {
+            metadata.thread_id.clear();
+            metadata.author = Some(ChangeAuthor::Unattributed);
+            let next_num = *index.stream_next.get(UNATTRIBUTED_STREAM).unwrap_or(&1);
+            let id = ChangeId::new_unattributed(next_num)?;
+            (UNATTRIBUTED_STREAM.to_string(), next_num, id)
         } else {
-            let next_stream = stream_name_from_index(index.thread_streams.len());
-            index
-                .thread_streams
-                .insert(metadata.thread_id.clone(), next_stream.clone());
-            next_stream
+            metadata.author = Some(author);
+            let stream = if let Some(existing) = index.thread_streams.get(&metadata.thread_id) {
+                existing.clone()
+            } else {
+                let next_stream = stream_name_from_index(index.thread_streams.len());
+                index
+                    .thread_streams
+                    .insert(metadata.thread_id.clone(), next_stream.clone());
+                next_stream
+            };
+            let next_num = *index.stream_next.get(&stream).unwrap_or(&1);
+            let id = ChangeId::new(&stream, next_num)?;
+            (stream, next_num, id)
         };
-        let next_num = *index.stream_next.get(&stream).unwrap_or(&1);
-        let id = ChangeId::new(&stream, next_num)?;
         let sequence = index.next_sequence;
 
         let record = ChangeRecord {
@@ -178,16 +193,23 @@ impl ChangeHistoryStore {
         }
         let file_paths = record.files.iter().map(|f| f.rel_path.clone()).collect();
         let has_incomplete_coverage = record.files.iter().any(|f| !f.coverage.is_complete());
+        let ephemeral_only = !record.files.is_empty()
+            && record
+                .files
+                .iter()
+                .all(|f| f.scope == ChangeScope::Ephemeral);
         index.entries.push(ChangeIndexEntry {
             id,
             sequence,
             thread_id: record.metadata.thread_id.clone(),
+            author: record.metadata.author.clone(),
             call_id: record.metadata.call_id.clone(),
             source_kind: record.metadata.source_kind,
             created_at: record.metadata.created_at,
             exit_code: record.metadata.exit_code,
             file_paths,
             has_incomplete_coverage,
+            ephemeral_only,
         });
         self.write_index_locked(&index)?;
 

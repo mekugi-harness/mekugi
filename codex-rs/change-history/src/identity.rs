@@ -14,6 +14,9 @@ const STREAM_WORDS: [&str; 26] = [
     "frost", "glass", "gold", "green",
 ];
 
+/// Reserved stream name for unattributed user-shell (`!`) change IDs (`shell1`, `shell2`, ...).
+pub const UNATTRIBUTED_STREAM: &str = "shell";
+
 /// Convert a 0-based stream index to a bijective base-26 lowercase stream name
 /// (`0 -> "a"`, `25 -> "z"`, `26 -> "aa"`).
 pub fn stream_name_from_index(mut index: usize) -> String {
@@ -42,6 +45,9 @@ impl ChangeId {
     /// Build a `ChangeId` from a lowercase stream letter sequence (`"a"`, `"b"`, ...)
     /// and a 1-based monotonic number.
     pub fn new(stream: &str, number: u64) -> Result<Self, ChangeHistoryError> {
+        if stream == UNATTRIBUTED_STREAM {
+            return Self::new_unattributed(number);
+        }
         if stream.is_empty() || number == 0 || !stream.bytes().all(|b| b.is_ascii_lowercase()) {
             return Err(ChangeHistoryError::InvalidChangeId(format!(
                 "{stream}{number}"
@@ -57,6 +63,24 @@ impl ChangeId {
             number,
             raw,
         })
+    }
+
+    /// Build an unattributed shell-mode `ChangeId` (e.g. `shell1`, `shell2`).
+    pub fn new_unattributed(number: u64) -> Result<Self, ChangeHistoryError> {
+        if number == 0 {
+            return Err(ChangeHistoryError::InvalidChangeId(format!(
+                "{UNATTRIBUTED_STREAM}{number}"
+            )));
+        }
+        Ok(Self {
+            stream: UNATTRIBUTED_STREAM.to_string(),
+            number,
+            raw: format!("{UNATTRIBUTED_STREAM}{number}"),
+        })
+    }
+
+    pub fn is_unattributed(&self) -> bool {
+        self.stream == UNATTRIBUTED_STREAM
     }
 
     pub fn as_str(&self) -> &str {
@@ -82,6 +106,18 @@ impl FromStr for ChangeId {
     type Err = ChangeHistoryError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        if let Some(rest) = input.strip_prefix(UNATTRIBUTED_STREAM)
+            && !rest.is_empty()
+            && rest.bytes().all(|b| b.is_ascii_digit())
+        {
+            let number: u64 = rest
+                .parse()
+                .map_err(|_| ChangeHistoryError::InvalidChangeId(input.to_string()))?;
+            if number == 0 || number.to_string() != rest {
+                return Err(ChangeHistoryError::InvalidChangeId(input.to_string()));
+            }
+            return Self::new_unattributed(number);
+        }
         let mut tail = input;
         let mut stream = String::new();
         loop {
