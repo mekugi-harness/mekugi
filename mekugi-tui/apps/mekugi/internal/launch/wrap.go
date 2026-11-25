@@ -188,9 +188,8 @@ func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *ses
 		if len(debugPaths) == 0 {
 			return
 		}
-		fmt.Fprintln(os.Stderr, "To diagnose this session, ask an agent to run:")
 		directory := filepath.Dir(debugPaths[0])
-		fmt.Fprintf(os.Stderr, "  mekugi inspect-session --debug-dir %s --field diagnostic\n", commandargs.Quote(directory))
+		fmt.Fprintf(os.Stderr, "Debug bundle saved to: %s\n", directory)
 	}()
 	return runInvocation(frontends.Presentation, frontends.Conversation, frontends.LivePreview, frontends.Activity, frontends.History, frontends.Preferences, frontends.Segments, frontends.Changes, frontends.Usage, frontends.AgentMetrics, frontends.TransportDiagnostics, frontends.Diagnostics, ctx, frontends.Commands, frontends.AutoTitle, frontends.Observation, options, settings, issues, executable, args, environment, os.Stderr, resumeThread, resumeArgv, approvals, func(paths []string) { debugPaths = paths }, api, workspace, threads)
 }

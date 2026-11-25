@@ -8,10 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"slices"
 	"syscall"
-
-	inspectioncli "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inspectioncli"
 
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 
@@ -61,7 +58,11 @@ func Run() (exitCode int) {
 	if len(os.Args) > 1 {
 		operation = os.Args[1]
 	}
-	if worker != nil || slices.Contains([]string{"inspect-sessions", "replay-session", "inspect-session", "inspect-storage"}, operation) {
+	if worker == nil {
+		switch operation {
+		}
+	}
+	if worker != nil {
 		runtime, err := composition.Frontends(ctx, false, true, "")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "mekugi:", err)
@@ -75,19 +76,7 @@ func Run() (exitCode int) {
 				}
 			}
 		}()
-		if worker != nil {
-			return worker.Run(runtime.History, runtime.Commands, command.DedicatedHostProcess, ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
-		}
-		switch operation {
-		case "inspect-sessions":
-			return inspectioncli.RunSessionCorpusInspection(runtime.Inspection, ctx, os.Args[2:], os.Stdout, os.Stderr)
-		case "replay-session":
-			return RunSessionUIReplay(runtime.Terminal, runtime.Presentation, runtime.Conversation, runtime.Observation, runtime.Activity, runtime.Replay, ctx, os.Args[2:], os.Stdin, os.Stdout, os.Stderr)
-		case "inspect-session":
-			return inspectioncli.RunSessionInspection(runtime.Inspection, runtime.Diagnostics, ctx, os.Args[2:], os.Stdout, os.Stderr)
-		case "inspect-storage":
-			return inspectioncli.RunStorageInspection(runtime.History, runtime.Segments.Reports, ctx, os.Args[2:], os.Stdout, os.Stderr)
-		}
+		return worker.Run(runtime.History, runtime.Commands, command.DedicatedHostProcess, ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	}
 	routerArgs, command, err := launchoptions.SplitCommand(os.Args[1:])
 	if errors.Is(err, flag.ErrHelp) {

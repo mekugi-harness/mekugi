@@ -8,15 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
 	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
-
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
@@ -205,58 +201,5 @@ func TestVCSPatchCopiesKeepTheirSource(t *testing.T) {
 				t.Fatalf("unexpected file: %+v", row)
 			}
 		}
-	}
-}
-
-func TestSessionUIReplayVCSKeepsRetainedEvidenceAcrossReset(t *testing.T) {
-	g, output := vcsCommitFixture(t, "recorded commit")
-	live := vcsCommandUI(t, g.dir)
-	item := map[string]any{"id": "commit", "type": "commandExecution", "command": "git commit -m 'recorded commit'", "cwd": g.dir,
-		"status": "completed", "exitCode": 0, "aggregatedOutput": output}
-	live.shell.Transcript.Expansion = 1
-	appServerTestNotify(t, live, "item/completed", map[string]any{"threadId": "main", "turnId": "turn", "item": item})
-	awaitMain(t, live, "M  a.go")
-	// An offline replay neither borrows the live cache nor starts another Git read.
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n: > \"$2/replayed-git\"\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	meta := replayTestMeta("root")
-	meta["payload"].(map[string]any)["cwd"] = g.dir
-	path := replayTestWrite(t, t.TempDir(), "root.jsonl", meta,
-		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "turn"}),
-		replayTestItem("root", "turn", replayTestEpoch+1000, replayTestEpoch+2000, map[string]any{
-			"type": "CommandExecution", "id": "commit", "command": []string{"git", "commit", "-m", "recorded commit"},
-			"cwd": g.dir, "aggregated_output": output, "exit_code": 0, "status": "completed"}),
-		replayTestRecord("event_msg", replayTestEpoch+3000, map[string]any{"type": "task_complete", "turn_id": "turn"}))
-	source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-	t.Cleanup(p.close)
-	for range 2 {
-		if err := p.seek(3 * time.Second); err != nil {
-			t.Fatal(err)
-		}
-		p.ui.view.Expansion = 1
-		replayPlaybackTestPaint(t, p, 90, 28)
-		if got := ansi.Strip(strings.Join(p.ui.testActivity(p.ui.view).RenderFeed(90, 60).Lines, "\n")); !strings.Contains(got, "A  b.go") || strings.Contains(got, "M  a.go") {
-			t.Fatalf("replayed evidence:\n%s", got)
-		}
-		if p.ui.session.Activity().Commits != nil {
-			t.Fatal("replay acquired a Git reader")
-		}
-		previous := p.ui.source.Model
-		if err := p.seek(0); err != nil {
-			t.Fatal(err)
-		}
-		if p.ui.source.Model == previous || strings.Contains(ansi.Strip(strings.Join(p.ui.testActivity(p.ui.view).RenderFeed(90, 60).Lines, "\n")), "b.go") {
-			t.Fatal("backward reset retained future VCS rows")
-		}
-	}
-	if _, err := os.Stat(filepath.Join(g.dir, "replayed-git")); !os.IsNotExist(err) {
-		t.Fatalf("replay started Git: %v", err)
 	}
 }

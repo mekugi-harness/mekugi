@@ -7,9 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
-
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 )
 
 func TestDebugSessionArtifacts(t *testing.T) {
@@ -49,44 +46,6 @@ func TestDebugSessionArtifacts(t *testing.T) {
 	root, err := debugStorageDirectory()
 	if err != nil || filepath.Dir(filepath.Dir(paths[0])) != root {
 		t.Fatalf("bundle not in managed state: %v, %v", paths, err)
-	}
-}
-
-func TestDebugCustomCaptureBundleSupportsReplay(t *testing.T) {
-	t.Setenv("TMPDIR", shortTempDir(t))
-	custom := filepath.Join(t.TempDir(), "custom capture.jsonl")
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	var paths []string
-	if err := testRunSession(testHistory(), ctx, testCommands(), []string{"--debug", "--capture-output", custom}, nil,
-		func(invocationFixture) { cancel() }, func(artifacts []string) { paths = artifacts }); err != nil {
-		t.Fatal(err)
-	}
-	if len(paths) != 6 || paths[1] != custom {
-		t.Fatalf("selected capture destination changed: %q", paths)
-	}
-	debugDir := filepath.Dir(paths[0])
-	bundle, err := os.Stat(filepath.Join(debugDir, "capture.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	selected, err := os.Stat(custom)
-	if err != nil || !os.SameFile(bundle, selected) {
-		t.Fatalf("debug capture does not resolve to the selected file: %v", err)
-	}
-	// Representative retained provider evidence in the real producer's chosen
-	// capture destination must reach the existing replay consumer.
-	replayTestWrite(t, filepath.Dir(custom), filepath.Base(custom), map[string]any{
-		"boundary": "provider", "thread_id": "root", "captured_at": time.UnixMilli(replayTestEpoch + 50), "duration_ms": 20,
-	})
-	rollout := replayTestWrite(t, t.TempDir(), "rollout-root.jsonl", replayTestMeta("root"),
-		replayTestRecord("event_msg", replayTestEpoch, map[string]any{"type": "task_started", "turn_id": "turn"}),
-		replayTestItem("root", "turn", replayTestEpoch+1, replayTestEpoch+2, map[string]any{
-			"type": "AgentMessage", "id": "answer", "content": []map[string]any{{"text": "Replay complete."}},
-		}))
-	replay, err := replayReadTest(t, new(transportcapture.Service), t.Context(), rollout, debugDir, 1)
-	if err != nil || replay == nil || replay.Providers != 1 {
-		t.Fatalf("custom capture replay: %v, error=%v", replay, err)
 	}
 }
 

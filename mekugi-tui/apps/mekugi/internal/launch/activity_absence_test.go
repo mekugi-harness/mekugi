@@ -41,22 +41,6 @@ func TestActivityAbsenceKeepsHostOutput(t *testing.T) {
 	}
 }
 
-func TestActivityAbsenceKeepsOfflineReplay(t *testing.T) {
-	p := newTestUIReplayPlayback(nil, t.Context(), replayPlaybackTestSource(), 1)
-	defer p.close()
-	if err := p.seek(p.Until); err != nil {
-		t.Fatal(err)
-	}
-	if frame := replayPlaybackTestPaint(t, p, 120, 28); !strings.Contains(frame, "Repaint diagnosis complete") {
-		t.Fatalf("absent activity blocked replay: %s", frame)
-	}
-	for _, entry := range p.ui.source.Entries {
-		if entry.Source.Native != nil && entry.Source.Native.Output != nil {
-			t.Fatal("offline replay retained output without activity")
-		}
-	}
-}
-
 func TestActivityAbsenceUnknownExit(t *testing.T) {
 	for _, absent := range []bool{false, true} {
 		name := "present"

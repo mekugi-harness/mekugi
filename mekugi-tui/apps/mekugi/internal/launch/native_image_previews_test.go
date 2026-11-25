@@ -2,7 +2,6 @@ package launch
 
 import (
 	"bytes"
-	"encoding/base64"
 	jsonv1 "encoding/json"
 	json "encoding/json/v2"
 	"fmt"
@@ -19,13 +18,10 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
 )
 
 func TestUISnapshotNativeImagePreviews(t *testing.T) {
@@ -245,123 +241,6 @@ func TestNativeImagePreviewScopeAndReplacement(t *testing.T) {
 	previews.finish(imagePreviewResult{scope: scope, source: terminalui.ImageSource{Path: "late"}, preview: previews.images[first]})
 	if _, ok := previews.images[terminalui.ImageSource{Path: "late"}]; ok {
 		t.Fatal("stale result adopted")
-	}
-}
-
-func TestReplayImagePreviewsLifecycle(t *testing.T) {
-	for _, key := range []string{"TMUX", "TMUX_PANE", "ZELLIJ", "ZELLIJ_SESSION_NAME", "ZELLIJ_VERSION", "KITTY_WINDOW_ID", "WEZTERM_EXECUTABLE", "WEZTERM_VERSION"} {
-		t.Setenv(key, "")
-	}
-	t.Setenv("TERM_PROGRAM", "iTerm.app")
-	t.Setenv("TERM_PROGRAM_VERSION", "3.6.1")
-	workspace := t.TempDir()
-	path := filepath.Join(workspace, "artwork.png")
-	if err := os.WriteFile(path, previewFixturePNG(t), 0600); err != nil {
-		t.Fatal(err)
-	}
-	artifact, _ := json.Marshal(path)
-	record := fmt.Sprintf(`{"type":"session_meta","payload":{"id":"main","cwd":%q}}
-{"timestamp":"2026-10-01T12:00:01Z","type":"event_msg","payload":{"type":"item_completed","thread_id":"main","turn_id":"turn","started_at_ms":1,"completed_at_ms":1001,"item":{"type":"Extension","kind":"image_gen.generation","id":"generated","status":"completed","fileId":"artifact","savedPath":%s}}}
-`, workspace, artifact)
-	rollpath := filepath.Join(workspace, "rollout.jsonl")
-	if err := os.WriteFile(rollpath, []byte(record), 0600); err != nil {
-		t.Fatal(err)
-	}
-	decoded, err := rollout.Replay(t.Context(), rollpath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := time.UnixMilli(1)
-	source := &playback.Source{Thread: decoded.Thread, Cwd: workspace, Start: start, End: start.Add(2 * time.Second), Threads: map[string]string{"main": "/root"}}
-	for _, event := range decoded.Events {
-		source.Events = append(source.Events, playback.Event{Event: event})
-	}
-	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-	t.Cleanup(p.close)
-	t.Cleanup(p.previews.close)
-	if err := p.seek(2 * time.Second); err != nil {
-		t.Fatal(err)
-	}
-	var output bytes.Buffer
-	if err := p.paint(&output, 80, 24); err != nil {
-		t.Fatal(err)
-	}
-	if p.previews.results != nil || strings.Contains(output.String(), "\x1b_G") {
-		t.Fatal("headless replay acquired images")
-	}
-	master, slave, err := pty.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer master.Close()
-	defer slave.Close()
-	p.imageTerminal = slave
-	if err := p.paint(&output, 80, 24); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case result := <-p.previews.results:
-		p.previews.finish(result)
-	case <-time.After(time.Second):
-		t.Fatal("replay image did not load")
-	}
-	output.Reset()
-	if err := p.paint(&output, 80, 24); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.graphics.Placements) != 1 {
-		t.Fatal("replay did not render generated artifact")
-	}
-	u := p.ui
-	if !u.openTerminalMarkdownFile(&u.session, u.presentation, u.presentation.View().SourceWorkspace(), u.activitySource(u.view), u.shell, u.view, path) {
-		t.Fatal("replay image file link was not admitted")
-	}
-	for u.fileReads != nil {
-		select {
-		case result := <-u.fileReads:
-			u.loadedTerminalMarkdownFile(&u.session, u.presentation, u.presentation.View().SourceWorkspace(), u.shell, result)
-		case <-time.After(time.Second):
-			t.Fatal("replay image file admission stalled")
-		}
-	}
-	if err := p.paint(&output, 80, 24); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case result := <-p.previews.results:
-		p.previews.finish(result)
-	case <-time.After(time.Second):
-		t.Fatal("replay dialog did not acquire its own preview")
-	}
-	output.Reset()
-	if err := p.paint(&output, 80, 24); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.graphics.Placements) != 1 || p.previews.dialog.Dialog == 0 || u.shell.Dialog.File.ImagePath != path {
-		t.Fatal("replay image dialog did not replace transcript graphics")
-	}
-	_, graphic, _ := strings.Cut(output.String(), "\x1b_G")
-	_, payload, _ := strings.Cut(graphic, ";")
-	payload, _, _ = strings.Cut(payload, "\x1b\\")
-	filename, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(string(filename)); err != nil {
-		t.Fatal("local-file transport missing", err)
-	}
-	if err := p.seek(0); err != nil {
-		t.Fatal(err)
-	}
-	output.Reset()
-	if err := p.paint(&output, 80, 24); err != nil {
-		t.Fatal(err)
-	}
-	if len(p.graphics.Placements) != 0 || !strings.Contains(output.String(), "a=d") {
-		t.Fatal("backward seek retained graphics")
-	}
-	if _, err := os.Stat(string(filename)); !os.IsNotExist(err) {
-		t.Fatal("backward seek retained local transport file", err)
 	}
 }
 

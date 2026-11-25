@@ -60,15 +60,12 @@ func newFlags(stderr io.Writer, config *Config) *flag.FlagSet {
 		fmt.Fprintln(stderr, "       mekugi server [--socket PATH]")
 		fmt.Fprintln(stderr, "       mekugi connector [--listen ADDRESS] [--socket PATH] [--token-file PATH] [--origin URL]")
 		fmt.Fprintln(stderr, "       mekugi web [--listen ADDRESS]")
-		fmt.Fprintln(stderr, "       mekugi inspect-session --thread ID [options]")
-		fmt.Fprintln(stderr, "       mekugi inspect-session --session PATH [options]")
-		fmt.Fprintln(stderr, "       mekugi inspect-storage --workspace DIR --call-id ID [options]")
 		flags.PrintDefaults()
 	}
 	flags.StringVar(&config.ANSIFaint, "ansi-faint", "auto", "dim text: auto (detect mosh), on (ANSI faint), or off (fixed colors)")
 	flags.StringVar(&config.CaptureOutput, "capture-output", "", "optional sanitized capture JSONL path")
 	flags.BoolVar(&config.ChildReplySummary, "child-reply-summary", true, "show child-authored summaries in Main with full replies in the dialog")
-	flags.BoolVar(&config.Debug, "debug", false, "record diagnostics, capture, metrics, instructions, runtime reads, and AX report; print session diagnosis command on exit")
+	flags.BoolVar(&config.Debug, "debug", false, "record diagnostics, capture, metrics, instructions, runtime reads, and AX report; print debug bundle path on exit")
 	return flags
 }
 

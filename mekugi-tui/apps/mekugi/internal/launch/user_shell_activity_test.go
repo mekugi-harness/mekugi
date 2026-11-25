@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
@@ -74,26 +73,5 @@ func TestUISnapshotUserShellActivity(t *testing.T) {
 				uisnapshot.AssertTerminal(t, fmt.Sprintf("testdata/snapshots/user-shell-%s-%d.txt", state, width), append(rows, "plain after activity"), width)
 			}
 		})
-	}
-}
-
-func TestUserShellReplayKeepsOriginAndOutput(t *testing.T) {
-	path := replayTestWrite(t, t.TempDir(), "shell.jsonl", replayTestMeta("main"),
-		replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+1000, map[string]any{
-			"type": "CommandExecution", "id": "shell", "source": "user_shell", "status": "completed",
-			"command": []string{"bash", "-lc", "cat notes.txt"}, "exit_code": 0, "aggregated_output": "first line\nlast line\n",
-		}))
-	source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-	t.Cleanup(p.close)
-	if err := p.advance(p.Until); err != nil {
-		t.Fatal(err)
-	}
-	got := replayPlaybackTestPaint(t, p, 80, 20)
-	if !strings.Contains(got, "You ran") || !strings.Contains(got, "cat notes.txt") || !strings.Contains(got, "last line") || len(p.ui.session.Commands()) != 0 {
-		t.Fatalf("replay lost user shell or revived its process:\n%s", got)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
@@ -84,19 +83,6 @@ func TestSideQuestionActivityLiveRestoredReplay(t *testing.T) {
 				}
 				check(u.attached.source, ansi.Strip(strings.Join(u.testActivity(u.shell.Transcript).testRenderConversation(100).Lines, "\n")))
 			}
-			path := replayTestWrite(t, t.TempDir(), "side.jsonl", replayTestMeta("main"), replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+1000, map[string]any{
-				"type": "McpToolCall", "id": item.ID, "server": item.Server, "tool": item.Tool, "status": item.Status, "arguments": item.Arguments, "result": item.Result,
-			}))
-			source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-			t.Cleanup(p.close)
-			if err := p.advance(p.Until); err != nil {
-				t.Fatal(err)
-			}
-			check(p.ui.source, replayPlaybackTestPaint(t, p, 100, 30))
 		})
 	}
 }

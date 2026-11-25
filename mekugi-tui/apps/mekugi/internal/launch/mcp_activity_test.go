@@ -15,7 +15,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
@@ -80,32 +79,6 @@ func TestMCPActivityLiveAndRestored(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-func TestMCPActivityReplay(t *testing.T) {
-	path := replayTestWrite(t, t.TempDir(), "mcp.jsonl", replayTestMeta("main"), replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+1000, map[string]any{
-		"type": "McpToolCall", "id": "call", "server": "catalog", "tool": "lookup", "status": "failed", "arguments": map[string]any{"id": 42}, "result": map[string]any{"content": []any{}, "structuredContent": map[string]any{"ok": false}}, "error": map[string]any{"message": "lookup failed"},
-	}))
-	source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-	t.Cleanup(p.close)
-	if err := p.advance(500 * time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
-	before := replayPlaybackTestPaint(t, p, 80, 30)
-	if !strings.Contains(before, "catalog") || strings.Contains(before, "lookup failed") || strings.Contains(before, "structuredContent") {
-		t.Fatalf("replay start leaked outcome or lost identity:\n%s", before)
-	}
-	if err := p.advance(p.Until); err != nil {
-		t.Fatal(err)
-	}
-	after := replayPlaybackTestPaint(t, p, 80, 30)
-	if !strings.Contains(after, "MCP") || !strings.Contains(after, "failed") || len(p.ui.session.Commands()) != 0 {
-		t.Fatalf("replay lost completion or revived execution:\n%s", after)
 	}
 }
 
@@ -252,34 +225,6 @@ func TestUISnapshotThreadControlSpawn(t *testing.T) {
 	}
 }
 
-func TestThreadControlSpawnReplay(t *testing.T) {
-	for _, status := range []string{"completed", "failed"} {
-		item := spawnActivityItem(status)
-		path := replayTestWrite(t, t.TempDir(), "spawn.jsonl", replayTestMeta("main"), replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+1000, map[string]any{
-			"type": "McpToolCall", "id": item.ID, "server": item.Server, "tool": item.Tool, "status": item.Status, "arguments": item.Arguments, "result": item.Result,
-		}))
-		source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-		t.Cleanup(p.close)
-		if err := p.advance(500 * time.Millisecond); err != nil {
-			t.Fatal(err)
-		}
-		if before := replayPlaybackTestPaint(t, p, 80, 30); !strings.Contains(before, "Spawning") || strings.Contains(before, "started") || strings.Contains(before, "lowercase") {
-			t.Fatalf("replay start lost pending state or leaked outcome:\n%s", before)
-		}
-		if err := p.advance(p.Until); err != nil {
-			t.Fatal(err)
-		}
-		after := replayPlaybackTestPaint(t, p, 80, 30)
-		if strings.Contains(after, "MCP") || strings.Contains(after, "started") != (status == "completed") || strings.Contains(after, "lowercase") != (status == "failed") {
-			t.Fatalf("replay lost spawn outcome (%s):\n%s", status, after)
-		}
-	}
-}
-
 func coordinationActivityItems(t *testing.T) []binding.ThreadItem {
 	t.Helper()
 	items := []binding.ThreadItem{spawnActivityItem("completed")}
@@ -343,23 +288,6 @@ func TestThreadControlTrafficLiveRestoredReplay(t *testing.T) {
 			t.Fatalf("delegate outbox lost its actual sender:\n%s", rendered)
 		}
 	}
-	for _, item := range items {
-		path := replayTestWrite(t, t.TempDir(), "coordination.jsonl", replayTestMeta("main"), replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+1000, map[string]any{
-			"type": "McpToolCall", "id": item.ID, "server": item.Server, "tool": item.Tool, "status": item.Status, "arguments": item.Arguments, "result": item.Result,
-		}))
-		source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-		t.Cleanup(p.close)
-		if err := p.advance(p.Until); err != nil {
-			t.Fatal(err)
-		}
-		if painted := replayPlaybackTestPaint(t, p, 80, 30); strings.Contains(painted, "MCP") || strings.Contains(painted, `"content"`) {
-			t.Fatalf("%s replay exposed raw MCP:\n%s", item.Tool, painted)
-		}
-	}
 }
 
 func TestThreadControlMixedWaitLiveRestoredReplay(t *testing.T) {
@@ -386,19 +314,6 @@ func TestThreadControlMixedWaitLiveRestoredReplay(t *testing.T) {
 		painted := strings.Join(u.testActivity(u.shell.Transcript).testRenderConversation(160).Lines, "\n")
 		check(u.attached.source, ansi.Strip(painted))
 	}
-	path := replayTestWrite(t, t.TempDir(), "mixed-wait.jsonl", replayTestMeta("main"), replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+1000, map[string]any{
-		"type": "McpToolCall", "id": item.ID, "server": item.Server, "tool": item.Tool, "status": item.Status, "arguments": item.Arguments, "result": item.Result,
-	}))
-	source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-	t.Cleanup(p.close)
-	if err := p.advance(p.Until); err != nil {
-		t.Fatal(err)
-	}
-	check(p.ui.source, replayPlaybackTestPaint(t, p, 160, 30))
 }
 
 func TestRestoredIncomingCoordinationReplyKeepsChildLink(t *testing.T) {
@@ -534,113 +449,6 @@ func TestThreadControlEmptyWaitLiveRestoredReplay(t *testing.T) {
 					appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": "main", "turnId": "turn", "item": item})
 				}
 				check(ansi.Strip(strings.Join(u.testActivity(u.shell.Transcript).testRenderConversation(160).Lines, "\n")))
-			}
-			path := replayTestWrite(t, t.TempDir(), "wait.jsonl", replayTestMeta("main"), replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+1, map[string]any{
-				"type": "McpToolCall", "id": item.ID, "server": item.Server, "tool": item.Tool, "status": item.Status, "arguments": item.Arguments, "result": item.Result,
-			}))
-			source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-			t.Cleanup(p.close)
-			if err := p.advance(p.Until); err != nil {
-				t.Fatal(err)
-			}
-			check(replayPlaybackTestPaint(t, p, 160, 30))
-		})
-	}
-}
-
-func TestThreadControlRetainedWaitOutcome(t *testing.T) {
-	// Same separate-output shape as the reported session; ids are fixture-local.
-	for _, tt := range []struct{ name, fields, want string }{
-		{"completed", `"state":"completed","wait_mode":"any","event":{"task":"/root/worker","kind":"completed","status":"completed"},"targets":["/root/worker","/root/reader"]`, "Finished waiting for worker: completed"},
-		{"message", `"state":"completed","event":{"task":"/root/worker","kind":"message","status":"working"}`, "Finished waiting for worker: working ·\u00a0message received"},
-		{"timeout", `"state":"timeout","targets":["/root/worker"]`, "Finished waiting for worker ·\u00a0timeout"},
-		{"canceled", `"state":"canceled","targets":["/root/worker"]`, "Finished waiting for worker ·\u00a0canceled"},
-		{"paused", `"state":"paused","targets":["/root/worker"]`, "Finished waiting for worker ·\u00a0paused"},
-		{"yielded", `"state":"yielded","targets":["/root/worker"]`, "Finished waiting for worker ·\u00a0yielded"},
-		{"mixed", `"state":"completed","events":[{"task":"/root/worker","status":"failed"},{"task":"/root/reader","status":"interrupted"}]`, "Finished waiting for worker: failed, reader: interrupted"},
-		{"failed", `"state":"failed","targets":["/root/worker"]`, "Finished waiting for worker ·\u00a0failed"},
-		{"unknown", `"state":"unknown"`, ""},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			output := `{"id":"main:wait",` + tt.fields + `}`
-			for _, provenance := range []string{"owned", "missing", "tool-call", "foreign"} {
-				payload := map[string]any{"type": "function_call_output", "namespace": "threadcontrol", "name": "wait_agent", "output": output}
-				if provenance == "tool-call" {
-					payload["call_id"] = "ordinary"
-				}
-				if provenance == "foreign" {
-					payload["namespace"] = "other"
-				}
-				record := rolloutRecord(1, "response_item", payload)
-				record["metadata"] = map[string]any{"client_authored": provenance != "missing"}
-				u := newAppServerSessionTestUI(t, t.TempDir())
-				root := binding.ThreadInfo{ID: "main", Cwd: u.attached.cwd, Path: writeTestRollout(t, "main", record, record)}
-				if err := u.restoreContent(root); err != nil {
-					t.Fatal(err)
-				}
-				text := ansi.Strip(strings.Join(u.testActivity(u.shell.Transcript).testRenderConversation(160).Lines, "\n"))
-				want := 0
-				if provenance == "owned" && tt.want != "" {
-					want = 1
-				}
-				if strings.Count(text, "Finished waiting") != want || want > 0 && !strings.Contains(text, tt.want) {
-					t.Fatalf("restored %s wake:\n%s", provenance, text)
-				}
-			}
-			path := replayTestWrite(t, t.TempDir(), "wake.jsonl", replayTestMeta("main"), replayTestItem("main", "continued", replayTestEpoch, replayTestEpoch+1, map[string]any{
-				"type": "FunctionCallOutput", "id": "outcome", "namespace": "threadcontrol", "name": "wait_agent", "output": output,
-			}))
-			source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-			t.Cleanup(p.close)
-			if err := p.advance(p.Until); err != nil {
-				t.Fatal(err)
-			}
-			if text := replayPlaybackTestPaint(t, p, 160, 30); tt.want != "" && !strings.Contains(text, tt.want) || tt.want == "" && strings.Contains(text, "Finished waiting") {
-				t.Fatalf("replay lost wake:\n%s", text)
-			}
-		})
-	}
-}
-
-func TestThreadControlRetainedCompactionOutcome(t *testing.T) {
-	for _, tc := range []struct{ name, tool, state, want string }{
-		{"standalone-skipped", "compact", "skipped", "Compaction skipped: retained diagnostic"},
-		{"wait-failed", "wait_agent", "failed", "Compaction not performed: retained diagnostic"},
-		{"standalone-canceled", "compact", "canceled", "Compaction canceled: retained diagnostic"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			output := fmt.Sprintf(`{"id":"checkpoint","compaction":{"state":%q,"error":"retained diagnostic"}}`, tc.state)
-			u := newAppServerSessionTestUI(t, t.TempDir())
-			record := rolloutRecord(1, "response_item", map[string]any{"type": "function_call_output", "namespace": "threadcontrol", "name": tc.tool, "output": output})
-			record["metadata"] = map[string]any{"client_authored": true}
-			if err := u.restoreContent(binding.ThreadInfo{ID: "main", Cwd: u.attached.cwd, Path: writeTestRollout(t, "main", record, record)}); err != nil {
-				t.Fatal(err)
-			}
-			if text := ansi.Strip(strings.Join(u.testActivity(u.shell.Transcript).testRenderConversation(160).Lines, "\n")); strings.Count(text, tc.want) != 1 {
-				t.Fatalf("restored checkpoint outcome: %s", text)
-			}
-			path := replayTestWrite(t, t.TempDir(), "checkpoint.jsonl", replayTestMeta("main"), replayTestItem("main", "continued", replayTestEpoch, replayTestEpoch+1, map[string]any{
-				"type": "FunctionCallOutput", "id": "checkpoint", "namespace": "threadcontrol", "name": tc.tool, "output": output,
-			}))
-			source, err := replayReadTest(t, nil, t.Context(), path, "", 1)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-			t.Cleanup(p.close)
-			if err := p.advance(p.Until); err != nil {
-				t.Fatal(err)
-			}
-			if text := replayPlaybackTestPaint(t, p, 160, 30); strings.Count(text, tc.want) != 1 {
-				t.Fatalf("replayed checkpoint outcome: %s", text)
 			}
 		})
 	}

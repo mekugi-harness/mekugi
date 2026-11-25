@@ -114,7 +114,7 @@ func startModelOptions(body []byte) (sessionapi.StartOptions, error) {
 
 func (l *serverLauncher) Run(ctx context.Context, start sessionapi.Start, api *sessionapi.Server) error {
 	if start.Replay != nil {
-		return runServerReplay(ctx, *start.Replay, api)
+		return errors.New("offline session replay is no longer supported")
 	}
 	execution := &threadExecution{hub: l.hub, workers: &l.workers, sourceSocket: l.sourceSocket}
 	if start.Native != nil {

@@ -4,17 +4,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
 )
 
 func TestNativeSourceAcquisitionLiveRestoredAndReplay(t *testing.T) {
@@ -46,20 +42,8 @@ func TestNativeSourceAcquisitionLiveRestoredAndReplay(t *testing.T) {
 			if err := restored.restoreContent(binding.ThreadInfo{ID: "main", Cwd: directory, Path: path}); err != nil {
 				t.Fatal(err)
 			}
-			source, err := replayTestService(t, nil).Read(t.Context(), playback.ReadOptions{Path: path, HistoryDirectory: filepath.Join(directory, "absent-history")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if source.Items != 0 || len(source.Events) != 2 || len(source.Unsupported) != 0 {
-				t.Fatalf("source acquisition became shell activity or disappeared: %+v", source)
-			}
-			p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-			t.Cleanup(p.close)
-			if err := p.advance(source.End.Sub(source.Start)); err != nil {
-				t.Fatal(err)
-			}
 			var expected []activity.Value
-			for _, feed := range []*sessionpresentation.ActivitySource{live.attached.source, restored.attached.source, p.ui.source} {
+			for _, feed := range []*sessionpresentation.ActivitySource{live.attached.source, restored.attached.source} {
 				if len(feed.Entries) != 1 {
 					t.Fatalf("acquisition omitted or duplicated before first turn: %+v", feed.Entries)
 				}
@@ -88,10 +72,6 @@ func TestNativeSourceAcquisitionLiveRestoredAndReplay(t *testing.T) {
 				} else if !reflect.DeepEqual(values, expected) {
 					t.Fatalf("restored/replay source facts differ: got=%+v live=%+v", values, expected)
 				}
-			}
-			paint := ansi.Strip(replayPlaybackTestPaint(t, p, 120, 30))
-			if !strings.Contains(paint, "source.txt") || !strings.Contains(paint, "permission denied") || strings.Contains(paint, "OPAQUE_MODEL_BODY") || strings.Contains(paint, "context.reload") {
-				t.Fatalf("rendered source receipt lost outcome or leaked transport: %s", paint)
 			}
 		})
 	}

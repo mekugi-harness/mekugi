@@ -5,14 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activityui "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
@@ -32,7 +29,7 @@ func TestUISnapshotWebSearch(t *testing.T) {
 			items[i].Results = []jsontext.Value{}
 		}
 	}
-	for _, mode := range []string{"live", "restored", "replay"} {
+	for _, mode := range []string{"live", "restored"} {
 		t.Run(mode, func(t *testing.T) {
 			u := newAppServerSessionTestUI(t, t.TempDir())
 			var blocks []activityui.Block
@@ -44,25 +41,9 @@ func TestUISnapshotWebSearch(t *testing.T) {
 				}
 			case "restored":
 				u.restoreHistory([]binding.HistoryTurn{{ID: "t", Status: "completed", Items: items}})
-			case "replay":
-				start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-				source := &playback.Source{Thread: "main", Cwd: "/workspace", Start: start, End: start.Add(time.Second), Threads: map[string]string{"main": "/root"}}
-				for _, item := range items {
-					source.Events = append(source.Events, playback.Event{At: start, Kind: "item/completed", ThreadID: "main", TurnID: "t", Item: item.Observation()})
-				}
-				p := newTestUIReplayPlayback(new(activitymodel.Service), t.Context(), source, 1)
-				t.Cleanup(p.close)
-				if err := p.advance(time.Second); err != nil {
-					t.Fatal(err)
-				}
-				for i := range items {
-					blocks = append(blocks, p.ui.testActivity(p.ui.view).blocks(i)...)
-				}
 			}
-			if mode != "replay" {
-				for i := range items {
-					blocks = append(blocks, u.testActivity(u.shell.Transcript).blocks(i)...)
-				}
+			for i := range items {
+				blocks = append(blocks, u.testActivity(u.shell.Transcript).blocks(i)...)
 			}
 			if len(blocks) != len(items) {
 				t.Fatalf("blocks: %+v", blocks)

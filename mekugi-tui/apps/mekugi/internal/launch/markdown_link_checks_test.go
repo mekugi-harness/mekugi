@@ -210,50 +210,6 @@ func TestMarkdownLinksChildAndDialog(t *testing.T) {
 	}
 }
 
-func TestMarkdownLinksReplay(t *testing.T) {
-	source := replayPlaybackTestSource()
-	source.Cwd = t.TempDir()
-	if err := os.WriteFile(filepath.Join(source.Cwd, "replay.go"), []byte("package replay"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for i := range source.Events {
-		if source.Events[i].Item.ID == "answer" {
-			source.Events[i].Item.Text = "replay.go and missing.go"
-		}
-	}
-	p := newTestUIReplayPlayback(nil, t.Context(), source, 1)
-	t.Cleanup(p.close)
-	for cycle := range 3 {
-		if cycle > 0 {
-			if err := p.seek(0); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := p.advance(20 * time.Second); err != nil {
-			t.Fatal(err)
-		}
-		for {
-			replayPlaybackTestPaint(t, p, 80, 18)
-			if len(p.ui.links.pending) == 0 {
-				break
-			}
-			select {
-			case result := <-p.ui.links.results:
-				p.ui.links.finish(result)
-			case <-time.After(5 * time.Second):
-				t.Fatal("replay link checks did not finish")
-			}
-		}
-		if len(p.ui.links.admitted) != 1 {
-			t.Fatal("replay retained retired attachment admissions")
-		}
-	}
-	rows := strings.Join(p.ui.shell.Frame.Rows, "\n")
-	if !strings.Contains(rows, "]8;;replay.go") || strings.Contains(rows, "]8;;missing.go") || strings.Contains(rows, "mekugi-file-candidate:") {
-		t.Fatalf("replay admission was not delivered: %q", rows)
-	}
-}
-
 func TestMarkdownLinksPreservedWhenBottomSheetOpens(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "types.ts"), []byte("export type X = string;\n"), 0600); err != nil {

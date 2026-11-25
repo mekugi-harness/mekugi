@@ -1,16 +1,12 @@
 package launch
 
 import (
-	"bytes"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	inspectioncli "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/inspectioncli"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
@@ -74,28 +70,18 @@ func TestUISnapshotDebugHandoffAfterCodexExit(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := string(data)
-			if strings.Contains(after, "codex-finished") || strings.Count(after, "To diagnose this session") != 1 {
+			if strings.Contains(after, "codex-finished") || strings.Count(after, "Debug bundle saved to:") != 1 {
 				t.Fatalf("native host diagnostics leaked or post-exit handoff was missing: %q", data)
 			}
 			lines := strings.Split(strings.TrimSpace(after), "\n")
-			if len(lines) != 2 {
-				t.Fatalf("diagnostic handoff is not one command: %q", after)
+			if len(lines) != 1 {
+				t.Fatalf("diagnostic handoff is not one line: %q", after)
 			}
-			// Parse the printed shell command, then invoke the real diagnostic entry point.
-			reader := `mekugi() { printf '%s\n' "$@"; }; `
-			resolved, err := exec.CommandContext(t.Context(), "sh", "-c", reader+strings.TrimSpace(lines[1])).CombinedOutput()
-			if err != nil {
-				t.Fatalf("handoff command failed: %v: %s", err, resolved)
+			dir := strings.TrimSpace(strings.TrimPrefix(lines[0], "Debug bundle saved to:"))
+			if dir == "" {
+				t.Fatalf("diagnostic handoff missing bundle directory: %q", after)
 			}
-			argv := strings.Split(strings.TrimSpace(string(resolved)), "\n")
-			if len(argv) != 5 || argv[0] != "inspect-session" || argv[1] != "--debug-dir" || argv[3] != "--field" || argv[4] != "diagnostic" {
-				t.Fatalf("diagnostic handoff is not a session inspection command: %q", resolved)
-			}
-			var diagnosticErrors bytes.Buffer
-			if code := inspectioncli.RunSessionInspection(testComposition(t).Inspection, testComposition(t).Diagnostics, t.Context(), argv[1:], io.Discard, &diagnosticErrors); code != 0 {
-				t.Fatalf("printed diagnostic command failed: %d: %s", code, &diagnosticErrors)
-			}
-			normalized := strings.ReplaceAll(after, commandargs.Quote(argv[2]), "'/tmp/mekugi-debug-session'")
+			normalized := strings.ReplaceAll(after, dir, "/tmp/mekugi-debug-session")
 			uisnapshot.Assert(t, filepath.Join(fixtures, "debug-handoff.txt"), normalized)
 		})
 	}

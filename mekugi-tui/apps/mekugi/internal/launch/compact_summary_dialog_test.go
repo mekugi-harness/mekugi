@@ -3,7 +3,6 @@ package launch
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
@@ -44,7 +42,7 @@ func TestUISnapshotCompactionSummaryDialog(t *testing.T) {
 		)
 	}
 	path := replayTestWrite(t, t.TempDir(), "rollout-main.jsonl", records...)
-	for _, mode := range []string{"live", "replacement", "restore", "replay"} {
+	for _, mode := range []string{"live", "replacement", "restore"} {
 		t.Run(mode, func(t *testing.T) {
 			var u *appServerUI
 			if mode == "replacement" {
@@ -77,39 +75,6 @@ func TestUISnapshotCompactionSummaryDialog(t *testing.T) {
 				if err := u.restoreContent(info); err != nil {
 					t.Fatal(err)
 				}
-			} else {
-				source, err := replayTestService(t, nil).Read(t.Context(), playback.ReadOptions{Path: path, HistoryDirectory: p.retained.Store.Directory(), Seed: 1})
-				if err != nil {
-					t.Fatal(err)
-				}
-				replay := newTestUIReplayPlayback(u.activity, t.Context(), source, 1)
-				defer replay.close()
-				if err := replay.seek(replay.Until); err != nil {
-					t.Fatal(err)
-				}
-				replay.publish()
-				feed := replay.ui.view.RenderFeed(80, 20)
-				for _, snippet := range feed.Snippets {
-					block, ok := replay.ui.view.SnippetBlock(snippet)
-					if !ok || block.Kind != "compaction" || block.Body != summary {
-						continue
-					}
-					view := replay.ui.presentation.View()
-					target := terminalsession.SelectionTarget{Version: view.Version, Thread: view.Displayed.ID, View: replay.ui.view, Snippet: snippet}
-					effects := slices.Values([]terminalsession.InputEffect{{Selection: &terminalsession.SelectionInput{Target: target}}})
-					if err := replay.applyInput(effects); err != nil {
-						t.Fatal(err)
-					}
-					if replay.ui.shell.Dialog == nil {
-						t.Fatal("replay click did not open the shared dialog")
-					}
-					replay.ui.shell.Dialog.Paint(make([]string, 20), terminalsession.Rect{W: 80, H: 20})
-					if got := replay.ui.shell.Dialog.Document.Text; got != summary {
-						t.Fatalf("replay summary=%q", got)
-					}
-					return
-				}
-				t.Fatalf("replay summary has no clickable target: %q", feed.Lines)
 			}
 			_, view, _ := nativeDetailTestViews(t, u)
 			renderer := nativeDetailTestRenderer(t, u, view)
@@ -157,7 +122,7 @@ func TestUISnapshotCompactionSummaryDialog(t *testing.T) {
 }
 
 func TestCompactionUnsuccessfulCompletionHasNoSuccessRow(t *testing.T) {
-	for _, mode := range []string{"main", "child", "restore", "replay"} {
+	for _, mode := range []string{"main", "child", "restore"} {
 		t.Run(mode, func(t *testing.T) {
 			u := newAppServerSessionTestUI(t, t.TempDir())
 			items := []binding.ThreadItem{
@@ -170,23 +135,6 @@ func TestCompactionUnsuccessfulCompletionHasNoSuccessRow(t *testing.T) {
 				if err := u.restoreContent(binding.ThreadInfo{ID: "main", Cwd: u.attached.cwd, Turns: []binding.HistoryTurn{{ID: "turn", Status: "completed", Items: items}}}); err != nil {
 					t.Fatal(err)
 				}
-			} else if mode == "replay" {
-				records := []map[string]any{replayTestMeta("main")}
-				for i, item := range items {
-					records = append(records, replayTestItem("main", "turn", replayTestEpoch, replayTestEpoch+int64(i+1)*1000, map[string]any{"id": item.ID, "type": "ContextCompaction", "status": item.Status}))
-				}
-				path := replayTestWrite(t, t.TempDir(), "rollout.jsonl", records...)
-				source, err := replayTestService(t, nil).Read(t.Context(), playback.ReadOptions{Path: path, Seed: 1})
-				if err != nil {
-					t.Fatal(err)
-				}
-				replay := newTestUIReplayPlayback(u.activity, t.Context(), source, 1)
-				defer replay.close()
-				if err := replay.seek(replay.Until); err != nil {
-					t.Fatal(err)
-				}
-				replay.publish()
-				view = replay.ui.view
 			} else {
 				if mode == "child" {
 					appServerTestNotify(t, u, "thread/started", map[string]any{"thread": map[string]any{"id": "child", "agentNickname": "worker"}})
@@ -198,11 +146,9 @@ func TestCompactionUnsuccessfulCompletionHasNoSuccessRow(t *testing.T) {
 					appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": mode, "turnId": "turn", "item": item})
 				}
 			}
-			if mode != "replay" {
-				u.testActivity(view).publishActivity()
-			}
+			u.testActivity(view).publishActivity()
 			label := "Context reset"
-			if mode == "restore" || mode == "replay" {
+			if mode == "restore" {
 				label = "Context compacted"
 			}
 			if rendered := strings.Join(view.RenderConversation(80).Lines, "\n"); strings.Count(rendered, label) != 1 {
@@ -254,26 +200,5 @@ func TestCompactionSummaryReadLeavesInputResponsiveAndRejectsStaleResult(t *test
 	renderer.terminal.Dialog.Paint(make([]string, 20), terminalsession.Rect{W: 80, H: 20})
 	if renderer.terminal.Dialog.Document.Text != "replacement dialog" {
 		t.Fatal("replacement dialog changed")
-	}
-}
-
-func TestCompactionReplayChargesRetainedSummaryBytes(t *testing.T) {
-	p := newManagedMekugiProxy(t)
-	attachTestReplayStore(t, p)
-	ref, err := moduletest.StoreCompact(t.Context(), p.retained, "main", strings.Repeat("x", 16<<20), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	records := []map[string]any{replayTestMeta("main")}
-	for i := range 17 {
-		records = append(records,
-			replayTestRecord("compacted", replayTestEpoch+int64(i)*1000, map[string]any{"replacement_history": []any{map[string]any{"type": "compaction", "encrypted_content": ref}}}),
-			replayTestItem("main", "turn", replayTestEpoch+int64(i)*1000, replayTestEpoch+int64(i)*1000+1, map[string]any{"type": "ContextCompaction", "id": fmt.Sprint(i)}),
-		)
-	}
-	path := replayTestWrite(t, t.TempDir(), "main.jsonl", records...)
-	_, err = replayTestService(t, nil).Read(t.Context(), playback.ReadOptions{Path: path, HistoryDirectory: p.retained.Store.Directory()})
-	if err == nil || !strings.Contains(err.Error(), "replay corpus exceeds 256 MiB") {
-		t.Fatalf("retained summary budget: %v", err)
 	}
 }

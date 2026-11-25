@@ -352,3 +352,7 @@ func TestNativeNoticeChildFrameCannotAcknowledgeMainProgress(t *testing.T) {
 		t.Fatal("visible Main retry was lost or duplicated")
 	}
 }
+
+func failureStoreTestFailure() requestexecution.Failure {
+	return requestexecution.Failure{Session: "failure-store-test-session", Thread: "failure-store-test-thread", Phase: "forward"}
+}

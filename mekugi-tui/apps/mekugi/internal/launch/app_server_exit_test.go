@@ -73,7 +73,7 @@ func TestAppServerExitSummaryHighlight(t *testing.T) {
 	if err := writeExitSummary(u.exitUsage, u.archived, u.Thread, u.resumeArgv, u.replayDebugDirectory, &out, true); err != nil {
 		t.Fatal(err)
 	}
-	want := "To continue this session, run:\n  \x1b[36mmekugi codex --yolo resume saved\x1b[39m\nTo replay this session offline, run:\n  \x1b[36mmekugi replay-session --session saved\x1b[39m\n"
+	want := "To continue this session, run:\n  \x1b[36mmekugi codex --yolo resume saved\x1b[39m\n"
 	if out.String() != want {
 		t.Fatalf("highlighted summary = %q, want %q", out.String(), want)
 	}
@@ -98,7 +98,6 @@ func TestAppServerExitSummaryArgvRoundTrip(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	for i, want := range [][]string{
 		append(append([]string{}, argv...), "resume", "saved"),
-		{argv[0], "replay-session", "--session", "saved", "--debug-dir", u.replayDebugDirectory},
 	} {
 		command := strings.TrimPrefix(lines[i*2+1], "  ")
 		got, err := exec.Command(execTrackShellExecutable(t, "bash"), "-c", "set -- "+command+"; printf '%s\\0' \"$@\"").CombinedOutput()
