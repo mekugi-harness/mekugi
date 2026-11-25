@@ -107,6 +107,7 @@ func TestPredictionSampleLifecycle(t *testing.T) {
 				}
 				return
 			}
+			transport.id = "sample"
 			if last() != "thread/sample" {
 				t.Fatal("did not sample")
 			}
@@ -115,13 +116,28 @@ func TestPredictionSampleLifecycle(t *testing.T) {
 				t.Fatalf("unexpected thread/sample params: %+v", params)
 			}
 			if closeAt == "sample" {
+				transport.id = "cancel"
 				if err := requests.ClosePrediction(p); err != nil {
 					t.Fatal(err)
 				}
 				if last() != "thread/sample/cancel" {
 					t.Fatal("closed sample did not cancel")
 				}
-				reply(`{}`)
+				cancelReq, ok := requests.Take("cancel")
+				if !ok {
+					t.Fatal("missing cancel ledger entry")
+				}
+				if handled, err := client.ObservePrediction(appserver.Message{Result: jsontext.Value(`{}`)}, cancelReq); !handled || err != nil {
+					t.Fatalf("cancel reply handled=%v err=%v", handled, err)
+				}
+				// Late sample response after cancel is ignored without marking Completed.
+				sampleReq, ok := requests.Take("request")
+				if !ok {
+					t.Fatal("missing original sample ledger entry")
+				}
+				if handled, err := client.ObservePrediction(appserver.Message{Result: jsontext.Value(`{"sourceTurnId":"source","responseId":"resp-late","text":"{\"suggestion\":\"Late\"}"}`)}, sampleReq); !handled || err != nil || p.Completed || p.Text != "" || requests.PredictionPending() {
+					t.Fatalf("late sample after cancel mishandled: handled=%v err=%v p=%+v pending=%v", handled, err, p, requests.PredictionPending())
+				}
 				return
 			}
 			reply(`{"sourceTurnId":"source","responseId":"resp-1","text":"{\"suggestion\":\"Show tests\",\"confidence_score\":0.9}"}`)

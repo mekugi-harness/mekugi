@@ -6047,23 +6047,23 @@ impl Session {
     const OPENAI_TITLE_GENERATION_MODEL: &'static str = "gpt-6-luna";
 
     pub(crate) fn title_request_metadata(
-    installation_id: String,
-    request_id: String,
-) -> crate::responses_metadata::CodexResponsesMetadata {
-    let mut metadata = crate::responses_metadata::CodexResponsesMetadata::new(
-        installation_id,
-        request_id.clone(),
-        request_id.clone(),
-        request_id.clone(),
-    );
-    metadata.turn_id = Some(request_id);
-    metadata.request_kind = Some(crate::responses_metadata::CodexResponsesRequestKind::Turn);
-    metadata.thread_source = Some(codex_protocol::protocol::ThreadSource::Feature(
-        "thread_title".to_string(),
-    ));
-    metadata.turn_trigger = Some("thread_title".to_string());
-    metadata
-}
+        installation_id: String,
+        request_id: String,
+    ) -> crate::responses_metadata::CodexResponsesMetadata {
+        let mut metadata = crate::responses_metadata::CodexResponsesMetadata::new(
+            installation_id,
+            request_id.clone(),
+            request_id.clone(),
+            request_id.clone(),
+        );
+        metadata.turn_id = Some(request_id);
+        metadata.request_kind = Some(crate::responses_metadata::CodexResponsesRequestKind::Turn);
+        metadata.thread_source = Some(codex_protocol::protocol::ThreadSource::Feature(
+            "thread_title".to_string(),
+        ));
+        metadata.turn_trigger = Some("thread_title".to_string());
+        metadata
+    }
 
     #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) async fn generate_title(&self, turn_id: &str, prompt: &str) -> Option<String> {
@@ -6096,7 +6096,9 @@ impl Session {
         )
         .await
         .ok()??;
-        if !builtin_openai {
+        let chatgpt_exempt = builtin_openai
+            && self.services.auth_manager.current_auth_uses_codex_backend();
+        if !chatgpt_exempt {
             self.record_rollout_budget_usage(
                 turn_id,
                 &crate::client_common::SamplingUsage {
@@ -6118,7 +6120,7 @@ impl Session {
                         usage_metadata,
                         model: Some(model.slug.clone()),
                         service_tier,
-                        openai_endpoint: false,
+                        openai_endpoint: builtin_openai,
                         request_duration_ms: None,
                     }),
                 },
