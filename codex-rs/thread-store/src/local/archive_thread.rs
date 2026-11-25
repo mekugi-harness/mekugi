@@ -1,5 +1,6 @@
 use super::LocalThreadStore;
 use super::helpers::owned_rollout_paths_from_index;
+use super::helpers::prune_thread_truncated_output;
 use super::helpers::restore_rollout_moves;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
@@ -146,6 +147,7 @@ async fn archive_thread_with_paths(
             message: format!("failed to update archived thread metadata: {err}"),
         });
     }
+    prune_thread_truncated_output(thread_id);
     Ok(())
 }
 
@@ -368,5 +370,37 @@ mod tests {
         assert_eq!(updated.rollout_path, archived_path);
         assert!(updated.archived_at.is_some());
         assert_eq!(updated.recency_at, metadata.recency_at);
+    }
+
+    #[tokio::test]
+    async fn archive_thread_prunes_session_truncated_output_dir() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::now_v7();
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        write_session_file(home.path(), "2025-01-03T12-00-00", uuid).expect("session file");
+
+        let session_tmp = codex_protocol::shell_environment::session_tmp_path(
+            codex_protocol::SessionId::from(thread_id),
+        );
+        let spill_dir = codex_utils_output_truncation::truncated_output_dir(&session_tmp);
+        std::fs::create_dir_all(&spill_dir).expect("create spill dir");
+        std::fs::write(session_tmp.join("scratch"), "keep").expect("write sibling");
+        let spill_id =
+            codex_utils_output_truncation::spill_truncated_output(&spill_dir, "spilled output")
+                .expect("write spill");
+        assert!(spill_dir.join(spill_id).exists());
+
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect("archive thread");
+
+        assert!(!spill_dir.exists());
+        assert_eq!(
+            std::fs::read_to_string(session_tmp.join("scratch")).expect("sibling preserved"),
+            "keep"
+        );
+        let _ = std::fs::remove_dir_all(&session_tmp);
     }
 }

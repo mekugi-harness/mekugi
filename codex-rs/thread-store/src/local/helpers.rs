@@ -364,6 +364,19 @@ fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
     ThreadId::from_string(&stem[uuid_start..]).ok()
 }
 
+pub(super) fn prune_thread_truncated_output(thread_id: ThreadId) {
+    let session_tmp = codex_protocol::shell_environment::session_tmp_path(
+        codex_protocol::SessionId::from(thread_id),
+    );
+    if let Err(err) = codex_utils_output_truncation::prune_truncated_output_dir(&session_tmp) {
+        tracing::warn!(
+            thread_id = %thread_id,
+            path = %session_tmp.display(),
+            "failed to prune session truncated output directory: {err}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use codex_protocol::protocol::SubAgentSource;

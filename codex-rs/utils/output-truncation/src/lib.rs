@@ -1,6 +1,8 @@
 //! Shared byte/token truncation for tool and exec output.
 
 use std::borrow::Cow;
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fs::DirBuilder;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -29,15 +31,58 @@ pub use codex_protocol::protocol::TruncationPolicy;
 /// Subdirectory inside `$SESSION_TMP` where truncated output portions are saved.
 pub const TRUNCATED_OUTPUT_SUBDIR: &str = "truncated_output";
 
+/// Default per-session byte cap for spilled truncated output files (64 MiB).
+pub const DEFAULT_SPILL_DIR_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Returns the truncated-output directory under a session's `$SESSION_TMP`.
 pub fn truncated_output_dir(session_tmp: &Path) -> PathBuf {
     session_tmp.join(TRUNCATED_OUTPUT_SUBDIR)
 }
 
+/// Removes `$SESSION_TMP/truncated_output` if it exists as a regular directory,
+/// refusing to follow symlinks on either `session_tmp` or the subdirectory.
+pub fn prune_truncated_output_dir(session_tmp: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(session_tmp) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    }
+    let spill_dir = truncated_output_dir(session_tmp);
+    match std::fs::symlink_metadata(&spill_dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    }
+    match std::fs::remove_dir_all(&spill_dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 /// Writes `omitted` to a newly created file `<dir>/<id>`, creating `dir` on demand,
-/// and returns the short unique `id`.
+/// evicts oldest existing spill files beyond [`DEFAULT_SPILL_DIR_MAX_BYTES`], and
+/// returns the short unique `id`.
 pub fn spill_truncated_output(dir: &Path, omitted: &str) -> std::io::Result<String> {
+    spill_truncated_output_with_cap(dir, omitted, DEFAULT_SPILL_DIR_MAX_BYTES)
+}
+
+/// Writes `omitted` to a newly created file `<dir>/<id>`, creating `dir` on demand,
+/// evicts the oldest existing regular files in `dir` until total size is at most
+/// `max_bytes` (always keeping the newly written file), and returns the short unique `id`.
+pub fn spill_truncated_output_with_cap(
+    dir: &Path,
+    omitted: &str,
+    max_bytes: u64,
+) -> std::io::Result<String> {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    if let Some(parent) = dir.parent() {
+        reject_non_dir_if_present(parent)?;
+    }
+    reject_non_dir_if_present(dir)?;
 
     let mut builder = DirBuilder::new();
     builder.recursive(true);
@@ -47,6 +92,7 @@ pub fn spill_truncated_output(dir: &Path, omitted: &str) -> std::io::Result<Stri
         builder.mode(0o700);
     }
     builder.create(dir)?;
+    ensure_regular_dir(dir)?;
 
     let pid = u64::from(std::process::id());
     let nanos = SystemTime::now()
@@ -73,6 +119,8 @@ pub fn spill_truncated_output(dir: &Path, omitted: &str) -> std::io::Result<Stri
         match options.open(&path) {
             Ok(mut file) => {
                 file.write_all(omitted.as_bytes())?;
+                drop(file);
+                evict_oldest_spills(dir, OsStr::new(&id), max_bytes);
                 return Ok(id);
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -83,6 +131,109 @@ pub fn spill_truncated_output(dir: &Path, omitted: &str) -> std::io::Result<Stri
         std::io::ErrorKind::AlreadyExists,
         "failed to allocate unique truncated output id",
     ))
+}
+
+struct SpillEntry {
+    path: PathBuf,
+    file_name: OsString,
+    len: u64,
+    modified: SystemTime,
+}
+
+fn reject_non_dir_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(()),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "truncated output path is not a regular directory: {}",
+                path.display()
+            ),
+        )),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn ensure_regular_dir(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "truncated output path is not a regular directory: {}",
+                path.display()
+            ),
+        ))
+    }
+}
+
+fn is_spill_id_name(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|s| {
+        s.len() == 8
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    })
+}
+
+fn evict_oldest_spills(dir: &Path, keep_file_name: &OsStr, max_bytes: u64) {
+    if !std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir()) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut total_bytes: u64 = 0;
+    let mut evictable = Vec::new();
+
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        if !is_spill_id_name(file_name.as_os_str()) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let len = meta.len();
+        total_bytes = total_bytes.saturating_add(len);
+        if file_name.as_os_str() != keep_file_name {
+            evictable.push(SpillEntry {
+                path,
+                file_name,
+                len,
+                modified: meta.modified().unwrap_or(UNIX_EPOCH),
+            });
+        }
+    }
+
+    if total_bytes <= max_bytes {
+        return;
+    }
+
+    evictable.sort_by(|a, b| {
+        a.modified
+            .cmp(&b.modified)
+            .then_with(|| a.file_name.cmp(&b.file_name))
+    });
+
+    for entry in evictable {
+        if total_bytes <= max_bytes {
+            break;
+        }
+        match std::fs::remove_file(&entry.path) {
+            Ok(()) => total_bytes = total_bytes.saturating_sub(entry.len),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                total_bytes = total_bytes.saturating_sub(entry.len);
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 fn annotate_marker_with_spill(content: &str, edit: &mut TextTruncation, spill_dir: Option<&Path>) {
