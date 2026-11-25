@@ -160,6 +160,11 @@ configured target directory and incremental setting, including in worktrees. Do 
 - `just test-native` without selectors builds the runtime and runs its offline
   regression selection, not the full Rust workspace. Use it for runtime
   integration or upstream imports; expand coverage for affected shared contracts.
+- For fast path-scoped verification across worktree diffs (web UI, Go, and
+  touched Rust crates), run `just affected` (or `just affected --dry-run` to
+  inspect the planned commands; accepts an optional base ref defaulting to
+  `origin/main`). It skips Cargo when `codex-rs/` is untouched and falls back to
+  `just test-native` on workspace-level Rust manifest/lockfile edits.
 - From the repository root, `just fmt` formats Rust, the justfile and maintained Python scripts;
   run it after code changes, not instruction-only edits. `just fmt-check` checks without edits.
   Scope Clippy with `just clippy -p <crate>`; `just fix -p <crate>` also modifies source.

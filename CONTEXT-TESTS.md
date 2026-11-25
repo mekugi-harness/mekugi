@@ -24,6 +24,12 @@ just test ./mekugi-tui/backends/codex/appserver \
   paths or `@workspace` and ordinary `go test` flags. Set `RTK=` for raw output.
   The default `-parallel=32` overlaps process/PTY waits; keep env/cwd-mutating
   tests serial.
+- Use `just affected` (optionally `just affected <base>` or `just affected --dry-run`)
+  for fast path-scoped local verification against `origin/main` plus working-tree
+  edits: it skips Cargo when `codex-rs/` is untouched, runs `just webui-check`
+  only when `mekugi-webui/` changes, scopes `just test` to touched Go packages,
+  and runs `just test-rust --locked` scoped to touched Rust crates (falling back
+  to `just test-native` for workspace-level Rust manifest/lockfile changes).
 - Prefer `just test` inside an active Mekugi shell: it drops per-session
   variables and frontend `PATH` entries to bypass live hooks and reuse cached
   results. Raw `go test` needs at least `env -u BASH_ENV -u MEKUGI_EXEC_TRACK`.

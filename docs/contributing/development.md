@@ -14,6 +14,13 @@ just lint
 just docs-check
 ```
 
+For a fast path-scoped verification loop in feature branches or worktrees, run
+`just affected` (defaults to diffing `origin/main...HEAD` plus uncommitted
+changes; pass a base ref or `--dry-run` to inspect planned commands). It runs
+`just webui-check`, scoped `just test`, and scoped `just test-rust` (or
+`just test-native` on workspace-level Rust changes) only for touched areas, and
+skips Cargo completely when `codex-rs/` is untouched.
+
 Recipes suppress command echoes and compact tool output when RTK is enabled.
 Go tests summarize successful packages and stream failure diagnostics; lint keeps
 native diagnostics and exit status. Set `RTK=` for native Go package outcomes.
