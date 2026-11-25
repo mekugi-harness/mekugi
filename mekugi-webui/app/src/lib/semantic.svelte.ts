@@ -386,7 +386,6 @@ export class ThreadControl {
       for (let page = 0; page < 10; page++) {
         const response = await machine.request<ThreadQueueListResponse>("thread/queue/list", {
           threadId,
-          limit: 100,
           ...(cursor ? { cursor } : {}),
         });
         if (this.#id !== threadId || this.#machine !== machine) return;

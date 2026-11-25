@@ -55,7 +55,7 @@
 
   $effect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia("(max-width: 1023px)");
+    const mq = window.matchMedia("(max-width: 68.74rem)");
     const sync = () => (narrow = mq.matches);
     sync();
     mq.addEventListener("change", sync);

@@ -666,7 +666,12 @@ export class Stream {
         if (notification.params.threadId !== id) return;
         this.#upsertItem(notification.params.turnId, notification.params.item);
         this.main = buildFeed(this.#turns, id);
-        if (notification.params.item.type === "collabAgentToolCall") {
+        if (
+          notification.params.item.type === "collabAgentToolCall" &&
+          (notification.params.item.tool === "spawnAgent" ||
+            notification.params.item.tool === "resumeAgent" ||
+            notification.params.item.tool === "closeAgent")
+        ) {
           void this.#loadSubtree(this.family?.root ?? id, machine, this.#requests.signal);
         }
         break;

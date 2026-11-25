@@ -27,6 +27,7 @@
         })
         .catch(() => {
           // Fall back to machine catalog if thread-scoped listing fails.
+          if (!target.models.length) void target.refreshModels();
         });
     });
   });
