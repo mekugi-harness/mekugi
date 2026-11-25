@@ -1,29 +1,25 @@
 <script lang="ts">
-  import { atLeast, cost, date, duration, tokens } from "./format";
+  import { atLeast, cost, date, tokens } from "./format";
   import Path from "./Path.svelte";
-  import type { Agent, Playback, Session } from "./protocol";
+  import type { Agent, Session } from "./protocol";
   import Tag from "./ui/Tag.svelte";
 
   let {
     session,
-    playback,
     root,
     status,
     alert = false,
   }: {
     session: Session;
-    playback?: Playback;
     root?: Agent;
     status?: string;
     alert?: boolean;
   } = $props();
 
-  // Facts a replay does not record are left out rather than shown as dashes.
   const rows = $derived(
     (
       [
         ["Started", session.started ? date(session.started) : undefined],
-        ["Recorded", playback ? duration(playback.until) : undefined],
         ["Turns", root?.turns !== undefined ? String(root.turns) : undefined],
         ["Round trips", root?.roundtrips !== undefined ? String(root.roundtrips) : undefined],
         [

@@ -34,7 +34,6 @@
     machine: Machine;
     id: string;
     title: string;
-    replay: boolean;
     pending: boolean;
     error?: string;
   }>();
@@ -228,14 +227,11 @@
   <MachineSettings focus={settings.focus} onclose={() => (settings = undefined)} />
 {/if}
 {#if endTarget}
-  <Dialog
-    title={endTarget.replay ? "End replay?" : "End thread?"}
-    onclose={() => (endTarget = undefined)}
-  >
+  <Dialog title="End thread?" onclose={() => (endTarget = undefined)}>
     <p class="mb-2">
       End <strong class="font-semibold">{endTarget.title}</strong> on
       <strong class="font-semibold">{endTarget.machine.label}</strong>? Active work stops. Saved
-      history stays available to resume or replay.
+      history stays available to resume.
     </p>
     <p class="font-mono text-small text-muted">{endTarget.id}</p>
     {#if endTarget.error}<Alert class="mt-2">{endTarget.error}</Alert>{/if}

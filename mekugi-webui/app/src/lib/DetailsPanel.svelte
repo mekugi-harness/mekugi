@@ -1,178 +1,87 @@
 <script lang="ts">
-  import Path from "./Path.svelte";
-  import { untrack } from "svelte";
   import Alert from "./ui/Alert.svelte";
-  import type { NativeDetails } from "../../../protocol";
   import Code from "./Code.svelte";
-  import { pathLanguage } from "./highlight";
   import Markdown from "./Markdown.svelte";
-  import ReferenceSelection from "./ReferenceSelection.svelte";
+  import type { Entry, ThreadItem } from "./protocol";
   import { stream } from "./stream.svelte";
-  import { errorText, isSuperseded } from "./transport";
-  import { semantic } from "./semantic.svelte";
+  import { errorText } from "./transport";
   import Button from "./ui/Button.svelte";
   import { codeBlock } from "./ui/styles";
 
-  // One activity's details from the server, in the right panel.
   let {
-    details,
+    entry,
     onclose,
-    onreference,
-  }: { details: NativeDetails; onclose: () => void; onreference: () => void } = $props();
-  // The selection a hydrated body belongs to. A refresh of the same selection
-  // keeps its body readable until the current reference replaces it.
-  const selection = $derived(
-    [
-      details.source.ID,
-      details.source.Caller,
-      details.view.ID.Attachment,
-      details.view.ID.Selection,
-    ].join("\n"),
-  );
-  let hydrated = $state.raw<{ selection: string; attachment: string; details: NativeDetails }>();
-  let failure = $state<string>();
-  let retry = $state(0);
-  const retained = $derived(
-    hydrated?.selection === selection && hydrated.attachment === details.content?.attachment
-      ? hydrated.details
-      : undefined,
-  );
-  const display = $derived(retained ?? details);
-  const runLines = $derived.by(() => {
-    const range = display.runRange;
-    const output = display.output;
-    if (!range?.Available || !output || output.Page !== display.selected) return;
-    const { Dropped, Lines } = output.View;
-    // Published line numbers start at one, including any discarded prefix.
-    const first = range.First - Dropped - 1;
-    const end = range.Last - Dropped;
-    return {
-      before: first > 0 ? Lines.slice(0, first).join("\n") + "\n" : "",
-      marked: Lines.slice(first, end).join("\n"),
-      after: end < Lines.length ? "\n" + Lines.slice(end).join("\n") : "",
-    };
-  });
-  let runMark = $state<HTMLElement>();
-  let scrolledSelection: string | undefined;
+  }: {
+    entry: Entry;
+    onclose: () => void;
+  } = $props();
+
+  let item = $state.raw<ThreadItem | undefined>();
+  let loading = $state(false);
+  let error = $state<string | undefined>();
+
   $effect(() => {
-    const target = selection;
-    if (!runMark || scrolledSelection === target) return;
-    runMark.scrollIntoView({ block: "start", inline: "nearest" });
-    scrolledSelection = target;
-  });
-  const contentIdentity = $derived(JSON.stringify(details.content));
-  $effect(() => {
-    void contentIdentity;
-    const reference = untrack(() => details.content);
-    const target = selection;
-    void retry;
-    failure = undefined;
-    if (!reference) {
-      hydrated = undefined;
-      return;
-    }
-    const request = new AbortController();
+    const ref = entry.content;
+    item = undefined;
+    error = undefined;
+    if (!ref?.itemId) return;
+    const controller = new AbortController();
+    loading = true;
     void stream
-      .readContent(reference, request.signal)
-      .then((result) => {
-        if (request.signal.aborted) return;
-        if (!result.details) throw new Error("The complete details are unavailable.");
-        hydrated = { selection: target, attachment: reference.attachment, details: result.details };
+      .readContent(ref, controller.signal)
+      .then((res) => {
+        if (!controller.signal.aborted) item = res.item;
       })
-      .catch((error) => {
-        if (!request.signal.aborted && !isSuperseded(error)) failure = errorText(error);
+      .catch((failure) => {
+        if (!controller.signal.aborted) error = errorText(failure);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) loading = false;
       });
-    return () => request.abort();
+    return () => controller.abort();
   });
-  const disabled = $derived(semantic.connection !== "open" || semantic.pending > 0);
-  let heading = $state<HTMLElement>();
-  let content = $state<HTMLElement>();
-  $effect(() => {
-    void details.view.ID.Selection;
-    heading?.focus({ preventScroll: true });
-  });
-  const block = `${codeBlock} my-2 px-3 py-2.5`;
 </script>
 
-<section class="flex h-full min-h-0 flex-col" aria-labelledby="details-heading">
-  <header class="flex min-h-12 items-center gap-2 border-b border-rule pr-2 pl-4">
-    <h2
-      id="details-heading"
-      class="min-w-0 flex-1 truncate font-semibold focus:outline-none"
-      tabindex="-1"
-      bind:this={heading}
-      title={display.file?.Path}
-    >
-      {#if display.file}<Path path={display.file.Path} />{:else}Activity details{/if}
-    </h2>
-    <ReferenceSelection
-      root={content}
-      source={display.file?.Path || ""}
-      description="dialog"
-      {onreference}
-    />
+<div class="flex h-full min-h-0 flex-col">
+  <div class="flex items-center justify-between gap-2 border-b border-rule px-3 py-2">
+    <h2 class="truncate font-semibold">{entry.kind ?? "Details"}</h2>
     <Button variant="quiet" icon="close" label="Close details" onclick={onclose} />
-  </header>
-  <div bind:this={content} class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3 pb-6">
-    {#if display.runRange?.Available === false}<Alert>
-        The referenced output lines are unavailable.
-      </Alert>{/if}
-    {#if details.content && failure}<Alert>{failure}</Alert><Button
-        variant="quiet"
-        onclick={() => retry++}>Retry complete details</Button
-      >
-    {:else if display.content}<p class="text-small text-muted">Loading complete details…</p>{/if}
-    {#if display.file}<pre class={block}><Code
-          code={display.file.Source}
-          lang={pathLanguage(display.file.Path)}
-        /></pre>{/if}
-    {#each display.view.Pages as page (page.ID)}
-      <section class="not-first:mt-6">
-        {#if page.Label || page.Path || page.Verb}<h3
-            class={[
-              "mb-2 text-small font-semibold wrap-anywhere",
-              !page.Label && !!page.Path && "font-mono",
-            ]}
-          >
-            {page.Label || page.Path || page.Verb}
-          </h3>{/if}
-        {#if page.Body}<Markdown text={page.Body} />{/if}
-        {#if page.Code}<pre class={block}><Code code={page.Code} lang={page.Lang} /></pre>{/if}
-        {#if page.Tail.length}<pre class={block}><Code
-              code={page.Tail.join("\n")}
-              lang={display.file ? pathLanguage(display.file.Path) : undefined}
-            /></pre>{/if}
-        {#if display.output?.Page === page.ID}
-          {#if runLines}
-            <pre class={block}><code
-                >{runLines.before}<mark
-                  bind:this={runMark}
-                  class="box-decoration-clone scroll-mt-3 border-l-2 border-accent bg-accent-tint text-ink"
-                  >{runLines.marked}</mark
-                >{runLines.after}</code
-              ></pre>
-          {:else}
-            <pre class={block}><Code
-                code={display.output.View.Lines.join("\n")}
-                lang={display.file ? pathLanguage(display.file.Path) : undefined}
-              /></pre>
-          {/if}
-          {#if display.output.View.Dropped}<p class="text-small text-muted">
-              {display.output.View.Dropped} earlier lines are no longer kept.
-            </p>{/if}
-        {:else if page.Retained}<Button
-            {disabled}
-            onclick={() =>
-              semantic.send({
-                detailOutput: { ID: display.view.ID, Page: page.ID, Version: page.OutputVersion },
-              })}>Load full output</Button
-          >{/if}
-      </section>
-    {:else}
-      {#if !display.file && !display.content}<p class="text-small text-muted">
-          No further details for this activity.
-        </p>{/if}
-    {/each}
-    {#if semantic.error}<Alert>{semantic.error}</Alert>{/if}
   </div>
-</section>
+  <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3 text-small">
+    {#if error}
+      <Alert>{error}</Alert>
+    {:else if loading}
+      <p class="text-muted" role="status">Loading item details…</p>
+    {:else if item}
+      {#if item.type === "commandExecution"}
+        <p class="mb-2 font-mono text-code text-ink">{item.command}</p>
+        {#if item.aggregatedOutput}
+          <div class={codeBlock}>
+            <Code code={item.aggregatedOutput} />
+          </div>
+        {/if}
+      {:else if item.type === "fileChange"}
+        {#each item.changes as change (change.path)}
+          <div class="mb-3">
+            <p class="mb-1 font-mono text-small font-medium">{change.path}</p>
+            {#if change.diff}
+              <div class={codeBlock}>
+                <Code code={change.diff} lang="diff" />
+              </div>
+            {/if}
+          </div>
+        {/each}
+      {:else if item.type === "agentMessage" || item.type === "plan"}
+        <Markdown text={item.text} />
+      {:else}
+        <div class={codeBlock}>
+          <Code code={JSON.stringify(item, null, 2)} lang="json" />
+        </div>
+      {/if}
+    {:else if entry.text}
+      <Markdown text={entry.text} />
+    {:else}
+      <p class="text-muted">No additional details for this item.</p>
+    {/if}
+  </div>
+</div>

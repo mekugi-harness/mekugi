@@ -134,7 +134,10 @@
               >
             </div>
             {#each preview.Files as file, i (i)}
-              {@const path = workspacePath(file.AfterPath || file.BeforePath, preview.Workspace)}
+              {@const path = workspacePath(
+                file.AfterPath || file.BeforePath || file.Path || "",
+                preview.Workspace,
+              )}
               <div class="flex min-h-0 flex-1 flex-col">
                 <h3
                   class="mt-2 flex min-w-0 flex-none font-mono text-code whitespace-nowrap"

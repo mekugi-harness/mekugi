@@ -81,11 +81,9 @@ _webui-deps:
 
 generate: workspace-check
     {{ workspace }} index-write
-    go run ./mekugi-tui/apps/mekugi/cmd/sessionapi-schema
 
 check-generated:
     {{ workspace }} index-check
-    go run ./mekugi-tui/apps/mekugi/cmd/sessionapi-schema -check
 
 # Diagnostic build, with symbols and the same optimized code as production.
 mekugi-pprof:

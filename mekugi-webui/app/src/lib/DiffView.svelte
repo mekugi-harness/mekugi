@@ -21,8 +21,8 @@
   } = $props();
 
   const source = $derived(file.Diff ?? "");
-  const beforePath = $derived(file.BeforePath);
-  const afterPath = $derived(file.AfterPath);
+  const beforePath = $derived(file.BeforePath ?? file.Path ?? "");
+  const afterPath = $derived(file.AfterPath ?? file.Path ?? "");
   const rows = $derived(diffRows(source));
   const words = $derived(diffWords(rows));
   let syntax = $state.raw(new Map<number, SyntaxToken[]>());

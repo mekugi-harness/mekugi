@@ -19,7 +19,7 @@
   import { open, select } from "./view.svelte";
 
   // A new thread starts from its first message. The toolbar picks where it
-  // runs and with which model; the + menu also resumes or replays a saved
+  // runs and with which model; the + menu also resumes a saved
   // thread by its ID.
   let {
     machine,
@@ -28,7 +28,7 @@
     machine: Machine;
     onopened: (machine: string, session: string, initial?: InitialInput) => void;
   } = $props();
-  let mode = $state<"new" | "resume" | "replay">("new");
+  let mode = $state<"new" | "resume">("new");
   // The latest acquisition of a machine's start options. A failure keeps its
   // machine identity, so only Retry reads again; a superseded read is dropped.
   let acquired = $state.raw<{ machine: string; options?: StartOptions; error?: string }>();
@@ -39,7 +39,6 @@
   let effort = $state("");
   let text = $state("");
   let saved = $state("");
-  let speed = $state(1);
   let items = $state<PendingAttachment[]>([]);
   let pathing = $state(false);
   let error = $state<string>();
@@ -82,7 +81,7 @@
     effort = "";
   }
 
-  async function begin(next: "resume" | "replay") {
+  async function begin(next: "resume") {
     mode = next;
     error = undefined;
     await tick();
@@ -97,38 +96,30 @@
     try {
       let request: Start;
       let initial: InitialInput | undefined;
-      if (mode === "replay") request = { replay: { session: saved.trim(), speed } };
-      else {
-        if (!options) throw new Error(`Wait for ${target.label}'s workspaces and models.`);
-        if (mode === "new" && !text.trim() && !items.length)
-          throw new Error("Write a first message or attach something.");
-        if (/^[!/]/.test(text.trimStart()))
-          throw new Error(
-            "Start with a message. Slash commands and shell input work once the thread runs.",
-          );
-        const attachments = await prepareAttachments(
-          items,
-          pending.signal,
-          (read, total) =>
-            (progress = total
-              ? `Reading attachments: ${Math.round((read / total) * 100)}%`
-              : "Preparing input…"),
+      if (!options) throw new Error(`Wait for ${target.label}'s workspaces and models.`);
+      if (mode === "new" && !text.trim() && !items.length)
+        throw new Error("Write a first message or attach something.");
+      if (/^[!/]/.test(text.trimStart()))
+        throw new Error(
+          "Start with a message. Slash commands and shell input work once the thread runs.",
         );
-        request = {
-          workspace,
-          model,
-          effort: effort || undefined,
-          resume: mode === "resume" ? saved.trim() : undefined,
-        };
-        if (text.trim() || attachments.length) initial = { text, items: [...items], attachments };
-      }
+      const attachments = await prepareAttachments(
+        items,
+        pending.signal,
+        (read, total) =>
+          (progress = total
+            ? `Reading attachments: ${Math.round((read / total) * 100)}%`
+            : "Preparing input…"),
+      );
+      request = {
+        workspace,
+        model,
+        effort: effort || undefined,
+        resume: mode === "resume" ? saved.trim() : undefined,
+      };
+      if (text.trim() || attachments.length) initial = { text, items: [...items], attachments };
       pending.signal.throwIfAborted();
-      progress =
-        mode === "replay"
-          ? "Opening the recording…"
-          : mode === "resume"
-            ? "Resuming the thread…"
-            : "Starting the thread…";
+      progress = mode === "resume" ? "Resuming the thread…" : "Starting the thread…";
       const result = await hub.createSession(request, target, pending.signal);
       if (disposed) return;
       if ("error" in result) {
@@ -159,11 +150,9 @@
   const ready = $derived(
     connected &&
       !busy &&
-      (mode === "replay"
-        ? !!saved.trim()
-        : !!options &&
-          !!workspace.trim() &&
-          (mode === "resume" ? !!saved.trim() : !!text.trim() || !!items.length)),
+      !!options &&
+      !!workspace.trim() &&
+      (mode === "resume" ? !!saved.trim() : !!text.trim() || !!items.length),
   );
   // On phones the workspace picker takes its own row and the others share
   // the next one with the menu and Start.
@@ -183,29 +172,25 @@
         class="text-heading font-semibold tracking-[-0.02em] focus:outline-none"
         tabindex="-1"
       >
-        {mode === "replay"
-          ? "Replay a saved thread"
-          : mode === "resume"
-            ? "Resume a saved thread"
-            : "What should main work on?"}
+        {mode === "resume" ? "Resume a saved thread" : "What should main work on?"}
       </h1>
       <p class="inline-flex items-center gap-1.5 text-small text-muted">
         <Dot tone={machine.state.tone || "idle"} size={6} />
         <span>{machine.label}</span>
-        {#if workspace && mode !== "replay"}
+        {#if workspace}
           <span aria-hidden="true">·</span>
           <span class="font-mono text-tiny">{basename(workspace)}</span>
         {/if}
       </p>
     </div>
     <ComposerCard
-      accepts={mode !== "replay" && !busy}
+      accepts={!busy}
       onfiles={(files) => tray?.add(files)}
       onsubmit={() => void start()}
     >
       {#if mode !== "new"}
         <div class="flex items-center gap-2 pt-2.5 pr-2 pl-3.5 text-muted">
-          <Icon name={mode === "replay" ? "play" : "history"} />
+          <Icon name="history" />
           <label class="min-w-0 flex-1"
             ><span class="sr-only">Saved session ID</span><input
               class="{input} font-mono"
@@ -218,63 +203,41 @@
               spellcheck="false"
             /></label
           >
-          {#if mode === "replay"}
-            <label class="flex items-center gap-1.5 text-small"
-              ><span>Speed</span><input
-                class="{input} max-w-[72px] tabular-nums"
-                type="number"
-                min="0.1"
-                max="100"
-                step="0.1"
-                required
-                bind:value={speed}
-                disabled={busy}
-                aria-label="Playback speed"
-              /></label
-            >
-          {/if}
           <Button
             variant="quiet"
             icon="close"
-            label={mode === "replay" ? "Cancel replay" : "Cancel resume"}
+            label="Cancel resume"
             disabled={busy}
             onclick={() => (mode = "new")}
           />
         </div>
       {/if}
-      {#if mode !== "replay"}
-        <Attachments
-          bind:this={tray}
-          bind:items
-          bind:pathing
-          machine={machine.label}
-          previewTarget={{ machine, workspace }}
-          disabled={busy}
-        />
-        <label class="sr-only" for="new-text">First message</label>
-        <textarea
-          id="new-text"
-          data-slot="input-group-control"
-          class="{composerText} min-h-20 pt-3.5 pb-1.5"
-          bind:value={text}
-          {onkeydown}
-          onpaste={(event) => {
-            const files = event.clipboardData?.files;
-            if (!files?.length || busy) return;
-            if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
-            tray?.add(files);
-          }}
-          rows="2"
-          disabled={busy}
-          placeholder={mode === "resume"
-            ? "Message to continue with (optional)"
-            : `Message main on ${machine.label}`}></textarea>
-      {:else}
-        <p class="px-4 pt-3 pb-1.5 text-small text-muted">
-          Replays use {machine.label}'s saved history. The live thread must have ended; model text
-          is simulated and no tools run.
-        </p>
-      {/if}
+      <Attachments
+        bind:this={tray}
+        bind:items
+        bind:pathing
+        machine={machine.label}
+        previewTarget={{ machine, workspace }}
+        disabled={busy}
+      />
+      <label class="sr-only" for="new-text">First message</label>
+      <textarea
+        id="new-text"
+        data-slot="input-group-control"
+        class="{composerText} min-h-20 pt-3.5 pb-1.5"
+        bind:value={text}
+        {onkeydown}
+        onpaste={(event) => {
+          const files = event.clipboardData?.files;
+          if (!files?.length || busy) return;
+          if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
+          tray?.add(files);
+        }}
+        rows="2"
+        disabled={busy}
+        placeholder={mode === "resume"
+          ? "Message to continue with (optional)"
+          : `Message main on ${machine.label}`}></textarea>
       <InputGroup.Addon
         align="block-end"
         class="{composerTools} cursor-default flex-wrap gap-1 text-body font-normal select-auto"
@@ -283,7 +246,6 @@
           {#snippet children(close)}
             <MenuItem
               icon="attach"
-              disabled={mode === "replay"}
               onclick={() => {
                 close();
                 tray?.pick();
@@ -291,7 +253,6 @@
             >
             <MenuItem
               icon="folder"
-              disabled={mode === "replay"}
               onclick={() => {
                 close();
                 pathing = true;
@@ -304,13 +265,6 @@
                 close();
                 void begin("resume");
               }}>Resume saved thread</MenuItem
-            >
-            <MenuItem
-              icon="play"
-              onclick={() => {
-                close();
-                void begin("replay");
-              }}>Open replay</MenuItem
             >
           {/snippet}
         </Menu>
@@ -331,66 +285,64 @@
           disabled={busy}
           onchange={select}
         />
-        {#if mode !== "replay"}
-          {#if options}
-            <!-- A path shows its folder name; the list and title show it whole. -->
+        {#if options}
+          <!-- A path shows its folder name; the list and title show it whole. -->
+          <Picker
+            class="max-sm:order-first max-sm:basis-full"
+            label="Workspace on {machine.label}"
+            title={workspace}
+            icon="folder"
+            entry="Workspace path"
+            path
+            text={basename(workspace) || "Choose a workspace"}
+            bind:value={workspace}
+            groups={[
+              {
+                choices: options.workspaces.map((path) => ({
+                  value: path,
+                  label: basename(path),
+                  detail: path,
+                })),
+              },
+            ]}
+            disabled={busy}
+          />
+          <Picker
+            class="max-sm:flex-1"
+            label="Model"
+            bind:value={model}
+            groups={options.models.map((group) => ({
+              label: group.label,
+              choices: group.models.map((choice) => ({ value: choice.id, label: choice.label })),
+            }))}
+            disabled={busy}
+            onchange={() => (effort = "")}
+          />
+          {#if chosen?.efforts.length}
             <Picker
-              class="max-sm:order-first max-sm:basis-full"
-              label="Workspace on {machine.label}"
-              title={workspace}
-              icon="folder"
-              entry="Workspace path"
-              path
-              text={basename(workspace) || "Choose a workspace"}
-              bind:value={workspace}
+              class="max-sm:flex-1"
+              label="Reasoning effort"
+              bind:value={effort}
               groups={[
                 {
-                  choices: options.workspaces.map((path) => ({
-                    value: path,
-                    label: basename(path),
-                    detail: path,
-                  })),
+                  choices: [
+                    {
+                      value: "",
+                      label: chosen.defaultEffort
+                        ? `${chosen.defaultEffort} (default)`
+                        : "Default effort",
+                    },
+                    ...chosen.efforts
+                      .filter((value) => value !== chosen.defaultEffort)
+                      .map((value) => ({ value, label: value })),
+                  ],
                 },
               ]}
               disabled={busy}
             />
-            <Picker
-              class="max-sm:flex-1"
-              label="Model"
-              bind:value={model}
-              groups={options.models.map((group) => ({
-                label: group.label,
-                choices: group.models.map((choice) => ({ value: choice.id, label: choice.label })),
-              }))}
-              disabled={busy}
-              onchange={() => (effort = "")}
-            />
-            {#if chosen?.efforts.length}
-              <Picker
-                class="max-sm:flex-1"
-                label="Reasoning effort"
-                bind:value={effort}
-                groups={[
-                  {
-                    choices: [
-                      {
-                        value: "",
-                        label: chosen.defaultEffort
-                          ? `${chosen.defaultEffort} (default)`
-                          : "Default effort",
-                      },
-                      ...chosen.efforts
-                        .filter((value) => value !== chosen.defaultEffort)
-                        .map((value) => ({ value, label: value })),
-                    ],
-                  },
-                ]}
-                disabled={busy}
-              />
-            {/if}
-          {:else if connected && !loadError}
-            <span class="{chip} border-dashed" role="status">Loading workspaces and models…</span>
           {/if}
+        {:else if connected && !loadError}
+          <span class="{chip} border-dashed" role="status">Loading workspaces and models…</span>
         {/if}
         <span class="flex-1 max-sm:hidden"></span>
         {#if busy}<Button variant="quiet" onclick={() => controller?.abort()}>Cancel</Button>{/if}
@@ -398,12 +350,8 @@
           type="submit"
           variant="primary"
           shape="round"
-          icon={mode === "replay" ? "play" : "send"}
-          label={mode === "replay"
-            ? "Open replay"
-            : mode === "resume"
-              ? "Resume thread"
-              : "Start thread"}
+          icon="send"
+          label={mode === "resume" ? "Resume thread" : "Start thread"}
           disabled={!ready}
         />
       </InputGroup.Addon>
@@ -420,7 +368,7 @@
           {loadError}
           <button type="button" class="underline" onclick={() => load(machine)}>Retry</button>
         </p>
-      {:else if options?.note && mode !== "replay"}<p class="text-muted">{options.note}</p>{/if}
+      {:else if options?.note}<p class="text-muted">{options.note}</p>{/if}
     </div>
   </div>
 </section>

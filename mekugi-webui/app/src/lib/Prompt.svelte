@@ -55,7 +55,10 @@
   );
   let progress = $state("");
   const disabled = $derived(
-    unavailable || promptState.sending || (!!call?.blocking && promptState.accepted),
+    unavailable ||
+      !!call?.secretBlocked ||
+      promptState.sending ||
+      (!!call?.blocking && promptState.accepted),
   );
 
   onDestroy(() => {
@@ -88,8 +91,6 @@
     const drafts = answers.map((answer) => pending.drafts[answer.question]);
     if (drafts.some((draft) => draft.sending || draft.accepted)) return;
     submittedWithFocus = card.contains(document.activeElement);
-    const release = semantic.retainInput();
-    const captured = semantic.event;
     const controller = new AbortController();
     acquisitions.add(controller);
     if (target.blocking) pending.sending = true;
@@ -116,12 +117,7 @@
         }
       }
       progress = "Sending…";
-      const error = await semantic.send(
-        { answers: { call: target.id, answers } },
-        controller.signal,
-        false,
-        captured,
-      );
+      const error = semantic.answerQuestions(target, answers);
       pending.error = error;
       if (target.blocking) pending.accepted = !error;
       for (const draft of drafts) draft.accepted = !error;
@@ -136,7 +132,6 @@
       progress = "";
       if (target.blocking) pending.sending = false;
       for (const draft of drafts) draft.sending = false;
-      release(pending.error);
     }
   }
 
@@ -144,27 +139,14 @@
     if (!approval || disabled) return;
     submittedWithFocus = card.contains(document.activeElement);
     const pending = promptState;
-    const release = semantic.retainInput();
     pending.sending = true;
-    const event = semantic.event;
-    pending.error = event
-      ? await semantic.send(
-          {
-            approval: {
-              Version: event.frame.view.Version,
-              Request: approval.id,
-              Choice: choice,
-              Reason: choice === pending.deny ? pending.reason : "",
-            },
-          },
-          undefined,
-          false,
-          event,
-        )
-      : "Wait for this thread's control view to connect.";
+    pending.error = semantic.decideApproval(
+      approval,
+      choice,
+      choice === pending.deny ? pending.reason : "",
+    );
     pending.accepted = !pending.error;
     pending.sending = false;
-    release();
   }
 
   const text = "my-2 whitespace-pre-wrap";
@@ -230,6 +212,9 @@
       </div>
     {/if}
   {:else if call}
+    {#if call.secretBlocked}
+      <Alert>Secret prompts can only be answered locally on the execution machine.</Alert>
+    {/if}
     <form
       onsubmit={(event) => {
         event.preventDefault();

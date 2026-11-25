@@ -39,7 +39,6 @@
     icon?: IconName;
     tone?: "running" | "alert" | "none";
     waiting?: number;
-    replay?: boolean;
     current?: boolean;
     run: () => void;
   };
@@ -77,7 +76,6 @@
           machine: machine.label,
           tone: s.status.alert ? "alert" : s.status.running ? "running" : "none",
           waiting: s.waiting,
-          replay: s.replay,
           current: view.machine === machine.id && view.session === s.id,
           run: () => {
             select(machine.id);
@@ -236,7 +234,6 @@
               <span class="flex min-w-0 items-center gap-2">
                 <span class="truncate font-medium text-ink">{item.title}</span>
                 {#if item.current}<Tag tone="live">Current</Tag>{/if}
-                {#if item.replay}<Tag>Replay</Tag>{/if}
               </span>
               {#if item.subtitle}
                 <span class="truncate text-small text-muted">{item.subtitle}</span>

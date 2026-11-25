@@ -1,36 +1,51 @@
-import { protocolVersion, subprotocol, readSuperseded } from "../../../protocol";
-import type {
-  RPCClosed,
-  RPCError,
-  RPCEvent,
-  RPCInitialize,
-  RPCMessage,
-  RPCMethod,
-  RPCParams,
-  RPCSubscribed,
-  RemoteMutation,
-  InputRequest,
-  Answer,
-} from "../../../protocol";
-export type { RPCEvent, RPCMethod, RPCParams } from "../../../protocol";
+import {
+  protocolVersion,
+  subprotocol,
+  type ClientNotification,
+  type InitializeParams,
+  type InitializeResponse,
+  type RemoteHumanMethod,
+  type RequestId,
+  type ResourceRequest,
+  type ServerNotification,
+  type ServerRequest,
+  type TurnStartParams,
+  type TurnSteerParams,
+  type VersionResourceResponse,
+} from "./protocol";
+
+export type { RemoteHumanMethod, ServerNotification, ServerRequest } from "./protocol";
 
 export type Connection = "connecting" | "open" | "lost" | "required" | "incompatible";
 export interface RequestOptions {
   signal?: AbortSignal;
 }
 export type ResourceKind = "content" | "image" | "attachment-image";
-export type SubscriptionMethod = "session/subscribe" | "view/attach";
 type StateListener = (state: Connection, error?: TransportError) => void;
+type OpenListener = (info: InitializeResponse) => void;
+type NotificationListener = (notification: ServerNotification) => void;
+type ServerRequestListener = (request: ServerRequest) => void;
+
+export interface RPCErrorPayload {
+  code: number;
+  message: string;
+  data?: {
+    status?: number;
+    outcome?: string;
+  };
+}
+
+interface WireMessage {
+  jsonrpc?: string;
+  id?: RequestId;
+  method?: string;
+  params?: unknown;
+  result?: unknown;
+  error?: RPCErrorPayload;
+}
 
 export class TransportError extends Error {
-  readonly kind:
-    | "network"
-    | "unknown"
-    | "required"
-    | "incompatible"
-    | "refused"
-    | "canceled"
-    | "superseded";
+  readonly kind: "network" | "unknown" | "required" | "incompatible" | "refused" | "canceled";
   readonly status?: number;
   constructor(message: string, kind: TransportError["kind"], status?: number) {
     super(message);
@@ -46,6 +61,7 @@ export const unreachable =
 const backoff = (attempt: number): number => Math.min(1000 * 2 ** attempt, 15_000);
 const canceled = (): TransportError =>
   new TransportError("The browser request was canceled.", "canceled");
+
 export function errorText(error: unknown, mutation = false): string {
   return error instanceof TransportError ? error.message : mutation ? unknownOutcome : unreachable;
 }
@@ -75,18 +91,12 @@ export function endpointURL(endpoint: string): string {
   return url.href.replace(/\/+$/, "");
 }
 
-export function isSuperseded(error: unknown): boolean {
-  return error instanceof TransportError && error.kind === "superseded";
-}
-
-// Both terminal read outcomes stop automatic acquisition of that identity.
-// Only a current failure offers Retry; supersession waits for publication.
-export type ReadFailure = { kind: "superseded" } | { kind: "failed"; text: string };
+export type ReadFailure = { kind: "failed"; text: string };
 export function readFailure(error: unknown): ReadFailure {
-  return isSuperseded(error) ? { kind: "superseded" } : { kind: "failed", text: errorText(error) };
+  return { kind: "failed", text: errorText(error) };
 }
 
-function remoteError(error: RPCError, initialize = false): TransportError {
+function remoteError(error: RPCErrorPayload, initialize = false): TransportError {
   const status = error.data?.status;
   if (status === 401)
     return new TransportError("This machine requires a valid bearer token.", "required", status);
@@ -98,24 +108,27 @@ function remoteError(error: RPCError, initialize = false): TransportError {
     );
   if (error.data?.outcome === "unknown")
     return new TransportError(`${error.message} ${unknownOutcome}`, "unknown", status);
-  if (status === 409 && error.code === readSuperseded)
-    return new TransportError(error.message, "superseded", status);
   return new TransportError(error.message, "refused", status);
 }
 
-function readOnly(method: RPCMethod): boolean {
-  return (
-    method === "initialize" ||
-    method === "session/options" ||
-    method === "session/page" ||
-    method === "publication/ack" ||
-    method === "session/list" ||
-    method === "session/read" ||
-    method === "session/subscribe" ||
-    method === "view/attach" ||
-    method === "subscription/cancel" ||
-    method === "request/cancel"
-  );
+const READ_ONLY_METHODS = new Set<RemoteHumanMethod>([
+  "initialize",
+  "model/list",
+  "skills/list",
+  "thread/list",
+  "thread/loaded/list",
+  "thread/inspect",
+  "thread/subtree/list",
+  "thread/changes/read",
+  "thread/read",
+  "thread/turns/list",
+  "thread/items/list",
+  "thread/items/read",
+  "thread/queue/list",
+]);
+
+function readOnly(method: RemoteHumanMethod): boolean {
+  return READ_ONLY_METHODS.has(method);
 }
 
 interface Pending {
@@ -123,33 +136,43 @@ interface Pending {
   result: (value: unknown) => void;
   fail: (error: TransportError) => void;
 }
-interface Subscription {
-  acknowledged: boolean;
-  event: (event: RPCEvent) => void;
-  fail: (error: TransportError) => void;
-}
 
-// One physical connection correlates replies and owns its subscription identities.
+type HandshakeParams = InitializeParams & { token: string };
+
+// One physical WebSocket connection speaking native mekugi-app-server JSON-RPC
+// through mekugi connector (/api/control, subprotocol mekugi.control.v9).
 class Channel {
-  readonly ready: Promise<void>;
-  readonly #initializing: Promise<void>;
+  readonly ready: Promise<InitializeResponse>;
+  readonly closedPromise: Promise<void>;
+  #resolveClosed!: () => void;
   #initialized = false;
   #socket: WebSocket;
   #closed = false;
   #next = 0;
   #pending = new Map<string, Pending>();
-  #subscriptions = new Map<string, Subscription>();
+  #onNotification?: NotificationListener;
+  #onServerRequest?: ServerRequestListener;
 
   get closed(): boolean {
     return this.#closed;
   }
 
-  constructor(endpoint: string, token: string, clock?: (server: number) => void) {
+  constructor(
+    endpoint: string,
+    token: string,
+    onNotification?: NotificationListener,
+    onServerRequest?: ServerRequestListener,
+  ) {
+    this.#onNotification = onNotification;
+    this.#onServerRequest = onServerRequest;
+    this.closedPromise = new Promise<void>((resolve) => {
+      this.#resolveClosed = resolve;
+    });
     const url = new URL(endpoint + "/api/control");
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     this.#socket = new WebSocket(url, subprotocol);
     this.#socket.addEventListener("message", (message) => this.#receive(message.data));
-    this.ready = new Promise((resolve, reject) => {
+    this.ready = new Promise<InitializeResponse>((resolve, reject) => {
       const timer = setTimeout(() => this.close(), 10_000);
       const fail = () => {
         clearTimeout(timer);
@@ -170,55 +193,47 @@ class Channel {
             this.close();
             return;
           }
-          this.#dispatch<RPCInitialize>(
-            "initialize",
-            { version: protocolVersion, token },
-            undefined,
-            (value) => {
-              const result = value as RPCInitialize;
-              if (result?.version !== protocolVersion)
+          const params: HandshakeParams = {
+            clientInfo: { name: "mekugi-webui", title: "Mekugi WebUI", version: protocolVersion },
+            capabilities: {
+              experimentalApi: true,
+              requiredHumanApproval: true,
+              requestAttestation: false,
+              optOutNotificationMethods: null,
+            },
+            token,
+          };
+          void this.#dispatch<InitializeResponse>("initialize", params)
+            .then((result) => {
+              if (!result || typeof result.userAgent !== "string")
                 throw new TransportError(
                   "This connector uses an incompatible Mekugi protocol.",
                   "incompatible",
                 );
-              if (!Number.isFinite(result.serverTime) || !result.serverTime)
-                throw new TransportError(
-                  "The connector returned an invalid clock sample.",
-                  "network",
-                );
-              clock?.(result.serverTime);
               this.#initialized = true;
-            },
-          ).then(
-            () => {
+              const initialized: ClientNotification = { method: "initialized" };
+              this.#sendRaw({ jsonrpc: "2.0", ...initialized });
               clearTimeout(timer);
               this.#socket.removeEventListener("close", fail);
-              resolve();
-            },
-            (error) => {
+              resolve(result);
+            })
+            .catch((error) => {
               clearTimeout(timer);
-              reject(error);
+              this.#socket.removeEventListener("close", fail);
+              reject(
+                error instanceof TransportError
+                  ? error
+                  : new TransportError(unreachable, "network"),
+              );
               this.close();
-            },
-          );
+            });
         },
         { once: true },
       );
     });
-    // The open listener above writes initialization first. Observation requests
-    // may follow on the ordered wire while its reply travels back; both server
-    // admission and client publication consumption still require initialization.
-    this.#initializing = Promise.race([
-      this.ready,
-      new Promise<void>((resolve) =>
-        this.#socket.addEventListener("open", () => resolve(), { once: true }),
-      ),
-    ]);
     this.#socket.addEventListener("error", () => this.close());
     this.#socket.addEventListener("close", () => this.close());
-    // A connection may be removed while its first consumer is waiting to start.
     void this.ready.catch(() => {});
-    void this.#initializing.catch(() => {});
   }
 
   close(): void {
@@ -232,24 +247,34 @@ class Channel {
           pending.mutation ? "unknown" : "network",
         ),
       );
-    for (const subscription of this.#subscriptions.values())
-      subscription.fail(new TransportError(unreachable, "network"));
     this.#pending.clear();
-    this.#subscriptions.clear();
+    this.#resolveClosed();
   }
 
-  async request<T>(method: RPCMethod, params: RPCParams, signal?: AbortSignal): Promise<T> {
+  async request<T>(method: RemoteHumanMethod, params?: unknown, signal?: AbortSignal): Promise<T> {
     await waitFor(this.ready, signal);
     if (signal?.aborted) throw canceled();
     return this.#dispatch<T>(method, params, signal);
   }
 
-  #dispatch<T>(
-    method: RPCMethod,
-    params: RPCParams | RPCInitialize,
-    signal?: AbortSignal,
-    admitted?: (result: unknown) => void,
-  ): Promise<T> {
+  respond(id: RequestId, result: unknown): void {
+    this.#sendRaw({ jsonrpc: "2.0", id, result });
+  }
+
+  respondError(id: RequestId, code: number, message: string): void {
+    this.#sendRaw({ jsonrpc: "2.0", id, error: { code, message } });
+  }
+
+  #sendRaw(payload: unknown): void {
+    if (this.#closed || this.#socket.readyState !== WebSocket.OPEN) return;
+    try {
+      this.#socket.send(JSON.stringify(payload));
+    } catch {
+      this.close();
+    }
+  }
+
+  #dispatch<T>(method: RemoteHumanMethod, params?: unknown, signal?: AbortSignal): Promise<T> {
     if (signal?.aborted) return Promise.reject(canceled());
     if (this.#closed || this.#socket.readyState !== WebSocket.OPEN)
       return Promise.reject(new TransportError(unreachable, "network"));
@@ -262,7 +287,11 @@ class Channel {
         ),
       );
     const id = String(++this.#next);
-    const encoded = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    const encoded = JSON.stringify(
+      params === undefined
+        ? { jsonrpc: "2.0", id, method }
+        : { jsonrpc: "2.0", id, method, params },
+    );
     const mutation = !readOnly(method);
     return new Promise<T>((resolve, reject) => {
       const finish = () => {
@@ -271,7 +300,6 @@ class Channel {
         this.#pending.delete(id);
       };
       const abort = () => {
-        this.#cancel("request/cancel", { body: { id } });
         finish();
         reject(mutation ? new TransportError(unknownOutcome, "unknown") : canceled());
       };
@@ -280,20 +308,7 @@ class Channel {
         mutation,
         result: (value) => {
           finish();
-          try {
-            admitted?.(value);
-            resolve(value as T);
-          } catch (error) {
-            reject(
-              error instanceof TransportError
-                ? error
-                : new TransportError(
-                    "The connector returned an invalid subscription acknowledgement.",
-                    "network",
-                  ),
-            );
-            this.close();
-          }
+          resolve(value as T);
         },
         fail: (error) => {
           finish();
@@ -309,113 +324,52 @@ class Channel {
     });
   }
 
-  #cancel(
-    method: "request/cancel" | "subscription/cancel" | "publication/ack",
-    params: RPCParams,
-  ): void {
-    if (this.#closed || this.#socket.readyState !== WebSocket.OPEN) return;
-    try {
-      this.#socket.send(
-        JSON.stringify({ jsonrpc: "2.0", id: String(++this.#next), method, params }),
-      );
-    } catch {
-      this.close();
-    }
-  }
-
-  async follow(
-    method: SubscriptionMethod,
-    params: RPCParams,
-    event: (event: RPCEvent) => void,
-    signal: AbortSignal,
-  ): Promise<void> {
-    await waitFor(this.#initializing, signal);
-    if (signal.aborted) return;
-    const id = newIdentity();
-    return new Promise((resolve, reject) => {
-      const finish = (error?: TransportError) => {
-        signal.removeEventListener("abort", abort);
-        this.#subscriptions.delete(id);
-        if (error) void this.ready.then(() => reject(error), reject);
-        else resolve();
-      };
-      const abort = () => {
-        this.#cancel("subscription/cancel", { subscription: id });
-        finish();
-      };
-      if (signal.aborted) return finish();
-      this.#subscriptions.set(id, { acknowledged: false, event, fail: finish });
-      signal.addEventListener("abort", abort, { once: true });
-      void this.#dispatch<RPCSubscribed>(
-        method,
-        { ...params, subscription: id },
-        signal,
-        (value) => {
-          const ack = value as RPCSubscribed;
-          if (ack?.subscription !== id) throw new Error("Wrong subscription");
-          const active = this.#subscriptions.get(id);
-          if (active) active.acknowledged = true;
-        },
-      ).catch((error) => {
-        if (this.#subscriptions.has(id)) this.#cancel("subscription/cancel", { subscription: id });
-        finish(
-          error instanceof TransportError ? error : new TransportError(unreachable, "network"),
-        );
-      });
-    });
-  }
-
   #receive(data: unknown): void {
-    let message: RPCMessage;
+    let message: WireMessage;
     try {
-      // The server bounds each publication, envelope included, to 64 MiB.
       if (typeof data !== "string" || data.length > 64 * 1024 * 1024)
         throw new Error("Invalid frame");
-      message = JSON.parse(data);
-      if (!message || Array.isArray(message) || message.jsonrpc !== "2.0")
+      message = JSON.parse(data) as WireMessage;
+      if (!message || typeof message !== "object" || Array.isArray(message))
         throw new Error("Invalid RPC");
-      if (!this.#initialized && String(message.id) !== "1")
-        throw new Error("Publication before initialization");
-      if (typeof message.id === "string" || typeof message.id === "number") {
+      // mekugi-app-server omits "jsonrpc" while connector refusals include "jsonrpc": "2.0".
+      if (message.jsonrpc !== undefined && message.jsonrpc !== "2.0")
+        throw new Error("Invalid RPC version");
+      const hasId = typeof message.id === "string" || typeof message.id === "number";
+      const hasMethod = typeof message.method === "string";
+      if (!this.#initialized && (!hasId || String(message.id) !== "1"))
+        throw new Error("Message before initialization");
+
+      // Server -> Client request (has both id and method)
+      if (hasId && hasMethod) {
+        this.#onServerRequest?.({
+          id: message.id!,
+          method: message.method!,
+          params: message.params,
+        } as ServerRequest);
+        return;
+      }
+
+      // Response to a Client -> Server request (has id, no method)
+      if (hasId) {
         const pending = this.#pending.get(String(message.id));
-        const result = message.result as { delivery?: string } | null;
-        if (typeof result?.delivery === "string") {
-          const acknowledge = () =>
-            this.#cancel("publication/ack", { body: { delivery: result.delivery } });
-          if (pending) Object.defineProperty(result, "acknowledge", { value: acknowledge });
-          else acknowledge();
-        }
         if (!pending) return;
         if (message.error) pending.fail(remoteError(message.error, String(message.id) === "1"));
         else if ("result" in message) pending.result(message.result);
         else throw new Error("Missing result");
         return;
       }
-      if (message.method === "subscription/event") {
-        const event = message.params as RPCEvent;
-        const subscription = this.#subscriptions.get(event?.subscription);
-        if (!subscription) {
-          if (event.delivery)
-            this.#cancel("publication/ack", { body: { delivery: event.delivery } });
-          return;
-        }
-        if (!subscription.acknowledged) throw new Error("Publication before acknowledgement");
-        subscription.event(event);
-        if (event.delivery) this.#cancel("publication/ack", { body: { delivery: event.delivery } });
+
+      // Server -> Client notification (has method, no id)
+      if (hasMethod) {
+        this.#onNotification?.({
+          method: message.method!,
+          params: message.params,
+        } as ServerNotification);
         return;
       }
-      if (message.method === "subscription/closed") {
-        const closed = message.params as RPCClosed;
-        this.#subscriptions
-          .get(closed?.subscription)
-          ?.fail(
-            closed.error
-              ? remoteError(closed.error)
-              : new TransportError("The session subscription closed.", "network"),
-          );
-        return;
-      }
-      throw new Error("Unexpected notification");
+
+      throw new Error("Unexpected RPC message");
     } catch {
       this.close();
     }
@@ -432,21 +386,10 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   });
 }
 
-function attachmentBearing(method: RPCMethod, params: RPCParams): boolean {
-  if (method === "session/input")
-    return !!(params.body as InputRequest | undefined)?.attachments?.length;
-  if (method === "session/answer")
-    return !!(params.body as Answer | undefined)?.answers?.some(
-      (answer) => answer.attachments?.length,
-    );
-  if (method === "view/intent") {
-    const operation = (params.body as RemoteMutation | undefined)?.operation;
-    return (
-      !!operation?.composer?.input?.attachments?.length ||
-      !!operation?.answers?.answers.some((answer) => answer.attachments?.length)
-    );
-  }
-  return false;
+function attachmentBearing(method: RemoteHumanMethod, params: unknown): boolean {
+  if (method !== "turn/start" && method !== "turn/steer") return false;
+  const input = (params as TurnStartParams | TurnSteerParams | undefined)?.input;
+  return !!input?.some((item) => item.type === "image");
 }
 
 export class Connector {
@@ -456,21 +399,25 @@ export class Connector {
   #disposed = false;
   #shared?: Channel;
   #bulk?: Channel;
-  #clock?: { server: number; received: number };
+  #info?: InitializeResponse;
+  #notifications = new Set<NotificationListener>();
+  #serverRequests = new Set<ServerRequestListener>();
 
-  get now(): number | undefined {
-    return this.#clock && this.#clock.server + performance.now() - this.#clock.received;
+  get info(): InitializeResponse | undefined {
+    return this.#info;
   }
 
   constructor(endpoint: string, token: string) {
     this.endpoint = endpointURL(endpoint);
     this.#token = this.#credential(token);
   }
+
   #credential(token: string): string {
     const value = token.trim();
     if (!value || /\s/.test(value)) throw new Error("Enter this machine's bearer token.");
     return value;
   }
+
   authorize(token: string): void {
     const value = this.#credential(token);
     if (this.#disposed) throw new Error("This machine connection was removed.");
@@ -483,23 +430,90 @@ export class Connector {
     this.#bulk?.close();
     this.#bulk = undefined;
   }
+
   close(): void {
     this.#disposed = true;
     this.#token = "";
     this.#lifetime.abort();
     this.#shared?.close();
     this.#bulk?.close();
+    this.#notifications.clear();
+    this.#serverRequests.clear();
   }
+
+  onNotification(listener: NotificationListener): () => void {
+    this.#notifications.add(listener);
+    return () => this.#notifications.delete(listener);
+  }
+
+  onServerRequest(listener: ServerRequestListener): () => void {
+    this.#serverRequests.add(listener);
+    return () => this.#serverRequests.delete(listener);
+  }
+
+  respond(id: RequestId, result: unknown): void {
+    this.#shared?.respond(id, result);
+  }
+
+  respondError(id: RequestId, code: number, message: string): void {
+    this.#shared?.respondError(id, code, message);
+  }
+
   #channel(): Channel {
-    if (!this.#shared || this.#shared.closed)
-      this.#shared = new Channel(this.endpoint, this.#token, (server) => {
-        this.#clock = { server, received: performance.now() };
-      });
+    if (!this.#shared || this.#shared.closed) {
+      this.#shared = new Channel(
+        this.endpoint,
+        this.#token,
+        (notification) => {
+          for (const listener of this.#notifications) listener(notification);
+        },
+        (request) => {
+          for (const listener of this.#serverRequests) listener(request);
+        },
+      );
+    }
     return this.#shared;
   }
+
+  connect(state: StateListener, onOpen?: OpenListener): () => void {
+    const controller = new AbortController();
+    const run = async () => {
+      let attempt = 0;
+      while (!controller.signal.aborted && !this.#disposed) {
+        const lifetime = this.#lifetime.signal;
+        const signal = AbortSignal.any([controller.signal, lifetime]);
+        state("connecting");
+        try {
+          const channel = this.#channel();
+          const info = await waitFor(channel.ready, signal);
+          if (signal.aborted) continue;
+          this.#info = info;
+          attempt = 0;
+          state("open");
+          onOpen?.(info);
+          await waitFor(channel.closedPromise, signal);
+          if (controller.signal.aborted || this.#disposed) return;
+          if (lifetime !== this.#lifetime.signal) continue;
+          state("lost", new TransportError(unreachable, "network"));
+          await pause(backoff(attempt++), signal);
+        } catch (error) {
+          if (controller.signal.aborted || this.#disposed) return;
+          if (lifetime !== this.#lifetime.signal) continue;
+          const failure =
+            error instanceof TransportError ? error : new TransportError(unreachable, "network");
+          const blocked = failure.kind === "required" || failure.kind === "incompatible";
+          state(blocked ? (failure.kind as "required" | "incompatible") : "lost", failure);
+          await pause(blocked ? undefined : backoff(attempt++), signal);
+        }
+      }
+    };
+    void run();
+    return () => controller.abort();
+  }
+
   async request<T>(
-    method: RPCMethod,
-    params: RPCParams = {},
+    method: RemoteHumanMethod,
+    params?: unknown,
     options: RequestOptions = {},
   ): Promise<T> {
     if (this.#disposed || options.signal?.aborted) throw canceled();
@@ -512,9 +526,37 @@ export class Connector {
     if (!this.#bulk || this.#bulk.closed) this.#bulk = new Channel(this.endpoint, this.#token);
     return this.#bulk.request<T>(method, params, signal);
   }
+
+  async version(options: RequestOptions = {}): Promise<VersionResourceResponse> {
+    if (this.#disposed || options.signal?.aborted) throw canceled();
+    const signal = AbortSignal.any([
+      this.#lifetime.signal,
+      ...(options.signal ? [options.signal] : []),
+    ]);
+    try {
+      const response = await fetch(`${this.endpoint}/api/version`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${this.#token}`,
+          "Mekugi-Protocol": protocolVersion,
+        },
+        credentials: "omit",
+        redirect: "error",
+        cache: "no-store",
+        signal,
+      });
+      if (!response.ok) throw await resourceError(response);
+      return (await response.json()) as VersionResourceResponse;
+    } catch (error) {
+      if (signal.aborted) throw canceled();
+      if (error instanceof TransportError) throw error;
+      throw new TransportError(unreachable, "network");
+    }
+  }
+
   async resource<T>(
     kind: ResourceKind,
-    params: RPCParams,
+    params: ResourceRequest,
     options: RequestOptions = {},
   ): Promise<T> {
     if (this.#disposed || options.signal?.aborted) throw canceled();
@@ -536,23 +578,7 @@ export class Connector {
         cache: "no-store",
         signal,
       });
-      if (!response.ok) {
-        if (response.headers.get("Content-Type")?.includes("application/json"))
-          throw remoteError((await response.json()) as RPCError);
-        if (response.status === 401)
-          throw new TransportError("This machine requires a valid bearer token.", "required", 401);
-        if (response.status === 409)
-          throw new TransportError(
-            "This connector uses an incompatible Mekugi protocol.",
-            "incompatible",
-            409,
-          );
-        throw new TransportError(
-          "The resource could not be read from this machine.",
-          "refused",
-          response.status,
-        );
-      }
+      if (!response.ok) throw await resourceError(response);
       return (await (kind === "content" ? response.json() : response.blob())) as T;
     } catch (error) {
       if (signal.aborted) throw canceled();
@@ -560,45 +586,24 @@ export class Connector {
       throw new TransportError(unreachable, "network");
     }
   }
-  subscribe(
-    method: SubscriptionMethod,
-    params: RPCParams,
-    event: (event: RPCEvent) => void,
-    state: StateListener,
-  ): () => void {
-    const controller = new AbortController();
-    const run = async () => {
-      let attempt = 0;
-      while (!controller.signal.aborted && !this.#disposed) {
-        const lifetime = this.#lifetime.signal;
-        const signal = AbortSignal.any([controller.signal, lifetime]);
-        state("connecting");
-        try {
-          await this.#channel().follow(
-            method,
-            params,
-            (next) => {
-              event(next);
-              attempt = 0;
-              state("open");
-            },
-            signal,
-          );
-        } catch (error) {
-          if (controller.signal.aborted || this.#disposed) return;
-          if (lifetime !== this.#lifetime.signal) continue;
-          const failure =
-            error instanceof TransportError ? error : new TransportError(unreachable, "network");
-          const blocked = failure.kind === "required" || failure.kind === "incompatible";
-          state(blocked ? (failure.kind as "required" | "incompatible") : "lost", failure);
-          if (failure.status === 404 || failure.status === 410 || failure.status === 405) return;
-          await pause(blocked ? undefined : backoff(attempt++), signal);
-        }
-      }
-    };
-    void run();
-    return () => controller.abort();
-  }
+}
+
+async function resourceError(response: Response): Promise<TransportError> {
+  if (response.headers.get("Content-Type")?.includes("application/json"))
+    return remoteError((await response.json()) as RPCErrorPayload);
+  if (response.status === 401)
+    return new TransportError("This machine requires a valid bearer token.", "required", 401);
+  if (response.status === 409)
+    return new TransportError(
+      "This connector uses an incompatible Mekugi protocol.",
+      "incompatible",
+      409,
+    );
+  return new TransportError(
+    "The resource could not be read from this machine.",
+    "refused",
+    response.status,
+  );
 }
 
 function pause(milliseconds: number | undefined, signal: AbortSignal): Promise<void> {

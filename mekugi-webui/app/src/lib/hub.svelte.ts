@@ -1,4 +1,28 @@
-import type { Listed, Start, StartOptions } from "./protocol";
+import type {
+  InitializeResponse,
+  Listed,
+  Model,
+  ModelGroup,
+  ModelListResponse,
+  RemoteHumanMethod,
+  RequestId,
+  ResourceRequest,
+  ServerNotification,
+  ServerRequest,
+  Start,
+  StartModel,
+  StartOptions,
+  Status,
+  Thread,
+  ThreadArchiveParams,
+  ThreadListResponse,
+  ThreadResumeParams,
+  ThreadResumeResponse,
+  ThreadStartParams,
+  ThreadStartResponse,
+  ThreadStatus,
+  VersionResourceResponse,
+} from "./protocol";
 import {
   Connector,
   errorText,
@@ -6,16 +30,73 @@ import {
   type Connection,
   type RequestOptions,
   type ResourceKind,
-  type RPCEvent,
-  type RPCMethod,
-  type RPCParams,
-  type SubscriptionMethod,
-  type TransportError,
 } from "./transport";
 import { select, view } from "./view.svelte";
 
 type SavedMachine = { id: string; label: string; endpoint: string; token: string };
 const storagePrefix = "mekugi.machine.v1:";
+
+export function threadStatusToStatus(status: ThreadStatus): Status {
+  switch (status.type) {
+    case "active": {
+      const waitingApproval = status.activeFlags.includes("waitingOnApproval");
+      const waitingInput = status.activeFlags.includes("waitingOnUserInput");
+      return {
+        running: true,
+        text: waitingApproval
+          ? "Waiting for approval"
+          : waitingInput
+            ? "Waiting for input"
+            : "Working",
+      };
+    }
+    case "systemError":
+      return { running: false, alert: true, text: "System error" };
+    case "idle":
+      return { running: false, text: "Idle" };
+    case "notLoaded":
+      return { running: false };
+  }
+}
+
+export function threadToListed(thread: Thread): Listed {
+  const status = threadStatusToStatus(thread.status);
+  const waiting =
+    thread.status.type === "active" &&
+    (thread.status.activeFlags.includes("waitingOnApproval") ||
+      thread.status.activeFlags.includes("waitingOnUserInput"))
+      ? 1
+      : 0;
+  return {
+    id: thread.id,
+    thread: thread.id,
+    parentThread: thread.parentThreadId ?? undefined,
+    title: thread.name || thread.preview || undefined,
+    workspace: thread.cwd || undefined,
+    started: thread.createdAt ? thread.createdAt * 1000 : undefined,
+    status,
+    waiting: waiting || undefined,
+  };
+}
+
+function modelsToGroups(models: Model[]): { groups: ModelGroup[]; defaultModel: string } {
+  const visible = models.filter((m) => !m.hidden);
+  const list = visible.length ? visible : models;
+  const startModels: StartModel[] = list.map((m) => ({
+    id: m.id || m.model,
+    label: m.displayName || m.model || m.id,
+    efforts: m.supportedReasoningEfforts?.map((e) => e.reasoningEffort) ?? [],
+    defaultEffort: m.defaultReasoningEffort,
+    serviceTiers: m.serviceTiers?.map((t) => t.id) ?? [],
+    defaultServiceTier: m.defaultServiceTier ?? undefined,
+  }));
+  const defaultEntry = list.find((m) => m.isDefault) ?? list[0];
+  const defaultModel = defaultEntry ? defaultEntry.id || defaultEntry.model : "";
+  return {
+    groups: startModels.length ? [{ label: "Models", models: startModels }] : [],
+    defaultModel,
+  };
+}
 
 export class Machine {
   readonly id: string;
@@ -24,9 +105,13 @@ export class Machine {
   sessions = $state.raw<Listed[] | undefined>();
   connection = $state<Connection>("connecting");
   error = $state<string | undefined>();
+  info = $state.raw<InitializeResponse | undefined>();
+  models = $state.raw<Model[]>([]);
   #connector: Connector;
   #token: string;
   #stop?: () => void;
+  #stopNotifications?: () => void;
+  #openListeners = new Set<(info: InitializeResponse) => void>();
 
   constructor(label: string, endpoint: string, token: string, id = newIdentity()) {
     this.id = id;
@@ -41,43 +126,118 @@ export class Machine {
     return { id: this.id, label: this.label, endpoint: this.endpoint, token: this.#token };
   }
 
-  get now(): number | undefined {
-    return this.#connector.now;
-  }
-
-  request<T>(method: RPCMethod, params?: RPCParams, options?: RequestOptions): Promise<T> {
+  request<T>(method: RemoteHumanMethod, params?: unknown, options?: RequestOptions): Promise<T> {
     return this.#connector.request<T>(method, params, options);
   }
 
-  resource<T>(kind: ResourceKind, params: RPCParams, options?: RequestOptions): Promise<T> {
+  version(options?: RequestOptions): Promise<VersionResourceResponse> {
+    return this.#connector.version(options);
+  }
+
+  resource<T>(kind: ResourceKind, params: ResourceRequest, options?: RequestOptions): Promise<T> {
     return this.#connector.resource<T>(kind, params, options);
   }
 
-  subscribe(
-    method: SubscriptionMethod,
-    params: RPCParams,
-    event: (event: RPCEvent) => void,
-    state: (connection: Connection, error?: TransportError) => void,
-  ): () => void {
-    return this.#connector.subscribe(method, params, event, state);
+  onNotification(listener: (notification: ServerNotification) => void): () => void {
+    return this.#connector.onNotification(listener);
+  }
+
+  onServerRequest(listener: (request: ServerRequest) => void): () => void {
+    return this.#connector.onServerRequest(listener);
+  }
+
+  onOpen(listener: (info: InitializeResponse) => void): () => void {
+    this.#openListeners.add(listener);
+    return () => this.#openListeners.delete(listener);
+  }
+
+  respond(id: RequestId, result: unknown): void {
+    this.#connector.respond(id, result);
+  }
+
+  respondError(id: RequestId, code: number, message: string): void {
+    this.#connector.respondError(id, code, message);
+  }
+
+  async refreshThreads(): Promise<void> {
+    try {
+      const response = await this.request<ThreadListResponse>("thread/list", {
+        limit: 100,
+        archived: false,
+      });
+      this.sessions = (response.data ?? []).map(threadToListed);
+    } catch {
+      // Transient refresh failures are surfaced through the connection state.
+    }
   }
 
   start(): void {
     this.#stop?.();
-    this.#stop = this.subscribe(
-      "session/subscribe",
-      {},
-      (event) => {
-        if (event.kind === "sessions")
-          this.sessions = (event.data as { sessions: Listed[] }).sessions;
-      },
+    this.#stopNotifications?.();
+    this.#stopNotifications = this.onNotification((notification) => {
+      this.#handleNotification(notification);
+    });
+    this.#stop = this.#connector.connect(
       (connection, error) => {
-        // Retries keep reporting the failure until the machine answers again.
         if (connection === "connecting" && this.connection === "lost") return;
         this.connection = connection;
         this.error = error?.message;
       },
+      (info) => {
+        this.info = info;
+        void this.refreshThreads();
+        for (const listener of this.#openListeners) listener(info);
+      },
     );
+  }
+
+  #handleNotification(notification: ServerNotification): void {
+    switch (notification.method) {
+      case "thread/started": {
+        const listed = threadToListed(notification.params.thread);
+        const current = this.sessions ?? [];
+        const index = current.findIndex((s) => s.id === listed.id);
+        this.sessions =
+          index >= 0 ? current.map((s, i) => (i === index ? listed : s)) : [listed, ...current];
+        break;
+      }
+      case "thread/status/changed": {
+        const { threadId, status } = notification.params;
+        if (!this.sessions) return;
+        const mapped = threadStatusToStatus(status);
+        const waiting =
+          status.type === "active" &&
+          (status.activeFlags.includes("waitingOnApproval") ||
+            status.activeFlags.includes("waitingOnUserInput"))
+            ? 1
+            : undefined;
+        this.sessions = this.sessions.map((s) =>
+          s.id === threadId ? { ...s, status: mapped, waiting } : s,
+        );
+        break;
+      }
+      case "thread/name/updated": {
+        const { threadId, threadName } = notification.params;
+        if (!this.sessions) return;
+        this.sessions = this.sessions.map((s) =>
+          s.id === threadId ? { ...s, title: threadName || s.title } : s,
+        );
+        break;
+      }
+      case "thread/archived":
+      case "thread/deleted": {
+        const { threadId } = notification.params;
+        if (!this.sessions) return;
+        this.sessions = this.sessions.filter((s) => s.id !== threadId);
+        break;
+      }
+      case "thread/unarchived": {
+        void this.refreshThreads();
+        break;
+      }
+      default:
+        break;
+    }
   }
 
   // What the machine's connection means to someone choosing where to work.
@@ -105,6 +265,8 @@ export class Machine {
 
   close(): void {
     this.#stop?.();
+    this.#stopNotifications?.();
+    this.#openListeners.clear();
     this.#connector.close();
     this.#token = "";
   }
@@ -172,7 +334,6 @@ class Hub {
       this.machines = [...this.machines, machine];
       this.#save(machine.id, machine);
       machine.start();
-      // Adding a machine from a thread leaves that thread on screen.
       if (!view.session) select(machine.id);
       return undefined;
     } catch (error) {
@@ -203,7 +364,24 @@ class Hub {
 
   async startOptions(machine: Machine): Promise<{ options: StartOptions } | { error: string }> {
     try {
-      return { options: await machine.request<StartOptions>("session/options") };
+      const response = await machine.request<ModelListResponse>("model/list", {
+        includeHidden: false,
+      });
+      const models = response.data ?? [];
+      machine.models = models;
+      const { groups, defaultModel } = modelsToGroups(models);
+      const workspaces = [
+        ...new Set(
+          (machine.sessions ?? []).map((s) => s.workspace).filter((w): w is string => !!w),
+        ),
+      ];
+      return {
+        options: {
+          workspaces,
+          models: groups,
+          defaultModel,
+        },
+      };
     } catch (error) {
       return { error: errorText(error) };
     }
@@ -215,7 +393,25 @@ class Hub {
     signal?: AbortSignal,
   ): Promise<{ id: string } | { error: string }> {
     try {
-      return await machine.request<{ id: string }>("session/start", { body: start }, { signal });
+      if (start.resume) {
+        const params: ThreadResumeParams = {
+          threadId: start.resume,
+          cwd: start.workspace || null,
+          model: start.model || null,
+        };
+        const response = await machine.request<ThreadResumeResponse>("thread/resume", params, {
+          signal,
+        });
+        return { id: response.thread.id };
+      }
+      const params: ThreadStartParams = {
+        cwd: start.workspace || null,
+        model: start.model || null,
+      };
+      const response = await machine.request<ThreadStartResponse>("thread/start", params, {
+        signal,
+      });
+      return { id: response.thread.id };
     } catch (error) {
       return { error: errorText(error, true) };
     }
@@ -223,7 +419,11 @@ class Hub {
 
   async endSession(id: string, machine: Machine): Promise<string | undefined> {
     try {
-      await machine.request("session/end", { thread: id });
+      const params: ThreadArchiveParams = { threadId: id };
+      await machine.request("thread/archive", params);
+      if (machine.sessions) {
+        machine.sessions = machine.sessions.filter((s) => s.id !== id);
+      }
       return undefined;
     } catch (error) {
       return errorText(error, true);
