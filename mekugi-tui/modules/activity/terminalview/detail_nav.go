@@ -63,6 +63,10 @@ func (t DetailTarget) SameEvent(other DetailTarget) bool {
 // ResolveDetailTarget populates sheet-level identity fields from the current
 // laid-out blocks so multi-segment commands share one event identity.
 func (v *View) ResolveDetailTarget(target DetailTarget) DetailTarget {
+	return resolveDetailTargetWithBlock(target, v.SnippetBlock)
+}
+
+func resolveDetailTargetWithBlock(target DetailTarget, lookup func(Snippet) (Block, bool)) DetailTarget {
 	if target.Zero() || target.Entry != 0 {
 		return target
 	}
@@ -71,7 +75,7 @@ func (v *View) ResolveDetailTarget(target DetailTarget) DetailTarget {
 		target.Source = target.Snippet.Run
 		return target
 	}
-	if block, ok := v.SnippetBlock(target.Snippet); ok {
+	if block, ok := lookup(target.Snippet); ok {
 		if len(block.Members) > 0 {
 			target.Merged = true
 		} else if block.Source != 0 {
@@ -94,23 +98,13 @@ func (v *View) detailRunIndex() detailRunIndex {
 }
 
 func (idx detailRunIndex) resolve(target DetailTarget) DetailTarget {
-	if target.Zero() || target.Entry != 0 {
-		return target
-	}
-	if target.Snippet.Block == EditNavigationSnippet {
-		target.Edit = true
-		target.Source = target.Snippet.Run
-		return target
-	}
-	if blocks, ok := idx[target.Snippet.Run]; ok && target.Snippet.Block >= 0 && target.Snippet.Block < len(blocks) {
-		block := blocks[target.Snippet.Block]
-		if len(block.Members) > 0 {
-			target.Merged = true
-		} else if block.Source != 0 {
-			target.Source = block.Source
+	return resolveDetailTargetWithBlock(target, func(s Snippet) (Block, bool) {
+		blocks, ok := idx[s.Run]
+		if !ok || s.Block < 0 || s.Block >= len(blocks) {
+			return Block{}, false
 		}
-	}
-	return target
+		return blocks[s.Block], true
+	})
 }
 
 // SetActiveDetail highlights the active transcript event (and optionally scrolls
@@ -157,25 +151,40 @@ func (v *View) collectDetailTargets(feed Feed, runs detailRunIndex) []DetailTarg
 	return targets
 }
 
+func matchDetailSpan(feed Feed, match func(row int) bool) (start, end int, found bool) {
+	start, end = -1, -1
+	for row := range feed.Lines {
+		if match(row) {
+			if start < 0 {
+				start = row
+			}
+			end = row + 1
+		}
+	}
+	return start, end, start >= 0
+}
+
+func rowMatchesEditPath(feed Feed, row int, active DetailTarget) bool {
+	if row >= len(feed.Snippets) {
+		return false
+	}
+	s := feed.Snippets[row]
+	if s.Run != active.Snippet.Run || s.Block != EditNavigationSnippet {
+		return false
+	}
+	return active.Snippet.Path != "" && s.Path == active.Snippet.Path ||
+		active.DisplayPath != "" && s.Path == active.DisplayPath
+}
+
 func (v *View) activeDetailRevealRange(feed Feed, runs detailRunIndex) (start int, end int, found bool) {
 	active := v.ActiveDetail
 	if active.Zero() {
 		return 0, 0, false
 	}
 	if active.Entry == 0 && active.Snippet != (Snippet{}) && active.Snippet.Block != EditNavigationSnippet {
-		start, end = -1, -1
-		for row := range feed.Lines {
-			if row < len(feed.Snippets) {
-				s := feed.Snippets[row]
-				if s.Run == active.Snippet.Run && s.Block == active.Snippet.Block {
-					if start < 0 {
-						start = row
-					}
-					end = row + 1
-				}
-			}
-		}
-		if start >= 0 {
+		if start, end, ok := matchDetailSpan(feed, func(row int) bool {
+			return row < len(feed.Snippets) && feed.Snippets[row].Run == active.Snippet.Run && feed.Snippets[row].Block == active.Snippet.Block
+		}); ok {
 			return start, end, true
 		}
 	}
@@ -188,66 +197,32 @@ func (v *View) activeDetailRowMatch(feed Feed, runs detailRunIndex) (exactPath b
 	if active.Zero() {
 		return false, 0, 0, false
 	}
-	matchPath := func(s Snippet) bool {
-		if s.Run != active.Snippet.Run || s.Block != EditNavigationSnippet {
-			return false
-		}
-		if active.Snippet.Path != "" && s.Path == active.Snippet.Path {
-			return true
-		}
-		return active.DisplayPath != "" && s.Path == active.DisplayPath
-	}
 	if active.Entry == 0 && active.Snippet.Block == EditNavigationSnippet && (active.Snippet.Path != "" || active.DisplayPath != "") {
-		start, end = -1, -1
-		for row := range feed.Lines {
-			if row < len(feed.Snippets) && matchPath(feed.Snippets[row]) {
-				if start < 0 {
-					start = row
-				}
-				end = row + 1
-			}
-		}
-		if start >= 0 {
+		if start, end, ok := matchDetailSpan(feed, func(row int) bool {
+			return rowMatchesEditPath(feed, row, active)
+		}); ok {
 			return true, start, end, true
 		}
 	}
-	start, end = -1, -1
-	for row := range feed.Lines {
-		if rowMatchesDetailEvent(feed, row, active, runs) {
-			if start < 0 {
-				start = row
-			}
-			end = row + 1
-		}
-	}
-	return false, start, end, start >= 0
+	start, end, found = matchDetailSpan(feed, func(row int) bool {
+		return rowMatchesDetailEvent(feed, row, active, runs)
+	})
+	return false, start, end, found
 }
 
 func rowMatchesDetailEvent(feed Feed, row int, active DetailTarget, runs detailRunIndex) bool {
 	if active.Entry != 0 {
 		return row < len(feed.Questions) && feed.Questions[row] == active.Entry
 	}
-	if row < len(feed.Snippets) {
-		s := feed.Snippets[row]
-		if s == (Snippet{}) {
-			return false
-		}
-		return runs.resolve(DetailTarget{Snippet: s}).SameEvent(active)
+	if row < len(feed.Snippets) && feed.Snippets[row] != (Snippet{}) {
+		return runs.resolve(DetailTarget{Snippet: feed.Snippets[row]}).SameEvent(active)
 	}
 	return false
 }
 
 func rowMatchesActiveDetail(feed Feed, row int, active DetailTarget, exactPath bool, runs detailRunIndex) bool {
 	if exactPath {
-		if row >= len(feed.Snippets) {
-			return false
-		}
-		s := feed.Snippets[row]
-		if s.Run != active.Snippet.Run || s.Block != EditNavigationSnippet {
-			return false
-		}
-		return active.Snippet.Path != "" && s.Path == active.Snippet.Path ||
-			active.DisplayPath != "" && s.Path == active.DisplayPath
+		return rowMatchesEditPath(feed, row, active)
 	}
 	return rowMatchesDetailEvent(feed, row, active, runs)
 }
