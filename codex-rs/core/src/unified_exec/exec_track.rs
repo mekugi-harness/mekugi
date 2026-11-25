@@ -251,13 +251,21 @@ impl ExecTrackAttachment {
             if self.write_capture.candidate_count() == 0 && mktemp_creations.is_empty() {
                 return;
             }
+            let source_kind = if self.source_kind == ChangeSourceKind::ShellWrite
+                && self.write_capture.is_vcs_only()
+                && mktemp_creations.is_empty()
+            {
+                ChangeSourceKind::VcsDiagnostic
+            } else {
+                self.source_kind
+            };
             let claim_key = shell_write_claim_key(&self.thread_id, &self.call_id);
             let metadata = ChangeMetadata {
                 thread_id: self.thread_id.clone(),
                 session_id: self.session_id.clone(),
                 turn_id: self.turn_id.clone(),
                 call_id: self.call_id.clone(),
-                source_kind: self.source_kind,
+                source_kind,
                 workspace_root: self.workspace_root.clone(),
                 created_at: unix_now_secs(),
                 exit_code: host_exit_code,

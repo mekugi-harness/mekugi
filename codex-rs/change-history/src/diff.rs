@@ -189,14 +189,20 @@ pub(crate) fn compose_transitions_with_continuity(
                     }
                     continue;
                 }
-                if require_continuity && existing.after != before {
-                    return Err(ChangeHistoryError::DriftConflict {
-                        path: file.abs_path.clone(),
-                        reason: format!(
-                            "discontinuous selection for `{}`: skipped intermediate edits before `{}`",
-                            file.rel_path, record.id
-                        ),
-                    });
+                if existing.after != before {
+                    if require_continuity {
+                        return Err(ChangeHistoryError::DriftConflict {
+                            path: file.abs_path.clone(),
+                            reason: format!(
+                                "discontinuous selection for `{}`: skipped intermediate edits before `{}`",
+                                file.rel_path, record.id
+                            ),
+                        });
+                    }
+                    existing.coverage_notes.push(format!(
+                        "{}: discontinuous baseline (unobserved write before this change)",
+                        record.id
+                    ));
                 }
                 *last_seq = record.sequence;
                 existing.after = after;
@@ -243,6 +249,9 @@ pub fn compose_diff(
     let transitions = compose_transitions(store, records, path_filters)?;
     let mut out = Vec::with_capacity(transitions.len());
     for tr in transitions {
+        if tr.before == tr.after && tr.moved_from.is_none() && tr.coverage_notes.is_empty() {
+            continue;
+        }
         let (unified_diff, stats) = render_transition_diff(&tr);
         out.push(ComposedFileDiff {
             rel_path: tr.rel_path,

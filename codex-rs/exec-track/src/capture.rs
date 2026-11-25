@@ -41,6 +41,14 @@ pub fn shell_write_claim_key(thread_id: &str, call_id: &str) -> String {
 pub struct ShellWriteCapture {
     cwd: PathBuf,
     baselines: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus)>,
+    vcs_only: bool,
+}
+
+#[derive(Default)]
+struct ExtractedWriteTargets {
+    paths: BTreeSet<PathBuf>,
+    has_authored: bool,
+    has_vcs: bool,
 }
 
 impl ShellWriteCapture {
@@ -58,9 +66,9 @@ impl ShellWriteCapture {
         session_tmp: Option<&Path>,
         can_read: impl Fn(&Path) -> bool,
     ) -> Self {
-        let paths = extract_write_paths(script, cwd, session_tmp);
+        let extracted = extract_write_targets(script, cwd, session_tmp);
         let mut baselines = BTreeMap::new();
-        for path in paths {
+        for path in extracted.paths {
             if !can_read(&path) {
                 continue;
             }
@@ -70,12 +78,19 @@ impl ShellWriteCapture {
         Self {
             cwd: cwd.to_path_buf(),
             baselines,
+            vcs_only: extracted.has_vcs && !extracted.has_authored,
         }
     }
 
     /// Number of statically recognized pre-execution candidate paths.
     pub fn candidate_count(&self) -> usize {
         self.baselines.len()
+    }
+
+    /// True when all statically recognized write targets came from diagnostic
+    /// VCS restore operations (e.g. `git restore`, `git checkout --`).
+    pub fn is_vcs_only(&self) -> bool {
+        self.vcs_only
     }
 
     /// Observe post-execution bytes for all statically recognized paths plus
@@ -181,30 +196,37 @@ impl ShellWriteCapture {
 /// Extract statically recognized shell write target paths from script using
 /// codex-shell-guard::parse_bash and static_word_value.
 pub fn extract_static_write_paths(script: &str, cwd: &Path) -> Vec<PathBuf> {
-    extract_write_paths(script, cwd, None)
+    extract_write_targets(script, cwd, None)
+        .paths
+        .into_iter()
+        .collect()
 }
 
-fn extract_write_paths(script: &str, cwd: &Path, session_tmp: Option<&Path>) -> Vec<PathBuf> {
+fn extract_write_targets(
+    script: &str,
+    cwd: &Path,
+    session_tmp: Option<&Path>,
+) -> ExtractedWriteTargets {
     let Some(tree) = parse_bash(script) else {
-        return Vec::new();
+        return ExtractedWriteTargets::default();
     };
-    let mut paths = BTreeSet::new();
+    let mut targets = ExtractedWriteTargets::default();
     let mut current_cwd = resolve_canonical_path(cwd);
-    collect_write_paths(tree.root_node(), script, &mut current_cwd, &mut paths);
+    collect_write_paths(tree.root_node(), script, &mut current_cwd, &mut targets);
     if let Some(session_tmp) = session_tmp.filter(|path| path.is_absolute())
         && script.contains("SESSION_TMP")
         && !tree.root_node().has_error()
     {
-        collect_scratch_redirects(tree.root_node(), script, session_tmp, &mut paths);
+        collect_scratch_redirects(tree.root_node(), script, session_tmp, &mut targets);
     }
-    paths.into_iter().collect()
+    targets
 }
 
 fn collect_scratch_redirects(
     root: Node<'_>,
     script: &str,
     session_tmp: &Path,
-    paths: &mut BTreeSet<PathBuf>,
+    targets: &mut ExtractedWriteTargets,
 ) {
     let Some(binding) = session_tmp.to_str() else {
         return;
@@ -260,7 +282,8 @@ fn collect_scratch_redirects(
                 {
                     let path = resolve_canonical_path(Path::new(&path));
                     if path != session_tmp && path.starts_with(&session_tmp) {
-                        paths.insert(path);
+                        targets.paths.insert(path);
+                        targets.has_authored = true;
                     }
                 }
             }
@@ -319,7 +342,7 @@ fn collect_write_paths(
     node: Node<'_>,
     script: &str,
     cwd: &mut PathBuf,
-    out: &mut BTreeSet<PathBuf>,
+    out: &mut ExtractedWriteTargets,
 ) {
     match node.kind() {
         "subshell" | "command_substitution" => {
@@ -336,7 +359,9 @@ fn collect_write_paths(
                 && let Some(raw) = static_word_value(dest, script)
                 && is_capturable_path(&raw)
             {
-                out.insert(resolve_canonical_path(&resolve_path(cwd, Path::new(&raw))));
+                out.paths
+                    .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(&raw))));
+                out.has_authored = true;
             }
         }
         "command" => {
@@ -389,7 +414,7 @@ fn is_output_redirect(node: Node<'_>, script: &str) -> bool {
     false
 }
 
-fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut BTreeSet<PathBuf>) {
+fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
     let Some(first) = words.first() else {
         return;
     };
@@ -399,7 +424,9 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut BTreeSe
         "tee" | "rm" | "touch" => {
             for arg in positional_args(args) {
                 if is_capturable_path(arg) {
-                    out.insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                    out.paths
+                        .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                    out.has_authored = true;
                 }
             }
         }
@@ -418,7 +445,9 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut BTreeSe
                     continue;
                 }
                 if is_capturable_path(arg) {
-                    out.insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                    out.paths
+                        .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                    out.has_authored = true;
                 }
             }
         }
@@ -427,13 +456,17 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut BTreeSe
             if let Some(dest) = pos.last()
                 && is_capturable_path(dest)
             {
-                out.insert(resolve_canonical_path(&resolve_path(cwd, Path::new(dest))));
+                out.paths
+                    .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(dest))));
+                out.has_authored = true;
             }
         }
         "mv" => {
             for arg in positional_args(args) {
                 if is_capturable_path(arg) {
-                    out.insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                    out.paths
+                        .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                    out.has_authored = true;
                 }
             }
         }
@@ -465,8 +498,264 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut BTreeSe
                         continue;
                     }
                     if is_capturable_path(arg) {
-                        out.insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                        out.paths
+                            .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+                        out.has_authored = true;
                     }
+                }
+            }
+        }
+        "gofmt" | "goimports" => {
+            extract_gofmt_write_targets(args, cwd, out);
+        }
+        "rustfmt" => {
+            extract_rustfmt_write_targets(args, cwd, out);
+        }
+        "git" => {
+            extract_git_restore_targets(args, cwd, out);
+        }
+        _ => {}
+    }
+}
+
+fn extract_gofmt_write_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
+    let mut has_write_flag = false;
+    let mut skip_next = false;
+    let mut after_dashdash = false;
+    let mut paths = Vec::new();
+
+    for arg in args {
+        if arg.is_empty() {
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if !after_dashdash && arg == "--" {
+            after_dashdash = true;
+            continue;
+        }
+        if !after_dashdash && arg.starts_with('-') {
+            if matches!(arg.as_str(), "-r" | "-cpuprofile" | "-local" | "-srcdir") {
+                skip_next = true;
+                continue;
+            }
+            if arg == "-w" || arg == "--w" || (!arg.starts_with("--") && arg[1..].contains('w')) {
+                has_write_flag = true;
+            }
+            continue;
+        }
+        paths.push(arg.as_str());
+    }
+
+    if !has_write_flag {
+        return;
+    }
+    for arg in paths {
+        if is_capturable_path(arg) {
+            out.paths
+                .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+            out.has_authored = true;
+        }
+    }
+}
+
+fn extract_rustfmt_write_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
+    let mut skip_next = false;
+    let mut expect_emit_value = false;
+    let mut after_dashdash = false;
+    let mut read_only = false;
+    let mut paths = Vec::new();
+
+    for arg in args {
+        if arg.is_empty() {
+            continue;
+        }
+        if expect_emit_value {
+            expect_emit_value = false;
+            if arg != "files" {
+                read_only = true;
+            }
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if !after_dashdash && arg == "--" {
+            after_dashdash = true;
+            continue;
+        }
+        if !after_dashdash && arg.starts_with('-') {
+            if matches!(
+                arg.as_str(),
+                "--check"
+                    | "--print-config"
+                    | "--list-files"
+                    | "-h"
+                    | "--help"
+                    | "-V"
+                    | "--version"
+            ) {
+                read_only = true;
+                continue;
+            }
+            if arg == "--emit" {
+                expect_emit_value = true;
+                continue;
+            }
+            if let Some(val) = arg.strip_prefix("--emit=") {
+                if val != "files" {
+                    read_only = true;
+                }
+                continue;
+            }
+            if matches!(
+                arg.as_str(),
+                "--edition"
+                    | "--config"
+                    | "--config-path"
+                    | "--color"
+                    | "--file-lines"
+                    | "--style-edition"
+            ) {
+                skip_next = true;
+                continue;
+            }
+            continue;
+        }
+        paths.push(arg.as_str());
+    }
+
+    if read_only {
+        return;
+    }
+    for arg in paths {
+        if is_capturable_path(arg) {
+            out.paths
+                .insert(resolve_canonical_path(&resolve_path(cwd, Path::new(arg))));
+            out.has_authored = true;
+        }
+    }
+}
+
+fn extract_git_restore_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
+    let mut git_cwd = cwd.to_path_buf();
+    let mut idx = 0;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg.is_empty() {
+            idx += 1;
+            continue;
+        }
+        if arg == "-C" {
+            if let Some(dir) = args.get(idx + 1)
+                && !dir.is_empty()
+            {
+                git_cwd = resolve_canonical_path(&resolve_path(&git_cwd, Path::new(dir)));
+            }
+            idx += 2;
+            continue;
+        }
+        if let Some(dir) = arg.strip_prefix("-C")
+            && !dir.is_empty()
+        {
+            git_cwd = resolve_canonical_path(&resolve_path(&git_cwd, Path::new(dir)));
+            idx += 1;
+            continue;
+        }
+        if matches!(
+            arg.as_str(),
+            "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env"
+        ) {
+            idx += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            idx += 1;
+            continue;
+        }
+        break;
+    }
+
+    let Some(subcmd) = args.get(idx).map(String::as_str) else {
+        return;
+    };
+    let sub_args = &args[idx + 1..];
+    match subcmd {
+        "restore" => {
+            let mut staged = false;
+            let mut worktree = false;
+            let mut skip_next = false;
+            let mut after_dashdash = false;
+            let mut paths = Vec::new();
+
+            for arg in sub_args {
+                if arg.is_empty() {
+                    continue;
+                }
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if !after_dashdash && arg == "--" {
+                    after_dashdash = true;
+                    continue;
+                }
+                if !after_dashdash && arg.starts_with('-') {
+                    if matches!(
+                        arg.as_str(),
+                        "-s" | "--source" | "--conflict" | "--pathspec-from-file"
+                    ) {
+                        skip_next = true;
+                        continue;
+                    }
+                    if arg == "-S" || arg == "--staged" {
+                        staged = true;
+                        continue;
+                    }
+                    if arg == "-W" || arg == "--worktree" {
+                        worktree = true;
+                        continue;
+                    }
+                    if !arg.starts_with("--") {
+                        if arg[1..].contains('S') {
+                            staged = true;
+                        }
+                        if arg[1..].contains('W') {
+                            worktree = true;
+                        }
+                    }
+                    continue;
+                }
+                paths.push(arg.as_str());
+            }
+
+            if staged && !worktree {
+                return;
+            }
+            for arg in paths {
+                if is_capturable_path(arg) {
+                    out.paths.insert(resolve_canonical_path(&resolve_path(
+                        &git_cwd,
+                        Path::new(arg),
+                    )));
+                    out.has_vcs = true;
+                }
+            }
+        }
+        "checkout" => {
+            let Some(dashdash_pos) = sub_args.iter().position(|arg| arg == "--") else {
+                return;
+            };
+            for arg in &sub_args[dashdash_pos + 1..] {
+                if is_capturable_path(arg) {
+                    out.paths.insert(resolve_canonical_path(&resolve_path(
+                        &git_cwd,
+                        Path::new(arg),
+                    )));
+                    out.has_vcs = true;
                 }
             }
         }

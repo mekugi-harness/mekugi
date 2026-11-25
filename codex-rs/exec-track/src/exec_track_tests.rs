@@ -876,7 +876,10 @@ async fn mktemp_long_option_with_u_is_still_recorded() {
         .await
         .expect("run bash");
 
-    assert!(output.status.success(), "instrumented mktemp --suffix failed");
+    assert!(
+        output.status.success(),
+        "instrumented mktemp --suffix failed"
+    );
     let report = session.finalize(output.status.code());
     assert_eq!(
         report.mktemp_creations.len(),
@@ -951,4 +954,233 @@ fn read_policy_blocks_denied_workspace_and_mktemp_paths() {
 
     assert_eq!(record.files.len(), 1);
     assert_eq!(record.files[0].rel_path, "ok.txt");
+}
+
+#[test]
+fn extract_static_write_paths_covers_formatters_and_git_restore() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(dir.path()).expect("canonicalize");
+    let sub = root.join("sub");
+    fs::create_dir_all(&sub).expect("mkdir sub");
+
+    let script = "\
+gofmt -w a.go\n\
+gofmt -s -w b.go\n\
+gofmt readonly.go\n\
+goimports -local example.com -w c.go\n\
+rustfmt --edition 2021 d.rs\n\
+rustfmt --check readonly_check.rs\n\
+rustfmt --emit stdout readonly_emit.rs\n\
+git restore e.rs\n\
+git restore --staged staged_only.rs\n\
+git restore -SW f.rs\n\
+git -C sub checkout HEAD -- g.rs\n\
+git checkout main\n";
+
+    let paths = extract_static_write_paths(script, &root);
+    assert_eq!(
+        paths,
+        vec![
+            root.join("a.go"),
+            root.join("b.go"),
+            root.join("c.go"),
+            root.join("d.rs"),
+            root.join("e.rs"),
+            root.join("f.rs"),
+            sub.join("g.rs"),
+        ]
+    );
+
+    let vcs_only = ShellWriteCapture::prepare("git restore e.rs", &root);
+    assert!(vcs_only.is_vcs_only());
+
+    let vcs_checkout = ShellWriteCapture::prepare("git checkout -- e.rs", &root);
+    assert!(vcs_checkout.is_vcs_only());
+
+    let fmt_only = ShellWriteCapture::prepare("rustfmt d.rs", &root);
+    assert!(!fmt_only.is_vcs_only());
+
+    let mixed = ShellWriteCapture::prepare("echo hi > a.txt && git restore e.rs", &root);
+    assert!(!mixed.is_vcs_only());
+}
+
+#[test]
+fn worktree_formatter_and_git_restore_compose_cleanly() {
+    let tmp = TempDir::new().expect("tempdir");
+    let origin_repo = tmp.path().join("repo");
+    let worktree = tmp.path().join("wt");
+    let store_dir = tmp.path().join("store");
+    fs::create_dir_all(&origin_repo).expect("mkdir repo");
+
+    let run_git = |cwd: &std::path::Path, args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("spawn git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    run_git(&origin_repo, &["init"]);
+    run_git(&origin_repo, &["config", "user.email", "test@example.com"]);
+    run_git(&origin_repo, &["config", "user.name", "Test"]);
+    fs::write(origin_repo.join("main.rs"), "fn main() {}\n").expect("write main.rs");
+    fs::write(origin_repo.join("revert_me.rs"), "fn keep() {}\n").expect("write revert_me.rs");
+    run_git(&origin_repo, &["add", "."]);
+    run_git(&origin_repo, &["commit", "-m", "initial"]);
+    run_git(
+        &origin_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "wt-branch",
+            worktree.to_str().expect("wt utf8"),
+        ],
+    );
+
+    let wt = fs::canonicalize(&worktree).expect("canonical wt");
+    let main_rs = wt.join("main.rs");
+    let revert_rs = wt.join("revert_me.rs");
+    let store = ChangeHistoryStore::open(&store_dir).expect("open store");
+
+    // 1. Initial authored edit (intentionally unformatted main.rs + edit to revert_me.rs).
+    let main_unformatted = b"fn main(){let x=1;let _=x;}\n".to_vec();
+    let revert_edited = b"fn keep() { let _ = 99; }\n".to_vec();
+    fs::write(&main_rs, &main_unformatted).expect("write unformatted main.rs");
+    fs::write(&revert_rs, &revert_edited).expect("write edited revert_me.rs");
+    let r1 = store
+        .record_change(
+            ChangeMetadata {
+                thread_id: "t-wt".to_string(),
+                session_id: "s-wt".to_string(),
+                turn_id: "turn-1".to_string(),
+                call_id: "call-1".to_string(),
+                source_kind: ChangeSourceKind::ApplyPatch,
+                workspace_root: wt.clone(),
+                created_at: 1_700_000_100,
+                exit_code: Some(0),
+                summary: Some("initial edit".to_string()),
+                claim_key: None,
+            },
+            vec![
+                codex_change_history::PendingFileChange {
+                    rel_path: "main.rs".to_string(),
+                    abs_path: main_rs.clone(),
+                    moved_from: None,
+                    before: codex_change_history::FileSnapshot::Present(b"fn main() {}\n".to_vec()),
+                    after: codex_change_history::FileSnapshot::Present(main_unformatted),
+                    coverage: codex_change_history::CoverageStatus::Complete,
+                },
+                codex_change_history::PendingFileChange {
+                    rel_path: "revert_me.rs".to_string(),
+                    abs_path: revert_rs.clone(),
+                    moved_from: None,
+                    before: codex_change_history::FileSnapshot::Present(b"fn keep() {}\n".to_vec()),
+                    after: codex_change_history::FileSnapshot::Present(revert_edited),
+                    coverage: codex_change_history::CoverageStatus::Complete,
+                },
+            ],
+        )
+        .expect("record r1");
+
+    // 2. Run rustfmt captured via ShellWriteCapture.
+    let fmt_cmd = "rustfmt main.rs";
+    let fmt_capture = ShellWriteCapture::prepare(fmt_cmd, &wt);
+    assert!(!fmt_capture.is_vcs_only());
+    let fmt_status = std::process::Command::new("rustfmt")
+        .current_dir(&wt)
+        .arg("main.rs")
+        .status()
+        .expect("run rustfmt");
+    assert!(fmt_status.success(), "rustfmt must succeed");
+    let r2 = fmt_capture
+        .finalize_and_persist(
+            &store_dir,
+            ChangeMetadata {
+                thread_id: "t-wt".to_string(),
+                session_id: "s-wt".to_string(),
+                turn_id: "turn-2".to_string(),
+                call_id: "call-2".to_string(),
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: wt.clone(),
+                created_at: 1_700_000_101,
+                exit_code: Some(0),
+                summary: Some(fmt_cmd.to_string()),
+                claim_key: Some(shell_write_claim_key("t-wt", "call-2")),
+            },
+            &[],
+        )
+        .expect("persist rustfmt")
+        .expect("rustfmt must produce a change record");
+    let formatted_bytes = fs::read(&main_rs).expect("read formatted main.rs");
+
+    // 3. Run git restore on revert_me.rs captured via ShellWriteCapture as VcsDiagnostic.
+    let restore_cmd = "git restore revert_me.rs";
+    let restore_capture = ShellWriteCapture::prepare(restore_cmd, &wt);
+    assert!(restore_capture.is_vcs_only());
+    run_git(&wt, &["restore", "revert_me.rs"]);
+    let r3 = restore_capture
+        .finalize_and_persist(
+            &store_dir,
+            ChangeMetadata {
+                thread_id: "t-wt".to_string(),
+                session_id: "s-wt".to_string(),
+                turn_id: "turn-3".to_string(),
+                call_id: "call-3".to_string(),
+                source_kind: ChangeSourceKind::VcsDiagnostic,
+                workspace_root: wt.clone(),
+                created_at: 1_700_000_102,
+                exit_code: Some(0),
+                summary: Some(restore_cmd.to_string()),
+                claim_key: Some(shell_write_claim_key("t-wt", "call-3")),
+            },
+            &[],
+        )
+        .expect("persist git restore")
+        .expect("git restore must produce a diagnostic record");
+
+    // 4. Follow-up authored edit on formatted main.rs.
+    let mut final_bytes = formatted_bytes.clone();
+    final_bytes.extend_from_slice(b"// done\n");
+    fs::write(&main_rs, &final_bytes).expect("write final main.rs");
+    let r4 = store
+        .record_change(
+            ChangeMetadata {
+                thread_id: "t-wt".to_string(),
+                session_id: "s-wt".to_string(),
+                turn_id: "turn-4".to_string(),
+                call_id: "call-4".to_string(),
+                source_kind: ChangeSourceKind::ApplyPatch,
+                workspace_root: wt,
+                created_at: 1_700_000_103,
+                exit_code: Some(0),
+                summary: Some("follow-up edit".to_string()),
+                claim_key: None,
+            },
+            vec![codex_change_history::PendingFileChange {
+                rel_path: "main.rs".to_string(),
+                abs_path: main_rs,
+                moved_from: None,
+                before: codex_change_history::FileSnapshot::Present(formatted_bytes),
+                after: codex_change_history::FileSnapshot::Present(final_bytes),
+                coverage: codex_change_history::CoverageStatus::Complete,
+            }],
+        )
+        .expect("record r4");
+
+    // Composing r1..r4 must omit revert_me.rs and compose main.rs cleanly without coverage gaps.
+    let summary =
+        codex_change_history::compose_summary(&store, &[r1, r2, r3, r4], &[]).expect("summary");
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].rel_path, "main.rs");
+    assert!(
+        summary.files[0].coverage_notes.is_empty(),
+        "expected continuous composition, got {:?}",
+        summary.files[0].coverage_notes
+    );
 }

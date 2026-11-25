@@ -690,7 +690,12 @@ fn user_shell_source_kind_is_authored_and_roundtrips() {
 
     let rec = store
         .record_change(
-            test_metadata(ws.path(), "t-user", "call-user", ChangeSourceKind::UserShell),
+            test_metadata(
+                ws.path(),
+                "t-user",
+                "call-user",
+                ChangeSourceKind::UserShell,
+            ),
             vec![PendingFileChange {
                 rel_path: "note.txt".to_string(),
                 abs_path: path,
@@ -715,4 +720,138 @@ fn user_shell_source_kind_is_authored_and_roundtrips() {
         history.contains("[user_shell]"),
         "expected [user_shell] label in history: {history}"
     );
+}
+
+#[test]
+fn compose_diff_and_summary_drop_net_noop_reverted_files() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let keep = ws.join("keep.rs");
+    let reverted = ws.join("reverted.rs");
+    let added_then_deleted = ws.join("temp.rs");
+
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![
+                PendingFileChange {
+                    rel_path: "keep.rs".to_string(),
+                    abs_path: keep,
+                    moved_from: None,
+                    before: FileSnapshot::Present(b"fn a() {}\n".to_vec()),
+                    after: FileSnapshot::Present(b"fn a() { let _ = 1; }\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+                PendingFileChange {
+                    rel_path: "reverted.rs".to_string(),
+                    abs_path: reverted.clone(),
+                    moved_from: None,
+                    before: FileSnapshot::Present(b"fn b() {}\n".to_vec()),
+                    after: FileSnapshot::Present(b"fn b() { let _ = 2; }\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+                PendingFileChange {
+                    rel_path: "temp.rs".to_string(),
+                    abs_path: added_then_deleted.clone(),
+                    moved_from: None,
+                    before: FileSnapshot::Missing,
+                    after: FileSnapshot::Present(b"// temporary\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+            ],
+        )
+        .expect("r1");
+
+    let r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::VcsDiagnostic),
+            vec![
+                PendingFileChange {
+                    rel_path: "reverted.rs".to_string(),
+                    abs_path: reverted,
+                    moved_from: None,
+                    before: FileSnapshot::Present(b"fn b() { let _ = 2; }\n".to_vec()),
+                    after: FileSnapshot::Present(b"fn b() {}\n".to_vec()),
+                    coverage: CoverageStatus::Complete,
+                },
+                PendingFileChange {
+                    rel_path: "temp.rs".to_string(),
+                    abs_path: added_then_deleted,
+                    moved_from: None,
+                    before: FileSnapshot::Present(b"// temporary\n".to_vec()),
+                    after: FileSnapshot::Missing,
+                    coverage: CoverageStatus::Complete,
+                },
+            ],
+        )
+        .expect("r2");
+
+    let summary = compose_summary(&store, &[r1.clone(), r2.clone()], &[]).expect("summary");
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].rel_path, "keep.rs");
+    assert_eq!(summary.files[0].status, 'M');
+    assert!(summary.files[0].coverage_notes.is_empty());
+
+    let diffs = compose_diff(&store, &[r1, r2], &[]).expect("diff");
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].rel_path, "keep.rs");
+}
+
+#[test]
+fn compose_diff_and_summary_flag_discontinuous_baseline_from_external_write() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let file = ws.join("a.rs");
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![PendingFileChange {
+                rel_path: "a.rs".to_string(),
+                abs_path: file.clone(),
+                moved_from: None,
+                before: FileSnapshot::Present(b"v0\n".to_vec()),
+                after: FileSnapshot::Present(b"v1\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r1");
+    // Simulate an unobserved external write (v1 -> v1-ext) before r2 restores v0.
+    let r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::ApplyPatch),
+            vec![PendingFileChange {
+                rel_path: "a.rs".to_string(),
+                abs_path: file,
+                moved_from: None,
+                before: FileSnapshot::Present(b"v1-ext\n".to_vec()),
+                after: FileSnapshot::Present(b"v0\n".to_vec()),
+                coverage: CoverageStatus::Complete,
+            }],
+        )
+        .expect("r2");
+
+    let summary = compose_summary(&store, &[r1.clone(), r2.clone()], &[]).expect("summary");
+    assert_eq!(
+        summary.files.len(),
+        1,
+        "discontinuous transition must not be silently dropped as a no-op"
+    );
+    assert!(
+        summary.files[0]
+            .coverage_notes
+            .iter()
+            .any(|note| note.contains("discontinuous baseline")),
+        "expected discontinuous baseline note, got {:?}",
+        summary.files[0].coverage_notes
+    );
+
+    let diffs = compose_diff(&store, &[r1, r2], &[]).expect("diff");
+    assert_eq!(diffs.len(), 1);
+    assert!(diffs[0].unified_diff.contains("discontinuous baseline"));
 }
