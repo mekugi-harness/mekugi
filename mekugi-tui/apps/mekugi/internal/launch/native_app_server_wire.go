@@ -21,7 +21,7 @@ import (
 )
 
 // nativeAppServerSocketPath returns the private, user-local Unix socket path
-// shared by direct native mekugi-app-server launches and the remote connector.
+// shared by the direct native mekugi-app-server daemon, terminal UI, and connector.
 func nativeAppServerSocketPath() (string, error) {
 	return connector.NativeSocketPath()
 }

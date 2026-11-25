@@ -14,6 +14,8 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
+const nativeServerSupervisorEnvironment = "MEKUGI_SERVER_SUPERVISOR"
+
 // A separate process must own the pipe and Wait: the launching renderer may
 // disappear long before the server. No runtime or client resources live here.
 func runNativeServerSupervisor(ctx context.Context, args []string) int {

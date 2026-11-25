@@ -147,7 +147,7 @@ func rpcUpstream(t *testing.T, operation func(*websocket.Conn)) string {
 			t.Error("private initialization was not sanitized")
 			return
 		}
-		result, _ := json.Marshal(&sessionapi.RPCInitialize{Version: sessionapi.ProtocolVersion})
+		result, _ := json.Marshal(&sessionapi.RPCInitialize{Version: sessionapi.ProtocolVersion, ServerTime: time.Now().UnixMilli()})
 		message := sessionapi.RPCMessage{JSONRPC: "2.0", ID: init.ID, Result: result}
 		if params.Version != sessionapi.ProtocolVersion {
 			message.Result = nil
@@ -520,10 +520,20 @@ func TestConnectorAuthenticationBeforeUpstream(t *testing.T) {
 	}
 }
 
+func testVersioned(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(sessionapi.ProtocolHeader, sessionapi.ProtocolVersion)
+		if r.Header.Get(sessionapi.ProtocolHeader) != sessionapi.ProtocolVersion {
+			http.Error(w, "incompatible protocol", http.StatusConflict)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+}
+
 func TestConnectorUsesServerVersionAdmission(t *testing.T) {
 	t.Parallel()
-	hub := sessionapi.NewHub(t.Context(), nil)
-	socket, _ := upstream(t, sessionapi.Versioned(hub.Handler()))
+	socket := rpcUpstream(t, func(*websocket.Conn) {})
 	c, path := connect(t, socket)
 	remote := httptest.NewServer(c)
 	defer remote.Close()

@@ -64,10 +64,13 @@ func TestPublicOptionsExposeOneInterface(t *testing.T) {
 	var help bytes.Buffer
 	flags := newFlags(&help, new(Config))
 	flags.Usage()
-	for _, command := range []string{"mekugi server [--socket PATH]", "mekugi connector [--listen ADDRESS]", "mekugi web [--listen ADDRESS]"} {
+	for _, command := range []string{"mekugi connector [--listen ADDRESS]", "mekugi web [--listen ADDRESS]"} {
 		if !strings.Contains(help.String(), command) {
 			t.Fatalf("help omits control entrypoint %q: %s", command, help.String())
 		}
+	}
+	if strings.Contains(help.String(), "mekugi server") {
+		t.Fatalf("help still advertises removed mekugi server entrypoint: %s", help.String())
 	}
 }
 

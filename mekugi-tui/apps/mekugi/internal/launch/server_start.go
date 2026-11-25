@@ -152,25 +152,6 @@ func (l *serverLauncher) Run(ctx context.Context, start sessionapi.Start, api *s
 	return err
 }
 
-func serverEnvironment(environment []string) []string {
-	terminal := ""
-	result := make([]string, 0, len(environment))
-	for _, entry := range withoutInheritedFrontend(environment) {
-		key, value, _ := strings.Cut(entry, "=")
-		if key == "TERM" {
-			terminal = value
-		}
-		if slices.Contains([]string{"MEKUGI_BASE_URL", "MEKUGI_RUNTIME_DIR", "TMUX", "TMUX_PANE", "TERM"}, key) {
-			continue
-		}
-		result = append(result, entry)
-	}
-	if terminal == "" || terminal == "dumb" {
-		terminal = "xterm-256color"
-	}
-	return append(result, "TERM="+terminal)
-}
-
 func recentServerWorkspaces(ctx context.Context) []string {
 	directory, err := rollout.HomeDirectory()
 	if err != nil {

@@ -24,7 +24,7 @@
 - **Owner boundaries**: [Session history](../../mekugi-tui/modules/sessionhistory/SPEC.md) owns namespaces,
   catalogs, leases, and retention; feature modules own their record codecs and retirement policies;
   [Change evidence](change-evidence.md) owns capture reconciliation;
-  [Executable frontends](../../mekugi-tui/apps/mekugi/internal/frontends/SPEC.md) owns worker delivery;
+  Native `mekugi-app-server` (`codex-arg0`) owns helper delivery;
   [Diagnostics](../../mekugi-tui/modules/diagnostics/SPEC.md) owns private debug bundles separately.
 
 ## Current approach (replaceable)

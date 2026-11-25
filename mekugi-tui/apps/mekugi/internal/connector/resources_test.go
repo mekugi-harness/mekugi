@@ -15,7 +15,7 @@ import (
 
 func TestConnectorResourceAdmissionAndForwarding(t *testing.T) {
 	var calls atomic.Int32
-	socket, _ := upstream(t, sessionapi.Versioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	socket, _ := upstream(t, testVersioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		for _, header := range []string{"Authorization", "Cookie", "Origin", "X-Mekugi-Authority"} {
 			if r.Header.Get(header) != "" {
@@ -79,7 +79,7 @@ func TestConnectorResourceAdmissionAndForwarding(t *testing.T) {
 
 func TestConnectorRotationCancelsResourceTransfers(t *testing.T) {
 	started, canceled := make(chan struct{}), make(chan struct{})
-	socket, _ := upstream(t, sessionapi.Versioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	socket, _ := upstream(t, testVersioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
@@ -119,7 +119,7 @@ func TestConnectorRotationCancelsResourceTransfers(t *testing.T) {
 }
 
 func TestConnectorTruncatedResourceFails(t *testing.T) {
-	socket, _ := upstream(t, sessionapi.Versioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	socket, _ := upstream(t, testVersioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("Content-Length", "1024")
 		w.WriteHeader(200)
@@ -144,7 +144,7 @@ func TestConnectorTruncatedResourceFails(t *testing.T) {
 
 func TestConnectorRotationRetiresIncompleteResourceBody(t *testing.T) {
 	started := make(chan struct{})
-	socket, _ := upstream(t, sessionapi.Versioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	socket, _ := upstream(t, testVersioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)
 		_, _ = io.Copy(io.Discard, r.Body)
 	})))
@@ -176,9 +176,18 @@ func TestConnectorRotationRetiresIncompleteResourceBody(t *testing.T) {
 }
 
 func TestConnectorResourceLimitsRetainSemanticStatus(t *testing.T) {
-	hub := sessionapi.NewHub(t.Context(), nil)
-	defer hub.Close()
-	socket, _ := upstream(t, sessionapi.Versioned(hub.Handler()))
+	socket, _ := upstream(t, testVersioned(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if len(body) > 1024 {
+			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if len(body) == 0 || body[len(body)-1] != '}' {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})))
 	connector, tokenFile := connect(t, socket)
 	remote := httptest.NewServer(connector)
 	defer remote.Close()

@@ -44,7 +44,7 @@ saves a manual title and skips automatic naming. Otherwise a new session may mak
 separate GPT-6 Luna medium-reasoning title request; unavailable credentials or Luna
 silently skip it. Notifications follow Codex's `tui.notifications`. See
 [terminal controls](../../mekugi-tui/apps/mekugi/internal/terminalsession/SPEC.md),
-[session naming](../../mekugi-tui/modules/sessionnaming/SPEC.md), and
+native session naming, and
 [notifications](../../mekugi-tui/modules/notifications/SPEC.md).
 
 ## Composer

@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/composition"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/headless"
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
@@ -150,7 +150,6 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	}
 	environment = serverEnvironment(environment)
 
-	var rt *composition.Runtime
 	var debug *diagnostic.Bundle
 	var writes *persistence.Counter
 	var capture *transportcapture.Recorder
@@ -172,9 +171,6 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 			debug.Event(map[string]any{"event": "router_stop", "failed": runErr != nil, "storage_writes": debug.Writes().Snapshot()})
 			errs = append(errs, debug.Close())
 		}
-		if rt != nil {
-			errs = append(errs, rt.Close(context.WithoutCancel(ctx)))
-		}
 		if cfg.finalize != nil {
 			errs = append(errs, cfg.finalize())
 		}
@@ -188,12 +184,7 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	}()
 
 	if options.Debug {
-		var rtErr error
-		rt, rtErr = composition.Frontends(ctx, false, options.ChildReplySummary, "")
-		if rtErr != nil {
-			return 1, rtErr
-		}
-		debug, err = openDebugOutput(rt.Diagnostics, true, options.CaptureOutput, readLogPath)
+		debug, err = openDebugOutput(new(diagnostic.Service), true, options.CaptureOutput, readLogPath)
 		if err != nil {
 			return 1, err
 		}
@@ -599,4 +590,26 @@ func validateProviderOverrides(args []string, profile string) error {
 		}
 	}
 	return nil
+}
+
+func decodeResponseCompleted(params []byte) (binding.ResponseCompleted, inference.Usage, time.Duration, bool, error) {
+	var event binding.ResponseCompleted
+	if err := json.Unmarshal(params, &event); err != nil {
+		return binding.ResponseCompleted{}, inference.Usage{}, 0, false, err
+	}
+	if event.ThreadID == "" || event.ResponseID == "" {
+		return event, inference.Usage{}, 0, false, nil
+	}
+	var counts inference.Usage
+	if u := event.Usage; u != nil {
+		counts = inference.Usage{TotalsKnown: true, InputTokens: u.InputTokens,
+			UncachedInputTokens: u.InputTokens - min(u.CachedInputTokens, u.InputTokens),
+			CacheWriteTokens:    u.CacheWriteInputTokens, OutputTokens: u.OutputTokens,
+			ReasoningTokens: u.ReasoningOutputTokens,
+			Incomplete: event.UsageMetadata == nil || event.UsageMetadata.Metadata.Input.Cached == nil ||
+				event.UsageMetadata.Metadata.Output.Reasoning == nil,
+			Inconsistent: u.CachedInputTokens > u.InputTokens || u.ReasoningOutputTokens > u.OutputTokens,
+		}
+	}
+	return event, counts, time.Duration(event.RequestDurationMS) * time.Millisecond, true, nil
 }
