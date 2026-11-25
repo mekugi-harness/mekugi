@@ -305,6 +305,7 @@ fn exit_code_from_status(status: ExitStatus) -> i32 {
 struct TerminalForegroundGuard {
     tty_fd: libc::c_int,
     original_pgrp: libc::pid_t,
+    child_pgrp: Option<libc::pid_t>,
 }
 
 #[cfg(unix)]
@@ -343,18 +344,38 @@ impl TerminalForegroundGuard {
             Some(Self {
                 tty_fd,
                 original_pgrp: current_pgrp,
+                child_pgrp: None,
             })
         }
     }
 
-    fn restore(&self) {
-        set_foreground_pgrp(self.tty_fd, self.original_pgrp);
+    fn set_child_pgrp(&mut self, child_pgrp: libc::pid_t) {
+        self.child_pgrp = Some(child_pgrp);
     }
 
-    fn handoff_to_if_foreground(&self, child_pgrp: libc::pid_t) {
+    /// Restore `original_pgrp` only if the handed-off child process group still owns the
+    /// terminal (or if spawn failed before `child_pgrp` was recorded). Returns `true` if
+    /// foreground ownership belonged to us and was restored.
+    fn restore_if_owned(&self) -> bool {
+        // SAFETY: `tcgetpgrp` is a thread-safe POSIX query on `tty_fd`.
+        let fg_pgrp = unsafe { libc::tcgetpgrp(self.tty_fd) };
+        let should_restore = match self.child_pgrp {
+            Some(child_pgrp) => fg_pgrp == child_pgrp,
+            None => fg_pgrp != self.original_pgrp,
+        };
+        if should_restore {
+            set_foreground_pgrp(self.tty_fd, self.original_pgrp);
+        }
+        should_restore
+    }
+
+    fn handoff_to_if_foreground(&self, child_pgrp: libc::pid_t) -> bool {
         // SAFETY: `tcgetpgrp` is a thread-safe POSIX query on `tty_fd`.
         if unsafe { libc::tcgetpgrp(self.tty_fd) } == self.original_pgrp {
             set_foreground_pgrp(self.tty_fd, child_pgrp);
+            true
+        } else {
+            false
         }
     }
 }
@@ -362,7 +383,7 @@ impl TerminalForegroundGuard {
 #[cfg(unix)]
 impl Drop for TerminalForegroundGuard {
     fn drop(&mut self) {
-        self.restore();
+        let _ = self.restore_if_owned();
     }
 }
 
@@ -377,11 +398,24 @@ fn wait_child_with_tty_job_control(
     use std::os::unix::process::ExitStatusExt;
 
     let child_pid = child.id() as libc::pid_t;
+    let mut handed_off = true;
     loop {
+        if !handed_off && tty_guard.handoff_to_if_foreground(child_pid) {
+            handed_off = true;
+        }
         let mut raw_status: libc::c_int = 0;
+        let flags = if handed_off {
+            libc::WUNTRACED
+        } else {
+            libc::WUNTRACED | libc::WNOHANG
+        };
         // SAFETY: `child_pid` is a direct unwaited child of this process and `raw_status` is a
         // valid stack slot. `WUNTRACED` lets us observe job-control stops.
-        let waited = unsafe { libc::waitpid(child_pid, &mut raw_status, libc::WUNTRACED) };
+        let waited = unsafe { libc::waitpid(child_pid, &mut raw_status, flags) };
+        if waited == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            continue;
+        }
         if waited == -1 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
@@ -391,12 +425,25 @@ fn wait_child_with_tty_job_control(
         }
         if libc::WIFSTOPPED(raw_status) {
             let stop_sig = libc::WSTOPSIG(raw_status);
-            tty_guard.restore();
-            // SAFETY: `original_pgrp > 0` and `stop_sig` is a valid stop signal from `waitpid`.
+            let _ = tty_guard.restore_if_owned();
+            // Block `stop_sig` on this thread while signaling `-original_pgrp`, then unblock it so
+            // delivery happens synchronously on the calling thread before checking post-resume
+            // foreground ownership (even when pipe-reader threads are running).
+            // SAFETY: `original_pgrp > 0`, `stop_sig` is a valid stop signal from `waitpid`, and
+            // `sigset_t` values are stack-allocated.
             unsafe {
+                let mut block_set: libc::sigset_t = std::mem::zeroed();
+                let mut old_set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut block_set);
+                libc::sigaddset(&mut block_set, stop_sig);
+                let masked = libc::pthread_sigmask(libc::SIG_BLOCK, &block_set, &mut old_set) == 0;
                 libc::kill(-tty_guard.original_pgrp, stop_sig);
+                if masked {
+                    let _ =
+                        libc::pthread_sigmask(libc::SIG_SETMASK, &old_set, std::ptr::null_mut());
+                }
             }
-            tty_guard.handoff_to_if_foreground(child_pid);
+            handed_off = tty_guard.handoff_to_if_foreground(child_pid);
             // SAFETY: `child_pid > 0` is the child's process group leader.
             unsafe {
                 libc::kill(-child_pid, libc::SIGCONT);
@@ -500,7 +547,8 @@ pub fn execute(args: &[String]) -> ToolOutput {
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let tty_guard = TerminalForegroundGuard::capture_if_foreground();
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut tty_guard = TerminalForegroundGuard::capture_if_foreground();
     configure_child_process_group(&mut cmd, tty_guard.as_ref());
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -517,6 +565,10 @@ pub fn execute(args: &[String]) -> ToolOutput {
             };
         }
     };
+    #[cfg(unix)]
+    if let Some(guard) = tty_guard.as_mut() {
+        guard.set_child_pgrp(child.id() as libc::pid_t);
+    }
 
     let out_cap = Arc::new(Mutex::new(Some(OutputWindow::new(&options))));
     let err_cap = Arc::new(Mutex::new(Some(OutputWindow::new(&options))));
@@ -553,7 +605,9 @@ pub fn execute(args: &[String]) -> ToolOutput {
     // Terminate any descendants still holding inherited stdout/stderr pipes so draining cannot hang.
     crate::common::kill_process_group(child.id() as i32);
     #[cfg(unix)]
-    let restored_pgrp = tty_guard.as_ref().map(|guard| guard.original_pgrp);
+    let restored_pgrp = tty_guard
+        .as_ref()
+        .and_then(|guard| guard.restore_if_owned().then_some(guard.original_pgrp));
     drop(tty_guard);
     #[cfg(unix)]
     if let Some(original_pgrp) = restored_pgrp {
