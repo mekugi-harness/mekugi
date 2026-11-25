@@ -68,7 +68,7 @@ class CargoEnvironmentTests(unittest.TestCase):
 
 
 class NativeRunnerTests(unittest.TestCase):
-    def run_action(self, *arguments, stack=None, target_config="shared-target", target_env=None, release_lto=None):
+    def run_action(self, *arguments, stack=None, target_config="shared-target", target_env=None, release_lto=None, nextest=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             rust = root / "codex-rs"
@@ -123,6 +123,7 @@ class NativeRunnerTests(unittest.TestCase):
                 patch.object(v8, "resolve_codex_v8_cargo_env", create=True, return_value={"RUSTY_V8_ARCHIVE": "pinned-v8"}) as resolve_v8,
                 patch.object(build, "run") as run,
                 patch.object(build.shutil, "copy2") as copy,
+                patch.object(build.shutil, "which", return_value="/usr/bin/cargo-nextest" if nextest else None),
                 patch.object(build.tarfile, "open"),
             ):
                 build.main()
@@ -200,6 +201,24 @@ class NativeRunnerTests(unittest.TestCase):
             key = f"CARGO_BIN_EXE_{name}"
             self.assertNotIn(key, compile_env)
             self.assertEqual(run_env[key], str(output / name))
+
+    def test_nextest_used_when_available(self):
+        calls, copies, _ = self.run_action("test", nextest=True)
+        packages = ["-p", "codex-app-server", "-p", "codex-code-mode-host",
+                    "-p", "codex-bwrap", "-p", "codex-app-server-subprocess-tests"]
+        nextest_prefix = ["cargo", "nextest", "run", "--no-fail-fast", "--retries", "0",
+                          "--locked", "--cargo-profile", "dev-small", *packages]
+        self.assertEqual(copies, 4)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[1].args[0], [*nextest_prefix, "--bin", "mekugi-app-server"])
+        self.assertEqual(calls[2].args[0], [*nextest_prefix, "--test", "subprocess"])
+
+        filtered_calls, _, _ = self.run_action("test", "--test-filter", "websocket", nextest=True)
+        self.assertEqual(len(filtered_calls), 2)
+        self.assertEqual(
+            filtered_calls[1].args[0],
+            [*nextest_prefix, "--test", "subprocess", "--test", "all", "websocket"],
+        )
 
     def test_explicit_profile_and_stack_override_defaults(self):
         calls, _, _ = self.run_action("test", "--profile", "release", "--", "-p", "codex-core", "--lib", stack="16777216")

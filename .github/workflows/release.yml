@@ -262,6 +262,8 @@ jobs:
           CARGO_INCREMENTAL: '0'
           # Use system Git for V8's nested Git dependencies instead of Cargo's libgit2 transport.
           CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
           PLATFORM: ${{ matrix.platform }}
           RUSTC_WRAPPER: sccache
         run: |
