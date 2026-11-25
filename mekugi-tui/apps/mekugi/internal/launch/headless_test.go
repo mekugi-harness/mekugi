@@ -334,6 +334,78 @@ func TestHeadlessWaitsForFamilyJoinBeforeCompleted(t *testing.T) {
 	}
 }
 
+func TestHeadlessDrainsDelegateEventsAfterTerminalSubtree(t *testing.T) {
+	dir, workspace := installHeadlessFixture(t)
+	t.Chdir(workspace)
+	t.Setenv("MEKUGI_AUTO_WRAP_HEADLESS_SCENARIO", "late-delegate-event")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	code, err := runHeadless(ctx, nil, []string{"--yolo"}, strings.NewReader("delegate work"), &output)
+	if code != 0 || err != nil {
+		t.Fatalf("late delegate drain failed: code=%d err=%v\n%s", code, err, &output)
+	}
+	var methods []string
+	childCompletedIdx, completedIdx := -1, -1
+	for i, row := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
+		var message appserver.Message
+		if err := json.Unmarshal(row, &message); err != nil {
+			t.Fatalf("non-JSON stdout: %q: %v", row, err)
+		}
+		methods = append(methods, message.Method)
+		if message.Method == "turn/completed" && bytes.Contains(message.Params, []byte("child-1")) {
+			childCompletedIdx = i
+		}
+		if message.Method == "mekugi/headless/completed" {
+			completedIdx = i
+		}
+	}
+	if childCompletedIdx < 0 || completedIdx < 0 || childCompletedIdx >= completedIdx || completedIdx != len(methods)-1 {
+		t.Fatalf("dropped trailing delegate event: childCompleted=%d completed=%d total=%d\n%s", childCompletedIdx, completedIdx, len(methods), &output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rpc.joined")); err != nil {
+		t.Fatalf("host shutdown not joined: %v", err)
+	}
+}
+
+func TestHeadlessRetriesAfterSubtreeRPCError(t *testing.T) {
+	dir, workspace := installHeadlessFixture(t)
+	t.Chdir(workspace)
+	t.Setenv("MEKUGI_AUTO_WRAP_HEADLESS_SCENARIO", "subtree-retry")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	code, err := runHeadless(ctx, nil, []string{"--yolo"}, strings.NewReader("ordinary prompt"), &output)
+	if code != 0 || err != nil || !strings.Contains(output.String(), "mekugi/headless/completed") {
+		t.Fatalf("did not recover from transient subtree error: code=%d err=%v\n%s", code, err, &output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rpc.joined")); err != nil {
+		t.Fatalf("host shutdown not joined: %v", err)
+	}
+}
+
+func TestHeadlessOutputCleanupFailurePreventsCompletion(t *testing.T) {
+	_, workspace := installHeadlessFixture(t)
+	t.Chdir(workspace)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cleanupErr := errors.New("capture flush failed")
+	var output bytes.Buffer
+	code, err := runHeadlessSession(ctx, headlessSessionConfig{
+		args:      []string{"--yolo"},
+		workspace: workspace,
+		prompt:    "ordinary prompt",
+		output:    &output,
+		finalize:  func() error { return cleanupErr },
+	})
+	if code != 1 || !errors.Is(err, cleanupErr) {
+		t.Fatalf("cleanup failure did not fail exit: code=%d err=%v", code, err)
+	}
+	if strings.Contains(output.String(), "mekugi/headless/completed") {
+		t.Fatalf("emitted completed despite cleanup failure:\n%s", &output)
+	}
+}
+
 func TestEvaluateHeadlessFamily(t *testing.T) {
 	cases := []struct {
 		name          string

@@ -148,6 +148,10 @@ func TestAutoWrapProcess(t *testing.T) {
 				fmt.Fprintf(os.Stdout, `{"id":%s,"result":{"data":[]}}`+"\n", request.ID)
 			case "thread/subtree/list":
 				subtreeReads++
+				if scenario == "subtree-retry" && subtreeReads == 1 {
+					fmt.Fprintf(os.Stdout, `{"id":%s,"error":{"code":-32000,"message":"transient subtree error"}}`+"\n", request.ID)
+					continue
+				}
 				agent := binding.ThreadInfo{ID: "auto-wrap", Source: []byte(`{"subAgent":{"thread_spawn":{"agent_path":"/root"}}}`), CanAcceptDirectInput: new(true)}
 				if workStatus != "" {
 					agent.AgentStatus, _ = json.Marshal(workStatus)
@@ -160,6 +164,11 @@ func TestAutoWrapProcess(t *testing.T) {
 					}
 					child := binding.ThreadInfo{ID: "child-1", ParentThreadID: "auto-wrap", Source: []byte(`{"subAgent":{"thread_spawn":{"agent_path":"/root/worker"}}}`)}
 					child.AgentStatus, _ = json.Marshal(childStatus)
+					members = append(members, child)
+				}
+				if scenario == "late-delegate-event" && childStatus != "" {
+					child := binding.ThreadInfo{ID: "child-1", ParentThreadID: "auto-wrap", Source: []byte(`{"subAgent":{"thread_spawn":{"agent_path":"/root/worker"}}}`)}
+					child.AgentStatus, _ = json.Marshal("completed")
 					members = append(members, child)
 				}
 				response, err := json.Marshal(map[string]any{"id": request.ID, "result": map[string]any{"data": members}})
@@ -219,6 +228,10 @@ func TestAutoWrapProcess(t *testing.T) {
 					childStatus = "running"
 					fmt.Fprintln(os.Stdout, `{"method":"thread/started","params":{"thread":{"id":"child-1","parentThreadId":"auto-wrap"}}}`)
 				}
+				if scenario == "late-delegate-event" {
+					childStatus = "completed"
+					fmt.Fprintln(os.Stdout, `{"method":"thread/started","params":{"thread":{"id":"child-1","parentThreadId":"auto-wrap"}}}`)
+				}
 				status := "completed"
 				if scenario == "failed" || scenario == "interrupted" {
 					status = scenario
@@ -234,6 +247,11 @@ func TestAutoWrapProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 		if headlessHost {
+			if scenario == "late-delegate-event" {
+				// Emit the delegate's final turn/completed notification after the
+				// terminal subtree snapshot was already returned, during EOF flush.
+				fmt.Fprintln(os.Stdout, `{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn","status":"completed"}}}`)
+			}
 			select {
 			case <-runtimeStarted:
 				if err := os.WriteFile(markerPath+".joined", []byte("joined"), 0600); err != nil {

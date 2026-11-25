@@ -22,7 +22,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
@@ -51,6 +50,7 @@ type headlessSessionConfig struct {
 	output      io.Writer
 	allowResume bool
 	parsed      *parsedHeadlessArgs
+	finalize    func() error
 }
 
 type parsedHeadlessArgs struct {
@@ -150,33 +150,60 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	}
 	environment = serverEnvironment(environment)
 
+	var rt *composition.Runtime
 	var debug *diagnostic.Bundle
 	var writes *persistence.Counter
+	var capture *transportcapture.Recorder
+	var metricsFile *os.File
+	outputsClosed := false
+	finalizeOutputs := func() error {
+		if outputsClosed {
+			return nil
+		}
+		outputsClosed = true
+		var errs []error
+		if capture != nil {
+			errs = append(errs, capture.Close())
+			if metricsFile != nil {
+				errs = append(errs, capture.WriteMetrics(writes.Writer(metricsFile)), metricsFile.Close())
+			}
+		}
+		if debug != nil {
+			debug.Event(map[string]any{"event": "router_stop", "failed": runErr != nil, "storage_writes": debug.Writes().Snapshot()})
+			errs = append(errs, debug.Close())
+		}
+		if rt != nil {
+			errs = append(errs, rt.Close(context.WithoutCancel(ctx)))
+		}
+		if cfg.finalize != nil {
+			errs = append(errs, cfg.finalize())
+		}
+		return errors.Join(errs...)
+	}
+	defer func() {
+		runErr = errors.Join(runErr, finalizeOutputs())
+		if runErr != nil && code == 0 {
+			code = 1
+		}
+	}()
+
 	if options.Debug {
-		rt, rtErr := composition.Frontends(ctx, false, options.ChildReplySummary, "")
+		var rtErr error
+		rt, rtErr = composition.Frontends(ctx, false, options.ChildReplySummary, "")
 		if rtErr != nil {
 			return 1, rtErr
 		}
-		defer func() {
-			runErr = errors.Join(runErr, rt.Close(context.WithoutCancel(ctx)))
-		}()
 		debug, err = openDebugOutput(rt.Diagnostics, true, options.CaptureOutput, readLogPath)
 		if err != nil {
 			return 1, err
 		}
 		writes = debug.Writes()
-		defer func() {
-			debug.Event(map[string]any{"event": "router_stop", "failed": runErr != nil, "storage_writes": debug.Writes().Snapshot()})
-			runErr = errors.Join(runErr, debug.Close())
-		}()
 	}
 
 	capturePath := options.CaptureOutput
 	if debug != nil {
 		capturePath = debug.CapturePath()
 	}
-	var capture *transportcapture.Recorder
-	var metricsFile *os.File
 	if capturePath != "" || debug != nil {
 		if capturePath != "" {
 			capturePath, err = filepath.Abs(capturePath)
@@ -188,12 +215,6 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 		if err != nil {
 			return 1, fmt.Errorf("initialize capture: %w", err)
 		}
-		defer func() {
-			runErr = errors.Join(runErr, capture.Close())
-			if metricsFile != nil {
-				runErr = errors.Join(runErr, capture.WriteMetrics(writes.Writer(metricsFile)), metricsFile.Close())
-			}
-		}()
 		if debug != nil {
 			metricsFile, err = os.OpenFile(debug.MetricsPath(), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 			if err != nil {
@@ -231,12 +252,12 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	cmd.WaitDelay = 5 * time.Second
 
 	thread, err := runHeadlessHost(ctx, cmd, options, resumeThread, cfg.prompt, stream, capture)
-	err = errors.Join(err, stream.Err())
-	if err != nil {
-		return 1, err
+	runErr = errors.Join(err, stream.Err(), ctx.Err())
+	if cleanupErr := finalizeOutputs(); cleanupErr != nil {
+		runErr = errors.Join(runErr, cleanupErr)
 	}
-	if err := ctx.Err(); err != nil {
-		return 1, err
+	if runErr != nil {
+		return 1, runErr
 	}
 	if err := stream.Complete(thread); err != nil {
 		return 1, err
@@ -284,9 +305,16 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 		return "", err
 	}
 
-	var treePending, treeDirty, rootCompleted bool
+	var treePending, treeDirty, treeRetry, rootCompleted, shuttingDown bool
+	var shutdownTimer *time.Timer
+	var shutdownTimeout <-chan time.Time
+	defer func() {
+		if shutdownTimer != nil {
+			shutdownTimer.Stop()
+		}
+	}()
 	observeTree := func() error {
-		if rootThread == "" || treePending || !treeDirty {
+		if shuttingDown || rootThread == "" || treePending || !treeDirty {
 			return nil
 		}
 		_, err := requests.Send("thread/subtree/list", map[string]any{"threadId": rootThread}, "native/tree", headlessRequest{kind: headlessReqSubtreeList})
@@ -303,8 +331,10 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 		select {
 		case <-ctx.Done():
 			return rootThread, ctx.Err()
+		case <-shutdownTimeout:
+			return rootThread, errors.New("app-server did not shut down after EOF; forced termination")
 		case <-pollTick.C:
-			if rootCompleted && !treePending {
+			if !shuttingDown && (rootCompleted || treeRetry) && !treePending {
 				treeDirty = true
 				if err := observeTree(); err != nil {
 					return rootThread, headlessWriteErr(ctx, err)
@@ -313,6 +343,9 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 		case message, ok := <-host.Messages:
 			if !ok {
 				exited = true
+				if shuttingDown {
+					return rootThread, <-host.Done
+				}
 				if err := ctx.Err(); err != nil {
 					return rootThread, errors.Join(err, <-host.Done)
 				}
@@ -328,6 +361,9 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 			}
 			if err := observeHeadlessCapture(capture, message); err != nil {
 				return rootThread, err
+			}
+			if shuttingDown {
+				continue
 			}
 			if message.Method == "" {
 				req, ok := requests.Lookup(string(message.ID))
@@ -373,16 +409,24 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 				case headlessReqSubtreeList:
 					treePending = false
 					if message.Error != nil {
-						treeDirty = false
+						treeRetry = true
 						continue
 					}
+					treeRetry = false
 					done, rootDone, stateErr := evaluateHeadlessFamily(rootThread, message.Result)
 					if stateErr != nil {
 						return rootThread, stateErr
 					}
 					rootCompleted = rootDone
 					if done {
-						return rootThread, nil
+						// Initiate graceful EOF shutdown and keep draining host.Messages
+						// so any trailing delegate notifications (such as turn/completed)
+						// are forwarded before mekugi/headless/completed is emitted.
+						shuttingDown = true
+						_ = host.Input.Close()
+						shutdownTimer = time.NewTimer(3 * time.Second)
+						shutdownTimeout = shutdownTimer.C
+						continue
 					}
 					if err := observeTree(); err != nil {
 						return rootThread, headlessWriteErr(ctx, err)
@@ -472,28 +516,11 @@ func observeHeadlessCapture(capture *transportcapture.Recorder, message appserve
 	}
 	switch message.Method {
 	case "rawResponse/completed":
-		var event binding.ResponseCompleted
-		if err := json.Unmarshal(message.Params, &event); err != nil {
+		event, counts, duration, ok, err := decodeResponseCompleted(message.Params)
+		if err != nil || !ok {
 			return err
 		}
-		if event.ThreadID == "" || event.ResponseID == "" {
-			return nil
-		}
-		var counts inference.Usage
-		if u := event.Usage; u != nil {
-			counts = inference.Usage{
-				TotalsKnown:         true,
-				InputTokens:         u.InputTokens,
-				UncachedInputTokens: u.InputTokens - min(u.CachedInputTokens, u.InputTokens),
-				CacheWriteTokens:    u.CacheWriteInputTokens,
-				OutputTokens:        u.OutputTokens,
-				ReasoningTokens:     u.ReasoningOutputTokens,
-				Incomplete: event.UsageMetadata == nil || event.UsageMetadata.Metadata.Input.Cached == nil ||
-					event.UsageMetadata.Metadata.Output.Reasoning == nil,
-				Inconsistent: u.CachedInputTokens > u.InputTokens || u.ReasoningOutputTokens > u.OutputTokens,
-			}
-		}
-		capture.ObserveResponse(event.ThreadID, event.TurnID, event.Model, counts, time.Duration(event.RequestDurationMS)*time.Millisecond)
+		capture.ObserveResponse(event.ThreadID, event.TurnID, event.Model, counts, duration)
 	case "error":
 		var event binding.Notification
 		if err := json.Unmarshal(message.Params, &event); err != nil {
