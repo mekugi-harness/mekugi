@@ -385,7 +385,7 @@ func (session *nativeSession) restoreHistoryItem(attached *attachedPresentation,
 			text = activitypresentation.HostEditText(facts, attached.cwd)
 		}
 		entry := sessionpresentation.ActivityEntry{Seq: attached.source.LastSeq + 1, Agent: "Main", Kind: "tool", Text: text, CallID: item.ID, Observed: time.Now(),
-			Native: &sessionpresentation.NativeItem{Thread: session.Client.Thread, Turn: turn.ID, Item: item.ID, Phase: method, Command: item.Command, CommandCwd: sessionpresentation.CommandDirectory(facts, attached.cwd), Status: item.Status, Duration: sessionpresentation.ItemDuration(facts), SearchResults: sessionpresentation.SearchResults(facts), Workdir: sessionpresentation.CommandWorkdir(facts, attached.cwd)}}
+			Native: &sessionpresentation.NativeItem{Thread: session.Client.Thread, Turn: turn.ID, Item: item.ID, Phase: method, Command: item.Command, CommandDisplay: sessionpresentation.CommandDisplaySource(facts), CommandCwd: sessionpresentation.CommandDirectory(facts, attached.cwd), Status: item.Status, Duration: sessionpresentation.ItemDuration(facts), SearchResults: sessionpresentation.SearchResults(facts), Workdir: sessionpresentation.CommandWorkdir(facts, attached.cwd)}}
 		if item.Type == "fileChange" {
 			entry.Native.EditPages = activitypresentation.HostEditPages(facts, attached.cwd, method)
 		}

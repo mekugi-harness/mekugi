@@ -138,7 +138,11 @@ func restoreCommandSegments(parent context.Context, retained changes.Scope, segm
 	}
 	cwd := cmp.Or(entry.Native.CommandCwd, sessionpresentation.CommandDirectory(item.Observation(), workspace))
 	for _, part := range record.Parts {
-		segment := sessionpresentation.ActivitySegment{Timing: segmenttransport.Timing(part.Timing), Source: part.Source, Text: (activitypresentation.CommandSource{Script: part.Source, Display: frontends.ShellDisplaySource(part.Source), Directory: cwd}).SegmentText(), Skipped: part.Skipped, Exit: part.Exit}
+		display := frontends.ShellDisplaySource(part.Source)
+		if len(record.Parts) == 1 {
+			display = sessionpresentation.SingleSegmentDisplay(part.Source, entry.Native.CommandDisplay, item.Cwd)
+		}
+		segment := sessionpresentation.ActivitySegment{Timing: segmenttransport.Timing(part.Timing), Source: part.Source, Text: (activitypresentation.CommandSource{Script: part.Source, Display: display, Directory: cwd}).SegmentText(), Skipped: part.Skipped, Exit: part.Exit}
 		if separate && !part.Skipped {
 			if outputs := activity.Outputs(attached.session.Scope()); outputs != nil {
 				segment.Output = outputs.New()

@@ -103,7 +103,7 @@ func (c Command) compound(values []Value, inline bool) bool {
 	if compound || c.Script == "" {
 		return compound
 	}
-	if program, err := syntax.NewParser().Parse(strings.NewReader(c.Script), ""); err == nil {
+	if program, err := syntax.NewParser().Parse(strings.NewReader(cmp.Or(c.Display, c.Script)), ""); err == nil {
 		if len(values) == 1 && values[0].Verb == "Run" && values[0].Code == textsanitize.Safe(shellDisplaySource(c.Display), false) {
 			return false
 		}
@@ -258,6 +258,12 @@ func (c Command) SegmentValues(detail bool) []Value {
 		}
 		if segment.Text == "" && hiddenCommandSource(cmp.Or(segment.Display, segment.Source)) {
 			continue
+		}
+		if segmentIndex == 0 && len(c.Segments) > 1 && !segment.Skipped && !segment.Pending && segment.ExitCode == 0 &&
+			c.Display != "" && strings.TrimRight(c.Display, "\r\n") != strings.TrimRight(c.Script, "\r\n") {
+			if rest, _, ok := shellsyntax.StripLeadingCd(c.Script, c.Directory); ok && strings.TrimRight(rest, "\r\n") == strings.TrimRight(c.Display, "\r\n") {
+				continue
+			}
 		}
 		if classified && !segment.Skipped && segment.ExitCode == 0 {
 			following := ""

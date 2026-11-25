@@ -324,6 +324,7 @@ func ReduceObservation(s *Attachment, model *Model, mainSource, childSource *Act
 			native.CommandTimeout = in.CommandTimeout
 			native.UserShell = item.UserShell
 			native.ProcessID = item.ProcessID
+			native.CommandDisplay = CommandDisplaySource(item)
 			native.CommandCwd = CommandDirectory(item, in.Workspace)
 			native.SearchResults = SearchResults(item)
 			entry := ActivityEntry{Seq: s.Activity().NextSequence(), Agent: agent, Kind: "tool", Text: ToolText(item, in.Workspace), CallID: id, Observed: now, Native: native}
@@ -332,7 +333,7 @@ func ReduceObservation(s *Attachment, model *Model, mainSource, childSource *Act
 				if item.Type == "commandExecution" {
 					native.Running, native.CommandStarted = true, now
 					if run := s.Commands()[key]; run == nil {
-						native.Invocation = activitypresentation.NewInvocation(CommandSource(item.Command, native.CommandCwd), now, outputs)
+						native.Invocation = activitypresentation.NewInvocation(itemCommandSource(item, native.CommandCwd), now, outputs)
 						native.Output = native.Invocation.Output()
 						s.Commands()[key] = &CommandOperation{Entry: entry}
 						result.Deliveries = append(result.Deliveries, ActivityDelivery{Command: &CommandDelivery{Kind: CommandBegin, Key: key, Text: entry.Text}})

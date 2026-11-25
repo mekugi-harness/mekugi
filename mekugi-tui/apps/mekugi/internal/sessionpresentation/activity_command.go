@@ -1,9 +1,11 @@
 package sessionpresentation
 
 import (
+	"cmp"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	activitypresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -27,7 +29,7 @@ func CommandPresentation(entry ActivityEntry) activitypresentation.Command {
 	} else {
 		// Non-command items, including hooks, share the terminal detail surface.
 		source := CommandSource(n.Command, n.CommandCwd)
-		c.Script, c.Display, c.Directory = source.Script, source.Display, source.Directory
+		c.Script, c.Display, c.Directory = source.Script, cmp.Or(n.CommandDisplay, source.Display), source.Directory
 		if n.Output != nil {
 			snapshot, _ := n.Output.Context(0)
 			c.Output = &snapshot
@@ -54,8 +56,12 @@ func CommandPresentation(entry ActivityEntry) activitypresentation.Command {
 		if n.SegmentsPending {
 			break
 		}
+		segmentDisplay := frontends.ShellDisplaySource(segment.Source)
+		if len(n.Segments) == 1 {
+			segmentDisplay = SingleSegmentDisplay(segment.Source, c.Display, cmp.Or(n.CommandCwd, c.Directory))
+		}
 		value := activitypresentation.CommandSegment{
-			Source: segment.Source, Display: frontends.ShellDisplaySource(segment.Source), Text: segment.Text, Running: segment.Running, Skipped: segment.Skipped, Pending: segment.Pending, ExitCode: segment.Exit,
+			Source: segment.Source, Display: segmentDisplay, Text: segment.Text, Running: segment.Running, Skipped: segment.Skipped, Pending: segment.Pending, ExitCode: segment.Exit,
 			Started: segment.Timing.Started, Ended: segment.Timing.Ended, Duration: time.Duration(segment.Timing.ElapsedNS),
 			Tail: segment.Tail, TailOmitted: segment.Omit, TailClipped: segment.Clipped, Changes: segment.Changes, Results: segment.Results,
 		}
@@ -81,4 +87,10 @@ func CommandSource(command, directory string) activitypresentation.CommandSource
 		script = shellinstrumentation.ShOriginal(command)
 	}
 	return activitypresentation.CommandSource{Script: script, Display: frontends.ShellDisplaySource(DisplayCommand(command)), Directory: directory}
+}
+
+func itemCommandSource(item observation.Item, directory string) activitypresentation.CommandSource {
+	source := CommandSource(item.Command, directory)
+	source.Display = CommandDisplaySource(item)
+	return source
 }

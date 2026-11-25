@@ -38,8 +38,12 @@ func (a *Attachment) Commands() map[[3]string]*CommandOperation {
 // Source: apps/mekugi/internal/router/exec_track.go:50:77@29a3a244.
 func CommandReport(invocation *activitypresentation.Invocation, track segments.Report, directory string) activitypresentation.SegmentReport {
 	report := activitypresentation.SegmentReport{Terminal: track.Terminal, Lossy: track.Lossy, Ended: track.Ended, Closed: track.Closed, Done: track.Done, ExitCode: track.Code}
+	canonical := invocation.Snapshot()
 	for index, observed := range track.Segments {
 		analysis := frontends.ShellDisplaySource(observed.Source)
+		if len(track.Segments) == 1 {
+			analysis = SingleSegmentDisplay(observed.Source, canonical.Display, directory)
+		}
 		text := invocation.SegmentText(index)
 		if text == "" {
 			text = (activitypresentation.CommandSource{Script: observed.Source, Display: analysis, Directory: directory}).SegmentText()

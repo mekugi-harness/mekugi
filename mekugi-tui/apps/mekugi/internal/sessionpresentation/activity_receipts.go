@@ -1,6 +1,7 @@
 package sessionpresentation
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 
@@ -51,7 +52,8 @@ func (v *ActivitySource) ApplyCapturedEdits(receipts []*changepresentation.Recei
 					native := *entry.Native
 					native.CapturedEdit = nil
 					entry.Native = &native
-					entry.Text = activitypresentation.ShellSource(frontends.ShellDisplaySource(DisplayCommand(native.Command)), native.CommandCwd)
+					display := cmp.Or(native.CommandDisplay, frontends.ShellDisplaySource(DisplayCommand(native.Command)))
+					entry.Text = activitypresentation.ShellSource(display, native.CommandCwd)
 					v.Model.Replace(i, entry, activitypresentation.RetainAnnotations(ActivityContent(entry).Values(), v.Entries[i].Values))
 				}
 				continue
@@ -72,7 +74,8 @@ func (v *ActivitySource) ApplyCapturedEdits(receipts []*changepresentation.Recei
 			if call == anchor && entry.Native.Command != "" {
 				// Rebuild from the host command so repeated reconciliation never
 				// duplicates receipts or drops neighboring operations.
-				original := activitypresentation.ShellSource(frontends.ShellDisplaySource(DisplayCommand(entry.Native.Command)), entry.Native.CommandCwd)
+				display := cmp.Or(entry.Native.CommandDisplay, frontends.ShellDisplaySource(DisplayCommand(entry.Native.Command)))
+				original := activitypresentation.ShellSource(display, entry.Native.CommandCwd)
 				paragraphs := activitymodel.Paragraphs(original)
 				// A grouped receipt without a witnessed writer can land on a
 				// standalone read. It supplements that operation, not replaces it.
