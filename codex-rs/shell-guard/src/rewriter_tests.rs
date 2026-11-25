@@ -400,17 +400,33 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
         "cat <<'EOF' > \"$(printf '%s-%s.sh' case in)\" &&\nsh -c 'echo hi'\nEOF\necho ok";
     assert_eq!(rewrite_script(case_in_args, &config), case_in_args);
 
-    // Trailing comment backslash and escaped double-backslash must not skip the heredoc opening newline.
-    for literal_bs in [
-        "cat <<'SCRIPT' && # note \\\nsh -c 'echo hello'\nSCRIPT\necho ok",
-        "cat <<'SCRIPT' && echo \\\\\nsh -c 'echo hello'\nSCRIPT",
+    // Trailing comment backslash and escaped double-backslash must keep the heredoc body verbatim
+    // while still rewriting guarded commands that follow the terminator.
+    for (prefix, suffix) in [
+        (
+            "cat <<'SCRIPT' && # note \\\nsh -c 'echo hello'\nSCRIPT\n",
+            "/usr/bin/git push",
+        ),
+        (
+            "cat <<'SCRIPT' && echo \\\\\nsh -c 'echo hello'\nSCRIPT\n",
+            "/usr/bin/git push",
+        ),
     ] {
-        assert_eq!(rewrite_script(literal_bs, &config), literal_bs);
+        let script = format!("{prefix}{suffix}");
+        let rewritten = rewrite_script(&script, &config);
+        assert!(
+            rewritten.starts_with(prefix) && rewritten.ends_with("-- /usr/bin/git push"),
+            "got: {rewritten}"
+        );
     }
 
     // Quoted prefix concatenated with unquoted suffix ('END'MARKER) must not terminate early on END.
     let concat_delim = "cat <<'END'MARKER &&\nEND\nsh -c 'echo hello'\nENDMARKER\necho ok";
     assert_eq!(rewrite_script(concat_delim, &config), concat_delim);
+
+    // Delimiter containing literal <(tag) suffix (E'O'F<(tag)) must not truncate to EOF.
+    let subst_like_delim = "cat <<E'O'F<(tag) &&\nEOF\nsh -c 'printf done'\nEOF<(tag)\necho ok";
+    assert_eq!(rewrite_script(subst_like_delim, &config), subst_like_delim);
 
     // Multiline process substitution on a quoted heredoc line must still rewrite its inner command.
     let proc_subst = "cat <<'OUTER' <(\n/usr/bin/git push\n)\nOUTER";

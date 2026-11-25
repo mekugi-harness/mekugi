@@ -445,7 +445,7 @@ fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSp
         else {
             continue;
         };
-        let word_end = scan_shell_word_end(src.as_bytes(), node.start_byte(), src.len());
+        let word_end = scan_shell_word_end(src.as_bytes(), node.end_byte(), src.len());
         let word_text = &src[node.start_byte()..word_end];
         let Some((delimiter, is_quoted)) = parse_heredoc_word(word_text) else {
             continue;
@@ -732,12 +732,52 @@ fn scan_error_line_heredocs(src: &str, start: usize, end: usize) -> Vec<HeredocE
 }
 
 fn scan_shell_word_end(bytes: &[u8], mut i: usize, limit: usize) -> usize {
-    while i < limit
-        && !matches!(
+    while i < limit {
+        if matches!(bytes[i], b'<' | b'>' | b'$') && bytes.get(i + 1) == Some(&b'(') {
+            i += 2;
+            let mut depth = 1usize;
+            while i < limit && depth > 0 {
+                match bytes[i] {
+                    b'\\' => i = (i + 2).min(limit),
+                    b'\'' => {
+                        i += 1;
+                        while i < limit && bytes[i] != b'\'' {
+                            i += 1;
+                        }
+                        i = (i + 1).min(limit);
+                    }
+                    b'"' => {
+                        i += 1;
+                        while i < limit {
+                            match bytes[i] {
+                                b'\\' => i = (i + 2).min(limit),
+                                b'"' => {
+                                    i += 1;
+                                    break;
+                                }
+                                _ => i += 1,
+                            }
+                        }
+                    }
+                    b'(' => {
+                        depth += 1;
+                        i += 1;
+                    }
+                    b')' => {
+                        depth -= 1;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        if matches!(
             bytes[i],
             b' ' | b'\t' | b'\n' | b'\r' | b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>'
-        )
-    {
+        ) {
+            break;
+        }
         match bytes[i] {
             b'\\' => i = (i + 2).min(limit),
             b'\'' => {
