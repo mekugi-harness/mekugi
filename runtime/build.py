@@ -99,15 +99,16 @@ def main():
     binaries = [("codex-app-server", "mekugi-app-server"), ("codex-code-mode-host", "codex-code-mode-host")]
     if spec.is_linux:
         binaries.append(("codex-bwrap", "bwrap"))
-    selection = ["--locked", "--profile", profile]
+    packages = []
     for package, _ in binaries:
-        selection.extend(["-p", package])
+        packages.extend(["-p", package])
     suite_targets = []
     if args.action == "test":
-        selection.extend(["-p", subprocess_test_package])
+        packages.extend(["-p", subprocess_test_package])
         suite_targets.extend(["--test", "subprocess"])
         if args.test_filter is not None:
             suite_targets.extend(["--test", "all"])
+    selection = ["--locked", "--profile", profile, *packages]
     cargo = ["cargo", "build", *selection]
     for _, binary in binaries:
         cargo.extend(["--bin", binary])
@@ -126,9 +127,26 @@ def main():
         shutil.copy2(target_dir / profile_dir / binary, output / binary)
     shutil.copy2(RUST / "models-manager/models.json", output / "mekugi-models.json")
     if args.action == "test":
-        filters = ["--", args.test_filter] if args.test_filter is not None else []
+        use_nextest = shutil.which("cargo-nextest") is not None
+        test_cmd = (
+            ["cargo", "nextest", "run", "--no-fail-fast", "--retries", "0"]
+            if use_nextest
+            else ["cargo", "test"]
+        )
+        test_selection = (
+            # Nextest can invoke Cargo without the wrapper that selected this directory.
+            ["--locked", "--cargo-profile", profile, "--target-dir", str(target_dir), *packages]
+            if use_nextest
+            else selection
+        )
         if args.test_filter is None:
-            run(["cargo", "test", *selection, "--bin", "mekugi-app-server"], env)
+            filters = []
+        elif use_nextest:
+            filters = [args.test_filter]
+        else:
+            filters = ["--", args.test_filter]
+        if args.test_filter is None:
+            run([*test_cmd, *test_selection, "--bin", "mekugi-app-server"], env)
         # Give the suites the staged sibling layout without changing compiler inputs.
         suite_env = env | {
             f"CARGO_BIN_EXE_{name}": str(output / name)
@@ -137,7 +155,7 @@ def main():
         suite_env["CARGO_BIN_EXE_exec-server"] = str(
             target_dir / profile_dir / "exec-server"
         )
-        run(["cargo", "test", *selection, *suite_targets, *filters], suite_env)
+        run([*test_cmd, *test_selection, *suite_targets, *filters], suite_env)
         return
     if args.action == "build":
         print(output)

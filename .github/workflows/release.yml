@@ -76,6 +76,7 @@ jobs:
     env:
       CGO_ENABLED: '1'
       BUILD_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      NATIVE_PACKAGE_PROFILE: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch') && 'release' || 'dev-small' }}
       SCCACHE_GHA_ENABLED: 'true'
       SCCACHE_IDLE_TIMEOUT: '0'
     steps:
@@ -94,10 +95,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.4'
-      - name: Install Just
+      - name: Install Just and cargo-nextest
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
-          tool: just@1.51.0
+          tool: just@1.51.0, cargo-nextest
       - name: Cache Bun dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -147,19 +148,20 @@ jobs:
         id: native_key
         env:
           PLATFORM: ${{ matrix.platform }}
+          PROFILE: ${{ env.NATIVE_PACKAGE_PROFILE }}
           RUNNER_LABEL: ${{ matrix.runner }}
           RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'justfile', 'runtime/build.py') }}
         run: |
           native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
           image="$RUNNER_LABEL-${ImageVersion:-$GITHUB_RUN_ID}"
-          key="$(printf '%s\n' "$PLATFORM" "$image" "$native_tree" "$RECIPE_HASH" | shasum -a 256 | cut -d' ' -f1)"
+          key="$(printf '%s\n' "$PLATFORM" "$PROFILE" "$image" "$native_tree" "$RECIPE_HASH" | shasum -a 256 | cut -d' ' -f1)"
           echo "name=mekugi_${PLATFORM}-$key" >> "$GITHUB_OUTPUT"
       - name: Cache packaged native runtime
         id: native_cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/artifacts/mekugi-native_${{ matrix.platform }}.tar.gz
-          key: native-bundle-v2-${{ steps.native_key.outputs.name }}
+          key: native-bundle-v3-${{ steps.native_key.outputs.name }}
       - name: Restore packaged native runtime from main
         id: native_artifact
         if: steps.native_cache.outputs.cache-hit != 'true'
@@ -226,7 +228,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends pkg-config libcap-dev libssl-dev
+          sudo apt-get install --yes --no-install-recommends pkg-config libcap-dev libssl-dev mold
       - name: Enable unprivileged user namespaces
         if: runner.os == 'Linux'
         run: |
@@ -260,6 +262,8 @@ jobs:
           CARGO_INCREMENTAL: '0'
           # Use system Git for V8's nested Git dependencies instead of Cargo's libgit2 transport.
           CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
           PLATFORM: ${{ matrix.platform }}
           RUSTC_WRAPPER: sccache
         run: |
@@ -269,7 +273,7 @@ jobs:
         if: steps.native_cache.outputs.cache-hit != 'true' && steps.native_artifact.outputs.restored != 'true'
         env: *native_env
         run: |
-          just package-native --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
+          just package-native --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
       - name: Build and package
         env:
           PLATFORM: ${{ matrix.platform }}
