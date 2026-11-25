@@ -112,6 +112,10 @@ preview-native-ui:
         {{ just }} _test-env go test -trimpath \
         {{ launch }} -run '^TestNativeUIWalkthrough$' -count=1 -timeout 0
 
+# Run path-scoped verification for files changed since base (supports --dry-run).
+affected base='origin/main' *args:
+    python3 scripts/affected.py --just {{ just }} "$@"
+
 # Defaults to all workspace packages. Otherwise pass packages and go test flags.
 test *args='@workspace': workspace-check
     MEKUGI_E2E_MODEL="${MEKUGI_E2E_MODEL-gpt-6-luna}" {{ just }} _test-env {{ go_test }} -parallel=32 "$@"

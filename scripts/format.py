@@ -61,6 +61,8 @@ def python_scripts_formatter_group(*, check: bool) -> FormatterGroup:
     args.extend(
         [
             "scripts/format.py",
+            "scripts/affected.py",
+            "scripts/test_affected.py",
             "scripts/test_native_maintenance.py",
             "codex-rs/app-server-protocol/scripts",
         ]
