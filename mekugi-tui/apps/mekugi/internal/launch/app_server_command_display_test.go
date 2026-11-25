@@ -563,6 +563,7 @@ func TestLeadingCdFailedCdKeepsOriginalCommandAndWorkdir(t *testing.T) {
 		{"and chain cd failure", "cd missing && go test ./...", "failed", "bash: line 1: cd: missing: No such file or directory\n", "", "cd missing && go test ./...", 1},
 		{"semicolon cd failure with zero exit", "cd missing; pwd", "completed", "bash: line 1: cd: missing: No such file or directory\n" + workspace + "\n", "", "cd missing; pwd", 0},
 		{"nested child script cd error preserves outer workdir", "cd sub && ./build.sh", "failed", "./build.sh: line 2: cd: generated: No such file or directory\n", "sub", "./build.sh", 1},
+		{"missing command ending in cd preserves outer workdir", "cd man && etcd --version", "failed", "bash: line 1: etcd: command not found\n", "man", "etcd --version", 127},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := tc.output

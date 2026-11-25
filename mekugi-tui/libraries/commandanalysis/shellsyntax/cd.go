@@ -30,8 +30,8 @@ func StripLeadingCd(script, directory string) (rest, target string, ok bool) {
 	return rest, filepath.Clean(target), true
 }
 
-// LeadingCdOperand returns the raw literal directory operand of a leading cd
-// statement without resolving it against a base directory.
+// LeadingCdOperand returns the raw literal directory operand of a strippable
+// leading cd prefix without resolving it against a base directory.
 func LeadingCdOperand(script string) (string, bool) {
 	operand, _, ok := parseLeadingCd(script)
 	return operand, ok

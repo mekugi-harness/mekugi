@@ -50,10 +50,14 @@ func isOuterShellCdError(line, operand string) bool {
 	default:
 		return false
 	}
-	for _, marker := range []string{": cd: ", " cd: ", "cd:"} {
-		if _, after, found := strings.Cut(rest, marker); found {
-			return strings.Contains(after, operand)
-		}
+	if _, after, found := strings.Cut(rest, ": cd: "); found {
+		return strings.Contains(after, operand)
+	}
+	if after, found := strings.CutPrefix(rest, " cd: "); found {
+		return strings.Contains(after, operand)
+	}
+	if after, found := strings.CutPrefix(rest, "cd:"); found {
+		return strings.Contains(after, operand)
 	}
 	return false
 }
