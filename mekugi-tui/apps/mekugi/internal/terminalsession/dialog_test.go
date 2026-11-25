@@ -312,3 +312,25 @@ func TestDialogEventNavArrowsAcrossTabsAndBoundaries(t *testing.T) {
 		t.Fatalf("Esc did not close EventNav dialog: %+v", intent)
 	}
 }
+
+func TestContentDialogEventNavLeftDoesNotInterceptModelVisible(t *testing.T) {
+	d := ContentDialog{View: activityui.NewView()}
+	d.EventNav = true
+	d.Pages = []sessionpresentation.DetailItem{
+		{ID: "first", Kind: "op", Verb: "Run", Code: "echo 1", Prepared: &activitypresentation.PreparedContent{ID: "p1", Text: "prepared 1"}},
+		{ID: "second", Kind: "op", Verb: "Run", Code: "echo 2", Prepared: &activitypresentation.PreparedContent{ID: "p2", Text: "prepared 2"}},
+	}
+	d.Update(sessionpresentation.DetailView{Pages: d.Pages})
+	d.Paint(make([]string, 16), Rect{W: 80, H: 16})
+	// Enable model-visible on tab 0, then Left should still navigate to previous event (not toggle original).
+	d.Key("o")
+	if intent := d.Key(keyLeft); intent.Action != DialogPrevEvent {
+		t.Fatalf("Left in model-visible EventNav tab 0 = %+v, want DialogPrevEvent", intent)
+	}
+	// On tab 1 with model-visible enabled, Left moves to tab 0.
+	d.Key("\x1b[C")
+	d.Key("o")
+	if intent := d.Key(keyLeft); intent.Action != 0 || d.Page != 0 {
+		t.Fatalf("Left in model-visible EventNav tab 1 = %+v (page=%d), want tab 0", intent, d.Page)
+	}
+}

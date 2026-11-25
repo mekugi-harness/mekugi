@@ -66,6 +66,7 @@ func (c *nativeClient) openTranscriptDetail(version sessionpresentation.Version,
 	if selectLast && target.LastSnippet != (activityui.Snippet{}) {
 		active.Snippet = target.LastSnippet
 	}
+	active = view.ResolveDetailTarget(active)
 	c.detailNav.view = view
 	c.detailNav.thread = thread
 	c.detailNav.active = active

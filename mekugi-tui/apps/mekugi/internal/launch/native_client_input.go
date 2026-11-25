@@ -631,7 +631,6 @@ func (c *nativeClient) dialog(intent terminalsession.DialogIntent) {
 		c.clearDetailNavTarget()
 		c.details(c.event.Frame.View.Version, sessionapi.NativeDetailRequest{Displayed: source, Kind: kind, Path: intent.Text, Agent: kind == sessionapi.NativeRunDetails && agent})
 	case terminalsession.DialogReference:
-		c.restoreDetailNav()
 		c.closeLocalDetails()
 		intent := u.Main.Reference(intent.Description, intent.Text, "")
 		c.enqueue(sessionapi.NativeOperation{Reference: &intent}, nil, nil)

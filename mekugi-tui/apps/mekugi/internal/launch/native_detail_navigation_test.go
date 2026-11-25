@@ -170,6 +170,13 @@ func TestNativeTranscriptSheetCrossEventNavigationAndRestore(t *testing.T) {
 			// a -> b -> c -> d
 			sendKey("\x1b[C")
 			checkStep("right to b.go", "b.go", "a.go")
+			// Quoting selected sheet text into the composer must keep event navigation active.
+			client.dialog(terminalsession.DialogIntent{Action: terminalsession.DialogReference, Description: "diff", Text: "+new b.go"})
+			if len(client.calls) != 1 || client.calls[0].operation.Reference == nil {
+				t.Fatalf("DialogReference did not enqueue Reference operation: %+v", client.calls)
+			}
+			client.calls = nil
+			publish()
 			sendKey("\x1b[C")
 			checkStep("right across message to c.go", "c.go", "c.go")
 			sendKey("\x1b[C")

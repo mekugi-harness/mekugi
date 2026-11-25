@@ -259,7 +259,7 @@ func (d *ContentDialog) Key(key string) DialogIntent {
 	if d.Processes && d.Selection == nil && !d.Typing {
 		return d.processKey(key)
 	}
-	if !d.Typing && (key == "o" || left && len(d.Pages) > 0 && d.modelVisible[d.Pages[d.Page].ID]) {
+	if !d.Typing && (key == "o" || !d.EventNav && left && len(d.Pages) > 0 && d.modelVisible[d.Pages[d.Page].ID]) {
 		if d.Selection == nil && len(d.Pages) > 0 {
 			page := d.Pages[d.Page]
 			if page.Prepared != nil {

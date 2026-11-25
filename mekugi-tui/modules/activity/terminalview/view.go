@@ -1559,11 +1559,19 @@ func (v *View) viewportPosition(feed Feed, rows int) (int, bool) {
 	if v.ActiveDetailReveal && rows > 0 {
 		if _, start, end, ok := v.activeDetailRowMatch(feed); ok {
 			clamped := max(0, min(offset, len(feed.Lines)-rows))
-			if start < clamped || end > clamped+rows {
+			minVisible := clamped
+			if _, pinned := v.pinnedHeadingAt(feed, clamped, rows); pinned {
+				minVisible++
+			}
+			if start < minVisible || end > clamped+rows {
 				if end-start >= rows {
 					offset = start
 				} else {
 					offset = start - (rows-(end-start))/2
+				}
+				offset = max(0, min(offset, len(feed.Lines)-rows))
+				if _, pinned := v.pinnedHeadingAt(feed, offset, rows); pinned && start == offset && offset > 0 {
+					offset--
 				}
 				following = false
 			}
@@ -1581,7 +1589,11 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 	}
 	v.Offset, v.Following = v.viewportPosition(feed, rows)
 	v.ActiveDetailReveal = false
-	v.FeedTargets = collectDetailTargets(feed)
+	if v.ActiveDetail.Zero() {
+		v.FeedTargets = nil
+	} else {
+		v.FeedTargets = v.collectDetailTargets(feed)
+	}
 	v.imageViewport(feed, rows)
 	v.FeedSpans = feed.Spans
 	v.FeedLines, v.FeedRows = len(feed.Lines), max(1, rows)
@@ -1623,7 +1635,7 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 				if v.FeedSnippets[row] == (Snippet{}) && v.FeedQuestions[row] == 0 {
 					continue
 				}
-				if rowMatchesActiveDetail(feed, v.Offset+row, v.ActiveDetail, exactPath) {
+				if v.rowMatchesActiveDetail(feed, v.Offset+row, v.ActiveDetail, exactPath) {
 					lines[row] = highlightTranscriptGutter(lines[row], v.Painter.Theme)
 				}
 			}

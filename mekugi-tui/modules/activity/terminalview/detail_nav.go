@@ -1,7 +1,6 @@
 package terminalview
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -13,11 +12,39 @@ import (
 // with its row span in the laid-out feed.
 type DetailTarget struct {
 	Entry       uint64
+	Source      uint64  // Resolved source entry sequence for single-source multi-segment events.
+	Edit        bool    // True when this target opens an edit sheet rather than a command/entry sheet.
+	Merged      bool    // True when this target is a merged multi-source block.
 	Snippet     Snippet
 	LastSnippet Snippet // Last distinct row snippet in this event (e.g. final file in a multi-file edit).
 	DisplayPath string  // Optional alternate path for matching an active edit tab back to its transcript row.
 	Start       int     // First feed row of this target.
 	End         int     // Exclusive last feed row of this target.
+}
+
+type detailEventKey struct {
+	entry       uint64
+	source      uint64
+	edit        bool
+	mergedRun   uint64
+	mergedBlock int
+}
+
+func (t DetailTarget) eventKey() detailEventKey {
+	if t.Entry != 0 {
+		return detailEventKey{entry: t.Entry}
+	}
+	if t.Edit || t.Snippet.Block == EditNavigationSnippet {
+		source := t.Source
+		if source == 0 {
+			source = t.Snippet.Run
+		}
+		return detailEventKey{source: source, edit: true}
+	}
+	if !t.Merged && t.Source != 0 {
+		return detailEventKey{source: t.Source}
+	}
+	return detailEventKey{mergedRun: t.Snippet.Run, mergedBlock: t.Snippet.Block}
 }
 
 // Zero reports whether the target names no transcript event.
@@ -30,16 +57,34 @@ func (t DetailTarget) SameEvent(other DetailTarget) bool {
 	if t.Zero() || other.Zero() {
 		return false
 	}
-	if t.Entry != 0 || other.Entry != 0 {
-		return t.Entry == other.Entry
+	return t.eventKey() == other.eventKey()
+}
+
+// ResolveDetailTarget populates sheet-level identity fields from the current
+// laid-out blocks so multi-segment commands share one event identity.
+func (v *View) ResolveDetailTarget(target DetailTarget) DetailTarget {
+	if target.Zero() || target.Entry != 0 {
+		return target
 	}
-	return t.Snippet.Run == other.Snippet.Run && t.Snippet.Block == other.Snippet.Block
+	if target.Snippet.Block == EditNavigationSnippet {
+		target.Edit = true
+		target.Source = target.Snippet.Run
+		return target
+	}
+	if block, ok := v.SnippetBlock(target.Snippet); ok {
+		if len(block.Members) > 0 {
+			target.Merged = true
+		} else if block.Source != 0 {
+			target.Source = block.Source
+		}
+	}
+	return target
 }
 
 // SetActiveDetail highlights the active transcript event (and optionally scrolls
 // the transcript viewport to keep it visible while the detail sheet is open).
 func (v *View) SetActiveDetail(target DetailTarget, reveal bool) {
-	v.ActiveDetail = target
+	v.ActiveDetail = v.ResolveDetailTarget(target)
 	if reveal {
 		v.ActiveDetailReveal = true
 	}
@@ -51,31 +96,30 @@ func (v *View) ClearActiveDetail() {
 	v.ActiveDetailReveal = false
 }
 
-func collectDetailTargets(feed Feed) []DetailTarget {
+func (v *View) collectDetailTargets(feed Feed) []DetailTarget {
 	var targets []DetailTarget
+	seen := make(map[detailEventKey]int)
 	for row := range feed.Lines {
 		var cand DetailTarget
 		if row < len(feed.Questions) && feed.Questions[row] != 0 {
 			cand = DetailTarget{Entry: feed.Questions[row], Start: row, End: row + 1}
 		} else if row < len(feed.Snippets) && feed.Snippets[row] != (Snippet{}) {
 			s := feed.Snippets[row]
-			cand = DetailTarget{Snippet: s, LastSnippet: s, Start: row, End: row + 1}
+			cand = v.ResolveDetailTarget(DetailTarget{Snippet: s, LastSnippet: s, Start: row, End: row + 1})
 		} else {
 			continue
 		}
-		if n := len(targets); n > 0 && targets[n-1].SameEvent(cand) {
-			targets[n-1].End = row + 1
-			if cand.Snippet != (Snippet{}) {
-				targets[n-1].LastSnippet = cand.Snippet
+		key := cand.eventKey()
+		if idx, exists := seen[key]; exists {
+			if idx == len(targets)-1 {
+				targets[idx].End = row + 1
 			}
-			continue
-		}
-		if idx := slices.IndexFunc(targets, func(existing DetailTarget) bool { return existing.SameEvent(cand) }); idx >= 0 {
 			if cand.Snippet != (Snippet{}) {
 				targets[idx].LastSnippet = cand.Snippet
 			}
 			continue
 		}
+		seen[key] = len(targets)
 		targets = append(targets, cand)
 	}
 	return targets
@@ -111,7 +155,7 @@ func (v *View) activeDetailRowMatch(feed Feed) (exactPath bool, start int, end i
 	}
 	start, end = -1, -1
 	for row := range feed.Lines {
-		if rowMatchesDetailEvent(feed, row, active) {
+		if v.rowMatchesDetailEvent(feed, row, active) {
 			if start < 0 {
 				start = row
 			}
@@ -121,18 +165,21 @@ func (v *View) activeDetailRowMatch(feed Feed) (exactPath bool, start int, end i
 	return false, start, end, start >= 0
 }
 
-func rowMatchesDetailEvent(feed Feed, row int, active DetailTarget) bool {
+func (v *View) rowMatchesDetailEvent(feed Feed, row int, active DetailTarget) bool {
 	if active.Entry != 0 {
 		return row < len(feed.Questions) && feed.Questions[row] == active.Entry
 	}
 	if row < len(feed.Snippets) {
 		s := feed.Snippets[row]
-		return s != (Snippet{}) && s.Run == active.Snippet.Run && s.Block == active.Snippet.Block
+		if s == (Snippet{}) {
+			return false
+		}
+		return v.ResolveDetailTarget(DetailTarget{Snippet: s}).SameEvent(active)
 	}
 	return false
 }
 
-func rowMatchesActiveDetail(feed Feed, row int, active DetailTarget, exactPath bool) bool {
+func (v *View) rowMatchesActiveDetail(feed Feed, row int, active DetailTarget, exactPath bool) bool {
 	if exactPath {
 		if row >= len(feed.Snippets) {
 			return false
@@ -144,7 +191,7 @@ func rowMatchesActiveDetail(feed Feed, row int, active DetailTarget, exactPath b
 		return active.Snippet.Path != "" && s.Path == active.Snippet.Path ||
 			active.DisplayPath != "" && s.Path == active.DisplayPath
 	}
-	return rowMatchesDetailEvent(feed, row, active)
+	return v.rowMatchesDetailEvent(feed, row, active)
 }
 
 // highlightTranscriptGutter styles the two-cell left rail of an active

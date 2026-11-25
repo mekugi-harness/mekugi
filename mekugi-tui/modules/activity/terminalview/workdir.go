@@ -25,7 +25,10 @@ func (s workdirSpans) finish(end int) {
 // PinnedHeading returns the feed row to show in place of the first viewport
 // row. Its body must still have a visible row below the replacement.
 func (v *View) PinnedHeading(feed Feed, rows int) (int, bool) {
-	top := v.Offset
+	return v.pinnedHeadingAt(feed, v.Offset, rows)
+}
+
+func (v *View) pinnedHeadingAt(feed Feed, top, rows int) (int, bool) {
 	if rows < 2 || top+1 >= len(feed.Lines) {
 		return 0, false
 	}
