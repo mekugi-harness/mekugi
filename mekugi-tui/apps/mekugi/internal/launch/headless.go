@@ -256,6 +256,9 @@ func runHeadlessSession(ctx context.Context, cfg headlessSessionConfig) (code in
 	if cleanupErr := finalizeOutputs(); cleanupErr != nil {
 		runErr = errors.Join(runErr, cleanupErr)
 	}
+	if runErr == nil {
+		runErr = ctx.Err()
+	}
 	if runErr != nil {
 		return 1, runErr
 	}
@@ -284,12 +287,19 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 	startupConfig := appServerResumeConfig(cmd.Args, nil)
 
 	exited := false
+	doneCh := host.Done
+	var processDone bool
+	var processErr error
 	defer func() {
 		if !exited {
 			if runErr != nil || ctx.Err() != nil {
 				_ = host.Cancel()
 			}
-			runErr = errors.Join(runErr, host.Shutdown())
+			if processDone {
+				runErr = errors.Join(runErr, processErr)
+			} else {
+				runErr = errors.Join(runErr, host.Shutdown())
+			}
 		}
 		if runErr != nil {
 			if diagnostic := host.Diagnostics.Snapshot(); diagnostic != "" {
@@ -331,8 +341,24 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 		select {
 		case <-ctx.Done():
 			return rootThread, ctx.Err()
+		case err := <-doneCh:
+			processDone = true
+			processErr = err
+			doneCh = nil
+			if shutdownTimer != nil {
+				shutdownTimer.Stop()
+				shutdownTimeout = nil
+			}
 		case <-shutdownTimeout:
-			return rootThread, errors.New("app-server did not shut down after EOF; forced termination")
+			select {
+			case err := <-doneCh:
+				processDone = true
+				processErr = err
+				doneCh = nil
+				shutdownTimeout = nil
+			default:
+				return rootThread, errors.New("app-server did not shut down after EOF; forced termination")
+			}
 		case <-pollTick.C:
 			if !shuttingDown && (rootCompleted || treeRetry) && !treePending {
 				treeDirty = true
@@ -343,13 +369,17 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 		case message, ok := <-host.Messages:
 			if !ok {
 				exited = true
+				if !processDone {
+					processErr = <-host.Done
+					processDone = true
+				}
 				if shuttingDown {
-					return rootThread, <-host.Done
+					return rootThread, processErr
 				}
 				if err := ctx.Err(); err != nil {
-					return rootThread, errors.Join(err, <-host.Done)
+					return rootThread, errors.Join(err, processErr)
 				}
-				return rootThread, errors.Join(errors.New("app-server disconnected; active work may be incomplete"), <-host.Done)
+				return rootThread, errors.Join(errors.New("app-server disconnected; active work may be incomplete"), processErr)
 			}
 			if err := stream.Observe(message); err != nil {
 				return rootThread, err
@@ -424,8 +454,10 @@ func runHeadlessHost(ctx context.Context, cmd *exec.Cmd, options launchoptions.C
 						// are forwarded before mekugi/headless/completed is emitted.
 						shuttingDown = true
 						_ = host.Input.Close()
-						shutdownTimer = time.NewTimer(3 * time.Second)
-						shutdownTimeout = shutdownTimer.C
+						if !processDone {
+							shutdownTimer = time.NewTimer(3 * time.Second)
+							shutdownTimeout = shutdownTimer.C
+						}
 						continue
 					}
 					if err := observeTree(); err != nil {
