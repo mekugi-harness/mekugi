@@ -12,13 +12,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/creack/pty"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -44,7 +47,7 @@ func TestNativeStartupInterruptCancelsReadinessWait(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", cache)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("MEKUGI_NATIVE_START_INTERRUPT_FIXTURE", "1")
-	socket, err := sessionapi.ControlSocketPath()
+	socket, err := nativeAppServerSocketPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +134,46 @@ func runNativeServerFixture() {
 	if err = errors.Join(err, file.Close()); err != nil {
 		os.Exit(93)
 	}
-	os.Exit(Run())
+	var listenSocket string
+	for i, arg := range os.Args {
+		if arg == "--listen" && i+1 < len(os.Args) {
+			listenSocket = strings.TrimPrefix(os.Args[i+1], "unix://")
+		}
+	}
+	if listenSocket == "" {
+		os.Exit(Run())
+	}
+	listener, err := sessionapi.ListenControl(listenSocket)
+	if err != nil {
+		os.Exit(94)
+	}
+	defer listener.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		_, _, _ = conn.Read(r.Context())
+	})}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+	_ = srv.Serve(listener)
+	os.Exit(0)
+}
+
+func installNativeAppServerFixtureWrapper(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\nexec " + commandargs.Quote(os.Args[0]) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "mekugi-app-server"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return bin + string(os.PathListSeparator) + os.Getenv("PATH")
 }
 
 func TestNativeServerDiagnosticsLauncher(t *testing.T) {
@@ -171,8 +213,9 @@ func TestNativeServerDiagnosticsSurviveClientExit(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
+			pathEnv := installNativeAppServerFixtureWrapper(t)
 			client := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestNativeServerDiagnosticsLauncher$")
-			client.Env = append(os.Environ(), "MEKUGI_NATIVE_SERVER_LAUNCH_SOCKET="+socket, "MEKUGI_NATIVE_SERVER_FIXTURE="+receipt, "MEKUGI_NATIVE_SERVER_FAILURE="+test.mode, "XDG_STATE_HOME="+state)
+			client.Env = append(os.Environ(), "PATH="+pathEnv, "MEKUGI_NATIVE_SERVER_LAUNCH_SOCKET="+socket, "MEKUGI_NATIVE_SERVER_FIXTURE="+receipt, "MEKUGI_NATIVE_SERVER_FAILURE="+test.mode, "XDG_STATE_HOME="+state)
 			output, err := client.CombinedOutput()
 			if err != nil {
 				t.Fatalf("launching client: %v\n%s", err, output)
@@ -260,6 +303,7 @@ func TestNativeServerProcessStartupRaceAndIndependentLifetime(t *testing.T) {
 	defer os.RemoveAll(directory)
 	receipts := filepath.Join(directory, "started.jsonl")
 	socket := filepath.Join(directory, "control", "s")
+	t.Setenv("PATH", installNativeAppServerFixtureWrapper(t))
 	t.Setenv("MEKUGI_NATIVE_SERVER_FIXTURE", receipts)
 	t.Setenv("CODEX_THREAD_ID", "borrowed-parent")
 	t.Setenv("MEKUGI_RUNTIME_DIR", filepath.Join(directory, "parent-only"))
@@ -316,20 +360,8 @@ func TestNativeServerProcessStartupRaceAndIndependentLifetime(t *testing.T) {
 	if len(started) != 1 || started[0].Terminal || started[0].ThreadEnv || started[0].RuntimeEnv {
 		t.Fatalf("detached startup ownership: %+v", started)
 	}
-	transport := sessionapi.ControlTransport(socket)
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-	request, err := http.NewRequestWithContext(t.Context(), "GET", "http://mekugi/api/version", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set(sessionapi.ProtocolHeader, sessionapi.ProtocolVersion)
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatalf("client cancellation stopped the server: %v", err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("server stopped serving after clients left: %s", response.Status)
+	ready, err := probeNativeAppServer(t.Context(), socket)
+	if err != nil || !ready {
+		t.Fatalf("server stopped serving after clients left: ready=%v err=%v", ready, err)
 	}
 }

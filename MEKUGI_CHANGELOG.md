@@ -73,6 +73,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   mutations omit continuous net-zero transitions (`before == after` without
   rename or incomplete coverage) and surface discontinuous baselines from
   unobserved external writes via coverage notes (`MEKUGI-827`).
+- Native app-server presentation (`MEKUGI-807`): `mekugi-app-server` exposes
+  `thread/changes/read` over App-Server Protocol v2 so direct Unix-socket
+  clients (including the Go TUI connecting to `--listen unix://PATH`) read
+  durable saved changes and composed diffs directly from `codex-change-history`
+  without an intermediate Go session server.
 - Native process-scoped shell write observation (`codex-exec-track`,
   `MEKUGI-801`): `codex-core` wraps agent and interactive `!` user-shell
   commands with `WriteObserverSession` (Linux `seccomp-unotify` and macOS

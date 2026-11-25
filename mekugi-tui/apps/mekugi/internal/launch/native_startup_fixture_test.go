@@ -109,7 +109,7 @@ func startAppServerUI(terminalViews terminalsession.Views, reviewSource *changec
 		defer connection.Close()
 		terminal, _ := terminalViews.NewAttachment(diffrender.EnvironmentTheme(os.Getenv("COLORFGBG")))
 		terminal.Faint = faint
-		client := nativeClient{connection: connection, renderer: nativeClientRenderer{terminal: terminal, views: terminalViews}, editors: make(map[string]*composer.Editor)}
+		client := nativeClient{connection: wrapSessionAPIConnection(connection), renderer: nativeClientRenderer{terminal: terminal, views: terminalViews}, editors: make(map[string]*composer.Editor)}
 		_, err = client.run(ctx, stdin, stdout)
 		if outcome, ok := errors.AsType[*sessionapi.NativeExit](err); ok && outcome.Code == 0 {
 			return nil

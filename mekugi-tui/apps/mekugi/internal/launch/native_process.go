@@ -6,16 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 )
 
 const nativeServerSupervisorEnvironment = "MEKUGI_SERVER_SUPERVISOR"
 
-// ensureNativeServer starts one detached server only when the peer-checked
-// control endpoint is absent. Waiting belongs to the client; execution does not.
+// ensureNativeServer starts one detached native mekugi-app-server daemon
+// listening on unix://PATH only when the peer-checked endpoint is absent.
+// Waiting belongs to the client; execution does not.
 func ensureNativeServer(ctx context.Context, socket string) error {
-	return sessionapi.EnsureControl(ctx, socket, func() error {
+	return ensureNativeAppServer(ctx, socket, func() error {
 		executable, err := os.Executable()
 		if err != nil {
 			return err

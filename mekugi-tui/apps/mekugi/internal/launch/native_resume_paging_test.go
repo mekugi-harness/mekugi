@@ -148,7 +148,7 @@ func TestUISnapshotNativeResumePagingPTY(t *testing.T) {
 	defer cancel()
 	chunks := readPTYChunks(ctx, master, 8192, 64)
 	terminal, _ := u.terminalViews.NewAttachment(diffrender.DarkTheme)
-	c := nativeClient{connection: connection, renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
+	c := nativeClient{connection: wrapSessionAPIConnection(connection), renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
 	done := make(chan error, 1)
 	go func() { _, err := c.run(ctx, slave, slave); done <- err }()
 	defer func() {

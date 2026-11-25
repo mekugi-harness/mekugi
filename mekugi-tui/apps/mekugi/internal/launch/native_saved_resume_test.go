@@ -148,7 +148,7 @@ func TestNativeServerSavedResume(t *testing.T) {
 		}
 		if attach {
 			u, _ := newAppServerTestUI()
-			c := &nativeClient{ctx: t.Context(), connection: source, renderer: nativeClientRenderer{terminal: u.shell, views: u.terminalViews}}
+			c := &nativeClient{ctx: t.Context(), connection: wrapSessionAPIConnection(source), renderer: nativeClientRenderer{terminal: u.shell, views: u.terminalViews}}
 			c.accept(event)
 			done := make(chan nativeClientReattached, 1)
 			c.attachDestination(t.Context(), done)

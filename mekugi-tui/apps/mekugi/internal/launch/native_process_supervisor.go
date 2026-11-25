@@ -24,7 +24,13 @@ func runNativeServerSupervisor(ctx context.Context, args []string) int {
 		defer status.Close()
 	}
 	_ = os.Unsetenv(nativeServerSupervisorEnvironment)
-	executable, err := os.Executable()
+	socket := ""
+	for i, arg := range args {
+		if arg == "--socket" && i+1 < len(args) {
+			socket = args[i+1]
+		}
+	}
+	executable, err := invocationExecutable("mekugi-app-server", os.Environ(), "")
 	if err != nil {
 		return 1
 	}
@@ -35,7 +41,11 @@ func runNativeServerSupervisor(ctx context.Context, args []string) int {
 	if log != nil {
 		defer log.Close()
 	}
-	command := exec.Command(executable, append([]string{"server"}, args...)...)
+	listenArg := "unix://"
+	if socket != "" {
+		listenArg += socket
+	}
+	command := exec.Command(executable, "--listen", listenArg)
 	command.Env = os.Environ()
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	command.WaitDelay = time.Second // Descendants retaining stderr cannot hide exit.
@@ -43,11 +53,7 @@ func runNativeServerSupervisor(ctx context.Context, args []string) int {
 		command.Stderr = log
 	}
 	event := diagnostic.ProcessEvent{Event: "start", Time: time.Now().UTC(), Executable: executable, Build: mekugiVersion(), GoVersion: runtime.Version()}
-	for i, arg := range args {
-		if arg == "--socket" && i+1 < len(args) {
-			event.Socket = args[i+1]
-		}
-	}
+	event.Socket = socket
 	if build, ok := debug.ReadBuildInfo(); ok {
 		for _, setting := range build.Settings {
 			switch setting.Key {

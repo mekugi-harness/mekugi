@@ -1653,6 +1653,9 @@ impl MessageProcessor {
             ClientRequest::ThreadSubtreeList { params, .. } => {
                 self.thread_processor.thread_subtree_list(params).await
             }
+            ClientRequest::ThreadChangesRead { params, .. } => {
+                self.thread_processor.thread_changes_read(params).await
+            }
             ClientRequest::AgentEnd { params, .. } => {
                 self.thread_processor.agent_end(&request_id, params).await
             }

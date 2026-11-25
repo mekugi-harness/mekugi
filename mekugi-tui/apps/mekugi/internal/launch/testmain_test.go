@@ -17,7 +17,7 @@ import (
 // Provider selection must not depend on credentials in the developer's shell.
 // Empty overrides also disable credentials from the local configuration file.
 func TestMain(m *testing.M) {
-	if os.Getenv("MEKUGI_NATIVE_SERVER_FIXTURE") != "" && len(os.Args) > 1 && os.Args[1] == "server" {
+	if os.Getenv("MEKUGI_NATIVE_SERVER_FIXTURE") != "" && len(os.Args) > 1 && (os.Args[1] == "server" || os.Args[1] == "--listen") {
 		runNativeServerFixture()
 	}
 	if os.Getenv("MEKUGI_INVOCATION_FIXTURE") == "1" {

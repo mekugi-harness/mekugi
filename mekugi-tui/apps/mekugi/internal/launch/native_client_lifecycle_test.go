@@ -124,7 +124,7 @@ func TestNativeReattachKeepsSourceUntilDestinationPublication(t *testing.T) {
 			c.reattach = "missing"
 			c.attachDestination(t.Context(), done)
 			failed := <-done
-			if c.applyReattachment(failed) != nil || sourceScope.Err() != nil || c.connection != source {
+			if c.applyReattachment(failed) != nil || sourceScope.Err() != nil || c.connection != wrapSessionAPIConnection(source) {
 				t.Fatal("failed destination retired source")
 			}
 			if len(saves) != 0 || terminal.Transcript != sourceTranscript {

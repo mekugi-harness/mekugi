@@ -74,7 +74,7 @@ func TestNativeExitRetainsFinalDiagnostics(t *testing.T) {
 			go func() { _, _ = io.Copy(io.Discard, master); close(readDone) }()
 			defer func() { slave.Close(); <-readDone }()
 			terminal, _ := u.terminalViews.NewAttachment(diffrender.DarkTheme)
-			client := nativeClient{connection: connection, renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
+			client := nativeClient{connection: wrapSessionAPIConnection(connection), renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
 			if _, err := client.run(t.Context(), slave, slave); err != nil {
 				t.Fatal(err)
 			}

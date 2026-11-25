@@ -1,0 +1,945 @@
+package launch
+
+import (
+	"context"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
+	activityfeed "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
+	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
+)
+
+func (c *directNativeConnection) handleServerMessage(msg appserver.Message) {
+	if len(msg.ID) > 0 && msg.Method != "" {
+		c.handleServerRequest(msg)
+		return
+	}
+	c.handleNotification(msg)
+}
+
+func (c *directNativeConnection) handleNotification(msg appserver.Message) {
+	switch msg.Method {
+	case "turn/started":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			Turn     struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			switch p.ThreadID {
+			case c.btwThread:
+				c.btwRunning = true
+			case c.sideThread:
+				c.sideActiveTurn = p.Turn.ID
+				c.busy = true
+			default:
+				if p.ThreadID == "" || p.ThreadID == c.mainThread {
+					c.activeTurn = p.Turn.ID
+					c.busy = true
+				}
+			}
+			c.publishLocked()
+			c.mu.Unlock()
+		}
+
+	case "turn/completed":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			Turn     struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+				Error  *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"turn"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			switch p.ThreadID {
+			case c.btwThread:
+				c.btwRunning = false
+			case c.sideThread:
+				c.sideActiveTurn = ""
+				c.busy = c.activeTurn != ""
+			default:
+				if p.ThreadID == "" || p.ThreadID == c.mainThread {
+					c.activeTurn = ""
+					c.busy = c.sideActiveTurn != ""
+				}
+			}
+			if p.Turn.Error != nil && p.Turn.Error.Message != "" {
+				c.setFeedbackLocked(p.Turn.Error.Message, true)
+			}
+			mainID := c.mainThread
+			c.publishLocked()
+			c.mu.Unlock()
+			if mainID != "" {
+				go c.refreshAuxiliary(c.ctx, mainID)
+			}
+		}
+
+	case "item/started", "item/completed":
+		var p struct {
+			ThreadID string         `json:"threadId"`
+			TurnID   string         `json:"turnId"`
+			Item     jsontext.Value `json:"item"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && len(p.Item) > 0 {
+			complete := msg.Method == "item/completed"
+			c.mu.Lock()
+			threadID := p.ThreadID
+			if threadID == "" {
+				threadID = c.mainThread
+			}
+			itemType := c.upsertWireItemLocked(threadID, p.TurnID, p.Item, complete)
+			mainID := c.mainThread
+			c.publishLocked()
+			c.mu.Unlock()
+			if complete && mainID != "" {
+				switch itemType {
+				case "fileChange", "commandExecution":
+					go c.refreshChanges(c.ctx, mainID)
+				case "collabAgentToolCall", "subAgentActivity":
+					go c.refreshSubtree(c.ctx, mainID)
+				}
+			}
+		}
+
+	case "item/agentMessage/delta":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
+			Delta    string `json:"delta"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.Delta != "" {
+			c.mu.Lock()
+			if p.ThreadID != "" && p.ThreadID == c.btwThread {
+				c.btwAnswer.WriteString(p.Delta)
+			} else {
+				threadID := p.ThreadID
+				if threadID == "" {
+					threadID = c.mainThread
+				}
+				rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "agentMessage", "final")
+				rec.entry.Text += p.Delta
+				rec.entry.Live = true
+				rec.entry.Running = true
+				rec.entry.Revision++
+			}
+			c.publishLocked()
+			c.mu.Unlock()
+		}
+
+	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
+			Delta    string `json:"delta"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.Delta != "" {
+			c.mu.Lock()
+			threadID := p.ThreadID
+			if threadID == "" {
+				threadID = c.mainThread
+			}
+			rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "reasoning", "reasoning")
+			rec.entry.Text += p.Delta
+			rec.entry.Live = true
+			rec.entry.Running = true
+			rec.entry.Revision++
+			c.publishLocked()
+			c.mu.Unlock()
+		}
+
+	case "item/commandExecution/outputDelta", "item/fileChange/outputDelta":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
+			Delta    string `json:"delta"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.Delta != "" {
+			c.mu.Lock()
+			threadID := p.ThreadID
+			if threadID == "" {
+				threadID = c.mainThread
+			}
+			rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "commandExecution", "tool")
+			rec.output += p.Delta
+			if len(rec.entry.Values) > 0 {
+				rec.entry.Values[0].Output = 1
+			}
+			if rec.entry.Outputs == nil {
+				rec.entry.Outputs = map[int]int{}
+			}
+			rec.entry.Outputs[1]++
+			rec.entry.Revision++
+			c.publishLocked()
+			c.mu.Unlock()
+		}
+
+	case "thread/tokenUsage/updated":
+		var p struct {
+			ThreadID   string `json:"threadId"`
+			TokenUsage struct {
+				Total struct {
+					TotalTokens           uint64 `json:"totalTokens"`
+					InputTokens           uint64 `json:"inputTokens"`
+					OutputTokens          uint64 `json:"outputTokens"`
+					CachedInputTokens     uint64 `json:"cachedInputTokens"`
+					ReasoningOutputTokens uint64 `json:"reasoningOutputTokens"`
+				} `json:"total"`
+				Last struct {
+					TotalTokens uint64 `json:"totalTokens"`
+				} `json:"last"`
+				ModelContextWindow uint64 `json:"modelContextWindow"`
+			} `json:"tokenUsage"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			if p.ThreadID == "" || p.ThreadID == c.mainThread {
+				c.usage = sessionapi.NativeUsage{
+					TotalTokens:           p.TokenUsage.Total.TotalTokens,
+					InputTokens:           p.TokenUsage.Total.InputTokens,
+					OutputTokens:          p.TokenUsage.Total.OutputTokens,
+					CachedInputTokens:     p.TokenUsage.Total.CachedInputTokens,
+					ReasoningOutputTokens: p.TokenUsage.Total.ReasoningOutputTokens,
+				}
+				c.contextTokens = p.TokenUsage.Last.TotalTokens
+				c.contextWindow = p.TokenUsage.ModelContextWindow
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+		}
+
+	case "thread/name/updated":
+		var p struct {
+			ThreadID   string `json:"threadId"`
+			ThreadName string `json:"threadName"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			if p.ThreadID == c.mainThread && p.ThreadName != "" {
+				c.title = p.ThreadName
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+		}
+
+	case "thread/settings/updated":
+		var p struct {
+			ThreadID        string `json:"threadId"`
+			Model           string `json:"model"`
+			ReasoningEffort string `json:"reasoningEffort"`
+			ServiceTier     string `json:"serviceTier"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			if p.ThreadID == "" || p.ThreadID == c.mainThread {
+				if p.Model != "" {
+					c.model = p.Model
+				}
+				if p.ReasoningEffort != "" {
+					c.effort = p.ReasoningEffort
+				}
+				if p.ServiceTier != "" {
+					c.tier = p.ServiceTier
+				}
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+		}
+
+	case "thread/queue/changed":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			Items    []struct {
+				Text string `json:"text"`
+			} `json:"items"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			if p.ThreadID == "" || p.ThreadID == c.mainThread {
+				c.queue = make([]conversation.PendingText, 0, len(p.Items))
+				for _, item := range p.Items {
+					c.queue = append(c.queue, conversation.PendingText{Text: item.Text})
+				}
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+		}
+
+	case "thread/prediction/updated":
+		var p struct {
+			ThreadID   string `json:"threadId"`
+			TurnID     string `json:"turnId"`
+			Prediction string `json:"prediction"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			if p.ThreadID == "" || p.ThreadID == c.mainThread {
+				c.prediction = p.Prediction
+				c.predictionTurn = p.TurnID
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+		}
+
+	case "thread/reverted":
+		var p struct {
+			ThreadID string `json:"threadId"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			target := p.ThreadID
+			if target == "" {
+				c.mu.Lock()
+				target = c.mainThread
+				c.mu.Unlock()
+			}
+			if target != "" {
+				go func() {
+					c.reloadThreadTranscript(c.ctx, target)
+					c.refreshChanges(c.ctx, target)
+				}()
+			}
+		}
+
+	case "thread/started", "thread/status/changed":
+		c.mu.Lock()
+		mainID := c.mainThread
+		c.mu.Unlock()
+		if mainID != "" {
+			go c.refreshSubtree(c.ctx, mainID)
+		}
+
+	case "serverRequest/resolved":
+		if resolved, err := binding.DecodeResolvedRequest(msg.Params); err == nil {
+			key := string(resolved.RequestID)
+			c.mu.Lock()
+			if _, exists := c.requests[key]; exists {
+				delete(c.requests, key)
+				c.requestOrder = slices.DeleteFunc(c.requestOrder, func(id string) bool { return id == key })
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+		}
+	}
+}
+
+func (c *directNativeConnection) handleServerRequest(msg appserver.Message) {
+	key := string(msg.ID)
+	req := &directPendingServerRequest{
+		id:        slices.Clone(msg.ID),
+		method:    msg.Method,
+		rawParams: slices.Clone(msg.Params),
+	}
+
+	switch msg.Method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "shellGuard/requestApproval":
+		req.shellGuard = msg.Method == "shellGuard/requestApproval"
+		view := decodeDirectApprovalView(key, msg.Method, msg.Params)
+		req.threadID = view.Thread
+		req.turnID = view.Turn
+		req.itemID = view.Item
+		req.approval = &view
+
+	case "item/tool/requestUserInput":
+		call := decodeDirectQuestionCall(key, msg.Params)
+		req.threadID = call.Thread
+		req.turnID = call.Turn
+		req.itemID = call.Item
+		req.question = &call
+
+	case "shellGuard/requestSecret":
+		req.secret = true
+		req.shellGuard = true
+		call := decodeDirectSecretCall(key, msg.Params)
+		req.threadID = call.Thread
+		req.question = &call
+
+	default:
+		_ = c.wire.RespondError(c.ctx, msg.ID, -32601, "unsupported terminal client server request: "+msg.Method)
+		return
+	}
+
+	c.mu.Lock()
+	if _, exists := c.requests[key]; !exists {
+		c.requestOrder = append(c.requestOrder, key)
+	}
+	c.requests[key] = req
+	c.publishLocked()
+	c.mu.Unlock()
+}
+
+func decodeDirectApprovalView(id, method string, params jsontext.Value) prompt.ApprovalView {
+	view := prompt.ApprovalView{
+		ID: id,
+		Choices: []prompt.Choice{
+			{ID: 0, Label: "Allow", Approve: true},
+			{ID: 1, Label: "Allow for session", Approve: true, Session: true, Lasting: true},
+			{ID: 2, Label: "Deny", Deny: true},
+		},
+	}
+	if decoded, err := binding.DecodeApprovalRequest(params); err == nil {
+		view.Thread = decoded.ThreadID
+		view.Turn = decoded.TurnID
+		view.Item = decoded.ItemID
+		view.Subject = decoded.Command
+		if decoded.Reason != "" {
+			view.Details = append(view.Details, decoded.Reason)
+		}
+		if decoded.GrantRoot != "" {
+			view.Details = append(view.Details, "Grant root: "+decoded.GrantRoot)
+		}
+	}
+	switch method {
+	case "item/commandExecution/requestApproval":
+		view.Title = "Approve command"
+	case "item/fileChange/requestApproval":
+		view.Title = "Approve file change"
+	case "item/permissions/requestApproval":
+		view.Title = "Approve permissions"
+	case "shellGuard/requestApproval":
+		view.Title = "Approve guarded shell command"
+		var sg struct {
+			ThreadID string `json:"threadId"`
+			Command  string `json:"command"`
+			Summary  string `json:"summary"`
+			Reason   string `json:"reason"`
+		}
+		if json.Unmarshal(params, &sg) == nil {
+			if sg.ThreadID != "" {
+				view.Thread = sg.ThreadID
+			}
+			if sg.Command != "" {
+				view.Subject = sg.Command
+			}
+			if sg.Summary != "" {
+				view.Details = append(view.Details, sg.Summary)
+			}
+			if sg.Reason != "" {
+				view.Details = append(view.Details, sg.Reason)
+			}
+		}
+	}
+	return view
+}
+
+func decodeDirectQuestionCall(id string, params jsontext.Value) prompt.CallView {
+	call := prompt.CallView{ID: id, Sync: true}
+	if decoded, err := binding.DecodeQuestionRequest(params); err == nil {
+		call.Thread = decoded.ThreadID
+		call.Turn = decoded.TurnID
+		call.Item = decoded.ItemID
+		for _, q := range decoded.Questions {
+			qv := prompt.QuestionView{
+				ID:     q.ID,
+				Header: q.Header,
+				Text:   q.Question,
+				Secret: q.IsSecret,
+			}
+			for _, opt := range q.Options {
+				qv.Choices = append(qv.Choices, prompt.Option{Label: opt.Label, Description: opt.Description})
+			}
+			call.Questions = append(call.Questions, qv)
+		}
+	}
+	return call
+}
+
+func decodeDirectSecretCall(id string, params jsontext.Value) prompt.CallView {
+	var sg struct {
+		ThreadID string `json:"threadId"`
+		Prompt   string `json:"prompt"`
+		Command  string `json:"command"`
+	}
+	_ = json.Unmarshal(params, &sg)
+	text := sg.Prompt
+	if text == "" {
+		text = "Enter secret"
+	}
+	if sg.Command != "" {
+		text += " (" + sg.Command + ")"
+	}
+	return prompt.CallView{
+		ID:     id,
+		Sync:   true,
+		Thread: sg.ThreadID,
+		Questions: []prompt.QuestionView{{
+			ID:     "secret",
+			Header: "Secret required",
+			Text:   text,
+			Secret: true,
+		}},
+	}
+}
+
+func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, itemType, kind string) *directItemRecord {
+	if itemID != "" {
+		if rec, ok := c.itemsByID[itemID]; ok {
+			return rec
+		}
+	}
+	c.seq++
+	caller := c.threadCallers[threadID]
+	if caller == "" {
+		caller = "main"
+	}
+	rec := &directItemRecord{
+		id:       itemID,
+		threadID: threadID,
+		turnID:   turnID,
+		itemType: itemType,
+		seq:      c.seq,
+		entry: activity.Entry{
+			Facts: activity.Facts{
+				Seq:      c.seq,
+				Agent:    caller,
+				Kind:     kind,
+				Observed: time.Now(),
+			},
+			Revision: 1,
+		},
+	}
+	c.items[threadID] = append(c.items[threadID], rec)
+	if itemID != "" {
+		c.itemsByID[itemID] = rec
+	}
+	return rec
+}
+
+func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns []directWireTurn) {
+	c.items[threadID] = nil
+	for _, turn := range turns {
+		for _, rawItem := range turn.Items {
+			c.upsertWireItemLocked(threadID, turn.ID, rawItem, true)
+		}
+	}
+}
+
+// upsertWireItemLocked maps native mekugi-app-server ThreadItem payloads
+// directly into activity.Entry publications. Unknown / server-owned inline card
+// item payloads render directly from their server fields without Go backend state.
+func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, raw jsontext.Value, complete bool) string {
+	var fields map[string]jsontext.Value
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return ""
+	}
+	itemType := decodeJSONString(fields["type"])
+	itemID := decodeJSONString(fields["id"])
+	if threadID == c.btwThread && itemType == "agentMessage" {
+		if text := decodeJSONString(fields["text"]); text != "" {
+			c.btwAnswer.Reset()
+			c.btwAnswer.WriteString(text)
+		}
+		return itemType
+	}
+
+	kind := "tool"
+	switch itemType {
+	case "userMessage":
+		kind = "user"
+	case "agentMessage":
+		kind = "final"
+	case "reasoning":
+		kind = "reasoning"
+	case "plan":
+		kind = "plan"
+	case "contextCompaction":
+		kind = "compaction"
+	}
+
+	rec := c.ensureItemLocked(threadID, turnID, itemID, itemType, kind)
+	rec.entry.Kind = kind
+	rec.entry.Live = !complete
+	rec.entry.Running = !complete
+	rec.entry.ItemComplete = complete
+	if complete {
+		rec.entry.Completed = time.Now()
+		rec.entry.OutputComplete = true
+	}
+
+	switch itemType {
+	case "userMessage":
+		rec.entry.Text = extractUserMessageText(fields["content"])
+	case "agentMessage":
+		if text := decodeJSONString(fields["text"]); text != "" {
+			rec.entry.Text = text
+		}
+	case "plan":
+		rec.entry.Text = decodeJSONString(fields["text"])
+	case "reasoning":
+		var summary, content []string
+		_ = json.Unmarshal(fields["summary"], &summary)
+		_ = json.Unmarshal(fields["content"], &content)
+		joined := strings.Join(summary, "\n")
+		if joined == "" {
+			joined = strings.Join(content, "\n")
+		}
+		if joined != "" {
+			rec.entry.Text = joined
+		}
+	case "commandExecution":
+		command := decodeJSONString(fields["command"])
+		status := decodeJSONString(fields["status"])
+		agg := decodeJSONString(fields["aggregatedOutput"])
+		if agg != "" {
+			rec.output = agg
+		}
+		val := activity.Value{
+			Content: activityfeed.Content{
+				Kind: "op",
+				Verb: "Run",
+				Code: command,
+				Body: rec.output,
+			},
+		}
+		if rec.output != "" {
+			val.Output = 1
+			if rec.entry.Outputs == nil {
+				rec.entry.Outputs = map[int]int{}
+			}
+			rec.entry.Outputs[1]++
+		}
+		rec.entry.Values = []activity.Value{val}
+		rec.entry.Outcome = status
+	case "fileChange":
+		var changeList []struct {
+			Path string `json:"path"`
+			Kind string `json:"kind"`
+			Diff string `json:"diff"`
+		}
+		_ = json.Unmarshal(fields["changes"], &changeList)
+		vals := make([]activity.Value, 0, len(changeList))
+		for _, ch := range changeList {
+			verb := "Edit"
+			if ch.Kind != "" {
+				verb = strings.ToUpper(ch.Kind[:1]) + ch.Kind[1:]
+			}
+			vals = append(vals, activity.Value{
+				Content: activityfeed.Content{
+					Kind: "op",
+					Verb: verb,
+					Label: ch.Path,
+					Code: ch.Diff,
+					Lang: "diff",
+				},
+			})
+		}
+		rec.entry.Values = vals
+		rec.entry.Outcome = decodeJSONString(fields["status"])
+	case "mcpToolCall", "dynamicToolCall":
+		tool := decodeJSONString(fields["tool"])
+		server := decodeJSONString(fields["server"])
+		label := tool
+		if server != "" && tool != "" {
+			label = server + "/" + tool
+		}
+		rec.entry.Values = []activity.Value{{
+			Content: activityfeed.Content{
+				Kind: "op",
+				Verb: "Call",
+				Label: label,
+			},
+		}}
+		rec.entry.Outcome = decodeJSONString(fields["status"])
+	case "collabAgentToolCall":
+		tool := decodeJSONString(fields["tool"])
+		promptText := decodeJSONString(fields["prompt"])
+		rec.entry.Values = []activity.Value{{
+			Content: activityfeed.Content{
+				Kind: "op",
+				Verb: tool,
+				Label: promptText,
+			},
+		}}
+		rec.entry.Outcome = decodeJSONString(fields["status"])
+	case "subAgentActivity":
+		agentPath := decodeJSONString(fields["agentPath"])
+		assignment := decodeJSONString(fields["assignment"])
+		rec.entry.Assignment = assignment != ""
+		rec.entry.AssignmentTo = agentPath
+		rec.entry.AssignmentText = assignment
+		rec.entry.Text = assignment
+	case "contextCompaction":
+		rec.entry.ContextBoundary = true
+		rec.entry.Text = "Context compacted"
+	default:
+		// Render server-owned inline cards and future ThreadItem models directly
+		// from their server-published fields without adding Go backend state.
+		title := firstNonEmpty(
+			decodeJSONString(fields["title"]),
+			decodeJSONString(fields["header"]),
+			decodeJSONString(fields["label"]),
+			itemType,
+		)
+		body := firstNonEmpty(
+			decodeJSONString(fields["body"]),
+			decodeJSONString(fields["markdown"]),
+			decodeJSONString(fields["text"]),
+			decodeJSONString(fields["summary"]),
+		)
+		rec.entry.Text = body
+		rec.entry.Values = []activity.Value{{
+			Content: activityfeed.Content{
+				Kind: "message",
+				Verb: title,
+				Body: body,
+			},
+		}}
+		rec.entry.Outcome = decodeJSONString(fields["status"])
+	}
+	rec.entry.Revision++
+	return itemType
+}
+
+func extractUserMessageText(raw jsontext.Value) string {
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var out []string
+	for _, part := range parts {
+		if part.Text != "" {
+			out = append(out, part.Text)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func decodeJSONString(raw jsontext.Value) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread string) {
+	var resp struct {
+		Data []directWireThread `json:"data"`
+	}
+	if err := c.wire.Call(ctx, "thread/subtree/list", map[string]any{"threadId": rootThread}, &resp); err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var threads []string
+	var roster []activity.AgentRow
+	for i, th := range resp.Data {
+		threads = append(threads, th.ID)
+		name := th.AgentPath
+		if name == "" {
+			if th.ID == rootThread {
+				name = "main"
+			} else {
+				name = fmt.Sprintf("agent-%d", i)
+			}
+		}
+		c.threadCallers[th.ID] = name
+		depth := strings.Count(name, "/")
+		if th.ID == rootThread {
+			depth = 0
+		}
+		roster = append(roster, activity.AgentRow{
+			Agent: activity.Agent{
+				AgentFacts: activity.AgentFacts{
+					Name:   name,
+					Role:   th.AgentRole,
+					Thread: th.ID,
+				},
+			},
+			Depth: depth,
+		})
+	}
+	c.family = &sessionapi.Family{
+		Root:    rootThread,
+		Threads: threads,
+		Agents:  &activity.Publication{Roster: roster},
+		Status:  sessionpresentation.Label{Text: c.statusTextLocked(), Running: c.busy},
+	}
+	c.publishLocked()
+}
+
+func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID string) {
+	var resp directThreadChangesResponse
+	if err := c.wire.Call(ctx, "thread/changes/read", map[string]any{"threadId": threadID}, &resp); err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reviewRev++
+	files := make([]changes.File, 0, len(resp.Files))
+	for i, f := range resp.Files {
+		beforePath := f.Path
+		if f.MovedFrom != "" {
+			beforePath = f.MovedFrom
+		}
+		if f.Status == "A" {
+			beforePath = ""
+		}
+		afterPath := f.Path
+		if f.Status == "D" {
+			afterPath = ""
+		}
+		reviewFile := diffmodel.ReviewFile{
+			BeforePath: beforePath,
+			AfterPath:  afterPath,
+			Diff:       f.UnifiedDiff,
+			Binary:     f.IsBinary,
+		}
+		if len(f.CoverageNotes) > 0 {
+			reviewFile.Incomplete = strings.Join(f.CoverageNotes, "; ")
+		}
+		chunk := changes.Chunk{
+			Key:          fmt.Sprintf("native-%d-%s", i, f.Path),
+			Status:       f.Status,
+			Workspace:    resp.Workspace,
+			CaptureOrder: uint64(i + 1),
+			Review:       reviewFile,
+			Origin: changes.Origin{
+				Caller: c.threadCallers[threadID],
+				Source: "native",
+			},
+		}
+		files = append(files, changes.File{
+			Path:   f.Path,
+			Chunks: []changes.Chunk{chunk},
+			Status: diffmodel.StatusOf(reviewFile),
+		})
+	}
+	var pub changes.Publication
+	pub = pub.With(files)
+	ws := resp.Workspace
+	if ws == "" {
+		ws = c.workspace
+	}
+	c.review = &changes.ReviewView{
+		Publication: pub,
+		Workspace:   ws,
+		Revision:    c.reviewRev,
+	}
+	c.publishLocked()
+}
+
+func (c *directNativeConnection) refreshQueue(ctx context.Context, threadID string) {
+	var resp struct {
+		Items []struct {
+			Text string `json:"text"`
+		} `json:"items"`
+	}
+	if err := c.wire.Call(ctx, "thread/queue/list", map[string]any{"threadId": threadID}, &resp); err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.queue = make([]conversation.PendingText, 0, len(resp.Items))
+	for _, item := range resp.Items {
+		c.queue = append(c.queue, conversation.PendingText{Text: item.Text})
+	}
+	c.publishLocked()
+}
+
+func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, threadID string) {
+	var resp struct {
+		Thread directWireThread `json:"thread"`
+	}
+	if err := c.wire.Call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true}, &resp); err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hydrateThreadTurnsLocked(threadID, resp.Thread.Turns)
+	c.publishLocked()
+}
+
+func (c *directNativeConnection) loadResumeList(ctx context.Context, cursor string, all bool) error {
+	params := map[string]any{"limit": 50}
+	if cursor != "" {
+		params["cursor"] = cursor
+	}
+	var resp struct {
+		Data       []directWireThread `json:"data"`
+		NextCursor string             `json:"nextCursor"`
+	}
+	if err := c.wire.Call(ctx, "thread/list", params, &resp); err != nil {
+		return fmt.Errorf("list native threads: %w", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var rows []sessionpresentation.ResumeRow
+	if cursor != "" && c.resumeView != nil {
+		rows = slices.Clone(c.resumeView.Rows)
+	}
+	for _, th := range resp.Data {
+		if !all && c.workspace != "" && th.Cwd != "" && th.Cwd != c.workspace {
+			continue
+		}
+		title := th.Name
+		if title == "" {
+			title = th.Preview
+		}
+		rows = append(rows, sessionpresentation.ResumeRow{
+			ID:        th.ID,
+			Title:     title,
+			Workspace: th.Cwd,
+			Updated:   th.UpdatedAt,
+		})
+	}
+	c.resumeCursor = resp.NextCursor
+	id := uint64(1)
+	if c.resumeView != nil {
+		id = c.resumeView.ID + 1
+	}
+	c.resumeView = &sessionpresentation.ResumeView{
+		ID:        id,
+		Workspace: c.workspace,
+		Startup:   c.mainThread == "",
+		All:       all,
+		HasMore:   resp.NextCursor != "",
+		CanPage:   resp.NextCursor != "",
+		PageAfter: resp.NextCursor,
+		Rows:      rows,
+		Scanned:   len(rows),
+		LoadedAt:  time.Now(),
+	}
+	c.publishLocked()
+	return nil
+}
+
+func (c *directNativeConnection) setFeedbackLocked(text string, alert bool) {
+	c.feedbackText = text
+	c.feedbackAlert = alert
+	c.feedbackRev++
+}

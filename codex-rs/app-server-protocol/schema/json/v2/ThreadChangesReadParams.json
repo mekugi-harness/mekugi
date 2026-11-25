@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Request composed saved changes from the native change-history store for a thread.",
+  "properties": {
+    "includeEphemeral": {
+      "description": "Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "threadId"
+  ],
+  "title": "ThreadChangesReadParams",
+  "type": "object"
+}

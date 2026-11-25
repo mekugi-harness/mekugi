@@ -550,6 +550,10 @@ export type { ThreadAttachmentOwnerListResponse } from "./ThreadAttachmentOwnerL
 export type { ThreadAttachmentRemoveParams } from "./ThreadAttachmentRemoveParams";
 export type { ThreadAttachmentRemoveResponse } from "./ThreadAttachmentRemoveResponse";
 export type { ThreadAttachmentUpdatedNotification } from "./ThreadAttachmentUpdatedNotification";
+export type { ThreadChangeFileDiff } from "./ThreadChangeFileDiff";
+export type { ThreadChangeOrigin } from "./ThreadChangeOrigin";
+export type { ThreadChangesReadParams } from "./ThreadChangesReadParams";
+export type { ThreadChangesReadResponse } from "./ThreadChangesReadResponse";
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
 export type { ThreadCompactCancelParams } from "./ThreadCompactCancelParams";
 export type { ThreadCompactCancelResponse } from "./ThreadCompactCancelResponse";
