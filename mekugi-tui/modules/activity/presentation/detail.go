@@ -52,6 +52,8 @@ type DetailPage struct {
 	ID          string
 	DisplayPath string
 	Revision    uint64
+	// A command-run link selects combined output even when the feed shows segments.
+	CombinedOutput bool `json:"-"`
 	// PreparedSource links frozen contributed pages to the host observation
 	// without allowing live source refresh to replace their original content.
 	PreparedSource uint64
@@ -87,6 +89,12 @@ func RefreshDetails(pages []DetailPage, sources map[uint64]DetailSource) []Detai
 		}
 		source, exists := sources[page.Source]
 		if !exists || page.Source == 0 {
+			refreshed = append(refreshed, page)
+			continue
+		}
+		if page.CombinedOutput && source.Command != nil {
+			page.Running = source.Command.Running
+			page.Revision = source.Revision
 			refreshed = append(refreshed, page)
 			continue
 		}

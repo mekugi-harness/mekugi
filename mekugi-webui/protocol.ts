@@ -303,6 +303,7 @@ export type NativeDetails = {
   "selected"?: string;
   "view": DetailView;
   "output": (DetailOutput | null);
+  "runRange"?: (RunOutputRange | null);
   "file": (DetailFile | null);
   "agent": boolean;
 };
@@ -579,6 +580,12 @@ export type DetailView = {
 export type DetailOutput = {
   "View": OutputView;
 } & Omit<DetailOutputRequest, "View">;
+
+export type RunOutputRange = {
+  "First": number;
+  "Last": number;
+  "Available": boolean;
+};
 
 export type DetailFile = {
   "Path": string;

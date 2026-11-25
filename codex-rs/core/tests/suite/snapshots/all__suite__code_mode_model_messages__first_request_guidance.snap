@@ -194,6 +194,11 @@ Run JavaScript code to orchestrate/compose tool calls
   output and handles within each shell budget and the total within the cell
   budget. Keep short commands inline; edit and run substantial reusable
   scripts in `SESSION_TMP` in one call.
+- Summarize or interpret visible command output without copying it into the
+  reply unless the user asks for it there.
+- To cite a run, print its `ret.event_call_id` with the tool result and link to
+  `[output](mekugi:run/<id>)`, optionally adding `:line` or `:first-last`.
+  Cite lines only when you know their positions in the full run output.
 
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level).
@@ -354,6 +359,8 @@ declare const tools: { exec_command(args: {
 }): Promise<{
   // Chunk identifier included when the response reports one.
   chunk_id?: string;
+  // Command run ID, unchanged across write_stdin calls.
+  event_call_id?: string;
   // Process exit code when the command finished during this call.
   exit_code?: number;
   // Approximate token count before output truncation.
@@ -448,6 +455,8 @@ declare const tools: { write_stdin(args: {
 }): Promise<{
   // Chunk identifier included when the response reports one.
   chunk_id?: string;
+  // Command run ID, unchanged across write_stdin calls.
+  event_call_id?: string;
   // Process exit code when the command finished during this call.
   exit_code?: number;
   // Approximate token count before output truncation.
@@ -641,7 +650,7 @@ Waits on a yielded `exec` cell and returns new output or completion.
     "additionalProperties": false,
     "properties": {
       "cell_id": {
-        "description": "Identifier of the exec cell.",
+        "description": "Identifier of the running exec cell.",
         "type": "string"
       },
       "max_tokens": {

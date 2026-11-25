@@ -29,6 +29,8 @@ type Painter struct {
 	CopyScope  uint64
 	// FileLink authorizes local destinations using the consumer's workspace.
 	FileLink func(target string) bool
+	// ActionLink admits in-app destinations that need no file lookup.
+	ActionLink func(target string) bool
 	// DeferFileLinks keeps local candidates private until visible-row admission.
 	DeferFileLinks bool
 }
@@ -229,12 +231,14 @@ func (p *Painter) Inline(line string) string {
 
 func (p *Painter) linkAllowed(target string) bool {
 	target = strings.TrimPrefix(target, "@")
-	return strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "http://") || p.FileLink != nil && p.FileLink(target)
+	return strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "http://") ||
+		p.ActionLink != nil && p.ActionLink(target) || p.FileLink != nil && p.FileLink(target)
 }
 
 func (p *Painter) inlineLink(label, target string) string {
 	target = strings.TrimPrefix(target, "@")
-	if p.DeferFileLinks && !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+	if p.DeferFileLinks && !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") &&
+		(p.ActionLink == nil || !p.ActionLink(target)) {
 		return "\x1b]8;;" + fileLinkCandidate + url.QueryEscape(target) + "\x1b\\" + label + "\x1b]8;;\x1b\\"
 	}
 	if strings.HasPrefix(target, "/") {
@@ -266,7 +270,7 @@ func rawFilePath(path string) bool {
 	return !strings.Contains(base, ":") && !strings.ContainsAny(first, " \t") && name != "" && (strings.Contains(base, "/") || file)
 }
 
-// Parse local paths, file URLs and HTTP(S) URLs independently of clickability,
+// Parse supported link destinations independently of clickability,
 // so missing destinations retain the same visible label and copy annotations.
 func markdownLink(s string) (label, target string, end int, ok bool) {
 	close, depth := -1, 0
@@ -296,7 +300,9 @@ func markdownLink(s string) (label, target string, end int, ok bool) {
 	if end == 0 || strings.ContainsAny(target, "\x00\x1b\r\n") {
 		return "", "", 0, false
 	}
-	if strings.HasPrefix(target, "/") || strings.HasPrefix(target, "file://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "http://") {
+	if strings.HasPrefix(target, "/") || strings.HasPrefix(target, "file://") ||
+		strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "http://") ||
+		strings.HasPrefix(target, "mekugi:run/") {
 		return s[1:close], target, end, true
 	}
 	path := target

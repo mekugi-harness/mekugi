@@ -80,6 +80,7 @@ type detailFiles struct {
 	id           sessionpresentation.DetailID
 	agent        bool
 	selected     string
+	runRange     *sessionpresentation.RunOutputRange
 	file         *activitypresentation.DetailFile
 	copyFilePath func(string)
 	textOnly     bool // Remote-human links retain the text-only file contract.

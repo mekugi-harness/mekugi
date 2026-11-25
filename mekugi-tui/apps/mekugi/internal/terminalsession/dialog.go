@@ -78,6 +78,7 @@ type Dialog struct {
 	starts      []int
 	theme       diffrender.Theme
 	pendingLine int
+	outputLine  bool
 	link        string
 	listHeader  bool // A column header row sits above the body.
 }
@@ -171,7 +172,12 @@ func (d *Dialog) SetDocument(page terminalui.DialogPage, width int) {
 }
 
 // RevealLine requests a source-line jump after the next layout.
-func (d *Dialog) RevealLine(line int) { d.pendingLine = line }
+func (d *Dialog) RevealLine(line int) { d.pendingLine, d.outputLine = line, false }
+
+// RevealOutputLine skips command source lines that share the output number.
+func (d *Dialog) RevealOutputLine(line int) {
+	d.pendingLine, d.outputLine = line, true
+}
 
 func (d *Dialog) navigate(first int) {
 	if first >= 0 && first < len(d.Document.Lines) {
@@ -526,12 +532,12 @@ func (d *Dialog) selectionMouse(button, x, y int, release bool) (DialogIntent, b
 func (d *Dialog) layoutBody() []string {
 	if d.pendingLine > 0 {
 		for i, line := range d.Document.Lines {
-			if line.Number == d.pendingLine {
+			if line.Number == d.pendingLine && (!d.outputLine || line.Output) {
 				d.navigate(i)
 				break
 			}
 		}
-		d.pendingLine = 0
+		d.pendingLine, d.outputLine = 0, false
 	}
 	if d.follow {
 		d.top = d.bottom()

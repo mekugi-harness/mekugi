@@ -330,7 +330,9 @@ func (c *nativeClient) dispatch(event terminalsession.Input) {
 					break
 				}
 				if target.Link != "" {
-					if !c.copyNonFileLink(target.Link) {
+					if _, _, _, ok := commandRunTarget(target.Link); ok {
+						c.details(target.Version, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeRunDetails, Path: target.Link, Agent: target.View == u.Agents, Displayed: sessionpresentation.Thread{ID: target.Thread}})
+					} else if !c.copyNonFileLink(target.Link) {
 						c.details(target.Version, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeFileDetails, Path: target.Link, Displayed: sessionpresentation.Thread{ID: target.Thread}})
 					}
 				} else {
@@ -622,15 +624,20 @@ func (c *nativeClient) dialog(intent terminalsession.DialogIntent) {
 	case terminalsession.DialogCopy:
 		c.notice, _ = u.Frame.CopyText(intent.Text)
 	case terminalsession.DialogOpenLink:
-		if c.copyNonFileLink(intent.Text) {
+		kind := sessionapi.NativeFileDetails
+		if _, _, _, ok := commandRunTarget(intent.Text); ok {
+			kind = sessionapi.NativeRunDetails
+		} else if c.copyNonFileLink(intent.Text) {
 			return
 		}
 		var source sessionpresentation.Thread
+		agent := false
 		if details := c.event.Frame.Details; details != nil && details.View.ID == u.Dialog.ID {
 			source = details.Source
+			agent = details.Agent
 		}
 		c.closeLocalDetails()
-		c.details(c.event.Frame.View.Version, sessionapi.NativeDetailRequest{Displayed: source, Kind: sessionapi.NativeFileDetails, Path: intent.Text})
+		c.details(c.event.Frame.View.Version, sessionapi.NativeDetailRequest{Displayed: source, Kind: kind, Path: intent.Text, Agent: kind == sessionapi.NativeRunDetails && agent})
 	case terminalsession.DialogReference:
 		c.closeLocalDetails()
 		intent := u.Main.Reference(intent.Description, intent.Text, "")

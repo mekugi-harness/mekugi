@@ -62,13 +62,14 @@ type NativeActivityFrame struct {
 }
 
 type NativeDetails struct {
-	Content  *ContentReference                 `json:"content,omitzero"`
-	Source   sessionpresentation.Thread        `json:"source"`
-	Selected string                            `json:"selected,omitempty"`
-	View     sessionpresentation.DetailView    `json:"view"`
-	Output   *sessionpresentation.DetailOutput `json:"output"`
-	File     *activity.DetailFile              `json:"file"`
-	Agent    bool                              `json:"agent"`
+	Content  *ContentReference                   `json:"content,omitzero"`
+	Source   sessionpresentation.Thread          `json:"source"`
+	Selected string                              `json:"selected,omitempty"`
+	View     sessionpresentation.DetailView      `json:"view"`
+	Output   *sessionpresentation.DetailOutput   `json:"output"`
+	RunRange *sessionpresentation.RunOutputRange `json:"runRange,omitempty"`
+	File     *activity.DetailFile                `json:"file"`
+	Agent    bool                                `json:"agent"`
 }
 
 // NativeSwitch explicitly identifies a successful replacement. Other viewers
@@ -199,6 +200,7 @@ type NativeDetailKind string
 const (
 	NativeEntryDetails   NativeDetailKind = "entry"
 	NativeFileDetails    NativeDetailKind = "file"
+	NativeRunDetails     NativeDetailKind = "run"
 	NativeErrorDetails   NativeDetailKind = "error"
 	NativeSkillDetails   NativeDetailKind = "skills"
 	NativeProcessDetails NativeDetailKind = "processes"

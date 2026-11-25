@@ -52,6 +52,19 @@ func (v *nativeSessionView) openDetails(request sessionapi.NativeDetailRequest) 
 		source = v.attached.childSource
 	}
 	switch request.Kind {
+	case sessionapi.NativeRunDetails:
+		id, first, last, ok := commandRunTarget(request.Path)
+		if !ok {
+			return "The command run link is invalid."
+		}
+		pages := commandRunPages(source, thread.ID, id)
+		if len(pages) == 0 {
+			return "The command run is unavailable in this thread."
+		}
+		v.files.openDetailSelection(&v.attached.session, view.Version, source, pages, false)
+		if first > 0 {
+			v.files.runRange = &sessionpresentation.RunOutputRange{First: first, Last: last}
+		}
 	case sessionapi.NativeFileDetails:
 		v.files.textOnly = v.remoteHuman
 		copyReservation := v.reserveFileCopy()
@@ -175,4 +188,5 @@ func (v *nativeSessionView) publishDetails(frame *sessionapi.NativeFrame) {
 			frame.Details.Output = &output
 		}
 	}
+	frame.Details.RunRange = v.files.selectedRunRange(frame.Details.Output)
 }

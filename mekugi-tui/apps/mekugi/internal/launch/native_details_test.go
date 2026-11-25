@@ -302,6 +302,105 @@ func TestNativeDetailInitialPageDoesNotOverrideClientNavigation(t *testing.T) {
 	}
 }
 
+func TestCommandRunLinkOpensCombinedOutput(t *testing.T) {
+	u, _ := newAppServerTestUI()
+	u.startSession("main", "/workspace")
+	firstID := "exec-11111111-1111-4111-8111-111111111111"
+	secondID := "exec-22222222-2222-4222-8222-222222222222"
+	rangedLink := "mekugi:run/" + secondID + ":2-3"
+	outputs := u.activity.Outputs(u.attached.session.Scope())
+	first, second, segment := outputs.New(), outputs.New(), outputs.New()
+	first.Finish(new("other run\n"), new(0))
+	second.Finish(new("line one\nline two\nline three\n"), new(0))
+	segment.Finish(new("line one\n"), new(0))
+	u.attached.source.Apply(sessionpresentation.ActivityEvent{Entries: []sessionpresentation.ActivityEntry{
+		{Seq: 1, Kind: "tool", Text: "Run first", Native: &sessionpresentation.NativeItem{
+			Thread: "main", Item: firstID, Command: "printf first", Output: first,
+		}},
+		{Seq: 2, Kind: "tool", Text: "Run second", Native: &sessionpresentation.NativeItem{
+			Thread: "main", Item: secondID, Command: "printf one; printf two", Output: second,
+			Segments: []sessionpresentation.ActivitySegment{{Source: "printf one", Output: segment}},
+		}},
+		{Seq: 3, Agent: "Main", Kind: "final", Text: "[Inspect second run](" + rangedLink + ")"},
+	}})
+	_, view, _ := nativeDetailTestViews(t, u)
+	request := sessionapi.NativeDetailRequest{Kind: sessionapi.NativeRunDetails, Path: "mekugi:run/" + firstID}
+	if refusal := view.openDetails(request); refusal != "" {
+		t.Fatal(refusal)
+	}
+	if detail := nativeDetailFrame(view).Details; detail.RunRange != nil || detail.Output == nil || strings.Join(detail.Output.View.Lines, "\n") != "other run" {
+		t.Fatalf("whole-run link opened the wrong output: %+v", detail)
+	}
+
+	terminal, _ := u.terminalViews.NewAttachment(diffrender.DarkTheme)
+	t.Cleanup(func() { _ = terminal.Diff.Close() })
+	terminal.Width, terminal.Height = 80, 24
+	client := nativeClient{renderer: nativeClientRenderer{terminal: terminal, views: u.terminalViews}}
+	before := view.attached.presentation.View()
+	client.accept(sessionapi.NativeEvent{Attachment: view.attached.view, Frame: sessionapi.NativeFrame{
+		View: before, Main: view.attached.source.Publication(view.attached.presentation, nil),
+	}})
+	painted, err := client.renderer.render(t.Context(), io.Discard, time.Now(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := terminalsession.Screen(80, 24, painted.Rows, -1, -1)
+	clicked := false
+	var paintedLink, selectedLink string
+	for y, row := range rows {
+		plain := ansi.Strip(row)
+		if x := strings.Index(plain, "Inspect second run"); x >= 0 {
+			column := ansi.StringWidth(plain[:x]) + 1
+			_, paintedLink = terminalsession.Screen(80, 24, terminal.Frame.Rows, column-1, y)
+			for _, suffix := range []string{"M", "m"} {
+				client.dispatch(terminalsession.Input{Kind: terminalsession.MouseInput, Text: fmt.Sprintf("\x1b[<0;%d;%d%s", column, y+1, suffix)})
+				if terminal.Selection != nil {
+					selectedLink = terminal.Selection.Link
+				}
+			}
+			clicked = true
+			break
+		}
+	}
+	if len(client.calls) != 1 || client.calls[0].operation.Details == nil {
+		t.Fatalf("terminal link did not request command details: clicked=%v, painted=%q, selected=%q, calls=%d, notice=%s", clicked, paintedLink, selectedLink, len(client.calls), client.notice)
+	}
+	request = *client.calls[0].operation.Details
+	if refusal := view.openDetails(request); refusal != "" {
+		t.Fatal(refusal)
+	}
+	frame := nativeDetailFrame(view)
+	detail := frame.Details
+	want := sessionpresentation.RunOutputRange{First: 2, Last: 3, Available: true}
+	if detail.Output == nil || strings.Join(detail.Output.View.Lines, "\n") != "line one\nline two\nline three" ||
+		detail.RunRange == nil || *detail.RunRange != want {
+		t.Fatalf("ranged link did not select the combined output: %+v", detail)
+	}
+	client.renderer.update(frame, conversation.DraftView{Available: true}, conversation.PromptDraftView{}, time.Now())
+	terminal.Dialog.Layout(80)
+	var highlighted []string
+	for _, line := range terminal.Dialog.Document.Lines {
+		if line.GutterStyle != "" {
+			highlighted = append(highlighted, ansi.Strip(line.Text))
+		}
+	}
+	if strings.Join(highlighted, "\n") != "line two\nline three" {
+		t.Fatalf("incorrect terminal output highlight: %q", highlighted)
+	}
+
+	request.Path = "mekugi:run/" + secondID + ":9"
+	if refusal := view.openDetails(request); refusal != "" {
+		t.Fatal(refusal)
+	}
+	if detail := nativeDetailFrame(view).Details; detail.Output == nil || detail.RunRange == nil || detail.RunRange.Available {
+		t.Fatalf("unavailable range should still open the run: %+v", detail)
+	}
+	request.Displayed.ID = "other-thread"
+	if refusal := view.openDetails(request); refusal == "" {
+		t.Fatal("run link crossed thread boundaries")
+	}
+}
+
 func TestNativeChildDialogLinkKeepsSourceAcrossNavigation(t *testing.T) {
 	for _, destination := range []string{"main", "child-b"} {
 		t.Run(destination, func(t *testing.T) {

@@ -20,6 +20,7 @@ type ContentDialog struct {
 	ID            sessionpresentation.DetailID
 	Revision      uint64
 	Output        *sessionpresentation.DetailOutput
+	RunRange      *sessionpresentation.RunOutputRange
 	Pages         []sessionpresentation.DetailItem
 	Processes     bool
 	ProcessDetail bool
@@ -40,6 +41,7 @@ type contentDialogKey struct {
 	version      uint64
 	retained     bool
 	output       bool
+	runRange     sessionpresentation.RunOutputRange
 	modelVisible bool
 	theme        diffrender.Theme
 	file         *activitypresentation.DetailFile
@@ -137,6 +139,9 @@ func (d *ContentDialog) Layout(width int) {
 		output = &d.Output.View
 	}
 	key.output = output != nil
+	if d.RunRange != nil && !page.ModelVisible {
+		key.runRange = *d.RunRange
+	}
 	if !page.Retained && page.Running {
 		if frame, version, ok := d.View.CurrentCommandFrame(page.Source); ok {
 			key.frame = version
@@ -156,6 +161,19 @@ func (d *ContentDialog) Layout(width int) {
 		d.RevealLine(d.File.First)
 	}
 	document := d.View.Painter.DetailDocument(page.DetailPage, output, d.File, width)
+	if key.runRange.Available {
+		for i := range document.Lines {
+			line := &document.Lines[i]
+			if line.Output && line.Number >= key.runRange.First && line.Number <= key.runRange.Last {
+				line.GutterStyle = d.View.Painter.Theme.Accent() + d.View.Painter.Theme.SelectionBackground()
+			}
+		}
+		if key.runRange != d.laidKey.runRange {
+			d.RevealOutputLine(key.runRange.First)
+		}
+	} else if key.runRange.First != 0 {
+		document.Lines = append([]terminalui.DialogLine{{Text: "Requested output lines are unavailable.", Wrap: true}}, document.Lines...)
+	}
 	if d.ImageSource().Path != "" {
 		document.Text = d.File.Path
 		d.imageLine = len(document.Lines)

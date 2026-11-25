@@ -24,6 +24,16 @@ test("machine-local Markdown links retain the shared file target", () => {
   assert.doesNotThrow(() => block("[Literal](a%ZZ.md)"));
 });
 
+test("run Markdown links retain the native detail target without browser navigation", () => {
+  const run = "mekugi:run/exec-00000000-0000-4000-8000-000000000042";
+  const html = block(
+    `[Run](${run}) [Line](${run}:3) [Range](${run}:3-5) [Other](mekugi:other/call_42)`,
+  );
+  for (const suffix of ["", ":3", ":3-5"])
+    assert.ok(html.includes(`href="#panel-content" data-run-link="${run}${suffix}"`));
+  assert.doesNotMatch(html, /href="mekugi:|data-file-link|data-run-link="mekugi:other/);
+});
+
 test("untrusted links and images never execute or fetch automatically", () => {
   const html = block(
     "<script>alert(1)</script> [unsafe](javascript:alert(1)) ![Remote](https://example.com/image.png) [fragment](#heading)",

@@ -198,7 +198,7 @@ func (p *Painter) DialogPage(block Block, width int) terminalui.DialogPage {
 		identity = terminalui.CopyID(content, p.CopyScope)
 	}
 	for i, line := range colored {
-		row := terminalui.DialogLine{Number: first + i, Gutter: gutter, Text: line}
+		row := terminalui.DialogLine{Number: first + i, Gutter: gutter, Text: line, Output: true}
 		if p.CopySource && !p.LayoutOnly && ansi.Strip(line) != view.Lines[i] {
 			row.CopySource = &terminalui.CopyFragment{ID: terminalui.CopyID(strconv.Itoa(i), identity), Prefix: view.Lines[i]}
 		}

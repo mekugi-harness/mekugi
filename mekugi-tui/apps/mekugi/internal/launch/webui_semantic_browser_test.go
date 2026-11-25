@@ -30,7 +30,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/connector"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-webui"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
@@ -38,6 +37,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
+	"github.com/mekugi-harness/mekugi/mekugi-webui"
 )
 
 type webUISemanticLane string
@@ -48,7 +48,7 @@ const (
 	webUIFull     webUISemanticLane = "semantic"
 )
 
-// TestWebUIControlsBrowser covers links, file details, status and process controls.
+// TestWebUIControlsBrowser covers links, file and run details, status and process controls.
 func TestWebUIControlsBrowser(t *testing.T) {
 	testWebUISemanticBrowser(t, webUIControls)
 }
@@ -608,6 +608,13 @@ func testWebUISemanticBrowser(t *testing.T, lane webUISemanticLane) {
 	run("wait", "--text", "Browser file details fixture")
 	run("wait", "--fn", `Array.from(document.querySelectorAll('[aria-labelledby="details-heading"] pre')).every(pre => pre.querySelector('span[style]') && pre.textContent.includes('**Highlighted file content**'))`)
 	button("Close details")
+	run("wait", "--fn", `!document.querySelector('#details-heading')`)
+	closeDetailsPanel := func() {
+		t.Helper()
+		button("Close panel")
+		run("wait", "--fn", `!document.querySelector('aside[aria-label="Thread panel"]') &&
+			document.querySelector('header button[aria-label="Session details"]')?.disabled === false`)
+	}
 	// Open after each resize: switching to a narrow layout closes the panel.
 	for _, size := range []struct{ name, width, height string }{{"desktop", "1280", "900"}, {"tablet", "768", "1024"}, {"phone", "390", "844"}} {
 		viewport(size.width, size.height)
@@ -622,11 +629,31 @@ func testWebUISemanticBrowser(t *testing.T, lane webUISemanticLane) {
 			if artifacts := os.Getenv("MEKUGI_TEST_WEBUI_ARTIFACTS"); artifacts != "" {
 				run("screenshot", filepath.Join(artifacts, "file-details-"+size.name+"-"+theme+".png"))
 			}
-			button("Close panel")
-			run("wait", "--fn", `!document.querySelector('aside[aria-label="Thread panel"]')`)
+			closeDetailsPanel()
+			waitAction(`document.querySelector('a[data-run-link$=":130-132"]')`)
+			run("find", "role", "link", "click", "--name", "Run output", "--exact")
+			run("wait", "--fn", `(() => {
+				const pane = document.querySelector('[aria-labelledby="details-heading"] > .overflow-y-auto');
+				const mark = pane?.querySelector('pre mark');
+				if (mark?.textContent !== 'Browser run line 130\nBrowser run line 131\nBrowser run line 132') return false;
+				const visible = pane.getBoundingClientRect(), range = mark.getBoundingClientRect();
+				return pane.scrollTop > 0 && range.top >= visible.top && range.bottom <= visible.bottom &&
+					getComputedStyle(mark).backgroundColor !== getComputedStyle(mark.closest('pre')).backgroundColor;
+			})()`)
+			closeDetailsPanel()
 		}
 	}
 	viewport("1280", "720")
+	waitAction(`document.querySelector('a[data-run-link$=":900"]')`)
+	run("find", "role", "link", "click", "--name", "Unavailable run line", "--exact")
+	run("wait", "--text", "The referenced output lines are unavailable.")
+	run("wait", "--fn", `(() => {
+		const pane = document.querySelector('[aria-labelledby="details-heading"] > .overflow-y-auto');
+		const output = pane?.querySelector('section pre:last-of-type')?.textContent;
+		return output?.startsWith('Browser run line 1\n') && output.endsWith('Browser run line 180') &&
+			!pane.querySelector('pre mark') && pane.scrollTop === 0;
+	})()`)
+	closeDetailsPanel()
 	message("/status")
 	run("wait", "--text", "Session status")
 	if strings.TrimSpace(run("eval", `document.querySelectorAll('[data-slot=dialog-content] [data-slot=table-row]').length > 0 && Array.from(document.querySelectorAll('[data-slot=dialog-content] [data-slot=table-row], [data-slot=dialog-content] [data-slot=table-row] > *')).every(el => getComputedStyle(el).borderTopWidth === '0px' && getComputedStyle(el).borderBottomWidth === '0px')`)) != "true" {
@@ -653,7 +680,7 @@ func testWebUISemanticBrowser(t *testing.T, lane webUISemanticLane) {
 		if strings.Count(string(body), "thread/backgroundTerminals/terminate ") != 3 || strings.Contains(string(body), "turn/interrupt ") {
 			t.Fatal("individual Stop lost its host identity or interrupted the turn")
 		}
-		t.Log("links, machine-local details, grouped status and individual process lifecycle passed")
+		t.Log("links, machine-local and run details, grouped status and individual process lifecycle passed")
 		return
 	}
 
@@ -1386,10 +1413,18 @@ func serveWebUISemanticHost(t *testing.T) {
 			if key == "browser later input" {
 				answer = "Browser later input answer"
 			}
-			if inputs == 1 && key == "browser first input" {
-				answer += "\n\nAutomatic https://example.com/auto and [Website](https://example.com/markdown). [Workspace notes](notes.md)"
-			}
 			history := binding.HistoryTurn{ID: id, Status: "completed", Items: []binding.ThreadItem{{ID: fmt.Sprintf("user-%d", inputs), Type: "userMessage", Content: content}, {ID: fmt.Sprintf("answer-%d", inputs), Type: "agentMessage", Text: answer}}}
+			if inputs == 1 && key == "browser first input" {
+				const runID = "exec-00000000-0000-4000-8000-000000000042"
+				history.Items[1].Text += "\n\nAutomatic https://example.com/auto and [Website](https://example.com/markdown). [Workspace notes](notes.md)" +
+					"\n\n[Run output](mekugi:run/" + runID + ":130-132) [Unavailable run line](mekugi:run/" + runID + ":900)"
+				var output strings.Builder
+				for line := 1; line <= 180; line++ {
+					fmt.Fprintf(&output, "Browser run line %d\n", line)
+				}
+				run := binding.ThreadItem{ID: runID, Type: "commandExecution", Command: "printf browser-run", AggregatedOutput: new(output.String()), Status: "completed", ExitCode: new(0)}
+				history.Items = append(history.Items[:1], run, history.Items[1])
+			}
 			if strings.Contains(string(content), "initial task") {
 				history.Items[1].Text = "One-off repeated answer"
 				history.Items = append(history.Items, binding.ThreadItem{ID: fmt.Sprintf("repeated-answer-%d", inputs), Type: "agentMessage", Text: "One-off repeated answer"})

@@ -12,6 +12,7 @@ func (files *detailFiles) openDetailSelection(session *sessionpresentation.Attac
 	files.id = files.details.OpenDetails(version, source, pages, processes, session.RunningProcesses())
 	files.agent = source != nil && source.Audience != sessionpresentation.MainAudience
 	files.selected, files.file = "", nil
+	files.runRange = nil
 	if view, ok := files.details.DetailView(files.id); ok && len(view.Pages) > 0 {
 		files.selected = view.Pages[0].ID
 	}
@@ -21,6 +22,17 @@ func (files *detailFiles) closeOutput() {
 	files.details.Clear()
 	files.stopFileRead()
 	files.id, files.selected, files.file = sessionpresentation.DetailID{}, "", nil
+	files.runRange = nil
+}
+
+func (files *detailFiles) selectedRunRange(output *sessionpresentation.DetailOutput) *sessionpresentation.RunOutputRange {
+	if files.runRange == nil {
+		return nil
+	}
+	requested := *files.runRange
+	requested.Available = output != nil && output.Page == files.selected &&
+		runRangeAvailable(output.View, requested.First, requested.Last)
+	return &requested
 }
 
 func (files *detailFiles) replaceDetails(session *sessionpresentation.Attachment, pages []activitypresentation.DetailPage) {
@@ -86,13 +98,16 @@ func (files *detailFiles) prepareOutput(session *sessionpresentation.Attachment,
 	page := d.Pages[d.Page]
 	if !page.Retained {
 		d.Output = nil
+		d.RunRange = files.selectedRunRange(nil)
 		return
 	}
 	if d.Output != nil && d.Output.Page == page.ID && d.Output.Version == page.OutputVersion {
+		d.RunRange = files.selectedRunRange(d.Output)
 		return
 	}
 	request := sessionpresentation.DetailOutputRequest{ID: d.ID, Page: page.ID, Version: page.OutputVersion}
 	if output, ok := files.details.DetailOutput(request); ok {
 		d.Output = &output
+		d.RunRange = files.selectedRunRange(d.Output)
 	}
 }

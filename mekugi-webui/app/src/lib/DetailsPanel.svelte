@@ -38,6 +38,28 @@
       : undefined,
   );
   const display = $derived(retained ?? details);
+  const runLines = $derived.by(() => {
+    const range = display.runRange;
+    const output = display.output;
+    if (!range?.Available || !output || output.Page !== display.selected) return;
+    const { Dropped, Lines } = output.View;
+    // Published line numbers start at one, including any discarded prefix.
+    const first = range.First - Dropped - 1;
+    const end = range.Last - Dropped;
+    return {
+      before: first > 0 ? Lines.slice(0, first).join("\n") + "\n" : "",
+      marked: Lines.slice(first, end).join("\n"),
+      after: end < Lines.length ? "\n" + Lines.slice(end).join("\n") : "",
+    };
+  });
+  let runMark = $state<HTMLElement>();
+  let scrolledSelection: string | undefined;
+  $effect(() => {
+    const target = selection;
+    if (!runMark || scrolledSelection === target) return;
+    runMark.scrollIntoView({ block: "start", inline: "nearest" });
+    scrolledSelection = target;
+  });
   const contentIdentity = $derived(JSON.stringify(details.content));
   $effect(() => {
     void contentIdentity;
@@ -92,6 +114,9 @@
     <Button variant="quiet" icon="close" label="Close details" onclick={onclose} />
   </header>
   <div bind:this={content} class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3 pb-6">
+    {#if display.runRange?.Available === false}<Alert>
+        The referenced output lines are unavailable.
+      </Alert>{/if}
     {#if details.content && failure}<Alert>{failure}</Alert><Button
         variant="quiet"
         onclick={() => retry++}>Retry complete details</Button
@@ -118,10 +143,20 @@
               lang={display.file ? pathLanguage(display.file.Path) : undefined}
             /></pre>{/if}
         {#if display.output?.Page === page.ID}
-          <pre class={block}><Code
-              code={display.output.View.Lines.join("\n")}
-              lang={display.file ? pathLanguage(display.file.Path) : undefined}
-            /></pre>
+          {#if runLines}
+            <pre class={block}><code
+                >{runLines.before}<mark
+                  bind:this={runMark}
+                  class="box-decoration-clone scroll-mt-3 border-l-2 border-accent bg-accent-tint text-ink"
+                  >{runLines.marked}</mark
+                >{runLines.after}</code
+              ></pre>
+          {:else}
+            <pre class={block}><Code
+                code={display.output.View.Lines.join("\n")}
+                lang={display.file ? pathLanguage(display.file.Path) : undefined}
+              /></pre>
+          {/if}
           {#if display.output.View.Dropped}<p class="text-small text-muted">
               {display.output.View.Dropped} earlier lines are no longer kept.
             </p>{/if}

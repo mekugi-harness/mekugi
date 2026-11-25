@@ -26,20 +26,24 @@
       highlightWithin(node, "pre > code", (code) => /language-(\S+)/.exec(code.className)?.[1]);
   };
   const click = (event: MouseEvent) => {
-    const link = (event.target as Element).closest<HTMLElement>("[data-file-link]");
+    if (!(event.target instanceof Element)) return;
+    const link = event.target.closest<HTMLAnchorElement>("a[data-file-link], a[data-run-link]");
     if (!link) return;
     event.preventDefault();
     problem = undefined;
+    const run = link.dataset.runLink;
     const shown = semantic.frame?.view;
     if (!shown) {
-      problem = "File details are available on a connected live thread.";
+      problem = run
+        ? "Run details are available on a connected live thread."
+        : "File details are available on a connected live thread.";
       return;
     }
     const legacyAgent = !!view.agent && shown.Main.ID === stream.session?.thread;
     void semantic.send({
       details: {
-        Kind: "file",
-        Path: link.dataset.fileLink ?? "",
+        Kind: run ? "run" : "file",
+        Path: run ?? link.dataset.fileLink ?? "",
         Source: 0,
         Output: 0,
         Sources: [],

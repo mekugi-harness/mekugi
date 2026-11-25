@@ -5,6 +5,7 @@ import MarkdownIt, { type Env } from "markdown-it";
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
 
 const web = /^(?:https?:\/\/|mailto:)/i;
+const runPrefix = "mekugi:run/";
 const local = (href: string) =>
   !/^[#?]/.test(href) &&
   (!/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith("/") || href.startsWith("file:"));
@@ -16,6 +17,11 @@ const defaultLinkOpen =
 
 md.renderer.rules.link_open = (tokens, i, options, env, self) => {
   const href = String(tokens[i].attrGet("href") ?? "");
+  if (href.startsWith(runPrefix)) {
+    tokens[i].attrSet("href", "#panel-content");
+    tokens[i].attrSet("data-run-link", href);
+    return defaultLinkOpen(tokens, i, options, env, self);
+  }
   if (!web.test(href)) {
     tokens[i].attrs = [];
     tokens[i].tag = local(href) ? "a" : "span";

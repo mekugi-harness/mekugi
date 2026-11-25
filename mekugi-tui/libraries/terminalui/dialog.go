@@ -28,6 +28,7 @@ type DialogPage struct {
 // DialogLine is one numbered source/output line, a logical unnumbered error
 // line, or a pre-laid-out row such as a note or rendered Markdown.
 type DialogLine struct {
+	Output      bool          // A numbered output row, distinct from source code.
 	Wrap        bool          // Keep an unnumbered logical line intact for search; wrap only for display.
 	Number      int           // Zero leaves the number column blank.
 	Gutter      string        // "│" before source, "┆" before output, empty for other rows.

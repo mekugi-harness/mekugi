@@ -4729,14 +4729,21 @@ const results = await Promise.all([
   }),
 ]);
 
-text(JSON.stringify([results[0].output.includes("code-alpha-ready"), results[1].output.includes("code-beta-ready")]));
+text(JSON.stringify([
+  results[0].output.includes("code-alpha-ready"),
+  results[1].output.includes("code-beta-ready"),
+  sessions.every((session, i) =>
+    typeof session.event_call_id === "string" &&
+    session.event_call_id === results[i].event_call_id),
+  sessions[0].event_call_id !== sessions[1].event_call_id,
+]));
 "#,
     )
     .await?;
 
     let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
     let result: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
-    assert_eq!(result, serde_json::json!([true, true]));
+    assert_eq!(result, serde_json::json!([true, true, true, true]));
 
     Ok(())
 }

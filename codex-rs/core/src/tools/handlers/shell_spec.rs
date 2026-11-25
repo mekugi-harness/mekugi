@@ -183,6 +183,10 @@ fn unified_exec_output_schema() -> Value {
                 "type": "string",
                 "description": "Chunk identifier included when the response reports one."
             },
+            "event_call_id": {
+                "type": "string",
+                "description": "Command run ID, unchanged across write_stdin calls."
+            },
             "wall_time_seconds": {
                 "type": "number",
                 "description": "Elapsed wall time spent waiting for output in seconds."

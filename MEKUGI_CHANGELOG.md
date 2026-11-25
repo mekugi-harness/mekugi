@@ -103,6 +103,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   replies through `child_reply_summary`. Plugin discovery is explicit rather
   than advertised automatically in model context. The managed host catalog uses
   concise base skill guidance. Code-mode batching lives in the exec description.
+- Exec guidance tells agents to summarize or interpret visible command output
+  without copying it into replies unless requested there.
+- Code-mode shell results expose `event_call_id` for Markdown run links. These
+  open retained command output in the terminal or browser, with optional
+  `:line` or `:first-last` locations.
 - Code-mode waits can hold the observer while a native wait pauses the cell
   deadline. The paired host and runtime exchange observation liveness separately
   from stream heartbeats. Instant-interrupt steering defers stream preemption

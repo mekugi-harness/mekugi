@@ -54,6 +54,11 @@ const EXEC_DESCRIPTION_TEMPLATE: &str = r#"Run JavaScript code to orchestrate/co
   output and handles within each shell budget and the total within the cell
   budget. Keep short commands inline; edit and run substantial reusable
   scripts in `SESSION_TMP` in one call.
+- Summarize or interpret visible command output without copying it into the
+  reply unless the user asks for it there.
+- To cite a run, print its `ret.event_call_id` with the tool result and link to
+  `[output](mekugi:run/<id>)`, optionally adding `:line` or `:first-last`.
+  Cite lines only when you know their positions in the full run output.
 
 - Global helpers:
 - `exit()`: Immediately ends the current script successfully (like an early return from the top level).

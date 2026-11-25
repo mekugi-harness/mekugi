@@ -99,6 +99,7 @@ func (c *nativeClientRenderer) update(frame sessionapi.NativeFrame, draft conver
 	u.Agents.Hydrate(frame.AgentOutput)
 	for _, painter := range []*activityui.View{u.Transcript, u.Agents} {
 		painter.Painter.FileLink = markdownFileLinks(view.SourceWorkspace())
+		painter.Painter.ActionLink = commandRunLink
 		painter.Painter.DeferFileLinks = true
 	}
 	if pane, ok := u.Auxiliary.(*changeui.Pane); ok && frame.Review != nil {
@@ -128,6 +129,7 @@ func (c *nativeClientRenderer) update(frame sessionapi.NativeFrame, draft conver
 			u.Dialog.View = u.Agents
 		}
 		u.Dialog.File, u.Dialog.Output = detail.File, detail.Output
+		u.Dialog.RunRange = detail.RunRange
 		u.Dialog.Update(detail.View)
 		if opened {
 			for i, page := range u.Dialog.Pages {

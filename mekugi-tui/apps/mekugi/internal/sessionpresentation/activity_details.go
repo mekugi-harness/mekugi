@@ -37,6 +37,11 @@ type DetailOutput struct {
 	View feed.OutputView
 }
 
+type RunOutputRange struct {
+	First, Last int
+	Available   bool
+}
+
 type detailPage struct {
 	activity.DetailPage
 	process     *Process

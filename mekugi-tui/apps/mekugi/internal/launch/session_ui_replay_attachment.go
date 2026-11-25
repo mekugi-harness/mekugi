@@ -199,6 +199,7 @@ func (p *uiReplayPlayback) publish() {
 	u.shell.Main.Update(view)
 	u.shell.Prompts.Update(view)
 	u.view.Painter.FileLink, u.agents.Painter.FileLink = markdownFileLinks(view.SourceWorkspace()), markdownFileLinks(view.SourceWorkspace())
+	u.view.Painter.ActionLink, u.agents.Painter.ActionLink = commandRunLink, commandRunLink
 	u.view.Painter.DeferFileLinks, u.agents.Painter.DeferFileLinks = true, true
 	u.publishActivity()
 }
@@ -266,6 +267,10 @@ func (p *uiReplayPlayback) applyInput(effects iter.Seq[terminalsession.InputEffe
 			if target.View == nil || !target.Version.SameAttachment(view.Version) || target.Thread != view.Displayed.ID {
 				continue
 			}
+			if id, first, last, ok := commandRunTarget(target.Link); ok {
+				p.openCommandRun(target.View, id, first, last)
+				continue
+			}
 			block, ok := target.View.SnippetBlock(target.Snippet)
 			if !ok || block.Kind != "compaction" {
 				continue
@@ -293,12 +298,30 @@ func (p *uiReplayPlayback) outputIntent(intent terminalsession.DialogIntent) {
 			u.feedback.Set(err.Error(), true, p.At)
 		}
 	case terminalsession.DialogOpenLink:
-		if !u.detailFiles.openTerminalMarkdownFile(&u.session, u.presentation, u.presentation.View().SourceWorkspace(), u.activitySource(u.shell.Dialog.View), u.shell, u.shell.Dialog.View, intent.Text) {
+		if id, first, last, ok := commandRunTarget(intent.Text); ok {
+			p.openCommandRun(u.shell.Dialog.View, id, first, last)
+		} else if !u.detailFiles.openTerminalMarkdownFile(&u.session, u.presentation, u.presentation.View().SourceWorkspace(), u.activitySource(u.shell.Dialog.View), u.shell, u.shell.Dialog.View, intent.Text) {
 			text, alert := u.shell.Frame.CopyText(intent.Text)
 			u.feedback.Set(text, alert, p.At)
 		}
 	}
 	p.publish()
+}
+
+func (p *uiReplayPlayback) openCommandRun(transcript *activityui.View, id string, first, last int) {
+	u := p.ui
+	view := u.presentation.View()
+	source := u.activitySource(transcript)
+	pages := commandRunPages(source, view.Displayed.ID, id)
+	if len(pages) == 0 {
+		u.feedback.Set("The command run is unavailable in this thread.", true, p.At)
+		return
+	}
+	u.openTerminalDetailSelection(&u.session, view.Version, source, u.shell, transcript, pages, false)
+	if first > 0 {
+		u.detailFiles.runRange = &sessionpresentation.RunOutputRange{First: first, Last: last}
+		u.detailFiles.prepareOutput(&u.session, u.shell)
+	}
 }
 
 func (p *uiReplayPlayback) paintFrame(out io.Writer, width, height int) error {
