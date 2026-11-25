@@ -636,6 +636,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             windows_sandbox,
             environment_is_remote,
         );
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut command = if matches!(requested_shell.shell_type, ShellType::PowerShell) {
             if attempt.sandbox_requested
                 && windows_sandbox == WindowsSandboxSelection::Mxc

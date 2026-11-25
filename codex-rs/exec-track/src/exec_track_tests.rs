@@ -432,11 +432,14 @@ fn linux_background_descendant_write_succeeds_after_settle() {
     let workspace = TempDir::new().expect("workspace");
     let store_dir = TempDir::new().expect("store");
     let bg_out = workspace.path().join("bg_after_settle.txt");
+    let bg_tmp = workspace.path().join("bg_after_settle.txt.tmp");
     let obs = WriteObserverSession::start("seccomp-bg".to_string(), |_| true).unwrap();
     let sock_path = obs.dir_path().join("observe.sock");
 
     let script = format!(
-        "(sleep 0.15; printf 'ok' > '{}') >/dev/null 2>&1 &",
+        "(sleep 0.15; printf 'ok' > '{}' && mv '{}' '{}') >/dev/null 2>&1 &",
+        bg_tmp.display(),
+        bg_tmp.display(),
         bg_out.display()
     );
     let pid = unsafe { libc::fork() };

@@ -112,36 +112,39 @@ impl ObservationState {
     }
 
     /// Release any held active-writer registrations without persisting.
-    pub(crate) fn release_active_writers(&self) {
-        let keys: Vec<WriterKey> = self
-            .baselines
-            .values()
-            .flat_map(|obs| obs.keys.iter().cloned())
-            .collect();
+    pub(crate) fn release_active_writers(&mut self) {
+        let baselines = std::mem::take(&mut self.baselines);
+        self.partial_reasons.clear();
+        let keys = Self::collect_keys(&baselines);
         if !keys.is_empty() {
             let _ = finish_call(&self.call_id, &keys);
         }
     }
 
+    fn collect_keys(baselines: &BTreeMap<PathBuf, ObservedFile>) -> Vec<WriterKey> {
+        baselines
+            .values()
+            .flat_map(|obs| obs.keys.iter().cloned())
+            .collect()
+    }
+
     /// Observe post-execution bytes for all touched paths and persist durable
     /// evidence into `ChangeHistoryStore`.
     pub(crate) fn finalize_and_persist(
-        &self,
+        &mut self,
         store_dir: &Path,
         workspace_root: &Path,
         session_tmp: Option<&Path>,
         metadata: ChangeMetadata,
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
-        let keys: Vec<WriterKey> = self
-            .baselines
-            .values()
-            .flat_map(|obs| obs.keys.iter().cloned())
-            .collect();
+        let baselines = std::mem::take(&mut self.baselines);
+        let partial_reasons = std::mem::take(&mut self.partial_reasons);
+        let keys = Self::collect_keys(&baselines);
         let conflicted = finish_call(&self.call_id, &keys);
 
         let mut authored_files = Vec::new();
         let mut vcs_files = Vec::new();
-        for (abs_path, obs) in &self.baselines {
+        for (abs_path, obs) in &baselines {
             if !(self.can_read)(abs_path)
                 || fs::canonicalize(abs_path)
                     .ok()
@@ -156,9 +159,9 @@ impl ObservationState {
                     reason: "concurrent write to same file".to_string(),
                 });
             }
-            if !self.partial_reasons.is_empty() {
+            if !partial_reasons.is_empty() {
                 coverage = coverage.merge(CoverageStatus::Partial {
-                    reason: self.partial_reasons.join("; "),
+                    reason: partial_reasons.join("; "),
                 });
             }
             if obs.before == after && coverage == CoverageStatus::Complete {

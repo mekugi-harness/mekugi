@@ -487,13 +487,106 @@ async fn persist_user_shell_output(
 }
 
 fn command_uses_privilege_escalation(raw_command: &str) -> bool {
-    raw_command
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '/'))
-        .filter(|tok| !tok.is_empty())
-        .any(|tok| {
-            let base = tok.rsplit('/').next().unwrap_or(tok);
-            matches!(base, "sudo" | "su" | "doas" | "pkexec")
-        })
+    fn is_env_assignment(tok: &str) -> bool {
+        let Some((name, _)) = tok.split_once('=') else {
+            return false;
+        };
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    fn check_cmd_token(tok: &str, at_cmd_pos: &mut bool, in_wrapper: &mut bool) -> bool {
+        if tok.is_empty() || !*at_cmd_pos {
+            return false;
+        }
+        if is_env_assignment(tok) {
+            return false;
+        }
+        if *in_wrapper && tok.starts_with('-') {
+            return false;
+        }
+        let base = tok.rsplit('/').next().unwrap_or(tok);
+        if matches!(base, "sudo" | "su" | "doas" | "pkexec") {
+            return true;
+        }
+        if matches!(
+            base,
+            "env" | "command" | "nohup" | "time" | "nice" | "exec" | "builtin"
+        ) {
+            *in_wrapper = true;
+            return false;
+        }
+        if matches!(
+            base,
+            "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "!"
+        ) {
+            *in_wrapper = false;
+            return false;
+        }
+        *at_cmd_pos = false;
+        *in_wrapper = false;
+        false
+    }
+
+    let mut token = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut at_cmd_pos = true;
+    let mut in_wrapper = false;
+
+    for ch in raw_command.chars() {
+        if escaped {
+            token.push(ch);
+            escaped = false;
+            continue;
+        }
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            } else {
+                token.push(ch);
+            }
+            continue;
+        }
+        if in_double {
+            if ch == '"' {
+                in_double = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else {
+                token.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            ';' | '|' | '&' | '\n' | '(' | ')' => {
+                if check_cmd_token(&token, &mut at_cmd_pos, &mut in_wrapper) {
+                    return true;
+                }
+                token.clear();
+                at_cmd_pos = true;
+                in_wrapper = false;
+            }
+            c if c.is_ascii_whitespace() => {
+                if !token.is_empty() {
+                    if check_cmd_token(&token, &mut at_cmd_pos, &mut in_wrapper) {
+                        return true;
+                    }
+                    token.clear();
+                }
+            }
+            _ => token.push(ch),
+        }
+    }
+    check_cmd_token(&token, &mut at_cmd_pos, &mut in_wrapper)
 }
 
 #[cfg(all(test, unix))]

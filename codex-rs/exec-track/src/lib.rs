@@ -136,7 +136,7 @@ impl WriteObserverSession {
         self.backend.settle();
         #[cfg(target_os = "macos")]
         self.backend.stop_and_join();
-        let guard = self
+        let mut guard = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

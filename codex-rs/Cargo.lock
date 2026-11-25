@@ -2892,7 +2892,6 @@ dependencies = [
  "libc",
  "pretty_assertions",
  "tempfile",
- "tracing",
 ]
 
 [[package]]

@@ -73,21 +73,19 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   mutations omit continuous net-zero transitions (`before == after` without
   rename or incomplete coverage) and surface discontinuous baselines from
   unobserved external writes via coverage notes (`MEKUGI-827`).
-- Native exec tracking and shell-write / `mktemp` observation (`codex-exec-track`,
-  `MEKUGI-801`): `codex-core` selects authored command spans with
-  `codex-shell-guard::parse_bash` for supported Bash and Linux `dash`-backed
-  `sh` lists, instruments segment boundaries inside one real shell without
-  fixed inherited caller FDs (3/4/7/8) or held tracking FDs across detached
-  descendants, preserves TTYs intact (status/timing only), falls back cleanly
-  to stock combined output on unsupported syntax or lost observation, captures
-  actual successful `mktemp` files and directory trees independently of
-  printable output (ignoring dry runs and failures), and persists observed
-  shell writes (including writes before nonzero exits) to `codex-change-history`
-  under `ChangeSourceKind::ShellWrite` for agent commands and
-  `ChangeSourceKind::UserShell` (`"user_shell"`, authored) for interactive `!`
-  user-shell commands with shared `claim_key` deduplication, while capturing
-  in-place formatters (`gofmt -w`, `goimports -w`, `rustfmt`) as authored
-  writes and Git worktree restores (`git restore`, `git checkout --`) under
+- Native process-scoped shell write observation (`codex-exec-track`,
+  `MEKUGI-801`): `codex-core` wraps agent and interactive `!` user-shell
+  commands with `WriteObserverSession` (Linux `seccomp-unotify` and macOS
+  `DYLD_INSERT_LIBRARIES`), capturing real filesystem writes lazily before
+  mutation without Bash AST parsing or shell script rewriting, preserving TTYs
+  intact, working on non-git directories, and capturing writes outside `cwd`
+  (classifying `/tmp`, `$TMPDIR`, and `$SESSION_TMP` as
+  `ChangeScope::Ephemeral`). Observed writes (including writes before nonzero
+  exits) persist to `codex-change-history` under `ChangeSourceKind::ShellWrite`
+  for agent commands and `ChangeSourceKind::UserShell` (`"user_shell"`,
+  unattributed `shellN`) for interactive `!` commands with shared `claim_key`
+  deduplication, while classifying Git worktree restores (`git restore`,
+  `git checkout --`, `git reset --hard`, `git clean`) under
   `ChangeSourceKind::VcsDiagnostic` (`MEKUGI-827`). Downgrade note:
   older runtimes deserialize `ChangeSourceKind` strictly and will reject a
   session's `change-history/index.json` once a `user_shell` entry is recorded.
