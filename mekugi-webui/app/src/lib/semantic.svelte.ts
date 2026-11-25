@@ -378,11 +378,24 @@ export class ThreadControl {
 
   async #refreshQueue(): Promise<void> {
     if (!this.#id || !this.#machine || this.#machine.connection !== "open") return;
+    const threadId = this.#id;
+    const machine = this.#machine;
     try {
-      const response = await this.#machine.request<ThreadQueueListResponse>("thread/queue/list", {
-        threadId: this.#id,
-      });
-      this.queued = response.data ?? [];
+      const all: QueuedSubmission[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const response = await machine.request<ThreadQueueListResponse>("thread/queue/list", {
+          threadId,
+          limit: 100,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (this.#id !== threadId || this.#machine !== machine) return;
+        for (const item of response.data ?? []) all.push(item);
+        const next = response.nextCursor ?? undefined;
+        if (!next || next === cursor) break;
+        cursor = next;
+      }
+      this.queued = all;
     } catch {
       // Queue listing is optional.
     }

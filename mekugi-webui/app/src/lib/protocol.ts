@@ -124,6 +124,8 @@ export type ThreadQueueAddParams = {
 
 export type ThreadQueueListParams = {
   threadId: string;
+  cursor?: string | null;
+  limit?: number | null;
 };
 
 export type ThreadQueueListResponse = {

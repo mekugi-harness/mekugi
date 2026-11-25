@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import type { ReasoningEffort } from "./protocol";
+  import type { Model, ModelListResponse, ReasoningEffort } from "./protocol";
   import { semantic } from "./semantic.svelte";
   import { stream } from "./stream.svelte";
   import Picker from "./ui/Picker.svelte";
@@ -8,18 +8,31 @@
 
   let { disabled = false }: { disabled?: boolean } = $props();
   let busy = $state(false);
-  let loadedForMachine = $state<string | undefined>();
+  let threadModels = $state.raw<Model[] | undefined>();
+  let loadedKey = $state<string | undefined>();
 
   $effect(() => {
     const target = stream.machine;
-    if (!target || target.connection !== "open") return;
-    if (target.models.length || loadedForMachine === target.id) return;
-    loadedForMachine = target.id;
-    untrack(() => void target.refreshModels());
+    const threadId = stream.session?.thread;
+    if (!target || target.connection !== "open" || !threadId) return;
+    const key = `${target.id}:${threadId}`;
+    if (loadedKey === key) return;
+    loadedKey = key;
+    threadModels = undefined;
+    untrack(() => {
+      void target
+        .request<ModelListResponse>("model/list", { includeHidden: false, threadId })
+        .then((res) => {
+          if (loadedKey === key) threadModels = res.data ?? [];
+        })
+        .catch(() => {
+          // Fall back to machine catalog if thread-scoped listing fails.
+        });
+    });
   });
 
   const session = $derived(stream.session);
-  const models = $derived(stream.machine?.models ?? []);
+  const models = $derived(threadModels ?? stream.machine?.models ?? []);
   const currentModel = $derived(session?.model ?? "");
   const currentEffort = $derived(session?.effort ?? "");
   const currentTier = $derived(session?.serviceTier ?? "");

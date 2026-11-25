@@ -51,6 +51,16 @@
   let savingName = $state(false);
   let renameError = $state<string | undefined>();
   let wall = $state(Date.now());
+  let narrow = $state(false);
+
+  $effect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 1023px)");
+    const sync = () => (narrow = mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  });
 
   $effect(() => {
     const timer = setInterval(() => (wall = Date.now()), 1000);
@@ -286,43 +296,20 @@
             />
           {/if}
         {/snippet}
-        <aside class="w-80 flex-none border-l border-rule bg-ground max-lg:hidden">
-          {@render panelContent()}
-        </aside>
-        <div
-          class="fixed inset-0 z-40 flex justify-end lg:hidden"
-          role="dialog"
-          aria-modal="true"
-          aria-label={panel === "agents" ? "Agents" : panel === "changes" ? "Changes" : "Details"}
-        >
-          <button
-            type="button"
-            class="flex-1 bg-black/40"
-            aria-label="Close panel"
-            onclick={() => (panel = undefined)}
-          ></button>
-          <div
-            class="flex h-full w-[min(22rem,90vw)] flex-col border-l border-rule bg-ground shadow-lg"
+        {#if narrow}
+          <Dialog
+            title={panel === "agents" ? "Agents" : panel === "changes" ? "Changes" : "Details"}
+            onclose={() => (panel = undefined)}
           >
-            <header
-              class="flex flex-none items-center justify-between border-b border-rule px-3 py-2"
-            >
-              <h2 class="text-small font-medium">
-                {panel === "agents" ? "Agents" : panel === "changes" ? "Changes" : "Details"}
-              </h2>
-              <Button
-                variant="quiet"
-                size="sm"
-                icon="close"
-                label="Close panel"
-                onclick={() => (panel = undefined)}
-              />
-            </header>
-            <div class="min-h-0 flex-1 overflow-y-auto">
+            <div class="max-h-[70vh] overflow-y-auto">
               {@render panelContent()}
             </div>
-          </div>
-        </div>
+          </Dialog>
+        {:else}
+          <aside class="w-80 flex-none border-l border-rule bg-ground">
+            {@render panelContent()}
+          </aside>
+        {/if}
       {/if}
     </div>
   {/if}
