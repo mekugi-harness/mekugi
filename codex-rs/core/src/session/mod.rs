@@ -6044,18 +6044,47 @@ impl Session {
         result
     }
 
+    const OPENAI_TITLE_GENERATION_MODEL: &'static str = "gpt-6-luna";
+
+    pub(crate) fn title_request_metadata(
+    installation_id: String,
+    request_id: String,
+) -> crate::responses_metadata::CodexResponsesMetadata {
+    let mut metadata = crate::responses_metadata::CodexResponsesMetadata::new(
+        installation_id,
+        request_id.clone(),
+        request_id.clone(),
+        request_id.clone(),
+    );
+    metadata.turn_id = Some(request_id);
+    metadata.request_kind = Some(crate::responses_metadata::CodexResponsesRequestKind::Turn);
+    metadata.thread_source = Some(codex_protocol::protocol::ThreadSource::Feature(
+        "thread_title".to_string(),
+    ));
+    metadata.turn_trigger = Some("thread_title".to_string());
+    metadata
+}
+
     #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) async fn generate_title(&self, turn_id: &str, prompt: &str) -> Option<String> {
         self.check_rollout_budget().ok()?;
-        let model = self.selected_model_info().await;
+        let config = self.get_config().await;
+        let builtin_openai = Self::on_builtin_openai(&config);
+        let model = if builtin_openai {
+            self.services
+                .models_manager
+                .get_model_info(
+                    Self::OPENAI_TITLE_GENERATION_MODEL,
+                    &config.to_models_manager_config(),
+                )
+                .await
+                .model
+        } else {
+            self.selected_model_info().await
+        };
         // The title is not a continuation of the execution thread or its cache.
         let request_id = Uuid::new_v4().to_string();
-        let metadata = crate::responses_metadata::CodexResponsesMetadata::new(
-            self.installation_id.clone(),
-            request_id.clone(),
-            request_id.clone(),
-            request_id,
-        );
+        let metadata = Self::title_request_metadata(self.installation_id.clone(), request_id);
         let (name, response_id, token_usage, usage_metadata) = tokio::time::timeout(
             std::time::Duration::from_secs(60),
             self.services.model_client.sample_title(
@@ -6067,36 +6096,37 @@ impl Session {
         )
         .await
         .ok()??;
-        self.record_rollout_budget_usage(
-            turn_id,
-            &crate::client_common::SamplingUsage {
-                provider: token_usage.clone(),
-                charge: Default::default(),
-            },
-        )
-        .await
-        .ok()?;
-        let config = self.get_config().await;
-        let service_tier = usage_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.service_tier.clone());
-        self.send_event_raw_with_persistence(
-            Event {
-                id: turn_id.to_owned(),
-                msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
-                    response_id,
-                    token_usage,
-                    usage_metadata,
-                    model: Some(model.slug.clone()),
-                    service_tier,
-                    openai_endpoint: Self::on_builtin_openai(&config),
-                    request_duration_ms: None,
-                }),
-            },
-            /*persist*/ false,
-            /*status*/ None,
-        )
-        .await;
+        if !builtin_openai {
+            self.record_rollout_budget_usage(
+                turn_id,
+                &crate::client_common::SamplingUsage {
+                    provider: token_usage.clone(),
+                    charge: Default::default(),
+                },
+            )
+            .await
+            .ok()?;
+            let service_tier = usage_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.service_tier.clone());
+            self.send_event_raw_with_persistence(
+                Event {
+                    id: turn_id.to_owned(),
+                    msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                        response_id,
+                        token_usage,
+                        usage_metadata,
+                        model: Some(model.slug.clone()),
+                        service_tier,
+                        openai_endpoint: false,
+                        request_duration_ms: None,
+                    }),
+                },
+                /*persist*/ false,
+                /*status*/ None,
+            )
+            .await;
+        }
         crate::util::normalize_thread_name(&name.split_whitespace().collect::<Vec<_>>().join(" "))
     }
 

@@ -40,6 +40,7 @@ type composerPredictions struct {
 	suppressed            bool
 	attempted, disabled   bool
 	supported             bool
+	interruptOnCancel     bool
 	request               *predictionRequest
 }
 
@@ -165,6 +166,6 @@ func (p *composerPredictions) configured(result predictionConfiguration, control
 		return nil
 	}
 	request.settings = settings
-	request.operation = &sessioncontrol.Prediction{SourceThread: request.thread, SourceTurn: request.turn, Trigger: request.trigger, Prompt: settings.Prompt + "\n\nReturn only JSON matching this schema: {\"type\":\"object\",\"properties\":{\"suggestion\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"suggestion\"],\"additionalProperties\":false}.", Effort: settings.Effort, UnsupportedModels: settings.UnsupportedModels}
+	request.operation = &sessioncontrol.Prediction{SourceThread: request.thread, SourceTurn: request.turn, Trigger: request.trigger, Prompt: settings.Prompt + "\n\nReturn only JSON matching this schema: {\"type\":\"object\",\"properties\":{\"suggestion\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"suggestion\"],\"additionalProperties\":false}.", Effort: settings.Effort, UnsupportedModels: settings.UnsupportedModels, InterruptOnCancel: p.interruptOnCancel}
 	return control.Requests.StartPrediction(request.operation)
 }

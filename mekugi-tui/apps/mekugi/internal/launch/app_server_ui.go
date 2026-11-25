@@ -134,7 +134,8 @@ func (session *nativeSession) prepareEndpoint(prefs *preferences.Service, enviro
 	native.diagnostics = &c.Diagnostics
 	native.hub = threads.hub
 	syncPredictions := func() error {
-		predictions.supported = sessioncontrol.PredictionForkSupported(session.backendVersion)
+		predictions.supported = sessioncontrol.PredictionSampleSupported(session.backendVersion)
+		predictions.interruptOnCancel = sessioncontrol.PredictionInterruptOnCancelSupported(session.backendVersion)
 		focused, disabled, available := native.predictionEligibility(&session.attached)
 		return predictions.sync(session.ctx, &session.attached, &session.Client, session.restoring != nil || !available, focused, disabled)
 	}

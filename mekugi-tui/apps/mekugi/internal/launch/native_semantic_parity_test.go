@@ -45,9 +45,9 @@ func TestNativePredictionForkPreservesInheritedConfiguration(t *testing.T) {
 			if len(request.ID) == 0 {
 				continue
 			}
-			if request.Method == "thread/fork" {
+			if request.Method == "thread/sample" {
 				// Echo the received wire envelope, not the caller's pre-transport map.
-				if err := json.MarshalEncode(encoder, map[string]any{"method": "fixture/predictionFork", "params": request.Params}); err != nil {
+				if err := json.MarshalEncode(encoder, map[string]any{"method": "fixture/predictionSample", "params": request.Params}); err != nil {
 					t.Fatal(err)
 				}
 				continue
@@ -94,7 +94,7 @@ func TestNativePredictionForkPreservesInheritedConfiguration(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	if err := session.Client.Requests.StartPrediction(&sessioncontrol.Prediction{SourceThread: "main", SourceTurn: "source"}); err != nil {
+	if err := session.Client.Requests.StartPrediction(&sessioncontrol.Prediction{SourceThread: "main", SourceTurn: "source", Prompt: "suggest", Trigger: "live", InterruptOnCancel: true}); err != nil {
 		t.Fatal(err)
 	}
 	for {
@@ -105,13 +105,13 @@ func TestNativePredictionForkPreservesInheritedConfiguration(t *testing.T) {
 			if !ok {
 				t.Fatal("prediction host disconnected")
 			}
-			if message.Method == "fixture/predictionFork" {
+			if message.Method == "fixture/predictionSample" {
 				var params map[string]any
 				if err := json.Unmarshal(message.Params, &params); err != nil {
 					t.Fatal(err)
 				}
-				if params["threadId"] != "main" || params["experimentalPredictionMode"] != true || params["ephemeral"] != true || params["excludeTurns"] != true || params["threadSource"] != "composer_predictions" || len(params) != 5 {
-					t.Fatalf("prediction fork changed inherited configuration or lost prediction semantics: %s", message.Params)
+				if params["threadId"] != "main" || params["expectedTurnId"] != "source" || params["threadSource"] != "composer_predictions" || params["turnTrigger"] != "composer_predictions" || params["disableMcp"] != true || params["interruptOnCancel"] != true {
+					t.Fatalf("prediction sample lost required parameters: %s", message.Params)
 				}
 				return
 			}

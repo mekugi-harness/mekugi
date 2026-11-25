@@ -13950,3 +13950,23 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
         "rejection must not permit same-name ordinary-auth replacement in this session"
     );
 }
+
+#[test]
+fn title_request_metadata_emits_thread_title_turn_metadata() {
+    let metadata = Session::title_request_metadata(
+        "install-1".to_string(),
+        "req-1".to_string(),
+    );
+    assert!(metadata.has_turn_metadata());
+    let payload = metadata
+        .turn_metadata_value()
+        .expect("title request must serialize turn metadata");
+    assert_eq!(payload["request_kind"], "turn");
+    assert_eq!(payload["thread_source"], "thread_title");
+    assert_eq!(payload["turn_trigger"], "thread_title");
+    assert_eq!(payload["turn_id"], "req-1");
+    let client_meta = metadata.client_metadata(false);
+    assert!(client_meta.contains_key("x-codex-turn-metadata"));
+    let headers = metadata.compatibility_headers();
+    assert!(headers.contains_key("x-codex-turn-metadata"));
+}

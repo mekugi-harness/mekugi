@@ -133,7 +133,7 @@ func TestComposerPredictionNativeCodex(t *testing.T) {
 			break
 		}
 	}
-	p := &sessioncontrol.Prediction{SourceThread: main, SourceTurn: turn.Turn.ID, Trigger: "live", Prompt: "Fixture remote prompt. Return suggestion JSON."}
+	p := &sessioncontrol.Prediction{SourceThread: main, SourceTurn: turn.Turn.ID, Trigger: "live", Prompt: "Fixture remote prompt. Return suggestion JSON.", InterruptOnCancel: true}
 	if err := client.Requests.StartPrediction(p); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestComposerPredictionNativeCodex(t *testing.T) {
 			t.Fatalf("prediction rejected: %+v, message=%+v", p, m)
 		}
 	}
-	if p.Text != "Show tests" || p.Closed || p.Thread == main || client.Requests.IsSideThread(p.Thread) {
+	if p.Text != "Show tests" || p.Closed || client.Requests.PredictionPending() {
 		t.Fatalf("prediction result or cleanup failed: %+v", p)
 	}
 	mu.Lock()
