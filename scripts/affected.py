@@ -43,8 +43,8 @@ class VerificationPlan:
         if self.go_packages:
             commands.append([just_bin, "test", *self.go_packages])
         if self.rust_fallback:
-            commands.append([just_bin, "test-rust", "--locked", "--workspace"])
-        elif self.rust_packages:
+            commands.append([just_bin, "test-native"])
+        if self.rust_packages:
             build_packages = set(self.rust_packages)
             for pkg in self.rust_packages:
                 build_packages.update(RUST_COMPANION_PACKAGES.get(pkg, ()))
@@ -93,13 +93,13 @@ def _normalize_rel_path(path: str) -> str:
 
 def _parse_toml_section(text: str, section: str) -> str:
     """Extract the body of a top-level TOML table for Python 3.10 fallback."""
-    header_re = re.compile(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$")
+    header_re = re.compile(r"^\s*(\[\[?)\s*([^\[\]]+?)\s*\]\]?\s*(?:#.*)?$")
     lines: list[str] = []
     in_section = False
     for line in text.splitlines():
         match = header_re.match(line)
         if match:
-            in_section = match.group(1).strip() == section
+            in_section = match.group(1) == "[" and match.group(2).strip() == section
             continue
         if in_section:
             lines.append(line)
@@ -130,7 +130,10 @@ def _read_package_name(text: str) -> str | None:
         package_name = data.get("package", {}).get("name")
         return package_name if isinstance(package_name, str) and package_name else None
     body = _parse_toml_section(text, "package")
-    match = re.search(r'(?m)^\s*name\s*=\s*(?:"([^"]+)"|\'([^\']+)\')', body)
+    match = re.search(
+        r'(?m)^\s*(?:name|"name"|\'name\')\s*=\s*(?:"([^"]+)"|\'([^\']+)\')',
+        body,
+    )
     if not match:
         return None
     return match.group(1) or match.group(2)
@@ -268,8 +271,6 @@ def plan_affected(
             continue
 
         if rel_path.startswith("codex-rs/"):
-            if rust_fallback:
-                continue
             if excluded_rust_dirs is None:
                 excluded_rust_dirs = _load_rust_excluded_dirs(repo_root)
             pkg = resolve_rust_package(rel_path, repo_root, excluded_rust_dirs)
@@ -288,7 +289,7 @@ def plan_affected(
                 if pkg.endswith("/...")
                 or not any(pkg.startswith(prefix) for prefix in wildcards)
             )
-    resolved_rust = () if rust_fallback else tuple(sorted(rust_packages))
+    resolved_rust = tuple(sorted(rust_packages))
     return VerificationPlan(
         changed_files=normalized,
         webui=webui,

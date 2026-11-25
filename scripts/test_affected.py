@@ -200,7 +200,6 @@ class AffectedPlanTests(unittest.TestCase):
 
     def test_rust_workspace_level_or_excluded_falls_back_safely(self):
         for changed in (
-            ["codex-rs/Cargo.toml", "codex-rs/core/src/lib.rs"],
             ["codex-rs/Cargo.lock"],
             ["codex-rs/.config/nextest.toml"],
             ["codex-rs/tui/src/lib.rs"],
@@ -209,9 +208,29 @@ class AffectedPlanTests(unittest.TestCase):
             with self.subTest(changed=changed):
                 plan = AFFECTED.plan_affected(changed, self.repo)
                 self.assertTrue(plan.rust_fallback)
-                self.assertEqual(
-                    plan.commands(), [["just", "test-rust", "--locked", "--workspace"]]
-                )
+                self.assertEqual(plan.commands(), [["just", "test-native"]])
+
+    def test_rust_workspace_file_with_crate_keeps_scoped_crate_tests(self):
+        plan = AFFECTED.plan_affected(
+            ["codex-rs/Cargo.lock", "codex-rs/protocol/src/lib.rs"],
+            self.repo,
+        )
+        self.assertTrue(plan.rust_fallback)
+        self.assertEqual(
+            plan.commands(),
+            [
+                ["just", "test-native"],
+                [
+                    "just",
+                    "test-rust",
+                    "--locked",
+                    "-p",
+                    "codex-protocol",
+                    "-E",
+                    "package(codex-protocol)",
+                ],
+            ],
+        )
 
     def test_mixed_diff_runs_all_affected_targets(self):
         plan = AFFECTED.plan_affected(
@@ -304,6 +323,9 @@ class AffectedPlanTests(unittest.TestCase):
         )
 
     def test_python310_toml_fallback_parses_package_and_excludes(self):
+        (self.repo / "codex-rs/protocol/Cargo.toml").write_text(
+            '[package]\n"name" = "codex-protocol"\n\n[[bin]]\nname = "protocol-bin"\n'
+        )
         with patch.object(AFFECTED, "tomllib", None):
             plan = AFFECTED.plan_affected(
                 ["codex-rs/protocol/src/lib.rs"],
@@ -325,6 +347,11 @@ class AffectedPlanTests(unittest.TestCase):
             )
             excluded = AFFECTED.plan_affected(["codex-rs/tui/src/lib.rs"], self.repo)
             self.assertTrue(excluded.rust_fallback)
+            self.assertIsNone(
+                AFFECTED._read_package_name(
+                    '[package]\nversion = "0.1.0"\n\n[[bin]]\nname = "only-bin"\n'
+                )
+            )
 
     def test_collect_changed_files_catches_committed_staged_unstaged_and_untracked(
         self,
