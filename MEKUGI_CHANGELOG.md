@@ -67,7 +67,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   actual successful `mktemp` files and directory trees independently of
   printable output (ignoring dry runs and failures), and persists observed
   shell writes (including writes before nonzero exits) to `codex-change-history`
-  under `ChangeSourceKind::ShellWrite` with shared `claim_key` deduplication.
+  under `ChangeSourceKind::ShellWrite` for agent commands and
+  `ChangeSourceKind::UserShell` (`"user_shell"`, authored) for interactive `!`
+  user-shell commands with shared `claim_key` deduplication. Downgrade note:
+  older runtimes deserialize `ChangeSourceKind` strictly and will reject a
+  session's `change-history/index.json` once a `user_shell` entry is recorded.
 - Subprocess regression tests are in a separate
   [crate](codex-rs/app-server-subprocess-tests/Cargo.toml) and exercise the staged
   runtime, including the exec-server fixture's Linux sandbox helper so it can
