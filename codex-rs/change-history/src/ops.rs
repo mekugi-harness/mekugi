@@ -68,6 +68,9 @@ impl ChangeHistoryStore {
 
         let mut planned = Vec::with_capacity(transitions.len());
         for tr in transitions {
+            if tr.before == tr.after && tr.moved_from.is_none() && tr.coverage_notes.is_empty() {
+                continue;
+            }
             if !tr.coverage_notes.is_empty() {
                 return Err(ChangeHistoryError::MissingEvidence {
                     id: tr.rel_path.clone(),

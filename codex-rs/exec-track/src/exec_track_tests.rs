@@ -876,7 +876,10 @@ async fn mktemp_long_option_with_u_is_still_recorded() {
         .await
         .expect("run bash");
 
-    assert!(output.status.success(), "instrumented mktemp --suffix failed");
+    assert!(
+        output.status.success(),
+        "instrumented mktemp --suffix failed"
+    );
     let report = session.finalize(output.status.code());
     assert_eq!(
         report.mktemp_creations.len(),
@@ -951,4 +954,281 @@ fn read_policy_blocks_denied_workspace_and_mktemp_paths() {
 
     assert_eq!(record.files.len(), 1);
     assert_eq!(record.files[0].rel_path, "ok.txt");
+}
+
+fn capture_meta(
+    ws: &std::path::Path,
+    thread: &str,
+    call: &str,
+    kind: ChangeSourceKind,
+    summary: &str,
+) -> ChangeMetadata {
+    ChangeMetadata {
+        thread_id: thread.to_string(),
+        session_id: "sess".to_string(),
+        turn_id: format!("turn-{call}"),
+        call_id: call.to_string(),
+        source_kind: kind,
+        workspace_root: ws.to_path_buf(),
+        created_at: 1_700_000_100,
+        exit_code: Some(0),
+        summary: Some(summary.to_string()),
+        claim_key: Some(shell_write_claim_key(thread, call)),
+    }
+}
+
+#[test]
+fn extract_static_write_paths_covers_formatters_and_git_restore() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(dir.path()).expect("canonicalize");
+    let sub = root.join("sub");
+    fs::create_dir_all(&sub).expect("mkdir sub");
+
+    let script = "\
+gofmt -w a.go\n\
+gofmt -s -w b.go\n\
+gofmt readonly.go\n\
+goimports -local example.com -w c.go\n\
+rustfmt --edition 2021 d.rs\n\
+rustfmt --check readonly_check.rs\n\
+rustfmt --emit stdout readonly_emit.rs\n\
+git restore e.rs\n\
+git restore --staged staged_only.rs\n\
+git restore -SW f.rs\n\
+git -C sub checkout HEAD -- g.rs\n\
+git checkout main\n";
+
+    assert_eq!(
+        extract_static_write_paths(script, &root),
+        vec![
+            root.join("a.go"),
+            root.join("b.go"),
+            root.join("c.go"),
+            root.join("d.rs"),
+            root.join("e.rs"),
+            root.join("f.rs"),
+            sub.join("g.rs"),
+        ]
+    );
+}
+
+#[test]
+fn worktree_formatter_and_git_restore_compose_cleanly() {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    let worktree = tmp.path().join("wt");
+    let store_dir = tmp.path().join("store");
+    fs::create_dir_all(&repo).expect("mkdir repo");
+
+    let run_git = |cwd: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+
+    run_git(&repo, &["init"]);
+    run_git(&repo, &["config", "user.email", "test@example.com"]);
+    run_git(&repo, &["config", "user.name", "Test"]);
+    fs::write(repo.join("main.rs"), "fn main() {}\n").expect("write main.rs");
+    fs::write(repo.join("revert_me.rs"), "fn keep() {}\n").expect("write revert_me.rs");
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "initial"]);
+    run_git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "wt-branch",
+            worktree.to_str().expect("utf8"),
+        ],
+    );
+
+    let wt = fs::canonicalize(&worktree).expect("canonical wt");
+    let (main_rs, revert_rs) = (wt.join("main.rs"), wt.join("revert_me.rs"));
+    let store = ChangeHistoryStore::open(&store_dir).expect("open store");
+
+    // 1. Authored edit (unformatted main.rs + edit to revert_me.rs).
+    let main_unfmt = b"fn main(){let x=1;let _=x;}\n".to_vec();
+    let revert_dirty = b"fn keep() { let _ = 99; }\n".to_vec();
+    fs::write(&main_rs, &main_unfmt).expect("write main");
+    fs::write(&revert_rs, &revert_dirty).expect("write revert");
+    let r1 = store
+        .record_change(
+            capture_meta(&wt, "t-wt", "c1", ChangeSourceKind::ApplyPatch, "edit"),
+            vec![
+                codex_change_history::PendingFileChange {
+                    rel_path: "main.rs".to_string(),
+                    abs_path: main_rs.clone(),
+                    moved_from: None,
+                    before: codex_change_history::FileSnapshot::Present(b"fn main() {}\n".to_vec()),
+                    after: codex_change_history::FileSnapshot::Present(main_unfmt),
+                    coverage: codex_change_history::CoverageStatus::Complete,
+                },
+                codex_change_history::PendingFileChange {
+                    rel_path: "revert_me.rs".to_string(),
+                    abs_path: revert_rs.clone(),
+                    moved_from: None,
+                    before: codex_change_history::FileSnapshot::Present(b"fn keep() {}\n".to_vec()),
+                    after: codex_change_history::FileSnapshot::Present(revert_dirty),
+                    coverage: codex_change_history::CoverageStatus::Complete,
+                },
+            ],
+        )
+        .expect("r1");
+
+    // 2. rustfmt captured as ShellWrite.
+    let fmt_cap = ShellWriteCapture::prepare("rustfmt main.rs", &wt);
+    assert!(
+        std::process::Command::new("rustfmt")
+            .current_dir(&wt)
+            .arg("main.rs")
+            .status()
+            .expect("rustfmt")
+            .success()
+    );
+    let r2 = fmt_cap
+        .finalize_and_persist(
+            &store_dir,
+            capture_meta(
+                &wt,
+                "t-wt",
+                "c2",
+                ChangeSourceKind::ShellWrite,
+                "rustfmt main.rs",
+            ),
+            &[],
+        )
+        .expect("persist r2")
+        .expect("r2");
+    assert_eq!(r2.metadata.source_kind, ChangeSourceKind::ShellWrite);
+    let formatted = fs::read(&main_rs).expect("read formatted");
+
+    // 3. git restore captured automatically as VcsDiagnostic.
+    let res_cap = ShellWriteCapture::prepare("git restore revert_me.rs", &wt);
+    run_git(&wt, &["restore", "revert_me.rs"]);
+    let r3 = res_cap
+        .finalize_and_persist(
+            &store_dir,
+            capture_meta(
+                &wt,
+                "t-wt",
+                "c3",
+                ChangeSourceKind::ShellWrite,
+                "git restore revert_me.rs",
+            ),
+            &[],
+        )
+        .expect("persist r3")
+        .expect("r3");
+    assert_eq!(r3.metadata.source_kind, ChangeSourceKind::VcsDiagnostic);
+
+    // 4. Follow-up authored edit on formatted main.rs.
+    let mut final_bytes = formatted.clone();
+    final_bytes.extend_from_slice(b"// done\n");
+    fs::write(&main_rs, &final_bytes).expect("write final");
+    let r4 = store
+        .record_change(
+            capture_meta(&wt, "t-wt", "c4", ChangeSourceKind::ApplyPatch, "follow-up"),
+            vec![codex_change_history::PendingFileChange {
+                rel_path: "main.rs".to_string(),
+                abs_path: main_rs,
+                moved_from: None,
+                before: codex_change_history::FileSnapshot::Present(formatted),
+                after: codex_change_history::FileSnapshot::Present(final_bytes),
+                coverage: codex_change_history::CoverageStatus::Complete,
+            }],
+        )
+        .expect("r4");
+
+    let summary =
+        codex_change_history::compose_summary(&store, &[r1, r2, r3, r4], &[]).expect("summary");
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].rel_path, "main.rs");
+    assert!(summary.files[0].coverage_notes.is_empty());
+}
+
+#[test]
+fn mixed_command_and_user_shell_vcs_provenance_separation() {
+    let dir = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(dir.path()).expect("canonicalize");
+    let store_dir = dir.path().join("store");
+    let (a_go, b_go) = (root.join("a.go"), root.join("b.go"));
+    fs::write(&a_go, "package p\n").expect("write a");
+    fs::write(&b_go, "package p // dirty\n").expect("write b");
+
+    // 1. Mixed command where only git restore modifies disk -> single VcsDiagnostic record.
+    let cap1 = ShellWriteCapture::prepare("gofmt -w a.go && git restore b.go", &root);
+    fs::write(&b_go, "package p\n").expect("restore b");
+    let r1 = cap1
+        .finalize_and_persist(
+            &store_dir,
+            capture_meta(&root, "t-prov", "c1", ChangeSourceKind::ShellWrite, "mixed"),
+            &[],
+        )
+        .expect("persist r1")
+        .expect("r1");
+    assert_eq!(r1.metadata.source_kind, ChangeSourceKind::VcsDiagnostic);
+    assert_eq!(r1.files[0].rel_path, "b.go");
+
+    // 2. Mixed command where disjoint authored and VCS paths both change -> split records.
+    let cap2 = ShellWriteCapture::prepare("gofmt -w a.go && git restore b.go", &root);
+    fs::write(&a_go, "package p\n// fmt\n").expect("fmt a");
+    fs::write(&b_go, "package p // restored\n").expect("restore b");
+    let r2 = cap2
+        .finalize_and_persist(
+            &store_dir,
+            capture_meta(&root, "t-prov", "c2", ChangeSourceKind::ShellWrite, "mixed"),
+            &[],
+        )
+        .expect("persist r2")
+        .expect("r2");
+    assert_eq!(r2.metadata.source_kind, ChangeSourceKind::ShellWrite);
+    assert_eq!(r2.files[0].rel_path, "a.go");
+
+    // 3. Interactive UserShell (!git restore) also classifies as VcsDiagnostic.
+    let cap3 = ShellWriteCapture::prepare("git restore b.go", &root);
+    fs::write(&b_go, "package p\n").expect("restore b");
+    let r3 = cap3
+        .finalize_and_persist(
+            &store_dir,
+            capture_meta(
+                &root,
+                "t-prov",
+                "c3",
+                ChangeSourceKind::UserShell,
+                "git restore",
+            ),
+            &[],
+        )
+        .expect("persist r3")
+        .expect("r3");
+    assert_eq!(r3.metadata.source_kind, ChangeSourceKind::VcsDiagnostic);
+
+    let entries = ChangeHistoryStore::open(&store_dir)
+        .expect("open")
+        .list_entries()
+        .expect("list");
+    assert_eq!(entries.len(), 4);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.source_kind.is_authored())
+            .count(),
+        1
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.source_kind == ChangeSourceKind::VcsDiagnostic)
+            .count(),
+        3
+    );
 }

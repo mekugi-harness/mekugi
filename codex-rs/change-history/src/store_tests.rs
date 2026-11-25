@@ -690,7 +690,12 @@ fn user_shell_source_kind_is_authored_and_roundtrips() {
 
     let rec = store
         .record_change(
-            test_metadata(ws.path(), "t-user", "call-user", ChangeSourceKind::UserShell),
+            test_metadata(
+                ws.path(),
+                "t-user",
+                "call-user",
+                ChangeSourceKind::UserShell,
+            ),
             vec![PendingFileChange {
                 rel_path: "note.txt".to_string(),
                 abs_path: path,
@@ -714,5 +719,260 @@ fn user_shell_source_kind_is_authored_and_roundtrips() {
     assert!(
         history.contains("[user_shell]"),
         "expected [user_shell] label in history: {history}"
+    );
+}
+
+fn pending_text(
+    ws: &std::path::Path,
+    rel: &str,
+    before: Option<&[u8]>,
+    after: Option<&[u8]>,
+) -> PendingFileChange {
+    PendingFileChange {
+        rel_path: rel.to_string(),
+        abs_path: ws.join(rel),
+        moved_from: None,
+        before: before.map_or(FileSnapshot::Missing, |b| FileSnapshot::Present(b.to_vec())),
+        after: after.map_or(FileSnapshot::Missing, |b| FileSnapshot::Present(b.to_vec())),
+        coverage: CoverageStatus::Complete,
+    }
+}
+
+#[test]
+fn compose_diff_and_summary_drop_net_noop_reverted_files() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![
+                pending_text(
+                    &ws,
+                    "keep.rs",
+                    Some(
+                        b"fn a() {}
+",
+                    ),
+                    Some(
+                        b"fn a() { 1 }
+",
+                    ),
+                ),
+                pending_text(
+                    &ws,
+                    "reverted.rs",
+                    Some(
+                        b"fn b() {}
+",
+                    ),
+                    Some(
+                        b"fn b() { 2 }
+",
+                    ),
+                ),
+                pending_text(
+                    &ws,
+                    "temp.rs",
+                    None,
+                    Some(
+                        b"// tmp
+",
+                    ),
+                ),
+            ],
+        )
+        .expect("r1");
+    let r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::VcsDiagnostic),
+            vec![
+                pending_text(
+                    &ws,
+                    "reverted.rs",
+                    Some(
+                        b"fn b() { 2 }
+",
+                    ),
+                    Some(
+                        b"fn b() {}
+",
+                    ),
+                ),
+                pending_text(
+                    &ws,
+                    "temp.rs",
+                    Some(
+                        b"// tmp
+",
+                    ),
+                    None,
+                ),
+            ],
+        )
+        .expect("r2");
+
+    let summary = compose_summary(&store, &[r1.clone(), r2.clone()], &[]).expect("summary");
+    assert_eq!(summary.files.len(), 1);
+    assert_eq!(summary.files[0].rel_path, "keep.rs");
+    assert!(summary.files[0].coverage_notes.is_empty());
+
+    let diffs = compose_diff(&store, &[r1, r2], &[]).expect("diff");
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].rel_path, "keep.rs");
+}
+
+#[test]
+fn compose_diff_and_summary_flag_discontinuous_baseline_from_external_write() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![pending_text(
+                &ws,
+                "a.rs",
+                Some(
+                    b"v0
+",
+                ),
+                Some(
+                    b"v1
+",
+                ),
+            )],
+        )
+        .expect("r1");
+    // Unobserved external write mutated a.rs (v1 -> v1-ext) before r2 restores v0.
+    let r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::ApplyPatch),
+            vec![pending_text(
+                &ws,
+                "a.rs",
+                Some(
+                    b"v1-ext
+",
+                ),
+                Some(
+                    b"v0
+",
+                ),
+            )],
+        )
+        .expect("r2");
+
+    let summary = compose_summary(&store, &[r1.clone(), r2.clone()], &[]).expect("summary");
+    assert_eq!(
+        summary.files.len(),
+        1,
+        "discontinuous transition must not be dropped"
+    );
+    assert!(
+        summary.files[0]
+            .coverage_notes
+            .iter()
+            .any(|n| n.contains("discontinuous baseline"))
+    );
+
+    let diffs = compose_diff(&store, &[r1, r2], &[]).expect("diff");
+    assert_eq!(diffs.len(), 1);
+    assert!(diffs[0].unified_diff.contains("discontinuous baseline"));
+}
+
+#[test]
+fn mutate_skips_net_noop_added_then_deleted_files() {
+    let tmp = TempDir::new().expect("tempdir");
+    let ws = tmp.path().join("ws");
+    fs::create_dir_all(&ws).expect("mkdir ws");
+    let store = ChangeHistoryStore::open(tmp.path().join("store")).expect("open");
+
+    let r1 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c1", ChangeSourceKind::ApplyPatch),
+            vec![
+                pending_text(
+                    &ws,
+                    "keep.rs",
+                    Some(
+                        b"old
+",
+                    ),
+                    Some(
+                        b"new
+",
+                    ),
+                ),
+                pending_text(
+                    &ws,
+                    "temp.rs",
+                    None,
+                    Some(
+                        b"scratch
+",
+                    ),
+                ),
+            ],
+        )
+        .expect("r1");
+    let r2 = store
+        .record_change(
+            test_metadata(&ws, "t1", "c2", ChangeSourceKind::ApplyPatch),
+            vec![pending_text(
+                &ws,
+                "temp.rs",
+                Some(
+                    b"scratch
+",
+                ),
+                None,
+            )],
+        )
+        .expect("r2");
+
+    fs::write(
+        ws.join("keep.rs"),
+        b"new
+",
+    )
+    .expect("write keep");
+    fs::write(
+        ws.join("temp.rs"),
+        b"recreated-later
+",
+    )
+    .expect("write temp");
+
+    // Path-scoped revert of only the net-zero file succeeds with 0 writes (no false NoMatchingPaths).
+    let noop = store
+        .mutate_workspace(
+            MutationDirection::Revert,
+            &[r1.id.clone(), r2.id.clone()],
+            &["temp.rs".to_string()],
+            "t1",
+            "s1",
+        )
+        .expect("net-zero mutation must succeed without error");
+    assert!(noop.affected_paths.is_empty());
+
+    // Range revert skips recreated temp.rs and cleanly reverts keep.rs.
+    let outcome = store
+        .mutate_workspace(MutationDirection::Revert, &[r1.id, r2.id], &[], "t1", "s1")
+        .expect("revert range");
+    assert_eq!(outcome.affected_paths, vec!["keep.rs"]);
+    assert_eq!(
+        fs::read(ws.join("keep.rs")).expect("read keep"),
+        b"old
+"
+    );
+    assert_eq!(
+        fs::read(ws.join("temp.rs")).expect("read temp"),
+        b"recreated-later
+"
     );
 }
