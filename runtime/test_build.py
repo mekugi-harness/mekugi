@@ -203,21 +203,25 @@ class NativeRunnerTests(unittest.TestCase):
             self.assertEqual(run_env[key], str(output / name))
 
     def test_nextest_used_when_available(self):
-        calls, copies, _ = self.run_action("test", nextest=True)
+        calls, copies, output = self.run_action("test", nextest=True)
         packages = ["-p", "codex-app-server", "-p", "codex-code-mode-host",
                     "-p", "codex-bwrap", "-p", "codex-app-server-subprocess-tests"]
         nextest_prefix = ["cargo", "nextest", "run", "--no-fail-fast", "--retries", "0",
-                          "--locked", "--cargo-profile", "dev-small", *packages]
+                          "--locked", "--cargo-profile", "dev-small", "--target-dir"]
+        selection = [*nextest_prefix, str(output.parent / "shared-target"), *packages]
         self.assertEqual(copies, 4)
         self.assertEqual(len(calls), 3)
-        self.assertEqual(calls[1].args[0], [*nextest_prefix, "--bin", "mekugi-app-server"])
-        self.assertEqual(calls[2].args[0], [*nextest_prefix, "--test", "subprocess"])
+        self.assertEqual(calls[1].args[0], [*selection, "--bin", "mekugi-app-server"])
+        self.assertEqual(calls[2].args[0], [*selection, "--test", "subprocess"])
 
-        filtered_calls, _, _ = self.run_action("test", "--test-filter", "websocket", nextest=True)
+        filtered_calls, _, output = self.run_action(
+            "test", "--test-filter", "websocket", target_env="other-target", nextest=True,
+        )
+        selection = [*nextest_prefix, str(output.parent / "codex-rs/other-target"), *packages]
         self.assertEqual(len(filtered_calls), 2)
         self.assertEqual(
             filtered_calls[1].args[0],
-            [*nextest_prefix, "--test", "subprocess", "--test", "all", "websocket"],
+            [*selection, "--test", "subprocess", "--test", "all", "websocket"],
         )
 
     def test_explicit_profile_and_stack_override_defaults(self):

@@ -134,7 +134,8 @@ def main():
             else ["cargo", "test"]
         )
         test_selection = (
-            ["--locked", "--cargo-profile", profile, *packages]
+            # Nextest can invoke Cargo without the wrapper that selected this directory.
+            ["--locked", "--cargo-profile", profile, "--target-dir", str(target_dir), *packages]
             if use_nextest
             else selection
         )
