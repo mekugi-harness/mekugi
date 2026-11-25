@@ -100,6 +100,8 @@ func TestAutoWrapProcess(t *testing.T) {
 			}()
 		}
 		workStatus := ""
+		childStatus := ""
+		subtreeReads := 0
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			var request struct {
@@ -145,11 +147,22 @@ func TestAutoWrapProcess(t *testing.T) {
 			case "model/list":
 				fmt.Fprintf(os.Stdout, `{"id":%s,"result":{"data":[]}}`+"\n", request.ID)
 			case "thread/subtree/list":
+				subtreeReads++
 				agent := binding.ThreadInfo{ID: "auto-wrap", Source: []byte(`{"subAgent":{"thread_spawn":{"agent_path":"/root"}}}`), CanAcceptDirectInput: new(true)}
 				if workStatus != "" {
 					agent.AgentStatus, _ = json.Marshal(workStatus)
 				}
-				response, err := json.Marshal(map[string]any{"id": request.ID, "result": map[string]any{"data": []binding.ThreadInfo{agent}}})
+				members := []binding.ThreadInfo{agent}
+				if scenario == "family-join" && childStatus != "" {
+					if subtreeReads >= 2 {
+						childStatus = "completed"
+						fmt.Fprintln(os.Stdout, `{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"child-turn","status":"completed"}}}`)
+					}
+					child := binding.ThreadInfo{ID: "child-1", ParentThreadID: "auto-wrap", Source: []byte(`{"subAgent":{"thread_spawn":{"agent_path":"/root/worker"}}}`)}
+					child.AgentStatus, _ = json.Marshal(childStatus)
+					members = append(members, child)
+				}
+				response, err := json.Marshal(map[string]any{"id": request.ID, "result": map[string]any{"data": members}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -187,6 +200,9 @@ func TestAutoWrapProcess(t *testing.T) {
 				case "approval":
 					fmt.Fprintln(os.Stdout, `{"id":"approval","method":"item/commandExecution/requestApproval","params":{"threadId":"auto-wrap"}}`)
 					continue
+				case "shell-guard":
+					fmt.Fprintln(os.Stdout, `{"id":"guard-1","method":"shellGuard/requestApproval","params":{"threadId":"auto-wrap","command":"git push"}}`)
+					continue
 				case "question":
 					fmt.Fprintln(os.Stdout, `{"method":"item/completed","params":{"threadId":"auto-wrap","item":{"id":"question","type":"agentMessage","delivery":"async","questions":[{"id":"q"}]}}}`)
 					continue
@@ -199,6 +215,10 @@ func TestAutoWrapProcess(t *testing.T) {
 				}
 				fmt.Fprintf(os.Stdout, `{"id":%s,"result":{"turn":{"id":"test-turn"}}}`+"\n", request.ID)
 				fmt.Fprintln(os.Stdout, `{"method":"turn/started","params":{"threadId":"auto-wrap","turn":{"id":"test-turn"}}}`)
+				if scenario == "family-join" {
+					childStatus = "running"
+					fmt.Fprintln(os.Stdout, `{"method":"thread/started","params":{"thread":{"id":"child-1","parentThreadId":"auto-wrap"}}}`)
+				}
 				status := "completed"
 				if scenario == "failed" || scenario == "interrupted" {
 					status = scenario

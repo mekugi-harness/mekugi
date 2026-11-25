@@ -110,19 +110,11 @@ func (c *nativeConnection) run() (runErr error) {
 			}
 		}
 		c.workers.Wait()
-		if runErr != nil && c.threads.headless != nil {
-			if diagnostic := host.Diagnostics.Snapshot(); diagnostic != "" {
-				runErr = fmt.Errorf("%w\nCodex: %s", runErr, diagnostic)
-			}
-		}
 		if c.root.audience != nil {
 			c.root.audience.Detach()
 		}
 		_ = host.Input.Close()
 		_ = host.Output.Close()
-		if runErr != nil && c.threads.headless != nil {
-			c.threads.headless.Fail(runErr)
-		}
 	}()
 	tick := time.NewTicker(33 * time.Millisecond)
 	defer tick.Stop()
@@ -135,11 +127,6 @@ func (c *nativeConnection) run() (runErr error) {
 				return errors.Join(err, <-host.Done)
 			}
 			return errors.Join(errors.New("app-server disconnected; active work may be incomplete"), <-host.Done)
-		}
-		if c.threads.headless != nil {
-			if err := c.threads.headless.Observe(message); err != nil {
-				return err
-			}
 		}
 		err := c.message(message)
 		// Cancellation interrupts the host process. A queued response can
@@ -218,22 +205,6 @@ func (c *nativeConnection) run() (runErr error) {
 		if c.root.quitRequested {
 			return nil
 		}
-		if c.threads.headless != nil {
-			for _, current := range c.endpoints {
-				session := current.session
-				if session.questions.Count(session.Client.Thread) > 0 || len(session.approvals.Pending) > 0 {
-					return errors.New("headless cannot answer pending questions or approvals; continue interactively")
-				}
-			}
-			if agent := c.agent(c.root.Client.Thread); agent != nil {
-				switch agent.AgentState() {
-				case "completed":
-					return nil
-				case "errored", "interrupted", "shutdown":
-					return fmt.Errorf("headless native work: %s", agent.AgentState())
-				}
-			}
-		}
 	}
 }
 
@@ -299,11 +270,6 @@ func (c *nativeConnection) message(message appserver.Message) error {
 				c.root.sessionCapture.ObserveFailure(event.ThreadID, event.TurnID)
 			}
 		}
-	}
-	if c.threads != nil && c.threads.headless != nil && message.Method != "" && len(message.ID) != 0 {
-		err := fmt.Errorf("headless cannot answer host request %s; continue interactively", message.Method)
-		c.threads.headless.Fail(err)
-		return err
 	}
 	if message.Method == "skills/changed" {
 		for _, endpoint := range slices.Clone(c.endpoints) {
