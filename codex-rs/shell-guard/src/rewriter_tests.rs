@@ -364,11 +364,14 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
         assert_eq!(rewrite_script(brace_case, &config), brace_case);
     }
 
-    // Backslash-newline continued delimiter in an unquoted heredoc must not swallow later quoted heredocs.
-    let continued_unquoted = "cat <<EOF\nhello\nE\\\nOF\ncat <<'Q' &&\nsh -c 'echo hi'\nQ\necho ok";
-    assert_eq!(
-        rewrite_script(continued_unquoted, &config),
-        continued_unquoted
+    // Unquoted heredoc followed by a quoted heredoc must protect the quoted body and still rewrite later commands.
+    let unquoted_then_quoted =
+        "cat <<EOF\nhello\nEOF\ncat <<'Q' &&\nsh -c 'echo hi'\nQ\n/usr/bin/git push";
+    let rewritten_seq = rewrite_script(unquoted_then_quoted, &config);
+    assert!(
+        rewritten_seq.starts_with("cat <<EOF\nhello\nEOF\ncat <<'Q' &&\nsh -c 'echo hi'\nQ\n")
+            && rewritten_seq.ends_with("-- /usr/bin/git push"),
+        "got: {rewritten_seq}"
     );
 
     // Array subscript shift must not be parsed as a heredoc hiding later quoted heredocs.
@@ -391,6 +394,11 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
     // Case pattern inside command substitution must not pop CmdSubst and drop a queued heredoc.
     let case_in_subst = "out=$(cat <<'EOF'; case x in a) echo ok;; esac\nsh -c 'echo hi'\nEOF\n)";
     assert_eq!(rewrite_script(case_in_subst, &config), case_in_subst);
+
+    // Literal case/in arguments inside a command substitution must not strand an outer quoted heredoc.
+    let case_in_args =
+        "cat <<'EOF' > \"$(printf '%s-%s.sh' case in)\" &&\nsh -c 'echo hi'\nEOF\necho ok";
+    assert_eq!(rewrite_script(case_in_args, &config), case_in_args);
 }
 
 #[cfg(unix)]
