@@ -214,6 +214,16 @@ func collectLegacyCalls(snapshot *presentation.Snapshot) map[[2]string]bool {
 	return calls
 }
 
+func collectLegacyCallIDs(calls map[[2]string]bool) map[string]bool {
+	ids := make(map[string]bool, len(calls))
+	for k := range calls {
+		if k[1] != "" {
+			ids[k[1]] = true
+		}
+	}
+	return ids
+}
+
 func recordLegacyAttemptCalls(calls map[[2]string]bool, attempt presentation.Attempt) {
 	if calls == nil {
 		return
@@ -263,6 +273,7 @@ func reconcileNativeReview(
 	}
 
 	remainingBytes := changes.MaxReadBytes
+	legacyCallIDs := collectLegacyCallIDs(legacyCalls)
 	added := false
 	for _, entry := range index.Entries {
 		if err := ctx.Err(); err != nil {
@@ -277,7 +288,7 @@ func reconcileNativeReview(
 		if !threadInScope(scope, entry.ThreadID) {
 			continue
 		}
-		if entry.CallID != "" && legacyCalls[[2]string{entry.ThreadID, entry.CallID}] {
+		if entry.CallID != "" && (legacyCalls[[2]string{entry.ThreadID, entry.CallID}] || (entry.ThreadID == "" && legacyCallIDs[entry.CallID])) {
 			continue
 		}
 

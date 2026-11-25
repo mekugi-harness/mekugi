@@ -339,3 +339,133 @@ fn linux_seccomp_unotify_captures_dynamic_shell_and_rename_writes_without_git() 
         FileSnapshot::Present(b"new\n".to_vec())
     );
 }
+
+#[test]
+fn concurrent_create_then_overwrite_marks_partial_coverage() {
+    let workspace = TempDir::new().expect("workspace");
+    let store_dir = TempDir::new().expect("store");
+    let new_file = workspace.path().join("report.txt");
+
+    let obs_a = WriteObserverSession::start("call-create-a".to_string(), |_| true).unwrap();
+    let obs_b = WriteObserverSession::start("call-overwrite-b".to_string(), |_| true).unwrap();
+
+    obs_a.state.lock().unwrap().record_pre_write(&new_file);
+    fs::write(&new_file, b"from-a").unwrap();
+    obs_b.state.lock().unwrap().record_pre_write(&new_file);
+    fs::write(&new_file, b"from-b").unwrap();
+
+    let rec_a = obs_a
+        .finish_and_persist(
+            store_dir.path(),
+            workspace.path(),
+            None,
+            sample_metadata("thread-a", "call-create-a", workspace.path().to_path_buf()),
+        )
+        .unwrap()
+        .unwrap();
+    let rec_b = obs_b
+        .finish_and_persist(
+            store_dir.path(),
+            workspace.path(),
+            None,
+            sample_metadata(
+                "thread-b",
+                "call-overwrite-b",
+                workspace.path().to_path_buf(),
+            ),
+        )
+        .unwrap()
+        .unwrap();
+
+    assert!(!rec_a.files[0].coverage.is_complete());
+    assert!(!rec_b.files[0].coverage.is_complete());
+}
+
+#[test]
+fn mixed_authored_and_vcs_diagnostic_writes_persist_separate_records() {
+    let workspace = TempDir::new().expect("workspace");
+    let store_dir = TempDir::new().expect("store");
+    let authored = workspace.path().join("a.rs");
+    let restored = workspace.path().join("b.rs");
+    fs::write(&authored, b"old-a").unwrap();
+    fs::write(&restored, b"dirty-b").unwrap();
+
+    let obs = WriteObserverSession::start("call-mixed".to_string(), |_| true).unwrap();
+    {
+        let mut st = obs.state.lock().unwrap();
+        st.record_pre_write_with_provenance(&authored, false);
+        st.record_pre_write_with_provenance(&restored, true);
+    }
+    fs::write(&authored, b"fmt-a").unwrap();
+    fs::write(&restored, b"clean-b").unwrap();
+
+    let rec = obs
+        .finish_and_persist(
+            store_dir.path(),
+            workspace.path(),
+            None,
+            sample_metadata("thread-mix", "call-mixed", workspace.path().to_path_buf()),
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(rec.metadata.source_kind, ChangeSourceKind::ShellWrite);
+    assert_eq!(rec.files.len(), 1);
+    assert_eq!(rec.files[0].rel_path, "a.rs");
+
+    let store = ChangeHistoryStore::open_existing(store_dir.path()).unwrap();
+    let entries = store.list_entries().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.source_kind == ChangeSourceKind::VcsDiagnostic
+                && e.file_paths == vec!["b.rs"])
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_background_descendant_write_succeeds_after_settle() {
+    use std::process::Command;
+
+    let workspace = TempDir::new().expect("workspace");
+    let store_dir = TempDir::new().expect("store");
+    let bg_out = workspace.path().join("bg_after_settle.txt");
+    let obs = WriteObserverSession::start("seccomp-bg".to_string(), |_| true).unwrap();
+    let sock_path = obs.dir_path().join("observe.sock");
+
+    let script = format!(
+        "(sleep 0.15; printf 'ok' > '{}') >/dev/null 2>&1 &",
+        bg_out.display()
+    );
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        crate::linux::install_filter_and_handoff(&sock_path);
+        let status = Command::new("/bin/sh").args(["-c", &script]).status();
+        let code = status.ok().and_then(|s| s.code()).unwrap_or(1);
+        unsafe { libc::_exit(code) };
+    }
+    let mut status: libc::c_int = 0;
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+
+    let _ = obs.finish_and_persist(
+        store_dir.path(),
+        workspace.path(),
+        None,
+        sample_metadata("thread-bg", "seccomp-bg", workspace.path().to_path_buf()),
+    );
+
+    for _ in 0..30 {
+        if bg_out.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(
+        fs::read(&bg_out).expect("bg output must succeed without ENOSYS"),
+        b"ok"
+    );
+}

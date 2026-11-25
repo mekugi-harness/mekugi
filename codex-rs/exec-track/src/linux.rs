@@ -201,7 +201,8 @@ fn build_write_filter() -> Vec<SockFilter> {
 
 pub(crate) struct LinuxObserver {
     sock_path: PathBuf,
-    stop: Arc<AtomicBool>,
+    settled: Arc<AtomicBool>,
+    connected: Arc<AtomicBool>,
     handle: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
@@ -210,14 +211,17 @@ impl LinuxObserver {
         let sock_path = dir.join("observe.sock");
         let listener = UnixListener::bind(&sock_path)?;
         listener.set_nonblocking(true)?;
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_bg = Arc::clone(&stop);
+        let settled = Arc::new(AtomicBool::new(false));
+        let settled_bg = Arc::clone(&settled);
+        let connected = Arc::new(AtomicBool::new(false));
+        let connected_bg = Arc::clone(&connected);
         let handle = thread::Builder::new()
             .name("mekugi-seccomp-observer".to_string())
-            .spawn(move || supervisor_loop(listener, state, stop_bg))?;
+            .spawn(move || supervisor_loop(listener, state, settled_bg, connected_bg))?;
         Ok(Self {
             sock_path,
-            stop,
+            settled,
+            connected,
             handle: Mutex::new(Some(handle)),
         })
     }
@@ -243,13 +247,17 @@ impl LinuxObserver {
         })
     }
 
-    pub(crate) fn stop_and_join(&self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(handle) = self
-            .handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+    /// Stop recording new baselines while keeping the notification listener alive
+    /// in pass-through mode (`CONTINUE`) until all descendants exit (`POLLHUP`),
+    /// so surviving background jobs never fail with `ENOSYS`.
+    pub(crate) fn settle(&self) {
+        self.settled.store(true, Ordering::Release);
+        if !self.connected.load(Ordering::Acquire)
+            && let Some(handle) = self
+                .handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
         {
             let _ = handle.join();
         }
@@ -259,10 +267,11 @@ impl LinuxObserver {
 fn supervisor_loop(
     listener: UnixListener,
     state: Arc<Mutex<ObservationState>>,
-    stop: Arc<AtomicBool>,
+    settled: Arc<AtomicBool>,
+    connected: Arc<AtomicBool>,
 ) {
     let listener_fd = loop {
-        if stop.load(Ordering::Acquire) {
+        if settled.load(Ordering::Acquire) {
             return;
         }
         match listener.accept() {
@@ -270,6 +279,7 @@ fn supervisor_loop(
                 let _ = stream.set_nonblocking(false);
                 match recv_fd(&stream) {
                     Ok(fd) => {
+                        connected.store(true, Ordering::Release);
                         let _ = stream.write_all(&[1u8]);
                         break fd;
                     }
@@ -288,17 +298,22 @@ fn supervisor_loop(
         }
     };
 
-    serve_notifications(listener_fd.as_raw_fd(), &state, &stop);
+    serve_notifications(listener_fd.as_raw_fd(), &state, &settled);
 }
 
-fn serve_notifications(notif_fd: RawFd, state: &Mutex<ObservationState>, stop: &AtomicBool) {
+fn serve_notifications(notif_fd: RawFd, state: &Mutex<ObservationState>, settled: &AtomicBool) {
     loop {
         let mut pfd = libc::pollfd {
             fd: notif_fd,
             events: libc::POLLIN,
             revents: 0,
         };
-        let rc = unsafe { libc::poll(&mut pfd, 1, 25) };
+        let timeout_ms = if settled.load(Ordering::Acquire) {
+            250
+        } else {
+            25
+        };
+        let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
         if rc < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
@@ -307,9 +322,6 @@ fn serve_notifications(notif_fd: RawFd, state: &Mutex<ObservationState>, stop: &
             break;
         }
         if rc == 0 {
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
             continue;
         }
         if (pfd.revents & libc::POLLHUP) != 0 && (pfd.revents & libc::POLLIN) == 0 {
@@ -330,7 +342,9 @@ fn serve_notifications(notif_fd: RawFd, state: &Mutex<ObservationState>, stop: &
             break;
         }
 
-        handle_notification(notif_fd, &req, state);
+        if !settled.load(Ordering::Acquire) {
+            handle_notification(notif_fd, &req, state);
+        }
 
         let resp = SeccompNotifResp {
             id: req.id,
@@ -412,12 +426,64 @@ fn handle_notification(notif_fd: RawFd, req: &SeccompNotif, state: &Mutex<Observ
     if unsafe { libc::ioctl(notif_fd, SECCOMP_IOCTL_NOTIF_ID_VALID, &id) } < 0 {
         return;
     }
+    let is_vcs_diagnostic = is_vcs_diagnostic_git_process(pid);
     let mut guard = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for path in paths {
-        guard.record_pre_write(&path);
+        guard.record_pre_write_with_provenance(&path, is_vcs_diagnostic);
     }
+}
+
+/// Detect whether `pid` is a `git` subprocess executing a VCS state-mutating
+/// subcommand so its writes are classified as `ChangeSourceKind::VcsDiagnostic`.
+fn is_vcs_diagnostic_git_process(pid: u32) -> bool {
+    let Ok(comm) = fs::read_to_string(format!("/proc/{pid}/comm")) else {
+        return false;
+    };
+    if comm.trim() != "git" {
+        return false;
+    }
+    let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    let mut args = cmdline
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(String::from_utf8_lossy);
+    let _ = args.next();
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if matches!(
+            arg.as_ref(),
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        ) {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return matches!(
+            arg.as_ref(),
+            "checkout"
+                | "switch"
+                | "restore"
+                | "reset"
+                | "merge"
+                | "rebase"
+                | "pull"
+                | "stash"
+                | "cherry-pick"
+                | "revert"
+                | "clean"
+        );
+    }
+    false
 }
 
 fn read_open_how_is_write(pid: u32, how_ptr: u64) -> bool {

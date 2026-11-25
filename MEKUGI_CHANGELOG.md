@@ -24,6 +24,14 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `msymbol`, and `mrun` CLIs (`codex-mekugi-tools`) through stock PATH symlinks
   and exports
   `CODEX_ARG0_PATH_DIR` so login shells retain those aliases on `PATH`. It also
+  dispatches `--codex-exec-observe` for process-scoped OS write observation
+  (Linux `seccomp-unotify`, macOS `DYLD_INSERT_LIBRARIES`), replacing Bash AST
+  write-path heuristics and FIFO script rewriting. Interactive user-shell (`!`)
+  edits emit unattributed `shellN` change IDs (excluded from agent `--mine` and
+  handoffs), and ephemeral temp-path writes (`/tmp`, `$TMPDIR`, `$SESSION_TMP`)
+  are classified as `ChangeScope::Ephemeral` so they remain inspectable by
+  explicit change ID without polluting default agent history or Saved Diff.
+- `codex-arg0` also
   stages per-session `vcs-guard/` (`git`, `gh`, `hg`, `svn`, `jj`) and
   `sudo-guard/` (`sudo`, `gpg`, `gpg2`, `mekugi-sudo-askpass`) symlinks
   dispatched by `codex-shell-guard` without adding them to the process-wide

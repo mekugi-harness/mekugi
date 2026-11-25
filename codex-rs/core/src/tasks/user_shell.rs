@@ -192,8 +192,13 @@ pub(crate) async fn execute_user_shell_command(
         &shell_environment_policy.r#set,
         &mut exec_env_map,
     );
-    if let Some(wrapped) =
-        user_shell_track.wrap_command(&exec_command, turn_context.config.codex_self_exe.as_deref())
+    // Skip Linux `seccomp-unotify` wrapping (`PR_SET_NO_NEW_PRIVS`) when the user
+    // shell command invokes a privilege-escalation binary (`sudo`/`su`/`doas`/`pkexec`).
+    let skip_for_setuid =
+        cfg!(target_os = "linux") && command_uses_privilege_escalation(&raw_command);
+    if !skip_for_setuid
+        && let Some(wrapped) = user_shell_track
+            .wrap_command(&exec_command, turn_context.config.codex_self_exe.as_deref())
     {
         exec_command = wrapped.argv;
         for (k, v) in wrapped.env {
@@ -479,6 +484,16 @@ async fn persist_user_shell_output(
     session
         .inject_no_new_turn(vec![output_item], Some(turn_context))
         .await;
+}
+
+fn command_uses_privilege_escalation(raw_command: &str) -> bool {
+    raw_command
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '/'))
+        .filter(|tok| !tok.is_empty())
+        .any(|tok| {
+            let base = tok.rsplit('/').next().unwrap_or(tok);
+            matches!(base, "sudo" | "su" | "doas" | "pkexec")
+        })
 }
 
 #[cfg(all(test, unix))]

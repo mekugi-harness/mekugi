@@ -13,12 +13,13 @@ use codex_change_history::ChangeHistoryError;
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeMetadata;
 use codex_change_history::ChangeRecord;
+use codex_change_history::ChangeSourceKind;
 use codex_change_history::CoverageStatus;
 use codex_change_history::FileSnapshot;
 use codex_change_history::PendingFileChange;
 use codex_change_history::classify_change_scope;
 
-use crate::active_writers::InodeKey;
+use crate::active_writers::WriterKey;
 use crate::active_writers::finish_call;
 use crate::active_writers::register_write;
 
@@ -27,13 +28,20 @@ const MAX_CAPTURE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 pub(crate) type ReadPolicyFn = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 
+struct ObservedFile {
+    before: FileSnapshot,
+    coverage: CoverageStatus,
+    keys: Vec<WriterKey>,
+    vcs_diagnostic_only: bool,
+}
+
 /// Mutable per-command write observation state shared between the OS supervisor
 /// thread and final settlement.
 pub(crate) struct ObservationState {
     call_id: String,
     ignored_root: PathBuf,
     can_read: ReadPolicyFn,
-    baselines: BTreeMap<PathBuf, (FileSnapshot, CoverageStatus, Option<InodeKey>)>,
+    baselines: BTreeMap<PathBuf, ObservedFile>,
     partial_reasons: Vec<String>,
 }
 
@@ -51,6 +59,16 @@ impl ObservationState {
 
     /// Lazily snapshot pre-write bytes the first time this command touches `path`.
     pub(crate) fn record_pre_write(&mut self, raw_path: &Path) {
+        self.record_pre_write_with_provenance(raw_path, false);
+    }
+
+    /// Lazily snapshot pre-write bytes, tracking whether the writing subprocess
+    /// is a VCS-diagnostic git operation (e.g. `git restore`/`git checkout`).
+    pub(crate) fn record_pre_write_with_provenance(
+        &mut self,
+        raw_path: &Path,
+        is_vcs_diagnostic: bool,
+    ) {
         if should_ignore_path(raw_path, &self.ignored_root) {
             return;
         }
@@ -58,22 +76,31 @@ impl ObservationState {
         if should_ignore_path(&path, &self.ignored_root) {
             return;
         }
-        if self.baselines.contains_key(&path) {
+        if let Some(existing) = self.baselines.get_mut(&path) {
+            if !is_vcs_diagnostic {
+                existing.vcs_diagnostic_only = false;
+            }
             return;
         }
         if !(self.can_read)(&path) {
             return;
         }
-        let inode = InodeKey::from_path(&path);
+        let keys = WriterKey::keys_for_path(&path);
         let (snapshot, mut coverage) = read_bounded_snapshot(&path);
-        if let Some(ino) = inode
-            && register_write(&self.call_id, ino)
-        {
+        if register_write(&self.call_id, &keys) {
             coverage = coverage.merge(CoverageStatus::Partial {
                 reason: "concurrent write to same file".to_string(),
             });
         }
-        self.baselines.insert(path, (snapshot, coverage, inode));
+        self.baselines.insert(
+            path,
+            ObservedFile {
+                before: snapshot,
+                coverage,
+                keys,
+                vcs_diagnostic_only: is_vcs_diagnostic,
+            },
+        );
     }
 
     /// Record an explicit honesty marker (e.g., macOS SIP-protected binary executed).
@@ -86,13 +113,13 @@ impl ObservationState {
 
     /// Release any held active-writer registrations without persisting.
     pub(crate) fn release_active_writers(&self) {
-        let inodes: Vec<InodeKey> = self
+        let keys: Vec<WriterKey> = self
             .baselines
             .values()
-            .filter_map(|(_, _, ino)| *ino)
+            .flat_map(|obs| obs.keys.iter().cloned())
             .collect();
-        if !inodes.is_empty() {
-            let _ = finish_call(&self.call_id, &inodes);
+        if !keys.is_empty() {
+            let _ = finish_call(&self.call_id, &keys);
         }
     }
 
@@ -105,15 +132,16 @@ impl ObservationState {
         session_tmp: Option<&Path>,
         metadata: ChangeMetadata,
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
-        let inodes: Vec<InodeKey> = self
+        let keys: Vec<WriterKey> = self
             .baselines
             .values()
-            .filter_map(|(_, _, ino)| *ino)
+            .flat_map(|obs| obs.keys.iter().cloned())
             .collect();
-        let conflicted = finish_call(&self.call_id, &inodes);
+        let conflicted = finish_call(&self.call_id, &keys);
 
-        let mut pending_files = Vec::new();
-        for (abs_path, (before, before_cov, inode)) in &self.baselines {
+        let mut authored_files = Vec::new();
+        let mut vcs_files = Vec::new();
+        for (abs_path, obs) in &self.baselines {
             if !(self.can_read)(abs_path)
                 || fs::canonicalize(abs_path)
                     .ok()
@@ -122,10 +150,8 @@ impl ObservationState {
                 continue;
             }
             let (after, after_cov) = read_bounded_snapshot(abs_path);
-            let mut coverage = before_cov.clone().merge(after_cov);
-            if let Some(ino) = inode
-                && conflicted.contains(ino)
-            {
+            let mut coverage = obs.coverage.clone().merge(after_cov);
+            if obs.keys.iter().any(|k| conflicted.contains(k)) {
                 coverage = coverage.merge(CoverageStatus::Partial {
                     reason: "concurrent write to same file".to_string(),
                 });
@@ -135,29 +161,47 @@ impl ObservationState {
                     reason: self.partial_reasons.join("; "),
                 });
             }
-            if before == &after && coverage == CoverageStatus::Complete {
+            if obs.before == after && coverage == CoverageStatus::Complete {
                 continue;
             }
             let rel_path = display_rel_path(workspace_root, abs_path);
             let scope = classify_change_scope(abs_path, workspace_root, session_tmp);
-            pending_files.push(PendingFileChange {
+            let change = PendingFileChange {
                 rel_path,
                 abs_path: abs_path.clone(),
                 moved_from: None,
-                before: before.clone(),
+                before: obs.before.clone(),
                 after,
                 coverage,
                 scope,
-            });
+            };
+            if obs.vcs_diagnostic_only {
+                vcs_files.push(change);
+            } else {
+                authored_files.push(change);
+            }
         }
 
-        if pending_files.is_empty() {
+        if authored_files.is_empty() && vcs_files.is_empty() {
             return Ok(None);
         }
 
         let store = ChangeHistoryStore::open(store_dir)?;
-        let record = store.record_change(metadata, pending_files)?;
-        Ok(Some(record))
+        let mut vcs_record = None;
+        if !vcs_files.is_empty() {
+            let mut vcs_meta = metadata.clone();
+            vcs_meta.source_kind = ChangeSourceKind::VcsDiagnostic;
+            vcs_meta.claim_key = Some(match vcs_meta.claim_key {
+                Some(k) => format!("{k}:vcs"),
+                None => format!("{}:{}:vcs", vcs_meta.thread_id, vcs_meta.call_id),
+            });
+            vcs_record = Some(store.record_change(vcs_meta, vcs_files)?);
+        }
+        if !authored_files.is_empty() {
+            let record = store.record_change(metadata, authored_files)?;
+            return Ok(Some(record));
+        }
+        Ok(vcs_record)
     }
 }
 

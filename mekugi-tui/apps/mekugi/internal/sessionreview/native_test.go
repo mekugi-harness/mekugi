@@ -498,4 +498,32 @@ func TestNativeStoreUnattributedUserShellAndEphemeralFiltering(t *testing.T) {
 			t.Fatalf("expected userShell source, got %q", attempt.Chunks[0].Origin.Source)
 		}
 	}
+
+	// Unattributed shell1 must also deduplicate against a legacy userShell capture with matching CallID.
+	builder := presentation.NewBuilder(nil)
+	if err := builder.Add(presentation.Attempt{
+		AttemptIdentity: presentation.AttemptIdentity{
+			Key:    presentation.AttemptKey{Workspace: workspace, Call: "legacy-u1"},
+			Change: "shell1",
+		},
+		Operation: activitydetail.Operation{Thread: "main", Item: "user-call-1"},
+		Chunks: []presentation.Chunk{{
+			Key:          workspace + "\x00legacy-u1/0",
+			Stream:       workspace + "\x00legacy\x000",
+			Workspace:    workspace,
+			CaptureOrder: 1,
+			Review:       diffmodel.RenderReviewFile("", filepath.Join(workspace, "kept.txt"), "", "user-edit\n"),
+			Origin:       presentation.Origin{Change: "shell1", Caller: "", Source: "userShell"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dedupProj := Projection{NativeDir: f.dir, Data: builder.Finish(), Scope: scope}
+	changed2, err := dedupProj.Apply(t.Context(), Event{Kind: "native", NativeDir: f.dir})
+	if err != nil {
+		t.Fatalf("Apply(native dedup): %v", err)
+	}
+	if changed2 || dedupProj.Data.Len() != 1 {
+		t.Fatalf("expected unattributed shell1 to deduplicate against legacy userShell call (changed=%v len=%d)", changed2, dedupProj.Data.Len())
+	}
 }

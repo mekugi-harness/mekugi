@@ -17,6 +17,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
 
+use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
+
+use crate::CODEX_EXEC_OBSERVE_ARG1;
 use crate::WrappedCommand;
 use crate::ipc::serve_unix_message;
 use crate::persist::ObservationState;
@@ -75,7 +79,11 @@ impl MacosObserver {
         })
     }
 
-    pub(crate) fn wrap_command(&self, argv: &[String]) -> Option<WrappedCommand> {
+    pub(crate) fn wrap_command(
+        &self,
+        argv: &[String],
+        self_exe: Option<&Path>,
+    ) -> Option<WrappedCommand> {
         if argv.is_empty() {
             return None;
         }
@@ -92,6 +100,19 @@ impl MacosObserver {
                         new_argv[0]
                     ));
             }
+        }
+        if let Some(exe) = self_exe {
+            let mut wrapped = Vec::with_capacity(new_argv.len() + 5);
+            wrapped.push(exe.to_string_lossy().into_owned());
+            wrapped.push(CODEX_EXEC_OBSERVE_ARG1.to_string());
+            wrapped.push(self.sock_path.to_string_lossy().into_owned());
+            wrapped.push(self.dylib_path.to_string_lossy().into_owned());
+            wrapped.push("--".to_string());
+            wrapped.extend(new_argv);
+            return Some(WrappedCommand {
+                argv: wrapped,
+                env: Vec::new(),
+            });
         }
         let existing = std::env::var("DYLD_INSERT_LIBRARIES").unwrap_or_default();
         let dyld_val = if existing.is_empty() {
@@ -147,4 +168,44 @@ fn find_non_sip_shell(original: &str) -> Option<String> {
         .iter()
         .find(|p| Path::new(p).is_file())
         .map(|p| (*p).to_string())
+}
+
+/// Child wrapper entrypoint on macOS invoked via
+/// `<codex-exe> --codex-exec-observe <sock> <dylib> -- <cmd> [args...]`.
+/// Sets `DYLD_INSERT_LIBRARIES` and `MEKUGI_WRITE_OBSERVER_SOCK` inside the
+/// Seatbelt sandbox (after SIP-protected `sandbox-exec` has launched) and `execvp`s `<cmd>`.
+pub fn run_observe_wrapper_main() -> ! {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let Some(sep) = args.iter().position(|a| a == "--") else {
+        std::process::exit(126);
+    };
+    let cmd_args = &args[sep + 1..];
+    if cmd_args.is_empty() {
+        std::process::exit(126);
+    }
+    if let (Some(sock), Some(dylib)) = (args.get(2), args.get(3)) {
+        let existing = std::env::var_os("DYLD_INSERT_LIBRARIES").unwrap_or_default();
+        let mut dyld_val = dylib.clone();
+        if !existing.is_empty() {
+            dyld_val.push(":");
+            dyld_val.push(existing);
+        }
+        unsafe {
+            std::env::set_var("DYLD_INSERT_LIBRARIES", dyld_val);
+            std::env::set_var(ENV_SOCK, sock);
+        }
+    }
+    let c_args: Vec<CString> = cmd_args
+        .iter()
+        .filter_map(|a| CString::new(a.as_bytes()).ok())
+        .collect();
+    if c_args.is_empty() {
+        std::process::exit(126);
+    }
+    let mut ptrs: Vec<*const libc::c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
+    ptrs.push(std::ptr::null());
+    unsafe {
+        libc::execvp(ptrs[0], ptrs.as_ptr());
+    }
+    std::process::exit(127);
 }

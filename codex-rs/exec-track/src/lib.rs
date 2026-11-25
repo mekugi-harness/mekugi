@@ -29,6 +29,8 @@ use tempfile::TempDir;
 
 #[cfg(target_os = "linux")]
 pub use linux::run_observe_wrapper_main;
+#[cfg(target_os = "macos")]
+pub use macos::run_observe_wrapper_main;
 use persist::ObservationState;
 
 /// Internal arg1 used by `codex-arg0` to dispatch the Linux `seccomp-unotify` child wrapper.
@@ -100,8 +102,7 @@ impl WriteObserverSession {
         }
         #[cfg(target_os = "macos")]
         {
-            let _ = self_exe;
-            self.backend.wrap_command(argv)
+            self.backend.wrap_command(argv, self_exe)
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
@@ -112,7 +113,9 @@ impl WriteObserverSession {
 
     /// Stop the observer background thread without persisting.
     pub fn stop(&self) {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        self.backend.settle();
+        #[cfg(target_os = "macos")]
         self.backend.stop_and_join();
         self.state
             .lock()
@@ -129,7 +132,9 @@ impl WriteObserverSession {
         session_tmp: Option<&Path>,
         metadata: ChangeMetadata,
     ) -> Result<Option<ChangeRecord>, ChangeHistoryError> {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        self.backend.settle();
+        #[cfg(target_os = "macos")]
         self.backend.stop_and_join();
         let guard = self
             .state

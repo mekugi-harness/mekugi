@@ -120,7 +120,7 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     if argv1 == CODEX_FS_HELPER_ARG1 {
         codex_exec_server::run_fs_helper_main();
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if argv1 == codex_exec_track::CODEX_EXEC_OBSERVE_ARG1 {
         codex_exec_track::run_observe_wrapper_main();
     }

@@ -129,6 +129,38 @@ impl ExecRequest {
         self.launch.program_and_args()
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn raw_command(&self) -> &[String] {
+        &self.launch.command
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn wrap_outer_command(
+        &mut self,
+        argv: Vec<String>,
+        extra_env: Vec<(String, String)>,
+    ) {
+        // Only wrap when `arg0` is absent or already matches the inner executable's basename
+        // (e.g., the `codex-linux-sandbox` alias symlink), so arg0 dispatch stays intact.
+        if let Some(arg0) = &self.launch.arg0 {
+            let inner_name = self
+                .launch
+                .command
+                .first()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .and_then(|n| n.to_str());
+            if inner_name != Some(arg0.as_str()) {
+                return;
+            }
+            self.launch.arg0 = None;
+        }
+        self.launch.native_program = None;
+        self.launch.command = argv;
+        for (k, v) in extra_env {
+            self.launch.env.insert(k, v);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         command: Vec<String>,

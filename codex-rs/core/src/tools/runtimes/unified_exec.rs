@@ -710,6 +710,9 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             permissions
         };
 
+        // On macOS, wrap the inner command before Seatbelt so `<self_exe>` runs
+        // inside `sandbox-exec` (after SIP stripping) and sets `DYLD_INSERT_LIBRARIES`.
+        #[cfg(target_os = "macos")]
         if let Some(track) = &prepared_exec_track
             && let Some(wrapped) = track.wrap_command(
                 &command,
@@ -735,7 +738,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
             .map_err(|err| ToolError::Rejected(format!("invalid shell guard socket: {err}")))?;
         #[cfg(not(target_os = "macos"))]
         let runtime_socket = None;
-        let request = if executor_managed {
+        let mut request = if executor_managed {
             let mut request = attempt
                 .env_for_exec_server(
                     command,
@@ -772,6 +775,18 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 .await
                 .map_err(ToolError::Codex)?
         };
+        // On Linux, wrap the outer command after sandbox construction so the
+        // `seccomp-unotify` wrapper connects to `observe.sock` *before* restricted
+        // network seccomp rules block `connect()`.
+        #[cfg(target_os = "linux")]
+        if let Some(track) = &prepared_exec_track
+            && let Some(wrapped) = track.wrap_command(
+                request.raw_command(),
+                ctx.step_context.turn.config.codex_self_exe.as_deref(),
+            )
+        {
+            request.wrap_outer_command(wrapped.argv, wrapped.env);
+        }
         let exec_track_handles = prepared_exec_track;
         let process = self
             .manager
