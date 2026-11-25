@@ -1,0 +1,233 @@
+# syntax=docker/sandbox-kit:3
+# yaml-language-server: $schema=https://raw.githubusercontent.com/docker/sandbox-kit-spec/main/schema/kit.schema.json
+schemaVersion: "3"
+kind: workload
+version: "1.0.0"
+displayName: Mekugi Dev Environment
+description: >-
+  Ubuntu 26.04 LTS development environment workload for building, testing,
+  linting, and formatting Mekugi (Go 1.27+ with CGO, Rust 1.99.1 with
+  clippy/rustfmt/rust-src, mold, sccache, cargo-nextest, Node.js 26.13 LTS,
+  Bun 1.4.4, Just 1.51, uv, golangci-lint, deadcode, ripgrep, Docker Engine,
+  and native Linux build libraries).
+sourceUrl: https://github.com/mekugi-harness/mekugi
+licenses: [MIT, Apache-2.0]
+
+args:
+  goVersion:
+    default: "1.27.3"
+    pattern: '^[0-9]+\.[0-9]+(\.[0-9]+)?$'
+    description: Go toolchain version (matches Dockerfile and satisfies mekugi-tui/go.work)
+    buildArg: GO_VERSION
+  rustToolchain:
+    default: "1.99.1"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: Rustup channel matching codex-rs/rust-toolchain.toml
+    buildArg: RUST_TOOLCHAIN
+  nodeVersion:
+    default: "26.13.1"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: Node.js LTS version (v26 Lithium)
+    buildArg: NODE_VERSION
+  bunVersion:
+    default: "1.4.4"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: Bun version matching Dockerfile and CI
+    buildArg: BUN_VERSION
+  justVersion:
+    default: "1.51.0"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: Just task runner version matching CI
+    buildArg: JUST_VERSION
+  golangciLintVersion:
+    default: "2.14.0"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: golangci-lint version matching CI
+    buildArg: GOLANGCI_LINT_VERSION
+  deadcodeVersion:
+    default: "0.51.0"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: golang.org/x/tools/cmd/deadcode version matching CI
+    buildArg: DEADCODE_VERSION
+  sccacheVersion:
+    default: "0.19.0"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: sccache version matching CI
+    buildArg: SCCACHE_VERSION
+  nextestVersion:
+    default: "0.9.152"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: cargo-nextest version for native Rust test suites
+    buildArg: NEXTEST_VERSION
+  uvVersion:
+    default: "0.13.10"
+    pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+    description: uv version for locked Python maintenance tools (just fmt)
+    buildArg: UV_VERSION
+  memory:
+    default: "8g"
+    pattern: '^[0-9]+[kKmMgGtT]i?[bB]?$'
+    description: Default sandbox memory allocation (override with --kit-arg memory=... or sbx run --memory)
+
+provides:
+  - "go@${{ kit.args.goVersion }}"
+  - "rust@${{ kit.args.rustToolchain }}"
+  - "node@${{ kit.args.nodeVersion }}"
+  - "bun@${{ kit.args.bunVersion }}"
+  - "just@${{ kit.args.justVersion }}"
+  - "golangci-lint@${{ kit.args.golangciLintVersion }}"
+  - "deadcode@${{ kit.args.deadcodeVersion }}"
+  - "sccache@${{ kit.args.sccacheVersion }}"
+  - "cargo-nextest@${{ kit.args.nextestVersion }}"
+  - "uv@${{ kit.args.uvVersion }}"
+
+dockerfile: ./mekugi-dev.dockerfile
+
+capabilities:
+  # Declares that this workload follows the Docker Sandboxes launch contract.
+  - type: com.docker.sandbox/sbx@1
+
+  # Default compute budget for Rust/V8, Go/CGO, and Svelte/Vite builds.
+  - type: com.docker.sandbox/resources@1
+    config:
+      cpu: 4
+      memory: "${{ kit.args.memory }}"
+
+  # Optional Docker-in-Docker support for building Mekugi's WebUI/connector
+  # container images and running container-based checks.
+  - type: com.docker.sandbox/dockerd@1
+    optional: true
+    description: Builds and runs containers with the in-sandbox Docker engine
+
+  - type: com.docker.sandbox/privileged@1
+    optional: true
+    description: Enables inner Docker engine and unprivileged user-namespace tests (bwrap)
+
+  # Scoped runtime egress covering Go modules, Cargo/rustup, prebuilt V8
+  # release artifacts, npm/Bun, PyPI (uv/ruff), Ubuntu/Docker apt, and Docker Hub.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          # Go modules and checksum database
+          - proxy.golang.org:443
+          - sum.golang.org:443
+          - storage.googleapis.com:443
+          # Rust crates and rustup
+          - crates.io:443
+          - index.crates.io:443
+          - static.crates.io:443
+          - static.rust-lang.org:443
+          # GitHub repositories, API, and prebuilt rusty_v8 release assets
+          - github.com:443
+          - api.github.com:443
+          - codeload.github.com:443
+          - objects.githubusercontent.com:443
+          - release-assets.githubusercontent.com:443
+          - raw.githubusercontent.com:443
+          # Bun / npm packages for mekugi-webui
+          - registry.npmjs.org:443
+          # PyPI for locked Python maintenance tools (just fmt -> uv/ruff)
+          - pypi.org:443
+          - files.pythonhosted.org:443
+          # Ubuntu LTS (amd64 + arm64) and Docker apt sources
+          - archive.ubuntu.com
+          - security.ubuntu.com
+          - ports.ubuntu.com
+          - download.docker.com
+          # Container registries for in-sandbox container builds (Dockerfile, GHCR)
+          - auth.docker.io:443
+          - registry-1.docker.io:443
+          - production.cloudflare.docker.com:443
+          - production.cloudfront.docker.com:443
+          - docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com:443
+          - ghcr.io:443
+          - pkg-containers.githubusercontent.com:443
+
+  # Persistent build and package caches across sandbox restarts.
+  - type: com.docker.sandbox/volume@1
+    optional: true
+    config:
+      path: /home/agent/go/pkg/mod
+      mode: "0755"
+
+  - type: com.docker.sandbox/volume@1
+    optional: true
+    config:
+      path: /home/agent/.cargo/registry
+      mode: "0755"
+
+  - type: com.docker.sandbox/volume@1
+    optional: true
+    config:
+      path: /home/agent/.cargo/git
+      mode: "0755"
+
+  - type: com.docker.sandbox/volume@1
+    optional: true
+    config:
+      path: /home/agent/.bun/install/cache
+      mode: "0755"
+
+  - type: com.docker.sandbox/volume@1
+    optional: true
+    config:
+      path: /home/agent/.cache/sccache
+      mode: "0755"
+
+  - type: com.docker.sandbox/volume@1
+    optional: true
+    config:
+      path: /home/agent/.cache/uv
+      mode: "0755"
+
+  # Fresh block volumes may come up root-owned; repair mount-root ownership
+  # and enable unprivileged userns (when elevated) for bwrap tests.
+  - type: com.docker.sandbox/lifecycle@1
+    optional: true
+    config:
+      startup:
+        - command: |
+            set -eu
+            for d in \
+              /home/agent/go/bin \
+              /home/agent/go/pkg/mod \
+              /home/agent/.cargo/registry \
+              /home/agent/.cargo/git \
+              /home/agent/.bun/install/cache \
+              /home/agent/.cache/sccache \
+              /home/agent/.cache/uv
+            do
+              mkdir -p "$d"
+              [ "$(stat -c %u "$d")" = 1000 ] || chown agent:agent "$d"
+            done
+            sysctl -w kernel.unprivileged_userns_clone=1 >/dev/null 2>&1 || true
+            sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || true
+          user: "0"
+          description: Ensure persistent cache volume roots are agent-owned and allow bwrap userns when elevated
+
+  # Accept one context version through runtime policy, or skip both.
+  # Accepting both conflicts; optionality does not express alternatives.
+  - type: com.docker.sandbox/agent-context@1
+    optional: true
+    config: &agent-context
+      filename: AGENTS.md
+      content: |
+        ## Mekugi Development Sandbox
+
+        This Ubuntu 26.04 LTS sandbox provides the Linux build, test, lint, and format
+        toolchain for Mekugi (`mekugi-tui`, `mekugi-webui`, and the native Rust
+        runtime in `codex-rs`): Go (CGO), `golangci-lint`, `deadcode`, Rust
+        (`clippy`, `rustfmt`, `rust-src`), `mold`, `sccache` (`RUSTC_WRAPPER`),
+        `cargo-nextest`, Node.js, Bun, Just, Python 3, `uv`, `ripgrep`,
+        clang/gcc/cmake, `pkg-config`, `libcap-dev`, `libssl-dev`, and Docker Engine.
+
+        Run `just --list` from the repository root for recipes (`just build`,
+        `just test`, `just lint`, `just fmt`, `just affected`, `just docs-check`,
+        `just check-generated`, `just webui-check`, `just check-native`,
+        `just test-native`). For raw Go commands, set `GOWORK="$PWD/mekugi-tui/go.work"`.
+        Read `AGENTS.md` and `docs/contributing/development.md` before editing.
+
+  - type: com.docker.sandbox/agent-context@2
+    optional: true
+    config: *agent-context
