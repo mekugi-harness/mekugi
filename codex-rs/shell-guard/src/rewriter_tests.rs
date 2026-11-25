@@ -346,6 +346,51 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
             "ANSI-C delimiter failed ({ansi_c}): {rewritten}"
         );
     }
+
+    // ANSI-C control escape before a multibyte UTF-8 character must not panic and truncates at NUL.
+    let unicode_ctrl = "cat <<$'EOF\\c\u{0800}' &&\nsh -c 'echo hi'\nEOF\n/usr/bin/git push";
+    let rewritten_unicode = rewrite_script(unicode_ctrl, &config);
+    assert!(
+        rewritten_unicode.starts_with("cat <<$'EOF\\c\u{0800}' &&\nsh -c 'echo hi'\nEOF\n")
+            && rewritten_unicode.ends_with("-- /usr/bin/git push"),
+        "got: {rewritten_unicode}"
+    );
+
+    // Literal brace inside parameter expansion and nested parameter expansion must not hide later heredocs.
+    for brace_case in [
+        "printf '%s\\n' \"${value:-{text}\"\ncat <<'EOF' &&\nsh -c 'echo hi'\nEOF\necho ok",
+        "printf '%s\\n' \"${a:-${b:-text}}\"\ncat <<'EOF' &&\nsh -c 'echo hi'\nEOF\necho ok",
+    ] {
+        assert_eq!(rewrite_script(brace_case, &config), brace_case);
+    }
+
+    // Backslash-newline continued delimiter in an unquoted heredoc must not swallow later quoted heredocs.
+    let continued_unquoted = "cat <<EOF\nhello\nE\\\nOF\ncat <<'Q' &&\nsh -c 'echo hi'\nQ\necho ok";
+    assert_eq!(
+        rewrite_script(continued_unquoted, &config),
+        continued_unquoted
+    );
+
+    // Array subscript shift must not be parsed as a heredoc hiding later quoted heredocs.
+    let array_shift = "a[1<<2]=x\ncat <<'EOF' &&\nsh -c 'echo hi'\nEOF\necho ok";
+    assert_eq!(rewrite_script(array_shift, &config), array_shift);
+
+    // Command substitution inside arithmetic command must still protect its own quoted heredoc.
+    let arith_cmd_subst =
+        "(( result = $(cat <<'EOF' > /tmp/remote.sh &&\nsh -c 'echo hi'\nEOF\necho 1) ))";
+    assert_eq!(rewrite_script(arith_cmd_subst, &config), arith_cmd_subst);
+
+    // Quoted heredoc nested inside command substitution within an unquoted heredoc body must stay protected.
+    let unquoted_nested_quoted =
+        "cat <<EOF\n$(cat <<'INNER' > /tmp/remote.sh &&\nsh -c 'echo hi'\nINNER\necho ok)\nEOF";
+    assert_eq!(
+        rewrite_script(unquoted_nested_quoted, &config),
+        unquoted_nested_quoted
+    );
+
+    // Case pattern inside command substitution must not pop CmdSubst and drop a queued heredoc.
+    let case_in_subst = "out=$(cat <<'EOF'; case x in a) echo ok;; esac\nsh -c 'echo hi'\nEOF\n)";
+    assert_eq!(rewrite_script(case_in_subst, &config), case_in_subst);
 }
 
 #[cfg(unix)]

@@ -89,18 +89,23 @@ struct PendingHeredoc {
 enum LexMode {
     Normal {
         pending: VecDeque<PendingHeredoc>,
+        case_depth: usize,
+        in_case_pattern: bool,
     },
     DoubleQuote,
     CmdSubst {
         paren_depth: usize,
         pending: VecDeque<PendingHeredoc>,
+        case_depth: usize,
+        in_case_pattern: bool,
     },
     Arith {
         paren_depth: usize,
     },
-    ParamExpansion {
-        brace_depth: usize,
+    ArraySubscript {
+        bracket_depth: usize,
     },
+    ParamExpansion,
 }
 
 /// Parses a shell script with `tree-sitter-bash`, returning `None` if the grammar
@@ -425,10 +430,21 @@ fn mask_quoted_heredocs(script: &str, spans: &[QuotedHeredocSpan]) -> Option<Str
 /// Scans POSIX/Bash lexical structure to find byte spans of all quoted
 /// here-document bodies (including their terminating delimiter lines).
 fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
-    let bytes = src.as_bytes();
     let mut spans = Vec::new();
+    quoted_heredoc_spans_with_offset(src, 0, &mut spans);
+    spans
+}
+
+fn quoted_heredoc_spans_with_offset(
+    src: &str,
+    base_offset: usize,
+    spans: &mut Vec<QuotedHeredocSpan>,
+) {
+    let bytes = src.as_bytes();
     let mut modes = vec![LexMode::Normal {
         pending: VecDeque::new(),
+        case_depth: 0,
+        in_case_pattern: false,
     }];
     let mut at_word_start = true;
     let mut i = 0;
@@ -439,6 +455,7 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
             DoubleQuote,
             CmdSubst,
             Arith,
+            ArraySubscript,
             ParamExpansion,
         }
         let mode_kind = match modes.last() {
@@ -446,7 +463,8 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
             Some(LexMode::DoubleQuote) => ModeKind::DoubleQuote,
             Some(LexMode::CmdSubst { .. }) => ModeKind::CmdSubst,
             Some(LexMode::Arith { .. }) => ModeKind::Arith,
-            Some(LexMode::ParamExpansion { .. }) => ModeKind::ParamExpansion,
+            Some(LexMode::ArraySubscript { .. }) => ModeKind::ArraySubscript,
+            Some(LexMode::ParamExpansion) => ModeKind::ParamExpansion,
         };
 
         match mode_kind {
@@ -466,13 +484,15 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         modes.push(LexMode::CmdSubst {
                             paren_depth: 1,
                             pending: VecDeque::new(),
+                            case_depth: 0,
+                            in_case_pattern: false,
                         });
                         at_word_start = true;
                         i += 2;
                     }
                 }
                 b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                    modes.push(LexMode::ParamExpansion { brace_depth: 1 });
+                    modes.push(LexMode::ParamExpansion);
                     i += 2;
                 }
                 _ => {
@@ -490,6 +510,28 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                     modes.push(LexMode::DoubleQuote);
                     i += 1;
                 }
+                b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                    if bytes.get(i + 2) == Some(&b'(') {
+                        modes.push(LexMode::Arith { paren_depth: 2 });
+                        i += 3;
+                    } else {
+                        modes.push(LexMode::CmdSubst {
+                            paren_depth: 1,
+                            pending: VecDeque::new(),
+                            case_depth: 0,
+                            in_case_pattern: false,
+                        });
+                        at_word_start = true;
+                        i += 2;
+                    }
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                    modes.push(LexMode::ParamExpansion);
+                    i += 2;
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'\'') => {
+                    i = skip_ansi_c_quoted(bytes, i + 2);
+                }
                 b'(' => {
                     if let Some(LexMode::Arith { paren_depth }) = modes.last_mut() {
                         *paren_depth += 1;
@@ -503,6 +545,62 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                     } else {
                         false
                     };
+                    if pop {
+                        modes.pop();
+                    }
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            },
+            ModeKind::ArraySubscript => match bytes[i] {
+                b'\\' => {
+                    i = (i + 2).min(bytes.len());
+                }
+                b'\'' => {
+                    i = skip_single_quoted(bytes, i + 1);
+                }
+                b'"' => {
+                    modes.push(LexMode::DoubleQuote);
+                    i += 1;
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                    if bytes.get(i + 2) == Some(&b'(') {
+                        modes.push(LexMode::Arith { paren_depth: 2 });
+                        i += 3;
+                    } else {
+                        modes.push(LexMode::CmdSubst {
+                            paren_depth: 1,
+                            pending: VecDeque::new(),
+                            case_depth: 0,
+                            in_case_pattern: false,
+                        });
+                        at_word_start = true;
+                        i += 2;
+                    }
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                    modes.push(LexMode::ParamExpansion);
+                    i += 2;
+                }
+                b'$' if bytes.get(i + 1) == Some(&b'\'') => {
+                    i = skip_ansi_c_quoted(bytes, i + 2);
+                }
+                b'[' => {
+                    if let Some(LexMode::ArraySubscript { bracket_depth }) = modes.last_mut() {
+                        *bracket_depth += 1;
+                    }
+                    i += 1;
+                }
+                b']' => {
+                    let pop =
+                        if let Some(LexMode::ArraySubscript { bracket_depth }) = modes.last_mut() {
+                            *bracket_depth -= 1;
+                            *bracket_depth == 0
+                        } else {
+                            false
+                        };
                     if pop {
                         modes.pop();
                     }
@@ -531,31 +629,22 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         modes.push(LexMode::CmdSubst {
                             paren_depth: 1,
                             pending: VecDeque::new(),
+                            case_depth: 0,
+                            in_case_pattern: false,
                         });
                         at_word_start = true;
                         i += 2;
                     }
                 }
+                b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                    modes.push(LexMode::ParamExpansion);
+                    i += 2;
+                }
                 b'$' if bytes.get(i + 1) == Some(&b'\'') => {
                     i = skip_ansi_c_quoted(bytes, i + 2);
                 }
-                b'{' => {
-                    if let Some(LexMode::ParamExpansion { brace_depth }) = modes.last_mut() {
-                        *brace_depth += 1;
-                    }
-                    i += 1;
-                }
                 b'}' => {
-                    let pop =
-                        if let Some(LexMode::ParamExpansion { brace_depth }) = modes.last_mut() {
-                            *brace_depth -= 1;
-                            *brace_depth == 0
-                        } else {
-                            false
-                        };
-                    if pop {
-                        modes.pop();
-                    }
+                    modes.pop();
                     i += 1;
                 }
                 _ => {
@@ -576,11 +665,11 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                 b'\n' => {
                     i += 1;
                     at_word_start = true;
-                    if let Some(LexMode::Normal { pending } | LexMode::CmdSubst { pending, .. }) =
+                    if let Some(LexMode::Normal { pending, .. } | LexMode::CmdSubst { pending, .. }) =
                         modes.last_mut()
                         && !pending.is_empty()
                     {
-                        consume_pending_heredocs(src, &mut i, pending, &mut spans);
+                        consume_pending_heredocs(src, base_offset, &mut i, pending, spans);
                     }
                 }
                 b'#' if at_word_start => {
@@ -597,13 +686,15 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         modes.push(LexMode::CmdSubst {
                             paren_depth: 1,
                             pending: VecDeque::new(),
+                            case_depth: 0,
+                            in_case_pattern: false,
                         });
                         at_word_start = true;
                         i += 2;
                     }
                 }
                 b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                    modes.push(LexMode::ParamExpansion { brace_depth: 1 });
+                    modes.push(LexMode::ParamExpansion);
                     at_word_start = false;
                     i += 2;
                 }
@@ -634,24 +725,45 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                     i += 2;
                 }
                 b'(' => {
-                    if let Some(LexMode::CmdSubst { paren_depth, .. }) = modes.last_mut() {
+                    if let Some(LexMode::CmdSubst {
+                        paren_depth,
+                        in_case_pattern,
+                        ..
+                    }) = modes.last_mut()
+                        && !*in_case_pattern
+                    {
                         *paren_depth += 1;
                     }
                     at_word_start = true;
                     i += 1;
                 }
                 b')' => {
-                    let pop = if let Some(LexMode::CmdSubst { paren_depth, .. }) = modes.last_mut()
-                    {
-                        *paren_depth -= 1;
-                        *paren_depth == 0
-                    } else {
-                        false
+                    let pop = match modes.last_mut() {
+                        Some(
+                            LexMode::Normal {
+                                in_case_pattern, ..
+                            }
+                            | LexMode::CmdSubst {
+                                in_case_pattern, ..
+                            },
+                        ) if *in_case_pattern => {
+                            *in_case_pattern = false;
+                            false
+                        }
+                        Some(LexMode::CmdSubst { paren_depth, .. }) => {
+                            *paren_depth -= 1;
+                            *paren_depth == 0
+                        }
+                        _ => false,
                     };
                     if pop {
                         modes.pop();
                     }
                     at_word_start = true;
+                    i += 1;
+                }
+                b'[' if !at_word_start && is_array_assignment_subscript(bytes, i) => {
+                    modes.push(LexMode::ArraySubscript { bracket_depth: 1 });
                     i += 1;
                 }
                 b'<' if bytes.get(i + 1) == Some(&b'<') => {
@@ -668,7 +780,7 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         if let Some(heredoc) =
                             parse_heredoc_delimiter(src, &mut i, redir_start, strip_tabs)
                             && let Some(
-                                LexMode::Normal { pending } | LexMode::CmdSubst { pending, .. },
+                                LexMode::Normal { pending, .. } | LexMode::CmdSubst { pending, .. },
                             ) = modes.last_mut()
                         {
                             pending.push_back(heredoc);
@@ -676,9 +788,84 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
                         at_word_start = false;
                     }
                 }
+                b';' if bytes.get(i + 1) == Some(&b';') || bytes.get(i + 1) == Some(&b'&') => {
+                    if let Some(
+                        LexMode::Normal {
+                            case_depth,
+                            in_case_pattern,
+                            ..
+                        }
+                        | LexMode::CmdSubst {
+                            case_depth,
+                            in_case_pattern,
+                            ..
+                        },
+                    ) = modes.last_mut()
+                        && *case_depth > 0
+                    {
+                        *in_case_pattern = true;
+                    }
+                    i += if bytes.get(i + 1) == Some(&b';') && bytes.get(i + 2) == Some(&b'&') {
+                        3
+                    } else {
+                        2
+                    };
+                    at_word_start = true;
+                }
                 b' ' | b'\t' | b'\r' | b';' | b'&' | b'|' | b'<' | b'>' => {
                     at_word_start = true;
                     i += 1;
+                }
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' if at_word_start => {
+                    let start = i;
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+                    {
+                        i += 1;
+                    }
+                    let word_ended = i >= bytes.len()
+                        || matches!(
+                            bytes[i],
+                            b' ' | b'\t'
+                                | b'\n'
+                                | b'\r'
+                                | b';'
+                                | b'&'
+                                | b'|'
+                                | b'('
+                                | b')'
+                                | b'<'
+                                | b'>'
+                        );
+                    if word_ended
+                        && let Some(
+                            LexMode::Normal {
+                                case_depth,
+                                in_case_pattern,
+                                ..
+                            }
+                            | LexMode::CmdSubst {
+                                case_depth,
+                                in_case_pattern,
+                                ..
+                            },
+                        ) = modes.last_mut()
+                    {
+                        match &bytes[start..i] {
+                            b"case" => {
+                                *case_depth += 1;
+                                *in_case_pattern = false;
+                            }
+                            b"in" if *case_depth > 0 => {
+                                *in_case_pattern = true;
+                            }
+                            b"esac" if *case_depth > 0 => {
+                                *case_depth -= 1;
+                                *in_case_pattern = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                    at_word_start = false;
                 }
                 _ => {
                     at_word_start = false;
@@ -687,8 +874,6 @@ fn quoted_heredoc_spans(src: &str) -> Vec<QuotedHeredocSpan> {
             },
         }
     }
-
-    spans
 }
 
 fn skip_single_quoted(bytes: &[u8], mut i: usize) -> usize {
@@ -745,6 +930,66 @@ fn is_arithmetic_command(bytes: &[u8], start: usize) -> bool {
                 i += 1;
                 if depth == 1 {
                     return bytes.get(i) == Some(&b')');
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// Returns true when an opening bracket is preceded by a shell identifier and
+/// its matching closing bracket is immediately followed by = or += (an indexed
+/// array assignment such as a[1<<2]=x, where << is an arithmetic shift).
+fn is_array_assignment_subscript(bytes: &[u8], bracket_pos: usize) -> bool {
+    let mut ident_start = bracket_pos;
+    while ident_start > 0
+        && (bytes[ident_start - 1].is_ascii_alphanumeric() || bytes[ident_start - 1] == b'_')
+    {
+        ident_start -= 1;
+    }
+    if ident_start == bracket_pos
+        || !(bytes[ident_start].is_ascii_alphabetic() || bytes[ident_start] == b'_')
+    {
+        return false;
+    }
+    let at_boundary = ident_start == 0
+        || matches!(
+            bytes[ident_start - 1],
+            b' ' | b'\t' | b'\n' | b'\r' | b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>'
+        );
+    if !at_boundary {
+        return false;
+    }
+    let mut i = bracket_pos + 1;
+    let mut depth = 1usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'\'' => i = skip_single_quoted(bytes, i + 1),
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(bytes.len()),
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b']' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    return bytes.get(i) == Some(&b'=')
+                        || (bytes.get(i) == Some(&b'+') && bytes.get(i + 1) == Some(&b'='));
                 }
             }
             _ => i += 1,
@@ -1088,25 +1333,19 @@ fn parse_ansi_c_delimiter(src: &str, pos: &mut usize, out: &mut String) -> bool 
                         }
                     }
                     _ => {
-                        if let Some(ch) = src[*pos..].chars().next() {
-                            if !truncated_at_nul {
-                                raw.push(b'\\');
-                                let mut buf = [0u8; 4];
-                                raw.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                            }
-                            *pos += ch.len_utf8();
+                        if !truncated_at_nul {
+                            raw.push(b'\\');
+                            raw.push(bytes[*pos]);
                         }
+                        *pos += 1;
                     }
                 }
             }
             _ => {
-                if let Some(ch) = src[*pos..].chars().next() {
-                    if !truncated_at_nul {
-                        let mut buf = [0u8; 4];
-                        raw.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                    }
-                    *pos += ch.len_utf8();
+                if !truncated_at_nul {
+                    raw.push(bytes[*pos]);
                 }
+                *pos += 1;
             }
         }
     }
@@ -1128,6 +1367,7 @@ fn hex_digit(byte: u8) -> Option<u32> {
 
 fn consume_pending_heredocs(
     src: &str,
+    base_offset: usize,
     pos: &mut usize,
     pending: &mut VecDeque<PendingHeredoc>,
     spans: &mut Vec<QuotedHeredocSpan>,
@@ -1135,37 +1375,155 @@ fn consume_pending_heredocs(
     let bytes = src.as_bytes();
     while let Some(heredoc) = pending.pop_front() {
         let body_start = *pos;
+        let mut body_end = src.len();
         let mut full_end = src.len();
 
-        while *pos < bytes.len() {
-            let line_start = *pos;
-            let rel_nl = bytes[line_start..].iter().position(|&b| b == b'\n');
-            let (line_end, next_pos) = match rel_nl {
-                Some(offset) => (line_start + offset, line_start + offset + 1),
-                None => (src.len(), src.len()),
-            };
-            let raw_line = &src[line_start..line_end];
-            let candidate = if heredoc.strip_tabs {
-                raw_line.trim_start_matches('\t')
-            } else {
-                raw_line
-            };
-            *pos = next_pos;
-            if candidate == heredoc.delimiter {
-                full_end = next_pos;
-                break;
+        if heredoc.is_quoted {
+            while *pos < bytes.len() {
+                let line_start = *pos;
+                let rel_nl = bytes[line_start..].iter().position(|&b| b == b'\n');
+                let (line_end, next_pos) = match rel_nl {
+                    Some(offset) => (line_start + offset, line_start + offset + 1),
+                    None => (src.len(), src.len()),
+                };
+                let raw_line = &src[line_start..line_end];
+                let candidate = if heredoc.strip_tabs {
+                    raw_line.trim_start_matches('\t')
+                } else {
+                    raw_line
+                };
+                *pos = next_pos;
+                if candidate == heredoc.delimiter {
+                    body_end = line_start;
+                    full_end = next_pos;
+                    break;
+                }
+            }
+        } else {
+            // Unquoted heredocs fold unescaped backslash-newline continuations
+            // into logical lines before checking for the terminating delimiter.
+            while *pos < bytes.len() {
+                let logical_start = *pos;
+                let mut logical_line = String::new();
+                loop {
+                    let line_start = *pos;
+                    let rel_nl = bytes[line_start..].iter().position(|&b| b == b'\n');
+                    let (line_end, next_pos) = match rel_nl {
+                        Some(offset) => (line_start + offset, line_start + offset + 1),
+                        None => (src.len(), src.len()),
+                    };
+                    let raw_line = &src[line_start..line_end];
+                    let part = if heredoc.strip_tabs {
+                        raw_line.trim_start_matches('\t')
+                    } else {
+                        raw_line
+                    };
+                    *pos = next_pos;
+                    let has_nl = rel_nl.is_some();
+                    let trimmed_cr = part.strip_suffix('\r');
+                    let effective = trimmed_cr.unwrap_or(part);
+                    let trailing_bs = effective.bytes().rev().take_while(|&b| b == b'\\').count();
+                    if has_nl && trailing_bs % 2 == 1 {
+                        logical_line.push_str(&effective[..effective.len() - 1]);
+                        if *pos >= bytes.len() {
+                            break;
+                        }
+                    } else {
+                        logical_line.push_str(part);
+                        break;
+                    }
+                }
+                if logical_line == heredoc.delimiter {
+                    body_end = logical_start;
+                    full_end = *pos;
+                    break;
+                }
             }
         }
 
         if heredoc.is_quoted {
             spans.push(QuotedHeredocSpan {
-                redir_start: heredoc.redir_start,
-                redir_end: heredoc.redir_end,
-                body_start,
-                full_end,
+                redir_start: base_offset + heredoc.redir_start,
+                redir_end: base_offset + heredoc.redir_end,
+                body_start: base_offset + body_start,
+                full_end: base_offset + full_end,
             });
+        } else {
+            scan_unquoted_heredoc_substitutions(
+                &src[body_start..body_end],
+                base_offset + body_start,
+                spans,
+            );
         }
     }
+}
+
+/// Scans an unquoted here-document body for unescaped command substitutions
+/// so any quoted heredocs nested inside them are also protected.
+fn scan_unquoted_heredoc_substitutions(
+    body: &str,
+    base_offset: usize,
+    spans: &mut Vec<QuotedHeredocSpan>,
+) {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                if bytes.get(i + 2) == Some(&b'(') {
+                    i += 3;
+                } else {
+                    let subst_start = i + 2;
+                    let subst_end = find_cmd_subst_end(bytes, subst_start);
+                    quoted_heredoc_spans_with_offset(
+                        &body[subst_start..subst_end],
+                        base_offset + subst_start,
+                        spans,
+                    );
+                    i = (subst_end + 1).min(bytes.len());
+                }
+            }
+            _ => i += 1,
+        }
+    }
+}
+
+fn find_cmd_subst_end(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    let mut depth = 1usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(bytes.len()),
+            b'\'' => i = skip_single_quoted(bytes, i + 1),
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i = (i + 2).min(bytes.len()),
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    bytes.len()
 }
 
 /// Locate the command string, not a script filename or its positional args.
