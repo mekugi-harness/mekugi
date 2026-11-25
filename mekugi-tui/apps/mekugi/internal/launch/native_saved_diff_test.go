@@ -7,13 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 )
 
-func writeNativeCapture(t *testing.T, sessionID, workspace, thread, stream, id, callID, relPath, before, after string, seq uint64) {
+func writeNativeCapture(t *testing.T, sessionID, workspace, thread, stream, id, callID, sourceKind, relPath, before, after string, seq uint64) {
 	t.Helper()
 	dir := sessionreview.NativeStoreDir(sessionID)
 	for _, sub := range []string{"blobs", "records"} {
@@ -45,7 +48,7 @@ func writeNativeCapture(t *testing.T, sessionID, workspace, thread, stream, id, 
 			"session_id":     sessionID,
 			"turn_id":        "turn-1",
 			"call_id":        callID,
-			"source_kind":    "apply_patch",
+			"source_kind":    sourceKind,
 			"workspace_root": workspace,
 			"created_at":     1700000000,
 		},
@@ -86,7 +89,7 @@ func writeNativeCapture(t *testing.T, sessionID, workspace, thread, stream, id, 
 		"sequence":                seq,
 		"thread_id":               thread,
 		"call_id":                 callID,
-		"source_kind":             "apply_patch",
+		"source_kind":             sourceKind,
 		"created_at":              1700000000,
 		"file_paths":              []string{relPath},
 		"has_incomplete_coverage": false,
@@ -139,7 +142,7 @@ func TestSavedDiffIncludesNativeCapturedEdits(t *testing.T) {
 	}
 
 	// Simulate a newly native-captured apply_patch edit followed by item/completed.
-	writeNativeCapture(t, sessionID, workspace, "main", "a", "amber1", "patch-call-1", "main.go", "", "package main\n", 1)
+	writeNativeCapture(t, sessionID, workspace, "main", "a", "amber1", "patch-call-1", "apply_patch", "main.go", "", "package main\n", 1)
 	if err := u.observedEvent(&u.attached, &u.picker, &u.Editor, u.clock, &panel, &resumePicker, "item/completed", binding.Notification{
 		ThreadID: "main",
 		TurnID:   "turn-1",
@@ -158,7 +161,7 @@ func TestSavedDiffIncludesNativeCapturedEdits(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeNativeCapture(t, sessionID, workspace, "child-1", "b", "apple1", "child-call-1", "child.go", "", "package child\n", 2)
+	writeNativeCapture(t, sessionID, workspace, "child-1", "b", "apple1", "child-call-1", "apply_patch", "child.go", "", "package child\n", 2)
 	if err := u.observedEvent(&u.attached, &u.picker, &u.Editor, u.clock, &panel, &resumePicker, "turn/completed", binding.Notification{
 		ThreadID: "child-1",
 		Turn:     binding.Turn{ID: "turn-child-1", Status: "completed"},
@@ -168,5 +171,59 @@ func TestSavedDiffIncludesNativeCapturedEdits(t *testing.T) {
 	apply()
 	if got := paths(); !slices.Equal(got, []string{"child.go", "main.go"}) {
 		t.Fatalf("expected main + child native edits in Saved Diff, got %v", got)
+	}
+}
+
+func TestNativeShellCaptureShowsTranscriptCounts(t *testing.T) {
+	for _, state := range []string{"live", "restored"} {
+		t.Run(state, func(t *testing.T) {
+			t.Setenv("TMPDIR", t.TempDir())
+			workspace := t.TempDir()
+			const sessionID = "native-shell-receipt"
+			u := newAppServerSessionTestUI(t, workspace)
+			sub := u.review.Subscribe()
+			defer u.review.Unsubscribe(sub)
+			drainReview := func() {
+				t.Helper()
+				for _, event := range u.review.TakePreviews(sub) {
+					applyTestReview(&u.attached, u.shell, u.review, u.reviewSource, u.preparePane, &u.pendingEditReceipts, u.clock, t.Context(), event)
+				}
+				if u.review.Failure != "" {
+					t.Fatal(u.review.Failure)
+				}
+			}
+			restoreTestDiffThread(&u.attached, u.shell, u.review, u.reviewSource, u.preparePane, binding.ThreadInfo{
+				ID: "main", SessionID: sessionID, Cwd: workspace,
+			})
+			if state == "live" {
+				drainReview()
+			}
+
+			item := binding.ThreadItem{ID: "shell-call", Type: "commandExecution", Cwd: workspace,
+				Command: "python3 update.py", Status: "completed", ExitCode: new(0)}
+			writeNativeCapture(t, sessionID, workspace, "main", "a", "amber1", item.ID, "shell_write", "result.txt", "old\n", "new\nextra\n", 1)
+			if state == "restored" {
+				drainReview()
+				u.restoreHistory([]binding.HistoryTurn{{ID: "turn-1", Status: "completed", Items: []binding.ThreadItem{item}}})
+			} else {
+				appServerTestNotify(t, u, "turn/started", map[string]any{"threadId": "main", "turn": binding.Turn{ID: "turn-1"}})
+				appServerTestNotify(t, u, "item/completed", map[string]any{"threadId": "main", "turnId": "turn-1", "item": item})
+				appServerTestNotify(t, u, "turn/completed", map[string]any{"threadId": "main", "turn": binding.Turn{ID: "turn-1", Status: "completed"}})
+				drainReview()
+				publishActivity(&u.attached, u.shell)
+			}
+
+			view := u.testActivity(u.shell.Transcript)
+			view.Clock = func() time.Time { return time.Unix(1000, 0) }
+			view.RenderConversation(100)
+			view.Pace(view.Clock().Add(time.Hour))
+			lines := view.RenderConversation(100).Lines
+			if !slices.ContainsFunc(lines, func(line string) bool {
+				row := ansi.Strip(line)
+				return strings.Contains(row, "result.txt") && strings.Contains(row, "+2 -1")
+			}) {
+				t.Fatalf("transcript is missing captured edit counts:\n%s", ansi.Strip(strings.Join(lines, "\n")))
+			}
+		})
 	}
 }

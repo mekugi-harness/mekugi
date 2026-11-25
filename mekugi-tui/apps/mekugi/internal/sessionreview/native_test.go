@@ -214,6 +214,9 @@ func TestNativeStoreHydratesAndRefreshesSavedDiff(t *testing.T) {
 	if pub.Counts.Net == nil || pub.Counts.Net.Added != 2 || pub.Counts.Net.Removed != 0 {
 		t.Fatalf("unexpected net counts: %+v", pub.Counts.Net)
 	}
+	if receipts := review.Projection.Data.Receipts(); len(receipts) != 1 || receipts[0].AnchorCall() != "call-1" {
+		t.Fatalf("expected a receipt only for the admitted authored edit, got %+v", receipts)
+	}
 
 	// Publish a new native edit from an admitted child thread and refresh incrementally.
 	review.SetCaller("child", "/root/worker")
@@ -483,6 +486,9 @@ func TestNativeStoreUnattributedUserShellAndEphemeralFiltering(t *testing.T) {
 	}
 	if proj.Data.Len() != 1 {
 		t.Fatalf("expected 1 attempt, got %d", proj.Data.Len())
+	}
+	if receipts := proj.Data.Receipts(); len(receipts) != 0 {
+		t.Fatalf("unattributed evidence published a command receipt: %+v", receipts)
 	}
 	for attempt := range proj.Data.Attempts() {
 		if attempt.Change != "shell1" {

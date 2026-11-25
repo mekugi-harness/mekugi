@@ -380,6 +380,18 @@ func reconcileNativeReview(
 		if len(attempt.Chunks) == 0 {
 			continue
 		}
+		if attempt.Operation.Thread != "" && attempt.Operation.Item != "" && attempt.HasAuthoredChanges() {
+			files := make([]diffmodel.ReviewFile, len(attempt.Chunks))
+			for i, chunk := range attempt.Chunks {
+				files[i] = chunk.Review
+			}
+			attempt.Receipt = presentation.NewReceipt(workspace, presentation.ReceiptEvidence{
+				Files:    files,
+				ChangeID: record.ID,
+			})
+			attempt.Receipt.Thread = attempt.Operation.Thread
+			attempt.Receipt.Calls = []string{attempt.Operation.Item}
+		}
 		if err := builder.Add(attempt); err != nil {
 			return false, err
 		}

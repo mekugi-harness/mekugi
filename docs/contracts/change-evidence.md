@@ -37,8 +37,9 @@
   include tracked `mktemp` files and direct redirects through `SESSION_TMP`.
   Evidence is written to the native store before an ID is exposed.
 - Native `mchanges`, preload, context reset and agent handoffs consume that
-  store. Legacy saved Diff still opens retained client records but does not
-  include newly native-captured edits. Activity shows native patch details.
+  store. Saved Diff opens both native captures and retained client records.
+  The transcript shows edit counts when captured evidence joins an exact
+  command item.
 - The client still captures explicit user shell actions for saved review.
   It does not reconstruct model tool execution from inference traffic.
 - See [Change history](../../mekugi-tui/modules/changehistory/SPEC.md) for
