@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 )
@@ -26,15 +23,6 @@ type Input struct {
 	Input      struct {
 		Command *string `json:"command"`
 	} `json:"tool_input"`
-}
-
-// TrackingCommand builds the optional observer invoked after caller hooks.
-func TrackingCommand(helper, tracker string) string {
-	arguments := []string{helper, Flag, tracker}
-	for i := range arguments {
-		arguments[i] = commandargs.Quote(arguments[i])
-	}
-	return "/bin/sh -c " + commandargs.Quote(strings.Join(arguments, " ")+" || :")
 }
 
 // Rewrite instruments tracked sh commands.

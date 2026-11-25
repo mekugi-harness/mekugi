@@ -9,8 +9,6 @@ use (
 	./libraries/commandargs
 	./libraries/diffmodel
 	./libraries/diffrender
-	./libraries/httptransport
-	./libraries/mcptransport
 	./libraries/modelprotocol
 	./libraries/pathdisplay
 	./libraries/persistence
@@ -27,13 +25,9 @@ use (
 	./modules/livepreview
 	./modules/notifications
 	./modules/sessionhistory
-	./modules/sessioninspection
-	./modules/sessionnaming
-	./modules/sessionreplay
 	./modules/sessionpreferences
 	./modules/transportdiagnostics
 	./modules/usage
-	./providers/openai
 	./testsupport/moduletest
 	./testsupport/uisnapshot
 )

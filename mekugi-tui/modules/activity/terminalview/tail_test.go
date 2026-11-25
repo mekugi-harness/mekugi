@@ -13,16 +13,12 @@ import (
 
 func TestOutputTailStreamsBoundedTail(t *testing.T) {
 	output := "build\r\n\r\n10%\r50%\r100%\ndone\x1b[2K\n" + strings.Repeat("x", 3*OutputTailBytes) + "\nnext"
-	whole, wholeOmit, _ := activitymodel.TailOutput(output)
 	var chunked OutputTail
 	for chunk := range slices.Values(strings.SplitAfter(output, "")) {
 		chunked.Write(chunk) // One byte at a time splits CRLF and escapes.
 	}
 	chunked.Reveal(chunked.Pending())
 	tail, omitted := chunked.Lines()
-	if !reflect.DeepEqual(tail, whole) || omitted != wholeOmit {
-		t.Fatalf("chunked tail = %q, %d; whole = %q, %d", tail, omitted, whole, wholeOmit)
-	}
 	want := []string{"build", "100%", "done", strings.Repeat("x", OutputTailBytes) + "…", "next"}
 	if !reflect.DeepEqual(tail, want) || omitted != 0 {
 		t.Fatalf("tail = %q omitted %d, want %q", tail, omitted, want)

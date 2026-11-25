@@ -21,10 +21,3 @@ func MustMarshalJSON(value any) jsonv1.RawMessage {
 	}
 	return data
 }
-
-// StringField returns a string field, or an empty string when it is unavailable.
-func StringField(object map[string]jsonv1.RawMessage, name string) string {
-	var value string
-	_ = json.Unmarshal(object[name], &value, jsonv1.DefaultOptionsV1())
-	return value
-}

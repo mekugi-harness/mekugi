@@ -89,29 +89,6 @@ func (e *Editor) Remember(draft Draft) {
 	}
 }
 
-// RestoreHistory reconciles one ordered occurrence with shared or live history.
-// Matching is source-scoped and consumes occurrences, preserving repeated input.
-func (e *Editor) RestoreHistory(source string, draft Draft) {
-	for i := range e.InputHistory {
-		entry := &e.InputHistory[i]
-		if entry.Source == source && entry.Text == draft.Text && !entry.Restored {
-			if len(entry.Images)+len(entry.Files)+len(entry.Skills)+len(entry.Selections) == 0 {
-				entry.Draft = draft.Clone()
-			}
-			if entry.Occurrence == "" {
-				entry.Occurrence = rand.Text()
-			}
-			entry.Restored = true
-			return
-		}
-	}
-	e.Remember(draft)
-	if draft.Text != "" {
-		entry := &e.InputHistory[len(e.InputHistory)-1]
-		entry.Source, entry.Restored = source, true
-	}
-}
-
 // PrependHistory reconciles restored occurrences in shared chronological order.
 // Live acknowledgements remain newer; parked and undo navigation follows the
 // same entries when enrichment moves a restored occurrence.

@@ -37,24 +37,6 @@ func TestDecoderPasteAndTerminalReplies(t *testing.T) {
 	}
 }
 
-func TestReplayInterruptedReportsReset(t *testing.T) {
-	for _, report := range []string{"\x1b[", "\x1b[<64;", "\x1b[Mq"} {
-		var input ReplayInput
-		for _, key := range []byte(report) {
-			input.Consume(key)
-		}
-		input.Consume(27)
-		if input.mouse.Active || input.x10 != 0 || input.EscapeReady() == nil {
-			t.Fatalf("interrupted report %q retained state", report)
-		}
-		input.ExpireEscape()
-		if input.Consume('+') != '+' {
-			t.Fatalf("input after timeout lost for %q", report)
-		}
-		input.Close()
-	}
-}
-
 type failedPaint struct{}
 
 func (failedPaint) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }

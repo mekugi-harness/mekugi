@@ -45,36 +45,6 @@ type MenuAction struct {
 	Query   string
 }
 
-func (m *Model) AdmitMenu(in MenuAction) error {
-	p := m.view.Menu
-	if m.admitOwner(in.Version) != nil || p == nil || in.Menu != p.ID {
-		return ErrStaleIntent
-	}
-	if in.Thread != "" && in.Thread != m.view.Main.ID && in.Thread != m.view.SideThread.ID {
-		return ErrInputUnavailable
-	}
-	if m.replay && in.Kind != MenuDismiss && p.Kind != MenuCopy {
-		return ErrReplayIntent
-	}
-	switch in.Kind {
-	case MenuAccept:
-		if p.Kind == MenuCompletion && in.Thread == "" && (m.readOnly() != Editable || !m.view.Draft.Available) {
-			return ErrInputUnavailable
-		}
-		for _, choice := range p.Choices {
-			if choice.Identity() == in.Choice {
-				return nil
-			}
-		}
-		return ErrStaleIntent
-	case MenuSearch:
-		if p.Kind != MenuManageSkills && p.Kind != "preset-label" {
-			return ErrStaleIntent
-		}
-	}
-	return nil
-}
-
 // MenuState identifies the current application menu; Conversation owns its choices.
 // Source: apps/mekugi/internal/router/composer_menu.go:12:16@0ce86dd5.
 type MenuState struct {
@@ -82,11 +52,4 @@ type MenuState struct {
 	ID        uint64
 	Kind      MenuKind
 	Preferred completion.ChoiceID
-}
-
-func (m *Model) Menu() *MenuState { return &m.menu }
-
-func (m *MenuState) Begin(kind MenuKind) {
-	m.ID++
-	m.Kind, m.Preferred = kind, completion.ChoiceID{}
 }

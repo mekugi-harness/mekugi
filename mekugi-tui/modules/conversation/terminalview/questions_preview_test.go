@@ -6,22 +6,26 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
-	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/terminalview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
 func previewDock() *prompt.Questions {
-	c := conversationbinding.Questions("main", "", "preview", nil, []binding.Question{{ID: "q1", Question: "How should we publish the release?", Options: []binding.QuestionOption{
-		{Label: "Immediate", Preview: "Publish all changes now."},
-		{Label: "Staged", Recommended: true, Preview: "Release plan\n\n1. Publish to the canary group.\n2. Monitor errors for one hour.\n3. Expand to all customers.\n\n<b>Plain text, not HTML.</b>"},
-		{Label: "Later", Description: "Keep the current version"},
-	}}})
+	c := prompt.Call{
+		ID: "preview", Thread: "main",
+		Questions: []prompt.Question{{
+			ID: "q1", Question: "How should we publish the release?", Selected: 1,
+			Choices: []prompt.Option{
+				{Label: "Immediate", Preview: "Publish all changes now."},
+				{Label: "Staged", Recommended: true, Preview: "Release plan\n\n1. Publish to the canary group.\n2. Monitor errors for one hour.\n3. Expand to all customers.\n\n<b>Plain text, not HTML.</b>"},
+				{Label: "Later", Description: "Keep the current version"},
+			},
+		}},
+	}
 	var questions prompt.Questions
-	questions.Add(&c, false)
+	questions.Calls = append(questions.Calls, &c)
 	questions.Open(&c)
 	return &questions
 }
@@ -125,16 +129,19 @@ func TestQuestionRecommendedDescription(t *testing.T) {
 }
 
 func TestQuestionCompactHeightKeepsFocusedDescriptionReadable(t *testing.T) {
-	c := conversationbinding.Questions("main", "", "compact", nil, []binding.Question{{
-		ID:       "q1",
-		Question: strings.Join([]string{"Line 1 of a long question", "Line 2 of a long question", "Line 3 of a long question", "Line 4 of a long question", "Line 5 of a long question"}, "\n"),
-		Options: []binding.QuestionOption{
-			{Label: "Narrow", Description: "Only one path"},
-			{Label: "Broad", Description: "All paths"},
-		},
-	}})
+	c := prompt.Call{
+		ID: "compact", Thread: "main",
+		Questions: []prompt.Question{{
+			ID:       "q1",
+			Question: strings.Join([]string{"Line 1 of a long question", "Line 2 of a long question", "Line 3 of a long question", "Line 4 of a long question", "Line 5 of a long question"}, "\n"),
+			Choices: []prompt.Option{
+				{Label: "Narrow", Description: "Only one path"},
+				{Label: "Broad", Description: "All paths"},
+			},
+		}},
+	}
 	var m prompt.Questions
-	m.Add(&c, false)
+	m.Calls = append(m.Calls, &c)
 	m.Open(&c)
 	var layout terminalview.QuestionLayout
 	want := []string{"Only one path", "All paths", "Type your answer"}

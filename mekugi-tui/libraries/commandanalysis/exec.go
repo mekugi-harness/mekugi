@@ -10,7 +10,3 @@ type Command struct {
 	Workdir string
 	Shell   string `json:",omitempty"`
 }
-
-func LocalEnvironment(environmentID []byte) bool {
-	return len(environmentID) == 0 || string(environmentID) == "null"
-}

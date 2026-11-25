@@ -29,19 +29,6 @@ const (
 	Opaque
 )
 
-func (c Class) String() string {
-	switch c {
-	case Neutral:
-		return "neutral"
-	case Declared:
-		return "declared"
-	case Scoped:
-		return "scoped"
-	default:
-		return "opaque"
-	}
-}
-
 // Operand is an absolute path, or a shell glob expanded read-only at
 // capture time.
 type Operand struct {

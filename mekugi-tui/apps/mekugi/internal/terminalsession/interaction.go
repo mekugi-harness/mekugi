@@ -214,18 +214,6 @@ func (in FrameInput) Dispatch(state *Interaction, event Input) iter.Seq[InputEff
 	}
 }
 
-// Send routes a complete key, including a decoder-expired lone Escape.
-func (in FrameInput) Send(state *Interaction, key string) iter.Seq[InputEffect] {
-	return func(yield func(InputEffect) bool) {
-		state.resizeUntil = time.Time{}
-		in.send(state, key, yield)
-	}
-}
-
-func (in FrameInput) SelectPane(state *Interaction, pane int) iter.Seq[InputEffect] {
-	return func(yield func(InputEffect) bool) { in.selectPane(state, pane, yield) }
-}
-
 // Source: apps/mekugi/internal/router/terminal_ui.go:138:267@d16ed250.
 func (in FrameInput) send(state *Interaction, key string, yield func(InputEffect) bool) {
 	if in.Dialog != nil {

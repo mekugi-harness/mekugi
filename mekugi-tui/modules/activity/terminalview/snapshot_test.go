@@ -15,21 +15,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
 
-func TestUISnapshotPreloadAttachments(t *testing.T) {
-	item := presentation.ItemContent{Kind: "tool", Command: presentation.Command{Exited: true}, Details: &presentation.ItemDetails{Reload: []presentation.ReloadSource{
-		{Path: "context.txt", Preload: true, ExitCode: new(0)},
-		{Skill: "guide", Preload: true, ExitCode: new(0)},
-		{Path: "missing.txt", Preload: true, ExitCode: new(1)},
-	}}}
-	p := Painter{Theme: diffrender.DarkTheme}
-	var rows []string
-	for _, value := range presentation.AttachmentEvents(item.Values()) {
-		rows = append(rows, p.Block(Block{Value: value}, 100)...)
-	}
-	rows = append(rows, p.Summary([]Block{{Value: presentation.AttachmentEvents(item.Values())[0]}}, 100))
-	uisnapshot.AssertTerminal(t, "testdata/snapshots/preload-attachments-ansi.txt", append(rows, "plain after attachments"), 100)
-}
-
 func TestUISnapshotSkillRosterIdentity(t *testing.T) {
 	p := Painter{Theme: diffrender.DarkTheme}
 	values := presentation.Operations(presentation.ShellSource("skills-mgr get commit/references/fix.md", ""))
@@ -278,7 +263,7 @@ func TestUISnapshotActivityOutputDialog(t *testing.T) {
 		},
 		{
 			name: "released_output", width: 44, height: 14,
-			block: Block{Kind: "op", Verb: "Run", Code: "make test-ui-snapshots", OutputSnapshot: new(releasedOutput().View()),
+			block: Block{Kind: "op", Verb: "Run", Code: "make test-ui-snapshots", OutputSnapshot: new(releasedOutput()),
 				Tail: []string{"ok  internal/ui/activity", "ok  internal/ui/terminal"}, TailOmitted: 20},
 		},
 		{
@@ -455,34 +440,3 @@ func TestTemporaryCapturedChangesRetainBatchAndOutput(t *testing.T) {
 	}
 }
 
-func TestUISnapshotOperationResultCounts(t *testing.T) {
-	p := Painter{Theme: diffrender.DarkTheme}
-	var rows []string
-	for _, tc := range []struct{ source, output string }{
-		{"rg needle src", "a.go:1:needle\nb.go:2:needle"},
-		{"ls src", "a.go\nb.go"},
-		{"inspect_file a.go", "1-2 import\n4-6 function main"},
-		{"ls empty", ""},
-		{"ls *", "a:\none\n\nb:\ntwo"},
-		{"rg -A 1 needle src", "a.go:1:needle\na.go-2-context"},
-		{"inspect_file a.go", "1-2 import\n[output truncated]"},
-	} {
-		entry := presentation.ItemContent{Kind: "tool", Text: presentation.ShellSource(tc.source, ""), Details: &presentation.ItemDetails{SearchResults: presentation.OperationResultCount(tc.source, &tc.output, 0)}, Command: presentation.Command{Tail: strings.Split(tc.output, "\n"), Exited: true}}
-		value := entry.Values()[0]
-		block := Block{Value: value, Collapsed: true}
-		painted := p.Block(block, 60)
-		if strings.Contains(ansi.Strip(strings.Join(painted, "\n")), "lines") {
-			t.Fatal("count retained hidden-line hint")
-		}
-		rows = append(rows, painted...)
-		// Disclosure changes only presentation; retained rows still open.
-		if tc.output != "" && len(p.DialogPage(block, 60).Lines) == 0 {
-			t.Fatal("collapsed operation lost its detail page")
-		}
-		block.Collapsed = false
-		if tc.output != "" && !strings.Contains(ansi.Strip(strings.Join(p.Block(block, 60), "\n")), strings.Split(tc.output, "\n")[0]) {
-			t.Fatal("expanded output missing")
-		}
-	}
-	uisnapshot.AssertTerminal(t, "testdata/snapshots/operation_result_counts.txt", rows, 60)
-}

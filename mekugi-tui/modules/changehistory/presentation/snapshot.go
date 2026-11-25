@@ -2,7 +2,7 @@ package presentation
 
 import (
 	"cmp"
-	"errors"
+
 	"fmt"
 	"iter"
 	"maps"
@@ -28,12 +28,10 @@ type AttemptIdentity struct {
 // SourceAnchor selects the last witnessed writer; older receipts use the first
 // host item. Siblings do not repeat its summary.
 type Receipt struct {
-	Thread    string
-	Calls     []string
-	Text      string
-	Pages     []activitydetail.Page
-	workspace string
-	evidence  *ReceiptEvidence
+	Thread string
+	Calls  []string
+	Text   string
+	Pages  []activitydetail.Page
 
 	SourceAnchor activitydetail.SourceAnchor
 }
@@ -172,10 +170,9 @@ type Snapshot struct {
 	attempts    map[AttemptKey]Attempt
 	order       []AttemptKey
 	receipts    []*Receipt // Immutable references, assembled only during hydration.
-	bytes       int
+
 	// Negative positions block paths touched by structural or colliding groups.
-	paths           map[string]int
-	maxCaptureOrder uint64
+
 }
 
 func (s *Snapshot) Attempts() iter.Seq[Attempt] {
@@ -207,142 +204,6 @@ func (s *Snapshot) Receipts() []*Receipt {
 // Builder belongs to one unpublished hydration job. Previously accepted data
 // is shared read-only; new attempts cannot escape a failed or stale job.
 type Builder struct {
-	base     *Snapshot
-	next     Snapshot
-	finished bool
-}
-
-func NewBuilder(base *Snapshot) *Builder {
-	b := &Builder{base: base}
-	if base != nil {
-		b.next = *base
-	}
-	return b
-}
-
-// Known validates repeated identities before the application reopens evidence.
-func (b *Builder) Known(identity AttemptIdentity) (bool, error) {
-	if old, found := b.next.attempts[identity.Key]; found {
-		if old.AttemptIdentity != identity {
-			return false, errors.New("live diff attempt identity changed")
-		}
-		return true, nil
-	}
-	if len(b.next.order) >= 65536 {
-		return false, errors.New("live diff exceeds 65,536 attempts")
-	}
-	return false, nil
-}
-
-func (b *Builder) Add(attempt Attempt) error {
-	if b.finished {
-		return errors.New("saved-review builder is already published")
-	}
-	if found, err := b.Known(attempt.AttemptIdentity); found || err != nil {
-		return err
-	}
-	if !filepath.IsAbs(attempt.Key.Workspace) {
-		return errors.New("live diff workspace must be absolute")
-	}
-	bytes := b.next.bytes
-	if attempt.Receipt != nil {
-		receipt := *attempt.Receipt
-		receipt.Calls, receipt.Pages = slices.Clone(receipt.Calls), slices.Clone(receipt.Pages)
-		attempt.Receipt = &receipt
-		bytes += len(receipt.Text)
-	}
-	attempt.Chunks = slices.Clone(attempt.Chunks)
-	for _, chunk := range attempt.Chunks {
-		bytes += len(chunk.Review.Diff) + len(chunk.Review.BeforePath) + len(chunk.Review.AfterPath) + len(attempt.Key.Workspace) + 1 + len(attempt.Key.Call) + len(chunk.Caller) + len(chunk.Source)
-	}
-	if bytes > changes.MaxReadBytes {
-		return errors.New("live diff exceeds 64 MiB; use mchanges with a narrower range")
-	}
-	if b.next.attempts == nil || b.base != nil && len(b.next.order) == len(b.base.order) {
-		b.next.attempts = maps.Clone(b.next.attempts)
-		if b.next.attempts == nil {
-			b.next.attempts = make(map[AttemptKey]Attempt)
-		}
-		b.next.order = slices.Clone(b.next.order)
-		b.next.receipts = slices.Clone(b.next.receipts)
-		b.next.Publication.Diagnostics = slices.Clone(b.next.Publication.Diagnostics)
-	}
-	b.next.bytes = bytes
-	b.next.attempts[attempt.Key] = attempt
-	b.next.order = append(b.next.order, attempt.Key)
-	for _, chunk := range attempt.Chunks {
-		if changes.GitDiagnosticReview(chunk.Review) {
-			b.next.Publication.Diagnostics = append(b.next.Publication.Diagnostics, chunk)
-		}
-	}
-	if attempt.Receipt != nil {
-		for i, prior := range b.next.receipts {
-			if len(prior.Calls) != 0 && prior.Thread == attempt.Receipt.Thread && slices.Equal(prior.Calls, attempt.Receipt.Calls) {
-				merged := *prior
-				if prior.evidence != nil && attempt.Receipt.evidence != nil && prior.workspace == attempt.Receipt.workspace {
-					evidence := *prior.evidence
-					evidence.Files = append(slices.Clone(evidence.Files), attempt.Receipt.evidence.Files...)
-					evidence.Counts = append(slices.Clone(evidence.Counts), attempt.Receipt.evidence.Counts...)
-					evidence.Truncated = append(slices.Clone(evidence.Truncated), attempt.Receipt.evidence.Truncated...)
-					merged.evidence = &evidence
-					merged.Text = ReceiptText(prior.workspace, evidence)
-				} else {
-					merged.Text = strings.TrimSpace(prior.Text + "\n" + attempt.Receipt.Text)
-				}
-				merged.Pages = append(slices.Clone(prior.Pages), attempt.Receipt.Pages...)
-				b.next.receipts[i] = &merged
-				return nil
-			}
-		}
-		b.next.receipts = append(b.next.receipts, attempt.Receipt)
-	}
-	return nil
-}
-
-func (b *Builder) Finish() *Snapshot {
-	if b.finished {
-		return &b.next
-	}
-	b.finished = true
-	if b.base != nil && b.base.Publication.initialized && len(b.next.order) == len(b.base.order) {
-		return b.base
-	}
-	if b.base != nil && b.base.Publication.initialized {
-		var captures []Chunk
-		for _, key := range b.next.order[len(b.base.order):] {
-			for _, chunk := range b.next.attempts[key].Chunks {
-				if changes.AuthoredReview(chunk.Review) {
-					captures = append(captures, chunk)
-				}
-			}
-		}
-		if len(captures) == 0 {
-			return &b.next
-		}
-		if b.appendCaptures(captures) {
-			return &b.next
-		}
-	}
-	var captures []Chunk
-	for _, key := range b.next.order {
-		for _, chunk := range b.next.attempts[key].Chunks {
-			if changes.AuthoredReview(chunk.Review) {
-				captures = append(captures, chunk)
-			}
-		}
-	}
-	b.next.Publication = b.next.Publication.With(GroupCaptures(captures))
-	b.next.indexPaths()
-	return &b.next
-}
-
-func (b *Builder) RequirePresent(present map[AttemptKey]bool) error {
-	for _, key := range b.next.order {
-		if !present[key] {
-			return errors.New("change records were removed; restart the live view")
-		}
-	}
-	return nil
 }
 
 // ActivityDetail resolves the original captured invocation, never a composed

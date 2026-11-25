@@ -44,23 +44,3 @@ func TestReasoningStreamReservesAndDrainsCompletion(t *testing.T) {
 	}
 }
 
-func TestReasoningStreamSeekSettlesOnlyCompletedAndKeepsOrder(t *testing.T) {
-	at := time.Unix(100, 0)
-	var stream ReasoningStream
-	for _, seq := range []uint64{20, 10} {
-		entry := observation.TextUpdate{Ref: observation.ItemRef{ThreadID: "main", ItemID: string(rune(seq))}, Kind: "reasoning", Phase: "item/completed", Text: strings.Repeat("line\n", 40), Live: true, Sequence: seq}
-		stream.Queue([]observation.TextUpdate{entry})
-	}
-	stream.FinishCompleted()
-	updates := stream.Advance(at)
-	if len(updates) != 4 || updates[0].Sequence != 10 || updates[1].Sequence != 10 || updates[2].Sequence != 20 || updates[3].Sequence != 20 {
-		t.Fatalf("completion order: %+v", updates)
-	}
-	if updates[1].Completed != at || updates[3].Completed != at {
-		t.Fatal("seek used wall time")
-	}
-	var reset ReasoningStream
-	if updates := reset.Advance(at); len(updates) != 0 {
-		t.Fatalf("reset retained future text: %+v", updates)
-	}
-}

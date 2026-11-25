@@ -3,7 +3,6 @@ package prompt
 
 import (
 	"slices"
-	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 )
@@ -44,39 +43,13 @@ type Questions struct {
 	Active            *Call
 	Index             int
 	Confirm, AutoOpen bool
-	inputTurns        map[string]bool
-}
-
-func (m *Questions) Add(c *Call, replay bool) bool {
-	if len(c.Questions) == 0 || slices.ContainsFunc(m.Calls, func(old *Call) bool { return old.ID == c.ID }) {
-		return false
-	}
-	m.recordInputTurn(c.Turn)
-	m.Calls = append(m.Calls, c)
-	if !replay {
-		m.AutoOpen = true
-	}
-	return true
-}
-func (m *Questions) recordInputTurn(turn string) {
-	if m.inputTurns == nil {
-		m.inputTurns = make(map[string]bool)
-	}
-	m.inputTurns[turn] = true
-}
-func (m *Questions) Count(thread string) int {
-	var v QuestionDockView
-	m.position(&v, threadPending(thread))
-	return v.Count
 }
 
 // threadPending keeps the thread's unanswered calls, plus local ones.
 func threadPending(thread string) func(*Call) bool {
 	return func(c *Call) bool { return (c.Thread == thread || c.Local) && !c.Resolved && !c.Sent }
 }
-func (m *Questions) Waiting(thread string) bool {
-	return slices.ContainsFunc(m.Calls, func(c *Call) bool { return c.Thread == thread && (c.Sync || c.Local) && !c.Resolved })
-}
+
 func (m *Questions) Next() *Call {
 	for _, c := range m.Calls {
 		if (c.Sync || c.Local) && !c.Resolved && !c.Sent {
@@ -116,9 +89,6 @@ func (m *Questions) Move(step int) {
 }
 func (m *Questions) ShouldOpen(vacant bool) bool {
 	return m.AutoOpen && m.Active == nil && vacant && m.Next() != nil
-}
-func (m *Questions) Remove(c *Call) {
-	m.Calls = slices.DeleteFunc(m.Calls, func(old *Call) bool { return old == c })
 }
 
 func (q *Question) Choose(index int) { q.Selected = index; q.Done = false }
@@ -163,76 +133,6 @@ func (m *Questions) Advance() (step int, submit bool) {
 	}
 	m.Confirm = m.Active.Gaps() > 0
 	return 0, !m.Confirm
-}
-
-// Resolve returns drafts to remember in local history. The caller parks the
-// active editor first and records returned facts without issuing a host request.
-func (c *Call) Resolve(outcome string) []composer.Draft {
-	if c.Resolved {
-		return nil
-	}
-	var drafts []composer.Draft
-	for i := range c.Questions {
-		q := &c.Questions[i]
-		if q.Outcome != "" {
-			continue
-		}
-		q.Outcome = outcome
-		if c.Sync && c.Sent {
-			if q.Skipped || !q.Done {
-				q.Outcome = "skipped"
-			} else {
-				q.Outcome = "answered"
-			}
-		} else if !q.IsSecret && q.Editor.Snapshot.Text != "" {
-			drafts = append(drafts, q.Editor.Snapshot.Draft.Clone())
-		}
-		q.Editor = composer.State{}
-	}
-	c.Resolved = true
-	return drafts
-}
-func (c *Call) Reject() bool {
-	if c.Resolved || c.Sync {
-		return false
-	}
-	c.Sent = false
-	c.SubmissionID = ""
-	for i := range c.Questions {
-		if c.Questions[i].Outcome == "" {
-			c.Questions[i].Sent = false
-			c.Questions[i].SubmissionID = ""
-		}
-	}
-	return true
-}
-func (c *Call) Commit(index int, clientID, answer string) (composer.Draft, bool) {
-	if index < 0 || index >= len(c.Questions) || c.Sync {
-		return composer.Draft{}, false
-	}
-	q := &c.Questions[index]
-	if q.Outcome != "" {
-		return composer.Draft{}, false
-	}
-	var discarded composer.Draft
-	outcome := "answered elsewhere"
-	if q.SubmissionID != "" && (clientID == q.SubmissionID || clientID == "" && answer == strings.Join(q.Answer, "\n")) {
-		outcome = "answered"
-	} else {
-		q.Done = false
-		if !q.IsSecret {
-			discarded = q.Editor.Snapshot.Draft.Clone()
-		}
-	}
-	q.Outcome = outcome
-	q.Sent = false
-	if !q.IsSecret {
-		q.Answer = []string{answer}
-	}
-	q.Editor = composer.State{}
-	c.Resolved = !slices.ContainsFunc(c.Questions, func(q Question) bool { return q.Outcome == "" })
-	c.refreshSent()
-	return discarded, true
 }
 
 // View is detached plain data. It intentionally excludes draft text, secret
@@ -320,65 +220,6 @@ func (c *Call) View() CallView {
 		v.Questions = append(v.Questions, r)
 	}
 	return v
-}
-
-// Submitted distinguishes local answer admission from host commitment.
-func (c *Call) Submitted() {
-	if c.Sync {
-		c.Sent = true
-		for i := range c.Questions {
-			c.Questions[i].Editor = composer.State{}
-		}
-		return
-	}
-	for i := range c.Questions {
-		q := &c.Questions[i]
-		if c.Submitting(*q) {
-			q.Sent = true
-			if q.Skipped {
-				q.Editor = composer.State{}
-			}
-		}
-	}
-	c.SubmitIDs = nil
-	c.refreshSent()
-}
-
-func (c *Call) Submitting(q Question) bool {
-	return q.Outcome == "" && q.Done && !q.Sent && (c.SubmitIDs == nil || slices.Contains(c.SubmitIDs, q.ID))
-}
-
-func (c *Call) refreshSent() {
-	c.Sent = !slices.ContainsFunc(c.Questions, func(q Question) bool { return q.Outcome == "" && !q.Sent })
-}
-
-func (c *Call) Sending() bool {
-	return c.Sent || slices.ContainsFunc(c.Questions, func(q Question) bool { return q.Sent })
-}
-
-func (c *Call) SetSubmission(id string, questions []string) {
-	c.SubmissionID = id
-	for i := range c.Questions {
-		q := &c.Questions[i]
-		if slices.Contains(questions, q.ID) && q.Sent {
-			q.SubmissionID = id
-		}
-	}
-}
-
-func (c *Call) RejectQuestions(questions []string) bool {
-	if c.Resolved || c.Sync {
-		return false
-	}
-	for i := range c.Questions {
-		q := &c.Questions[i]
-		if q.Outcome == "" && slices.Contains(questions, q.ID) {
-			q.Sent = false
-			q.SubmissionID = ""
-		}
-	}
-	c.refreshSent()
-	return true
 }
 
 // MoveChannel navigates pending calls without merging their answer authority.

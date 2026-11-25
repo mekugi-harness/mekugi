@@ -1673,13 +1673,6 @@ func (v *View) ExpireFlash(now time.Time) bool {
 	return true
 }
 
-func maxTime(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
-}
-
 func (v *View) Footer(width int) string {
 	mode, toggle := "ALL", "a only"
 	if v.displayingChild() {

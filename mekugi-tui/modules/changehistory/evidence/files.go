@@ -2,8 +2,6 @@ package evidence
 
 import (
 	"context"
-	"errors"
-	"unicode/utf8"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
@@ -85,63 +83,6 @@ type Review struct {
 
 func Inline(file diffmodel.ReviewFile) Review { return Review{ReviewFile: file} }
 
-func InlineReviews(files []diffmodel.ReviewFile) []Review {
-	if files == nil {
-		return nil
-	}
-	reviews := make([]Review, len(files))
-	for i, file := range files {
-		reviews[i] = Inline(file)
-	}
-	return reviews
-}
-
-// ReceiptFiles detaches bounded text, exact counts and per-file truncation flags.
-// Receipts need no storage handle or later reads.
-func ReceiptFiles(reviews []Review, limit int) ([]diffmodel.ReviewFile, [][2]int, []bool, error) {
-	files := make([]diffmodel.ReviewFile, 0, len(reviews))
-	counts := make([][2]int, 0, len(reviews))
-	truncated := make([]bool, 0, len(reviews))
-	for _, review := range reviews {
-		file := review.ReviewFile
-		if review.Text != nil {
-			var err error
-			file.Diff, err = review.Text.Prefix(limit)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-		} else if len(file.Diff) > limit {
-			file.Diff = file.Diff[:limit]
-			for len(file.Diff) > 0 && !utf8.ValidString(file.Diff) {
-				file.Diff = file.Diff[:len(file.Diff)-1]
-			}
-		}
-		limit -= len(file.Diff)
-		added, removed := review.LineCounts()
-		counts = append(counts, [2]int{added, removed})
-		truncated = append(truncated, len(file.Diff) < review.DiffBytes())
-		files = append(files, file)
-	}
-	return files, counts, truncated, nil
-}
-
-func RetainReview(ctx context.Context, source *Source, file diffmodel.ReviewFile, budget *int) Review {
-	r := Inline(file)
-	if source == nil || len(file.Diff) <= InlineBytes && len(file.Diff) <= *budget {
-		*budget -= len(file.Diff)
-		return r
-	}
-	r.Added, r.Removed = file.LineCounts()
-	ref, err := source.SaveText(ctx, file.Diff)
-	if err != nil {
-		file.Diff = ""
-		file.Incomplete = "retain file evidence: " + err.Error()
-		return Inline(file)
-	}
-	r.Diff, r.Text = "", ref
-	return r
-}
-
 func (r Review) Load() (diffmodel.ReviewFile, error) {
 	file := r.ReviewFile
 	if r.Text != nil {
@@ -166,25 +107,4 @@ func (r Review) DiffBytes() int {
 		return r.Text.Size
 	}
 	return len(r.Diff)
-}
-
-// LoadReviews is a bounded projection, not the storage representation. Filtering
-// occurs before text reads, so a narrow cold selection never expands its batch.
-func LoadReviews(reviews []Review, keep func(diffmodel.ReviewFile) bool, limit int) ([]diffmodel.ReviewFile, error) {
-	var files []diffmodel.ReviewFile
-	for _, review := range reviews {
-		if keep != nil && !keep(review.ReviewFile) {
-			continue
-		}
-		if review.DiffBytes() > limit {
-			return nil, errors.New("change projection exceeds its byte bound; narrow the selected paths")
-		}
-		file, err := review.Load()
-		if err != nil {
-			return nil, err
-		}
-		limit -= len(file.Diff)
-		files = append(files, file)
-	}
-	return files, nil
 }

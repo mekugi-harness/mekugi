@@ -209,7 +209,7 @@ func (c *nativeClient) syncDetailNav(frame sessionapi.NativeFrame) {
 
 func (c *nativeClient) openFeedbackDetails(text string) {
 	pages := activity.DetailPages(activityui.Values([]activityui.Block{{Kind: "error", Body: text}}))
-	c.localDetailID = c.localDetails.OpenDetails(c.event.Frame.View.Version, nil, pages, false, nil)
+	c.localDetailID = c.localDetails.OpenDetails(c.event.Frame.View.Version, pages)
 	// Local and server selections have distinct owners even if their counters
 	// happen to match. Force the ordinary dialog's new-selection navigation path.
 	c.renderer.terminal.Dialog = nil

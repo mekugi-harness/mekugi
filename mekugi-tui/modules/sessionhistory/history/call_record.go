@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
@@ -216,17 +215,6 @@ type Timing struct {
 	Started   time.Time `json:"started,omitzero"`
 	Ended     time.Time `json:"ended,omitzero"`
 	ElapsedNS int64     `json:"elapsed_ns,omitzero"`
-}
-
-func PatchCallID(callID string, index int) string {
-	return callID + ":apply:" + strconv.Itoa(index+1)
-}
-
-func ExecCallID(callID string, codeMode bool) string {
-	if codeMode {
-		return callID + ":effects"
-	}
-	return callID + ":exec:1"
 }
 
 func Name(workspace, callID string, commentary bool) string {

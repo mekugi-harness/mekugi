@@ -102,12 +102,3 @@ func (s *ReasoningStream) Advance(at time.Time) []observation.TextUpdate {
 	slices.SortStableFunc(updates, func(a, b observation.TextUpdate) int { return cmp.Compare(a.Sequence, b.Sequence) })
 	return updates
 }
-
-func (s *ReasoningStream) FinishCompleted() {
-	for _, run := range s.runs {
-		if run.done != nil {
-			run.output.Flush()
-			run.dirty = true
-		}
-	}
-}

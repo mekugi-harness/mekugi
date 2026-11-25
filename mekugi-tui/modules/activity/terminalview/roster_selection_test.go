@@ -104,14 +104,15 @@ func TestUISnapshotNativeRosterScroll(t *testing.T) {
 func TestUISnapshotNativeRosterFailedRead(t *testing.T) {
 	for _, theme := range []diffrender.Theme{diffrender.TerminalTheme, diffrender.DarkTheme, diffrender.LightTheme} {
 		t.Run(fmt.Sprint(theme), func(t *testing.T) {
-			source := presentation.CommandSource{Script: "cat missing.txt", Display: "cat missing.txt"}
-			invocation := presentation.NewInvocation(source, time.Unix(100, 0), new(feed.Retention))
-			invocation.Write("cat: missing.txt: No such file or directory\n")
-			invocation.Complete(presentation.CommandCompletion{Source: source, Exit: new(3)})
-			command := invocation.Snapshot()
-			command.Source = 7
-			output, _ := invocation.Output().Context(feed.OutputBytes)
-			command.Output = &output
+			command := presentation.Command{
+				Source:   7,
+				Script:   "cat missing.txt",
+				Display:  "cat missing.txt",
+				Exited:   true,
+				ExitCode: 3,
+				Tail:     []string{"cat: missing.txt: No such file or directory"},
+				Output:   &feed.OutputView{Lines: []string{"cat: missing.txt: No such file or directory"}, Done: true, Exited: true, Exit: 3},
+			}
 			values := (presentation.ItemContent{Seq: 7, Kind: "tool", Text: presentation.ShellSource(command.Script, ""), Command: command, Details: &presentation.ItemDetails{CommandText: command.Script, Output: 1}}).Values()
 			if len(values) != 1 || values[0].Kind != "reads" || !values[0].FailedOutcome() || !values[0].Exited || values[0].ExitCode != 3 {
 				t.Fatalf("read projection = %+v", values)

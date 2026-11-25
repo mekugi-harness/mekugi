@@ -1,11 +1,5 @@
 package binding
 
-import (
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
-	"errors"
-)
-
 type ShellGuardKind string
 
 const (
@@ -32,20 +26,6 @@ type ShellGuardApprovalParams struct {
 	Argv        []string       `json:"argv"`
 }
 
-func DecodeShellGuardApproval(params jsontext.Value) (ShellGuardApprovalParams, error) {
-	var p ShellGuardApprovalParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return p, err
-	}
-	if p.Kind != RemoteWrite && p.Kind != Sudo {
-		return p, errors.New("unsupported shellGuard/requestApproval kind")
-	}
-	if len(p.Argv) == 0 {
-		return p, errors.New("shellGuard/requestApproval missing argv")
-	}
-	return p, nil
-}
-
 // ShellGuardApprovalResponse encodes client responses to `shellGuard/requestApproval`.
 type ShellGuardApprovalResponse struct {
 	Decision string  `json:"decision"`
@@ -62,20 +42,6 @@ type ShellGuardSecretParams struct {
 	Cwd         string               `json:"cwd"`
 	Executable  string               `json:"executable"`
 	Argv        []string             `json:"argv"`
-}
-
-func DecodeShellGuardSecret(params jsontext.Value) (ShellGuardSecretParams, error) {
-	var p ShellGuardSecretParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return p, err
-	}
-	if p.Kind != SudoPassword && p.Kind != GpgPassphrase {
-		return p, errors.New("unsupported shellGuard/requestSecret kind")
-	}
-	if len(p.Argv) == 0 {
-		return p, errors.New("shellGuard/requestSecret missing argv")
-	}
-	return p, nil
 }
 
 // ShellGuardSecretResponse encodes client responses to `shellGuard/requestSecret`.

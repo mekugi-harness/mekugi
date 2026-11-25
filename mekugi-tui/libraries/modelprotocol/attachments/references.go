@@ -144,35 +144,6 @@ func changeID(id string, abbreviated bool) bool {
 	return true
 }
 
-// String is the canonical spelling used when resolved internal identities
-// become public selections again. It never embeds a native skill path.
-func (r Reference) String() string {
-	if r.Changes != nil {
-		return "mchanges:" + strings.Join(r.Changes, ",")
-	}
-	text := "$" + r.Skill
-	if r.Skill == "" {
-		path := r.Path
-		if strings.ContainsAny(path, " \t\"'`()[]{}<>,;") || strings.TrimRight(path, ".,:!?") != path || strings.HasPrefix(path, "@") || strings.Contains(path, "#L") {
-			if !strings.ContainsRune(path, '\'') {
-				path = "'" + path + "'"
-			} else {
-				path = strconv.Quote(path)
-			}
-		}
-		text = "@" + path
-	}
-	for i, span := range r.Ranges {
-		if i == 0 {
-			text += "#"
-		} else {
-			text += ","
-		}
-		text += fmt.Sprintf("L%d-L%d", span[0], span[1])
-	}
-	return text
-}
-
 func ValidSkillReference(skill string) bool {
 	if skill == "" || len(skill) > 256 || strings.HasPrefix(skill, "-") || strings.ContainsAny(skill, "\x00\r\n\t \\\"'`$#()[]{}<>,;") {
 		return false

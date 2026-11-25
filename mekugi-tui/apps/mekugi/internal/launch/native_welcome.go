@@ -2,7 +2,6 @@ package launch
 
 import (
 	"runtime/debug"
-	"strings"
 )
 
 // Release builds set this to their tag with -ldflags -X.
@@ -24,19 +23,4 @@ func mekugiVersion() string {
 		}
 	}
 	return "dev"
-}
-
-// Initialize's first user-agent token identifies the running app-server build.
-func backendVersion(agent string) string {
-	token, _, _ := strings.Cut(agent, " ")
-	_, version, ok := strings.Cut(token, "/")
-	if !ok {
-		return ""
-	}
-	for _, r := range version {
-		if r != '.' && r != '-' && r != '+' && (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
-			return ""
-		}
-	}
-	return strings.TrimPrefix(version, "v")
 }

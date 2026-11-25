@@ -3,50 +3,14 @@ package composer
 
 import (
 	"fmt"
-	"slices"
+
 	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/sourceanalysis/sourcekind"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/attachments"
 )
 
 const SelectionPrefix = "[Selected "
 const UserSelectionsPrefix = "\n\n---\nUser selections:\n"
-
-func SelectionLabel(label string) bool {
-	return strings.HasPrefix(label, SelectionPrefix) && strings.HasSuffix(label, "]") && !strings.ContainsAny(label, "\n")
-}
-
-// RestoreSelections rebinds mentions from their submitted frames, so recalled
-// input keeps its quotes after resume. Only a label that occurs once in the
-// text binds; omitted content and ambiguous labels stay literal.
-func RestoreSelections(text string, frames []string) []Token {
-	var labels []string
-	quotes := make(map[string]*Token)
-	for _, frame := range frames {
-		selection, ok := attachments.ParseSelection(frame)
-		if !ok || !SelectionLabel(selection.Label) {
-			continue
-		}
-		label, source, body := selection.Label, selection.Source, selection.Body
-		if quotes[label] == nil {
-			labels = append(labels, label)
-			quotes[label] = &Token{Source: source}
-		}
-		quotes[label].Text += body
-	}
-	var selections []Token
-	for _, label := range labels {
-		if start := strings.Index(text, label); start >= 0 && strings.Count(text, label) == 1 {
-			selection := *quotes[label]
-			selection.Start, selection.End = start, start+len(label)
-			selections = append(selections, selection)
-		}
-	}
-	slices.SortFunc(selections, func(a, b Token) int { return a.Start - b.Start })
-	return selections
-}
 
 // UserSelections appends supplied text as ordinary Markdown in the user's input.
 func (d Draft) UserSelections() string {

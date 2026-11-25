@@ -63,19 +63,3 @@ func Discover(ctx context.Context, threads []string) (map[string][]string, error
 	}
 	return found, nil
 }
-
-// DiscoverOne resolves exactly one rollout for a thread identity.
-func DiscoverOne(ctx context.Context, thread string) (string, error) {
-	rollouts, err := Discover(ctx, []string{thread})
-	if err != nil {
-		return "", err
-	}
-	switch paths := rollouts[thread]; len(paths) {
-	case 0:
-		return "", fmt.Errorf("rollout for %q not found in Codex sessions or archived_sessions", thread)
-	case 1:
-		return paths[0], nil
-	default:
-		return "", fmt.Errorf("%q has multiple rollouts in Codex sessions or archived_sessions", thread)
-	}
-}

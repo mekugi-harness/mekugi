@@ -12,20 +12,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
-
-	history "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
-
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/composition"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
-	segmenttransport "github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/transport"
-
 	"golang.org/x/term"
 )
 
@@ -78,127 +67,9 @@ func wrapCodex(ctx context.Context, routerArgs, args []string) (code int, runErr
 	return 2, errors.New("interactive sessions require terminal stdin and stdout; use mekugi codex headless --yolo for automation")
 }
 
-// runServerSession borrows an explicitly supplied API while owning execution until
-// ctx ends. Its host, stores and request ledger are the ordinary invocation owners.
-func runServerSession(ctx context.Context, routerArgs, args []string, api *sessionapi.Server, workspace string, threads *threadExecution) (int, error) {
-	if api == nil {
-		return 2, errors.New("server session requires a control API")
-	}
-	if !filepath.IsAbs(workspace) {
-		return 2, errors.New("server sessions require an absolute workspace")
-	}
-	if !interactiveCodexArgs(args) {
-		return 2, errors.New("server sessions require interactive session arguments")
-	}
-	return runOwnedInvocation(ctx, routerArgs, args, api, workspace, threads)
-}
-
-func runOwnedInvocation(ctx context.Context, routerArgs, args []string, api *sessionapi.Server, workspace string, threads *threadExecution) (code int, runErr error) {
-	if api == nil {
-		return 1, errors.New("server session requires a control API")
-	}
-	if threads == nil {
-		return 1, errors.New("server session requires native thread execution resources")
-	}
-	suppliedArgs := slices.Clone(args)
-	args = expandReasoningShortcuts(args)
-	options, err := launchoptions.Parse(routerArgs)
-	if err != nil {
-		return 2, err
-	}
-	var settings launchoptions.Settings
-	environment := invocationEnvironment(ctx)
-	if threads.setup != nil {
-		options, settings = threads.setup.options, threads.setup.settings
-		environment = slices.Clone(threads.setup.environment)
-	} else {
-		options.Profile, args, err = launchoptions.ProfileSelector(args)
-		if err != nil {
-			return 2, err
-		}
-		settings, err = launchoptions.LoadSettings()
-		if err != nil {
-			return 1, err
-		}
-	}
-	if options.RequireCustomProvider && options.Profile == "" {
-		return 2, errors.New("mekugi requires a custom Responses provider profile: configure NAME.config.toml and run mekugi -p NAME; use mekugi codex for native OpenAI")
-	}
-	options = options.ResolveFeatures(settings.Features)
-	var resumeThread string
-	var resumeArgv []string
-	approvals := false
-	{
-		var err error
-		var yolo bool
-		args, resumeThread, yolo, err = appServerArgs(args)
-		if err != nil {
-			return 2, err
-		}
-		if err := validateProviderOverrides(args, options.Profile); err != nil {
-			return 2, err
-		}
-		approvals = !yolo
-		resumeArgv = appServerResumeArgv(os.Args[0], routerArgs, suppliedArgs)
-		if resumeThread != "" && resumeThread != "--last" && resumeThread != sessioncontrol.ResumePicker {
-			if err := api.ReserveThread(resumeThread); err != nil {
-				return 1, err
-			}
-		}
-	}
-	var executable string
-	if threads.setup != nil {
-		executable, args, approvals = threads.setup.executable, slices.Clone(threads.setup.args), threads.setup.approvals
-	} else {
-		executable, err = invocationExecutable("mekugi-app-server", environment, workspace)
-		if err != nil {
-			return 1, fmt.Errorf("locate mekugi-app-server: %w", err)
-		}
-	}
-	environment = serverEnvironment(environment)
-	captureDirectory, err := history.ReplayDirectory()
-	if err != nil {
-		return 1, fmt.Errorf("initialize replay storage: %w", err)
-	}
-	if threads.setup == nil {
-		threads.setup = &threadSetup{options: options, settings: settings, executable: executable, args: slices.Clone(args), environment: slices.Clone(environment), approvals: approvals}
-	}
-	frontends, err := composition.Frontends(ctx, true, options.ChildReplySummary, captureDirectory)
-	if err != nil {
-		return 1, err
-	}
-	threads.tools = frontends.MCP
-	issues := requestexecution.NewFailures(frontends.Notifications)
-	defer func() {
-		for _, message := range issues.Notices.Pending() {
-			fmt.Fprintln(os.Stderr, textsanitize.Safe(message, false))
-		}
-	}()
-	defer func() {
-		if err := frontends.Close(context.WithoutCancel(ctx)); err != nil {
-			runErr = errors.Join(runErr, err)
-			if code == 0 {
-				code = 1
-			}
-		}
-	}()
-
-	var debugPaths []string
-	defer func() {
-		if len(debugPaths) == 0 {
-			return
-		}
-		directory := filepath.Dir(debugPaths[0])
-		fmt.Fprintf(os.Stderr, "Debug bundle saved to: %s\n", directory)
-	}()
-	return runInvocation(frontends.Presentation, frontends.Conversation, frontends.LivePreview, frontends.Activity, frontends.History, frontends.Preferences, frontends.Segments, frontends.Changes, frontends.Usage, frontends.AgentMetrics, frontends.TransportDiagnostics, frontends.Diagnostics, ctx, frontends.Commands, frontends.AutoTitle, frontends.Observation, options, settings, issues, executable, args, environment, os.Stderr, resumeThread, resumeArgv, approvals, func(paths []string) { debugPaths = paths }, api, workspace, threads)
-}
-
 // Reasoning shortcuts are session-local Codex config overrides. Preserve option
 // operands and everything after -- rather than interpreting prompt contents.
 func expandReasoningShortcuts(args []string) []string {
-	// Non-session subcommands can own trailing child-process arguments without
-	// a -- delimiter (for example mcp add and sandbox). Leave those intact.
 	if !interactiveCodexArgs(args) && (len(args) == 0 || args[0] != "headless") {
 		return args
 	}
@@ -224,25 +95,11 @@ func expandReasoningShortcuts(args []string) []string {
 	return result
 }
 
-// execTrackHelper is the installed command-segment helper beside this
-// executable, or empty when it is missing and commands run untracked.
-func execTrackHelper() string {
-	executable, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	helper := filepath.Join(filepath.Dir(executable), "mekugi-exec")
-	if info, err := os.Stat(helper); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return ""
-	}
-	return helper
-}
-
 const userBashEnvEnvironment = "MEKUGI_USER_BASH_ENV"
 const frontendBashEnvMarker = "# Mekugi frontend shell startup\n"
 
 // withoutInheritedFrontend removes invocation-owned shell state and restores
-// the user's startup file before another invocation installs its own frontend.
+// the user's startup file before launching a child process.
 func withoutInheritedFrontend(environment []string) []string {
 	values := map[string]string{}
 	for _, entry := range environment {
@@ -287,68 +144,6 @@ func withoutInheritedFrontend(environment []string) []string {
 	return result
 }
 
-// frontendShellEnvironment restores the frontend PATH in Codex's Bash command
-// shells and, with a helper, reports each command's segments.
-func frontendShellEnvironment(environment []string, directory, helper string, reports segmenttransport.Endpoints) ([]string, error) {
-	environment = withoutInheritedFrontend(environment)
-	// Login Bash may replace inherited PATH while reading /etc/profile. Its
-	// noninteractive startup file runs afterward, including for `bash -lc`.
-	previous := ""
-	basePath := ""
-	for _, entry := range environment {
-		if value, ok := strings.CutPrefix(entry, "BASH_ENV="); ok {
-			previous = value
-		}
-		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
-			basePath = value
-		}
-	}
-	startup := frontendBashEnvMarker
-	if previous != "" {
-		startup += ". " + commandargs.Quote(previous) + "\n"
-	}
-	front := directory
-	startup += "PATH=" + commandargs.Quote(front) + ":\"$PATH\"\n"
-	startup += "if [ -n \"${CODEX_ARG0_PATH_DIR:-}\" ]; then\n" +
-		"  case :$PATH: in \":$CODEX_ARG0_PATH_DIR:\"*) ;; *) PATH=\"$CODEX_ARG0_PATH_DIR:$PATH\" ;; esac\n" +
-		"fi\n" +
-		"export PATH\n"
-	// Login profiles can replace PATH. Retain inherited command directories as
-	// fallbacks without accumulating them each time a nested shell starts.
-	if paths := filepath.SplitList(basePath); len(paths) != 0 {
-		for i := range paths {
-			paths[i] = commandargs.Quote(paths[i])
-		}
-		startup += "for __mekugi_path in " + strings.Join(paths, " ") + "; do\n" +
-			"  case :$PATH: in *\":$__mekugi_path:\"*) ;; *) PATH=\"$PATH:$__mekugi_path\" ;; esac\n" +
-			"done\nunset __mekugi_path\n"
-	}
-
-	environment = slices.DeleteFunc(environment, func(entry string) bool {
-		return strings.HasPrefix(entry, "PATH=") || strings.HasPrefix(entry, "BASH_ENV=")
-	})
-	if helper != "" && reports.Requests != "" {
-		socket, trackDirectory := reports.Requests, reports.Directory
-		tracker := filepath.Join(filepath.Dir(directory), "exec-track.bash")
-		if err := os.WriteFile(tracker, []byte(shellinstrumentation.Tracker(helper, socket, trackDirectory)), 0o600); err != nil {
-			return nil, fmt.Errorf("prepare command tracking: %w", err)
-		}
-		startup += shellinstrumentation.Hook(tracker)
-		shTracker := filepath.Join(filepath.Dir(directory), "exec-track.sh")
-		if err := os.WriteFile(shTracker, []byte(shellinstrumentation.ShTracker(helper, socket, trackDirectory)), 0o600); err != nil {
-			return nil, fmt.Errorf("prepare sh command tracking: %w", err)
-		}
-		environment = append(environment, shellinstrumentation.ShTrackerEnvironment+"="+shTracker)
-	}
-	path := filepath.Join(filepath.Dir(directory), "frontend-bash-env")
-	if err := os.WriteFile(path, []byte(startup), 0o600); err != nil {
-		return nil, fmt.Errorf("prepare frontend shell environment: %w", err)
-	}
-	return append(environment,
-		"PATH="+front+string(os.PathListSeparator)+basePath,
-		"BASH_ENV="+path, userBashEnvEnvironment+"="+previous), nil
-}
-
 func serverEnvironment(environment []string) []string {
 	terminal := ""
 	result := make([]string, 0, len(environment))
@@ -388,7 +183,7 @@ func interactiveCodexArgs(args []string) bool {
 		case "headless", "exec", "e", "review", "login", "logout", "mcp", "mcp-server", "app-server", "app", "completion", "sandbox", "debug", "apply", "a", "cloud", "features", "help":
 			return false
 		default:
-			return true // resume, fork, or the initial interactive prompt.
+			return true
 		}
 	}
 	return true

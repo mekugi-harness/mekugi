@@ -153,12 +153,6 @@ func (w *execShellWalker) provider(identity string, args []*syntax.Word) bool {
 	return true
 }
 
-// ReadSource selects literal eval/stdin/script input without evaluating it.
-func ReadSource(input Interpreter) (source, script, reason string) {
-	source, script, _, reason = readSource(input, readInterpreterFile)
-	return
-}
-
 func readInterpreterFile(path string) (string, string) {
 	file, err := sourceparse.Open(path)
 	if err != nil {

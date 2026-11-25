@@ -3,7 +3,6 @@ package binding
 import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
-	"errors"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 )
@@ -172,23 +171,4 @@ type HistoryTurn struct {
 	Error       *struct {
 		Message string `json:"message"`
 	} `json:"error"`
-}
-
-// DecodeHistoryThread admits a thread/read or thread/resume response only for
-// the requested thread identity. Decoding does not restore live operations.
-// Source: apps/mekugi/internal/router/app_server_resume.go:49:58@[eaad597b] resumeSettingsResponse.
-func DecodeHistoryThread(raw []byte, requested string) (ThreadInfo, error) {
-	var result struct {
-		Thread ThreadInfo `json:"thread"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return ThreadInfo{}, err
-	}
-	if result.Thread.ID == "" {
-		return ThreadInfo{}, errors.New("thread/read returned no thread identity")
-	}
-	if result.Thread.ID != requested {
-		return ThreadInfo{}, errors.New("thread/read returned a different thread identity")
-	}
-	return result.Thread, nil
 }

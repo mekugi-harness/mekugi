@@ -13,7 +13,7 @@ import (
 func TestQuestionKeyViewAndDraftIsolation(t *testing.T) {
 	var questions prompt.Questions
 	call := &prompt.Call{ID: "ask", Thread: "main", Sync: true, Questions: []prompt.Question{{Question: "Choose?", Choices: []prompt.Option{{Label: "Yes"}}}, {Question: "Password?", IsSecret: true}}}
-	questions.Add(call, false)
+	questions.Calls = append(questions.Calls, call)
 	questions.Open(questions.Next())
 	var layout terminalview.QuestionLayout
 	key := func(text string, empty bool) terminalview.PromptAction {
@@ -54,9 +54,11 @@ func TestQuestionKeyViewAndDraftIsolation(t *testing.T) {
 func TestQuestionDockCountsOtherCallsAndNamesAsker(t *testing.T) {
 	var questions prompt.Questions
 	first := &prompt.Call{ID: "first", Thread: "child", Questions: []prompt.Question{{Question: "First?"}, {Question: "Second?"}}}
-	questions.Add(first, false)
-	questions.Add(&prompt.Call{ID: "later", Thread: "child", Questions: []prompt.Question{{Question: "Later?"}}}, false)
-	questions.Add(&prompt.Call{ID: "other", Thread: "main", Questions: []prompt.Question{{Question: "Elsewhere?"}}}, false)
+	questions.Calls = append(questions.Calls,
+		first,
+		&prompt.Call{ID: "later", Thread: "child", Questions: []prompt.Question{{Question: "Later?"}}},
+		&prompt.Call{ID: "other", Thread: "main", Questions: []prompt.Question{{Question: "Elsewhere?"}}},
+	)
 	var layout terminalview.QuestionLayout
 	if got := strings.Join(terminalview.Questions(questions.View("child"), &terminalui.Painter{}, &layout, "/root/worker", false, 60, 12), "\n"); !strings.Contains(got, "worker asks 3 questions") {
 		t.Fatalf("hidden banner = %q", got)
@@ -73,7 +75,7 @@ func TestApprovalKeyKeepsHostEffectsWithCaller(t *testing.T) {
 	approval := &prompt.Approval{Choices: []prompt.Choice{{ID: 0, Label: "Once"}, {ID: 1, Label: "Session"}, {ID: 2, Label: "Decline", Deny: true}}}
 	var layout terminalview.ApprovalLayout
 	var approvals prompt.Approvals
-	approvals.Add(approval)
+	approvals.Pending = append(approvals.Pending, approval)
 	approvals.Show()
 	key := func(text string, empty bool) terminalview.PromptAction {
 		view := approval.View()

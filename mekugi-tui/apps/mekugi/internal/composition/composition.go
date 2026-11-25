@@ -1,110 +1,43 @@
 package composition
 
 import (
-	"context"
-	"encoding/json/jsontext"
-	"errors"
-	"fmt"
 	"slices"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionnaming"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
-
-	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activityview "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/notifications/notice"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionpreferences/preferences"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/diagnosticsection"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/diagnostics/diagnostic"
-
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
-	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/segments"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessioninspection/query"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionreplay/playback"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/accounting"
 )
 
-// Handle resolves one explicitly declared dependency during ordered construction.
-// It is application wiring, not a service locator exposed to feature code.
+// Handle resolves one explicitly declared dependency during composition declaration.
 type Handle[S any] struct {
-	id    module.ID
-	value S
-	ready bool
-}
-
-func (h *Handle[S]) Value() S {
-	if !h.ready {
-		panic(fmt.Sprintf("module %s has not been constructed", h.id))
-	}
-	return h.value
+	id module.ID
 }
 
 type entry struct {
-	auxiliary    []terminalui.PaneFactory[*scope.Store]
-	roster       []terminalui.RosterDefinition[*activityview.View]
-	presentation []presentation.Status
-	diagnostics  []diagnosticsection.Contribution
-	inspection   []inspection.Contribution
-	id           module.ID
-	requires     []module.ID
-	lifetime     module.Lifetime
-	resources    []string
-	commands     []command.Contribution
-	records      []recordkind.Spec
-	frontends    bool
-	validFactory bool
-	construct    func(module.Slots, binding.Registrar) error
-	start, stop  func(context.Context) error
+	auxiliary []terminalui.PaneFactory[*scope.Store]
+	roster    []terminalui.RosterDefinition[*activityview.View]
+	id        module.ID
+	requires  []module.ID
 }
 
 type Composition struct {
 	entries []entry
-	sealed  bool
 }
 
-// Add declares a factory, without constructing or starting it. The typed
-// dependency closure resolves prior handles after all slots have been collected.
+// Add declares a module descriptor for renderer view selection and workspace indexing.
 func (c *Composition) Add[D, S any, B interface {
 	module.NoBindings | binding.Bindings[S]
 }, V interface {
 	module.NoViews | terminalui.Definitions[S, *scope.Store] | terminalui.RosterDefinition[*activityview.View]
-}](descriptor module.Descriptor[D, S, B, V], deps func() D) *Handle[S] {
-	if c.sealed {
-		panic("composition is already activated")
-	}
-	backend, _ := any(descriptor.Bindings).(binding.Bindings[S])
+}](descriptor module.Descriptor[D, S, B, V], _ func() D) *Handle[S] {
 	handle := &Handle[S]{id: descriptor.ID}
 	node := entry{
-		presentation: slices.Clone(descriptor.Contributes.Presentation),
-		id:           descriptor.ID, requires: slices.Clone(descriptor.Requires),
-		lifetime: descriptor.Lifetime, resources: slices.Clone(descriptor.Resources),
-		records:      slices.Clone(descriptor.Contributes.RecordKinds),
-		frontends:    backend.Frontends,
-		validFactory: descriptor.New != nil && deps != nil,
+		id:       descriptor.ID,
+		requires: slices.Clone(descriptor.Requires),
 	}
 	if roster, ok := any(descriptor.Views).(terminalui.RosterDefinition[*activityview.View]); ok {
 		node.roster = []terminalui.RosterDefinition[*activityview.View]{roster}
@@ -114,215 +47,13 @@ func (c *Composition) Add[D, S any, B interface {
 		factory := terminalui.PaneFactory[*scope.Store]{Name: definition.Name, Label: definition.Label}
 		if definition.Attach != nil {
 			factory.Attach = func(theme diffrender.Theme) terminalui.PaneAttachment[*scope.Store] {
-				bound := definition.Attach(theme)
-				result := terminalui.PaneAttachment[*scope.Store]{Pane: bound.Pane}
-				if bound.Prepare != nil {
-					result.Prepare = func(store *scope.Store) { bound.Prepare(handle.Value(), store) }
-				}
-				return result
+				return terminalui.PaneAttachment[*scope.Store]{Pane: definition.Attach(theme).Pane}
 			}
 		}
 		node.auxiliary = append(node.auxiliary, factory)
 	}
-	commands := slices.Clone(descriptor.Contributes.Commands)
-	for _, definition := range commands {
-		contribution := command.Contribution{Spec: definition.Spec}
-		if definition.Run != nil {
-			contribution.Run = func(ctx context.Context, request command.Request) (command.Output, error) {
-				return definition.Run(handle.Value(), ctx, request)
-			}
-		}
-		node.commands = append(node.commands, contribution)
-	}
-	for _, definition := range descriptor.Contributes.Inspection {
-		var contribution inspection.Contribution
-		if definition.NewAX != nil {
-			contribution.NewAX = func() inspection.AXCollector { return definition.NewAX(handle.Value()) }
-		}
-		if definition.ProviderUsage != nil {
-			contribution.ProviderUsage = func(ctx context.Context, path string, filter inspection.UsageFilter) (map[string]inspection.Usage, error) {
-				return definition.ProviderUsage(handle.Value(), ctx, path, filter)
-			}
-		}
-		if definition.RequestTiming != nil {
-			contribution.RequestTiming = func(ctx context.Context, store inspection.RetainedReader, thread string) (jsontext.Value, error) {
-				return definition.RequestTiming(handle.Value(), ctx, store, thread)
-			}
-		}
-		node.inspection = append(node.inspection, contribution)
-	}
-	for _, definition := range descriptor.Contributes.DiagnosticSections {
-		contribution := diagnosticsection.Contribution{Transport: definition.Transport}
-		if definition.PrepareReads != nil {
-			contribution.PrepareReads = func(path string, outputs ...string) error {
-				return definition.PrepareReads(handle.Value(), path, outputs...)
-			}
-		}
-		if definition.ReadSnapshot != nil {
-			contribution.ReadSnapshot = func(ctx context.Context, path string) (diagnosticsection.Reads, error) {
-				return definition.ReadSnapshot(handle.Value(), ctx, path)
-			}
-		}
-		node.diagnostics = append(node.diagnostics, contribution)
-	}
-	node.construct = func(slots module.Slots, binder binding.Registrar) error {
-		if !descriptor.HostsDiagnosticSections {
-			slots.DiagnosticSections = nil
-		}
-		if !descriptor.HostsInspection {
-			slots.Inspection = nil
-		}
-		if !descriptor.HostsRecords {
-			slots.RecordKinds = nil
-		}
-		service, err := descriptor.New(deps(), slots)
-		if err != nil {
-			return err
-		}
-		handle.value, handle.ready = service, true
-		return backend.Register(binder, service, commands)
-	}
-	if descriptor.Start != nil {
-		node.start = func(ctx context.Context) error { return descriptor.Start(ctx, handle.Value()) }
-	}
-	if descriptor.Stop != nil {
-		node.stop = func(ctx context.Context) error { return descriptor.Stop(ctx, handle.Value()) }
-	}
 	c.entries = append(c.entries, node)
 	return handle
-}
-
-type Runtime struct {
-	MCP                  []binding.MCPServer
-	Terminal             terminalsession.Views
-	Presentation         *sessionpresentation.Service
-	Conversation         *conversationmodel.Service
-	Replay               *playback.Service
-	LivePreview          *preview.Service
-	Activity             *feed.Service
-	Notifications        *notice.Service
-	Preferences          *preferences.Service
-	Diagnostics          *diagnostic.Service
-	Inspection           *query.Service
-	AutoTitle            bool
-	TransportDiagnostics *transportcapture.Service
-	AgentMetrics         *evidence.Service
-	Usage                *accounting.Service
-	Observation          *binding.Observation
-
-	Changes  *changecapture.Service
-	Segments *segments.Service
-	History  *history.Service
-	Commands []command.Contribution
-	started  []entry
-}
-
-func (r *Runtime) Close(ctx context.Context) error {
-	var failures []error
-	for _, node := range slices.Backward(r.started) {
-		if node.stop != nil {
-			if err := node.stop(ctx); err != nil {
-				failures = append(failures, fmt.Errorf("stop %s: %w", node.id, err))
-			}
-		}
-	}
-	r.started = nil
-	return errors.Join(failures...)
-}
-
-// Activate validates the entire list before construction or resource startup.
-func (c *Composition) Activate(ctx context.Context, binder *binding.Registry) (*Runtime, error) {
-	if c.sealed {
-		return nil, errors.New("composition is already activated")
-	}
-	c.sealed = true
-	runtime := new(Runtime)
-	var auxiliary []terminalui.PaneFactory[*scope.Store]
-	var roster []terminalui.RosterDefinition[*activityview.View]
-	var status []presentation.Status
-	var records []recordkind.Spec
-	var inspections []inspection.Contribution
-	var diagnostics []diagnosticsection.Contribution
-	positions := make(map[module.ID]int)
-	var failures []error
-	for i, node := range c.entries {
-		if node.id == "" {
-			failures = append(failures, errors.New("empty module identity"))
-		}
-		if _, exists := positions[node.id]; exists {
-			failures = append(failures, fmt.Errorf("duplicate module %s", node.id))
-		}
-		positions[node.id] = i
-		runtime.Commands = append(runtime.Commands, node.commands...)
-		auxiliary = append(auxiliary, node.auxiliary...)
-		roster = append(roster, node.roster...)
-		status = append(status, node.presentation...)
-		records = append(records, node.records...)
-		inspections = append(inspections, node.inspection...)
-		diagnostics = append(diagnostics, node.diagnostics...)
-	}
-	for i, node := range c.entries {
-		if !node.validFactory {
-			failures = append(failures, fmt.Errorf("%s: missing typed constructor or dependencies", node.id))
-		}
-		for _, required := range node.requires {
-			position, exists := positions[required]
-			if !exists {
-				failures = append(failures, fmt.Errorf("%s requires missing module %s", node.id, required))
-			} else if position >= i {
-				failures = append(failures, fmt.Errorf("%s requires %s before it", node.id, required))
-			}
-		}
-		if node.lifetime != module.Stateless && node.lifetime != module.Invocation && node.lifetime != module.HostOperation && node.lifetime != module.AttachedSession {
-			failures = append(failures, fmt.Errorf("%s: unsupported lifetime %q", node.id, node.lifetime))
-		}
-		if (node.start == nil) != (node.stop == nil) || len(node.resources) != 0 && node.start == nil || node.lifetime != module.Invocation && (node.start != nil || len(node.resources) != 0) {
-			failures = append(failures, fmt.Errorf("%s: lifecycle does not match declared resources", node.id))
-		}
-		if node.frontends != (len(node.commands) != 0) {
-			failures = append(failures, fmt.Errorf("%s: executable contributions and Codex frontend connection differ", node.id))
-		}
-	}
-	if err := frontends.ValidateCatalog(runtime.Commands); err != nil {
-		failures = append(failures, err)
-	}
-	terminal, err := terminalsession.NewViews(auxiliary, roster)
-	if err != nil {
-		failures = append(failures, err)
-	}
-	runtime.Terminal = terminal
-	presentations, err := sessionpresentation.New(status)
-	if err != nil {
-		failures = append(failures, err)
-	}
-	runtime.Presentation = presentations
-	if err := errors.Join(failures...); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	for _, node := range c.entries {
-		if err := node.construct(module.Slots{DiagnosticSections: slices.Clone(diagnostics), Inspection: slices.Clone(inspections), RecordKinds: slices.Clone(records)}, binder); err != nil {
-			return nil, fmt.Errorf("construct %s: %w", node.id, err)
-		}
-	}
-	_, runtime.AutoTitle = positions[sessionnaming.Module.ID]
-	runtime.Observation = binder.RegisteredObservation()
-	runtime.MCP = binder.RegisteredMCP()
-	for _, node := range c.entries {
-		if err := ctx.Err(); err != nil {
-			return nil, errors.Join(err, runtime.Close(context.WithoutCancel(ctx)))
-		}
-		if node.start == nil {
-			continue
-		}
-		runtime.started = append(runtime.started, node)
-		if err := node.start(ctx); err != nil {
-			return nil, errors.Join(fmt.Errorf("start %s: %w", node.id, err), runtime.Close(context.WithoutCancel(ctx)))
-		}
-	}
-	return runtime, nil
 }
 
 // RendererViews collects descriptor-selected painters without activating a module
@@ -331,15 +62,7 @@ func (c *Composition) RendererViews() (terminalsession.Views, error) {
 	var auxiliary []terminalui.PaneFactory[*scope.Store]
 	var roster []terminalui.RosterDefinition[*activityview.View]
 	for _, node := range c.entries {
-		for _, source := range node.auxiliary {
-			factory := source
-			if source.Attach != nil {
-				factory.Attach = func(theme diffrender.Theme) terminalui.PaneAttachment[*scope.Store] {
-					return terminalui.PaneAttachment[*scope.Store]{Pane: source.Attach(theme).Pane}
-				}
-			}
-			auxiliary = append(auxiliary, factory)
-		}
+		auxiliary = append(auxiliary, node.auxiliary...)
 		roster = append(roster, node.roster...)
 	}
 	return terminalsession.NewViews(auxiliary, roster)

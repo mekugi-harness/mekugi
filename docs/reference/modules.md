@@ -1,7 +1,7 @@
 # Module reference
 
 Generated from feature descriptors, Codex binding declarations and application
-composition. 15 of 15 feature modules are selected.
+composition. 12 of 12 feature modules are selected.
 Regenerate with `just generate`; verify with `just check-generated`.
 
 The [composition contract](../contracts/composition.md) defines ownership and
@@ -63,18 +63,16 @@ Own conversation drafts, transcripts, prompts, queues, and side answers
 Retain and inspect private diagnostic evidence
 
 - Composition: selected; lifetime: `invocation`.
-- Requires: `sessionhistory`, `sessioninspection`.
-- Contributes: `record-kinds`.
+- Requires: `sessionhistory`.
 - Hosts: `diagnostic-sections`.
-- Records: `failure`, `instructions`, `instruction-revision`, `instruction-content`.
 - Codex connections: none.
 
 ## [livepreview](../../mekugi-tui/modules/livepreview/SPEC.md)
 
-Project provisional source changes and publish bounded live view state
+Live preview view types and terminal renderer
 
-- Composition: selected; lifetime: `attached-session`.
-- Requires: `changehistory`.
+- Composition: selected; lifetime: `stateless`.
+- Requires: none.
 - Codex connections: none.
 
 ## [notifications](../../mekugi-tui/modules/notifications/SPEC.md)
@@ -93,24 +91,7 @@ Own retained session publication, namespaces, allocation, leases, and retention
 - Requires: none.
 - Contributes: `record-kinds`.
 - Hosts: `record-kinds`.
-- Records: `hooks`, `compaction`, `compact`, `frozen-file`, `frozen-resource`, `output`, `cursor`, `call`, `snapshot`, `commentary`.
-- Codex connections: none.
-
-## [sessioninspection](../../mekugi-tui/modules/sessioninspection/SPEC.md)
-
-Query retained calls, outcomes and static corpus findings
-
-- Composition: selected; lifetime: `invocation`.
-- Requires: `sessionhistory`, `changehistory`.
-- Hosts: `inspection`.
-- Codex connections: `rollout`.
-
-## [sessionnaming](../../mekugi-tui/modules/sessionnaming/SPEC.md)
-
-Generate optional thread names while preserving manual authority
-
-- Composition: selected; lifetime: `stateless`.
-- Requires: none.
+- Records: `hooks`, `compaction`, `compact`, `frozen-file`, `frozen-resource`, `output`, `cursor`, `call`, `commentary`.
 - Codex connections: none.
 
 ## [sessionpreferences](../../mekugi-tui/modules/sessionpreferences/SPEC.md)
@@ -120,14 +101,6 @@ Retain applied settings and renderer preferences for a workspace and thread
 - Composition: selected; lifetime: `invocation`.
 - Requires: `sessionhistory`.
 - Codex connections: none.
-
-## [sessionreplay](../../mekugi-tui/modules/sessionreplay/SPEC.md)
-
-Schedule retained observations with synthetic streaming and read-only playback controls
-
-- Composition: selected; lifetime: `stateless`.
-- Requires: `activity`, `sessionhistory`.
-- Codex connections: `rollout`.
 
 ## [transportdiagnostics](../../mekugi-tui/modules/transportdiagnostics/SPEC.md)
 
@@ -144,7 +117,7 @@ Summarize native provider responses and read private diagnostic evidence
 Project provider usage and reference costs from native responses
 
 - Composition: selected; lifetime: `invocation`.
-- Requires: `sessionhistory`.
+- Requires: none.
 - Resources: on-demand retained-usage publication worker.
 - Contributes: `record-kinds`, `presentation`.
 - Records: `usage`.

@@ -11,8 +11,6 @@ import (
 	"unicode"
 
 	noticepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/notifications/presentation"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 )
 
 // Source: codex-rs/tui/src/notifications/{mod,osc9}.rs@1cc7e236
@@ -26,7 +24,6 @@ type nativeNotifications struct {
 	lastTitle    string
 	titleWritten bool
 	lastStatus   string
-	blocked      map[string]nativeBlockedRequest
 	settings     struct {
 		Events    jsontext.Value `json:"notifications"`
 		Method    string         `json:"notification_method"`
@@ -34,42 +31,8 @@ type nativeNotifications struct {
 	}
 }
 
-type nativeBlockedRequest struct {
-	Thread string `json:"threadId"`
-	Turn   string `json:"turnId"`
-}
 
-func (n *nativeNotifications) blockNotification(feedback *noticepresentation.Model, clock func() time.Time, m appserver.Message) {
-	if n == nil {
-		return
-	}
-	if _, exists := n.blocked[string(m.ID)]; exists {
-		return
-	}
-	var request nativeBlockedRequest
-	_ = json.Unmarshal(m.Params, &request)
-	if n.blocked == nil {
-		n.blocked = make(map[string]nativeBlockedRequest)
-	}
-	n.blocked[string(m.ID)] = request
-	n.notify(feedback, clock, "approval-requested", "Approval requested")
-}
 
-func (n *nativeNotifications) resolve(m appserver.Message) {
-	if n == nil || m.Method != "serverRequest/resolved" {
-		return
-	}
-	var p struct {
-		ThreadID  string         `json:"threadId"`
-		RequestID jsontext.Value `json:"requestId"`
-	}
-	if json.Unmarshal(m.Params, &p) != nil {
-		return
-	}
-	if request, ok := n.blocked[string(p.RequestID)]; ok && (request.Thread == "" || request.Thread == p.ThreadID) {
-		delete(n.blocked, string(p.RequestID))
-	}
-}
 
 func (n *nativeNotifications) writeTitle(feedback *noticepresentation.Model, clock func() time.Time, workspace string, actionRequired, busy bool, now time.Time) {
 	if n == nil || n.out == nil {
@@ -130,31 +93,6 @@ func (n *nativeNotifications) clearTerminalStatus(feedback *noticepresentation.M
 	}
 }
 
-func (n *nativeNotifications) notificationConfig(feedback *noticepresentation.Model, clock func() time.Time, m appserver.Message) {
-	if n == nil {
-		return
-	}
-	var result struct {
-		Config struct {
-			TUI jsontext.Value `json:"tui"`
-		} `json:"config"`
-	}
-	if m.Error != nil {
-		setNotice(feedback, presentationTime(clock), "Terminal notification settings could not be read", true)
-		return
-	}
-	if err := json.Unmarshal(m.Result, &result); err != nil {
-		setNotice(feedback, presentationTime(clock), "Terminal notification settings could not be read", true)
-		return
-	}
-	if len(result.Config.TUI) > 0 {
-		if err := json.Unmarshal(result.Config.TUI, &n.settings); err != nil {
-			setNotice(feedback, presentationTime(clock), "Terminal notification settings could not be read", true)
-			return
-		}
-	}
-	n.ready = true
-}
 
 func (n *nativeNotifications) allows(event string) bool {
 	if n == nil || n.out == nil || !n.ready {

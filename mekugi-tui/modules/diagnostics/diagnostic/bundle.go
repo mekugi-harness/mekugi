@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
+
 	"sync"
 	"time"
 
@@ -24,7 +24,6 @@ type Bundle struct {
 	service                  *Service
 	replayDirectory          string
 	discover                 func(context.Context, []string) (map[string][]string, error)
-	instructionContent       map[string]bool
 	writes                   *persistence.Counter
 	release                  func() error
 	mu                       sync.Mutex
@@ -33,7 +32,6 @@ type Bundle struct {
 	paths                    []string
 	capturePath, metricsPath string
 	axThreads                map[string]bool
-	axDroppedThreads         bool
 	err                      error
 }
 
@@ -42,12 +40,11 @@ type BundleOptions struct {
 	Discover                                        func(context.Context, []string) (map[string][]string, error)
 }
 
-func (d *Bundle) Paths() []string              { return slices.Clone(d.paths) }
 func (d *Bundle) CapturePath() string          { return d.capturePath }
 func (d *Bundle) MetricsPath() string          { return d.metricsPath }
 func (d *Bundle) ReadLogPath() string          { return d.axReadPath }
 func (d *Bundle) Writes() *persistence.Counter { return d.writes }
-func (d *Bundle) Fail(err error)               { d.mu.Lock(); defer d.mu.Unlock(); d.err = errors.Join(d.err, err) }
+
 func (s *Service) OpenBundle(options BundleOptions) (*Bundle, error) {
 	if s.sections.ReadSnapshot != nil && options.Discover == nil {
 		return nil, errors.New("AX export requires rollout discovery")
@@ -158,11 +155,10 @@ func (d *Bundle) Close() error {
 			closeErr = errors.Join(closeErr, file.Close())
 		}
 	}
-	axErr := d.writeAXReport()
 	var releaseErr error
 	if d.release != nil {
 		releaseErr = d.release()
 		d.release = nil
 	}
-	return errors.Join(d.err, closeErr, axErr, releaseErr)
+	return errors.Join(d.err, closeErr, releaseErr)
 }
