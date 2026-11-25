@@ -1,10 +1,14 @@
 use super::AppServerTransport;
 use super::CHANNEL_CAPACITY;
+use super::ConnectionOrigin;
 use super::DaemonShutdownAccess;
+use super::REMOTE_HUMAN_CONTROL_PATH;
+use super::REMOTE_HUMAN_SUBPROTOCOL;
 use super::TransportEvent;
 use super::acquire_app_server_startup_lock;
 use super::app_server_control_socket_path;
 use super::start_control_socket_acceptor;
+use super::start_control_socket_acceptor_with_http_router;
 #[cfg(unix)]
 use super::unix_socket::acquire_removable_app_server_startup_lock;
 #[cfg(unix)]
@@ -539,6 +543,109 @@ fn test_startup_lock_path(temp_dir: &Path) -> AbsolutePathBuf {
 
 async fn connect_to_socket(socket_path: &Path) -> IoResult<UnixStream> {
     UnixStream::connect(socket_path).await
+}
+
+#[tokio::test]
+async fn remote_human_control_endpoint_negotiates_subprotocol_and_origin() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp_dir.path());
+    let (transport_event_tx, mut transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let accept_handle = start_control_socket_acceptor(
+        socket_path.clone(),
+        transport_event_tx,
+        shutdown_token.clone(),
+        DaemonShutdownAccess::Disabled,
+        WebSocketCompression::Plain,
+    )
+    .await
+    .expect("control socket acceptor should start");
+
+    let stream = connect_to_socket(socket_path.as_path())
+        .await
+        .expect("client should connect");
+    let request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(format!("ws://localhost{REMOTE_HUMAN_CONTROL_PATH}"))
+        .header("Host", "localhost")
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .header("Sec-WebSocket-Protocol", REMOTE_HUMAN_SUBPROTOCOL)
+        .body(())
+        .expect("request should build");
+    let (mut websocket, response) = client_async(request, stream)
+        .await
+        .expect("remote-human websocket upgrade should complete");
+    assert_eq!(response.status().as_u16(), 101);
+    assert_eq!(
+        response
+            .headers()
+            .get("sec-websocket-protocol")
+            .and_then(|v| v.to_str().ok()),
+        Some(REMOTE_HUMAN_SUBPROTOCOL)
+    );
+
+    let opened = timeout(Duration::from_secs(1), transport_event_rx.recv())
+        .await
+        .expect("connection opened event should arrive")
+        .expect("connection opened event");
+    assert!(matches!(
+        opened,
+        TransportEvent::ConnectionOpened {
+            origin: ConnectionOrigin::RemoteHuman,
+            ..
+        }
+    ));
+
+    websocket.close(None).await.expect("close should send");
+    shutdown_token.cancel();
+    accept_handle.await.expect("acceptor should join");
+}
+
+#[tokio::test]
+async fn control_socket_serves_mounted_http_resources_alongside_websockets() {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let socket_path = test_socket_path(temp_dir.path());
+    let (transport_event_tx, _transport_event_rx) =
+        mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
+    let shutdown_token = CancellationToken::new();
+    let extra = axum::Router::new().route(
+        "/api/resources/content",
+        axum::routing::post(|| async { (axum::http::StatusCode::OK, "ok-resource") }),
+    );
+    let accept_handle = start_control_socket_acceptor_with_http_router(
+        socket_path.clone(),
+        transport_event_tx,
+        shutdown_token.clone(),
+        DaemonShutdownAccess::Disabled,
+        WebSocketCompression::Plain,
+        Some(extra),
+    )
+    .await
+    .expect("control socket acceptor should start");
+
+    let mut stream = connect_to_socket(socket_path.as_path())
+        .await
+        .expect("client should connect");
+    stream
+        .write_all(
+            b"POST /api/resources/content HTTP/1.1\r\nHost: session\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        )
+        .await
+        .expect("write HTTP request");
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.expect("read HTTP response");
+    let response = String::from_utf8_lossy(&buf);
+    assert!(response.starts_with("HTTP/1.1 200 OK"), "response: {response}");
+    assert!(response.ends_with("ok-resource"), "response: {response}");
+
+    shutdown_token.cancel();
+    accept_handle.await.expect("acceptor should join");
 }
 
 #[cfg(unix)]

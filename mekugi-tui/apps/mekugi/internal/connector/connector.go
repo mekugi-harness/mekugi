@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -25,12 +27,32 @@ import (
 )
 
 const (
-	initializeLimit      = 1024
+	initializeLimit      = 4096
 	initializeTimeout    = 5 * time.Second
 	writeTimeout         = 10 * time.Second
 	connectionLimit      = 128
 	unauthenticatedLimit = 16
 )
+
+// NativeSocketPath returns the default private Unix control socket path for
+// mekugi-app-server ($CODEX_HOME/app-server-control/app-server-control.sock).
+func NativeSocketPath() (string, error) {
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("locate home directory for app-server control socket: %w", err)
+		}
+		codexHome = filepath.Join(home, ".codex")
+	} else if !filepath.IsAbs(codexHome) {
+		absHome, err := filepath.Abs(codexHome)
+		if err != nil {
+			return "", fmt.Errorf("resolve CODEX_HOME for app-server control socket: %w", err)
+		}
+		codexHome = absHome
+	}
+	return filepath.Join(codexHome, "app-server-control", "app-server-control.sock"), nil
+}
 
 type Options struct {
 	SocketPath string
@@ -278,16 +300,22 @@ func (c *Connector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request sessionapi.RPCMessage
-	var initialize sessionapi.RPCInitialize
+	var params map[string]jsontext.Value
 	if json.Unmarshal(data, &request, json.RejectUnknownMembers(true)) != nil || request.JSONRPC != "2.0" || request.Method != "initialize" ||
 		len(request.ID) == 0 || (request.ID.Kind() != '"' && request.ID.Kind() != '0') ||
 		(request.ID.Kind() == '0' && strings.ContainsAny(string(request.ID), ".eE")) ||
 		len(request.Result) != 0 || request.Error != nil || request.Params.Kind() != '{' ||
-		json.Unmarshal(request.Params, &initialize, json.RejectUnknownMembers(true)) != nil {
+		json.Unmarshal(request.Params, &params) != nil {
 		return
 	}
+	var token string
+	if rawToken, ok := params["token"]; ok {
+		if json.Unmarshal(rawToken, &token) != nil {
+			return
+		}
+	}
 	c.mu.Lock()
-	valid := ctx.Err() == nil && subtle.ConstantTimeCompare([]byte(initialize.Token), []byte(c.token)) == 1
+	valid := ctx.Err() == nil && subtle.ConstantTimeCompare([]byte(token), []byte(c.token)) == 1
 	if valid {
 		authenticated = true
 		c.unauthenticated--
@@ -297,8 +325,8 @@ func (c *Connector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuse(initializeCtx, downstream, request, http.StatusUnauthorized, "A valid connector token is required.")
 		return
 	}
-	initialize.Token = ""
-	request.Params, _ = json.Marshal(&initialize)
+	delete(params, "token")
+	request.Params, _ = json.Marshal(params)
 	data, _ = json.Marshal(&request)
 	// Build the upstream handshake from owned facts only. Caller credentials,
 	// Origin and authority headers never reach the private socket.

@@ -147,6 +147,7 @@ pub(crate) struct OutgoingMessageSender {
     verification_auth: OnceLock<Arc<codex_login::AuthManager>>,
     verification_connections: Mutex<HashSet<ConnectionId>>,
     human_approval_connections: Mutex<HashSet<ConnectionId>>,
+    remote_human_connections: Mutex<HashSet<ConnectionId>>,
     next_server_request_id: AtomicI64,
     sender: mpsc::Sender<OutgoingEnvelope>,
     process_reply_sender: mpsc::Sender<OutgoingEnvelope>,
@@ -283,6 +284,7 @@ impl OutgoingMessageSender {
             verification_auth: OnceLock::new(),
             verification_connections: Mutex::new(HashSet::new()),
             human_approval_connections: Mutex::new(HashSet::new()),
+            remote_human_connections: Mutex::new(HashSet::new()),
             next_server_request_id: AtomicI64::new(0),
             process_reply_sender: sender.clone(),
             sender,
@@ -354,8 +356,19 @@ impl OutgoingMessageSender {
             .insert(connection_id);
     }
 
+    pub(crate) async fn register_remote_human_connection(&self, connection_id: ConnectionId) {
+        self.remote_human_connections
+            .lock()
+            .await
+            .insert(connection_id);
+    }
+
     pub(crate) async fn connection_closed(&self, connection_id: ConnectionId) {
         self.human_approval_connections
+            .lock()
+            .await
+            .remove(&connection_id);
+        self.remote_human_connections
             .lock()
             .await
             .remove(&connection_id);
@@ -486,6 +499,22 @@ impl OutgoingMessageSender {
         } else {
             connection_ids
         };
+        let local_secret_connections;
+        let connection_ids = if requires_local_secret_authority(&request) {
+            if let Some(ids) = connection_ids {
+                let remote_human = self.remote_human_connections.lock().await;
+                local_secret_connections = ids
+                    .iter()
+                    .copied()
+                    .filter(|id| !remote_human.contains(id))
+                    .collect::<Vec<_>>();
+                Some(local_secret_connections.as_slice())
+            } else {
+                None
+            }
+        } else {
+            connection_ids
+        };
         {
             let mut request_id_to_callback = self.request_id_to_callback.lock().await;
             request_id_to_callback.insert(
@@ -573,7 +602,15 @@ impl OutgoingMessageSender {
             .lock()
             .await
             .contains(&connection_id);
+        let is_remote_human = self
+            .remote_human_connections
+            .lock()
+            .await
+            .contains(&connection_id);
         for request in requests {
+            if requires_local_secret_authority(&request) && is_remote_human {
+                continue;
+            }
             if requires_human_approval(&request) {
                 if !human_approval {
                     continue;
@@ -606,7 +643,9 @@ impl OutgoingMessageSender {
         id: RequestId,
         result: Result,
     ) {
-        let entry = self.take_connection_callback(connection_id, &id).await;
+        let entry = self
+            .take_connection_callback_for_response(connection_id, &id, Some(&result))
+            .await;
 
         match entry {
             Some((id, entry)) => {
@@ -700,13 +739,46 @@ impl OutgoingMessageSender {
         connection_id: ConnectionId,
         id: &RequestId,
     ) -> Option<(RequestId, PendingCallbackEntry)> {
+        self.take_connection_callback_for_response(connection_id, id, /*result*/ None)
+            .await
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn take_connection_callback_for_response(
+        &self,
+        connection_id: ConnectionId,
+        id: &RequestId,
+        result: Option<&Result>,
+    ) -> Option<(RequestId, PendingCallbackEntry)> {
         let human_approval = self
             .human_approval_connections
             .lock()
             .await
             .contains(&connection_id);
+        let is_remote_human = self
+            .remote_human_connections
+            .lock()
+            .await
+            .contains(&connection_id);
         let mut callbacks = self.request_id_to_callback.lock().await;
         let entry = callbacks.get(id)?;
+        if requires_local_secret_authority(&entry.request) && is_remote_human {
+            warn!(
+                ?connection_id,
+                "rejecting remote-human response to local-only secret request {id:?}"
+            );
+            return None;
+        }
+        if is_remote_human
+            && let Some(result) = result
+            && is_disallowed_remote_human_approval_response(&entry.request, result)
+        {
+            warn!(
+                ?connection_id,
+                "rejecting persistent/session-wide approval decision from remote-human connection for {id:?}"
+            );
+            return None;
+        }
         if requires_human_approval(&entry.request)
             && (!human_approval || !entry.human_approval_recipients.contains(&connection_id))
         {
@@ -1093,6 +1165,56 @@ fn timestamped_server_notification(notification: ServerNotification) -> Outgoing
 fn requires_human_approval(request: &ServerRequest) -> bool {
     matches!(request, ServerRequest::CommandExecutionRequestApproval { params, .. }
         if params.kind == codex_app_server_protocol::CommandExecutionApprovalKind::HumanCommand)
+}
+
+/// Private secret prompts (sudo password, GPG passphrase, and secret user-input
+/// questions) require local native authority and are never delivered to or
+/// answerable by remote-human connections.
+pub(crate) fn requires_local_secret_authority(request: &ServerRequest) -> bool {
+    match request {
+        ServerRequest::ShellGuardRequestSecret { .. } => true,
+        ServerRequest::ToolRequestUserInput { params, .. } => {
+            params.questions.iter().any(|question| question.is_secret)
+        }
+        _ => false,
+    }
+}
+
+/// Remote-human connections may only approve or deny a single command/action.
+/// Reject session-wide approvals and policy amendments from remote-human peers.
+fn is_disallowed_remote_human_approval_response(
+    request: &ServerRequest,
+    result: &serde_json::Value,
+) -> bool {
+    let decision_is_persistent = |decision: &serde_json::Value| -> bool {
+        match decision {
+            serde_json::Value::String(value) => matches!(
+                value.as_str(),
+                "acceptForSession" | "allowForSession" | "approved_for_session"
+            ),
+            serde_json::Value::Object(map) => {
+                map.contains_key("acceptWithExecpolicyAmendment")
+                    || map.contains_key("applyNetworkPolicyAmendment")
+                    || map.contains_key("approved_execpolicy_amendment")
+                    || map.contains_key("network_policy_amendment")
+            }
+            _ => false,
+        }
+    };
+    match request {
+        ServerRequest::CommandExecutionRequestApproval { .. }
+        | ServerRequest::FileChangeRequestApproval { .. }
+        | ServerRequest::ShellGuardRequestApproval { .. }
+        | ServerRequest::ExecCommandApproval { .. }
+        | ServerRequest::ApplyPatchApproval { .. } => {
+            result.get("decision").is_some_and(decision_is_persistent)
+        }
+        ServerRequest::PermissionsRequestApproval { .. } => result
+            .get("scope")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|scope| scope.eq_ignore_ascii_case("session")),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1915,5 +2037,247 @@ mod tests {
                 .await
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn remote_human_connection_cannot_receive_or_answer_secret_prompts() {
+        let (tx, mut rx) = mpsc::channel::<OutgoingEnvelope>(16);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let local_conn = ConnectionId(1);
+        let remote_conn = ConnectionId(2);
+        outgoing.register_remote_human_connection(remote_conn).await;
+        let thread_id = ThreadId::new();
+
+        // 1. ShellGuardRequestSecret (sudo password) is only delivered to local_conn.
+        let (secret_id, mut secret_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[local_conn, remote_conn]),
+                ServerRequestPayload::ShellGuardRequestSecret(
+                    codex_app_server_protocol::ShellGuardRequestSecretParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: Some("item-1".to_string()),
+                        started_at_ms: 0,
+                        kind: codex_app_server_protocol::ShellGuardSecretKind::SudoPassword,
+                        cwd: "/tmp".to_string(),
+                        executable: "sudo".to_string(),
+                        argv: vec!["sudo".to_string(), "ls".to_string()],
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+
+        let first = rx.try_recv().expect("local connection should receive secret request");
+        assert!(matches!(
+            first,
+            OutgoingEnvelope::ToConnection { connection_id, .. } if connection_id == local_conn
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "remote-human connection must not receive ShellGuardRequestSecret"
+        );
+
+        // Replaying pending thread requests to remote_conn must also skip the secret request.
+        outgoing
+            .replay_requests_to_connection_for_thread(remote_conn, thread_id)
+            .await;
+        assert!(
+            rx.try_recv().is_err(),
+            "remote-human connection must not receive replayed secret request"
+        );
+
+        // Remote-human response attempt must be rejected without resolving the callback.
+        outgoing
+            .notify_client_response(
+                remote_conn,
+                secret_id.clone(),
+                serde_json::json!({ "decision": "provide", "secret": "hunter2" }),
+            )
+            .await;
+        assert!(secret_waiter.try_recv().is_err());
+
+        // Local native connection can still answer the pending secret prompt.
+        outgoing
+            .notify_client_response(
+                local_conn,
+                secret_id,
+                serde_json::json!({ "decision": "decline" }),
+            )
+            .await;
+        assert!(secret_waiter.await.expect("local response should resolve").is_ok());
+
+        // 2. Secret ToolRequestUserInput (is_secret: true) is also blocked from remote_conn.
+        let (secret_q_id, mut secret_q_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-2".to_string(),
+                    item_id: "call-2".to_string(),
+                    questions: vec![codex_app_server_protocol::ToolRequestUserInputQuestion {
+                        id: "gpg".to_string(),
+                        header: Some("GPG".to_string()),
+                        question: "Passphrase?".to_string(),
+                        is_other: false,
+                        is_secret: true,
+                        options: None,
+                    }],
+                    is_blocking: true,
+                    auto_resolution_ms: None,
+                }),
+                Some(thread_id),
+            )
+            .await;
+        assert!(rx.try_recv().is_err());
+        outgoing
+            .notify_client_response(remote_conn, secret_q_id.clone(), serde_json::json!({}))
+            .await;
+        assert!(secret_q_waiter.try_recv().is_err());
+        outgoing.cancel_request(&secret_q_id).await;
+
+        // 3. Non-secret ToolRequestUserInput IS delivered to and answerable by remote_conn.
+        let (plain_q_id, plain_q_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::ToolRequestUserInput(ToolRequestUserInputParams {
+                    thread_id: thread_id.to_string(),
+                    turn_id: "turn-3".to_string(),
+                    item_id: "call-3".to_string(),
+                    questions: vec![codex_app_server_protocol::ToolRequestUserInputQuestion {
+                        id: "choice".to_string(),
+                        header: Some("Mode".to_string()),
+                        question: "Proceed?".to_string(),
+                        is_other: false,
+                        is_secret: false,
+                        options: None,
+                    }],
+                    is_blocking: true,
+                    auto_resolution_ms: None,
+                }),
+                Some(thread_id),
+            )
+            .await;
+        let delivered = rx.try_recv().expect("remote-human should receive non-secret question");
+        assert!(matches!(
+            delivered,
+            OutgoingEnvelope::ToConnection { connection_id, .. } if connection_id == remote_conn
+        ));
+        outgoing
+            .notify_client_response(remote_conn, plain_q_id, serde_json::json!({ "answers": {} }))
+            .await;
+        assert!(plain_q_waiter.await.expect("remote non-secret answer resolves").is_ok());
+    }
+
+    #[tokio::test]
+    async fn remote_human_connection_rejects_session_wide_and_policy_amendment_approvals() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(16);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let remote_conn = ConnectionId(42);
+        outgoing.register_remote_human_connection(remote_conn).await;
+        let thread_id = ThreadId::new();
+
+        let (cmd_id, mut cmd_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::CommandExecutionRequestApproval(
+                    codex_app_server_protocol::CommandExecutionRequestApprovalParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: "item-1".to_string(),
+                        approval_id: None,
+                        reason: None,
+                        network_approval_context: None,
+                        command: Some("ls".to_string()),
+                        cwd: None,
+                        command_actions: None,
+                        additional_permissions: None,
+                        proposed_execpolicy_amendment: None,
+                        proposed_network_policy_amendments: None,
+                        available_decisions: None,
+                        started_at_ms: 0,
+                        environment_id: None,
+                        kind: codex_app_server_protocol::CommandExecutionApprovalKind::Command,
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+
+        for disallowed in [
+            serde_json::json!({ "decision": "acceptForSession" }),
+            serde_json::json!({ "decision": "allowForSession" }),
+            serde_json::json!({
+                "decision": {
+                    "acceptWithExecpolicyAmendment": {
+                        "execpolicy_amendment": ["ls"]
+                    }
+                }
+            }),
+            serde_json::json!({
+                "decision": {
+                    "applyNetworkPolicyAmendment": {
+                        "network_policy_amendment": { "host": "example.com", "action": "allow" }
+                    }
+                }
+            }),
+        ] {
+            outgoing
+                .notify_client_response(remote_conn, cmd_id.clone(), disallowed)
+                .await;
+            assert!(
+                cmd_waiter.try_recv().is_err(),
+                "session-wide or policy-amendment approval must not resolve"
+            );
+        }
+
+        // One-time approval still succeeds.
+        outgoing
+            .notify_client_response(remote_conn, cmd_id, serde_json::json!({ "decision": "accept" }))
+            .await;
+        assert!(cmd_waiter.await.expect("one-time accept should resolve").is_ok());
+
+        // Session-scoped permission grant is also rejected on remote-human.
+        let (perm_id, mut perm_waiter) = outgoing
+            .send_request_to_connections(
+                Some(&[remote_conn]),
+                ServerRequestPayload::PermissionsRequestApproval(
+                    codex_app_server_protocol::PermissionsRequestApprovalParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-2".to_string(),
+                        item_id: "item-2".to_string(),
+                        reason: None,
+                        cwd: codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path("/tmp")
+                            .expect("absolute path")
+                            .into(),
+                        environment_id: None,
+                        started_at_ms: 0,
+                        permissions: codex_app_server_protocol::RequestPermissionProfile {
+                            network: None,
+                            file_system: None,
+                        },
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+        outgoing
+            .notify_client_response(
+                remote_conn,
+                perm_id.clone(),
+                serde_json::json!({ "permissions": {}, "scope": "session" }),
+            )
+            .await;
+        assert!(perm_waiter.try_recv().is_err());
+        outgoing
+            .notify_client_response(
+                remote_conn,
+                perm_id,
+                serde_json::json!({ "permissions": {}, "scope": "turn" }),
+            )
+            .await;
+        assert!(perm_waiter.await.expect("turn-scoped grant should resolve").is_ok());
     }
 }

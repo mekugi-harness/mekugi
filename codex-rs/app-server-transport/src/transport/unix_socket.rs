@@ -5,25 +5,31 @@ use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::path::Path;
 
+use super::ConnectionOrigin;
 use super::TransportEvent;
-use crate::transport::websocket::run_websocket_connection;
+use crate::transport::websocket::MAX_DECOMPRESSED_MESSAGE_SIZE;
+use crate::transport::websocket::run_websocket_connection_with_origin;
+use axum::Router;
+use axum::extract::State;
+use axum::extract::ws::Message as AxumWebSocketMessage;
+use axum::extract::ws::WebSocket as AxumWebSocket;
+use axum::extract::ws::WebSocketUpgrade;
+use axum::http::HeaderMap;
+use axum::http::HeaderValue;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::any;
+use axum::routing::get;
 use crate::websocket_compression::WEBSOCKET_COMPRESSION_HEADER;
 use crate::websocket_compression::WebSocketCompression;
 use crate::websocket_compression::ZSTD_STREAM_PROTOCOL;
 use codex_uds::UnixListener;
 use codex_uds::UnixStream;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use futures::SinkExt;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
-use tokio_tungstenite::accept_hdr_async_with_config;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::handshake::server::Response as HandshakeResponse;
-use tokio_tungstenite::tungstenite::http::HeaderValue;
-use tokio_tungstenite::tungstenite::http::Response;
-use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
@@ -36,6 +42,10 @@ const CONTROL_SOCKET_MODE: u32 = 0o600;
 // reject oversized requests before the socket closes.
 const MAX_UNFRAGMENTED_MESSAGE_BYTES_HEADER: &str =
     "x-codex-websocket-max-unfragmented-message-bytes";
+/// Restricted remote-human WebSocket control endpoint served on the private Unix socket.
+pub const REMOTE_HUMAN_CONTROL_PATH: &str = "/api/control";
+/// WebSocket subprotocol negotiated with the remote-human connector and browser UI.
+pub const REMOTE_HUMAN_SUBPROTOCOL: &str = "mekugi.control.v9";
 
 #[derive(Clone, Copy)]
 pub enum DaemonShutdownAccess {
@@ -50,6 +60,25 @@ pub async fn start_control_socket_acceptor(
     daemon_shutdown_access: DaemonShutdownAccess,
     compression: WebSocketCompression,
 ) -> IoResult<JoinHandle<()>> {
+    start_control_socket_acceptor_with_http_router(
+        socket_path,
+        transport_event_tx,
+        shutdown_token,
+        daemon_shutdown_access,
+        compression,
+        /*http_router*/ None,
+    )
+    .await
+}
+
+pub async fn start_control_socket_acceptor_with_http_router(
+    socket_path: AbsolutePathBuf,
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    shutdown_token: CancellationToken,
+    daemon_shutdown_access: DaemonShutdownAccess,
+    compression: WebSocketCompression,
+    http_router: Option<Router>,
+) -> IoResult<JoinHandle<()>> {
     let (listener, socket_guard) = bind_private_daemon_socket(socket_path.as_path()).await?;
     info!(
         socket_path = %socket_guard.socket_path.display(),
@@ -63,6 +92,7 @@ pub async fn start_control_socket_acceptor(
         socket_guard,
         daemon_shutdown_access,
         compression,
+        http_router,
     )))
 }
 
@@ -145,118 +175,194 @@ pub async fn bind_private_daemon_socket(
     Ok((listener, socket_guard))
 }
 
+#[derive(Clone)]
+struct ControlSocketState {
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    daemon_shutdown_access: DaemonShutdownAccess,
+    compression: WebSocketCompression,
+}
+
+struct ControlSocketListener(UnixListener);
+
+impl axum::serve::Listener for ControlSocketListener {
+    type Io = UnixStream;
+    type Addr = ();
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok(stream) => return (stream, ()),
+                Err(err) => {
+                    if matches!(
+                        err.kind(),
+                        ErrorKind::ConnectionAborted
+                            | ErrorKind::ConnectionReset
+                            | ErrorKind::Interrupted
+                    ) {
+                        warn!("recoverable control socket accept error: {err}");
+                        continue;
+                    }
+                    error!("control socket accept error: {err}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> IoResult<Self::Addr> {
+        Ok(())
+    }
+}
+
+fn default_max_unfragmented_message_bytes() -> Option<usize> {
+    let websocket_config = WebSocketConfig::default();
+    [
+        websocket_config.max_frame_size,
+        websocket_config.max_message_size,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
+async fn daemon_shutdown_handler(
+    websocket: WebSocketUpgrade,
+    State(state): State<ControlSocketState>,
+) -> impl IntoResponse {
+    if !matches!(state.daemon_shutdown_access, DaemonShutdownAccess::Managed) {
+        return (StatusCode::FORBIDDEN, "unmanaged server").into_response();
+    }
+    websocket
+        .on_upgrade(move |stream| run_daemon_shutdown(stream, state.transport_event_tx))
+        .into_response()
+}
+
+fn negotiate_compression(
+    configured: WebSocketCompression,
+    headers: &HeaderMap,
+) -> WebSocketCompression {
+    if configured == WebSocketCompression::Zstd
+        && headers
+            .get(WEBSOCKET_COMPRESSION_HEADER)
+            .is_some_and(|value| value == ZSTD_STREAM_PROTOCOL)
+    {
+        WebSocketCompression::Zstd
+    } else {
+        WebSocketCompression::Plain
+    }
+}
+
+fn apply_websocket_headers(
+    response: &mut axum::response::Response,
+    compression: WebSocketCompression,
+    max_unfragmented_message_bytes: Option<usize>,
+) {
+    if compression == WebSocketCompression::Zstd {
+        response.headers_mut().insert(
+            WEBSOCKET_COMPRESSION_HEADER,
+            HeaderValue::from_static(ZSTD_STREAM_PROTOCOL),
+        );
+    }
+    if let Some(max_bytes) = max_unfragmented_message_bytes {
+        response.headers_mut().insert(
+            MAX_UNFRAGMENTED_MESSAGE_BYTES_HEADER,
+            HeaderValue::from(max_bytes),
+        );
+    }
+}
+
+async fn remote_human_websocket_handler(
+    websocket: WebSocketUpgrade,
+    State(state): State<ControlSocketState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let compression = negotiate_compression(state.compression, &headers);
+    let mut response = websocket
+        .protocols([REMOTE_HUMAN_SUBPROTOCOL])
+        .max_frame_size(MAX_DECOMPRESSED_MESSAGE_SIZE)
+        .max_message_size(MAX_DECOMPRESSED_MESSAGE_SIZE)
+        .on_upgrade(move |stream| async move {
+            let (websocket_writer, websocket_reader) = stream.split();
+            run_websocket_connection_with_origin(
+                websocket_writer,
+                websocket_reader,
+                state.transport_event_tx,
+                ConnectionOrigin::RemoteHuman,
+                compression,
+            )
+            .await;
+        })
+        .into_response();
+    apply_websocket_headers(&mut response, compression, Some(MAX_DECOMPRESSED_MESSAGE_SIZE));
+    response
+}
+
+async fn local_control_websocket_handler(
+    websocket: WebSocketUpgrade,
+    State(state): State<ControlSocketState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let compression = negotiate_compression(state.compression, &headers);
+    let mut response = websocket
+        .on_upgrade(move |stream| async move {
+            let (websocket_writer, websocket_reader) = stream.split();
+            run_websocket_connection_with_origin(
+                websocket_writer,
+                websocket_reader,
+                state.transport_event_tx,
+                ConnectionOrigin::WebSocket,
+                compression,
+            )
+            .await;
+        })
+        .into_response();
+    apply_websocket_headers(&mut response, compression, default_max_unfragmented_message_bytes());
+    response
+}
+
 async fn run_control_socket_acceptor(
-    mut listener: UnixListener,
+    listener: UnixListener,
     transport_event_tx: mpsc::Sender<TransportEvent>,
     shutdown_token: CancellationToken,
     socket_guard: DaemonSocketFileGuard,
     daemon_shutdown_access: DaemonShutdownAccess,
     compression: WebSocketCompression,
+    http_router: Option<Router>,
 ) {
     let _socket_guard = socket_guard;
-    loop {
-        let stream = tokio::select! {
-            _ = shutdown_token.cancelled() => {
-                break;
-            }
-            result = listener.accept() => {
-                match result {
-                    Ok(stream) => stream,
-                    Err(err) => {
-                        if matches!(
-                            err.kind(),
-                            ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
-                        ) {
-                            warn!("recoverable control socket accept error: {err}");
-                            continue;
-                        }
-                        error!("control socket accept error: {err}");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
-                }
-            }
-        };
-
-        let transport_event_tx = transport_event_tx.clone();
-        tokio::spawn(async move {
-            let mut shutdown_request = false;
-            let mut negotiated_compression = WebSocketCompression::Plain;
-            let websocket_config = WebSocketConfig::default();
-            let max_unfragmented_message_bytes = [
-                websocket_config.max_frame_size,
-                websocket_config.max_message_size,
-            ]
-            .into_iter()
-            .flatten()
-            .min();
-            let websocket_stream = match accept_hdr_async_with_config(
-                stream,
-                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                 mut response: HandshakeResponse| {
-                    if request.uri().path() == "/daemon/shutdown" {
-                        if !matches!(daemon_shutdown_access, DaemonShutdownAccess::Managed) {
-                            let mut rejection = Response::new(Some("unmanaged server".to_string()));
-                            *rejection.status_mut() = StatusCode::FORBIDDEN;
-                            return Err(rejection);
-                        }
-                        shutdown_request = true;
-                    } else if compression == WebSocketCompression::Zstd
-                        && request
-                            .headers()
-                            .get(WEBSOCKET_COMPRESSION_HEADER)
-                            .is_some_and(|value| value == ZSTD_STREAM_PROTOCOL)
-                    {
-                        negotiated_compression = WebSocketCompression::Zstd;
-                        response.headers_mut().insert(
-                            WEBSOCKET_COMPRESSION_HEADER,
-                            HeaderValue::from_static(ZSTD_STREAM_PROTOCOL),
-                        );
-                    }
-                    if let Some(max_bytes) = max_unfragmented_message_bytes {
-                        response.headers_mut().insert(
-                            MAX_UNFRAGMENTED_MESSAGE_BYTES_HEADER,
-                            HeaderValue::from(max_bytes),
-                        );
-                    }
-                    Ok(response)
-                },
-                Some(websocket_config),
-            )
-            .await
-            {
-                Ok(websocket_stream) => websocket_stream,
-                Err(err) => {
-                    warn!("failed to upgrade control socket websocket connection: {err}");
-                    return;
-                }
-            };
-            if shutdown_request {
-                run_daemon_shutdown(websocket_stream, transport_event_tx).await;
-                return;
-            }
-            let (websocket_writer, websocket_reader) = websocket_stream.split();
-            run_websocket_connection(
-                websocket_writer,
-                websocket_reader,
-                transport_event_tx,
-                negotiated_compression,
-            )
-            .await;
-        });
+    let state = ControlSocketState {
+        transport_event_tx,
+        daemon_shutdown_access,
+        compression,
+    };
+    let mut router = Router::new()
+        .route("/daemon/shutdown", get(daemon_shutdown_handler))
+        .route(REMOTE_HUMAN_CONTROL_PATH, get(remote_human_websocket_handler))
+        .fallback(any(local_control_websocket_handler))
+        .with_state(state);
+    if let Some(extra) = http_router {
+        router = router.merge(extra);
+    }
+    let server = axum::serve(ControlSocketListener(listener), router).with_graceful_shutdown(
+        async move {
+            shutdown_token.cancelled().await;
+        },
+    );
+    if let Err(err) = server.await {
+        error!("control socket acceptor failed: {err}");
     }
     info!("control socket acceptor shutting down");
 }
 
 async fn run_daemon_shutdown(
-    mut websocket: tokio_tungstenite::WebSocketStream<UnixStream>,
+    mut websocket: AxumWebSocket,
     transport_event_tx: mpsc::Sender<TransportEvent>,
 ) {
     let pid = std::process::id().to_string();
-    if !matches!(websocket.next().await, Some(Ok(Message::Text(request))) if request == pid) {
+    if !matches!(websocket.next().await, Some(Ok(AxumWebSocketMessage::Text(request))) if request == pid) {
         return;
     }
-    if websocket.send(Message::Text(pid.into())).await.is_err() {
+    if websocket.send(AxumWebSocketMessage::Text(pid.into())).await.is_err() {
         return;
     }
     // Let the manager receive the acknowledgment before the main loop closes connections.

@@ -212,6 +212,27 @@ pub(crate) async fn run_websocket_connection<M, SinkError, StreamError>(
     SinkError: Send + 'static,
     StreamError: std::fmt::Display + Send + 'static,
 {
+    run_websocket_connection_with_origin(
+        websocket_writer,
+        websocket_reader,
+        transport_event_tx,
+        ConnectionOrigin::WebSocket,
+        compression,
+    )
+    .await;
+}
+
+pub(crate) async fn run_websocket_connection_with_origin<M, SinkError, StreamError>(
+    websocket_writer: impl futures::sink::Sink<M, Error = SinkError> + Send + 'static,
+    websocket_reader: impl futures::stream::Stream<Item = Result<M, StreamError>> + Send + 'static,
+    transport_event_tx: mpsc::Sender<TransportEvent>,
+    origin: ConnectionOrigin,
+    compression: WebSocketCompression,
+) where
+    M: AppServerWebSocketMessage + Send + 'static,
+    SinkError: Send + 'static,
+    StreamError: std::fmt::Display + Send + 'static,
+{
     let connection_id = next_connection_id();
     let (encoder, decoder) = match compression {
         WebSocketCompression::Plain => (None, None),
@@ -235,7 +256,7 @@ pub(crate) async fn run_websocket_connection<M, SinkError, StreamError>(
     if transport_event_tx
         .send(TransportEvent::ConnectionOpened {
             connection_id,
-            origin: ConnectionOrigin::WebSocket,
+            origin,
             auth: None,
             writer: writer_tx,
             disconnect_sender: Some(disconnect_token.clone()),

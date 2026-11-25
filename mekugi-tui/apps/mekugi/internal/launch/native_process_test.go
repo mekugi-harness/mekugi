@@ -43,6 +43,7 @@ func TestNativeStartupInterruptProcess(t *testing.T) {
 
 func TestNativeStartupInterruptCancelsReadinessWait(t *testing.T) {
 	cache := shortTempDir(t)
+	t.Setenv("CODEX_HOME", cache)
 	t.Setenv("HOME", cache) // os.UserCacheDir uses HOME on macOS.
 	t.Setenv("XDG_CACHE_HOME", cache)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

@@ -686,3 +686,74 @@ func TestConnectorLargeMessageAndClientDisconnect(t *testing.T) {
 		t.Fatal("client disconnect did not close upstream")
 	}
 }
+
+func TestConnectorNativeInitializePreservesClientInfoAndStripsToken(t *testing.T) {
+	t.Parallel()
+	var receivedParams map[string]any
+	socket, _ := upstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RequestURI() != sessionapi.RPCPath {
+			t.Errorf("upstream path = %q, want %q", r.URL.RequestURI(), sessionapi.RPCPath)
+		}
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{sessionapi.RPCSubprotocol}})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.CloseNow()
+		_, data, err := conn.Read(t.Context())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var msg struct {
+			JSONRPC string         `json:"jsonrpc"`
+			ID      any            `json:"id"`
+			Method  string         `json:"method"`
+			Params  map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Error(err)
+			return
+		}
+		receivedParams = msg.Params
+		reply := `{"jsonrpc":"2.0","id":1,"result":{"userAgent":"mekugi-app-server","platformFamily":"unix","platformOs":"linux"}}`
+		if err := conn.Write(t.Context(), websocket.MessageText, []byte(reply)); err != nil {
+			return
+		}
+		echo(t, conn)
+	}))
+	c, tokenPath := connect(t, socket, "https://ui.example")
+	remote := httptest.NewServer(c)
+	defer remote.Close()
+	conn := dial(t, remote.URL, http.Header{"Origin": []string{"https://ui.example"}})
+	defer conn.CloseNow()
+	initMsg := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"mekugi-webui","version":"1.0.0"},"capabilities":{"experimentalApi":true},"token":"` + readToken(t, tokenPath) + `"}}`
+	reply := exchange(t, conn, initMsg)
+	if !strings.Contains(reply, `"userAgent":"mekugi-app-server"`) {
+		t.Fatalf("unexpected native initialize reply: %s", reply)
+	}
+	if _, leaked := receivedParams["token"]; leaked {
+		t.Fatal("connector leaked bearer token into native initialize params")
+	}
+	clientInfo, ok := receivedParams["clientInfo"].(map[string]any)
+	if !ok || clientInfo["name"] != "mekugi-webui" {
+		t.Fatalf("connector dropped clientInfo: %#v", receivedParams)
+	}
+	turnMsg := `{"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"threadId":"t1","input":[{"type":"text","text":"hello"}]}}`
+	if got := exchange(t, conn, turnMsg); got != turnMsg {
+		t.Fatalf("native RPC altered: %q", got)
+	}
+}
+
+func TestConnectorNativeSocketPathUsesCodexHome(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	got, err := NativeSocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(codexHome, "app-server-control", "app-server-control.sock")
+	if got != want {
+		t.Fatalf("NativeSocketPath() = %q, want %q", got, want)
+	}
+}
