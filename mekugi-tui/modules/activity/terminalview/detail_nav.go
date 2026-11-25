@@ -81,6 +81,38 @@ func (v *View) ResolveDetailTarget(target DetailTarget) DetailTarget {
 	return target
 }
 
+type detailRunIndex map[uint64][]Block
+
+func (v *View) detailRunIndex() detailRunIndex {
+	index := make(detailRunIndex, len(v.Runs))
+	for key, run := range v.Runs {
+		if key.Expansion == v.Expansion {
+			index[key.First] = run.Blocks
+		}
+	}
+	return index
+}
+
+func (idx detailRunIndex) resolve(target DetailTarget) DetailTarget {
+	if target.Zero() || target.Entry != 0 {
+		return target
+	}
+	if target.Snippet.Block == EditNavigationSnippet {
+		target.Edit = true
+		target.Source = target.Snippet.Run
+		return target
+	}
+	if blocks, ok := idx[target.Snippet.Run]; ok && target.Snippet.Block >= 0 && target.Snippet.Block < len(blocks) {
+		block := blocks[target.Snippet.Block]
+		if len(block.Members) > 0 {
+			target.Merged = true
+		} else if block.Source != 0 {
+			target.Source = block.Source
+		}
+	}
+	return target
+}
+
 // SetActiveDetail highlights the active transcript event (and optionally scrolls
 // the transcript viewport to keep it visible while the detail sheet is open).
 func (v *View) SetActiveDetail(target DetailTarget, reveal bool) {
@@ -96,7 +128,7 @@ func (v *View) ClearActiveDetail() {
 	v.ActiveDetailReveal = false
 }
 
-func (v *View) collectDetailTargets(feed Feed) []DetailTarget {
+func (v *View) collectDetailTargets(feed Feed, runs detailRunIndex) []DetailTarget {
 	var targets []DetailTarget
 	seen := make(map[detailEventKey]int)
 	for row := range feed.Lines {
@@ -105,7 +137,7 @@ func (v *View) collectDetailTargets(feed Feed) []DetailTarget {
 			cand = DetailTarget{Entry: feed.Questions[row], Start: row, End: row + 1}
 		} else if row < len(feed.Snippets) && feed.Snippets[row] != (Snippet{}) {
 			s := feed.Snippets[row]
-			cand = v.ResolveDetailTarget(DetailTarget{Snippet: s, LastSnippet: s, Start: row, End: row + 1})
+			cand = runs.resolve(DetailTarget{Snippet: s, LastSnippet: s, Start: row, End: row + 1})
 		} else {
 			continue
 		}
@@ -125,7 +157,33 @@ func (v *View) collectDetailTargets(feed Feed) []DetailTarget {
 	return targets
 }
 
-func (v *View) activeDetailRowMatch(feed Feed) (exactPath bool, start int, end int, found bool) {
+func (v *View) activeDetailRevealRange(feed Feed, runs detailRunIndex) (start int, end int, found bool) {
+	active := v.ActiveDetail
+	if active.Zero() {
+		return 0, 0, false
+	}
+	if active.Entry == 0 && active.Snippet != (Snippet{}) && active.Snippet.Block != EditNavigationSnippet {
+		start, end = -1, -1
+		for row := range feed.Lines {
+			if row < len(feed.Snippets) {
+				s := feed.Snippets[row]
+				if s.Run == active.Snippet.Run && s.Block == active.Snippet.Block {
+					if start < 0 {
+						start = row
+					}
+					end = row + 1
+				}
+			}
+		}
+		if start >= 0 {
+			return start, end, true
+		}
+	}
+	_, start, end, found = v.activeDetailRowMatch(feed, runs)
+	return start, end, found
+}
+
+func (v *View) activeDetailRowMatch(feed Feed, runs detailRunIndex) (exactPath bool, start int, end int, found bool) {
 	active := v.ActiveDetail
 	if active.Zero() {
 		return false, 0, 0, false
@@ -155,7 +213,7 @@ func (v *View) activeDetailRowMatch(feed Feed) (exactPath bool, start int, end i
 	}
 	start, end = -1, -1
 	for row := range feed.Lines {
-		if v.rowMatchesDetailEvent(feed, row, active) {
+		if rowMatchesDetailEvent(feed, row, active, runs) {
 			if start < 0 {
 				start = row
 			}
@@ -165,7 +223,7 @@ func (v *View) activeDetailRowMatch(feed Feed) (exactPath bool, start int, end i
 	return false, start, end, start >= 0
 }
 
-func (v *View) rowMatchesDetailEvent(feed Feed, row int, active DetailTarget) bool {
+func rowMatchesDetailEvent(feed Feed, row int, active DetailTarget, runs detailRunIndex) bool {
 	if active.Entry != 0 {
 		return row < len(feed.Questions) && feed.Questions[row] == active.Entry
 	}
@@ -174,12 +232,12 @@ func (v *View) rowMatchesDetailEvent(feed Feed, row int, active DetailTarget) bo
 		if s == (Snippet{}) {
 			return false
 		}
-		return v.ResolveDetailTarget(DetailTarget{Snippet: s}).SameEvent(active)
+		return runs.resolve(DetailTarget{Snippet: s}).SameEvent(active)
 	}
 	return false
 }
 
-func (v *View) rowMatchesActiveDetail(feed Feed, row int, active DetailTarget, exactPath bool) bool {
+func rowMatchesActiveDetail(feed Feed, row int, active DetailTarget, exactPath bool, runs detailRunIndex) bool {
 	if exactPath {
 		if row >= len(feed.Snippets) {
 			return false
@@ -191,7 +249,7 @@ func (v *View) rowMatchesActiveDetail(feed Feed, row int, active DetailTarget, e
 		return active.Snippet.Path != "" && s.Path == active.Snippet.Path ||
 			active.DisplayPath != "" && s.Path == active.DisplayPath
 	}
-	return v.rowMatchesDetailEvent(feed, row, active)
+	return rowMatchesDetailEvent(feed, row, active, runs)
 }
 
 // highlightTranscriptGutter styles the two-cell left rail of an active

@@ -183,22 +183,91 @@ func TestActiveDetailScrollsBelowPinnedHeading(t *testing.T) {
 			Seq: 1, Agent: "Main", Kind: "tool",
 			Values: []activity.Value{
 				{Source: 1, Kind: "op", Verb: "Edit", Workdir: "sub", Label: "`sub/a.go`", Path: "sub/a.go", Effect: true},
-				{Source: 1, Kind: "op", Verb: "Edit", Workdir: "sub", Label: "`sub/b.go`", Path: "sub/b.go", Effect: true},
-				{Source: 1, Kind: "op", Verb: "Edit", Workdir: "sub", Label: "`sub/c.go`", Path: "sub/c.go", Effect: true},
-				{Source: 1, Kind: "op", Verb: "Edit", Workdir: "sub", Label: "`sub/d.go`", Path: "sub/d.go", Effect: true},
+				{Source: 2, Kind: "op", Verb: "Edit", Workdir: "sub", Label: "`sub/b.go`", Path: "sub/b.go", Effect: true},
+				{Source: 3, Kind: "op", Verb: "Edit", Workdir: "sub", Label: "`sub/c.go`", Path: "sub/c.go", Effect: true},
+				{Source: 4, Kind: "op", Verb: "Edit", Workdir: "sub", Label: "`sub/d.go`", Path: "sub/d.go", Effect: true},
 			},
 		},
 	}
 	v.Update(&activity.Publication{Entries: entries}, Display{Caller: "/root"})
-	// Place viewport offset right on sub/a.go (row 1, directly below the workdir heading at row 0),
-	// where PinnedHeading replaces row 1 with the pinned workdir heading.
+	// Place viewport offset right on sub/a.go (row 1, directly below the workdir heading at row 0)
+	// and verify PinnedHeading actually covers sub/a.go before reveal scrolls back to row 0.
 	v.Following = false
 	v.Offset = 1
+	before := ansi.Strip(strings.Join(v.Render(80, 3, time.Unix(1, 0)), "\n"))
+	if !strings.Contains(before, "sub") || strings.Contains(before, "a.go") {
+		t.Fatalf("expected pinned workdir heading to cover a.go at offset 1, got:\n%s", before)
+	}
 	v.SetActiveDetail(DetailTarget{Snippet: Snippet{Run: 1, Block: EditNavigationSnippet, Path: "sub/a.go"}}, true)
 	rows := v.Render(80, 3, time.Unix(1, 0))
 	joined := ansi.Strip(strings.Join(rows, "\n"))
 	if !strings.Contains(joined, "a.go") {
 		t.Fatalf("active edit was hidden by pinned workdir heading:\n%s", joined)
+	}
+}
+
+func TestActiveDetailRevealKeepsClickedCommandSegmentVisible(t *testing.T) {
+	v := NewView()
+	v.Conversation = true
+	v.FeedOnly = true
+	entries := []activity.Entry{
+		{
+			Seq: 1, Agent: "Main", Kind: "command",
+			Values: []activity.Value{
+				{
+					Source: 1, Operation: 1, Output: 1, Kind: "op", Verb: "Run",
+					Code: "echo first-segment",
+					Tail: []string{"line 1", "line 2", "line 3", "line 4", "line 5", "line 6"},
+				},
+				{
+					Source: 1, Operation: 2, Output: 2, Kind: "op", Verb: "Run",
+					Code: "echo second-segment",
+					Tail: []string{"second output"},
+				},
+			},
+		},
+	}
+	v.Update(&activity.Publication{Entries: entries}, Display{Caller: "/root"})
+	v.Follow()
+	_ = v.Render(80, 6, time.Unix(1, 0))
+
+	// Open the second segment (block 1) of the multi-segment command; reveal must keep it visible
+	// rather than scrolling back to block 0 when the full invocation exceeds viewport height.
+	v.SetActiveDetail(DetailTarget{Snippet: Snippet{Run: 1, Block: 1}}, true)
+	rows := v.Render(80, 6, time.Unix(1, 0))
+	joined := ansi.Strip(strings.Join(rows, "\n"))
+	if !strings.Contains(joined, "second-segment") {
+		t.Fatalf("clicked second command segment was scrolled out of view:\n%s", joined)
+	}
+	if len(v.FeedTargets) != 1 || v.FeedTargets[0].Source != 1 {
+		t.Fatalf("expected multi-segment command to stay collapsed to 1 target, got %+v", v.FeedTargets)
+	}
+}
+
+func TestDetailRunIndexResolvesManyRunsInSinglePass(t *testing.T) {
+	v := NewView()
+	v.Conversation = true
+	v.FeedOnly = true
+	const total = 150
+	entries := make([]activity.Entry, 0, total)
+	for i := uint64(1); i <= total; i++ {
+		entries = append(entries, activity.Entry{
+			Seq: i, Agent: "Main", Kind: "command",
+			Values: []activity.Value{
+				{Source: i, Operation: 1, Output: 1, Kind: "op", Verb: "Run", Code: fmt.Sprintf("echo cmd-%d", i)},
+			},
+		})
+	}
+	v.Update(&activity.Publication{Entries: entries}, Display{Caller: "/root"})
+	v.Follow()
+	v.SetActiveDetail(DetailTarget{Snippet: Snippet{Run: total, Block: 0}}, true)
+	rows := v.Render(80, 6, time.Unix(1, 0))
+	if len(v.FeedTargets) != total {
+		t.Fatalf("got %d targets, want %d", len(v.FeedTargets), total)
+	}
+	joined := ansi.Strip(strings.Join(rows, "\n"))
+	if !strings.Contains(joined, fmt.Sprintf("cmd-%d", total)) {
+		t.Fatalf("expected active last command visible:\n%s", joined)
 	}
 }
 

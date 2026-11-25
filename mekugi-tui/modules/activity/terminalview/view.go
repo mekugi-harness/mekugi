@@ -1552,12 +1552,20 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 
 // viewportPosition resolves scrolling without committing viewport geometry.
 func (v *View) viewportPosition(feed Feed, rows int) (int, bool) {
+	var runs detailRunIndex
+	if v.ActiveDetailReveal && rows > 0 && !v.ActiveDetail.Zero() {
+		runs = v.detailRunIndex()
+	}
+	return v.viewportPositionWithRuns(feed, rows, runs)
+}
+
+func (v *View) viewportPositionWithRuns(feed Feed, rows int, runs detailRunIndex) (int, bool) {
 	offset, following := v.Offset, v.Following
 	if following {
 		offset = len(feed.Lines) - rows
 	}
 	if v.ActiveDetailReveal && rows > 0 {
-		if _, start, end, ok := v.activeDetailRowMatch(feed); ok {
+		if start, end, ok := v.activeDetailRevealRange(feed, runs); ok {
 			clamped := max(0, min(offset, len(feed.Lines)-rows))
 			minVisible := clamped
 			if _, pinned := v.pinnedHeadingAt(feed, clamped, rows); pinned {
@@ -1587,12 +1595,16 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 	if len(v.outputDemands) > 0 {
 		return make([]string, rows)
 	}
-	v.Offset, v.Following = v.viewportPosition(feed, rows)
+	var runs detailRunIndex
+	if !v.ActiveDetail.Zero() {
+		runs = v.detailRunIndex()
+	}
+	v.Offset, v.Following = v.viewportPositionWithRuns(feed, rows, runs)
 	v.ActiveDetailReveal = false
 	if v.ActiveDetail.Zero() {
 		v.FeedTargets = nil
 	} else {
-		v.FeedTargets = v.collectDetailTargets(feed)
+		v.FeedTargets = v.collectDetailTargets(feed, runs)
 	}
 	v.imageViewport(feed, rows)
 	v.FeedSpans = feed.Spans
@@ -1629,13 +1641,13 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 		v.FeedQuestions[0] = 0
 	}
 	if !v.ActiveDetail.Zero() {
-		exactPath, _, _, found := v.activeDetailRowMatch(feed)
+		exactPath, _, _, found := v.activeDetailRowMatch(feed, runs)
 		if found {
 			for row := range lines {
 				if v.FeedSnippets[row] == (Snippet{}) && v.FeedQuestions[row] == 0 {
 					continue
 				}
-				if v.rowMatchesActiveDetail(feed, v.Offset+row, v.ActiveDetail, exactPath) {
+				if rowMatchesActiveDetail(feed, v.Offset+row, v.ActiveDetail, exactPath, runs) {
 					lines[row] = highlightTranscriptGutter(lines[row], v.Painter.Theme)
 				}
 			}
