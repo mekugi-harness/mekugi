@@ -77,6 +77,16 @@ func (c *NativeConnection) Attach(ctx context.Context, thread string) (*NativeCo
 	}
 	c.scope.refs++
 	c.scope.mu.Unlock()
+	params, seedReview, seedFamily := c.attachParams(thread)
+	subscription, err := c.scope.rpc.Subscribe(ctx, "view/attach", params)
+	if err != nil {
+		c.scope.release()
+		return nil, nativeRPCFailure(err)
+	}
+	return &NativeConnection{client: c.client, base: c.base, thread: thread, scope: c.scope, subscription: subscription, seedReview: seedReview, seedFamily: seedFamily}, nil
+}
+
+func (c *NativeConnection) attachParams(thread string) (RPCParams, *changes.ReviewView, *Family) {
 	c.retainMu.Lock()
 	seedReview, seedFamily := c.retainedReview, c.retainedFamily
 	c.retainMu.Unlock()
@@ -95,12 +105,7 @@ func (c *NativeConnection) Attach(ctx context.Context, thread string) (*NativeCo
 		}
 		params.Retain = &retain
 	}
-	subscription, err := c.scope.rpc.Subscribe(ctx, "view/attach", params)
-	if err != nil {
-		c.scope.release()
-		return nil, nativeRPCFailure(err)
-	}
-	return &NativeConnection{client: c.client, base: c.base, thread: thread, scope: c.scope, subscription: subscription, seedReview: seedReview, seedFamily: seedFamily}, nil
+	return params, seedReview, seedFamily
 }
 
 func (s *nativeRPCScope) release() {
