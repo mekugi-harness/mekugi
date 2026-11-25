@@ -1,7 +1,6 @@
 //! Pre/post shell-write and mktemp file-tree capture into codex-change-history.
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Component;
@@ -29,12 +28,6 @@ use crate::session::MktempCreation;
 const MAX_CAPTURE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// Maximum files walked inside one mktemp -d directory tree.
 const MAX_MKTEMP_TREE_FILES: usize = 1024;
-/// Maximum files walked when expanding directory targets (e.g. `git restore .`, `gofmt -w dir`).
-const MAX_DIR_TARGET_FILES: usize = 1024;
-/// Maximum child module files followed from a `rustfmt` root file.
-const MAX_RUSTFMT_CHILD_MODULES: usize = 256;
-/// Maximum file size scanned for `mod <name>;` child module declarations.
-const MAX_RUSTFMT_MODULE_SCAN_BYTES: u64 = 1024 * 1024;
 
 /// Compute the shared deduplication claim_key for (thread_id, call_id) so
 /// overlapping apply_patch and ShellWrite observers claim the same logical
@@ -110,16 +103,6 @@ impl ShellWriteCapture {
     /// Number of statically recognized pre-execution candidate paths.
     pub fn candidate_count(&self) -> usize {
         self.baselines.len()
-    }
-
-    /// True when all statically recognized write targets came from diagnostic
-    /// VCS restore operations (e.g. `git restore`, `git checkout --`).
-    pub fn is_vcs_only(&self) -> bool {
-        !self.baselines.is_empty()
-            && self
-                .baselines
-                .values()
-                .all(|(_, _, prov)| *prov == TargetProvenance::Vcs)
     }
 
     /// Observe post-execution bytes for all statically recognized paths plus
@@ -605,278 +588,107 @@ fn extract_command_write_targets(words: &[String], cwd: &Path, out: &mut Extract
     }
 }
 
-fn extract_gofmt_write_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
-    let mut has_write_flag = false;
-    let mut skip_next = false;
-    let mut after_dashdash = false;
+fn split_flags_and_paths<'a>(
+    args: &'a [String],
+    value_flags: &[&str],
+) -> (Vec<(&'a str, Option<&'a str>)>, Vec<&'a str>) {
+    let mut flags = Vec::new();
     let mut paths = Vec::new();
-
-    for arg in args {
-        if arg.is_empty() {
-            continue;
-        }
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
+    let mut after_dashdash = false;
+    let mut iter = args.iter().filter(|a| !a.is_empty());
+    while let Some(arg) = iter.next() {
         if !after_dashdash && arg == "--" {
             after_dashdash = true;
             continue;
         }
         if !after_dashdash && arg.starts_with('-') {
-            if matches!(arg.as_str(), "-r" | "-cpuprofile" | "-local" | "-srcdir") {
-                skip_next = true;
-                continue;
-            }
-            if arg == "-w" || arg == "--w" || (!arg.starts_with("--") && arg[1..].contains('w')) {
-                has_write_flag = true;
+            if value_flags.contains(&arg.as_str()) {
+                flags.push((arg.as_str(), iter.next().map(String::as_str)));
+            } else {
+                flags.push((arg.as_str(), None));
             }
             continue;
         }
         paths.push(arg.as_str());
     }
+    (flags, paths)
+}
 
-    if !has_write_flag {
-        return;
-    }
+fn insert_targets(
+    paths: &[&str],
+    cwd: &Path,
+    provenance: TargetProvenance,
+    out: &mut ExtractedWriteTargets,
+) {
     for arg in paths {
         if is_capturable_path(arg) {
-            let resolved = resolve_canonical_path(&resolve_path(cwd, Path::new(arg)));
-            if resolved.is_dir() {
-                let mut dir_files = Vec::new();
-                collect_dir_files_filtered(&resolved, &mut dir_files, MAX_DIR_TARGET_FILES, |p| {
-                    p.extension().is_some_and(|ext| ext == "go")
-                });
-                for file in dir_files {
-                    out.insert(file, TargetProvenance::Authored);
-                }
-            } else {
-                out.insert(resolved, TargetProvenance::Authored);
-            }
+            out.insert(
+                resolve_canonical_path(&resolve_path(cwd, Path::new(arg))),
+                provenance,
+            );
         }
+    }
+}
+
+fn extract_gofmt_write_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
+    let (flags, paths) = split_flags_and_paths(args, &["-r", "-cpuprofile", "-local", "-srcdir"]);
+    let has_write = flags
+        .iter()
+        .any(|(f, _)| *f == "-w" || *f == "--w" || (!f.starts_with("--") && f[1..].contains('w')));
+    if has_write {
+        insert_targets(&paths, cwd, TargetProvenance::Authored, out);
     }
 }
 
 fn extract_rustfmt_write_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
-    let mut skip_next = false;
-    let mut expect_emit_value = false;
-    let mut after_dashdash = false;
-    let mut read_only = false;
-    let mut skip_children = false;
-    let mut paths = Vec::new();
-
-    for arg in args {
-        if arg.is_empty() {
-            continue;
-        }
-        if expect_emit_value {
-            expect_emit_value = false;
-            if arg != "files" {
-                read_only = true;
-            }
-            continue;
-        }
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if !after_dashdash && arg == "--" {
-            after_dashdash = true;
-            continue;
-        }
-        if !after_dashdash && arg.starts_with('-') {
-            if matches!(
-                arg.as_str(),
-                "--check"
-                    | "--print-config"
-                    | "--list-files"
-                    | "-h"
-                    | "--help"
-                    | "-V"
-                    | "--version"
-            ) {
-                read_only = true;
-                continue;
-            }
-            if arg == "--skip-children" {
-                skip_children = true;
-                continue;
-            }
-            if arg == "--emit" {
-                expect_emit_value = true;
-                continue;
-            }
-            if let Some(val) = arg.strip_prefix("--emit=") {
-                if val != "files" {
-                    read_only = true;
-                }
-                continue;
-            }
-            if matches!(
-                arg.as_str(),
-                "--edition"
-                    | "--config"
-                    | "--config-path"
-                    | "--color"
-                    | "--file-lines"
-                    | "--style-edition"
-            ) {
-                skip_next = true;
-                continue;
-            }
-            continue;
-        }
-        paths.push(arg.as_str());
+    let (flags, paths) = split_flags_and_paths(
+        args,
+        &[
+            "--edition",
+            "--config",
+            "--config-path",
+            "--color",
+            "--emit",
+            "--file-lines",
+            "--style-edition",
+        ],
+    );
+    let read_only = flags.iter().any(|(f, val)| {
+        matches!(
+            *f,
+            "--check" | "--print-config" | "--list-files" | "-h" | "--help" | "-V" | "--version"
+        ) || (*f == "--emit" && *val != Some("files"))
+            || f.strip_prefix("--emit=").is_some_and(|v| v != "files")
+    });
+    if !read_only {
+        insert_targets(&paths, cwd, TargetProvenance::Authored, out);
     }
-
-    if read_only {
-        return;
-    }
-    let mut visited_modules = BTreeSet::new();
-    for arg in paths {
-        if is_capturable_path(arg) {
-            let resolved = resolve_canonical_path(&resolve_path(cwd, Path::new(arg)));
-            out.insert(resolved.clone(), TargetProvenance::Authored);
-            if !skip_children {
-                collect_rustfmt_child_modules(
-                    &resolved,
-                    out,
-                    &mut visited_modules,
-                    MAX_RUSTFMT_CHILD_MODULES,
-                );
-            }
-        }
-    }
-}
-
-fn collect_rustfmt_child_modules(
-    file_path: &Path,
-    out: &mut ExtractedWriteTargets,
-    visited: &mut BTreeSet<PathBuf>,
-    limit: usize,
-) {
-    if visited.len() >= limit || !visited.insert(file_path.to_path_buf()) {
-        return;
-    }
-    let Ok(meta) = fs::metadata(file_path) else {
-        return;
-    };
-    if !meta.is_file() || meta.len() > MAX_RUSTFMT_MODULE_SCAN_BYTES {
-        return;
-    }
-    let Ok(text) = fs::read_to_string(file_path) else {
-        return;
-    };
-    let Some(parent_dir) = file_path.parent() else {
-        return;
-    };
-    let file_stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let is_dir_root = matches!(file_stem, "lib" | "main" | "mod");
-
-    for line in text.lines() {
-        if visited.len() >= limit {
-            break;
-        }
-        let Some(mod_name) = parse_out_of_line_mod_decl(line) else {
-            continue;
-        };
-        let mut candidates = Vec::with_capacity(4);
-        if is_dir_root {
-            candidates.push(parent_dir.join(format!("{mod_name}.rs")));
-            candidates.push(parent_dir.join(mod_name).join("mod.rs"));
-        } else {
-            candidates.push(parent_dir.join(file_stem).join(format!("{mod_name}.rs")));
-            candidates.push(parent_dir.join(file_stem).join(mod_name).join("mod.rs"));
-            candidates.push(parent_dir.join(format!("{mod_name}.rs")));
-            candidates.push(parent_dir.join(mod_name).join("mod.rs"));
-        }
-        for candidate in candidates {
-            if candidate.is_file() {
-                let canonical = resolve_canonical_path(&candidate);
-                out.insert(canonical.clone(), TargetProvenance::Authored);
-                collect_rustfmt_child_modules(&canonical, out, visited, limit);
-                break;
-            }
-        }
-    }
-}
-
-fn parse_out_of_line_mod_decl(line: &str) -> Option<&str> {
-    let trimmed = line.trim();
-    if trimmed.starts_with("//") {
-        return None;
-    }
-    let rest = if let Some(after_pub) = trimmed.strip_prefix("pub") {
-        let after_pub = after_pub.trim_start();
-        if let Some(after_paren) = after_pub.strip_prefix('(') {
-            let close = after_paren.find(')')?;
-            after_paren[close + 1..].trim_start()
-        } else if trimmed
-            .as_bytes()
-            .get(3)
-            .is_some_and(u8::is_ascii_whitespace)
-        {
-            after_pub
-        } else {
-            return None;
-        }
-    } else {
-        trimmed
-    };
-    let after_mod = rest.strip_prefix("mod")?;
-    if !after_mod
-        .as_bytes()
-        .first()
-        .is_some_and(u8::is_ascii_whitespace)
-    {
-        return None;
-    }
-    let name_and_semi = after_mod.trim_start();
-    let semi_idx = name_and_semi.find(';')?;
-    let name = name_and_semi[..semi_idx].trim();
-    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        return None;
-    }
-    Some(name)
 }
 
 fn extract_git_restore_targets(args: &[String], cwd: &Path, out: &mut ExtractedWriteTargets) {
     let mut git_cwd = cwd.to_path_buf();
     let mut idx = 0;
-    while idx < args.len() {
-        let arg = &args[idx];
+    while let Some(arg) = args.get(idx) {
         if arg.is_empty() {
             idx += 1;
-            continue;
-        }
-        if arg == "-C" {
-            if let Some(dir) = args.get(idx + 1)
-                && !dir.is_empty()
-            {
+        } else if arg == "-C" {
+            if let Some(dir) = args.get(idx + 1).filter(|d| !d.is_empty()) {
                 git_cwd = resolve_canonical_path(&resolve_path(&git_cwd, Path::new(dir)));
             }
             idx += 2;
-            continue;
-        }
-        if let Some(dir) = arg.strip_prefix("-C")
-            && !dir.is_empty()
-        {
+        } else if let Some(dir) = arg.strip_prefix("-C").filter(|d| !d.is_empty()) {
             git_cwd = resolve_canonical_path(&resolve_path(&git_cwd, Path::new(dir)));
             idx += 1;
-            continue;
-        }
-        if matches!(
+        } else if matches!(
             arg.as_str(),
             "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix" | "--config-env"
         ) {
             idx += 2;
-            continue;
-        }
-        if arg.starts_with('-') {
+        } else if arg.starts_with('-') {
             idx += 1;
-            continue;
+        } else {
+            break;
         }
-        break;
     }
 
     let Some(subcmd) = args.get(idx).map(String::as_str) else {
@@ -885,86 +697,27 @@ fn extract_git_restore_targets(args: &[String], cwd: &Path, out: &mut ExtractedW
     let sub_args = &args[idx + 1..];
     match subcmd {
         "restore" => {
-            let mut staged = false;
-            let mut worktree = false;
-            let mut skip_next = false;
-            let mut after_dashdash = false;
-            let mut paths = Vec::new();
-
-            for arg in sub_args {
-                if arg.is_empty() {
-                    continue;
-                }
-                if skip_next {
-                    skip_next = false;
-                    continue;
-                }
-                if !after_dashdash && arg == "--" {
-                    after_dashdash = true;
-                    continue;
-                }
-                if !after_dashdash && arg.starts_with('-') {
-                    if matches!(
-                        arg.as_str(),
-                        "-s" | "--source" | "--conflict" | "--pathspec-from-file"
-                    ) {
-                        skip_next = true;
-                        continue;
-                    }
-                    if arg == "-S" || arg == "--staged" {
-                        staged = true;
-                        continue;
-                    }
-                    if arg == "-W" || arg == "--worktree" {
-                        worktree = true;
-                        continue;
-                    }
-                    if !arg.starts_with("--") {
-                        if arg[1..].contains('S') {
-                            staged = true;
-                        }
-                        if arg[1..].contains('W') {
-                            worktree = true;
-                        }
-                    }
-                    continue;
-                }
-                paths.push(arg.as_str());
-            }
-
-            if staged && !worktree {
-                return;
-            }
-            for arg in paths {
-                if is_capturable_path(arg) {
-                    insert_git_restore_target(&git_cwd, arg, out);
-                }
+            let (flags, paths) = split_flags_and_paths(
+                sub_args,
+                &["-s", "--source", "--conflict", "--pathspec-from-file"],
+            );
+            let staged = flags.iter().any(|(f, _)| {
+                *f == "-S" || *f == "--staged" || (!f.starts_with("--") && f[1..].contains('S'))
+            });
+            let worktree = flags.iter().any(|(f, _)| {
+                *f == "-W" || *f == "--worktree" || (!f.starts_with("--") && f[1..].contains('W'))
+            });
+            if !staged || worktree {
+                insert_targets(&paths, &git_cwd, TargetProvenance::Vcs, out);
             }
         }
         "checkout" => {
-            let Some(dashdash_pos) = sub_args.iter().position(|arg| arg == "--") else {
-                return;
-            };
-            for arg in &sub_args[dashdash_pos + 1..] {
-                if is_capturable_path(arg) {
-                    insert_git_restore_target(&git_cwd, arg, out);
-                }
+            if let Some(pos) = sub_args.iter().position(|arg| arg == "--") {
+                let paths: Vec<&str> = sub_args[pos + 1..].iter().map(String::as_str).collect();
+                insert_targets(&paths, &git_cwd, TargetProvenance::Vcs, out);
             }
         }
         _ => {}
-    }
-}
-
-fn insert_git_restore_target(git_cwd: &Path, arg: &str, out: &mut ExtractedWriteTargets) {
-    let resolved = resolve_canonical_path(&resolve_path(git_cwd, Path::new(arg)));
-    if resolved.is_dir() {
-        let mut dir_files = Vec::new();
-        collect_dir_files_filtered(&resolved, &mut dir_files, MAX_DIR_TARGET_FILES, |_| true);
-        for file in dir_files {
-            out.insert(file, TargetProvenance::Vcs);
-        }
-    } else {
-        out.insert(resolved, TargetProvenance::Vcs);
     }
 }
 
@@ -1071,15 +824,6 @@ fn admit_mktemp_path(path: &Path, allowed_roots: &[PathBuf]) -> Option<PathBuf> 
 }
 
 fn collect_dir_files(dir: &Path, out: &mut Vec<PathBuf>, limit: usize) {
-    collect_dir_files_filtered(dir, out, limit, |_| true);
-}
-
-fn collect_dir_files_filtered(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    limit: usize,
-    include_file: impl Fn(&Path) -> bool + Copy,
-) {
     if out.len() >= limit {
         return;
     }
@@ -1092,15 +836,12 @@ fn collect_dir_files_filtered(
         if out.len() >= limit {
             break;
         }
-        if path.file_name().is_some_and(|name| name == ".git") {
-            continue;
-        }
         let Ok(meta) = fs::symlink_metadata(&path) else {
             continue;
         };
         if meta.file_type().is_dir() {
-            collect_dir_files_filtered(&path, out, limit, include_file);
-        } else if meta.file_type().is_file() && include_file(&path) {
+            collect_dir_files(&path, out, limit);
+        } else if meta.file_type().is_file() {
             out.push(path);
         }
     }

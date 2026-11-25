@@ -56,15 +56,7 @@ impl ChangeHistoryStore {
         actor_session_id: &str,
     ) -> Result<MutationOutcome, ChangeHistoryError> {
         let records = self.load_records(ids)?;
-        let transitions: Vec<_> =
-            compose_transitions_with_continuity(self, &records, path_filters, true)?
-                .into_iter()
-                .filter(|tr| {
-                    !(tr.before == tr.after
-                        && tr.moved_from.is_none()
-                        && tr.coverage_notes.is_empty())
-                })
-                .collect();
+        let transitions = compose_transitions_with_continuity(self, &records, path_filters, true)?;
         if transitions.is_empty() {
             return Err(ChangeHistoryError::NoMatchingPaths);
         }
@@ -76,6 +68,9 @@ impl ChangeHistoryStore {
 
         let mut planned = Vec::with_capacity(transitions.len());
         for tr in transitions {
+            if tr.before == tr.after && tr.moved_from.is_none() && tr.coverage_notes.is_empty() {
+                continue;
+            }
             if !tr.coverage_notes.is_empty() {
                 return Err(ChangeHistoryError::MissingEvidence {
                     id: tr.rel_path.clone(),

@@ -130,107 +130,51 @@ fn range_summary_omits_reverted_files_and_flags_external_write_gaps() {
     fs::create_dir_all(&ws).expect("ws");
     let store = ChangeHistoryStore::open(&store_dir).expect("open");
 
-    let keep_path = ws.join("keep.rs");
-    let restored_path = ws.join("restored.rs");
-    let gap_path = ws.join("gap.rs");
+    let meta = |call: &str, kind: ChangeSourceKind| ChangeMetadata {
+        thread_id: "thread-1".to_string(),
+        session_id: "sess-1".to_string(),
+        turn_id: format!("turn-{call}"),
+        call_id: call.to_string(),
+        source_kind: kind,
+        workspace_root: ws.clone(),
+        created_at: 1_700_000_000,
+        exit_code: Some(0),
+        summary: None,
+        claim_key: None,
+    };
+    let file = |rel: &str, before: &[u8], after: &[u8]| PendingFileChange {
+        rel_path: rel.to_string(),
+        abs_path: ws.join(rel),
+        moved_from: None,
+        before: FileSnapshot::Present(before.to_vec()),
+        after: FileSnapshot::Present(after.to_vec()),
+        coverage: CoverageStatus::Complete,
+    };
 
     store
         .record_change(
-            ChangeMetadata {
-                thread_id: "thread-1".to_string(),
-                session_id: "sess-1".to_string(),
-                turn_id: "turn-1".to_string(),
-                call_id: "call-1".to_string(),
-                source_kind: ChangeSourceKind::ApplyPatch,
-                workspace_root: ws.clone(),
-                created_at: 1_700_000_000,
-                exit_code: Some(0),
-                summary: Some("edit files".to_string()),
-                claim_key: None,
-            },
+            meta("c1", ChangeSourceKind::ApplyPatch),
             vec![
-                PendingFileChange {
-                    rel_path: "keep.rs".to_string(),
-                    abs_path: keep_path,
-                    moved_from: None,
-                    before: FileSnapshot::Present(b"old\n".to_vec()),
-                    after: FileSnapshot::Present(b"new\n".to_vec()),
-                    coverage: CoverageStatus::Complete,
-                },
-                PendingFileChange {
-                    rel_path: "restored.rs".to_string(),
-                    abs_path: restored_path.clone(),
-                    moved_from: None,
-                    before: FileSnapshot::Present(b"orig\n".to_vec()),
-                    after: FileSnapshot::Present(b"dirty\n".to_vec()),
-                    coverage: CoverageStatus::Complete,
-                },
-                PendingFileChange {
-                    rel_path: "gap.rs".to_string(),
-                    abs_path: gap_path.clone(),
-                    moved_from: None,
-                    before: FileSnapshot::Present(b"g0\n".to_vec()),
-                    after: FileSnapshot::Present(b"g1\n".to_vec()),
-                    coverage: CoverageStatus::Complete,
-                },
+                file("keep.rs", b"old\n", b"new\n"),
+                file("restored.rs", b"orig\n", b"dirty\n"),
+                file("gap.rs", b"g0\n", b"g1\n"),
             ],
         )
-        .expect("record amber1");
-
+        .expect("amber1");
     store
         .record_change(
-            ChangeMetadata {
-                thread_id: "thread-1".to_string(),
-                session_id: "sess-1".to_string(),
-                turn_id: "turn-2".to_string(),
-                call_id: "call-2".to_string(),
-                source_kind: ChangeSourceKind::VcsDiagnostic,
-                workspace_root: ws.clone(),
-                created_at: 1_700_000_001,
-                exit_code: Some(0),
-                summary: Some("git restore restored.rs".to_string()),
-                claim_key: None,
-            },
-            vec![PendingFileChange {
-                rel_path: "restored.rs".to_string(),
-                abs_path: restored_path,
-                moved_from: None,
-                before: FileSnapshot::Present(b"dirty\n".to_vec()),
-                after: FileSnapshot::Present(b"orig\n".to_vec()),
-                coverage: CoverageStatus::Complete,
-            }],
+            meta("c2", ChangeSourceKind::VcsDiagnostic),
+            vec![file("restored.rs", b"dirty\n", b"orig\n")],
         )
-        .expect("record amber2");
-
-    // Uncaptured external write mutated gap.rs from g1 -> g1-external before amber3.
+        .expect("amber2");
     store
         .record_change(
-            ChangeMetadata {
-                thread_id: "thread-1".to_string(),
-                session_id: "sess-1".to_string(),
-                turn_id: "turn-3".to_string(),
-                call_id: "call-3".to_string(),
-                source_kind: ChangeSourceKind::ApplyPatch,
-                workspace_root: ws,
-                created_at: 1_700_000_002,
-                exit_code: Some(0),
-                summary: Some("edit gap after external write".to_string()),
-                claim_key: None,
-            },
-            vec![PendingFileChange {
-                rel_path: "gap.rs".to_string(),
-                abs_path: gap_path,
-                moved_from: None,
-                before: FileSnapshot::Present(b"g1-external\n".to_vec()),
-                after: FileSnapshot::Present(b"g2\n".to_vec()),
-                coverage: CoverageStatus::Complete,
-            }],
+            meta("c3", ChangeSourceKind::ApplyPatch),
+            vec![file("gap.rs", b"g1-external\n", b"g2\n")],
         )
-        .expect("record amber3");
+        .expect("amber3");
 
     let store_str = store_dir.to_string_lossy().into_owned();
-
-    // --list excludes VcsDiagnostic by default, --list --history includes it.
     let list_default = run_mchanges(&args(&["--store", &store_str, "--list"]));
     assert_eq!(list_default.exit_code, 0);
     assert!(!list_default.stdout.contains("amber2"));
@@ -239,7 +183,6 @@ fn range_summary_omits_reverted_files_and_flags_external_write_gaps() {
     assert_eq!(list_history.exit_code, 0);
     assert!(list_history.stdout.contains("amber2\tvcs_diagnostic"));
 
-    // Range summary omits restored.rs and explicitly flags the external-write gap on gap.rs.
     let sum = run_mchanges(&args(&[
         "--store",
         &store_str,
@@ -247,20 +190,10 @@ fn range_summary_omits_reverted_files_and_flags_external_write_gaps() {
         "--summary",
     ]));
     assert_eq!(sum.exit_code, 0, "stderr: {}", sum.stderr);
-    assert!(sum.stdout.contains("M keep.rs"), "stdout: {}", sum.stdout);
+    assert!(sum.stdout.contains("M keep.rs"));
+    assert!(!sum.stdout.contains("restored.rs"));
     assert!(
-        !sum.stdout.contains("restored.rs"),
-        "reverted file must be omitted from composed summary: {}",
-        sum.stdout
+        sum.stdout.contains("M gap.rs") && sum.stdout.contains("amber3: discontinuous baseline")
     );
-    assert!(
-        sum.stdout.contains("M gap.rs") && sum.stdout.contains("amber3: discontinuous baseline"),
-        "external write gap must be surfaced in coverage notes: {}",
-        sum.stdout
-    );
-    assert!(
-        sum.stdout.contains("Total: 2 files"),
-        "stdout: {}",
-        sum.stdout
-    );
+    assert!(sum.stdout.contains("Total: 2 files"));
 }
