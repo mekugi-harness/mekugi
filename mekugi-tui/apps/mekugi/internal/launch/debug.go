@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"crypto/rand"
 	json "encoding/json/v2"
 	"fmt"
 	"os"
@@ -39,6 +40,17 @@ func openDebugOutput(enabled bool, capturePath, readLogPath string) (*debugSessi
 	}
 	if capturePath == "" {
 		capturePath = filepath.Join(dir, "capture.jsonl")
+	}
+	capturePath, err = filepath.Abs(capturePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve debug capture path: %w", err)
+	}
+	// Keep custom capture output reachable from the standard bundle path so
+	// archiving the debug directory retains the capture.
+	if bundleCapture := filepath.Join(dir, "capture.jsonl"); capturePath != bundleCapture {
+		if err := os.Symlink(capturePath, bundleCapture); err != nil {
+			return nil, fmt.Errorf("link debug capture: %w", err)
+		}
 	}
 	if readLogPath == "" {
 		readLogPath = filepath.Join(dir, "ax-reads.jsonl")
@@ -84,12 +96,56 @@ func (d *debugSession) Close() error {
 	return f.Close()
 }
 
+const captureSchemaVersion = 7
+
+type captureProviderUsage struct {
+	EvidenceComplete bool   `json:"evidence_complete"`
+	InputTokens      uint64 `json:"input_tokens"`
+	CachedTokens     uint64 `json:"cached_input_tokens"`
+	OutputTokens     uint64 `json:"output_tokens"`
+	ReasoningTokens  uint64 `json:"reasoning_tokens"`
+}
+
+// captureRecord matches the published v7 provider capture JSONL shape.
+type captureRecord struct {
+	SchemaVersion    int                   `json:"schema_version"`
+	Boundary         string                `json:"boundary"`
+	CaptureID        string                `json:"capture_id"`
+	TurnID           string                `json:"turn_id,omitempty"`
+	ThreadID         string                `json:"thread_id"`
+	CapturedAt       time.Time             `json:"captured_at"`
+	RequestModel     string                `json:"request_model"`
+	DurationMillis   int64                 `json:"duration_ms,omitempty"`
+	ResponseComplete bool                  `json:"response_complete"`
+	ResponseStatus   string                `json:"response_status"`
+	CaptureError     string                `json:"capture_error"`
+	Usage            *captureProviderUsage `json:"usage,omitempty"`
+}
+
+type headlessUsageMetrics struct {
+	CachedObserved      bool                       `json:"cached_observed,omitzero"`
+	ReasoningObserved   bool                       `json:"reasoning_observed,omitzero"`
+	OutputThroughput    inference.OutputThroughput `json:"output_throughput,omitzero"`
+	CompleteAttempts    uint64                     `json:"complete_attempts"`
+	IncompleteAttempts  uint64                     `json:"incomplete_attempts"`
+	MissingAttempts     uint64                     `json:"missing_attempts"`
+	InputTokens         uint64                     `json:"input_tokens"`
+	CachedInputTokens   uint64                     `json:"cached_input_tokens"`
+	UncachedInputTokens uint64                     `json:"uncached_input_tokens"`
+	OutputTokens        uint64                     `json:"output_tokens"`
+	ReasoningTokens     uint64                     `json:"reasoning_tokens"`
+}
+
+type headlessRequestTotals struct {
+	Completed uint64 `json:"completed"`
+	Failed    uint64 `json:"failed"`
+}
+
 type headlessCapture struct {
-	mu        sync.Mutex
-	file      *os.File
-	completed uint64
-	failed    uint64
-	usage     inference.Usage
+	mu       sync.Mutex
+	file     *os.File
+	requests headlessRequestTotals
+	usage    headlessUsageMetrics
 }
 
 func openHeadlessCapture(path string) (*headlessCapture, error) {
@@ -112,22 +168,54 @@ func (c *headlessCapture) ObserveResponse(threadID, turnID, model string, counts
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.completed++
-	c.usage.InputTokens += counts.InputTokens
-	c.usage.UncachedInputTokens += counts.UncachedInputTokens
-	c.usage.CacheWriteTokens += counts.CacheWriteTokens
-	c.usage.OutputTokens += counts.OutputTokens
-	c.usage.ReasoningTokens += counts.ReasoningTokens
-	if c.file != nil {
-		record := map[string]any{
-			"event":       "response_completed",
-			"thread_id":   threadID,
-			"turn_id":     turnID,
-			"model":       model,
-			"duration_ms": duration.Milliseconds(),
-			"usage":       counts,
+	c.requests.Completed++
+	var usage *captureProviderUsage
+	if counts.TotalsKnown && !counts.Inconsistent {
+		cached := counts.InputTokens - counts.UncachedInputTokens
+		usage = &captureProviderUsage{
+			EvidenceComplete: !counts.Incomplete,
+			InputTokens:      counts.InputTokens,
+			CachedTokens:     cached,
+			OutputTokens:     counts.OutputTokens,
+			ReasoningTokens:  counts.ReasoningTokens,
 		}
-		if data, err := json.Marshal(record); err == nil {
+		c.usage.InputTokens += usage.InputTokens
+		c.usage.OutputTokens += usage.OutputTokens
+		if durationMS := duration.Milliseconds(); durationMS > 0 {
+			c.usage.OutputThroughput.Add(inference.OutputThroughput{
+				OutputTokens:     usage.OutputTokens,
+				DurationNanos:    uint64(durationMS) * uint64(time.Millisecond),
+				MeasuredRequests: 1,
+			})
+		}
+		if usage.EvidenceComplete {
+			c.usage.CompleteAttempts++
+			c.usage.CachedObserved = true
+			c.usage.ReasoningObserved = true
+			c.usage.CachedInputTokens += usage.CachedTokens
+			c.usage.UncachedInputTokens += usage.InputTokens - usage.CachedTokens
+			c.usage.ReasoningTokens += usage.ReasoningTokens
+		} else {
+			c.usage.IncompleteAttempts++
+		}
+	} else {
+		c.usage.MissingAttempts++
+	}
+	if c.file != nil {
+		record := captureRecord{
+			SchemaVersion:    captureSchemaVersion,
+			Boundary:         "native_response",
+			CaptureID:        rand.Text(),
+			ThreadID:         threadID,
+			TurnID:           turnID,
+			RequestModel:     model,
+			CapturedAt:       time.Now(),
+			ResponseComplete: true,
+			ResponseStatus:   "completed",
+			DurationMillis:   duration.Milliseconds(),
+			Usage:            usage,
+		}
+		if data, err := json.Marshal(&record); err == nil {
 			_, _ = c.file.Write(append(data, '\n'))
 		}
 	}
@@ -139,14 +227,18 @@ func (c *headlessCapture) ObserveFailure(threadID, turnID string) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.failed++
+	c.requests.Failed++
 	if c.file != nil {
-		record := map[string]any{
-			"event":     "response_failed",
-			"thread_id": threadID,
-			"turn_id":   turnID,
+		record := captureRecord{
+			SchemaVersion:  captureSchemaVersion,
+			Boundary:       "native_turn",
+			CaptureID:      rand.Text(),
+			ThreadID:       threadID,
+			TurnID:         turnID,
+			CapturedAt:     time.Now(),
+			ResponseStatus: "failed",
 		}
-		if data, err := json.Marshal(record); err == nil {
+		if data, err := json.Marshal(&record); err == nil {
 			_, _ = c.file.Write(append(data, '\n'))
 		}
 	}
@@ -157,10 +249,16 @@ func (c *headlessCapture) WriteMetrics(path string) error {
 		return nil
 	}
 	c.mu.Lock()
-	payload := map[string]any{
-		"completed": c.completed,
-		"failed":    c.failed,
-		"usage":     c.usage,
+	payload := struct {
+		Schema   string                `json:"schema"`
+		Mode     string                `json:"mode"`
+		Requests headlessRequestTotals `json:"requests"`
+		Usage    headlessUsageMetrics  `json:"usage"`
+	}{
+		Schema:   "mekugi.native.responses.v1",
+		Mode:     "native",
+		Requests: c.requests,
+		Usage:    c.usage,
 	}
 	c.mu.Unlock()
 	data, err := json.Marshal(payload)

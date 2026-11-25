@@ -30,7 +30,7 @@ func RenderReviewFile(beforePath, afterPath, before, after string) diffmodel.Rev
 			if p == "" {
 				return "/dev/null"
 			}
-			return p
+			return fmt.Sprintf("%q", p)
 		}
 		fmt.Fprintf(&diff, "--- %s\n+++ %s\n", pathLabel(file.BeforePath), pathLabel(file.AfterPath))
 	}

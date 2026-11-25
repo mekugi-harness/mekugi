@@ -340,7 +340,7 @@ func allowedImport(directory, pkg, imported string) error {
 			if len(parts) < 3 || slices.Contains([]string{"internal", "codexbinding", "terminalview", "presentation"}, parts[2]) {
 				return deny()
 			}
-			return nil // Requires is checked against the descriptor and typed Deps.
+			return nil // Public packages of sibling feature modules are allowed.
 		}
 		return deny()
 	}
