@@ -138,7 +138,20 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 	case "thread/queue/list":
 		return map[string]any{"items": []any{}}
 	case "thread/read":
-		return map[string]any{"thread": map[string]any{"id": "thr-worker", "turns": []any{}}}
+		return map[string]any{
+			"thread": map[string]any{
+				"id": "thr-main",
+				"turns": []map[string]any{
+					{
+						"id": "turn-1",
+						"items": []map[string]any{
+							{"id": "cmd-1", "type": "commandExecution", "command": "echo hi", "status": "completed", "aggregatedOutput": "hi\n"},
+							{"id": "card-788", "type": "serverInlineCard", "title": "Server Card", "body": "Rendered directly from native app-server", "status": "completed"},
+						},
+					},
+				},
+			},
+		}
 	case "thread/list":
 		return map[string]any{
 			"data": []map[string]any{
@@ -197,7 +210,7 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, []string{"--yolo"}, "", "")
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, []string{"--yolo", "-p", "custom-prof"}, "", "custom-prof")
 	if err != nil {
 		t.Fatalf("openDirectNativeConnection: %v", err)
 	}
@@ -211,6 +224,27 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 	})
 	if initial.Frame.Review.Files[0].Path != "main.go" {
 		t.Fatalf("unexpected saved change file: %+v", initial.Frame.Review.Files)
+	}
+	if initial.Frame.Main != initial.Frame.Agents {
+		t.Fatalf("expected Main and Agents to share publication when Displayed == Main")
+	}
+	mock.mu.Lock()
+	startParams := mock.params["thread/start"]
+	mock.mu.Unlock()
+	if len(startParams) != 1 {
+		t.Fatalf("expected 1 thread/start call, got %d", len(startParams))
+	}
+	var startBody struct {
+		Family map[string]jsontext.Value `json:"family"`
+	}
+	if err := json.Unmarshal(startParams[0], &startBody); err != nil {
+		t.Fatalf("unmarshal thread/start: %v", err)
+	}
+	if _, hasHome := startBody.Family["home"]; hasHome {
+		t.Fatalf("thread/start family must not send home: %s", startParams[0])
+	}
+	if len(startBody.Family["environment"]) == 0 || decodeJSONString(startBody.Family["profile"]) != "custom-prof" {
+		t.Fatalf("thread/start family missing environment or profile: %s", startParams[0])
 	}
 
 	// 2. Live transcript items, command output hydration, and server-owned inline card (MEKUGI-788 style).
@@ -273,34 +307,49 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 		return len(ev.Frame.MainOutput) == 1 && len(ev.Frame.MainOutput[0].View.Lines) > 0 && ev.Frame.MainOutput[0].View.Lines[0] == "hi"
 	})
 
-	// 3. Steering & queueing while turn is active.
+	// 3. Steering & queueing while turn is active (preserving image & selection attachments).
+	steerDraft := composer.Draft{
+		Text:         "steer [img] this",
+		Images:       []composer.Token{{Start: 6, End: 11, Path: "/tmp/shot.png"}},
+		AnswerImages: []string{"/tmp/ans.png"},
+	}
 	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{
 		Composer: &sessionapi.NativeComposerInput{
 			Intent: sessionpresentation.ComposerIntent{Operation: sessionpresentation.SubmitComposer},
-			Draft:  composer.Draft{Text: "steer this"},
+			Draft:  steerDraft,
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
+	queueDraft := composer.Draft{
+		Text:             "queue this",
+		AnswerSelections: "selected snippet",
+	}
 	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{
 		Composer: &sessionapi.NativeComposerInput{
 			Intent: sessionpresentation.ComposerIntent{Operation: sessionpresentation.QueueComposer},
-			Draft:  composer.Draft{Text: "queue this"},
+			Draft:  queueDraft,
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// 4. Approval and question/secret server requests.
+	// 4. Approvals (shellGuard with executable/argv, permissions) and secret prompts.
 	mock.send(t, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      "req-approve-1",
-		"method":  "item/commandExecution/requestApproval",
-		"params":  map[string]any{"threadId": "thr-main", "turnId": "turn-1", "itemId": "cmd-2", "command": "rm -rf /tmp/x"},
+		"method":  "shellGuard/requestApproval",
+		"params": map[string]any{
+			"threadId": "thr-main", "turnId": "turn-1", "itemId": "cmd-2",
+			"kind": "remoteWrite", "cwd": "/tmp/ws", "executable": "git", "argv": []string{"push", "origin", "main"},
+		},
 	})
 	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
 		return len(ev.Frame.Approvals) == 1 && ev.Frame.Approvals[0].ID == `"req-approve-1"`
 	})
+	if ev.Frame.Approvals[0].Subject != "git push origin main" {
+		t.Fatalf("expected shellGuard approval subject to include executable+argv, got %q", ev.Frame.Approvals[0].Subject)
+	}
 	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{
 		Approval: &sessionpresentation.ApprovalIntent{Request: `"req-approve-1"`, Choice: 0},
 	}); err != nil {
@@ -309,9 +358,27 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 
 	mock.send(t, map[string]any{
 		"jsonrpc": "2.0",
+		"id":      "req-perm-1",
+		"method":  "item/permissions/requestApproval",
+		"params": map[string]any{
+			"threadId": "thr-main", "turnId": "turn-1", "itemId": "perm-1",
+			"permissions": map[string]any{"network": map[string]any{"enabled": true}},
+		},
+	})
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return len(ev.Frame.Approvals) == 1 && ev.Frame.Approvals[0].ID == `"req-perm-1"`
+	})
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{
+		Approval: &sessionpresentation.ApprovalIntent{Request: `"req-perm-1"`, Choice: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mock.send(t, map[string]any{
+		"jsonrpc": "2.0",
 		"id":      "req-secret-1",
 		"method":  "shellGuard/requestSecret",
-		"params":  map[string]any{"threadId": "thr-main", "prompt": "sudo password"},
+		"params":  map[string]any{"threadId": "thr-main", "kind": "sudoPassword", "executable": "sudo", "argv": []string{"apt", "update"}},
 	})
 	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
 		return len(ev.Frame.Questions) == 1 && ev.Frame.Questions[0].ID == `"req-secret-1"`
@@ -320,6 +387,23 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 		Answers: &sessionapi.NativeAnswers{
 			Call:    `"req-secret-1"`,
 			Answers: []sessionapi.NativeQuestionAnswer{{AnswerInput: prompt.AnswerInput{Question: "secret"}, Secret: "topsecret"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mock.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "req-secret-2",
+		"method":  "shellGuard/requestSecret",
+		"params":  map[string]any{"threadId": "thr-main", "kind": "gpgPassphrase", "executable": "gpg", "argv": []string{"--sign"}},
+	})
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return len(ev.Frame.Questions) == 1 && ev.Frame.Questions[0].ID == `"req-secret-2"`
+	})
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{
+		Answers: &sessionapi.NativeAnswers{
+			Call:       `"req-secret-2"`,
+			Incomplete: true,
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -340,21 +424,67 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 		return ev.Frame.View.Displayed.ID == "thr-worker" && ev.Frame.View.Displayed.Caller == "main/worker"
 	})
 
+	// Verify history reload preserves visible transcript items and surviving Seq identities.
+	conn.reloadThreadTranscript(ctx, "thr-main")
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 2
+	})
+	if ev.Frame.Main.Entries[0].Seq != cmdSeq {
+		t.Fatalf("expected reload to preserve item Seq %d, got %d", cmdSeq, ev.Frame.Main.Entries[0].Seq)
+	}
+
+	// Verify resume picker scopes thread/list to current cwd.
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Command: new("/resume")}); err != nil {
+		t.Fatal(err)
+	}
+
 	// Verify all native RPC methods were invoked directly on mekugi-app-server.
 	mock.mu.Lock()
 	methods := slices.Clone(mock.methods)
 	approveResp := string(mock.responses[`"req-approve-1"`])
+	permResp := string(mock.responses[`"req-perm-1"`])
 	secretResp := string(mock.responses[`"req-secret-1"`])
+	secretDeclineResp := string(mock.responses[`"req-secret-2"`])
+	steerParams := slices.Clone(mock.params["turn/steer"])
+	queueParams := slices.Clone(mock.params["thread/queue/add"])
+	revertParams := slices.Clone(mock.params["thread/revert"])
+	forkParams := slices.Clone(mock.params["thread/fork"])
+	turnStartParams := slices.Clone(mock.params["turn/start"])
+	listParams := slices.Clone(mock.params["thread/list"])
 	mock.mu.Unlock()
-	for _, want := range []string{"initialize", "thread/start", "thread/subtree/list", "thread/changes/read", "turn/steer", "thread/queue/add", "thread/settings/update", "thread/revert", "thread/fork", "turn/start"} {
+	for _, want := range []string{"initialize", "thread/start", "thread/subtree/list", "thread/changes/read", "turn/steer", "thread/queue/add", "thread/settings/update", "thread/revert", "thread/fork", "turn/start", "thread/list"} {
 		if !slices.Contains(methods, want) {
 			t.Fatalf("missing direct native RPC %q; observed=%v", want, methods)
 		}
 	}
-	if !strings.Contains(approveResp, "accept") {
-		t.Fatalf("unexpected approval response: %s", approveResp)
+	if !strings.Contains(approveResp, `"decision":"accept"`) || strings.Contains(approveResp, `"allow"`) {
+		t.Fatalf("unexpected shellGuard approval response: %s", approveResp)
 	}
-	if !strings.Contains(secretResp, "topsecret") {
+	if !strings.Contains(permResp, `"scope":"session"`) || !strings.Contains(permResp, `"network"`) {
+		t.Fatalf("unexpected permissions approval response: %s", permResp)
+	}
+	if !strings.Contains(secretResp, `"decision":"provide"`) || !strings.Contains(secretResp, `"secret":"topsecret"`) {
 		t.Fatalf("unexpected secret response: %s", secretResp)
+	}
+	if !strings.Contains(secretDeclineResp, `"decision":"decline"`) {
+		t.Fatalf("unexpected declined secret response: %s", secretDeclineResp)
+	}
+	if len(steerParams) == 0 || !strings.Contains(string(steerParams[0]), "/tmp/shot.png") || !strings.Contains(string(steerParams[0]), "/tmp/ans.png") {
+		t.Fatalf("turn/steer dropped image attachments: %s", steerParams)
+	}
+	if len(queueParams) == 0 || !strings.Contains(string(queueParams[0]), `"clientUserMessageId"`) || !strings.Contains(string(queueParams[0]), "selected snippet") {
+		t.Fatalf("thread/queue/add missing clientUserMessageId or selection: %s", queueParams)
+	}
+	if len(revertParams) == 0 || !strings.Contains(string(revertParams[0]), `"beforeTurnId":"turn-1"`) {
+		t.Fatalf("thread/revert missing beforeTurnId: %s", revertParams)
+	}
+	if len(forkParams) < 2 || !strings.Contains(string(forkParams[1]), `"sandbox":"read-only"`) || !strings.Contains(string(forkParams[1]), `"approvalPolicy":"never"`) {
+		t.Fatalf("/btw fork missing read-only sandbox or approvalPolicy: %s", forkParams)
+	}
+	if len(turnStartParams) < 2 || !strings.Contains(string(turnStartParams[1]), `"environments":[]`) {
+		t.Fatalf("/btw turn/start missing empty environments: %s", turnStartParams)
+	}
+	if len(listParams) == 0 || !strings.Contains(string(listParams[0]), `"cwd":"/tmp/ws"`) {
+		t.Fatalf("thread/list missing cwd workspace filter: %s", listParams)
 	}
 }

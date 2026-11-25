@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -418,17 +419,37 @@ func decodeDirectApprovalView(id, method string, params jsontext.Value) prompt.A
 	case "shellGuard/requestApproval":
 		view.Title = "Approve guarded shell command"
 		var sg struct {
-			ThreadID string `json:"threadId"`
-			Command  string `json:"command"`
-			Summary  string `json:"summary"`
-			Reason   string `json:"reason"`
+			ThreadID   string   `json:"threadId"`
+			TurnID     string   `json:"turnId"`
+			ItemID     string   `json:"itemId"`
+			Kind       string   `json:"kind"`
+			Cwd        string   `json:"cwd"`
+			Executable string   `json:"executable"`
+			Argv       []string `json:"argv"`
+			Command    string   `json:"command"`
+			Summary    string   `json:"summary"`
+			Reason     string   `json:"reason"`
 		}
 		if json.Unmarshal(params, &sg) == nil {
 			if sg.ThreadID != "" {
 				view.Thread = sg.ThreadID
 			}
-			if sg.Command != "" {
+			if sg.TurnID != "" {
+				view.Turn = sg.TurnID
+			}
+			if sg.ItemID != "" {
+				view.Item = sg.ItemID
+			}
+			if cmd := formatShellGuardCommand(sg.Executable, sg.Argv); cmd != "" {
+				view.Subject = cmd
+			} else if sg.Command != "" {
 				view.Subject = sg.Command
+			}
+			if sg.Kind != "" {
+				view.Details = append(view.Details, "Kind: "+sg.Kind)
+			}
+			if sg.Cwd != "" {
+				view.Details = append(view.Details, "Directory: "+sg.Cwd)
 			}
 			if sg.Summary != "" {
 				view.Details = append(view.Details, sg.Summary)
@@ -439,6 +460,24 @@ func decodeDirectApprovalView(id, method string, params jsontext.Value) prompt.A
 		}
 	}
 	return view
+}
+
+func formatShellGuardCommand(executable string, argv []string) string {
+	if executable == "" && len(argv) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(argv)+1)
+	if executable != "" {
+		if len(argv) > 0 && (argv[0] == executable || argv[0] == filepath.Base(executable)) {
+			parts = append(parts, argv...)
+		} else {
+			parts = append(parts, executable)
+			parts = append(parts, argv...)
+		}
+	} else {
+		parts = append(parts, argv...)
+	}
+	return strings.Join(parts, " ")
 }
 
 func decodeDirectQuestionCall(id string, params jsontext.Value) prompt.CallView {
@@ -465,22 +504,41 @@ func decodeDirectQuestionCall(id string, params jsontext.Value) prompt.CallView 
 
 func decodeDirectSecretCall(id string, params jsontext.Value) prompt.CallView {
 	var sg struct {
-		ThreadID string `json:"threadId"`
-		Prompt   string `json:"prompt"`
-		Command  string `json:"command"`
+		ThreadID   string   `json:"threadId"`
+		TurnID     string   `json:"turnId"`
+		ItemID     string   `json:"itemId"`
+		Kind       string   `json:"kind"`
+		Cwd        string   `json:"cwd"`
+		Executable string   `json:"executable"`
+		Argv       []string `json:"argv"`
+		Prompt     string   `json:"prompt"`
+		Command    string   `json:"command"`
 	}
 	_ = json.Unmarshal(params, &sg)
 	text := sg.Prompt
 	if text == "" {
-		text = "Enter secret"
+		switch sg.Kind {
+		case "sudoPassword":
+			text = "Enter sudo password"
+		case "gpgPassphrase":
+			text = "Enter GPG passphrase"
+		default:
+			text = "Enter secret"
+		}
 	}
-	if sg.Command != "" {
-		text += " (" + sg.Command + ")"
+	cmd := formatShellGuardCommand(sg.Executable, sg.Argv)
+	if cmd == "" {
+		cmd = sg.Command
+	}
+	if cmd != "" {
+		text += " (" + cmd + ")"
 	}
 	return prompt.CallView{
 		ID:     id,
 		Sync:   true,
 		Thread: sg.ThreadID,
+		Turn:   sg.TurnID,
+		Item:   sg.ItemID,
 		Questions: []prompt.QuestionView{{
 			ID:     "secret",
 			Header: "Secret required",
@@ -525,10 +583,23 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 }
 
 func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns []directWireTurn) {
+	preservedSeq := make(map[string]uint64, len(c.items[threadID]))
+	for _, rec := range c.items[threadID] {
+		if rec.id != "" {
+			preservedSeq[rec.id] = rec.seq
+			delete(c.itemsByID, rec.id)
+		}
+	}
 	c.items[threadID] = nil
 	for _, turn := range turns {
 		for _, rawItem := range turn.Items {
 			c.upsertWireItemLocked(threadID, turn.ID, rawItem, true)
+		}
+	}
+	for _, rec := range c.items[threadID] {
+		if prevSeq, ok := preservedSeq[rec.id]; ok {
+			rec.seq = prevSeq
+			rec.entry.Seq = prevSeq
 		}
 	}
 }
@@ -888,6 +959,9 @@ func (c *directNativeConnection) loadResumeList(ctx context.Context, cursor stri
 	params := map[string]any{"limit": 50}
 	if cursor != "" {
 		params["cursor"] = cursor
+	}
+	if !all && c.workspace != "" {
+		params["cwd"] = c.workspace
 	}
 	var resp struct {
 		Data       []directWireThread `json:"data"`

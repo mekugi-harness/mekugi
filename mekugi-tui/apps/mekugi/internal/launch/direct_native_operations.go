@@ -2,6 +2,9 @@ package launch
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"slices"
@@ -13,6 +16,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	activityfeed "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
 )
 
 func (c *directNativeConnection) Send(ctx context.Context, _ sessionapi.NativeTarget, op sessionapi.NativeOperation) (sessionapi.NativeResult, error) {
@@ -82,13 +86,14 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 		}
 		return c.wire.Call(ctx, "thread/queue/start", map[string]any{"threadId": threadID}, nil)
 	}
-	if text == "" {
+	hasAttachments := len(in.Draft.Images) > 0 || len(in.Draft.AnswerImages) > 0 || in.Draft.AnswerSelections != "" || in.Draft.UserSelections() != ""
+	if text == "" && !hasAttachments {
 		return nil
 	}
-	if strings.HasPrefix(text, "/") {
+	if !hasAttachments && strings.HasPrefix(text, "/") {
 		return c.handleSlashCommand(ctx, text)
 	}
-	if strings.HasPrefix(text, "!") {
+	if !hasAttachments && strings.HasPrefix(text, "!") {
 		cmd := strings.TrimSpace(strings.TrimPrefix(text, "!"))
 		if cmd == "" {
 			return nil
@@ -119,11 +124,12 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 	if threadID == "" {
 		return errors.New("no active thread")
 	}
-	input := appserver.Input(text)
+	input := codexbinding.Input(in.Draft)
 	if in.Intent.Operation == sessionpresentation.QueueComposer && busy {
 		return c.wire.Call(ctx, "thread/queue/add", map[string]any{
-			"threadId": threadID,
-			"input":    input,
+			"threadId":            threadID,
+			"input":               input,
+			"clientUserMessageId": rand.Text(),
 		}, nil)
 	}
 	if busy {
@@ -182,11 +188,18 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 		if mainID == "" {
 			return errors.New("no active thread")
 		}
-		params := map[string]any{"threadId": mainID}
-		if rest != "" {
-			params["beforeTurnId"] = rest
+		beforeTurnID := rest
+		if beforeTurnID == "" {
+			resolved, err := c.resolveLatestTurnID(ctx, mainID)
+			if err != nil {
+				return err
+			}
+			beforeTurnID = resolved
 		}
-		return c.wire.Call(ctx, "thread/revert", params, nil)
+		return c.wire.Call(ctx, "thread/revert", map[string]any{
+			"threadId":     mainID,
+			"beforeTurnId": beforeTurnID,
+		}, nil)
 	case "/model":
 		if mainID == "" {
 			return errors.New("no active thread")
@@ -234,6 +247,28 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 		c.mu.Unlock()
 		return nil
 	}
+}
+
+func (c *directNativeConnection) resolveLatestTurnID(ctx context.Context, threadID string) (string, error) {
+	var resp struct {
+		Thread directWireThread `json:"thread"`
+	}
+	if err := c.wire.Call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true}, &resp); err == nil {
+		for i := len(resp.Thread.Turns) - 1; i >= 0; i-- {
+			if resp.Thread.Turns[i].ID != "" {
+				return resp.Thread.Turns[i].ID, nil
+			}
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	records := c.items[threadID]
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].turnID != "" {
+			return records[i].turnID, nil
+		}
+	}
+	return "", errors.New("no turns available to rewind")
 }
 
 func (c *directNativeConnection) stepReasoningEffort(ctx context.Context, delta int) error {
@@ -323,8 +358,11 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 	}
 	var resp directThreadStartResponse
 	if err := c.wire.Call(ctx, "thread/fork", map[string]any{
-		"threadId":  mainID,
-		"ephemeral": true,
+		"threadId":       mainID,
+		"threadSource":   "btw",
+		"excludeTurns":   true,
+		"sandbox":        "read-only",
+		"approvalPolicy": "never",
 	}, &resp); err != nil {
 		return fmt.Errorf("fork one-off thread: %w", err)
 	}
@@ -337,8 +375,9 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 	c.publishLocked()
 	c.mu.Unlock()
 	return c.wire.Call(ctx, "turn/start", map[string]any{
-		"threadId": resp.Thread.ID,
-		"input":    appserver.Input(question),
+		"threadId":     resp.Thread.ID,
+		"input":        appserver.Input(question),
+		"environments": []any{},
 	}, nil)
 }
 
@@ -405,9 +444,28 @@ func (c *directNativeConnection) handleApproval(ctx context.Context, intent sess
 	c.publishLocked()
 	c.mu.Unlock()
 
+	if req.method == "item/permissions/requestApproval" {
+		var payload struct {
+			Permissions jsontext.Value `json:"permissions"`
+		}
+		_ = json.Unmarshal(req.rawParams, &payload)
+		scope := "turn"
+		if decision == "acceptForSession" {
+			scope = "session"
+		}
+		if decision == "decline" || len(payload.Permissions) == 0 {
+			return c.wire.Respond(ctx, req.id, map[string]any{
+				"permissions": map[string]any{},
+				"scope":       "turn",
+			})
+		}
+		return c.wire.Respond(ctx, req.id, map[string]any{
+			"permissions": payload.Permissions,
+			"scope":       scope,
+		})
+	}
 	if req.shellGuard {
-		allow := decision == "accept" || decision == "acceptForSession"
-		result := map[string]any{"decision": decision, "allow": allow}
+		result := map[string]any{"decision": decision}
 		if intent.Reason != "" {
 			result["reason"] = intent.Reason
 		}
@@ -434,13 +492,20 @@ func (c *directNativeConnection) handleAnswers(ctx context.Context, in sessionap
 
 	if req.secret {
 		secret := ""
+		declined := in.Incomplete || len(in.Answers) == 0
 		if len(in.Answers) > 0 {
+			if in.Answers[0].Skip {
+				declined = true
+			}
 			secret = in.Answers[0].Secret
 			if secret == "" {
 				secret = in.Answers[0].Draft.Text
 			}
 		}
-		return c.wire.Respond(ctx, req.id, map[string]any{"secret": secret})
+		if declined || secret == "" {
+			return c.wire.Respond(ctx, req.id, map[string]any{"decision": "decline"})
+		}
+		return c.wire.Respond(ctx, req.id, map[string]any{"decision": "provide", "secret": secret})
 	}
 	answers := make([]binding.QuestionAnswer, 0, len(in.Answers))
 	for _, ans := range in.Answers {

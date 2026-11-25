@@ -8,12 +8,12 @@ import (
 	"io"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 
+	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -77,14 +77,15 @@ type directItemRecord struct {
 }
 
 type directNativeOptions struct {
-	socket     string
-	workspace  string
-	routerArgs []string
-	args       []string
-	resume     string
-	profile    string
-	yolo       bool
-	configArgs []string
+	socket                string
+	workspace             string
+	routerArgs            []string
+	args                  []string
+	resume                string
+	profile               string
+	requireCustomProvider bool
+	yolo                  bool
+	configArgs            []string
 }
 
 var directAttachmentSeq atomic.Uint64
@@ -156,19 +157,24 @@ type directNativeConnection struct {
 }
 
 func openDirectNativeConnection(ctx context.Context, socket, workspace string, routerArgs, args []string, resume, profile string) (*directNativeConnection, error) {
+	parsedRouter, err := launchoptions.Parse(routerArgs)
+	if err != nil {
+		return nil, err
+	}
 	configArgs, _, yolo, err := appServerArgs(expandReasoningShortcuts(args))
 	if err != nil {
 		return nil, err
 	}
 	opts := directNativeOptions{
-		socket:     socket,
-		workspace:  workspace,
-		routerArgs: slices.Clone(routerArgs),
-		args:       slices.Clone(args),
-		resume:     resume,
-		profile:    profile,
-		yolo:       yolo,
-		configArgs: nativeAppServerArgs(configArgs),
+		socket:                socket,
+		workspace:             workspace,
+		routerArgs:            slices.Clone(routerArgs),
+		args:                  slices.Clone(args),
+		resume:                resume,
+		profile:               profile,
+		requireCustomProvider: parsedRouter.RequireCustomProvider,
+		yolo:                  yolo,
+		configArgs:            nativeAppServerArgs(configArgs),
 	}
 	return newDirectNativeConnection(ctx, opts, "")
 }
@@ -217,12 +223,16 @@ func (c *directNativeConnection) bootstrap(ctx context.Context, attachThread str
 	case "--pick":
 		return c.loadResumeList(ctx, "", false)
 	case "--last":
+		listParams := map[string]any{"limit": 1}
+		if c.opts.workspace != "" {
+			listParams["cwd"] = c.opts.workspace
+		}
 		var listed struct {
 			Data []struct {
 				ID string `json:"id"`
 			} `json:"data"`
 		}
-		if err := c.wire.Call(ctx, "thread/list", map[string]any{"limit": 1}, &listed); err != nil {
+		if err := c.wire.Call(ctx, "thread/list", listParams, &listed); err != nil {
 			return fmt.Errorf("list threads for resume --last: %w", err)
 		}
 		if len(listed.Data) == 0 {
@@ -237,6 +247,28 @@ func (c *directNativeConnection) bootstrap(ctx context.Context, attachThread str
 	return c.startFreshThread(ctx)
 }
 
+func (c *directNativeConnection) familyParams() map[string]any {
+	if c.opts.profile == "" && !c.opts.requireCustomProvider {
+		return nil
+	}
+	env := make(map[string]string)
+	for _, entry := range serverEnvironment(os.Environ()) {
+		if k, v, ok := strings.Cut(entry, "="); ok && k != "" {
+			env[k] = v
+		}
+	}
+	family := map[string]any{
+		"environment": env,
+	}
+	if c.opts.profile != "" {
+		family["profile"] = c.opts.profile
+	}
+	if c.opts.requireCustomProvider {
+		family["requireCustomProvider"] = true
+	}
+	return family
+}
+
 func (c *directNativeConnection) startFreshThread(ctx context.Context) error {
 	params := map[string]any{
 		"cwd": c.opts.workspace,
@@ -248,18 +280,8 @@ func (c *directNativeConnection) startFreshThread(ctx context.Context) error {
 		params["approvalPolicy"] = "never"
 		params["sandbox"] = "danger-full-access"
 	}
-	if c.opts.profile != "" {
-		home := os.Getenv("CODEX_HOME")
-		if home == "" {
-			home = filepath.Join(os.Getenv("HOME"), ".codex")
-		}
-		if abs, err := filepath.Abs(home); err == nil {
-			home = abs
-		}
-		params["family"] = map[string]any{
-			"profile": c.opts.profile,
-			"home":    home,
-		}
+	if family := c.familyParams(); family != nil {
+		params["family"] = family
 	}
 	var resp directThreadStartResponse
 	if err := c.wire.Call(ctx, "thread/start", params, &resp); err != nil {
@@ -279,6 +301,9 @@ func (c *directNativeConnection) resumeThread(ctx context.Context, threadID stri
 	if c.opts.yolo {
 		params["approvalPolicy"] = "never"
 		params["sandbox"] = "danger-full-access"
+	}
+	if family := c.familyParams(); family != nil {
+		params["family"] = family
 	}
 	var resp directThreadStartResponse
 	if err := c.wire.Call(ctx, "thread/resume", params, &resp); err != nil {
@@ -508,9 +533,9 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	}
 
 	mainPub := c.publicationForThreadLocked(c.mainThread)
-	agentsPub := c.publicationForThreadLocked(displayed)
-	if c.family != nil && c.family.Agents != nil {
-		agentsPub.Roster = slices.Clone(c.family.Agents.Roster)
+	agentsPub := mainPub
+	if displayed != c.mainThread {
+		agentsPub = c.publicationForThreadLocked(displayed)
 	}
 
 	frame := sessionapi.NativeFrame{
