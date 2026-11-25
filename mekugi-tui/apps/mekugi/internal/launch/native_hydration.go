@@ -40,7 +40,22 @@ type retainedActivity struct {
 
 func readRetainedActivity(ctx context.Context, retained history.Session, root binding.ThreadInfo, task string) retainedActivity {
 	result := retainedActivity{thread: root, rollout: readRestoredRollout(root, cmp.Or(task, "/root")), compactions: make(map[[2]string]*history.CompactionObservation)}
-	references := rollout.CompactionReferences(ctx, root.ID, root.Path)
+	hasCompaction := false
+	for ti := range result.thread.Turns {
+		for ii := range result.thread.Turns[ti].Items {
+			if result.thread.Turns[ti].Items[ii].Type == "contextCompaction" {
+				hasCompaction = true
+				break
+			}
+		}
+		if hasCompaction {
+			break
+		}
+	}
+	var references map[string]string
+	if hasCompaction {
+		references = rollout.CompactionReferences(ctx, root.ID, root.Path)
+	}
 	for ti := range result.thread.Turns {
 		for ii := range result.thread.Turns[ti].Items {
 			item := &result.thread.Turns[ti].Items[ii]

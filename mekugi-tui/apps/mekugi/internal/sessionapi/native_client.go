@@ -1,6 +1,7 @@
 package sessionapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -11,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 )
 
 type nativeRPCScope struct {
@@ -23,14 +25,19 @@ type nativeRPCScope struct {
 // Closing it releases its stream and presentation scope, never the execution.
 // It does not reconnect or retry mutations with potentially ambiguous outcomes.
 type NativeConnection struct {
-	scope        *nativeRPCScope
-	closeOnce    sync.Once
-	client       *http.Client
-	base         string
-	thread       string
-	startup      string
-	subscription *RPCSubscription
-	last         NativeEvent
+	scope          *nativeRPCScope
+	closeOnce      sync.Once
+	client         *http.Client
+	base           string
+	thread         string
+	startup        string
+	subscription   *RPCSubscription
+	last           NativeEvent
+	retainMu       sync.Mutex
+	retainedReview *changes.ReviewView
+	retainedFamily *Family
+	seedReview     *changes.ReviewView
+	seedFamily     *Family
 }
 
 // NativeFailure preserves ordinary admission refusal separately from unknown
@@ -70,12 +77,29 @@ func (c *NativeConnection) Attach(ctx context.Context, thread string) (*NativeCo
 	}
 	c.scope.refs++
 	c.scope.mu.Unlock()
-	subscription, err := c.scope.rpc.Subscribe(ctx, "view/attach", RPCParams{Thread: thread})
+	c.retainMu.Lock()
+	seedReview, seedFamily := c.retainedReview, c.retainedFamily
+	c.retainMu.Unlock()
+	params := RPCParams{Thread: thread}
+	if c.subscription != nil && c.subscription.ID != "" {
+		var retain NativeRetainSource
+		if seedReview != nil && seedReview.Revision != 0 {
+			retain.ReviewRevision = seedReview.Revision
+		}
+		if seedFamily != nil && seedFamily.Root != "" && seedFamily.Revision != 0 {
+			retain.FamilyRoot, retain.FamilyRevision = seedFamily.Root, seedFamily.Revision
+		}
+		if retain.ReviewRevision != 0 || retain.FamilyRevision != 0 {
+			retain.Subscription = c.subscription.ID
+			params.Retain = &retain
+		}
+	}
+	subscription, err := c.scope.rpc.Subscribe(ctx, "view/attach", params)
 	if err != nil {
 		c.scope.release()
 		return nil, nativeRPCFailure(err)
 	}
-	return &NativeConnection{client: c.client, base: c.base, thread: thread, scope: c.scope, subscription: subscription}, nil
+	return &NativeConnection{client: c.client, base: c.base, thread: thread, scope: c.scope, subscription: subscription, seedReview: seedReview, seedFamily: seedFamily}, nil
 }
 
 func (s *nativeRPCScope) release() {
@@ -132,7 +156,13 @@ func (c *NativeConnection) Next() (NativeEvent, error) {
 		return NativeEvent{}, &outcome
 	}
 	first := c.last.Attachment == ""
-	event, err := decodeNativeEvent(kind, data, c.last)
+	var seedReview *changes.ReviewView
+	var seedFamily *Family
+	if first {
+		seedReview, seedFamily = c.seedReview, c.seedFamily
+		c.seedReview, c.seedFamily = nil, nil
+	}
+	event, err := decodeNativeEventWithSeed(kind, data, c.last, seedReview, seedFamily)
 	if err != nil {
 		return NativeEvent{}, err
 	}
@@ -148,12 +178,19 @@ func (c *NativeConnection) Next() (NativeEvent, error) {
 		return NativeEvent{}, errors.New("native stream silently changed its logical thread")
 	}
 	c.last = event
+	c.retainMu.Lock()
+	c.retainedReview, c.retainedFamily = event.Frame.Review, event.Frame.Family
+	c.retainMu.Unlock()
 	return event, nil
 }
 
 // Both socket clients and in-process child observations consume this wire
 // contract. Rendering owners only receive fully reconstructed immutable frames.
 func decodeNativeEvent(kind string, data []byte, previous NativeEvent) (NativeEvent, error) {
+	return decodeNativeEventWithSeed(kind, data, previous, nil, nil)
+}
+
+func decodeNativeEventWithSeed(kind string, data []byte, previous NativeEvent, seedReview *changes.ReviewView, seedFamily *Family) (NativeEvent, error) {
 	first := previous.Attachment == ""
 	if kind != "snapshot" && kind != "patch" || first && kind != "snapshot" {
 		return NativeEvent{}, errors.New("native stream did not provide a compatible snapshot")
@@ -164,8 +201,13 @@ func decodeNativeEvent(kind string, data []byte, previous NativeEvent) (NativeEv
 	var flags struct {
 		EntryDeltas nativeOwners `json:"entryDeltas"`
 	}
-	if err := json.Unmarshal(data, &flags, nativeEncoding); err != nil {
-		return NativeEvent{}, fmt.Errorf("decode native publication: %w", err)
+	if kind == "patch" {
+		prefix, _, _ := bytes.Cut(data, []byte(`"frame":`))
+		if bytes.Contains(prefix, []byte(`"entryDeltas"`)) {
+			if err := json.Unmarshal(data, &flags, nativeEncoding); err != nil {
+				return NativeEvent{}, fmt.Errorf("decode native publication: %w", err)
+			}
+		}
 	}
 	if flags.EntryDeltas == 0 {
 		if err := json.Unmarshal(data, &wire, nativeEncoding); err != nil {
@@ -210,7 +252,19 @@ func decodeNativeEvent(kind string, data []byte, previous NativeEvent) (NativeEv
 	}
 	event := wire.NativeEvent
 	if wire.Retained != 0 {
-		if kind == "snapshot" || first || wire.Retained & ^(nativeMain|nativeAgents|nativeReview|nativeFamily) != 0 || event.Frame.View.Version.Attachment != previous.Frame.View.Version.Attachment || event.Frame.View.Main.ID != previous.Frame.View.Main.ID || event.Startup != previous.Startup || event.Frame.Switch != nil {
+		if first && kind == "snapshot" {
+			if wire.Retained & ^(nativeReview|nativeFamily) != 0 ||
+				wire.Retained&nativeReview != 0 && seedReview == nil ||
+				wire.Retained&nativeFamily != 0 && seedFamily == nil {
+				return NativeEvent{}, errors.New("native delta has no compatible owner snapshot")
+			}
+			if wire.Retained&nativeReview != 0 {
+				event.Frame.Review = seedReview
+			}
+			if wire.Retained&nativeFamily != 0 {
+				event.Frame.Family = seedFamily
+			}
+		} else if kind == "snapshot" || first || wire.Retained & ^(nativeMain|nativeAgents|nativeReview|nativeFamily) != 0 || event.Frame.View.Version.Attachment != previous.Frame.View.Version.Attachment || event.Frame.View.Main.ID != previous.Frame.View.Main.ID || event.Startup != previous.Startup || event.Frame.Switch != nil {
 			return NativeEvent{}, errors.New("native delta has no compatible owner snapshot")
 		}
 		if wire.Retained&nativeMain != 0 {
@@ -219,10 +273,10 @@ func decodeNativeEvent(kind string, data []byte, previous NativeEvent) (NativeEv
 		if wire.Retained&nativeAgents != 0 {
 			event.Frame.Agents = previous.Frame.Agents
 		}
-		if wire.Retained&nativeReview != 0 {
+		if !first && wire.Retained&nativeReview != 0 {
 			event.Frame.Review = previous.Frame.Review
 		}
-		if wire.Retained&nativeFamily != 0 {
+		if !first && wire.Retained&nativeFamily != 0 {
 			event.Frame.Family = previous.Frame.Family
 		}
 	}
