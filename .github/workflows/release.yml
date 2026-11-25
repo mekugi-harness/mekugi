@@ -224,8 +224,26 @@ jobs:
             echo "restored=true" >> "$GITHUB_OUTPUT"
             break
           done <<< "$candidates"
+      - name: Decide native test and package steps
+        id: native_plan
+        env:
+          CACHE_HIT: ${{ steps.native_cache.outputs.cache-hit }}
+          ARTIFACT_RESTORED: ${{ steps.native_artifact.outputs.restored }}
+          IS_RELEASE_OR_DISPATCH: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
+        run: |
+          if [[ "$CACHE_HIT" == "true" || "$ARTIFACT_RESTORED" == "true" ]]; then
+            echo "package=false" >> "$GITHUB_OUTPUT"
+            if [[ "$IS_RELEASE_OR_DISPATCH" == "true" ]]; then
+              echo "test=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "test=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "package=true" >> "$GITHUB_OUTPUT"
+            echo "test=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install native Linux build dependency
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (steps.native_plan.outputs.test == 'true' || steps.native_plan.outputs.package == 'true')
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends pkg-config libcap-dev libssl-dev mold
@@ -238,10 +256,12 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - name: Set up sccache
+        if: steps.native_plan.outputs.test == 'true' || steps.native_plan.outputs.package == 'true'
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.19.0
       - name: Cache Cargo dependencies
+        if: steps.native_plan.outputs.test == 'true' || steps.native_plan.outputs.package == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -252,11 +272,13 @@ jobs:
           restore-keys: |
             cargo-deps-v1-${{ matrix.platform }}-
       - name: Cache prebuilt V8 artifacts
+        if: steps.native_plan.outputs.test == 'true' || steps.native_plan.outputs.package == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: codex-rs/target/v8-artifacts
           key: v8-artifacts-v1-${{ matrix.platform }}-${{ hashFiles('third_party/v8/rusty_v8_*_release_manifests.sha256') }}
       - name: Test native runtime
+        if: steps.native_plan.outputs.test == 'true'
         env: &native_env
           CARGO_BUILD_JOBS: ${{ runner.os == 'Linux' && '4' || '2' }}
           CARGO_INCREMENTAL: '0'
@@ -270,7 +292,7 @@ jobs:
           # App-server integration fixtures use debug-only startup options.
           just test-native
       - name: Package native runtime
-        if: steps.native_cache.outputs.cache-hit != 'true' && steps.native_artifact.outputs.restored != 'true'
+        if: steps.native_plan.outputs.package == 'true'
         env: *native_env
         run: |
           just package-native --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
