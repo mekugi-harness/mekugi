@@ -424,9 +424,20 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
     let concat_delim = "cat <<'END'MARKER &&\nEND\nsh -c 'echo hello'\nENDMARKER\necho ok";
     assert_eq!(rewrite_script(concat_delim, &config), concat_delim);
 
-    // Delimiter containing literal <(tag) suffix (E'O'F<(tag)) must not truncate to EOF.
-    let subst_like_delim = "cat <<E'O'F<(tag) &&\nEOF\nsh -c 'printf done'\nEOF<(tag)\necho ok";
-    assert_eq!(rewrite_script(subst_like_delim, &config), subst_like_delim);
+    // Delimiter containing literal <(tag) suffix (E'O'F<(tag)) must protect the full body
+    // while still rewriting commands after the real terminator.
+    let subst_like_prefix = "cat <<E'O'F<(tag) &&\nEOF\nsh -c 'printf done'\nEOF<(tag)\n";
+    let subst_like_script = format!("{subst_like_prefix}/usr/bin/git push");
+    let rewritten_subst = rewrite_script(&subst_like_script, &config);
+    assert!(
+        rewritten_subst.starts_with(subst_like_prefix)
+            && rewritten_subst.ends_with("-- /usr/bin/git push"),
+        "got: {rewritten_subst}"
+    );
+
+    // Unquoted delimiter adjacent to an output redirect (<<EOF>/dev/null) must not absorb >/dev/null.
+    let adjacent_redir = "cat <<EOF>/dev/null && cat <<'Q' > script.sh\nhello\nEOF\nvalue=$(sh -c 'printf sample')\nQ\necho AFTER";
+    assert_eq!(rewrite_script(adjacent_redir, &config), adjacent_redir);
 
     // Multiline process substitution on a quoted heredoc line must still rewrite its inner command.
     let proc_subst = "cat <<'OUTER' <(\n/usr/bin/git push\n)\nOUTER";

@@ -445,7 +445,7 @@ fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSp
         else {
             continue;
         };
-        let word_end = scan_shell_word_end(src.as_bytes(), node.end_byte(), src.len());
+        let word_end = scan_shell_word_end(src.as_bytes(), node.start_byte(), src.len());
         let word_text = &src[node.start_byte()..word_end];
         let Some((delimiter, is_quoted)) = parse_heredoc_word(word_text) else {
             continue;
