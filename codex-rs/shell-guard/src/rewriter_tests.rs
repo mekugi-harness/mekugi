@@ -450,6 +450,7 @@ fn prevents_heredoc_bypass_and_continuation_argument_rewrites() {
     for delim_prefix in [
         "cat <<EOF${tag:-a;b}'Z' &&\nsh -c 'printf done'\nEOF${tag:-a;b}Z\n",
         "cat <<EOF`a;b`'Z' &&\nsh -c 'printf done'\nEOF`a;b`Z\n",
+        "cat <<EOF${tag:-$(printf })}'Z' &&\n/bin/sh -c 'printf hello'\nEOF${tag:-$(printf })}Z\n",
     ] {
         let script = format!("{delim_prefix}/usr/bin/git push");
         let rewritten = rewrite_script(&script, &config);

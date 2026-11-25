@@ -491,9 +491,10 @@ fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSp
         let mut pos = body_start;
         for entry in entries {
             let entry_body_start = pos;
-            let full_end = advance_past_heredoc_body(src, &mut pos, &entry);
+            let (full_end, terminated) = advance_past_heredoc_body(src, &mut pos, &entry);
             let mask_unquoted_redirect_bug = !entry.is_quoted
                 && entry.absorbed_redirect
+                && terminated
                 && !src.as_bytes()[entry_body_start..full_end]
                     .iter()
                     .any(|&b| matches!(b, b'$' | b'\x60'));
@@ -742,95 +743,15 @@ fn scan_error_line_heredocs(src: &str, start: usize, end: usize) -> Vec<HeredocE
 fn scan_shell_word_end(bytes: &[u8], mut i: usize, limit: usize) -> usize {
     while i < limit {
         if matches!(bytes[i], b'<' | b'>' | b'$') && bytes.get(i + 1) == Some(&b'(') {
-            i += 2;
-            let mut depth = 1usize;
-            while i < limit && depth > 0 {
-                match bytes[i] {
-                    b'\\' => i = (i + 2).min(limit),
-                    b'\'' => {
-                        i += 1;
-                        while i < limit && bytes[i] != b'\'' {
-                            i += 1;
-                        }
-                        i = (i + 1).min(limit);
-                    }
-                    b'"' => {
-                        i += 1;
-                        while i < limit {
-                            match bytes[i] {
-                                b'\\' => i = (i + 2).min(limit),
-                                b'"' => {
-                                    i += 1;
-                                    break;
-                                }
-                                _ => i += 1,
-                            }
-                        }
-                    }
-                    b'(' => {
-                        depth += 1;
-                        i += 1;
-                    }
-                    b')' => {
-                        depth -= 1;
-                        i += 1;
-                    }
-                    _ => i += 1,
-                }
-            }
+            i = skip_balanced_parens(bytes, i + 2, limit);
             continue;
         }
         if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
-            i += 2;
-            let mut depth = 1usize;
-            while i < limit && depth > 0 {
-                match bytes[i] {
-                    b'\\' => i = (i + 2).min(limit),
-                    b'\'' => {
-                        i += 1;
-                        while i < limit && bytes[i] != b'\'' {
-                            i += 1;
-                        }
-                        i = (i + 1).min(limit);
-                    }
-                    b'"' => {
-                        i += 1;
-                        while i < limit {
-                            match bytes[i] {
-                                b'\\' => i = (i + 2).min(limit),
-                                b'"' => {
-                                    i += 1;
-                                    break;
-                                }
-                                _ => i += 1,
-                            }
-                        }
-                    }
-                    b'$' if bytes.get(i + 1) == Some(&b'{') => {
-                        depth += 1;
-                        i += 2;
-                    }
-                    b'}' => {
-                        depth -= 1;
-                        i += 1;
-                    }
-                    _ => i += 1,
-                }
-            }
+            i = skip_balanced_param_exp(bytes, i + 2, limit);
             continue;
         }
         if bytes[i] == b'`' {
-            i += 1;
-            while i < limit {
-                match bytes[i] {
-                    b'\\' => i = (i + 2).min(limit),
-                    b'`' => {
-                        i += 1;
-                        break;
-                    }
-                    _ => i += 1,
-                }
-            }
+            i = skip_backtick(bytes, i + 1, limit);
             continue;
         }
         if matches!(
@@ -839,48 +760,115 @@ fn scan_shell_word_end(bytes: &[u8], mut i: usize, limit: usize) -> usize {
         ) {
             break;
         }
+        i = skip_word_atom(bytes, i, limit);
+    }
+    i
+}
+
+fn skip_word_atom(bytes: &[u8], i: usize, limit: usize) -> usize {
+    match bytes[i] {
+        b'\\' => (i + 2).min(limit),
+        b'\'' => skip_single_quoted(bytes, i + 1, limit),
+        b'"' => skip_double_quoted(bytes, i + 1, limit),
+        b'$' if bytes.get(i + 1) == Some(&b'\'') => skip_ansi_c_quoted(bytes, i + 2, limit),
+        _ => i + 1,
+    }
+}
+
+fn skip_single_quoted(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit && bytes[i] != b'\'' {
+        i += 1;
+    }
+    (i + 1).min(limit)
+}
+
+fn skip_ansi_c_quoted(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit {
         match bytes[i] {
             b'\\' => i = (i + 2).min(limit),
-            b'\'' => {
-                i += 1;
-                while i < limit && bytes[i] != b'\'' {
+            b'\'' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    limit
+}
+
+fn skip_double_quoted(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(limit),
+            b'"' => return i + 1,
+            b'$' if bytes.get(i + 1) == Some(&b'(') => {
+                i = skip_balanced_parens(bytes, i + 2, limit);
+            }
+            b'$' if bytes.get(i + 1) == Some(&b'{') => {
+                i = skip_balanced_param_exp(bytes, i + 2, limit);
+            }
+            b'`' => i = skip_backtick(bytes, i + 1, limit),
+            _ => i += 1,
+        }
+    }
+    limit
+}
+
+fn skip_backtick(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    while i < limit {
+        match bytes[i] {
+            b'\\' => i = (i + 2).min(limit),
+            b'`' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    limit
+}
+
+fn skip_balanced_parens(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    let mut depth = 1usize;
+    while i < limit && depth > 0 {
+        if matches!(bytes[i], b'<' | b'>' | b'$') && bytes.get(i + 1) == Some(&b'(') {
+            i = skip_balanced_parens(bytes, i + 2, limit);
+        } else if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+            i = skip_balanced_param_exp(bytes, i + 2, limit);
+        } else if bytes[i] == b'`' {
+            i = skip_backtick(bytes, i + 1, limit);
+        } else {
+            match bytes[i] {
+                b'(' => {
+                    depth += 1;
                     i += 1;
                 }
-                i = (i + 1).min(limit);
-            }
-            b'"' => {
-                i += 1;
-                while i < limit {
-                    match bytes[i] {
-                        b'\\' => i = (i + 2).min(limit),
-                        b'"' => {
-                            i += 1;
-                            break;
-                        }
-                        _ => i += 1,
-                    }
+                b')' => {
+                    depth -= 1;
+                    i += 1;
                 }
+                _ => i = skip_word_atom(bytes, i, limit),
             }
-            b'$' if bytes.get(i + 1) == Some(&b'\'') => {
-                i += 2;
-                while i < limit {
-                    match bytes[i] {
-                        b'\\' => i = (i + 2).min(limit),
-                        b'\'' => {
-                            i += 1;
-                            break;
-                        }
-                        _ => i += 1,
-                    }
-                }
-            }
-            _ => i += 1,
         }
     }
     i
 }
 
-fn advance_past_heredoc_body(src: &str, pos: &mut usize, entry: &HeredocEntry) -> usize {
+fn skip_balanced_param_exp(bytes: &[u8], mut i: usize, limit: usize) -> usize {
+    let mut depth = 1usize;
+    while i < limit && depth > 0 {
+        if matches!(bytes[i], b'<' | b'>' | b'$') && bytes.get(i + 1) == Some(&b'(') {
+            i = skip_balanced_parens(bytes, i + 2, limit);
+        } else if bytes[i] == b'$' && bytes.get(i + 1) == Some(&b'{') {
+            depth += 1;
+            i += 2;
+        } else if bytes[i] == b'`' {
+            i = skip_backtick(bytes, i + 1, limit);
+        } else if bytes[i] == b'}' {
+            depth -= 1;
+            i += 1;
+        } else {
+            i = skip_word_atom(bytes, i, limit);
+        }
+    }
+    i
+}
+
+fn advance_past_heredoc_body(src: &str, pos: &mut usize, entry: &HeredocEntry) -> (usize, bool) {
     let bytes = src.as_bytes();
     while *pos < bytes.len() {
         let line_start = *pos;
@@ -897,10 +885,10 @@ fn advance_past_heredoc_body(src: &str, pos: &mut usize, entry: &HeredocEntry) -
         };
         *pos = next_pos;
         if candidate == entry.delimiter {
-            return next_pos;
+            return (next_pos, true);
         }
     }
-    src.len()
+    (src.len(), false)
 }
 
 /// Decodes a heredoc delimiter word and returns (delimiter, is_quoted).
