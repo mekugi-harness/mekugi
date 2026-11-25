@@ -288,3 +288,69 @@ test("ValueRow keeps full path in title while displaying relative path under gro
   );
   assert.ok(text(standalone).includes("in codex-rs"), text(standalone));
 });
+
+test("compound commands with workdir only on the first step stay grouped", () => {
+  const rows = [
+    row(1, [{ kind: "op", verb: "Run", code: "go test ./...", workdir: "docs" }]),
+    row(2, [
+      { kind: "op", verb: "Run", code: "go vet ./...", workdir: "docs" },
+      { kind: "op", verb: "Run", code: "go build ./..." },
+    ]),
+  ];
+  assert.deepEqual(workdirGroups(rows, "/repo"), ["docs", "docs"]);
+});
+
+test("bulk edits with pathless folded-edits markers are still adopted into the workdir group", () => {
+  const rows = [
+    row(1, [
+      { kind: "op", verb: "Create", path: ".worktrees/topic/a.go" },
+      { kind: "op", verb: "Create", hiddenEdits: 5 },
+    ]),
+    row(2, [{ kind: "op", verb: "Run", code: "go test ./...", workdir: ".worktrees/topic" }]),
+  ];
+  assert.deepEqual(workdirGroups(rows, "/repo"), [".worktrees/topic", ".worktrees/topic"]);
+});
+
+test("segmentWorkdirRows preserves group keys when paging prepends rows into the same group", () => {
+  const keys = new Map();
+  const page1 = [
+    row(51, [{ kind: "op", verb: "Run", code: "cmd 51", workdir: "docs" }]),
+    row(52, [{ kind: "op", verb: "Run", code: "cmd 52", workdir: "docs" }]),
+  ];
+  const seg1 = segmentWorkdirRows(page1, ["docs", "docs"], keys);
+  assert.equal(seg1.length, 1);
+  const initialKey = seg1[0].key;
+
+  const page2 = [
+    row(49, [{ kind: "op", verb: "Run", code: "cmd 49", workdir: "docs" }]),
+    row(50, [{ kind: "op", verb: "Run", code: "cmd 50", workdir: "docs" }]),
+    ...page1,
+  ];
+  const seg2 = segmentWorkdirRows(page2, ["docs", "docs", "docs", "docs"], keys);
+  assert.equal(seg2.length, 1);
+  assert.equal(seg2[0].key, initialKey);
+});
+
+test("ValueRow preserves already-relative git status change paths and adds tooltips to shortened label edits", () => {
+  const gitStatus = {
+    kind: "op",
+    verb: "Status",
+    workdir: "docs",
+    changes: [{ code: "M", label: "docs/intro.md" }],
+  };
+  const statusHtml = render(ValueRow, {
+    props: { value: gitStatus, groupWorkdir: "docs", workspace: "/repo" },
+  }).body;
+  assert.match(statusHtml, /<bdi[^>]*>docs\/intro\.md<\/bdi>/);
+
+  const labelEdit = {
+    kind: "op",
+    verb: "Edit",
+    label: "`.worktrees/topic/internal/edit.go` +1 -1",
+  };
+  const editHtml = render(ValueRow, {
+    props: { value: labelEdit, groupWorkdir: ".worktrees/topic", workspace: "/repo" },
+  }).body;
+  assert.match(editHtml, /title="\.worktrees\/topic\/internal\/edit\.go"/);
+  assert.ok(text(editHtml).includes("internal/edit.go"), text(editHtml));
+});

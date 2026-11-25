@@ -12,7 +12,7 @@
   import { codeBlock } from "./ui/styles";
   import Tag from "./ui/Tag.svelte";
   import * as Trace from "./ui/trace";
-  import { editWithin, normalizeWorkdir, relativeEditLabel, relativeToDir } from "./workdir";
+  import { editFullPath, editWithin, normalizeWorkdir, relativeEditLabel } from "./workdir";
 
   // outputLang names the grammar of the retained output, when known.
   let {
@@ -51,6 +51,11 @@
     groupWorkdir && !value.path
       ? relativeEditLabel(value, groupWorkdir, workspace)
       : (value.label ?? ""),
+  );
+  const editPathTitle = $derived(
+    groupWorkdir && !value.path && displayLabel !== (value.label ?? "")
+      ? editFullPath(value)
+      : undefined,
   );
   const labelParts = $derived(parts(displayLabel));
   // A label ending in "failed", as an MCP call's does, states the outcome the
@@ -266,7 +271,7 @@
           >{#if annotates(value)}{"· "}{/if}{@html label}</span
         >{/if}
     {:else if value.label}
-      <span {@attach commandLabel(label)}>{@html label}</span>
+      <span title={editPathTitle} {@attach commandLabel(label)}>{@html label}</span>
     {/if}
     {#each value.sources ?? [] as source, i (i)}<Tag mono class="ml-1.5 align-[1px]">{source}</Tag
       >{/each}
@@ -348,13 +353,9 @@
                 >{change.code ?? change.verb ?? ""}</span
               >
               <span class="min-w-0 font-mono"
-                >{#if change.code || change.verb}{@const changePath =
-                    groupWorkdir && change.label
-                      ? relativeToDir(change.label, groupWorkdir, workspace) || change.label
-                      : (change.label ?? "")}<Path
-                    path={changePath}
-                    title={change.label ?? ""}
-                  />{:else}<span class="block truncate">{change.label}</span>{/if}</span
+                >{#if change.code || change.verb}<Path path={change.label ?? ""} />{:else}<span
+                    class="block truncate">{change.label}</span
+                  >{/if}</span
               >
               {#if change.added || change.removed}
                 <span class="font-mono tabular-nums"

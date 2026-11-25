@@ -80,6 +80,11 @@ export function isEditOperation(value: Value): boolean {
   return value.kind === "op" && (!!value.sources?.length || EDIT_VERBS.has(value.verb ?? ""));
 }
 
+export function editFullPath(value: Value): string {
+  if (!isEditOperation(value)) return "";
+  return value.path || leadingCodeSpan(value.label ?? "")?.content || "";
+}
+
 export function relativeToDir(path: string, dir: string, workspace?: string): string {
   const normDir = normalizeWorkdir(dir, workspace);
   if (!normDir || !path) return "";
@@ -97,8 +102,7 @@ export function relativeToDir(path: string, dir: string, workspace?: string): st
 // Returns the edit target displayed relative to dir, or "" when the edit does
 // not belong within dir. Move paths require both endpoints to lie inside dir.
 export function editWithin(value: Value, dir: string, workspace?: string): string {
-  if (!isEditOperation(value)) return "";
-  const rawPath = value.path || leadingCodeSpan(value.label ?? "")?.content || "";
+  const rawPath = editFullPath(value);
   if (!rawPath) return "";
   if (value.verb === "Move") {
     const arrow = rawPath.indexOf(" => ");
@@ -135,6 +139,10 @@ function isPendingBatchExit(value: Value): boolean {
   );
 }
 
+function isFoldedEditsMarker(value: Value): boolean {
+  return (value.hiddenEdits ?? 0) > 0 && !value.path && !value.label;
+}
+
 function isReasoningRow(row: WorkdirRow): boolean {
   return !!row.thoughts || row.entry.kind === "reasoning";
 }
@@ -159,23 +167,21 @@ function rowWorkdir(row: WorkdirRow, workspace?: string): string {
   const values = (row.entry.values ?? []).filter((value) => !isPendingBatchExit(value));
   if (!values.length) return "";
   let dir = "";
-  let sawDefaultCommand = false;
   for (const value of values) {
     const current = normalizeWorkdir(value.workdir, workspace);
     if (current) {
       if (dir && dir !== current) return "";
       dir = current;
-    } else if (!value.batchExit && !isEditOperation(value)) {
-      sawDefaultCommand = true;
     }
   }
-  if (!dir || sawDefaultCommand) return "";
   return dir;
 }
 
 function canAdoptEditRow(row: WorkdirRow, dir: string, workspace?: string): boolean {
   if (!isActivityRow(row)) return false;
-  const values = (row.entry.values ?? []).filter((value) => !isPendingBatchExit(value));
+  const values = (row.entry.values ?? []).filter(
+    (value) => !isPendingBatchExit(value) && !isFoldedEditsMarker(value),
+  );
   if (!values.length) return false;
   return values.every((value) => editWithin(value, dir, workspace) !== "");
 }
@@ -270,8 +276,10 @@ export function workdirGroups<T extends WorkdirRow>(
 export function segmentWorkdirRows<T extends WorkdirRow>(
   rows: readonly T[],
   groups: readonly string[],
+  stableKeys?: Map<number, string>,
 ): WorkdirSegment<T>[] {
   const segments: WorkdirSegment<T>[] = [];
+  const usedKeys = new Set<string>();
   for (let i = 0; i < rows.length;) {
     const dir = groups[i] ?? "";
     if (!dir) {
@@ -284,11 +292,30 @@ export function segmentWorkdirRows<T extends WorkdirRow>(
       grouped.push(rows[i]);
       i++;
     }
+    const prefix = `${dir}:`;
+    let key = "";
+    if (stableKeys) {
+      for (const member of grouped) {
+        const existing = stableKeys.get(member.entry.seq);
+        if (existing?.startsWith(prefix) && !usedKeys.has(existing)) {
+          key = existing;
+          break;
+        }
+      }
+    }
+    if (!key) {
+      key = `${dir}:${grouped[0].entry.seq}`;
+      while (usedKeys.has(key)) key += "*";
+    }
+    usedKeys.add(key);
+    if (stableKeys) {
+      for (const member of grouped) stableKeys.set(member.entry.seq, key);
+    }
     segments.push({
       kind: "group",
       workdir: dir,
       rows: grouped,
-      key: `${dir}:${grouped[0].entry.seq}`,
+      key,
     });
   }
   return segments;

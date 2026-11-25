@@ -119,8 +119,15 @@
         ),
   );
   const visible = $derived(rows.slice(first));
-  const groupDirs = $derived(workdirGroups(rows, workspace));
-  const segments = $derived(segmentWorkdirRows(visible, groupDirs.slice(first)));
+  const groupKeys = new Map<number, string>();
+  const resolvedRows = $derived(
+    rows.map((row) => {
+      const entry = resolved(row.entry);
+      return entry === row.entry ? row : { ...row, entry };
+    }),
+  );
+  const groupDirs = $derived(workdirGroups(resolvedRows, workspace));
+  const segments = $derived(segmentWorkdirRows(visible, groupDirs.slice(first), groupKeys));
   $effect(() => {
     if (following) oldest = rows[Math.max(0, rows.length - pageSize)]?.entry.seq;
   });
@@ -143,6 +150,7 @@
     following = false;
     const container = scroller;
     const anchor = column.querySelector<HTMLElement>("[data-entry]");
+    const anchorSeq = anchor?.dataset.entry;
     const top = anchor?.getBoundingClientRect().top ?? 0;
     if (first === 0) {
       const request = nextPage;
@@ -156,8 +164,13 @@
     stalled = undefined;
     oldest = rows[Math.max(0, first - pageSize)]?.entry.seq;
     await tick();
-    if (anchor && scroller === container)
-      container.scrollTop += anchor.getBoundingClientRect().top - top;
+    const restored = anchor?.isConnected
+      ? anchor
+      : anchorSeq
+        ? column.querySelector<HTMLElement>(`[data-entry="${anchorSeq}"]`)
+        : null;
+    if (restored && scroller === container)
+      container.scrollTop += restored.getBoundingClientRect().top - top;
     paging = false;
     measure();
   }
