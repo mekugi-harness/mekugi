@@ -129,8 +129,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   client-side user shell edits so newly native-captured edits appear in the
   Diff pane.
 - When session naming is enabled, new persistent Main threads can receive a
-  native title from a one-shot, untooled request on their selected provider.
-  An existing manual name wins; title failure does not fail the turn.
+  native title from a one-shot, untooled request carrying `thread_title` turn
+  metadata (`gpt-6-luna` on built-in OpenAI, skipping local spend/budget
+  accounting under ChatGPT auth; selected model on custom providers). An
+  existing manual name wins; title failure does not fail the turn.
 - Native request construction expands submitted attachment snapshots and
   attributes standalone tool context without rewriting retained review items.
   Side forks reuse parent cache routing; answer-only forks stop when auto

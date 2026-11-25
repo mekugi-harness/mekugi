@@ -13953,10 +13953,7 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
 
 #[test]
 fn title_request_metadata_emits_thread_title_turn_metadata() {
-    let metadata = Session::title_request_metadata(
-        "install-1".to_string(),
-        "req-1".to_string(),
-    );
+    let metadata = Session::title_request_metadata("install-1".to_string(), "req-1".to_string());
     assert!(metadata.has_turn_metadata());
     let payload = metadata
         .turn_metadata_value()
