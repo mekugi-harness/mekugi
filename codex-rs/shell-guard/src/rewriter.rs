@@ -494,8 +494,7 @@ fn quoted_heredoc_spans_from_tree(src: &str, tree: &Tree) -> Vec<QuotedHeredocSp
             let full_end = advance_past_heredoc_body(src, &mut pos, &entry);
             let mask_unquoted_redirect_bug = !entry.is_quoted
                 && entry.absorbed_redirect
-                && !src[entry_body_start..full_end]
-                    .as_bytes()
+                && !src.as_bytes()[entry_body_start..full_end]
                     .iter()
                     .any(|&b| matches!(b, b'$' | b'\x60'));
             if entry.is_quoted || mask_unquoted_redirect_bug {
