@@ -16,7 +16,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
@@ -73,7 +73,7 @@ func TestLiveDiffDirectPublicationAndDurableReload(t *testing.T) {
 		t.Fatalf("publication lost saved edit: %+v", files)
 	}
 	callID := event.Calls[0]
-	if err := os.Remove(filepath.Join(store.directory, legacycall.Name(workspace, callID, false))); err != nil {
+	if err := os.Remove(filepath.Join(store.directory, history.Name(workspace, callID, false))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.liveDiffSnapshot(t.Context(), previewmodel.Scope{Workspaces: map[string]map[string]bool{workspace: {"identity-thread": true}}}); err == nil {
@@ -111,7 +111,7 @@ func TestLiveDiffScopeReconciliationUsesCachedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(store.directory, legacycall.Name(workspace, "one", false))); err != nil {
+	if err := os.Remove(filepath.Join(store.directory, history.Name(workspace, "one", false))); err != nil {
 		t.Fatal(err)
 	}
 	projection := sessionreview.Projection{Changes: store.changes, Retained: store.changeScope(), Data: data}
@@ -144,7 +144,7 @@ func TestLiveDiffJSONBatchKeepsFollowAndRecency(t *testing.T) {
 	})
 	sub := testReview(broker).Subscribe()
 	<-sub.Events()
-	histories := make(map[string]legacycall.History)
+	histories := make(map[string]history.History)
 	for _, name := range []string{"first", "second"} {
 		id, err := store.changes.Reserve(t.Context(), store.scoped(t.Context()).changeScope(), workspace, "thread-1", name)
 		if err != nil {
@@ -157,7 +157,7 @@ func TestLiveDiffJSONBatchKeepsFollowAndRecency(t *testing.T) {
 		if err := os.WriteFile(path, []byte("content\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		histories[name] = legacycall.History{ToolName: applyPatchToolName, ChangeID: id, CorrelationID: name, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "", "content\n")})}
+		histories[name] = history.History{ToolName: applyPatchToolName, ChangeID: id, CorrelationID: name, ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "", "content\n")})}
 	}
 	if err := store.put(t.Context(), workspace, histories); err != nil {
 		t.Fatal(err)

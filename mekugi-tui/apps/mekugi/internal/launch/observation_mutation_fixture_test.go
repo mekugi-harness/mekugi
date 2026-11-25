@@ -13,7 +13,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
@@ -24,8 +24,8 @@ func putTestChange(t *testing.T, ctx context.Context, store *mekugiReplayStore, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := legacycall.History{ChangeID: id, CorrelationID: correlation, ReviewFiles: retainedReviewFiles(files)}
-	if err := store.put(ctx, workspace, map[string]legacycall.History{correlation: history}); err != nil {
+	history := sessionhistory.History{ChangeID: id, CorrelationID: correlation, ReviewFiles: retainedReviewFiles(files)}
+	if err := store.put(ctx, workspace, map[string]sessionhistory.History{correlation: history}); err != nil {
 		t.Fatal(err)
 	}
 	return id

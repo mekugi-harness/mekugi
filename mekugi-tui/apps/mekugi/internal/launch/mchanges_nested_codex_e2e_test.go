@@ -12,7 +12,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/nativetrace"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/frontends"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
@@ -285,7 +285,7 @@ func testMChangesCheckOverlap(t *testing.T, command string, formatter bool) {
 		t.Fatal(err)
 	}
 	defer release()
-	writer, found, err := store.scoped(ctx).lookup(ctx, workspace, legacycall.ExecCallID(provider.callID, true))
+	writer, found, err := store.scoped(ctx).lookup(ctx, workspace, sessionhistory.ExecCallID(provider.callID, true))
 	if err != nil || !found || writer.ExecOutcome == nil {
 		t.Fatalf("formatter terminal capture: found=%t error=%v history=%+v", found, err, writer)
 	}
@@ -293,7 +293,7 @@ func testMChangesCheckOverlap(t *testing.T, command string, formatter bool) {
 	if writer.ChangeID != "" || len(writer.ReviewFiles) != 0 || writer.ExecOutcome.Coverage != changecapture.CoverageExact || writer.ExecOutcome.Exit == nil || *writer.ExecOutcome.Exit != 0 || strings.Contains(writer.ExecOutcome.ScopeReason, "rtk is not recognized") {
 		t.Fatalf("runner claimed an edit, lost the check scope or reported incomplete effects: %+v", writer)
 	}
-	edited, found, err := store.scoped(ctx).lookup(ctx, workspace, legacycall.PatchCallID(provider.callID+"-overlap", 0))
+	edited, found, err := store.scoped(ctx).lookup(ctx, workspace, sessionhistory.PatchCallID(provider.callID+"-overlap", 0))
 	if err != nil || !found || edited.ChangeID == "" {
 		t.Fatalf("overlapping patch capture: found=%t error=%v history=%+v", found, err, edited)
 	}
@@ -353,11 +353,11 @@ PY`
 		t.Fatal(err)
 	}
 	defer release()
-	check, found, err := store.scoped(ctx).lookup(ctx, workspace.dir, legacycall.ExecCallID(provider.callID, true))
+	check, found, err := store.scoped(ctx).lookup(ctx, workspace.dir, sessionhistory.ExecCallID(provider.callID, true))
 	if err != nil || !found || len(check.ReviewFiles) != 0 || check.ChangeID != "" {
 		t.Fatalf("runner claimed batch edits: found=%v id=%q files=%d err=%v", found, check.ChangeID, len(check.ReviewFiles), err)
 	}
-	batch, found, err := store.scoped(ctx).lookup(ctx, workspace.dir, legacycall.ExecCallID(provider.callID+"-overlap", true))
+	batch, found, err := store.scoped(ctx).lookup(ctx, workspace.dir, sessionhistory.ExecCallID(provider.callID+"-overlap", true))
 	if err != nil || !found || batch.ChangeID == "" {
 		t.Fatalf("missing batch: found=%v err=%v", found, err)
 	}
@@ -528,7 +528,7 @@ func TestMChangesNestedNativeCodexE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sawPatch, sawNonzeroExec bool
-	failedPatch, found, err := failedStore.lookup(failedContext, failureWorkspace, legacycall.PatchCallID(failureProvider.callID, 0))
+	failedPatch, found, err := failedStore.lookup(failedContext, failureWorkspace, sessionhistory.PatchCallID(failureProvider.callID, 0))
 	if err != nil || !found || failedPatch.ChangeID != "" || len(failedPatch.HostResults) != 1 || failedPatch.HostResults[0].Status != "failed" {
 		t.Fatalf("unchanged failed attempt was lost or allocated a change ID: %+v found=%t err=%v", failedPatch, found, err)
 	}
@@ -615,7 +615,7 @@ func TestMChangesNestedNativeCodexE2E(t *testing.T) {
 	}
 	var previousPatchCall string
 	for index, status := range []string{"completed", "failed"} {
-		attempt, found, err := loopStore.lookup(loopContext, loopWorkspace, legacycall.PatchCallID(loopProvider.callID, index))
+		attempt, found, err := loopStore.lookup(loopContext, loopWorkspace, sessionhistory.PatchCallID(loopProvider.callID, index))
 		if err != nil || !found || len(attempt.HostResults) != 1 || attempt.HostResults[0].Status != status || attempt.HostResults[0].CallID == previousPatchCall {
 			t.Fatalf("literal loop patch %d lost its distinct host outcome: %+v, %v", index, attempt, err)
 		}
@@ -624,7 +624,7 @@ func TestMChangesNestedNativeCodexE2E(t *testing.T) {
 			t.Fatalf("literal loop patch %d duplicated effects or lost failure", index)
 		}
 	}
-	commandAttempt, found, err := loopStore.lookup(loopContext, loopWorkspace, legacycall.ExecCallID(loopProvider.callID, true))
+	commandAttempt, found, err := loopStore.lookup(loopContext, loopWorkspace, sessionhistory.ExecCallID(loopProvider.callID, true))
 	if err != nil || !found || len(commandAttempt.HostResults) != 2 || commandAttempt.HostResults[0].CallID == commandAttempt.HostResults[1].CallID ||
 		len(commandAttempt.ReviewFiles) != 1 || commandAttempt.ExecOutcome.Coverage != changecapture.CoverageExact {
 		t.Fatalf("literal command loop lost host occurrences or scoped effects: %+v, %v", commandAttempt, err)

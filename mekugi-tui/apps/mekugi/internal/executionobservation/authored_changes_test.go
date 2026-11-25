@@ -12,7 +12,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
@@ -60,7 +60,7 @@ func TestAuthoredChangesKnownEditsIgnoreIncidentalEffectsAndGitIgnore(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			record, found, err := reopened.lookup(f.ctx, f.workspace, legacycall.ExecCallID("edit", false))
+			record, found, err := reopened.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID("edit", false))
 			if err != nil || !found || record.ChangeID == "" || len(record.ReviewFiles) != 1 || record.ReviewFiles[0].Incomplete != "" {
 				t.Fatalf("durable known edit: %+v, %v", record, err)
 			}
@@ -98,7 +98,7 @@ func TestAuthoredChangesLegacyObservationNoiseExcluded(t *testing.T) {
 	path := filepath.Join(f.workspace, "random-generated-file")
 	file := diffmodel.RenderReviewFile("", path, "", strings.Repeat("generated\n", 1000))
 	file.OriginNote = changecapture.InventoryNote
-	f.publish(t, id, "window", legacycall.ExecCallID("outer", false), mekugiHistory{ToolName: nativeExecCommandToolName, ExecOutcome: &changecapture.Outcome{Class: "opaque", Coverage: changecapture.CoveragePartial}, ReviewFiles: []diffmodel.ReviewFile{file}})
+	f.publish(t, id, "window", sessionhistory.ExecCallID("outer", false), mekugiHistory{ToolName: nativeExecCommandToolName, ExecOutcome: &changecapture.Outcome{Class: "opaque", Coverage: changecapture.CoveragePartial}, ReviewFiles: []diffmodel.ReviewFile{file}})
 	for _, view := range []string{"list", "summary", "", "net"} {
 		text, err := f.store.changes.Read(f.ctx, f.store.scoped(f.ctx).changeScope(), changes.Query{Workspace: f.workspace, IDs: []string{id}, View: view})
 		if err != nil || strings.Contains(text, "generated") || strings.Contains(text, "incomplete captured scope") || strings.Contains(text, "1000") {
@@ -123,7 +123,7 @@ func TestAuthoredChangesOwnedEvidenceSurvivesRestart(t *testing.T) {
 	if blobs := snapshotTestBlobs(t, store); len(blobs) != 0 {
 		t.Fatalf("new shared snapshots: %v", blobs)
 	}
-	data, err := os.ReadFile(filepath.Join(store.directory, legacycall.Name("/w", "inline", false)))
+	data, err := os.ReadFile(filepath.Join(store.directory, sessionhistory.Name("/w", "inline", false)))
 	if err != nil || strings.Contains(string(data), "before\\r\\n") || !strings.Contains(string(data), "change-evidence-") {
 		t.Fatalf("evidence not feature-owned: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestAuthoredChangesNamedFormatterKeepsFinalSourceEdits(t *testing.T) {
 	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "format", history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0)}}}); err != nil {
 		t.Fatal(err)
 	}
-	record, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("format", false))
+	record, found, err := f.store.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID("format", false))
 	if err != nil || !found || record.ChangeID == "" {
 		t.Fatalf("named formatter missing: %+v, %v", record, err)
 	}
@@ -197,7 +197,7 @@ func TestAuthoredChangesBraceFormatterKeepsCreationChain(t *testing.T) {
 	if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: "format", history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0)}}}); err != nil {
 		t.Fatal(err)
 	}
-	formatted, found, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("format", false))
+	formatted, found, err := f.store.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID("format", false))
 	if err != nil || !found || formatted.ChangeID == "" || len(formatted.ReviewFiles) != 2 {
 		t.Fatalf("formatter transition missing: %+v, %v", formatted, err)
 	}

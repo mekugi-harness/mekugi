@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 type Text struct {
@@ -136,7 +136,7 @@ func (s *Service) Inspect(ctx context.Context, options SingleOptions) (Result, e
 				return Result{}, fmt.Errorf("call %q: %w", call.ID, err)
 			}
 		}
-		var record legacycall.Record
+		var record sessionhistory.Record
 		found := false
 		if root != "" {
 			record, found, err = s.readCall(options.ReplayDirectory, root, call.ID)
@@ -144,10 +144,10 @@ func (s *Service) Inspect(ctx context.Context, options SingleOptions) (Result, e
 				return Result{}, fmt.Errorf("call %q: %w", call.ID, err)
 			}
 		}
-		var observed []legacycall.History
+		var observed []sessionhistory.History
 		if found && len(record.History.NativePatches) != 0 {
 			for index := range record.History.NativePatches {
-				derived, exists, readErr := s.readCall(options.ReplayDirectory, root, legacycall.PatchCallID(call.ID, index))
+				derived, exists, readErr := s.readCall(options.ReplayDirectory, root, sessionhistory.PatchCallID(call.ID, index))
 				if readErr != nil {
 					return Result{}, fmt.Errorf("call %q patch %d: %w", call.ID, index+1, readErr)
 				}
@@ -158,13 +158,13 @@ func (s *Service) Inspect(ctx context.Context, options SingleOptions) (Result, e
 					}
 					observed = append(observed, derived.History)
 				} else {
-					observed = append(observed, legacycall.History{})
+					observed = append(observed, sessionhistory.History{})
 				}
 			}
 		}
-		var effects *legacycall.History
+		var effects *sessionhistory.History
 		if found && record.History.ExecObservation != nil {
-			derivedID := legacycall.ExecCallID(call.ID, record.History.ExecObservation.CodeMode)
+			derivedID := sessionhistory.ExecCallID(call.ID, record.History.ExecObservation.CodeMode)
 			derived, exists, readErr := s.readCall(options.ReplayDirectory, root, derivedID)
 			if readErr != nil {
 				return Result{}, fmt.Errorf("call %q effects: %w", call.ID, readErr)
@@ -222,7 +222,7 @@ func (s *Service) Inspect(ctx context.Context, options SingleOptions) (Result, e
 	return result, nil
 }
 
-func inspectSessionCall(call Call, record legacycall.Record, found bool, observed []legacycall.History, effects *legacycall.History, field string, limit int) (CallResult, error) {
+func inspectSessionCall(call Call, record sessionhistory.Record, found bool, observed []sessionhistory.History, effects *sessionhistory.History, field string, limit int) (CallResult, error) {
 	result := CallResult{
 		CallID: call.ID, Tool: call.Tool, Replay: "missing",
 		Outcome: "unavailable", Text: make(map[string]Text),
@@ -281,7 +281,7 @@ func inspectSessionCall(call Call, record legacycall.Record, found bool, observe
 	}
 	if found && record.History.ExecObservation != nil {
 		result.Effects = &Effects{
-			CallID: legacycall.ExecCallID(call.ID, record.History.ExecObservation.CodeMode),
+			CallID: sessionhistory.ExecCallID(call.ID, record.History.ExecObservation.CodeMode),
 			Replay: "missing", Status: "unavailable", Coverage: "unavailable",
 		}
 		if effects == nil {

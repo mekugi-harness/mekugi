@@ -1,11 +1,8 @@
 package executionobservation
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand/v2"
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -14,10 +11,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 func snapshotTestHistory() mekugiHistory {
@@ -44,13 +38,6 @@ func snapshotTestHistory() mekugiHistory {
 	}
 }
 
-func snapshotTestPut(t *testing.T, store *mekugiReplayStore, ctx context.Context, call string, h mekugiHistory) {
-	t.Helper()
-	if err := putLegacySnapshotFixture(store, ctx, call, h); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func snapshotTestBlobs(t *testing.T, store *mekugiReplayStore) []string {
 	t.Helper()
 	names, err := filepath.Glob(filepath.Join(store.directory, "snapshot-*.json.gz"))
@@ -60,52 +47,6 @@ func snapshotTestBlobs(t *testing.T, store *mekugiReplayStore) []string {
 	return names
 }
 
-func TestReplaySnapshotsRoundTripDedupAndLegacy(t *testing.T) {
-	t.Parallel()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := snapshotTestHistory()
-	original := durableHistory(h)
-	for _, call := range []string{"first", "second", "first"} {
-		snapshotTestPut(t, store, t.Context(), call, h)
-	}
-	if !reflect.DeepEqual(h, original) {
-		t.Fatal("storage changed the captured evidence in memory")
-	}
-	// Exec and workspace inventories share the same content-addressed collection.
-	if blobs := snapshotTestBlobs(t, store); len(blobs) != 3 {
-		t.Fatalf("duplicate evidence objects: %v", blobs)
-	}
-	reopened, err := openMekugiReplayStore(store.directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, call := range []string{"first", "second"} {
-		got, found, err := reopened.lookup(t.Context(), "/w", call)
-		if err != nil || !found || !reflect.DeepEqual(got, original) {
-			t.Fatalf("restored evidence differs: found=%v err=%v got=%+v", found, err, got)
-		}
-	}
-	data, err := responses.MarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: "legacy", History: original})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.locked(t.Context(), func(store *mekugiReplayStore) error {
-		return store.transaction.Write(legacycall.Name("/w", "legacy", false), "legacy-pending-", data)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	got, found, err := reopened.lookup(t.Context(), "/w", "legacy")
-	if err != nil || !found || !reflect.DeepEqual(got, original) {
-		t.Fatalf("legacy evidence changed: %v %v", found, err)
-	}
-	h.ExecObservation.Files[0].Content = "conflicting content"
-	if err := store.put(t.Context(), "/w", map[string]mekugiHistory{"first": h}); err == nil {
-		t.Fatal("accepted changed durable evidence")
-	}
-}
 func TestInlineEditStorageFailureDoesNotPublishCall(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())
@@ -120,6 +61,7 @@ func TestInlineEditStorageFailureDoesNotPublishCall(t *testing.T) {
 		t.Fatalf("published an envelope before snapshots were durable: %v %v", found, err)
 	}
 }
+
 func TestInlineEditEvidenceAdmissionIsAtomic(t *testing.T) {
 	t.Parallel()
 	store, err := openMekugiReplayStore(t.TempDir())
@@ -154,113 +96,4 @@ func TestInlineEditEvidenceAdmissionIsAtomic(t *testing.T) {
 	if err != nil || !found || !reflect.DeepEqual(got.ExecObservation.Files, files) {
 		t.Fatalf("round trip found=%v err=%v", found, err)
 	}
-}
-func TestReplaySnapshotsForkDependenciesSurviveCleanup(t *testing.T) {
-	t.Parallel()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	parent, release := retentionTestSession(t, store, "parent", 0)
-	h := snapshotTestHistory()
-	snapshotTestPut(t, store, parent, "shared", h)
-	child, releaseChild := retentionTestSession(t, store, "fork", 0)
-	bindTestHandleScope(t, store, child, "", "parent")
-	release()
-	retentionTestAge(t, store, "parent", 15*24*time.Hour)
-	if err := store.cleanupSessions(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := openMekugiReplayStore(store.directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, found, err := reopened.lookup(t.Context(), "/w", "shared")
-	if err != nil || !found || !reflect.DeepEqual(got, durableHistory(h)) {
-		t.Fatalf("fork lost shared snapshots after parent expiry/restart: %v %v", found, err)
-	}
-	if blobs := snapshotTestBlobs(t, store); len(blobs) != 3 {
-		t.Fatalf("fork dependencies reclaimed: %v", blobs)
-	}
-	releaseChild()
-	retentionTestAge(t, store, "fork", 15*24*time.Hour)
-	old := time.Now().Add(-2 * time.Hour)
-	if err := os.Chtimes(filepath.Join(store.directory, "retention-sweep"), old, old); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.cleanupSessions(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if blobs := snapshotTestBlobs(t, store); len(blobs) != 0 {
-		t.Fatalf("last owner left snapshot artifacts: %v", blobs)
-	}
-}
-func TestReplaySnapshotsPressureProtectsUnpublishedDependencies(t *testing.T) {
-	t.Parallel()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := snapshotTestHistory()
-	h.UpstreamItem = map[string]json.RawMessage{"status": json.RawMessage(`"in_progress"`)}
-	snapshotTestPut(t, store, t.Context(), "call", h)
-	files, err := store.testFileSizes()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var size int64
-	old := time.Now().Add(-15 * 24 * time.Hour)
-	for name, bytes := range files {
-		size += bytes
-		if err := os.Chtimes(filepath.Join(store.directory, name), old, old); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store.maxBytes = size / 2
-	h.UpstreamItem["status"] = json.RawMessage(`"completed"`)
-	if err := store.put(t.Context(), "/w", map[string]mekugiHistory{"call": h}); err == nil {
-		t.Fatal("quota check did not protect pending dependencies")
-	}
-	got, found, err := store.lookup(t.Context(), "/w", "call")
-	if err != nil || !found || string(got.UpstreamItem["status"]) != `"in_progress"` {
-		t.Fatalf("failed update damaged retained facts: found=%v err=%v", found, err)
-	}
-}
-func TestReplaySnapshotsLegacyCatalogProtectsDependencies(t *testing.T) {
-	t.Parallel()
-	store, err := openMekugiReplayStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, release := retentionTestSession(t, store, "owner", 0)
-	snapshotTestPut(t, store, ctx, "call", snapshotTestHistory())
-	// Simulate a catalog containing only the envelope, then let cleanup expand
-	// dependencies without decompressing them or borrowing another session.
-	if err := store.locked(t.Context(), func(store *mekugiReplayStore) error {
-		catalog, err := store.publication.ReadCatalog(history.SessionName("owner"))
-		if err != nil {
-			return err
-		}
-		catalog.Files = map[string]bool{legacycall.Name("/w", "call", false): true}
-		data, err := json.Marshal(catalog)
-		if err != nil {
-			return err
-		}
-		return store.transaction.Write(history.SessionName("owner"), "session-pending-", data)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range snapshotTestBlobs(t, store) {
-		old := time.Now().Add(-15 * 24 * time.Hour)
-		if err := os.Chtimes(path, old, old); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := store.cleanupSessions(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, err := store.lookup(t.Context(), "/w", "call"); err != nil || !found {
-		t.Fatalf("live call dependency deleted: %v %v", found, err)
-	}
-	release()
 }

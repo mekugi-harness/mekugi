@@ -13,7 +13,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/command"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/execscope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/projection"
@@ -303,7 +303,7 @@ func TestMChangesRevertReportsUnknownStat(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, call := range index.Changes[other].Calls {
-		if err := os.Remove(filepath.Join(store.directory, legacycall.Name(workspace, call.ID, false))); err != nil {
+		if err := os.Remove(filepath.Join(store.directory, sessionhistory.Name(workspace, call.ID, false))); err != nil {
 			t.Fatal(err)
 		}
 	}

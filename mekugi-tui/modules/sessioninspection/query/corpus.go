@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 type CallRef struct {
@@ -215,7 +215,7 @@ func (s *Service) inspectCorpusSession(ctx context.Context, path string, calls [
 		if err != nil {
 			return session, err
 		}
-		var record legacycall.Record
+		var record history.Record
 		found := false
 		if root != "" {
 			record, found, err = s.readCall(replayDirectory, root, call.ID)
@@ -232,7 +232,7 @@ func (s *Service) inspectCorpusSession(ctx context.Context, path string, calls [
 			session.UnavailableCalls++
 		}
 		ref := CallRef{call.ID, call.Line, call.Timestamp}
-		var retained *legacycall.History
+		var retained *history.History
 		if found {
 			retained = &record.History
 		}

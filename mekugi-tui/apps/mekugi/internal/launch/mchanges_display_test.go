@@ -9,7 +9,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
@@ -140,7 +140,7 @@ func TestMChangesOutputRowsReadStoreOutput(t *testing.T) {
 			t.Fatal(err)
 		}
 		ids = append(ids, id)
-		if err := store.put(ctx, workspace, map[string]legacycall.History{call: {ChangeID: id, CorrelationID: call, ReviewFiles: retainedReviewFiles(files)}}); err != nil {
+		if err := store.put(ctx, workspace, map[string]sessionhistory.History{call: {ChangeID: id, CorrelationID: call, ReviewFiles: retainedReviewFiles(files)}}); err != nil {
 			t.Fatal(err)
 		}
 	}

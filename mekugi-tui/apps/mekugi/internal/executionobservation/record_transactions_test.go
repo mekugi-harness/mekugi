@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/recordtransactions"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -118,7 +117,7 @@ func TestRecordTransactionsInterruptedForkRetriesBeforeScopePublication(t *testi
 	owner := store.changes
 	store.changes = interruptedForkChanges{Service: owner, check: func() error {
 		catalog, err := store.publication.ReadCatalog(history.SessionName("fork"))
-		if err != nil || !catalog.Files[legacycall.Name("/w", "evidence", false)] {
+		if err != nil || !catalog.Files[history.Name("/w", "evidence", false)] {
 			t.Fatalf("cloned index preceded its dependencies: %+v %v", catalog, err)
 		}
 		if _, exists, err := store.publication.ReadScope("fork"); err != nil || exists {

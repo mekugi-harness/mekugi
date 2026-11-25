@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 
 	"github.com/gofrs/flock"
@@ -82,7 +80,7 @@ func retentionTestAge(t *testing.T, store *mekugiReplayStore, thread string, age
 
 func retentionTestPut(t *testing.T, store *mekugiReplayStore, ctx context.Context, workspace, call string) {
 	t.Helper()
-	if err := store.put(ctx, workspace, map[string]legacycall.History{call: {ToolName: "shell", Script: "true"}}); err != nil {
+	if err := store.put(ctx, workspace, map[string]retainedhistory.History{call: {ToolName: "shell", Script: "true"}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -164,7 +162,7 @@ func TestStoragePressureRemovesOldestInactiveSessionAcrossWorkspaces(t *testing.
 	}
 	store.maxBytes, _ = store.publication.Usage(store.retentionLimits(), files, "", 0)
 	retentionTestPressureRetry(t, store, current, func() error {
-		return store.put(current, "/third", map[string]legacycall.History{"new": {ToolName: "shell", Script: "true"}})
+		return store.put(current, "/third", map[string]retainedhistory.History{"new": {ToolName: "shell", Script: "true"}})
 	})
 	retentionTestExists(t, store, "/first", "old", false)
 	retentionTestExists(t, store, "/second", "newer", true)
@@ -186,7 +184,7 @@ func TestStoragePressurePreservesRunningWorkAndReportsLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.maxBytes, _ = store.publication.Usage(store.retentionLimits(), files, "", 0)
-	err = store.put(current, "/w", map[string]legacycall.History{"new": {Script: "true"}})
+	err = store.put(current, "/w", map[string]retainedhistory.History{"new": {Script: "true"}})
 	if err == nil || !strings.Contains(err.Error(), "limit is") || !strings.Contains(err.Error(), "Running sessions") {
 		t.Fatalf("storage pressure error = %v", err)
 	}
@@ -209,7 +207,7 @@ func TestStorageRetentionForkOwnershipSurvivesRestart(t *testing.T) {
 	if err != nil || !found {
 		t.Fatal(err)
 	}
-	if err := store.retainInput(child, "/w", nil, map[string]legacycall.History{"shared": history}, nil); err != nil {
+	if err := store.retainInput(child, "/w", nil, map[string]retainedhistory.History{"shared": history}, nil); err != nil {
 		t.Fatal(err)
 	}
 	releaseChild()
@@ -239,7 +237,7 @@ func TestStorageRetentionDoesNotFollowSymlinksOrRemoveUnknownFiles(t *testing.T)
 	if err := os.WriteFile(outside, []byte("original chat"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	name := legacycall.Name("/w", "link", false)
+	name := retainedhistory.Name("/w", "link", false)
 	if err := os.Symlink(outside, filepath.Join(store.directory, name)); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +262,7 @@ func TestStorageCleanupRetiresChangesWithoutReusingIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.put(old, "/w", map[string]legacycall.History{"call": {ChangeID: id, CorrelationID: "first", Attempt: 1}}); err != nil {
+	if err := store.put(old, "/w", map[string]retainedhistory.History{"call": {ChangeID: id, CorrelationID: "first", Attempt: 1}}); err != nil {
 		t.Fatal(err)
 	}
 	release()
@@ -305,7 +303,7 @@ func TestStorageCatalogGrowthCountsAgainstQuota(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = store.retainInput(child, "/w", nil, map[string]legacycall.History{"shared": history}, nil)
+	err = store.retainInput(child, "/w", nil, map[string]retainedhistory.History{"shared": history}, nil)
 	if err == nil || !strings.Contains(err.Error(), "limit is") {
 		t.Fatalf("catalog quota was not enforced: %v", err)
 	}
@@ -346,7 +344,7 @@ func TestStorageSnapshotLeaseBridgesForkValidationAndAdoption(t *testing.T) {
 		t.Fatal(err)
 	}
 	retentionTestExists(t, store, "/w", "shared", true)
-	if err := store.retainInput(child, "/w", nil, map[string]legacycall.History{"shared": history}, releaseSnapshot); err != nil {
+	if err := store.retainInput(child, "/w", nil, map[string]retainedhistory.History{"shared": history}, releaseSnapshot); err != nil {
 		t.Fatal(err)
 	}
 	if err := other.cleanupSessions(otherCtx); err != nil {
@@ -442,7 +440,7 @@ func TestStorageIndexPressurePersistsRetiredAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.put(old, "/w", map[string]legacycall.History{
+	if err := store.put(old, "/w", map[string]retainedhistory.History{
 		"old-call": {ChangeID: id, CorrelationID: "original", Attempt: 1, Script: strings.Repeat("x", 2048)},
 	}); err != nil {
 		t.Fatal(err)
@@ -451,7 +449,7 @@ func TestStorageIndexPressurePersistsRetiredAttempts(t *testing.T) {
 	retentionTestAge(t, store, "old", time.Hour)
 	current, _ := retentionTestSession(t, store, "current", 0)
 	current = bindTestHandleScope(t, store, current, "old", "")
-	if err := store.put(current, "/w", map[string]legacycall.History{
+	if err := store.put(current, "/w", map[string]retainedhistory.History{
 		"current-call": {ChangeID: id, CorrelationID: "original", Attempt: 2, ExecutingThread: "current"},
 	}); err != nil {
 		t.Fatal(err)

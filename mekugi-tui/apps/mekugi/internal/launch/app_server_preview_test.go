@@ -8,7 +8,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionreview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
@@ -533,7 +533,7 @@ func (p *nativePreview) apply(edit nativePreviewEdit) {
 	id := fmt.Sprintf("call-%d", p.calls)
 	caller := p.ui.attached.session.Caller(edit.thread)
 	if change, err := p.store.changes.Reserve(p.ui.ctx, p.store.scoped(p.ui.ctx).changeScope(), p.workspace, edit.thread, edit.item+"\x000"); err == nil {
-		_ = p.store.put(p.ui.ctx, p.workspace, map[string]legacycall.History{id: {
+		_ = p.store.put(p.ui.ctx, p.workspace, map[string]history.History{id: {
 			ToolName: applyPatchToolName, Caller: caller, ChangeID: change, CorrelationID: edit.item + "\x000", ExecutingThread: edit.thread,
 			ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(beforePath, absolute, string(before), after)}),
 		}})

@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	history "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
@@ -156,7 +155,7 @@ func TestMekugiReplayStoreConcurrencyAndCorruption(t *testing.T) {
 		})
 	}
 	wg.Wait()
-	if err := os.WriteFile(dir+"/"+legacycall.Name("/w", "c", false), []byte("corrupt"), 0600); err != nil {
+	if err := os.WriteFile(dir+"/"+history.Name("/w", "c", false), []byte("corrupt"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.lookup(t.Context(), "/w", "c"); err == nil {
@@ -227,7 +226,7 @@ func TestMekugiReplayStoreRejectsSymlinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target+"/outside", dir+"/"+legacycall.Name("/w", "c", false)); err != nil {
+	if err := os.Symlink(target+"/outside", dir+"/"+history.Name("/w", "c", false)); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.put(t.Context(), "/w", map[string]mekugiHistory{"c": {Script: "x"}}); err == nil {

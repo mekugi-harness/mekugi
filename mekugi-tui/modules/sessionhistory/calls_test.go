@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/moduletest"
@@ -100,12 +99,12 @@ func TestComposedCallCachePreservesOrderPinsAndAtomicAdmission(t *testing.T) {
 	}
 	initial := make([]history.Call, 128)
 	for i := range initial {
-		initial[i] = history.Call{ID: fmt.Sprint(i), History: legacycall.History{Script: fmt.Sprint(i)}}
+		initial[i] = history.Call{ID: fmt.Sprint(i), History: history.History{Script: fmt.Sprint(i)}}
 	}
 	if err := cache.Remember("pinned", initial); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.Remember("pinned", []history.Call{{ID: "0", History: legacycall.History{Script: "updated"}}, {ID: "new"}}); err != nil {
+	if err := cache.Remember("pinned", []history.Call{{ID: "0", History: history.History{Script: "updated"}}, {ID: "new"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := cache.Lookup("pinned", "1"); exists {

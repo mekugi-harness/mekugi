@@ -14,7 +14,6 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/recordtransactions"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/requestexecution"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/persistence"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
@@ -28,7 +27,7 @@ type replayRecord struct {
 	CallID       string
 	Commentary   bool
 	CaptureOrder uint64 `json:",omitzero"`
-	History      legacycall.History
+	History      history.History
 }
 
 func (s *mekugiReplayStore) read(workspace, callID string, commentary bool) (replayRecord, bool, error) {
@@ -38,9 +37,9 @@ func (s *mekugiReplayStore) read(workspace, callID string, commentary bool) (rep
 	}
 	return replayRecord{Version: record.Version, Workspace: record.Workspace, CallID: record.CallID, Commentary: record.Commentary, CaptureOrder: record.CaptureOrder, History: record.History}, true, nil
 }
-func (s *mekugiReplayStore) lookup(ctx context.Context, workspace, callID string) (legacycall.History, bool, error) {
+func (s *mekugiReplayStore) lookup(ctx context.Context, workspace, callID string) (history.History, bool, error) {
 	if s == nil {
-		return legacycall.History{}, false, nil
+		return history.History{}, false, nil
 	}
 	var record replayRecord
 	var found bool
@@ -54,7 +53,7 @@ func (s *mekugiReplayStore) lookup(ctx context.Context, workspace, callID string
 
 // Assertions detach the selected fixture's values. Production consumers retain
 // references and load only the text their own projection needs.
-func fixtureCapturedRecord(store *history.Store, workspace, call string, commentary bool) (legacycall.Record, bool, error) {
+func fixtureCapturedRecord(store *history.Store, workspace, call string, commentary bool) (history.Record, bool, error) {
 	record, found, err := store.ReadAttachedHostCall(workspace, call, commentary)
 	if err != nil || !found {
 		return record.Record, found, err
@@ -67,19 +66,19 @@ func fixtureCapturedRecord(store *history.Store, workspace, call string, comment
 	if err != nil {
 		return record.Record, false, err
 	}
-	files := func(values []evidence.File) ([]legacycall.File, error) {
-		var result []legacycall.File
+	files := func(values []evidence.File) ([]history.File, error) {
+		var result []history.File
 		for _, v := range values {
 			text, err := v.Text()
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, legacycall.File{Origin: v.Origin, AlsoManaged: v.AlsoManaged, Path: v.Path, Kind: string(v.Kind), Content: text, Size: v.Size, Hash: v.Hash, Link: v.Link, Stamp: v.Stamp, Error: v.Error, CopyOf: v.CopyOf})
+			result = append(result, history.File{Origin: v.Origin, AlsoManaged: v.AlsoManaged, Path: v.Path, Kind: string(v.Kind), Content: text, Size: v.Size, Hash: v.Hash, Link: v.Link, Stamp: v.Stamp, Error: v.Error, CopyOf: v.CopyOf})
 		}
 		return result, nil
 	}
 	if len(snapshot.Observation) > 0 {
-		record.History.ExecObservation = new(legacycall.Observation)
+		record.History.ExecObservation = new(history.Observation)
 		if err := jsonv2.Unmarshal(snapshot.Observation, record.History.ExecObservation); err != nil {
 			return record.Record, false, err
 		}
@@ -89,7 +88,7 @@ func fixtureCapturedRecord(store *history.Store, workspace, call string, comment
 		}
 	}
 	if len(snapshot.Baseline) > 0 {
-		record.History.ResolvedBaseline = new(legacycall.Baseline)
+		record.History.ResolvedBaseline = new(history.Baseline)
 		if err := jsonv2.Unmarshal(snapshot.Baseline, record.History.ResolvedBaseline); err != nil {
 			return record.Record, false, err
 		}
@@ -99,7 +98,7 @@ func fixtureCapturedRecord(store *history.Store, workspace, call string, comment
 		}
 	}
 	for _, patch := range snapshot.Patches {
-		value := legacycall.NativePatch{Input: patch.Input}
+		value := history.NativePatch{Input: patch.Input}
 		for _, file := range patch.Files {
 			if file.BeforeRef != nil {
 				file.Before, err = file.BeforeRef.Read()
@@ -113,7 +112,7 @@ func fixtureCapturedRecord(store *history.Store, workspace, call string, comment
 					return record.Record, false, err
 				}
 			}
-			value.Files = append(value.Files, legacycall.NativeFile{BeforePath: file.BeforePath, AfterPath: file.AfterPath, Before: file.Before, Exists: file.Exists, Error: file.Error, TargetBefore: file.TargetBefore, TargetExists: file.TargetExists, TargetError: file.TargetError})
+			value.Files = append(value.Files, history.NativeFile{BeforePath: file.BeforePath, AfterPath: file.AfterPath, Before: file.Before, Exists: file.Exists, Error: file.Error, TargetBefore: file.TargetBefore, TargetExists: file.TargetExists, TargetError: file.TargetError})
 		}
 		record.History.NativePatches = append(record.History.NativePatches, value)
 	}
@@ -122,7 +121,7 @@ func fixtureCapturedRecord(store *history.Store, workspace, call string, comment
 		return record.Record, false, err
 	}
 	for _, file := range reviews {
-		record.History.ReviewFiles = append(record.History.ReviewFiles, legacycall.ReviewFile(file))
+		record.History.ReviewFiles = append(record.History.ReviewFiles, history.ReviewFile(file))
 	}
 	return record.Record, true, nil
 }
@@ -219,7 +218,7 @@ func (s *mekugiReplayStore) changeScope() changes.Scope {
 }
 
 // put seeds neutral retained evidence through the actual publication owners.
-func (s *mekugiReplayStore) put(ctx context.Context, workspace string, histories map[string]legacycall.History) error {
+func (s *mekugiReplayStore) put(ctx context.Context, workspace string, histories map[string]history.History) error {
 	if s == nil {
 		return nil
 	}
@@ -235,7 +234,7 @@ func (s *mekugiReplayStore) put(ctx context.Context, workspace string, histories
 	updates, err := recordtransactions.PublishEvidence(ctx, s.changeScope(), s.changes, workspace, publications, func(tx *history.Transaction) error {
 		for _, id := range slices.Sorted(maps.Keys(histories)) {
 			h := histories[id]
-			if err := tx.PublishHostCall(s.session.Thread, s.retentionLimits(), legacycall.Record{Version: 1, Workspace: workspace, CallID: id, History: h}, h.ChangeID != "" && len(h.ReviewFiles) > 0); err != nil {
+			if err := tx.PublishHostCall(s.session.Thread, s.retentionLimits(), history.Record{Version: 1, Workspace: workspace, CallID: id, History: h}, h.ChangeID != "" && len(h.ReviewFiles) > 0); err != nil {
 				return requestexecution.StoragePublicationError(err)
 			}
 		}
@@ -246,14 +245,14 @@ func (s *mekugiReplayStore) put(ctx context.Context, workspace string, histories
 	}
 	return err
 }
-func (s *mekugiReplayStore) retainInput(ctx context.Context, workspace string, raw json.RawMessage, histories map[string]legacycall.History, release func()) error {
+func (s *mekugiReplayStore) retainInput(ctx context.Context, workspace string, raw json.RawMessage, histories map[string]history.History, release func()) error {
 	if len(raw) != 0 {
 		return errors.New("integration fixture requires explicit retained references")
 	}
 	s = s.scoped(ctx)
 	input := recordtransactions.Input{Workspace: workspace, ReleaseSnapshot: release}
 	for id, h := range histories {
-		input.Files = append(input.Files, legacycall.Name(workspace, id, false))
+		input.Files = append(input.Files, history.Name(workspace, id, false))
 		input.Changes = append(input.Changes, h.ChangeID)
 	}
 	return recordtransactions.RetainInput(ctx, s.changeScope(), s.changes, input)

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
@@ -23,10 +22,10 @@ const (
 // Call supplies a neutral host fact in request emission order.
 type Call struct {
 	ID      string
-	History legacycall.History
+	History History
 }
 type cachedCall struct {
-	legacycall.History
+	History
 	bytes    int
 	sequence uint64
 }
@@ -227,15 +226,15 @@ func oldestCall(histories map[string]cachedCall, protected map[string]bool) (str
 	return oldestID, found
 }
 
-func (p *CallCache) Lookup(sessionID, callID string) (legacycall.History, bool) {
+func (p *CallCache) Lookup(sessionID, callID string) (History, bool) {
 	if p == nil {
-		return legacycall.History{}, false
+		return History{}, false
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	session := p.sessions[sessionID]
 	if session == nil {
-		return legacycall.History{}, false
+		return History{}, false
 	}
 	call, ok := session.calls[callID]
 	return call.History, ok

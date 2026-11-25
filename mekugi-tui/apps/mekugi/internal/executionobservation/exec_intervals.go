@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
@@ -31,7 +29,7 @@ type execInterval struct {
 }
 
 func execIntervalID(call string, codeMode bool, number int) string {
-	return fmt.Sprintf("%s:interval:%d", legacycall.ExecCallID(call, codeMode), number)
+	return fmt.Sprintf("%s:interval:%d", history.ExecCallID(call, codeMode), number)
 }
 
 // Intervals are immutable observations under the original writer's correlation.

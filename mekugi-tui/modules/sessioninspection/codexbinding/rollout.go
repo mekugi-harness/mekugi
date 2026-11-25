@@ -12,7 +12,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessioninspection/query"
 )
@@ -90,7 +90,7 @@ func bindRollout(service *query.Service, source binding.RolloutSource) error {
 
 type callEvidence struct{ call binding.RolloutCall }
 
-func (e callEvidence) Verify(history legacycall.History) error {
+func (e callEvidence) Verify(history sessionhistory.History) error {
 	call := e.call
 	if history.ToolName == "" || history.CarrierName == "" ||
 		(history.CarrierKind != "" && history.CarrierKind != "custom" &&
@@ -120,7 +120,7 @@ func itemType(kind string) string {
 	}
 	return "custom_tool_call"
 }
-func retainedExecution(history *legacycall.History) *binding.RetainedExecution {
+func retainedExecution(history *sessionhistory.History) *binding.RetainedExecution {
 	if history == nil || history.TranslationError != "" {
 		return nil
 	}
@@ -174,7 +174,7 @@ func (e callEvidence) Commands() []string {
 	return selections
 }
 
-func (e callEvidence) EmptyPoll(history *legacycall.History) bool {
+func (e callEvidence) EmptyPoll(history *sessionhistory.History) bool {
 	call := e.call
 	if len(call.Outputs) == 0 {
 		return false

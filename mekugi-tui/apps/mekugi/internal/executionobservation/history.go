@@ -10,7 +10,7 @@ import (
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/evidence"
 )
 
@@ -35,7 +35,7 @@ type mekugiHistory struct {
 	ExecObservation  *changecapture.Observation       `json:",omitempty"`
 	ExecOutcome      *changecapture.Outcome           `json:",omitempty"`
 	HostResults      []binding.ToolResult             `json:",omitempty"`
-	CommandSegments  *legacycall.Segments             `json:",omitempty"`
+	CommandSegments  *history.Segments             `json:",omitempty"`
 	CarrierName      string
 	CarrierKind      codeModeCarrierKind
 	CarrierPayload   string
@@ -52,7 +52,7 @@ type mekugiHistory struct {
 	AlreadySatisfied     bool
 
 	// legacy keeps frozen inventory and coverage metadata at the retained record owner.
-	legacy *legacycall.History
+	legacy *history.History
 	// New capture evidence is lazy and feature-owned. ReviewFiles is the frozen
 	// inline input accepted from historical records and old adapter fixtures.
 	reviewFiles  []evidence.Review

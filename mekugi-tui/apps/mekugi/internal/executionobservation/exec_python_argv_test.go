@@ -12,7 +12,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
@@ -193,7 +193,7 @@ p.write_text(json.dumps(state,indent=2)+"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, found, err := reopened.lookup(f.ctx, f.workspace, legacycall.ExecCallID("argv-write", false))
+	record, found, err := reopened.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID("argv-write", false))
 	if err != nil || !found || record.ChangeID == "" || len(record.ReviewFiles) != 6 || record.ExecOutcome.Coverage != changecapture.CoveragePartial {
 		t.Fatalf("durable argv evidence: %+v, %v", record, err)
 	}

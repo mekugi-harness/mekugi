@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/executionobservation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
 func startShellObservationTest(t *testing.T, p *observationFixture, workspace, thread, turn, item, script string) (*executionobservation.ShellOperation, context.Context) {
@@ -28,7 +28,7 @@ func startShellObservationTest(t *testing.T, p *observationFixture, workspace, t
 }
 
 // Resolve the recorded host identity, independent of the opaque operation ID.
-func lookupShellTestRecord(t *testing.T, store *mekugiReplayStore, workspace, thread, item string) (legacycall.Record, bool) {
+func lookupShellTestRecord(t *testing.T, store *mekugiReplayStore, workspace, thread, item string) (history.Record, bool) {
 	t.Helper()
 	names, err := filepath.Glob(filepath.Join(store.directory, "call-*.json"))
 	if err != nil {
@@ -39,7 +39,7 @@ func lookupShellTestRecord(t *testing.T, store *mekugiReplayStore, workspace, th
 		if err != nil {
 			t.Fatal(err)
 		}
-		var record legacycall.Record
+		var record history.Record
 		if err := json.Unmarshal(data, &record); err != nil {
 			t.Fatal(err)
 		}
@@ -56,10 +56,10 @@ func lookupShellTestRecord(t *testing.T, store *mekugiReplayStore, workspace, th
 			}
 		}
 	}
-	return legacycall.Record{}, false
+	return history.Record{}, false
 }
 
-func shellTestRecord(t *testing.T, store *mekugiReplayStore, workspace, thread, item string) legacycall.Record {
+func shellTestRecord(t *testing.T, store *mekugiReplayStore, workspace, thread, item string) history.Record {
 	t.Helper()
 	record, found := lookupShellTestRecord(t, store, workspace, thread, item)
 	if !found {

@@ -17,7 +17,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inspection"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
@@ -35,19 +34,19 @@ func decodedCall(workspace, id string) binding.RolloutCall {
 		Item: binding.RolloutItem{Type: "function_call", CallID: id, Name: "exec_command", Namespace: "functions", Arguments: `{"cmd":"printf recorded"}`}}
 }
 
-func retained(call binding.RolloutCall) legacycall.Record {
-	return legacycall.Record{Version: 1, Workspace: call.Workspace, CallID: call.Item.CallID,
-		History: legacycall.History{ToolName: "exec_command", CarrierName: call.Item.Name, CarrierKind: "function", CarrierPayload: call.Item.Arguments,
+func retained(call binding.RolloutCall) history.Record {
+	return history.Record{Version: 1, Workspace: call.Workspace, CallID: call.Item.CallID,
+		History: history.History{ToolName: "exec_command", CarrierName: call.Item.Name, CarrierKind: "function", CarrierPayload: call.Item.Arguments,
 			UpstreamItem: map[string]jsontext.Value{"namespace": jsontext.Value(`"functions"`)}, Script: "printf recorded", AlreadySatisfied: true}}
 }
 
-func writeRecord(t *testing.T, directory string, call binding.RolloutCall, record legacycall.Record) {
+func writeRecord(t *testing.T, directory string, call binding.RolloutCall, record history.Record) {
 	t.Helper()
 	data, err := json.Marshal(record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, legacycall.Name(call.Workspace, call.Item.CallID, false)), data, 0440); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, history.Name(call.Workspace, call.Item.CallID, false)), data, 0440); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -69,14 +68,14 @@ func scripted(t *testing.T, calls []binding.RolloutCall, contributions ...inspec
 func TestDescriptorRetainedIdentityAndReadOnlyJoin(t *testing.T) {
 	for _, tc := range []struct {
 		name, wantError string
-		mutate          func(*legacycall.Record)
+		mutate          func(*history.Record)
 	}{
 		{name: "matching"},
-		{name: "workspace", wantError: "identity/version mismatch", mutate: func(r *legacycall.Record) { r.Workspace += "-other" }},
-		{name: "call", wantError: "identity/version mismatch", mutate: func(r *legacycall.Record) { r.CallID = "other" }},
-		{name: "payload", wantError: "payload does not match", mutate: func(r *legacycall.Record) { r.History.CarrierPayload = "other" }},
-		{name: "namespace", wantError: "payload does not match", mutate: func(r *legacycall.Record) { r.History.UpstreamItem["namespace"] = []byte(`"unrelated"`) }},
-		{name: "carrier", wantError: "invalid replay history identity", mutate: func(r *legacycall.Record) { r.History.CarrierKind = "unknown" }},
+		{name: "workspace", wantError: "identity/version mismatch", mutate: func(r *history.Record) { r.Workspace += "-other" }},
+		{name: "call", wantError: "identity/version mismatch", mutate: func(r *history.Record) { r.CallID = "other" }},
+		{name: "payload", wantError: "payload does not match", mutate: func(r *history.Record) { r.History.CarrierPayload = "other" }},
+		{name: "namespace", wantError: "payload does not match", mutate: func(r *history.Record) { r.History.UpstreamItem["namespace"] = []byte(`"unrelated"`) }},
+		{name: "carrier", wantError: "invalid replay history identity", mutate: func(r *history.Record) { r.History.CarrierKind = "unknown" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -335,24 +334,24 @@ func TestDescriptorCorpusFindingAdmission(t *testing.T) {
 }
 
 func TestDescriptorPatchOutcomeRequiresCompletedEvidence(t *testing.T) {
-	changed := &legacycall.History{ToolName: "apply_patch", ReviewFiles: []legacycall.ReviewFile{{AfterPath: "changed.txt"}}, Report: "changed file"}
-	failed := &legacycall.History{ToolName: "apply_patch", TranslationError: "partial patch failure", ReviewFiles: changed.ReviewFiles}
+	changed := &history.History{ToolName: "apply_patch", ReviewFiles: []history.ReviewFile{{AfterPath: "changed.txt"}}, Report: "changed file"}
+	failed := &history.History{ToolName: "apply_patch", TranslationError: "partial patch failure", ReviewFiles: changed.ReviewFiles}
 	for _, tc := range []struct {
 		name, want               string
-		outcomes                 []*legacycall.History
+		outcomes                 []*history.History
 		hostOutput, shellEffects bool
 		unconfirmed, failures    uint64
 	}{
-		{name: "missing", want: "unconfirmed", outcomes: []*legacycall.History{nil}, unconfirmed: 1},
-		{name: "host output without retained completion", want: "unconfirmed", outcomes: []*legacycall.History{nil}, hostOutput: true, unconfirmed: 1},
-		{name: "partially observed", want: "unconfirmed", outcomes: []*legacycall.History{changed, nil}, unconfirmed: 1},
-		{name: "failed with effects", want: "rejected", outcomes: []*legacycall.History{failed}, failures: 1},
-		{name: "known failure and missing outcome", want: "rejected", outcomes: []*legacycall.History{failed, nil}, failures: 1, unconfirmed: 1},
-		{name: "missing patch with completed shell", want: "unconfirmed", outcomes: []*legacycall.History{nil}, shellEffects: true, unconfirmed: 1},
-		{name: "failed patch with completed shell", want: "rejected", outcomes: []*legacycall.History{failed}, shellEffects: true, failures: 1},
-		{name: "completed changes", want: "applied", outcomes: []*legacycall.History{changed}},
-		{name: "completed no changes", want: "no_changes", outcomes: []*legacycall.History{{ToolName: "apply_patch"}}},
-		{name: "already satisfied", want: "already_satisfied", outcomes: []*legacycall.History{{ToolName: "apply_patch", AlreadySatisfied: true}}},
+		{name: "missing", want: "unconfirmed", outcomes: []*history.History{nil}, unconfirmed: 1},
+		{name: "host output without retained completion", want: "unconfirmed", outcomes: []*history.History{nil}, hostOutput: true, unconfirmed: 1},
+		{name: "partially observed", want: "unconfirmed", outcomes: []*history.History{changed, nil}, unconfirmed: 1},
+		{name: "failed with effects", want: "rejected", outcomes: []*history.History{failed}, failures: 1},
+		{name: "known failure and missing outcome", want: "rejected", outcomes: []*history.History{failed, nil}, failures: 1, unconfirmed: 1},
+		{name: "missing patch with completed shell", want: "unconfirmed", outcomes: []*history.History{nil}, shellEffects: true, unconfirmed: 1},
+		{name: "failed patch with completed shell", want: "rejected", outcomes: []*history.History{failed}, shellEffects: true, failures: 1},
+		{name: "completed changes", want: "applied", outcomes: []*history.History{changed}},
+		{name: "completed no changes", want: "no_changes", outcomes: []*history.History{{ToolName: "apply_patch"}}},
+		{name: "already satisfied", want: "already_satisfied", outcomes: []*history.History{{ToolName: "apply_patch", AlreadySatisfied: true}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workspace, replay := t.TempDir(), t.TempDir()
@@ -364,23 +363,23 @@ func TestDescriptorPatchOutcomeRequiresCompletedEvidence(t *testing.T) {
 			if tc.shellEffects {
 				call.Item.Name, call.Item.Input = "exec", fmt.Sprintf("text(await tools.apply_patch(%q)); text(await tools.exec_command({cmd: \"true\"}));", patch)
 			}
-			parent := legacycall.Record{Version: 1, Workspace: workspace, CallID: "patch", History: legacycall.History{ToolName: call.Item.Name, CarrierName: call.Item.Name, CarrierKind: "custom", CarrierPayload: call.Item.Input, Script: call.Item.Input}}
+			parent := history.Record{Version: 1, Workspace: workspace, CallID: "patch", History: history.History{ToolName: call.Item.Name, CarrierName: call.Item.Name, CarrierKind: "custom", CarrierPayload: call.Item.Input, Script: call.Item.Input}}
 			if tc.shellEffects {
-				parent.History.ExecObservation = &legacycall.Observation{CodeMode: true}
+				parent.History.ExecObservation = &history.Observation{CodeMode: true}
 				shellCall := call
-				shellCall.Item.CallID = legacycall.ExecCallID("patch", true)
-				writeRecord(t, replay, shellCall, legacycall.Record{Version: 1, Workspace: workspace, CallID: shellCall.Item.CallID, History: legacycall.History{ToolName: "exec_command", CorrelationID: "patch\x00exec", ExecOutcome: &legacycall.Outcome{Status: "completed", Coverage: "exact"}, ReviewFiles: changed.ReviewFiles}})
+				shellCall.Item.CallID = history.ExecCallID("patch", true)
+				writeRecord(t, replay, shellCall, history.Record{Version: 1, Workspace: workspace, CallID: shellCall.Item.CallID, History: history.History{ToolName: "exec_command", CorrelationID: "patch\x00exec", ExecOutcome: &history.Outcome{Status: "completed", Coverage: "exact"}, ReviewFiles: changed.ReviewFiles}})
 			}
 			for index, outcome := range tc.outcomes {
-				parent.History.NativePatches = append(parent.History.NativePatches, legacycall.NativePatch{Input: patch})
+				parent.History.NativePatches = append(parent.History.NativePatches, history.NativePatch{Input: patch})
 				if outcome == nil {
 					continue
 				}
 				derived := *outcome
 				derived.Script, derived.CorrelationID = patch, fmt.Sprintf("patch\x00%d", index)
 				derivedCall := call
-				derivedCall.Item.CallID = legacycall.PatchCallID("patch", index)
-				writeRecord(t, replay, derivedCall, legacycall.Record{Version: 1, Workspace: workspace, CallID: derivedCall.Item.CallID, History: derived})
+				derivedCall.Item.CallID = history.PatchCallID("patch", index)
+				writeRecord(t, replay, derivedCall, history.Record{Version: 1, Workspace: workspace, CallID: derivedCall.Item.CallID, History: derived})
 			}
 			writeRecord(t, replay, call, parent)
 			metrics := moduletest.New(t, agentmetrics.Module, agentmetrics.Deps{}, module.Slots{}, new(moduletest.Scripted))

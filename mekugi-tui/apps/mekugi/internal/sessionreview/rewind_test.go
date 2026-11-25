@@ -11,7 +11,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/activitydetail"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 )
 
@@ -57,7 +57,7 @@ func TestRewindChangesIncludesDescendantsAndRejectsGaps(t *testing.T) {
 				if mode == "grouped-missing" {
 					other = "missing"
 				}
-				a.Receipt = CapturedReceipt(dir, legacycall.History{ExecutingThread: "main", ExecOutcome: &legacycall.Outcome{CodeMode: true}, HostResults: []legacycall.HostResult{{Tool: "exec_command", CallID: "main-old"}, {Tool: "exec_command", CallID: other}}}, nil)
+				a.Receipt = CapturedReceipt(dir, history.History{ExecutingThread: "main", ExecOutcome: &history.Outcome{CodeMode: true}, HostResults: []history.HostResult{{Tool: "exec_command", CallID: "main-old"}, {Tool: "exec_command", CallID: other}}}, nil)
 			}
 			if err := b.Add(a); err != nil {
 				t.Fatal(err)

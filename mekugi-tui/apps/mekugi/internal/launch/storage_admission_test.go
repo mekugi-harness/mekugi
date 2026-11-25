@@ -10,9 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
@@ -44,9 +41,9 @@ func TestStorageAdmissionTracksScopedWritesAndFailedPublication(t *testing.T) {
 	}
 	ctx, _ := retentionTestSession(t, store, "current", 0)
 	for _, commentary := range []bool{false, true} {
-		name := legacycall.Name("/w", "changing", commentary)
+		name := history.Name("/w", "changing", commentary)
 		for _, size := range []int{100, 20} {
-			data := responses.MustMarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: "changing", Commentary: commentary, History: legacycall.History{Script: strings.Repeat("x", size)}})
+			data := responses.MustMarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: "changing", Commentary: commentary, History: history.History{Script: strings.Repeat("x", size)}})
 			if err := store.locked(ctx, func(store *mekugiReplayStore) error {
 				return store.scoped(ctx).writeManagedFile(name, "call-pending-", data)
 			}); err != nil {
@@ -56,7 +53,7 @@ func TestStorageAdmissionTracksScopedWritesAndFailedPublication(t *testing.T) {
 		}
 	}
 	err = store.locked(ctx, func(store *mekugiReplayStore) error {
-		return store.scoped(ctx).writeManagedFile(legacycall.Name("/w", "record", false), "missing-directory/pending-", []byte("record"))
+		return store.scoped(ctx).writeManagedFile(history.Name("/w", "record", false), "missing-directory/pending-", []byte("record"))
 	})
 	if err == nil {
 		t.Fatal("invalid publication succeeded")
@@ -83,8 +80,8 @@ func TestStorageAdmissionRefreshesAfterPeerPublicationAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.maxBytes, _ = store.publication.Usage(store.retentionLimits(), files, "", 0)
-	name := legacycall.Name("/w", "peer-growth", false)
-	data := responses.MustMarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: "peer-growth", History: legacycall.History{Script: strings.Repeat("x", 100)}})
+	name := history.Name("/w", "peer-growth", false)
+	data := responses.MustMarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: "peer-growth", History: history.History{Script: strings.Repeat("x", 100)}})
 	if err := peer.locked(t.Context(), func(peer *mekugiReplayStore) error { return peer.transaction.Write(name, "call-pending-", data) }); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +111,7 @@ func BenchmarkStorageAdmissionPublication(b *testing.B) {
 				b.Fatal(err)
 			}
 			for i := range 1000 {
-				name := legacycall.Name("/w", fmt.Sprint(i), false)
+				name := history.Name("/w", fmt.Sprint(i), false)
 				data := responses.MustMarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: fmt.Sprint(i)})
 				if err := os.WriteFile(filepath.Join(store.directory, name), data, 0600); err != nil {
 					b.Fatal(err)
@@ -125,11 +122,11 @@ func BenchmarkStorageAdmissionPublication(b *testing.B) {
 				b.Fatal(err)
 			}
 			b.Cleanup(release)
-			record := legacycall.Name("/w", "changing", false)
+			record := history.Name("/w", "changing", false)
 			iteration := 0
 			b.ReportAllocs()
 			for b.Loop() {
-				data := responses.MustMarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: "changing", History: legacycall.History{Script: strconv.Itoa(iteration)}})
+				data := responses.MustMarshalJSON(replayRecord{Version: 1, Workspace: "/w", CallID: "changing", History: history.History{Script: strconv.Itoa(iteration)}})
 				if cold {
 					store.publication = testHistory().Attach(store.directory)
 				}

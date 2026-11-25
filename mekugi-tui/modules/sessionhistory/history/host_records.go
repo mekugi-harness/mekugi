@@ -11,7 +11,6 @@ import (
 	"reflect"
 	"slices"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
@@ -35,12 +34,12 @@ func (e *HostConflict) Error() string {
 
 // ReadHostCall validates the selected historical envelope and its dependencies.
 // Callers that join several owners use their existing publication transaction.
-func (s *Store) ReadHostCall(workspace, callID string, commentary bool) (legacycall.Record, bool, error) {
+func (s *Store) ReadHostCall(workspace, callID string, commentary bool) (Record, bool, error) {
 	record, found, err := s.ReadAttachedHostCall(workspace, callID, commentary)
 	return record.Record, found, err
 }
 
-func (s *Store) LookupHostCall(ctx context.Context, workspace, callID string) (value legacycall.History, found bool, err error) {
+func (s *Store) LookupHostCall(ctx context.Context, workspace, callID string) (value History, found bool, err error) {
 	if s == nil {
 		return
 	}
@@ -55,8 +54,8 @@ func (s *Store) LookupHostCall(ctx context.Context, workspace, callID string) (v
 // normalizeHostHistory removes representation differences already omitted by the
 // frozen codec. Live watch/process facts cannot enter this neutral representation.
 // Source: apps/mekugi/internal/router/mekugi_store.go:56:73@d002a0dc and capture durability.
-func normalizeHostHistory(h legacycall.History) legacycall.History {
-	normalizeInventory := func(value *legacycall.Inventory) *legacycall.Inventory {
+func normalizeHostHistory(h History) History {
+	normalizeInventory := func(value *Inventory) *Inventory {
 		if value == nil {
 			return nil
 		}
@@ -97,7 +96,7 @@ func normalizeHostHistory(h legacycall.History) legacycall.History {
 
 // mergeHostHistory accepts completion enrichment, never altered tool payloads.
 // Source: apps/mekugi/internal/router/mekugi_store.go:165:219@d002a0dc.
-func mergeHostHistory(old, next legacycall.History) (legacycall.History, error) {
+func mergeHostHistory(old, next History) (History, error) {
 	old, next = normalizeHostHistory(old), normalizeHostHistory(next)
 	oldItem, nextItem := old.UpstreamItem, next.UpstreamItem
 	oldIDs, nextIDs := old.CommentaryMessageIDs, next.CommentaryMessageIDs
@@ -147,7 +146,7 @@ func mergeHostHistory(old, next legacycall.History) (legacycall.History, error) 
 // PublishHostCall retains the envelope before exposing it to dependent owners.
 // ordered is supplied by the evidence owner; history does not infer edit success.
 // Source: apps/mekugi/internal/router/mekugi_store.go:220:255@d002a0dc.
-func (tx *Transaction) PublishHostCall(thread string, limits Limits, r legacycall.Record, ordered bool) error {
+func (tx *Transaction) PublishHostCall(thread string, limits Limits, r Record, ordered bool) error {
 	return tx.PublishAttachedHostCall(thread, limits, HostRecord{Record: r}, ordered)
 }
 
@@ -200,7 +199,7 @@ func (tx *Transaction) PublishAttachedHostCall(thread string, limits Limits, r H
 	if len(data) > MaxRecordBytes {
 		return capacityError("replay record", int64(len(data)), MaxRecordBytes, "Split the tool call or reduce its retained output before retrying.")
 	}
-	name := legacycall.Name(r.Workspace, r.CallID, r.Commentary)
+	name := Name(r.Workspace, r.CallID, r.Commentary)
 	prefix := "call-"
 	if r.Commentary {
 		prefix = "commentary-"

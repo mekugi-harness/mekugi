@@ -18,7 +18,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis/execscope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandargs"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 
@@ -88,7 +88,7 @@ func runSnapshotExec(t *testing.T, proxy *Preparer, workspace, callID, command s
 	if err := operation.Complete(binding.ToolResult{CallID: callID, Tool: "userShell", Status: "completed", ExitCode: new(0)}, nativeExecOutput("Process exited with code 0")); err != nil {
 		t.Fatal(err)
 	}
-	value, found, err := store.lookup(ctx, workspace, legacycall.ExecCallID(operation.call, false))
+	value, found, err := store.lookup(ctx, workspace, sessionhistory.ExecCallID(operation.call, false))
 	if err != nil || !found {
 		t.Fatalf("%s: missing native shell capture (err = %v)", callID, err)
 	}
@@ -234,7 +234,7 @@ func TestWorkspaceSnapshotOverlappingCallsRecordAnEffectOnce(t *testing.T) {
 		if err := finalizeExecObservations(proxy.Retained, proxy.Changes, proxy.Checkpoints, proxy.PublishChanges, proxy.Windows, proxy.Audience, proxy.Notice, f.ctx, f.workspace, []execCompletion{{callID: ref, history: history, result: binding.ExecutionResult{Terminal: true, Succeeded: true, ExitCode: new(0), Text: nativeExecOutput("Process exited with code 0")}}}); err != nil {
 			t.Fatal(err)
 		}
-		record, _, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID(ref, false))
+		record, _, err := f.store.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID(ref, false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -317,7 +317,7 @@ func TestWorkspaceSnapshotConcurrentRuntimesRecordAnEffectOnce(t *testing.T) {
 	workers.Wait()
 	effects := 0
 	for _, ref := range refs {
-		record, _, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID(ref, false))
+		record, _, err := f.store.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID(ref, false))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -388,7 +388,7 @@ func TestWorkspaceSnapshotExternalScopesSerializeAcrossWorkspaces(t *testing.T) 
 	workers.Wait()
 	effects := 0
 	for i, ref := range refs {
-		record, found, err := f.store.lookup(f.ctx, workspaces[i], legacycall.ExecCallID(ref, false))
+		record, found, err := f.store.lookup(f.ctx, workspaces[i], sessionhistory.ExecCallID(ref, false))
 		if err != nil || !found {
 			t.Fatalf("finalization missing: %v %v", found, err)
 		}
@@ -495,11 +495,11 @@ func TestWorkspaceSnapshotClaimsStayWithinTheirWorkspace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	outerRecord, _, err := f.store.lookup(f.ctx, f.workspace, legacycall.ExecCallID("outer", false))
+	outerRecord, _, err := f.store.lookup(f.ctx, f.workspace, sessionhistory.ExecCallID("outer", false))
 	if err != nil || len(outerRecord.ReviewFiles) != 1 {
 		t.Fatalf("outer record: %+v, %v", reviewPaths(outerRecord), err)
 	}
-	nestedRecord, _, err := f.store.lookup(f.ctx, inner, legacycall.ExecCallID("nested", false))
+	nestedRecord, _, err := f.store.lookup(f.ctx, inner, sessionhistory.ExecCallID("nested", false))
 	if err != nil || len(nestedRecord.ReviewFiles) != 0 {
 		t.Fatalf("a claim crossed into another workspace's comparison: %+v, %v", reviewPaths(nestedRecord), err)
 	}

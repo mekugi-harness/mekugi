@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	sessionhistory "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
@@ -90,11 +90,11 @@ func TestSavedReviewWithoutLivePreview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	history := legacycall.History{ToolName: nativeExecCommandToolName, Root: workspace, ExecutingThread: "main", CorrelationID: call, ChangeID: id,
+	history := sessionhistory.History{ToolName: nativeExecCommandToolName, Root: workspace, ExecutingThread: "main", CorrelationID: call, ChangeID: id,
 		ReviewFiles: retainedReviewFiles([]diffmodel.ReviewFile{diffmodel.RenderReviewFile(filepath.Join(workspace, "formatted.go"), filepath.Join(workspace, "formatted.go"), "old\n", "new\n")}),
-		ExecOutcome: &legacycall.Outcome{Status: changecapture.StatusFailed, Coverage: changecapture.CoverageExact, Exit: new(2)},
+		ExecOutcome: &sessionhistory.Outcome{Status: changecapture.StatusFailed, Coverage: changecapture.CoverageExact, Exit: new(2)},
 	}
-	if err := writer.put(t.Context(), workspace, map[string]legacycall.History{call: history}); err != nil {
+	if err := writer.put(t.Context(), workspace, map[string]sessionhistory.History{call: history}); err != nil {
 		t.Fatal(err)
 	}
 	apply()

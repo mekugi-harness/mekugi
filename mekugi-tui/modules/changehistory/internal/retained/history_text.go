@@ -4,10 +4,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 )
 
-func outcomeText(o legacycall.Outcome) string {
+func outcomeText(o history.Outcome) string {
 	label := "exec"
 	if len(o.Labels) != 0 {
 		label += " " + strings.Join(o.Labels, ", ")
@@ -26,7 +26,7 @@ func outcomeText(o legacycall.Outcome) string {
 	return strings.Join(parts, " · ")
 }
 
-func hostResultText(r legacycall.HostResult) string {
+func hostResultText(r history.HostResult) string {
 	text := "host tool " + r.CallID + " " + r.Tool + ": " + r.Status
 	if r.ExitCode != nil {
 		text += "; exit " + strconv.Itoa(*r.ExitCode)

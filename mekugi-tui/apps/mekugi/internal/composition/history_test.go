@@ -13,7 +13,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/commandanalysis"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/commandsegments/reports"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory"
@@ -162,9 +161,8 @@ func TestFrontendsExposesConstructedHistoryHost(t *testing.T) {
 		t.Fatal("application omitted the history host")
 	}
 	for _, tc := range []struct{ name, id string }{
-		{legacycall.Name("/workspace", "call", false), "call"},
-		{legacycall.Name("/workspace", "commentary", true), "commentary"},
-		{legacycall.SnapshotName([]byte("snapshot")), "snapshot"},
+		{history.Name("/workspace", "call", false), "call"},
+		{history.Name("/workspace", "commentary", true), "commentary"},
 		{"wait-0002a56ee5625e517b301ff9722d588a16f1cd41c9f8a8599cd1ba8793cd44d6.json", "wait"},
 		{"usage-" + strings.Repeat("a", 64) + ".json", "usage"},
 		{"failure-" + strings.Repeat("a", 64) + ".json", "failure"},
@@ -187,8 +185,8 @@ func TestFrontendsExposesConstructedHistoryHost(t *testing.T) {
 			if kind.Dependencies == nil {
 				t.Fatal("call contribution omitted snapshot dependency validation")
 			}
-			ref := legacycall.SnapshotName([]byte("snapshot"))
-			data := []byte(`{"Version":2,"Workspace":"/workspace","CallID":"call","Snapshots":{"ExecFiles":"` + ref + `"}}`)
+			ref := "frozen-output-" + strings.Repeat("a", 64) + ".txt"
+			data := []byte(`{"Version":3,"Workspace":"/workspace","CallID":"call","Attachments":["` + ref + `"]}`)
 			deps, err := kind.Dependencies(recordkind.Record{Name: tc.name, Data: data})
 			if err != nil || len(deps) != 1 || deps[0] != ref {
 				t.Fatalf("call dependencies: %v, %v", deps, err)

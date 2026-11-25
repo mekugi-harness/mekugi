@@ -16,7 +16,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/recordkind"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory"
@@ -38,7 +37,7 @@ func newFixture(t *testing.T) *fixture {
 	kinds := append(slices.Clone(changehistory.Module.Contributes.RecordKinds), recordkind.Spec{
 		ID: "fixture-call", Match: func(name string) bool { return strings.HasPrefix(name, "call-") && strings.HasSuffix(name, ".json") },
 		Dependencies: func(record recordkind.Record) ([]string, error) {
-			return legacycall.Dependencies(record.Name, record.Data)
+			return history.HostDependencies(record.Name, record.Data)
 		},
 	})
 	host := moduletest.New(t, sessionhistory.Module, sessionhistory.Deps{}, module.Slots{RecordKinds: kinds}, nil)
@@ -67,16 +66,16 @@ func (f *fixture) reserve(t *testing.T, thread, correlation string) string {
 	return id
 }
 
-func (f *fixture) publish(t *testing.T, id, correlation, call, thread string, files []legacycall.ReviewFile) {
+func (f *fixture) publish(t *testing.T, id, correlation, call, thread string, files []history.ReviewFile) {
 	t.Helper()
-	record := legacycall.Record{Version: 1, Workspace: f.workspace, CallID: call, History: legacycall.History{ToolName: "apply_patch", Root: f.workspace, Script: call, ChangeID: id, CorrelationID: correlation, ExecutingThread: thread, Attempt: 1, ReviewFiles: files}}
+	record := history.Record{Version: 1, Workspace: f.workspace, CallID: call, History: history.History{ToolName: "apply_patch", Root: f.workspace, Script: call, ChangeID: id, CorrelationID: correlation, ExecutingThread: thread, Attempt: 1, ReviewFiles: files}}
 	data, err := json.Marshal(record, jsonv1.DefaultOptionsV1())
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = f.selected.Store.Transaction(t.Context(), nil, func(tx *history.Transaction) error {
 		// The immutable host observation is durable before membership is published.
-		if err := tx.Write(legacycall.Name(f.workspace, call, false), "call-pending-", data); err != nil {
+		if err := tx.Write(history.Name(f.workspace, call, false), "call-pending-", data); err != nil {
 			return err
 		}
 		updates, err := f.service.Publish(tx, f.selected, f.workspace, map[string]changes.Publication{call: {ChangeID: id, CorrelationID: correlation, ExecutingThread: thread, Confirmed: true}})
@@ -99,8 +98,8 @@ func (f *fixture) execute(t *testing.T, thread string, args ...string) command.O
 	return output
 }
 
-func review(path, before, after string) legacycall.ReviewFile {
-	return legacycall.ReviewFile{BeforePath: path, AfterPath: path, Diff: fmt.Sprintf("@@ -1 +1 @@\n-%s\n+%s\n", before, after)}
+func review(path, before, after string) history.ReviewFile {
+	return history.ReviewFile{BeforePath: path, AfterPath: path, Diff: fmt.Sprintf("@@ -1 +1 @@\n-%s\n+%s\n", before, after)}
 }
 
 func TestModulePatchExportPrintsCompleteOutputWhole(t *testing.T) {
@@ -108,7 +107,7 @@ func TestModulePatchExportPrintsCompleteOutputWhole(t *testing.T) {
 	f := newFixture(t)
 	id := f.reserve(t, "owner", "large")
 	after := strings.Repeat(" new", 20000)
-	f.publish(t, id, "large", "large-call", "owner", []legacycall.ReviewFile{review(filepath.Join(f.workspace, "file.txt"), "old", after)})
+	f.publish(t, id, "large", "large-call", "owner", []history.ReviewFile{review(filepath.Join(f.workspace, "file.txt"), "old", after)})
 	full := f.execute(t, "owner", id)
 	if full.ExitCode != 0 || full.Stderr != "" || !strings.Contains(full.Stdout, "\n+"+after+"\n") {
 		t.Fatalf("incomplete default export: status=%d stderr=%q bytes=%d", full.ExitCode, full.Stderr, len(full.Stdout))
@@ -124,14 +123,14 @@ func TestCanceledCaptureChainRetainsUnmatchedArtifactDiagnostic(t *testing.T) {
 	f := newFixture(t)
 	path := filepath.Join(f.workspace, "candidate.txt.new")
 	var ids []string
-	for i, file := range []legacycall.ReviewFile{
+	for i, file := range []history.ReviewFile{
 		{AfterPath: path, Diff: "@@ -0,0 +1 @@\n+A\n"},
 		{BeforePath: path, Diff: "@@ -1 +0,0 @@\n-A\n"},
 		{BeforePath: path, Diff: "@@ -1 +0,0 @@\n-B\n"},
 	} {
 		call := fmt.Sprintf("candidate-%d", i)
 		id := f.reserve(t, "owner", call)
-		files := []legacycall.ReviewFile{file}
+		files := []history.ReviewFile{file}
 		if i == 2 {
 			files = append(files, review(filepath.Join(f.workspace, "healthy.txt"), "old", "new"))
 		}
@@ -174,7 +173,7 @@ func TestModuleRepeatedRevertCaptureComposesRetainedHandoff(t *testing.T) {
 	} {
 		call := fmt.Sprintf("handoff-%d", i)
 		id := f.reserve(t, "delegate", call)
-		f.publish(t, id, call, call, "delegate", []legacycall.ReviewFile{legacycall.ReviewFile(file)})
+		f.publish(t, id, call, call, "delegate", []history.ReviewFile{history.ReviewFile(file)})
 		ids = append(ids, id)
 	}
 	// The real handoff excluded the incomplete writer, but selected both the
@@ -209,10 +208,10 @@ func TestComposedBinaryDiagnostics(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	id := f.reserve(t, "owner", "mixed")
-	files := []legacycall.ReviewFile{review(filepath.Join(f.workspace, "text.txt"), strings.Repeat("old", 100), strings.Repeat("new", 100))}
+	files := []history.ReviewFile{review(filepath.Join(f.workspace, "text.txt"), strings.Repeat("old", 100), strings.Repeat("new", 100))}
 	for i := range 50 {
 		path := filepath.Join(f.workspace, fmt.Sprintf("image-%02d.png", i))
-		files = append(files, legacycall.ReviewFile{AfterPath: path, Binary: true})
+		files = append(files, history.ReviewFile{AfterPath: path, Binary: true})
 	}
 	f.publish(t, id, "mixed", "mixed-call", "owner", files)
 	full := f.execute(t, "owner", id)
@@ -233,9 +232,9 @@ func TestModulePublicationAndScopedRead(t *testing.T) {
 		t.Fatalf("correlation allocated twice: %s, %s", first, repeated)
 	}
 	path := filepath.Join(f.workspace, "first.txt")
-	f.publish(t, first, "first", "first-call", "owner", []legacycall.ReviewFile{review(path, "old", "new")})
+	f.publish(t, first, "first", "first-call", "owner", []history.ReviewFile{review(path, "old", "new")})
 	sibling := f.reserve(t, "sibling", "sibling")
-	f.publish(t, sibling, "sibling", "sibling-call", "sibling", []legacycall.ReviewFile{review(filepath.Join(f.workspace, "sibling.txt"), "before", "after")})
+	f.publish(t, sibling, "sibling", "sibling-call", "sibling", []history.ReviewFile{review(filepath.Join(f.workspace, "sibling.txt"), "before", "after")})
 	pending := f.reserve(t, "owner", "pending")
 	own := f.execute(t, "owner", "--list")
 	if own.ExitCode != 0 || !strings.Contains(own.Stdout, first) || !strings.Contains(own.Stdout, pending) || strings.Contains(own.Stdout, sibling) {
@@ -271,7 +270,7 @@ func TestModuleMutationScopeAndReport(t *testing.T) {
 	if err := os.WriteFile(path, []byte("new\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	f.publish(t, id, "edit", "edit-call", "owner", []legacycall.ReviewFile{review(path, "old", "new")})
+	f.publish(t, id, "edit", "edit-call", "owner", []history.ReviewFile{review(path, "old", "new")})
 	query, err := f.service.Parse([]string{"revert", id}, f.workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +296,7 @@ func TestModuleForkDependencyPublicationAndRetirement(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	id := f.reserve(t, "owner", "edit")
-	f.publish(t, id, "edit", "call", "owner", []legacycall.ReviewFile{review(filepath.Join(f.workspace, "edit.txt"), "old", "new")})
+	f.publish(t, id, "edit", "call", "owner", []history.ReviewFile{review(filepath.Join(f.workspace, "edit.txt"), "old", "new")})
 	child := f.selected
 	child.Namespace, child.Thread = "fork", "fork"
 	var plan changes.ForkPlan
@@ -308,7 +307,7 @@ func TestModuleForkDependencyPublicationAndRetirement(t *testing.T) {
 			return err
 		}
 		names := plan.Dependencies()
-		if !slices.Equal(names, []string{legacycall.Name(f.workspace, "call", false)}) {
+		if !slices.Equal(names, []string{history.Name(f.workspace, "call", false)}) {
 			return fmt.Errorf("fork dependencies: %v", names)
 		}
 		if err := tx.Retain("fork", history.Limits{}, names...); err != nil {
@@ -382,7 +381,7 @@ func TestModuleForkDependencyPublicationAndRetirement(t *testing.T) {
 	if update, err := planner(t.Context(), recordkind.Retirement{Deleted: map[string]bool{"unrelated": true}}); err != nil || update != nil {
 		t.Fatalf("unrelated deletion retired evidence: %+v, %v", update, err)
 	}
-	update, err := planner(t.Context(), recordkind.Retirement{Deleted: map[string]bool{legacycall.Name(f.workspace, "call", false): true}})
+	update, err := planner(t.Context(), recordkind.Retirement{Deleted: map[string]bool{history.Name(f.workspace, "call", false): true}})
 	if err != nil || update == nil {
 		t.Fatalf("confirmed retirement: %+v, %v", update, err)
 	}
@@ -453,10 +452,10 @@ func TestModuleWorkspaceIndependentSelectionAndMutation(t *testing.T) {
 	}
 	first := f.reserve(t, "owner", "first")
 	firstPath := filepath.Join(f.workspace, "baz1")
-	f.publish(t, first, "first", "first-call", "owner", []legacycall.ReviewFile{review("baz1", "old", "new")})
+	f.publish(t, first, "first", "first-call", "owner", []history.ReviewFile{review("baz1", "old", "new")})
 	second := f.reserve(t, "owner", "second")
 	secondPath := filepath.Join(f.workspace, "baz2")
-	f.publish(t, second, "second", "second-call", "owner", []legacycall.ReviewFile{review("baz2", "before", "after")})
+	f.publish(t, second, "second", "second-call", "owner", []history.ReviewFile{review("baz2", "before", "after")})
 	for _, view := range []string{"", "--summary", "--history"} {
 		var expected string
 		for _, paths := range [][]string{nil, {"bar/baz1", "bar/baz2"}, {"baz1", "baz2"}, {firstPath, secondPath}} {
@@ -481,7 +480,7 @@ func TestModuleWorkspaceIndependentSelectionAndMutation(t *testing.T) {
 	}
 	// Authored-relative paths win when the cwd spelling names another captured file.
 	ambiguous := f.reserve(t, "sibling", "ambiguous")
-	f.publish(t, ambiguous, "ambiguous", "ambiguous-call", "sibling", []legacycall.ReviewFile{review("bar/baz1", "inside", "preferred")})
+	f.publish(t, ambiguous, "ambiguous", "ambiguous-call", "sibling", []history.ReviewFile{review("bar/baz1", "inside", "preferred")})
 	precedence, err := f.service.Parse([]string{first, ambiguous, "bar/baz1"}, root)
 	if err != nil {
 		t.Fatal(err)
@@ -494,7 +493,7 @@ func TestModuleWorkspaceIndependentSelectionAndMutation(t *testing.T) {
 	f.workspace = root
 	other := f.reserve(t, "owner", "other")
 	// Call identity is workspace-qualified, so this root may reuse first-call.
-	f.publish(t, other, "other", "first-call", "owner", []legacycall.ReviewFile{review("baz1", "outside", "changed")})
+	f.publish(t, other, "other", "first-call", "owner", []history.ReviewFile{review("baz1", "outside", "changed")})
 	query, err := f.service.Parse([]string{first, other, "--summary", "baz1"}, root)
 	if err != nil {
 		t.Fatal(err)
@@ -504,7 +503,7 @@ func TestModuleWorkspaceIndependentSelectionAndMutation(t *testing.T) {
 		t.Fatalf("same spelling in two authored workspaces: %q, %v", text, err)
 	}
 	sibling := f.reserve(t, "sibling", "sibling")
-	f.publish(t, sibling, "sibling", "sibling-call", "sibling", []legacycall.ReviewFile{review("private", "a", "b")})
+	f.publish(t, sibling, "sibling", "sibling-call", "sibling", []history.ReviewFile{review("private", "a", "b")})
 	// Reopen storage and select from unrelated cwd, using only retained caller evidence.
 	reopened := f.history.Attach(f.selected.Store.Directory())
 	selected := f.selected
@@ -552,7 +551,7 @@ func TestModuleWorkspaceIndependentSelectionAndMutation(t *testing.T) {
 	}
 	f.workspace = t.TempDir()
 	missing := f.reserve(t, "owner", "missing-workspace")
-	f.publish(t, missing, "missing-workspace", "missing-call", "owner", []legacycall.ReviewFile{review("gone", "a", "b")})
+	f.publish(t, missing, "missing-workspace", "missing-call", "owner", []history.ReviewFile{review("gone", "a", "b")})
 	if err := os.Remove(f.workspace); err != nil {
 		t.Fatal(err)
 	}
@@ -569,7 +568,7 @@ func TestModuleReadIsolatesCorruptIndexes(t *testing.T) {
 		t.Run(namespace, func(t *testing.T) {
 			f := newFixture(t)
 			id := f.reserve(t, "owner", "good")
-			f.publish(t, id, "good", "good-call", "owner", []legacycall.ReviewFile{review("good.txt", "old", "new")})
+			f.publish(t, id, "good", "good-call", "owner", []history.ReviewFile{review("good.txt", "old", "new")})
 			name := fmt.Sprintf("changes-v3-%x.json", sha256.Sum256([]byte(namespace+"\x00"+t.TempDir())))
 			data := fmt.Sprintf(`{"Namespace":%q,"Version":"broken-schema"}`, namespace)
 			if namespace == "foreign" {
@@ -614,7 +613,7 @@ func TestModuleSymlinkCallerFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := f.reserve(t, "owner", "good")
-	f.publish(t, id, "good", "good-call", "owner", []legacycall.ReviewFile{review("baz", "old", "new")})
+	f.publish(t, id, "good", "good-call", "owner", []history.ReviewFile{review("baz", "old", "new")})
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(root, alias); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
@@ -634,14 +633,14 @@ func TestModuleReadIsolatesAmbiguousOwnership(t *testing.T) {
 	f := newFixture(t)
 	firstRoot := f.workspace
 	first := f.reserve(t, "owner", "one")
-	f.publish(t, first, "one", "one-call", "owner", []legacycall.ReviewFile{review("one.txt", "a", "b")})
+	f.publish(t, first, "one", "one-call", "owner", []history.ReviewFile{review("one.txt", "a", "b")})
 	f.workspace = t.TempDir()
 	secondRoot := f.workspace
 	second := f.reserve(t, "owner", "two")
-	f.publish(t, second, "two", "two-call", "owner", []legacycall.ReviewFile{review("two.txt", "c", "d")})
+	f.publish(t, second, "two", "two-call", "owner", []history.ReviewFile{review("two.txt", "c", "d")})
 	f.workspace = t.TempDir()
 	healthy := f.reserve(t, "owner", "healthy")
-	f.publish(t, healthy, "healthy", "healthy-call", "owner", []legacycall.ReviewFile{review("healthy.txt", "x", "y")})
+	f.publish(t, healthy, "healthy", "healthy-call", "owner", []history.ReviewFile{review("healthy.txt", "x", "y")})
 	index, err := f.service.Inspect(f.selected, firstRoot)
 	if err != nil {
 		t.Fatal(err)

@@ -1,6 +1,6 @@
 package retained
 
-import "github.com/mekugi-harness/mekugi/mekugi-tui/libraries/legacycall"
+import "github.com/mekugi-harness/mekugi/mekugi-tui/modules/sessionhistory/history"
 
 func (s *store) dependencies(workspace string, ids []string, existingOnly bool) ([]string, error) {
 	index, err := s.readChangeIndex(workspace)
@@ -27,10 +27,10 @@ func changeDependencies(index changeIndex, ids []string, existingOnly bool) ([]s
 			names = append(names, index.indexNames(ids)...)
 		}
 		for _, id := range change.Dependencies {
-			names = append(names, legacycall.Name(index.workspaceFor(changeID), id, false))
+			names = append(names, history.Name(index.workspaceFor(changeID), id, false))
 		}
 		for _, call := range change.Calls {
-			names = append(names, legacycall.Name(index.workspaceFor(changeID), call.ID, false))
+			names = append(names, history.Name(index.workspaceFor(changeID), call.ID, false))
 		}
 	}
 	return names, nil
