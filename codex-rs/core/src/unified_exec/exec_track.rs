@@ -143,11 +143,19 @@ impl ExecTrackAttachment {
     /// Filesystem permissions granting sandboxed commands read/write access to
     /// the private per-invocation observer directory (Unix socket / macOS dylib).
     pub(crate) fn additional_permissions(&self) -> Option<AdditionalPermissionProfile> {
-        let dir = self.observer.as_ref()?.dir_path();
+        let observer = self.observer.as_ref()?;
+        let dir = observer.dir_path();
         let abs = AbsolutePathBuf::from_absolute_path(dir).ok()?;
+        let mut read_roots = vec![abs.clone()];
+        if let Some(shims) = observer.shims_dir()
+            && shims != dir
+            && let Ok(shims_abs) = AbsolutePathBuf::from_absolute_path(shims)
+        {
+            read_roots.push(shims_abs);
+        }
         Some(AdditionalPermissionProfile {
             file_system: Some(FileSystemPermissions::from_read_write_roots(
-                Some(vec![abs.clone()]),
+                Some(read_roots),
                 Some(vec![abs]),
             )),
             ..Default::default()

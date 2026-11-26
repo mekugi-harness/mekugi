@@ -49,7 +49,7 @@ impl MacosObserver {
         let dylib_path = dir.join("libmekugi_write_observer.dylib");
         fs::write(&dylib_path, INTERPOSE_DYLIB)?;
         fs::set_permissions(&dylib_path, fs::Permissions::from_mode(0o755))?;
-        let shims_dir = cached_non_sip_shims_dir();
+        let shims_dir = cached_non_sip_shims_dir(dir);
 
         let sock_path = dir.join("observe.sock");
         let listener = UnixListener::bind(&sock_path)?;
@@ -144,6 +144,10 @@ impl MacosObserver {
         })
     }
 
+    pub(crate) fn shims_dir(&self) -> Option<&Path> {
+        self.shims_dir.as_deref()
+    }
+
     pub(crate) fn stop_and_join(&self) {
         self.stop.store(true, Ordering::Release);
         if let Some(handle) = self
@@ -179,19 +183,20 @@ fn non_sip_utility_candidates(name: &str) -> Vec<PathBuf> {
     candidates
 }
 
-fn cached_non_sip_shims_dir() -> Option<PathBuf> {
-    CACHED_SHIMS_DIR
-        .get_or_init(|| {
-            if let Some(arg0_dir) = std::env::var_os("CODEX_ARG0_PATH_DIR") {
-                let target = PathBuf::from(arg0_dir).join(SHIMS_DIR_NAME);
-                if let Some(dir) = stage_non_sip_shims(&target) {
-                    return Some(dir);
-                }
-            }
-            let fallback = std::env::temp_dir().join(format!("mekugi-macos-shims-{}", std::process::id()));
-            stage_non_sip_shims(&fallback)
-        })
-        .clone()
+fn cached_non_sip_shims_dir(observer_dir: &Path) -> Option<PathBuf> {
+    if std::env::var_os("CODEX_ARG0_PATH_DIR").is_some() {
+        if let Some(dir) = CACHED_SHIMS_DIR
+            .get_or_init(|| {
+                let arg0_dir = std::env::var_os("CODEX_ARG0_PATH_DIR")?;
+                stage_non_sip_shims(&PathBuf::from(arg0_dir).join(SHIMS_DIR_NAME))
+            })
+            .clone()
+        {
+            return Some(dir);
+        }
+    }
+    // Fallback inside the per-command observer TempDir so it is always cleaned up on drop.
+    stage_non_sip_shims(&observer_dir.join(SHIMS_DIR_NAME))
 }
 
 fn stage_non_sip_shims(shims_dir: &Path) -> Option<PathBuf> {
@@ -261,7 +266,9 @@ fn find_non_sip_shell(original: &str, shims_dir: Option<&Path>) -> Option<String
 }
 
 fn is_sip_dir(dir: &Path) -> bool {
-    matches!(dir.to_str(), Some("/bin" | "/usr/bin" | "/sbin" | "/usr/sbin"))
+    ["/bin", "/usr/bin", "/sbin", "/usr/sbin"]
+        .into_iter()
+        .any(|path| dir == Path::new(path))
 }
 
 /// Insert `shims_dir` immediately before the first SIP system directory on `PATH`

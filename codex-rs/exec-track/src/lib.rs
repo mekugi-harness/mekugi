@@ -94,6 +94,18 @@ impl WriteObserverSession {
         self.dir.path()
     }
 
+    /// Optional read-only directory holding cached non-SIP macOS utility shims.
+    pub fn shims_dir(&self) -> Option<&Path> {
+        #[cfg(target_os = "macos")]
+        {
+            self.backend.shims_dir()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
     /// Wrap a shell command so its child process tree reports write syscalls to this observer.
     pub fn wrap_command(&self, argv: &[String], self_exe: Option<&Path>) -> Option<WrappedCommand> {
         #[cfg(target_os = "linux")]

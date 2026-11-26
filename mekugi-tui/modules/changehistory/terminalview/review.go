@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -54,14 +55,20 @@ func (r *Renderer) originLabel(origin presentation.Origin) string {
 }
 
 // provenance lists the changes a composed file combines, colored by caller.
-func (r *Renderer) provenance(file presentation.File) string {
-	external := false
-	for _, chunk := range file.Chunks {
-		if strings.HasPrefix(chunk.Review.OriginNote, "external:") {
-			external = true
-			break
-		}
+func isExternalReviewPath(path, workspace string) bool {
+	if !filepath.IsAbs(path) {
+		return false
 	}
+	if workspace == "" {
+		return true
+	}
+	cleanPath := filepath.Clean(path)
+	cleanWS := filepath.Clean(workspace)
+	return cleanPath != cleanWS && !strings.HasPrefix(cleanPath, cleanWS+string(filepath.Separator))
+}
+
+func (r *Renderer) provenance(file presentation.File, workspace string) string {
+	external := isExternalReviewPath(file.Path, workspace)
 	if len(file.Origins) == 0 && file.Baseline == 0 && !external {
 		return ""
 	}
@@ -176,7 +183,7 @@ func (r *Renderer) Render(ctx context.Context, theme diffrender.Theme, files []p
 				return Render{}, err
 			}
 		}
-		if line := r.provenance(file); line != "" {
+		if line := r.provenance(file, workspace); line != "" {
 			if err := appendLine(line, file.Highlighted, false); err != nil {
 				return Render{}, err
 			}
