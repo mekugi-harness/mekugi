@@ -55,10 +55,20 @@ func (r *Renderer) originLabel(origin presentation.Origin) string {
 
 // provenance lists the changes a composed file combines, colored by caller.
 func (r *Renderer) provenance(file presentation.File) string {
-	if len(file.Origins) == 0 && file.Baseline == 0 {
+	external := false
+	for _, chunk := range file.Chunks {
+		if strings.HasPrefix(chunk.Review.OriginNote, "external:") {
+			external = true
+			break
+		}
+	}
+	if len(file.Origins) == 0 && file.Baseline == 0 && !external {
 		return ""
 	}
 	var parts []string
+	if external {
+		parts = append(parts, diffrender.Subtle+"[external]"+diffrender.SubtleReset)
+	}
 	for i, origin := range file.Origins {
 		if i == 4 {
 			parts = append(parts, fmt.Sprintf(diffrender.Subtle+"+%d more"+diffrender.SubtleReset, len(file.Origins)-i))

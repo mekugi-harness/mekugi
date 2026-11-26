@@ -26,7 +26,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `CODEX_ARG0_PATH_DIR` so login shells retain those aliases on `PATH`. It also
   dispatches `--codex-exec-observe` for process-scoped OS write observation
   (Linux `seccomp-unotify`, macOS `DYLD_INSERT_LIBRARIES`), replacing Bash AST
-  write-path heuristics and FIFO script rewriting. Interactive user-shell (`!`)
+  write-path heuristics and FIFO script rewriting. On macOS, the observer
+  caches non-SIP userland shims (preferring Homebrew/Nix binaries, falling back
+  to ad-hoc signed copies) once per process and inserts them into `PATH` right
+  before `/bin`/`/usr/bin` so user-configured tools are never shadowed while
+  preserving `DYLD_INSERT_LIBRARIES` across common file-mutating utilities.
+  Interactive user-shell (`!`)
   edits emit unattributed `shellN` change IDs (excluded from agent `--mine` and
   handoffs), and ephemeral temp-path writes (`/tmp`, `$TMPDIR`, `$SESSION_TMP`)
   are classified as `ChangeScope::Ephemeral` so they remain inspectable by

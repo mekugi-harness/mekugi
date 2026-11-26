@@ -385,11 +385,27 @@ export function buildFeed(
   return { attachment, order, entries, revision: seq };
 }
 
+function normalizePosixPath(p: string): string {
+  const parts = p.split("/");
+  const stack: string[] = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      stack.pop();
+    } else {
+      stack.push(part);
+    }
+  }
+  return "/" + stack.join("/");
+}
+
 function isExternalChangePath(filePath: string, workspace?: string | null): boolean {
   if (!filePath.startsWith("/")) return false;
   if (!workspace || !workspace.startsWith("/")) return true;
-  const normWs = workspace.endsWith("/") ? workspace : `${workspace}/`;
-  return filePath !== workspace && !filePath.startsWith(normWs);
+  const cleanFile = normalizePosixPath(filePath);
+  const cleanWs = normalizePosixPath(workspace);
+  const wsPrefix = cleanWs === "/" ? "/" : `${cleanWs}/`;
+  return cleanFile !== cleanWs && !cleanFile.startsWith(wsPrefix);
 }
 
 function changesToReview(response: ThreadChangesReadResponse, revision: number): SavedReview {

@@ -13,6 +13,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -32,6 +33,7 @@ const SHIMS_DIR_NAME: &str = "shims";
 const SHIM_UTILITIES: &[&str] = &[
     "sh", "bash", "zsh", "sed", "awk", "cp", "mv", "rm", "install", "touch", "tee", "patch",
 ];
+static CACHED_SHIMS_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub(crate) struct MacosObserver {
     sock_path: PathBuf,
@@ -47,7 +49,7 @@ impl MacosObserver {
         let dylib_path = dir.join("libmekugi_write_observer.dylib");
         fs::write(&dylib_path, INTERPOSE_DYLIB)?;
         fs::set_permissions(&dylib_path, fs::Permissions::from_mode(0o755))?;
-        let shims_dir = stage_non_sip_shims(&dir.join(SHIMS_DIR_NAME));
+        let shims_dir = cached_non_sip_shims_dir();
 
         let sock_path = dir.join("observe.sock");
         let listener = UnixListener::bind(&sock_path)?;
@@ -109,11 +111,14 @@ impl MacosObserver {
             }
         }
         if let Some(exe) = self_exe {
-            let mut wrapped = Vec::with_capacity(new_argv.len() + 5);
+            let mut wrapped = Vec::with_capacity(new_argv.len() + 6);
             wrapped.push(exe.to_string_lossy().into_owned());
             wrapped.push(CODEX_EXEC_OBSERVE_ARG1.to_string());
             wrapped.push(self.sock_path.to_string_lossy().into_owned());
             wrapped.push(self.dylib_path.to_string_lossy().into_owned());
+            if let Some(shims) = &self.shims_dir {
+                wrapped.push(shims.to_string_lossy().into_owned());
+            }
             wrapped.push("--".to_string());
             wrapped.extend(new_argv);
             return Some(WrappedCommand {
@@ -174,11 +179,30 @@ fn non_sip_utility_candidates(name: &str) -> Vec<PathBuf> {
     candidates
 }
 
+fn cached_non_sip_shims_dir() -> Option<PathBuf> {
+    CACHED_SHIMS_DIR
+        .get_or_init(|| {
+            if let Some(arg0_dir) = std::env::var_os("CODEX_ARG0_PATH_DIR") {
+                let target = PathBuf::from(arg0_dir).join(SHIMS_DIR_NAME);
+                if let Some(dir) = stage_non_sip_shims(&target) {
+                    return Some(dir);
+                }
+            }
+            let fallback = std::env::temp_dir().join(format!("mekugi-macos-shims-{}", std::process::id()));
+            stage_non_sip_shims(&fallback)
+        })
+        .clone()
+}
+
 fn stage_non_sip_shims(shims_dir: &Path) -> Option<PathBuf> {
     fs::create_dir_all(shims_dir).ok()?;
     let mut staged = 0usize;
     for name in SHIM_UTILITIES {
         let dst = shims_dir.join(name);
+        if dst.is_file() {
+            staged += 1;
+            continue;
+        }
         if let Some(src) = non_sip_utility_candidates(name)
             .into_iter()
             .find(|p| p.is_file())
@@ -236,8 +260,27 @@ fn find_non_sip_shell(original: &str, shims_dir: Option<&Path>) -> Option<String
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+fn is_sip_dir(dir: &Path) -> bool {
+    matches!(dir.to_str(), Some("/bin" | "/usr/bin" | "/sbin" | "/usr/sbin"))
+}
+
+/// Insert `shims_dir` immediately before the first SIP system directory on `PATH`
+/// so user-configured utilities earlier on `PATH` (e.g. Homebrew GNU sed) are never shadowed.
+fn inject_shims_before_sip_dirs(existing_path: &std::ffi::OsStr, shims_dir: &Path) -> std::ffi::OsString {
+    let mut entries: Vec<PathBuf> = std::env::split_paths(existing_path).collect();
+    if entries.iter().any(|p| p == shims_dir) {
+        return existing_path.to_os_string();
+    }
+    if let Some(pos) = entries.iter().position(|p| is_sip_dir(p)) {
+        entries.insert(pos, shims_dir.to_path_buf());
+    } else {
+        entries.push(shims_dir.to_path_buf());
+    }
+    std::env::join_paths(entries).unwrap_or_else(|_| existing_path.to_os_string())
+}
+
 /// Child wrapper entrypoint on macOS invoked via
-/// `<codex-exe> --codex-exec-observe <sock> <dylib> -- <cmd> [args...]`.
+/// `<codex-exe> --codex-exec-observe <sock> <dylib> [shims_dir] -- <cmd> [args...]`.
 /// Sets `DYLD_INSERT_LIBRARIES` and `MEKUGI_WRITE_OBSERVER_SOCK` inside the
 /// Seatbelt sandbox (after SIP-protected `sandbox-exec` has launched) and `execvp`s `<cmd>`.
 pub fn run_observe_wrapper_main() -> ! {
@@ -256,15 +299,12 @@ pub fn run_observe_wrapper_main() -> ! {
             dyld_val.push(":");
             dyld_val.push(existing);
         }
-        if let Some(shims_dir) = Path::new(sock).parent().map(|p| p.join(SHIMS_DIR_NAME))
+        let shims_candidate = (sep > 4).then(|| PathBuf::from(&args[4]));
+        if let Some(shims_dir) = shims_candidate
             && shims_dir.is_dir()
         {
             let existing_path = std::env::var_os("PATH").unwrap_or_default();
-            let mut new_path = shims_dir.into_os_string();
-            if !existing_path.is_empty() {
-                new_path.push(":");
-                new_path.push(existing_path);
-            }
+            let new_path = inject_shims_before_sip_dirs(&existing_path, &shims_dir);
             unsafe {
                 std::env::set_var("PATH", new_path);
             }

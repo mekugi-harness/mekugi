@@ -106,7 +106,7 @@
       {#if review?.coverage === "partial"}
         <span
           class="rounded-chip border border-warning-edge bg-warning-tint px-1.5 py-0.5 text-tiny font-medium text-warning-ink"
-          title="One or more commands ran an uninstrumented binary (partial write coverage)"
+          title="One or more file changes have partial write coverage or missing baselines"
         >
           Partial coverage
         </span>
