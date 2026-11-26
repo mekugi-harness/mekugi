@@ -363,6 +363,9 @@ export function buildFeed(
     if (list) list.push(hook);
     else hooksByTurn.set(hook.turnId, [hook]);
   }
+  for (const list of hooksByTurn.values()) {
+    if (list.length > 1) list.sort((a, b) => a.afterItemCount - b.afterItemCount);
+  }
   for (let t = 0; t < turns.length; t++) {
     const turn = turns[t];
     const turnHooks = hooksByTurn.get(turn.id) ?? [];
@@ -445,6 +448,9 @@ function threadToAgent(thread: Thread, depth: number): Agent {
   };
 }
 
+const maxCachedHookThreads = 20;
+const maxHooksPerThread = 200;
+
 export class Stream {
   session = $state.raw<Session | undefined>();
   input = $state.raw<Input | undefined>();
@@ -510,7 +516,11 @@ export class Stream {
     this.#machine = machine;
     this.#turns = [];
     this.#liveItemIds.clear();
-    this.#hooks = this.#hooksByThread.get(`${machine.id}:${id}`) ?? [];
+    const cachedHooks = this.#hooksByThread.get(`${machine.id}:${id}`);
+    // Only restore settled hooks across a subscription gap; running hooks may have
+    // finished while the thread was unobserved.
+    this.#hooks = cachedHooks ? cachedHooks.filter((h) => h.run.status !== "running") : [];
+    if (cachedHooks) this.#rememberHooks(`${machine.id}:${id}`, this.#hooks);
     this.#requests = new AbortController();
     this.session = this.input = this.gone = undefined;
     this.activeTurnId = undefined;
@@ -593,6 +603,21 @@ export class Stream {
   #applyThread(thread: Thread, model?: string, effort?: string, serviceTier?: string): void {
     this.#turns = (thread.turns ?? []).map((t) => ({ ...t, items: [...t.items] }));
     this.#liveItemIds.clear();
+    const activeTurnIds = new Set(
+      this.#turns.filter((t) => t.status === "inProgress").map((t) => t.id),
+    );
+    if (
+      this.#hooks.some(
+        (h) => h.run.status === "running" && (!h.turnId || !activeTurnIds.has(h.turnId)),
+      )
+    ) {
+      this.#hooks = this.#hooks.filter(
+        (h) => h.run.status !== "running" || (!!h.turnId && activeTurnIds.has(h.turnId)),
+      );
+      if (this.#machine && this.#id) {
+        this.#rememberHooks(`${this.#machine.id}:${this.#id}`, this.#hooks);
+      }
+    }
     let activeTurn: Turn | undefined;
     for (let i = this.#turns.length - 1; i >= 0; i--) {
       if (this.#turns[i].status === "inProgress") {
@@ -910,8 +935,22 @@ export class Stream {
       afterItemCount: turn ? turn.items.length : 0,
       run,
     });
+    if (this.#hooks.length > maxHooksPerThread) {
+      this.#hooks.splice(0, this.#hooks.length - maxHooksPerThread);
+    }
     if (this.#machine && this.#id) {
-      this.#hooksByThread.set(`${this.#machine.id}:${this.#id}`, this.#hooks);
+      this.#rememberHooks(`${this.#machine.id}:${this.#id}`, this.#hooks);
+    }
+  }
+
+  #rememberHooks(cacheKey: string, hooks: HookRecord[]): void {
+    this.#hooksByThread.delete(cacheKey);
+    if (!hooks.length) return;
+    this.#hooksByThread.set(cacheKey, hooks);
+    while (this.#hooksByThread.size > maxCachedHookThreads) {
+      const oldest = this.#hooksByThread.keys().next().value;
+      if (oldest === undefined) break;
+      this.#hooksByThread.delete(oldest);
     }
   }
 
