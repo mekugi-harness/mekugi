@@ -965,7 +965,7 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 		if wsRoot == "" {
 			wsRoot = c.workspace
 		}
-		if filepath.IsAbs(f.Path) && (wsRoot == "" || !strings.HasPrefix(filepath.Clean(f.Path)+string(filepath.Separator), filepath.Clean(wsRoot)+string(filepath.Separator))) {
+		if changes.IsExternalPath(f.Path, wsRoot) {
 			reviewFile.OriginNote = "external: " + f.Path
 		}
 		chunk := changes.Chunk{

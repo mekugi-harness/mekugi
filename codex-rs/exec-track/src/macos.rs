@@ -9,6 +9,7 @@ use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,7 +50,7 @@ impl MacosObserver {
         let dylib_path = dir.join("libmekugi_write_observer.dylib");
         fs::write(&dylib_path, INTERPOSE_DYLIB)?;
         fs::set_permissions(&dylib_path, fs::Permissions::from_mode(0o755))?;
-        let shims_dir = cached_non_sip_shims_dir(dir);
+        let shims_dir = cached_non_sip_shims_dir();
 
         let sock_path = dir.join("observe.sock");
         let listener = UnixListener::bind(&sock_path)?;
@@ -183,20 +184,97 @@ fn non_sip_utility_candidates(name: &str) -> Vec<PathBuf> {
     candidates
 }
 
-fn cached_non_sip_shims_dir(observer_dir: &Path) -> Option<PathBuf> {
-    if std::env::var_os("CODEX_ARG0_PATH_DIR").is_some() {
-        if let Some(dir) = CACHED_SHIMS_DIR
-            .get_or_init(|| {
-                let arg0_dir = std::env::var_os("CODEX_ARG0_PATH_DIR")?;
-                stage_non_sip_shims(&PathBuf::from(arg0_dir).join(SHIMS_DIR_NAME))
-            })
-            .clone()
-        {
-            return Some(dir);
+fn cached_non_sip_shims_dir() -> Option<PathBuf> {
+    CACHED_SHIMS_DIR
+        .get_or_init(|| {
+            let base = std::env::var_os("CODEX_ARG0_PATH_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::env::temp_dir().join(format!("mekugi-non-sip-{}", std::process::id()))
+                });
+            stage_non_sip_shims(&base.join(SHIMS_DIR_NAME))
+        })
+        .clone()
+}
+
+/// Stages a non-SIP copy of a system binary only when it can actually execute
+/// under ad-hoc signing (Apple Silicon kills ad-hoc-signed `arm64e` slices
+/// with SIGKILL/137 via AMFI).
+fn stage_signed_system_copy(name: &str, src: &Path, dst: &Path) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let archs_out = std::process::Command::new("/usr/bin/lipo")
+            .arg("-archs")
+            .arg(src)
+            .output();
+        let Ok(out) = archs_out else {
+            return false;
+        };
+        if !out.status.success() {
+            return false;
+        }
+        let archs = String::from_utf8_lossy(&out.stdout);
+        let tokens: Vec<&str> = archs.split_whitespace().collect();
+        if tokens.contains(&"arm64") {
+            let extracted = std::process::Command::new("/usr/bin/lipo")
+                .arg(src)
+                .args(["-thin", "arm64", "-output"])
+                .arg(dst)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if !extracted {
+                let _ = fs::remove_file(dst);
+                return false;
+            }
+        } else {
+            // System binary only provides arm64e (no plain arm64 slice); ad-hoc
+            // signing it triggers AMFI SIGKILL on Apple Silicon.
+            return false;
         }
     }
-    // Fallback inside the per-command observer TempDir so it is always cleaned up on drop.
-    stage_non_sip_shims(&observer_dir.join(SHIMS_DIR_NAME))
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        if fs::copy(src, dst).is_err() {
+            return false;
+        }
+    }
+
+    if fs::set_permissions(dst, fs::Permissions::from_mode(0o755)).is_err() {
+        let _ = fs::remove_file(dst);
+        return false;
+    }
+    // Ad-hoc signing strips Apple's TF_PLATFORM flag so Darwin preserves DYLD_INSERT_LIBRARIES.
+    let signed = std::process::Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(dst)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !signed {
+        let _ = fs::remove_file(dst);
+        return false;
+    }
+    // Verify the staged binary is not killed by AMFI (e.g. SIGKILL/137) before exposing it.
+    let mut probe = std::process::Command::new(dst);
+    if matches!(name, "sh" | "bash" | "zsh") {
+        probe.args(["-c", "true"]);
+    } else {
+        probe.arg("--version");
+    }
+    let executable_ok = probe
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.signal().is_none());
+    if !executable_ok {
+        let _ = fs::remove_file(dst);
+        return false;
+    }
+    true
 }
 
 fn stage_non_sip_shims(shims_dir: &Path) -> Option<PathBuf> {
@@ -224,25 +302,8 @@ fn stage_non_sip_shims(shims_dir: &Path) -> Option<PathBuf> {
         let Some(src) = system_src else {
             continue;
         };
-        if fs::copy(&src, &dst).is_err() {
-            continue;
-        }
-        if fs::set_permissions(&dst, fs::Permissions::from_mode(0o755)).is_err() {
-            let _ = fs::remove_file(&dst);
-            continue;
-        }
-        // Ad-hoc signing strips Apple's TF_PLATFORM flag so Darwin preserves DYLD_INSERT_LIBRARIES.
-        let signed = std::process::Command::new("/usr/bin/codesign")
-            .args(["--force", "--sign", "-"])
-            .arg(&dst)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
-        if signed {
+        if stage_signed_system_copy(name, &src, &dst) {
             staged += 1;
-        } else {
-            let _ = fs::remove_file(&dst);
         }
     }
     (staged > 0).then(|| shims_dir.to_path_buf())

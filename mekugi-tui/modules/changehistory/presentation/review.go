@@ -2,7 +2,9 @@ package presentation
 
 import (
 	"cmp"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
@@ -80,6 +82,24 @@ func (file File) Key() string {
 		return file.id
 	}
 	return file.Path
+}
+
+// IsExternalPath reports whether path is an absolute path outside workspace.
+func IsExternalPath(path, workspace string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	if workspace == "" {
+		return true
+	}
+	cleanPath := filepath.Clean(path)
+	cleanWS := filepath.Clean(workspace)
+	return cleanPath != cleanWS && !strings.HasPrefix(cleanPath, cleanWS+string(filepath.Separator))
+}
+
+// IsExternal reports whether the file lives outside workspace.
+func (file File) IsExternal(workspace string) bool {
+	return IsExternalPath(file.Path, workspace)
 }
 
 // Merge replaces membership and marks newly observed captures after initial history.
