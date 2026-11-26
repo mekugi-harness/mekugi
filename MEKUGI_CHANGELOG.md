@@ -31,6 +31,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   handoffs), and ephemeral temp-path writes (`/tmp`, `$TMPDIR`, `$SESSION_TMP`)
   are classified as `ChangeScope::Ephemeral` so they remain inspectable by
   explicit change ID without polluting default agent history or Saved Diff.
+- `POST /api/resources/attachment-image` confines reads to the active thread's
+  workspace (or the server's configured workspace root for pre-thread previews)
+  using directory-relative `openat` (`O_NOFOLLOW | O_NONBLOCK`) and returns a
+  uniform `404` for outside-workspace, symlink-escaping, or non-regular paths.
+- `codex-shell-guard` strips `DYLD_INSERT_LIBRARIES` and
+  `MEKUGI_WRITE_OBSERVER_SOCK` from read-only `git config --get` alias probes.
 - `codex-arg0` also
   stages per-session `vcs-guard/` (`git`, `gh`, `hg`, `svn`, `jj`) and
   `sudo-guard/` (`sudo`, `gpg`, `gpg2`, `mekugi-sudo-askpass`) symlinks

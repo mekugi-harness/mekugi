@@ -582,7 +582,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(crate) thread_manager: Arc<ThreadManager>,
     pub(super) outgoing: Arc<OutgoingMessageSender>,
     pub(super) arg0_paths: Arg0DispatchPaths,
-    pub(super) config: Arc<Config>,
+    pub(crate) config: Arc<Config>,
     pub(super) config_manager: ConfigManager,
     pub(super) thread_store: Arc<dyn ThreadStore>,
     pub(crate) pending_thread_unloads: PendingThreadUnloads,
