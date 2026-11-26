@@ -385,11 +385,20 @@ export function buildFeed(
   return { attachment, order, entries, revision: seq };
 }
 
+function isExternalChangePath(filePath: string, workspace?: string | null): boolean {
+  if (!filePath.startsWith("/")) return false;
+  if (!workspace || !workspace.startsWith("/")) return true;
+  const normWs = workspace.endsWith("/") ? workspace : `${workspace}/`;
+  return filePath !== workspace && !filePath.startsWith(normWs);
+}
+
 function changesToReview(response: ThreadChangesReadResponse, revision: number): SavedReview {
   const files: ReviewedFile[] = (response.files ?? []).map((file, index) => ({
     key: `${index}:${file.path}`,
     path: file.path,
     status: file.status,
+    external: isExternalChangePath(file.path, response.workspace),
+    coverageNotes: file.coverageNotes?.length ? file.coverageNotes : undefined,
     chunks: [
       {
         Key: `${index}:${file.path}`,
@@ -406,6 +415,7 @@ function changesToReview(response: ThreadChangesReadResponse, revision: number):
           Action: file.status,
           Diff: file.unifiedDiff,
           Binary: file.isBinary,
+          Incomplete: file.coverageNotes?.length ? file.coverageNotes.join("; ") : undefined,
           Added: file.additions,
           Removed: file.deletions,
         },
@@ -417,11 +427,14 @@ function changesToReview(response: ThreadChangesReadResponse, revision: number):
     counts: { Added: file.additions, Removed: file.deletions },
   }));
   const net = { Added: response.totalAdditions, Removed: response.totalDeletions };
+  const partial =
+    response.changes.some((c) => c.incomplete) ||
+    response.files.some((f) => (f.coverageNotes?.length ?? 0) > 0);
   return {
     fileCount: files.length,
     revision,
     workspace: response.workspace ?? "",
-    coverage: "full",
+    coverage: partial ? "partial" : "full",
     callers: files.length ? [{ caller: "/root", count: files.length }] : [],
     counts: {
       Callers: files.length ? { "/root": net } : {},

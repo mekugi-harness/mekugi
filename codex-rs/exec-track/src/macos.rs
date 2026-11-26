@@ -28,10 +28,15 @@ use crate::persist::ObservationState;
 const INTERPOSE_DYLIB: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/libmekugi_write_observer.dylib"));
 const ENV_SOCK: &str = "MEKUGI_WRITE_OBSERVER_SOCK";
+const SHIMS_DIR_NAME: &str = "shims";
+const SHIM_UTILITIES: &[&str] = &[
+    "sh", "bash", "zsh", "sed", "awk", "cp", "mv", "rm", "install", "touch", "tee", "patch",
+];
 
 pub(crate) struct MacosObserver {
     sock_path: PathBuf,
     dylib_path: PathBuf,
+    shims_dir: Option<PathBuf>,
     state: Arc<Mutex<ObservationState>>,
     stop: Arc<AtomicBool>,
     handle: Mutex<Option<thread::JoinHandle<()>>>,
@@ -42,6 +47,7 @@ impl MacosObserver {
         let dylib_path = dir.join("libmekugi_write_observer.dylib");
         fs::write(&dylib_path, INTERPOSE_DYLIB)?;
         fs::set_permissions(&dylib_path, fs::Permissions::from_mode(0o755))?;
+        let shims_dir = stage_non_sip_shims(&dir.join(SHIMS_DIR_NAME));
 
         let sock_path = dir.join("observe.sock");
         let listener = UnixListener::bind(&sock_path)?;
@@ -73,6 +79,7 @@ impl MacosObserver {
         Ok(Self {
             sock_path,
             dylib_path,
+            shims_dir,
             state,
             stop,
             handle: Mutex::new(Some(handle)),
@@ -89,7 +96,7 @@ impl MacosObserver {
         }
         let mut new_argv = argv.to_vec();
         if is_sip_path(&new_argv[0]) {
-            if let Some(alt_shell) = find_non_sip_shell(&new_argv[0]) {
+            if let Some(alt_shell) = find_non_sip_shell(&new_argv[0], self.shims_dir.as_deref()) {
                 new_argv[0] = alt_shell;
             } else {
                 self.state
@@ -152,22 +159,81 @@ fn is_sip_path(path: &str) -> bool {
         || path.starts_with("/usr/sbin/")
 }
 
-fn find_non_sip_shell(original: &str) -> Option<String> {
-    let name = Path::new(original).file_name()?.to_str()?;
-    let candidates: &[&str] = match name {
-        "bash" => &["/opt/homebrew/bin/bash", "/usr/local/bin/bash"],
-        "zsh" => &["/opt/homebrew/bin/zsh", "/usr/local/bin/zsh"],
-        "sh" => &[
-            "/opt/homebrew/bin/dash",
-            "/opt/homebrew/bin/bash",
-            "/usr/local/bin/bash",
-        ],
-        _ => return None,
-    };
+fn non_sip_utility_candidates(name: &str) -> Vec<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from(format!("/opt/homebrew/bin/{name}")),
+        PathBuf::from(format!("/usr/local/bin/{name}")),
+        PathBuf::from(format!("/run/current-system/sw/bin/{name}")),
+        PathBuf::from(format!("/nix/var/nix/profiles/default/bin/{name}")),
+    ];
+    if name == "sh" {
+        candidates.insert(0, PathBuf::from("/opt/homebrew/bin/dash"));
+        candidates.push(PathBuf::from("/opt/homebrew/bin/bash"));
+        candidates.push(PathBuf::from("/usr/local/bin/bash"));
+    }
     candidates
-        .iter()
-        .find(|p| Path::new(p).is_file())
-        .map(|p| (*p).to_string())
+}
+
+fn stage_non_sip_shims(shims_dir: &Path) -> Option<PathBuf> {
+    fs::create_dir_all(shims_dir).ok()?;
+    let mut staged = 0usize;
+    for name in SHIM_UTILITIES {
+        let dst = shims_dir.join(name);
+        if let Some(src) = non_sip_utility_candidates(name)
+            .into_iter()
+            .find(|p| p.is_file())
+        {
+            if std::os::unix::fs::symlink(&src, &dst).is_ok() {
+                staged += 1;
+                continue;
+            }
+        }
+        let system_src = [format!("/bin/{name}"), format!("/usr/bin/{name}")]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file());
+        let Some(src) = system_src else {
+            continue;
+        };
+        if fs::copy(&src, &dst).is_err() {
+            continue;
+        }
+        if fs::set_permissions(&dst, fs::Permissions::from_mode(0o755)).is_err() {
+            let _ = fs::remove_file(&dst);
+            continue;
+        }
+        // Ad-hoc signing strips Apple's TF_PLATFORM flag so Darwin preserves DYLD_INSERT_LIBRARIES.
+        let signed = std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&dst)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if signed {
+            staged += 1;
+        } else {
+            let _ = fs::remove_file(&dst);
+        }
+    }
+    (staged > 0).then(|| shims_dir.to_path_buf())
+}
+
+fn find_non_sip_shell(original: &str, shims_dir: Option<&Path>) -> Option<String> {
+    let name = Path::new(original).file_name()?.to_str()?;
+    if let Some(dir) = shims_dir {
+        let shimmed = dir.join(name);
+        if shimmed.is_file() {
+            return Some(shimmed.to_string_lossy().into_owned());
+        }
+    }
+    if !matches!(name, "bash" | "zsh" | "sh") {
+        return None;
+    }
+    non_sip_utility_candidates(name)
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Child wrapper entrypoint on macOS invoked via
@@ -189,6 +255,19 @@ pub fn run_observe_wrapper_main() -> ! {
         if !existing.is_empty() {
             dyld_val.push(":");
             dyld_val.push(existing);
+        }
+        if let Some(shims_dir) = Path::new(sock).parent().map(|p| p.join(SHIMS_DIR_NAME))
+            && shims_dir.is_dir()
+        {
+            let existing_path = std::env::var_os("PATH").unwrap_or_default();
+            let mut new_path = shims_dir.into_os_string();
+            if !existing_path.is_empty() {
+                new_path.push(":");
+                new_path.push(existing_path);
+            }
+            unsafe {
+                std::env::set_var("PATH", new_path);
+            }
         }
         unsafe {
             std::env::set_var("DYLD_INSERT_LIBRARIES", dyld_val);

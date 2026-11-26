@@ -97,10 +97,20 @@
 
 <div class="flex h-full min-h-0 flex-col">
   <div class="flex min-h-11 items-center gap-2 border-b border-rule px-4 py-2 text-small">
-    <span class="font-semibold">
-      Changes {#if files.length}<span class="font-normal text-muted tabular-nums"
-          >({files.length})</span
-        >{/if}
+    <span class="flex items-center gap-2 font-semibold">
+      <span
+        >Changes {#if files.length}<span class="font-normal text-muted tabular-nums"
+            >({files.length})</span
+          >{/if}</span
+      >
+      {#if review?.coverage === "partial"}
+        <span
+          class="rounded-chip border border-warning-edge bg-warning-tint px-1.5 py-0.5 text-tiny font-medium text-warning-ink"
+          title="One or more commands ran an uninstrumented binary (partial write coverage)"
+        >
+          Partial coverage
+        </span>
+      {/if}
     </span>
     {#if net}
       <span class="font-mono tabular-nums">
@@ -139,9 +149,27 @@
               <summary
                 class="flex min-h-9 cursor-pointer items-center gap-2 rounded-control bg-raised/60 px-2.5 py-1 text-small transition-colors hover:bg-active/80 {caret}"
               >
-                <span class="min-w-0 flex-1 truncate font-mono text-code font-medium"
-                  ><Path path={workspacePath(file.path, review?.workspace ?? "")} /></span
-                >
+                <span class="flex min-w-0 flex-1 items-center gap-1.5">
+                  <span class="min-w-0 truncate font-mono text-code font-medium"
+                    ><Path path={workspacePath(file.path, review?.workspace ?? "")} /></span
+                  >
+                  {#if file.external}
+                    <span
+                      class="flex-none rounded-chip border border-rule bg-raised px-1.5 py-0.5 text-tiny text-muted"
+                      title={`Write outside workspace: ${file.path}`}
+                    >
+                      External
+                    </span>
+                  {/if}
+                  {#if file.coverageNotes?.length}
+                    <span
+                      class="flex-none rounded-chip border border-warning-edge bg-warning-tint px-1.5 py-0.5 text-tiny text-warning-ink"
+                      title={file.coverageNotes.join("; ")}
+                    >
+                      Partial
+                    </span>
+                  {/if}
+                </span>
                 <span class="flex-none font-mono tabular-nums">
                   <span class={file.counts.Added ? "text-positive" : "text-muted"}
                     >+{file.counts.Added}</span

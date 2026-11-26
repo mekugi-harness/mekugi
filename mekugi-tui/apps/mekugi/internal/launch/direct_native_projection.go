@@ -961,6 +961,13 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 		if len(f.CoverageNotes) > 0 {
 			reviewFile.Incomplete = strings.Join(f.CoverageNotes, "; ")
 		}
+		wsRoot := resp.Workspace
+		if wsRoot == "" {
+			wsRoot = c.workspace
+		}
+		if filepath.IsAbs(f.Path) && (wsRoot == "" || !strings.HasPrefix(filepath.Clean(f.Path)+string(filepath.Separator), filepath.Clean(wsRoot)+string(filepath.Separator))) {
+			reviewFile.OriginNote = "external: " + f.Path
+		}
 		chunk := changes.Chunk{
 			Key:          fmt.Sprintf("native-%d-%s", i, f.Path),
 			Status:       f.Status,

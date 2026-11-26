@@ -449,6 +449,8 @@ export type ReviewedFile = {
   key: string;
   path: string;
   status?: string;
+  external?: boolean;
+  coverageNotes?: Array<string>;
   chunks: Array<Chunk>;
   origins: Array<Origin>;
   counts: Counts;
