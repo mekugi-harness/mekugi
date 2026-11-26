@@ -520,13 +520,29 @@ async fn handle_attachment_image(
             );
         }
         let offered_root = thread_processor.config.cwd.as_path();
-        let (Ok(canonical_offered), Ok(canonical_req)) = (
-            tokio::fs::canonicalize(offered_root).await,
-            tokio::fs::canonicalize(&path).await,
-        ) else {
+        let Ok(canonical_req) = tokio::fs::canonicalize(&path).await else {
             return unavailable_image_response();
         };
-        if !canonical_req.starts_with(&canonical_offered) {
+        let mut authorized = tokio::fs::canonicalize(offered_root)
+            .await
+            .is_ok_and(|root| canonical_req.starts_with(&root));
+        if !authorized {
+            for tid in thread_processor.thread_manager.list_thread_ids().await {
+                if let Ok(resp) = thread_processor
+                    .thread_read_response_inner(ThreadReadParams {
+                        thread_id: tid.to_string(),
+                        include_turns: false,
+                    })
+                    .await
+                    && let Ok(cwd) = tokio::fs::canonicalize(resp.thread.cwd.as_path()).await
+                    && canonical_req.starts_with(&cwd)
+                {
+                    authorized = true;
+                    break;
+                }
+            }
+        }
+        if !authorized {
             return unavailable_image_response();
         }
         path
@@ -547,6 +563,21 @@ fn unavailable_image_response() -> Response {
     )
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn directory_traversal_flags() -> libc::c_int {
+    libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC
+}
+
+#[cfg(target_vendor = "apple")]
+fn directory_traversal_flags() -> libc::c_int {
+    libc::O_SEARCH | libc::O_DIRECTORY | libc::O_CLOEXEC
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))))]
+fn directory_traversal_flags() -> libc::c_int {
+    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC
+}
+
 #[cfg(unix)]
 fn open_confined_file_sync(canonical_workspace: &Path, relative: &Path) -> std::io::Result<std::fs::File> {
     use std::ffi::CString;
@@ -560,7 +591,7 @@ fn open_confined_file_sync(canonical_workspace: &Path, relative: &Path) -> std::
     let root_fd = unsafe {
         libc::open(
             root_c.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            directory_traversal_flags(),
         )
     };
     if root_fd < 0 {
@@ -590,7 +621,7 @@ fn open_confined_file_sync(canonical_workspace: &Path, relative: &Path) -> std::
             libc::openat(
                 std::os::fd::AsRawFd::as_raw_fd(&dir_fd),
                 part_c.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                directory_traversal_flags() | libc::O_NOFOLLOW,
             )
         };
         if next_fd < 0 {
@@ -943,6 +974,12 @@ mod tests {
             std::os::unix::fs::symlink(&outside_png, &escape_link).expect("symlink");
             let link_resp = read_image_source(&workspace, "escape.png", ImageReadMode::WorkspaceConfined).await;
             assert_eq!(link_resp.status(), StatusCode::NOT_FOUND);
+
+            let fifo = workspace.join("pipe.png");
+            let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).expect("cstr");
+            assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+            let fifo_resp = read_image_source(&workspace, "pipe.png", ImageReadMode::WorkspaceConfined).await;
+            assert_eq!(fifo_resp.status(), StatusCode::NOT_FOUND);
         }
 
         let missing_ws = root.path().join("no-such-workspace");
