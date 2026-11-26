@@ -296,7 +296,7 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: |
           # App-server integration fixtures use debug-only startup options.
-          python3 runtime/build.py test
+          TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" python3 runtime/build.py test
       - name: Package native runtime
         if: steps.native_plan.outputs.package == 'true'
         env: *native_env
