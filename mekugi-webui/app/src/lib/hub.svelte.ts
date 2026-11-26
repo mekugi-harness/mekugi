@@ -34,7 +34,15 @@ import { select, view } from "./view.svelte";
 
 type SavedMachine = { id: string; label: string; endpoint: string; token: string };
 const storagePrefix = "mekugi.machine.v1:";
-const normalizeEndpoint = (u: string) => u.trim().replace(/\/+$/, "");
+function normalizeEndpoint(raw: string): string | undefined {
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return undefined;
+  }
+}
 
 export function threadStatusToStatus(status: ThreadStatus): Status {
   switch (status.type) {
@@ -387,7 +395,11 @@ class Hub {
     }
     let added = 0;
     let skipped = 0;
-    const existing = new Set(this.machines.map((m) => normalizeEndpoint(m.endpoint)));
+    const existing = new Set(
+      this.machines
+        .map((m) => normalizeEndpoint(m.endpoint))
+        .filter((u): u is string => u !== undefined),
+    );
     for (const item of entries) {
       if (!item || typeof item !== "object") {
         skipped++;

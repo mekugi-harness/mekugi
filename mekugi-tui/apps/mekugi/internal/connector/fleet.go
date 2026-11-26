@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	json "encoding/json/v2"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -241,6 +242,10 @@ func (c *Connector) version(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
 	w.Header().Set(sessionapi.ProtocolHeader, sessionapi.ProtocolVersion)
 	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, io.LimitReader(resp.Body, 4096))
 }

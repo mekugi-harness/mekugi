@@ -31,8 +31,6 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   handoffs), and ephemeral temp-path writes (`/tmp`, `$TMPDIR`, `$SESSION_TMP`)
   are classified as `ChangeScope::Ephemeral` so they remain inspectable by
   explicit change ID without polluting default agent history or Saved Diff.
-- `mekugi connector` adds authenticated `GET /api/fleet` (`DEVBOXES_JSON` /
-  `DEVBOXES_FILE` cluster probing) and `GET /api/version` readiness forwarding.
 - `codex-arg0` also
   stages per-session `vcs-guard/` (`git`, `gh`, `hg`, `svn`, `jj`) and
   `sudo-guard/` (`sudo`, `gpg`, `gpg2`, `mekugi-sudo-askpass`) symlinks
