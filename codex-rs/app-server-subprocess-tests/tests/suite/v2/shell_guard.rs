@@ -123,6 +123,7 @@ async fn shell_guard_remote_write_accept_deny_and_non_write_under_yolo() -> Resu
         "git",
         r#"#!/bin/bash
 configs=()
+is_config=0
 want=""
 prev=""
 for arg in "$@"; do
@@ -138,11 +139,12 @@ for arg in "$@"; do
     fi
     case "$arg" in
         -c) prev="-c" ;;
+        config) is_config=1 ;;
         --get) prev="--get" ;;
         -c*) configs+=("${arg#-c}") ;;
     esac
 done
-if [[ -n $want ]]; then
+if [[ $is_config -eq 1 && -n $want ]]; then
     found=""
     for kv in "${configs[@]}"; do
         if [[ "${kv%%=*}" = "$want" ]]; then

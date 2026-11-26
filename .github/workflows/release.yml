@@ -296,12 +296,12 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: |
           # App-server integration fixtures use debug-only startup options.
-          just test-native
+          python3 runtime/build.py test
       - name: Package native runtime
         if: steps.native_plan.outputs.package == 'true'
         env: *native_env
         run: |
-          just package-native --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
+          python3 runtime/build.py package --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
       - name: Build and package
         env:
           PLATFORM: ${{ matrix.platform }}
