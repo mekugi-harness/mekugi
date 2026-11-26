@@ -167,7 +167,7 @@
       <h3 class="font-semibold">Launch ephemeral mekugi-dev sandbox</h3>
       <p class="text-small text-muted">
         Spawns an isolated <code>mekugi-dev</code> Docker Sandbox. Inside the sandbox, build/install
-        Mekugi (<code>just build</code>), start
+        Mekugi (<code>just install</code> or <code>just build-binaries</code>), start
         <code>mekugi server</code> and <code>mekugi connector</code> (see
         <code>docs/guide/remote.md</code>), then add its URL and token under Machines or
         <code>Import DEVBOXES_JSON</code>.

@@ -38,6 +38,7 @@ function normalizeEndpoint(raw: string): string | undefined {
   try {
     const u = new URL(raw.trim());
     if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    if (/[?#]/.test(u.href)) return undefined;
     return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
   } catch {
     return undefined;
