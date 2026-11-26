@@ -4,9 +4,12 @@
   import Composer from "./Composer.svelte";
   import DetailsPanel from "./DetailsPanel.svelte";
   import DiffPanel from "./DiffPanel.svelte";
+  import DisplayPopover from "./DisplayPopover.svelte";
   import { basename, statusText } from "./format";
   import type { Machine } from "./hub.svelte";
+  import { editEntryPaths, isEditEntry } from "./kinds";
   import Path from "./Path.svelte";
+  import { preferences } from "./preferences.svelte";
   import Prompt from "./Prompt.svelte";
   import type { Entry } from "./protocol";
   import Roster from "./Roster.svelte";
@@ -22,7 +25,8 @@
   import Dot from "./ui/Dot.svelte";
   import Field from "./ui/Field.svelte";
   import Popover from "./ui/Popover.svelte";
-  import { input as inputStyle, segment, segments } from "./ui/styles";
+  import { Separator } from "./ui/separator";
+  import { input as inputStyle } from "./ui/styles";
   import { show, view } from "./view.svelte";
 
   let {
@@ -46,6 +50,8 @@
   let selectedQuestion = $state("");
   let panel = $state<"agents" | "changes" | "details" | undefined>();
   let selectedEntry = $state<Entry | undefined>();
+  let focusChangePath = $state<string>();
+  let hiddenHooks = $state(0);
   let renameOpen = $state(false);
   let renameValue = $state("");
   let savingName = $state(false);
@@ -112,10 +118,41 @@
   const hasPrompts = $derived(
     !!(semantic.prompts.approvals.length || semantic.prompts.questions.length),
   );
+  const net = $derived(stream.review?.counts.Net);
+  const hasChanges = $derived(!!stream.review?.files.length);
+
+  function openChanges(paths: string[] = []) {
+    focusChangePath = paths[0];
+    panel = "changes";
+  }
 
   function openDetails(entry: Entry) {
+    if (isEditEntry(entry) && hasChanges) {
+      openChanges(editEntryPaths(entry));
+      return;
+    }
     selectedEntry = entry;
     panel = "details";
+  }
+
+  function onkeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey) {
+      const key = event.key.toLowerCase();
+      if (key === "h") {
+        event.preventDefault();
+        preferences.toggleHooks();
+        return;
+      }
+      if (key === "d") {
+        event.preventDefault();
+        preferences.toggleDebug();
+        return;
+      }
+    }
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === ".") {
+      event.preventDefault();
+      panel = panel ? undefined : "agents";
+    }
   }
 
   async function saveRename() {
@@ -133,55 +170,91 @@
   }
 </script>
 
+<svelte:window {onkeydown} />
+
 <div class="flex min-h-0 flex-1 flex-col">
-  <header class="flex h-12 flex-none items-center gap-2 border-b border-rule px-3">
+  <header
+    class="flex h-12 flex-none items-center gap-2 border-b border-rule px-3 max-sm:gap-1 max-sm:px-1.5"
+  >
     {#if !sidebar}
       <Button variant="quiet" icon="sidebar" label="Show sidebar" onclick={onsidebar} />
     {/if}
     <div class="flex min-w-0 flex-1 items-center gap-2">
-      <Dot
-        tone={stream.status.alert ? "alert" : stream.status.running ? "running" : "none"}
-        size={7}
-      />
-      <h1 class="truncate font-semibold">{title}</h1>
+      <h1 class="truncate text-body font-semibold tracking-[-0.01em]">{title}</h1>
       {#if session?.workspace}
         <span class="hidden truncate font-mono text-small text-muted md:inline">
           <Path path={basename(session.workspace)} title={session.workspace} />
         </span>
       {/if}
-      {#if stream.connection !== "open"}
-        <Badge size="chrome">{machine.state.text}</Badge>
-      {/if}
     </div>
-    <div class="flex flex-none items-center gap-1.5">
-      <div class={segments} role="group" aria-label="Side panels">
-        <button
-          type="button"
-          class={segment}
-          aria-pressed={panel === "agents"}
-          onclick={() => (panel = panel === "agents" ? undefined : "agents")}
-        >
-          Agents
-        </button>
-        <button
-          type="button"
-          class={segment}
-          aria-pressed={panel === "changes"}
-          onclick={() => (panel = panel === "changes" ? undefined : "changes")}
-        >
-          Changes {#if stream.review?.fileCount}({stream.review.fileCount}){/if}
-        </button>
-        {#if selectedEntry}
-          <button
-            type="button"
-            class={segment}
-            aria-pressed={panel === "details"}
-            onclick={() => (panel = panel === "details" ? undefined : "details")}
-          >
-            Details
-          </button>
+    <div class="flex flex-none items-center gap-1">
+      {#if session}
+        <DisplayPopover {hiddenHooks} />
+      {/if}
+      <span class="flex flex-none items-center gap-1.5 px-1 text-small text-muted max-sm:hidden">
+        {#if stream.connection === "open"}
+          <span class="inline-flex items-center gap-1.5 font-medium text-live-ink">
+            <Dot tone="open" size={6} />Live
+          </span>
+          <span aria-hidden="true" class="text-control">·</span>
+          <span class="flex-none">{machine.label}</span>
+        {:else}
+          <Badge size="chrome">{machine.state.text}</Badge>
         {/if}
-      </div>
+      </span>
+      {#if session && status}
+        {@const tone = stream.status.alert ? "alert" : stream.status.running ? "running" : "idle"}
+        <Badge
+          variant={tone === "alert" ? "destructive" : tone === "running" ? "working" : "quiet"}
+          size="chrome"
+          class="max-w-52 min-w-0 flex-initial max-sm:hidden"
+          title={status}
+        >
+          <Dot {tone} /><span class="truncate">{status}</span>
+        </Badge>
+      {/if}
+      <Separator orientation="vertical" class="mx-0.5 h-4 bg-rule max-sm:hidden" />
+      <Button
+        variant="quiet"
+        icon="agents"
+        label="Agents ({stream.roster.agents.length})"
+        title="Agents"
+        tooltip
+        aria-pressed={panel === "agents"}
+        onclick={() => (panel = panel === "agents" ? undefined : "agents")}
+      >
+        <span class="text-small font-medium tabular-nums">{stream.roster.agents.length}</span>
+      </Button>
+      <Button
+        variant="quiet"
+        icon="diff"
+        label="Changes"
+        title="Changes"
+        tooltip
+        aria-pressed={panel === "changes"}
+        onclick={() => (panel = panel === "changes" ? undefined : "changes")}
+      >
+        {#if net && (net.Added || net.Removed)}
+          <span class="font-mono text-small font-medium tabular-nums max-sm:hidden">
+            <span class="text-positive">+{net.Added}</span>
+            <span class="text-negative">−{net.Removed}</span>
+          </span>
+        {:else if stream.review?.fileCount}
+          <span class="text-small font-medium tabular-nums max-sm:hidden"
+            >{stream.review.fileCount}</span
+          >
+        {/if}
+      </Button>
+      {#if selectedEntry}
+        <Button
+          variant="quiet"
+          size="sm"
+          aria-pressed={panel === "details"}
+          onclick={() => (panel = panel === "details" ? undefined : "details")}
+        >
+          Details
+        </Button>
+      {/if}
       {#if session}
         <Popover label="Session details" icon="info">
           <SessionInfo {session} {root} {status} alert={stream.status.alert} />
@@ -221,6 +294,8 @@
           owner={view.agent ?? "/root"}
           workspace={session?.workspace}
           jumps={stream.jumps}
+          onhiddenhooks={(count) => (hiddenHooks = count)}
+          onchanges={hasChanges ? openChanges : undefined}
           onselect={openDetails}
         />
         <ThreadDocks />
@@ -285,7 +360,11 @@
               />
             </div>
           {:else if panel === "changes"}
-            <DiffPanel review={stream.review} />
+            <DiffPanel
+              review={stream.review}
+              focusPath={focusChangePath}
+              onfocused={() => (focusChangePath = undefined)}
+            />
           {:else if panel === "details" && selectedEntry}
             <DetailsPanel
               entry={selectedEntry}
@@ -306,7 +385,16 @@
             </div>
           </Dialog>
         {:else}
-          <aside class="w-80 flex-none border-l border-rule bg-ground">
+          <aside
+            class={[
+              "flex-none border-l border-rule bg-surface",
+              panel === "agents"
+                ? "w-side"
+                : panel === "details"
+                  ? "w-[min(480px,40vw)]"
+                  : "w-[min(640px,46vw)]",
+            ]}
+          >
             {@render panelContent()}
           </aside>
         {/if}

@@ -9,8 +9,8 @@
   let { tone = "idle", size = 7, color }: { tone?: Tone; size?: number; color?: string } = $props();
   const tones: Record<Tone, string> = {
     idle: "bg-control",
-    open: "bg-accent",
-    running: "animate-blink bg-accent",
+    open: "bg-live",
+    running: "animate-blink bg-working",
     done: "bg-positive",
     alert: "bg-negative",
     warn: "bg-warning-ink",

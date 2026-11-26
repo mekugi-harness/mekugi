@@ -1,4 +1,12 @@
 <script lang="ts">
+  import CircleAlertIcon from "@lucide/svelte/icons/circle-alert";
+  import FilePenLineIcon from "@lucide/svelte/icons/file-pen-line";
+  import FileTextIcon from "@lucide/svelte/icons/file-text";
+  import GitCommitHorizontalIcon from "@lucide/svelte/icons/git-commit-horizontal";
+  import PaperclipIcon from "@lucide/svelte/icons/paperclip";
+  import SearchIcon from "@lucide/svelte/icons/search";
+  import TerminalIcon from "@lucide/svelte/icons/terminal";
+  import Trash2Icon from "@lucide/svelte/icons/trash-2";
   import Code from "./Code.svelte";
   import { duration } from "./format";
   import { breakable, highlightWithin } from "./highlight";
@@ -9,6 +17,7 @@
   import { stream } from "./stream.svelte";
   import Dot from "./ui/Dot.svelte";
   import Icon from "./ui/Icon.svelte";
+  import { Spinner } from "./ui/spinner";
   import { codeBlock } from "./ui/styles";
   import Tag from "./ui/Tag.svelte";
   import * as Trace from "./ui/trace";
@@ -209,12 +218,14 @@
   const commandLabel = (html: string) => (node: HTMLElement) => {
     if (html && verb === "Run") highlightWithin(node, "code", () => "bash", true);
   };
-  const verbs: Record<string, string> = {
+  const verbInk: Record<string, string> = {
     run: "text-kind-run",
     read: "text-kind-read",
     write: "text-kind-write",
     fail: "text-negative",
   };
+  const verbFamily = $derived(exited || actionFailed ? "fail" : (family(verb) ?? ""));
+  const verbLower = $derived(verb.toLowerCase());
   const changeCodes: Record<string, string> = { A: "text-positive", D: "text-negative" };
   // Details below the label use the card's full width, past the meta column.
   const extra = "col-[2/-1] min-w-0 max-sm:col-span-full";
@@ -241,10 +252,35 @@
         : value.pending
           ? "pending"
           : undefined}
-    class="text-small font-medium whitespace-nowrap max-sm:col-span-full {verbs[
-      family(verb) ?? ''
-    ] ?? 'text-muted'}"><Trace.Title>{value.skipped ? "Skipped" : verb}</Trace.Title></Trace.Line
+    class="gap-2 text-small font-medium whitespace-nowrap max-sm:col-span-full"
   >
+    {#if value.skipped || verb}
+      <Trace.Icon class={["size-3.5", verbInk[verbFamily] ?? "text-muted"]}>
+        {#if value.running}
+          <Spinner class="size-3.5 text-working-ink" aria-label="Running" />
+        {:else if verbFamily === "fail"}
+          <CircleAlertIcon />
+        {:else if verbLower === "search"}
+          <SearchIcon />
+        {:else if verbLower === "delete" || verbLower === "deleted"}
+          <Trash2Icon />
+        {:else if verbLower === "commit" || verbLower === "committed" || verbLower === "stage" || verbLower === "diff"}
+          <GitCommitHorizontalIcon />
+        {:else if verbLower === "attach" || verbLower === "attached" || verbLower === "attached skill"}
+          <PaperclipIcon />
+        {:else if verbFamily === "write"}
+          <FilePenLineIcon />
+        {:else if verbFamily === "read"}
+          <FileTextIcon />
+        {:else}
+          <TerminalIcon />
+        {/if}
+      </Trace.Icon>
+      <Trace.Title class={verbFamily === "fail" ? "text-negative" : "text-muted"}>
+        {value.skipped ? "Skipped" : verb}
+      </Trace.Title>
+    {/if}
+  </Trace.Line>
   <!-- Code in a tool label is the subject itself, not an aside: mono, no chip. -->
   <!-- Rows share their entry's columns; a row without status lends the status
        column to its label, so paths wrap only where the row runs out. -->
@@ -296,7 +332,8 @@
           <span class={scriptOpen ? "rotate-0" : "-rotate-90"}
             ><Icon name="chevron" size={12} /></span
           >
-          <span class="max-sm:hidden">{fold.name} <span class="text-tiny">{fold.lines}</span></span
+          <span class="max-sm:hidden"
+            >{fold.name} <span class="font-normal text-muted">{fold.lines}</span></span
           ><span class="hidden max-sm:inline">{fold.short}</span>
         </button>{/if}
       {#if outputDisclosure}<Trace.CollapsibleTrigger
@@ -304,12 +341,12 @@
           title={`Output: ${output}`}
           class={toggle}
         >
-          <span class="max-sm:hidden">Output <span class="text-tiny">{output}</span></span><span
-            class="hidden max-sm:inline">{lines(tailLines)}</span
-          >
+          <span class="max-sm:hidden"
+            >Output <span class="font-normal text-muted">{output}</span></span
+          ><span class="hidden max-sm:inline">{lines(tailLines)}</span>
         </Trace.CollapsibleTrigger>{/if}
       {#if value.running}
-        <span class="inline-flex items-center gap-1.5 text-accent"
+        <span class="inline-flex items-center gap-1.5 text-working-ink"
           ><Dot tone="running" size={6} />running</span
         >
       {:else if value.pending}

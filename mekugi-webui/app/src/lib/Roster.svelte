@@ -1,14 +1,16 @@
 <script lang="ts">
   import { doing, since, stateLabel, worked } from "./agents";
   import { atLeast, cost, duration, progressText, tokens } from "./format";
+  import { preferences } from "./preferences.svelte";
   import type { Agent, Counts, Entry, Roster } from "./protocol";
+  import ContextCard from "./ui/ai/ContextCard.svelte";
   import Dot, { type Tone } from "./ui/Dot.svelte";
-  import { emptyBox, skeleton } from "./ui/styles";
+  import { Skeleton } from "./ui/skeleton";
+  import { emptyBox } from "./ui/styles";
   import Tag from "./ui/Tag.svelte";
   import { Progress } from "./ui/progress";
   import { stream } from "./stream.svelte";
   import Wait from "./Wait.svelte";
-  import AutoPage from "./AutoPage.svelte";
 
   // The agents of the session, as a tree under Main. Selecting one shows its
   // own activity; now is the recorded clock, for timers. The saved review's
@@ -34,7 +36,6 @@
   } = $props();
 
   const agents = $derived(roster.agents);
-  let completing = $state(false);
   const labels = $derived(new Map(agents.map((agent) => [agent.name, agent.label])));
   const known = (c?: Counts | null): c is Counts => !!c && c.Added >= 0 && c.Removed >= 0;
   const changes = (agent: Agent) =>
@@ -98,9 +99,13 @@
     idle: "hollow",
     paused: "hollow",
   };
-  const tallyInk: Record<string, string> = { working: "text-accent", error: "text-negative" };
+  const tallyInk: Record<string, string> = { working: "text-working-ink", error: "text-negative" };
   const stateInk: Record<string, string> = { working: "text-ink", error: "text-negative" };
   const sub = "pl-4 text-small leading-[18px]";
+  const contextPct = (agent: Agent) =>
+    agent.context != null && agent.window
+      ? Math.min(100, Math.round((agent.context / agent.window) * 100))
+      : undefined;
 
   // An agent that is not working keeps its card to three rows: its values
   // share one line, and the rest show while the card is focused or selected.
@@ -146,7 +151,7 @@
 </div>
 {#if whole.Added || whole.Removed || totals.input || totals.cost}
   <div
-    class="mt-2 flex flex-wrap gap-x-3 gap-y-1 rounded-control border border-rule bg-raised/60 px-2.5 py-1.5 text-small tabular-nums"
+    class="mt-2 flex flex-wrap gap-x-3 gap-y-1 rounded-control bg-raised/75 px-2.5 py-1.5 text-small tabular-nums"
   >
     {#if whole.Added || whole.Removed}{@render changed(
         whole.Added,
@@ -164,9 +169,10 @@
 
 {#if loading}
   <div class="mt-3.5 grid gap-3.5" aria-busy="true" aria-label="Loading agents">
-    {#each [64, 48] as width, i (i)}<div class="{skeleton} h-[18px]" style:width="{width}%">
-        &nbsp;
-      </div>{/each}
+    {#each [64, 48] as width, i (i)}<Skeleton
+        class="h-[18px] bg-active"
+        style="width: {width}%"
+      />{/each}
   </div>
 {:else if agents.length}
   <ul class="-mx-2.5 mt-2">
@@ -191,8 +197,8 @@
             "group/card relative grid w-full min-w-0 gap-1 rounded-card px-2.5 py-2 text-left transition-colors pointer-coarse:py-[11px]",
             agent.context != null && agent.window && "pb-3 pointer-coarse:pb-[13px]",
             agent.name === selected
-              ? "bg-accent-tint ring-1 ring-accent/25 ring-inset"
-              : !agent.nonAttachable && "hover:bg-raised",
+              ? "bg-accent-tint"
+              : !agent.nonAttachable && "hover:bg-raised/80",
           ]}
           disabled={agent.nonAttachable}
           title={agent.nonAttachable ? "Interactive view unavailable" : undefined}
@@ -207,7 +213,7 @@
             >
             {#if agent.role}<Tag {color}>{agent.role}</Tag>{/if}
             {#if time !== undefined}<span
-                class="ml-auto pl-2 text-small whitespace-nowrap text-muted tabular-nums"
+                class="ml-auto pl-2 font-mono text-small whitespace-nowrap text-muted tabular-nums"
                 title="Time spent working">{duration(time)}</span
               >{/if}
           </span>
@@ -223,7 +229,7 @@
               />
             {:else if what}
               <span class="sr-only">Working:</span>
-              <span class={["font-medium", what.failed ? "text-negative" : "text-accent"]}
+              <span class={["font-medium", what.failed ? "text-negative" : "text-working-ink"]}
                 >{what.verb}</span
               >
               {#if what.html}<span>{@html what.html}</span>{/if}
@@ -233,59 +239,106 @@
                 >{/if}
             {/if}
           </span>
-          <span class="{sub} flex items-start gap-3 tabular-nums not-has-[>:first-child>*]:hidden">
+          {#if preferences.telemetry !== "minimal"}
             <span
-              class={[
-                "flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-0.5",
-                compact && `max-h-[18px] overflow-hidden ${unclamped}`,
-              ]}
-              {@attach compact ? clip(agent) : undefined}
+              class="{sub} flex items-start gap-3 tabular-nums not-has-[>:first-child>*]:hidden"
             >
-              {#if edits.Added || edits.Removed}{@render changed(
-                  edits.Added,
-                  edits.Removed,
-                  "Lines this agent changed",
-                )}{/if}
-              {#if agent.inputTokens != null}{@render metric(
-                  atLeast(tokens(agent.inputTokens), agent.usagePartial),
-                  "in",
-                  "Input tokens",
-                )}{@render metric(
-                  atLeast(tokens(agent.outputTokens ?? 0), agent.usagePartial),
-                  "out",
-                  "Output tokens",
-                )}{/if}
-              {#if agent.cost != null}<span class="text-ink" title="Cost"
-                  >{atLeast(cost(agent.cost), agent.costPartial)}</span
-                >{/if}
-              {#if agent.turns}{@render metric(String(agent.turns), unit(agent.turns, "turn"))}{/if}
-              {#if agent.roundtrips}{@render metric(
-                  String(agent.roundtrips),
-                  unit(agent.roundtrips, "round trip"),
-                )}{/if}
-              {#if agent.skills?.length}{@render metric(
-                  String(agent.skills.length),
-                  unit(agent.skills.length, "skill"),
-                  agent.skills.join(", "),
-                )}{/if}
-              {#each agent.items ?? [] as item, i (i)}<span class="text-muted">{item}</span>{/each}
-              {#if agent.context != null}<span class="whitespace-nowrap" title="Context used"
-                  ><span class="text-ink">{tokens(agent.context)}</span>
-                  <span class="text-muted"
-                    >{agent.window ? `of ${tokens(agent.window)} context` : "context"}</span
-                  ></span
+              <span
+                class={[
+                  preferences.telemetry === "compact" && !compact
+                    ? "mt-0.5 grid min-w-0 flex-1 grid-cols-2 gap-x-3 gap-y-1"
+                    : "flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-0.5",
+                  compact && `max-h-[18px] overflow-hidden ${unclamped}`,
+                ]}
+                {@attach compact ? clip(agent) : undefined}
+              >
+                {#if edits.Added || edits.Removed}{@render changed(
+                    edits.Added,
+                    edits.Removed,
+                    "Lines this agent changed",
+                  )}{/if}
+                {#if agent.inputTokens != null}{@render metric(
+                    atLeast(tokens(agent.inputTokens), agent.usagePartial),
+                    "in",
+                    "Input tokens",
+                  )}{@render metric(
+                    atLeast(tokens(agent.outputTokens ?? 0), agent.usagePartial),
+                    "out",
+                    "Output tokens",
+                  )}{/if}
+                {#if agent.cost != null}<span class="text-ink" title="Cost"
+                    >{atLeast(cost(agent.cost), agent.costPartial)}</span
+                  >{/if}
+                {#if agent.turns}{@render metric(
+                    String(agent.turns),
+                    unit(agent.turns, "turn"),
+                  )}{/if}
+                {#if preferences.telemetry === "detailed"}
+                  {#if agent.roundtrips}{@render metric(
+                      String(agent.roundtrips),
+                      unit(agent.roundtrips, "round trip"),
+                    )}{/if}
+                  {#if agent.skills?.length}{@render metric(
+                      String(agent.skills.length),
+                      unit(agent.skills.length, "skill"),
+                      agent.skills.join(", "),
+                    )}{/if}
+                  {#each agent.items ?? [] as item, i (i)}<span class="text-muted">{item}</span
+                    >{/each}
+                {/if}
+                {#if agent.context != null}
+                  {@const pct = contextPct(agent)}
+                  {@const breakdown = [
+                    agent.inputTokens != null && {
+                      label: "Input",
+                      value: atLeast(tokens(agent.inputTokens), agent.usagePartial),
+                    },
+                    agent.inputTokens != null && {
+                      label: "Output",
+                      value: atLeast(tokens(agent.outputTokens ?? 0), agent.usagePartial),
+                    },
+                    agent.cost != null && {
+                      label: "Cost",
+                      value: atLeast(cost(agent.cost), agent.costPartial),
+                    },
+                    agent.turns && { label: "Turns", value: String(agent.turns) },
+                  ].filter((row): row is { label: string; value: string } => Boolean(row))}
+                  <ContextCard
+                    percent={pct}
+                    usedLabel={tokens(agent.context)}
+                    limitLabel={agent.window ? tokens(agent.window) : undefined}
+                    rows={breakdown}
+                  >
+                    <span class="whitespace-nowrap" title="Context used"
+                      >{#if pct !== undefined}<span class="text-ink">{pct}%</span>
+                        <span class="text-muted">·</span>{/if}
+                      <span class="text-ink">{tokens(agent.context)}</span>
+                      <span class="text-muted"
+                        >{agent.window ? `of ${tokens(agent.window)} context` : "context"}</span
+                      ></span
+                    >
+                  </ContextCard>
+                {/if}
+              </span>
+              <!-- Screen readers already read every value. -->
+              {#if compact && clipped[agent.name]}<span
+                  class="flex-none text-muted group-focus-visible/card:hidden group-aria-[current=true]/card:hidden"
+                  aria-hidden="true">+{clipped[agent.name]}</span
                 >{/if}
             </span>
-            <!-- Screen readers already read every value. -->
-            {#if compact && clipped[agent.name]}<span
-                class="flex-none text-muted group-focus-visible/card:hidden group-aria-[current=true]/card:hidden"
-                aria-hidden="true">+{clipped[agent.name]}</span
-              >{/if}
-          </span>
+          {/if}
           <!-- The context bar runs along the card's foot rather than taking a row. -->
           {#if agent.context != null && agent.window}
+            {@const pct = contextPct(agent) ?? 0}
             <Progress
-              class="pointer-events-none absolute inset-x-2.5 bottom-1 h-[3px] w-auto bg-active [&_[data-slot=progress-indicator]]:bg-accent"
+              class={[
+                "pointer-events-none absolute inset-x-2.5 bottom-1 h-[3px] w-auto bg-active",
+                pct >= 90
+                  ? "[&_[data-slot=progress-indicator]]:bg-negative"
+                  : pct >= 70
+                    ? "[&_[data-slot=progress-indicator]]:bg-working"
+                    : "[&_[data-slot=progress-indicator]]:bg-accent",
+              ]}
               value={Math.max(0, Math.min(agent.context, agent.window))}
               max={agent.window}
               aria-hidden="true"

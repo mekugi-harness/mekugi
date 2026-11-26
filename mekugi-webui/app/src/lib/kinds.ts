@@ -78,6 +78,42 @@ export function hasDetails(entry: Entry, owner = "/root", labelClipped = false):
   );
 }
 
+const editVerbs = new Set([
+  "edit",
+  "edited",
+  "create",
+  "created",
+  "delete",
+  "deleted",
+  "move",
+  "moved",
+]);
+
+// An entry whose values are file-edit operations (or apply_patch edits) opens
+// the Changes pane instead of raw Activity details when saved changes exist.
+export function isEditEntry(entry: Entry): boolean {
+  const values = entry.values;
+  if (!values?.length) return false;
+  return values.every((value) => {
+    const verb = (value.verb ?? "").toLowerCase();
+    if (editVerbs.has(verb)) return true;
+    if (value.sources?.includes("apply_patch")) return true;
+    return false;
+  });
+}
+
+export function editEntryPaths(entry: Entry): string[] {
+  const out: string[] = [];
+  for (const value of entry.values ?? []) {
+    if (value.path && !out.includes(value.path)) out.push(value.path);
+    else if (value.label) {
+      const match = value.label.match(/^`([^`]+)`/);
+      if (match?.[1] && !out.includes(match[1])) out.push(match[1]);
+    }
+  }
+  return out;
+}
+
 // An image artifact has a bound source, never inferred from a path label.
 export function isView(entry: Entry): boolean {
   return (

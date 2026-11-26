@@ -1,51 +1,180 @@
 <script lang="ts">
+  import { tick, untrack } from "svelte";
+  import type { Attachment } from "svelte/attachments";
+  import { workspacePath } from "./diff";
   import DiffView from "./DiffView.svelte";
   import Path from "./Path.svelte";
-  import type { SavedReview } from "./protocol";
-  import { emptyBox } from "./ui/styles";
+  import type { ReviewedFile, SavedReview } from "./protocol";
+  import Button from "./ui/Button.svelte";
+  import { Skeleton } from "./ui/skeleton";
+  import { caret, emptyBox } from "./ui/styles";
 
   let {
     review,
+    focusPath,
+    onfocused,
   }: {
     review: SavedReview | null;
+    focusPath?: string;
+    onfocused?: () => void;
   } = $props();
 
-  let wrap = $state(false);
+  const wrap = false;
   const files = $derived(review?.files ?? []);
   const net = $derived(review?.counts.Net);
+
+  // Every file starts expanded by default; an IntersectionObserver preloads
+  // diff views as the reader scrolls near them so large reviews stay snappy.
+  let toggled = $state<Record<string, boolean>>({});
+  let nearViewport = $state<Record<string, boolean>>({});
+  let scroller = $state<HTMLElement>();
+  const open = (file: ReviewedFile) => toggled[file.key] ?? true;
+  const anyOpen = $derived(files.some((file) => open(file)));
+
+  function setAllOpen(nextOpen: boolean) {
+    const nextState: Record<string, boolean> = {};
+    for (const file of files) nextState[file.key] = nextOpen;
+    toggled = nextState;
+  }
+
+  let observer: IntersectionObserver | undefined;
+  const observedNodes = new Map<HTMLElement, string>();
+  $effect(() => {
+    const root = scroller ?? null;
+    const io = new IntersectionObserver(
+      (entries) => {
+        let changed = false;
+        const nextNear = { ...nearViewport };
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const key = (entry.target as HTMLElement).dataset.file;
+          if (key && !nextNear[key]) {
+            nextNear[key] = true;
+            changed = true;
+          }
+        }
+        if (changed) nearViewport = nextNear;
+      },
+      { root, rootMargin: "240px 0px" },
+    );
+    observer = io;
+    for (const node of observedNodes.keys()) io.observe(node);
+    return () => {
+      io.disconnect();
+      if (observer === io) observer = undefined;
+    };
+  });
+
+  const observeFile =
+    (key: string): Attachment<HTMLElement> =>
+    (node) => {
+      observedNodes.set(node, key);
+      observer?.observe(node);
+      return () => {
+        observedNodes.delete(node);
+        observer?.unobserve(node);
+      };
+    };
+
+  $effect(() => {
+    const target = focusPath;
+    if (!target || !files.length || !scroller) return;
+    const match = files.find(
+      (file) =>
+        file.path === target ||
+        workspacePath(file.path, review?.workspace ?? "") === target ||
+        file.path.endsWith(`/${target}`),
+    );
+    if (!match) return;
+    untrack(() => {
+      toggled[match.key] = true;
+      nearViewport = { ...nearViewport, [match.key]: true };
+      void tick().then(() => {
+        const el = [...scroller!.querySelectorAll<HTMLElement>("[data-file]")].find(
+          (node) => node.dataset.file === match.key,
+        );
+        el?.scrollIntoView({ block: "start", behavior: "smooth" });
+        onfocused?.();
+      });
+    });
+  });
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-  <div class="flex items-center justify-between gap-2 border-b border-rule px-3 py-2 text-small">
+  <div class="flex min-h-11 items-center gap-2 border-b border-rule px-4 py-2 text-small">
     <span class="font-semibold">
-      Changes {#if files.length}({files.length}){/if}
+      Changes {#if files.length}<span class="font-normal text-muted tabular-nums"
+          >({files.length})</span
+        >{/if}
     </span>
     {#if net}
-      <span class="tabular-nums">
+      <span class="font-mono tabular-nums">
         <span class="text-positive">+{net.Added}</span>
         <span class="text-negative">−{net.Removed}</span>
       </span>
     {/if}
+    {#if files.length > 1}
+      <Button
+        variant="quiet"
+        size="sm"
+        class="ml-auto text-muted"
+        onclick={() => setAllOpen(!anyOpen)}
+      >
+        {anyOpen ? "Collapse all" : "Expand all"}
+      </Button>
+    {/if}
   </div>
-  <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+  <div bind:this={scroller} class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
     {#if files.length}
-      <ul class="grid gap-3">
-        {#each files as file (file.key)}
-          <li class="rounded-card border border-rule bg-surface">
-            <div
-              class="flex items-center justify-between gap-2 border-b border-rule px-3 py-2 text-small"
+      <ul class="grid gap-2">
+        {#each files as file, index (file.key)}
+          {@const isOpen = open(file)}
+          {@const ready = nearViewport[file.key] || index < 2}
+          <li data-file={file.key} {@attach observeFile(file.key)}>
+            <details
+              class="group/disclosure"
+              open={isOpen}
+              ontoggle={(e) => {
+                const now = (e.currentTarget as HTMLDetailsElement).open;
+                if (now !== open(file)) toggled[file.key] = now;
+                if (now && !nearViewport[file.key])
+                  nearViewport = { ...nearViewport, [file.key]: true };
+              }}
             >
-              <span class="min-w-0 truncate font-mono font-medium"><Path path={file.path} /></span>
-              <span class="flex-none tabular-nums">
-                <span class="text-positive">+{file.counts.Added}</span>
-                <span class="text-negative">−{file.counts.Removed}</span>
-              </span>
-            </div>
-            {#each file.chunks as chunk (chunk.Key)}
-              <div class="p-2">
-                <DiffView file={chunk.Review} workspace={review?.workspace ?? ""} {wrap} />
-              </div>
-            {/each}
+              <summary
+                class="flex min-h-9 cursor-pointer items-center gap-2 rounded-control bg-raised/60 px-2.5 py-1 text-small transition-colors hover:bg-active/80 {caret}"
+              >
+                <span class="min-w-0 flex-1 truncate font-mono text-code font-medium"
+                  ><Path path={workspacePath(file.path, review?.workspace ?? "")} /></span
+                >
+                <span class="flex-none font-mono tabular-nums">
+                  <span class={file.counts.Added ? "text-positive" : "text-muted"}
+                    >+{file.counts.Added}</span
+                  >
+                  <span class={file.counts.Removed ? "text-negative" : "text-muted"}
+                    >−{file.counts.Removed}</span
+                  >
+                </span>
+              </summary>
+              {#if isOpen}
+                <div class="pb-1">
+                  {#if ready}
+                    {#each file.chunks as chunk (chunk.Key)}
+                      <DiffView file={chunk.Review} workspace={review?.workspace ?? ""} {wrap} />
+                    {/each}
+                  {:else}
+                    <div
+                      class="mt-1.5 grid gap-1.5 rounded-card bg-raised p-3"
+                      aria-label="Loading diff"
+                    >
+                      <Skeleton class="h-3.5 w-3/4 bg-active" />
+                      <Skeleton class="h-3.5 w-1/2 bg-active" />
+                      <Skeleton class="h-3.5 w-5/6 bg-active" />
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+            </details>
           </li>
         {/each}
       </ul>

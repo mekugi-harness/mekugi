@@ -40,7 +40,7 @@
       <Alert class="mb-2">{error}</Alert>
     {/if}
     {#if queued.length}
-      <div class="rounded-control border border-rule bg-raised px-3 py-2 text-small">
+      <div class="rounded-float bg-raised px-3.5 py-2.5 text-small shadow-xs">
         <p class="font-medium text-muted">Queued ({queued.length})</p>
         <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
         <div

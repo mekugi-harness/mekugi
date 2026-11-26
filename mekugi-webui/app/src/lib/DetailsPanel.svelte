@@ -6,6 +6,7 @@
   import { stream } from "./stream.svelte";
   import { errorText } from "./transport";
   import Button from "./ui/Button.svelte";
+  import { Skeleton } from "./ui/skeleton";
   import { codeBlock } from "./ui/styles";
 
   let {
@@ -43,15 +44,18 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-  <div class="flex items-center justify-between gap-2 border-b border-rule px-3 py-2">
-    <h2 class="truncate font-semibold">{entry.kind ?? "Details"}</h2>
-    <Button variant="quiet" icon="close" label="Close details" onclick={onclose} />
+  <div class="flex min-h-9 items-center justify-between gap-2 bg-raised/50 pr-1.5 pl-4">
+    <h2 class="truncate text-small font-medium text-muted">{entry.kind ?? "Details"}</h2>
+    <Button variant="quiet" size="sm" icon="close" label="Close details" onclick={onclose} />
   </div>
   <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3 text-small">
     {#if error}
       <Alert>{error}</Alert>
     {:else if loading}
-      <p class="text-muted" role="status">Loading item details…</p>
+      <div class="grid gap-2" role="status" aria-busy="true" aria-label="Loading item details">
+        <Skeleton class="h-4 w-3/4 bg-active" />
+        <Skeleton class="h-24 w-full bg-active" />
+      </div>
     {:else if item}
       {#if item.type === "commandExecution"}
         <p class="mb-2 font-mono text-code text-ink">{item.command}</p>

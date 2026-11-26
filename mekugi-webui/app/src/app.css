@@ -9,24 +9,37 @@
    reserved for data (tool kinds, diff counts, agent roles, failures, and live pulse). */
 :root {
   color-scheme: light;
-  --ground: #f5f4f7;
+  /* Washi Light (default light palette): warm paper shell, crisp sheet,
+     disciplined semantic chroma with >= 4.5:1 text contrast. */
+  --ground: #f2f1ec;
   --surface: #ffffff;
-  --raised: #f4f3f7;
-  --active: #eae8f0;
-  --border: #e3e1ea;
-  --rule: #eeedf4;
-  --control: #cdc9d8;
-  --text: #14131a;
-  --muted: #5d5b68;
-  --primary: #14131a;
+  --raised: #f5f4ef;
+  --active: #eae8e1;
+  --border: #e2dfd7;
+  --rule: #eceae3;
+  --control: #ccc8bd;
+  --text: #16161a;
+  --muted: #5b5a63;
+  --primary: #5b44d4;
   --on-primary: #ffffff;
-  --accent: #6842c2;
-  --accent-tint: #f2eefb;
-  --accent-ink: #5a35b5;
-  --selection: #d9cdf5;
-  --kind-run: #6842c2;
-  --kind-read: #2563a8;
-  --kind-write: #8a5a06;
+  --accent: #5b44d4;
+  --accent-tint: #efebfd;
+  --accent-ink: #4c36b8;
+  --on-accent: #ffffff;
+  --selection: #d9d2fa;
+  --live: #0f6d4c;
+  --live-tint: #e7f7f0;
+  --live-ink: #116648;
+  --working: #b47209;
+  --working-tint: #fef6e4;
+  --working-ink: #8a5505;
+  --on-working: #ffffff;
+  --kind-run: #0369a1;
+  --kind-run-tint: #e6f4fb;
+  --kind-read: #4338ca;
+  --kind-read-tint: #eceffe;
+  --kind-write: #0f6d4c;
+  --kind-write-tint: #e7f7f0;
   --marker-image: #9e3994;
   --positive: #18794e;
   --negative: #c4242a;
@@ -36,8 +49,11 @@
   --pill-warning-bg: #fffbeb;
   --pill-warning-ink: #92400e;
   --pill-warning-edge: #fde68a;
-  --pill-neutral-bg: #eae8f0;
+  --pill-neutral-bg: #eae8e1;
   --pill-neutral-ink: #35333d;
+  --swatch-sumi: #25221b;
+  --swatch-violet: #211a34;
+  --swatch-mono: #222226;
   /* Role colours are the terminal's; on light grounds they keep their hue at
      a depth that reads on white. */
   --role-depth: 56%;
@@ -45,13 +61,13 @@
   --sheet-shadow: 0 1px 3px rgba(20, 19, 26, 0.05), 0 0 0 1px rgba(20, 19, 26, 0.05);
   --composer-shadow: 0 2px 10px -2px rgba(20, 19, 26, 0.06), 0 1px 2px rgba(20, 19, 26, 0.04);
   --composer-shadow-focus:
-    0 6px 22px -6px rgba(104, 66, 194, 0.16), 0 1px 3px rgba(20, 19, 26, 0.06);
+    0 6px 22px -6px rgba(94, 71, 214, 0.16), 0 1px 3px rgba(20, 19, 26, 0.06);
   --topbar: 48px;
   /* shadcn-svelte reads the same palette as the application compositions. */
   --background: var(--surface);
   --foreground: var(--text);
   --secondary: var(--raised);
-  --radius: 0.5rem;
+  --radius: 0.4375rem;
 }
 
 /* Until the theme owner marks the root, the page is still empty: a dark
@@ -59,12 +75,80 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
     color-scheme: dark;
-    --ground: #0c0b10;
+    --ground: #0b0c0f;
   }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
+  /* Sumi Dark (default dark palette): 3-tier warm obsidian surfaces, emerald
+     Live, bamboo-gold Working, desaturated tool verbs, indigo focus/CTA. */
+  --ground: #0b0c0f;
+  --surface: #121318;
+  --raised: #191b22;
+  --active: #232631;
+  --border: #272a36;
+  --rule: #1e202b;
+  --control: #3b3f52;
+  --text: #e6e7ec;
+  --muted: #9397a8;
+  --primary: #6f5cf5;
+  --on-primary: #ffffff;
+  --accent: #8f7ef9;
+  --accent-tint: #1e1c30;
+  --accent-ink: #b4a7fa;
+  --on-accent: #ffffff;
+  --selection: #3f3673;
+  --live: #34d399;
+  --live-tint: #112921;
+  --live-ink: #6ee7b7;
+  --working: #e5a93c;
+  --working-tint: #2b2213;
+  --working-ink: #f2c97d;
+  --on-working: #16130b;
+  --kind-run: #56ccf2;
+  --kind-run-tint: #132c3b;
+  --kind-read: #a5b4fc;
+  --kind-read-tint: #1e223d;
+  --kind-write: #6ee7b7;
+  --kind-write-tint: #122d24;
+  --marker-image: #dc8fd3;
+  --positive: #56d8ad;
+  --negative: #f06a78;
+  --destructive: #fca5a5;
+  --pill-negative-bg: #2e161c;
+  --pill-negative-ink: #fca5ae;
+  --pill-warning-bg: #2b2213;
+  --pill-warning-ink: #f2c97d;
+  --pill-warning-edge: #4d3d22;
+  --pill-neutral-bg: #232631;
+  --pill-neutral-ink: #cdd0dc;
+  --role-depth: 100%;
+  --float-shadow: 0 16px 40px -4px rgba(0, 0, 0, 0.68), 0 0 0 1px #2b2f3d;
+  --sheet-shadow: 0 1px 4px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --composer-shadow:
+    0 4px 16px -4px rgba(0, 0, 0, 0.48), 0 1px 2px rgba(0, 0, 0, 0.32),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  --composer-shadow-focus:
+    0 8px 28px -6px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(124, 106, 247, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Midnight Violet chroma preset: classic violet-tinted surfaces. */
+:root[data-palette="violet"] {
+  --ground: #f5f4f7;
+  --raised: #f4f3f7;
+  --active: #eae8f0;
+  --border: #e3e1ea;
+  --rule: #eeedf4;
+  --control: #cdc9d8;
+  --accent: #6842c2;
+  --accent-tint: #f2eefb;
+  --accent-ink: #5a35b5;
+  --kind-run: #6842c2;
+  --kind-run-tint: #f2eefb;
+}
+:root[data-theme="dark"][data-palette="violet"] {
   --ground: #0c0b10;
   --surface: #131219;
   --raised: #1a1922;
@@ -72,34 +156,48 @@
   --border: #262435;
   --rule: #1e1c29;
   --control: #3a374f;
-  --text: #e2e1e6;
-  --muted: #9391a0;
-  --primary: #ecebf0;
-  --on-primary: #131219;
   --accent: #9472e8;
   --accent-tint: #231d36;
-  /* The cursor violet, lifted to read on its tint. */
   --accent-ink: #b69ef5;
-  --selection: #523d80;
-  --kind-run: #9b7bf0;
-  --kind-read: #6eb5e0;
-  --kind-write: #deb37c;
-  --marker-image: #dc8fd3;
-  --positive: #56d8ad;
-  --negative: #e06363;
-  --destructive: #fca5a5;
-  --pill-negative-bg: #2d181e;
-  --pill-negative-ink: #e88282;
-  --pill-warning-bg: #292117;
-  --pill-warning-ink: #deb37c;
-  --pill-warning-edge: #4a3b27;
-  --pill-neutral-bg: #252333;
-  --pill-neutral-ink: #c8c7cf;
-  --role-depth: 100%;
-  --float-shadow: 0 16px 40px -4px rgba(0, 0, 0, 0.65), 0 0 0 1px #2c293d;
-  --sheet-shadow: 0 1px 4px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.045);
-  --composer-shadow: 0 4px 16px -4px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --composer-shadow-focus: 0 8px 28px -6px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(148, 114, 232, 0.35);
+  --kind-run: #b69ef5;
+  --kind-run-tint: #231d36;
+}
+
+/* Zen Mono chroma preset: pure neutral graphite with restrained status dots. */
+:root[data-palette="mono"] {
+  --ground: #f3f3f3;
+  --raised: #f4f4f5;
+  --active: #e8e8ea;
+  --border: #dfdfe2;
+  --rule: #ececee;
+  --control: #c7c7cc;
+  --accent: #3f3f46;
+  --accent-tint: #ededef;
+  --accent-ink: #27272a;
+  --kind-run: #3f3f46;
+  --kind-run-tint: #ededef;
+  --kind-read: #52525b;
+  --kind-read-tint: #f1f1f3;
+  --kind-write: #3f3f46;
+  --kind-write-tint: #ededef;
+}
+:root[data-theme="dark"][data-palette="mono"] {
+  --ground: #0b0b0c;
+  --surface: #131315;
+  --raised: #1b1b1e;
+  --active: #26262a;
+  --border: #2a2a2f;
+  --rule: #202024;
+  --control: #3f3f46;
+  --accent: #a1a1aa;
+  --accent-tint: #232327;
+  --accent-ink: #e4e4e7;
+  --kind-run: #d4d4d8;
+  --kind-run-tint: #232327;
+  --kind-read: #a1a1aa;
+  --kind-read-tint: #1f1f23;
+  --kind-write: #d4d4d8;
+  --kind-write-tint: #232327;
 }
 
 @theme {
@@ -115,7 +213,7 @@
 
   --text-*: initial;
   --text-tiny: 11px;
-  --text-tiny--line-height: 18px;
+  --text-tiny--line-height: 16px;
   --text-small: 12px;
   --text-small--line-height: 16px;
   --text-xs: 12px;
@@ -180,9 +278,23 @@
   --color-accent: var(--accent);
   --color-accent-tint: var(--accent-tint);
   --color-accent-ink: var(--accent-ink);
+  --color-on-accent: var(--on-accent);
+  --color-live: var(--live);
+  --color-live-tint: var(--live-tint);
+  --color-live-ink: var(--live-ink);
+  --color-working: var(--working);
+  --color-working-tint: var(--working-tint);
+  --color-working-ink: var(--working-ink);
+  --color-on-working: var(--on-working);
+  --color-swatch-sumi: var(--swatch-sumi);
+  --color-swatch-violet: var(--swatch-violet);
+  --color-swatch-mono: var(--swatch-mono);
   --color-kind-run: var(--kind-run);
+  --color-kind-run-tint: var(--kind-run-tint);
   --color-kind-read: var(--kind-read);
+  --color-kind-read-tint: var(--kind-read-tint);
   --color-kind-write: var(--kind-write);
+  --color-kind-write-tint: var(--kind-write-tint);
   --color-marker-image: var(--marker-image);
   --color-positive: var(--positive);
   --color-negative: var(--negative);
@@ -443,7 +555,5 @@
 }
 
 .tool-operand {
-  border-radius: var(--radius-chip);
-  background: var(--raised);
-  padding: 1px 5px;
+  color: inherit;
 }
