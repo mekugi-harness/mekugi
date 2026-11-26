@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -51,11 +50,20 @@ func loadSchemaMethods(t *testing.T, schemaDir, filename string) map[string]bool
 
 func repoRootFromTest(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve caller path")
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "..", "..", ".."))
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "codex-rs", "app-server-protocol", "schema", "json")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("could not locate repo root from %s", dir)
+		}
+		dir = parent
+	}
 }
 
 func TestGoNativeProtocolMethodsMatchRustSchema(t *testing.T) {
