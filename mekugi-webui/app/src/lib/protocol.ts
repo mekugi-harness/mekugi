@@ -387,6 +387,7 @@ export type Agent = {
   workSince?: number;
   lastResponse?: number;
   cost?: number | null;
+  tps?: number | null;
   costPartial?: boolean;
   inputTokens?: number | null;
   outputTokens?: number | null;

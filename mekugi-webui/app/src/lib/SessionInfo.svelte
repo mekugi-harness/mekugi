@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { atLeast, cost, date, tokens } from "./format";
+  import { atLeast, cost, date, tokens, tps } from "./format";
   import Path from "./Path.svelte";
   import type { Agent, Session } from "./protocol";
   import Tag from "./ui/Tag.svelte";
@@ -35,6 +35,7 @@
             : undefined,
         ],
         ["Cost", root?.cost != null ? atLeast(cost(root.cost), root.costPartial) : undefined],
+        ["Throughput", root?.tps != null ? tps(root.tps) : undefined],
       ] as [string, string | undefined][]
     ).filter(([, value]) => value !== undefined),
   );

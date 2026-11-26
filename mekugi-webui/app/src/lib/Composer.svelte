@@ -81,6 +81,58 @@
   const stoppable = $derived(!!input?.stoppable || !!stream.activeTurnId);
   const canSend = $derived(!disabled && (!!text.trim() || !!items.length));
 
+  const SLASH_COMMANDS = [
+    { name: "/model", description: "Set the model (e.g. /model gpt-5)", insert: "/model " },
+    {
+      name: "/effort",
+      description: "Set reasoning effort (low, medium, high, xhigh)",
+      insert: "/effort ",
+    },
+    {
+      name: "/reasoning",
+      description: "Set reasoning effort (low, medium, high, xhigh)",
+      insert: "/reasoning ",
+    },
+    { name: "/tier", description: "Set service tier (standard, fast)", insert: "/tier " },
+    { name: "/fast", description: "Toggle fast service tier", insert: "/fast" },
+    { name: "/compact", description: "Compact conversation context", insert: "/compact" },
+    { name: "/rename", description: "Rename this thread", insert: "/rename " },
+    { name: "/archive", description: "Archive this thread", insert: "/archive" },
+  ];
+
+  let slashDismissed = $state(false);
+  let slashIndex = $state(0);
+
+  const slashQuery = $derived.by(() => {
+    if (!text.startsWith("/") || /\s/.test(text) || text.indexOf("/", 1) >= 0) return undefined;
+    return text.slice(1).toLowerCase();
+  });
+  const slashMatches = $derived.by(() => {
+    if (slashQuery === undefined || slashDismissed) return [];
+    if (!slashQuery) return SLASH_COMMANDS;
+    const prefix = SLASH_COMMANDS.filter((c) => c.name.slice(1).startsWith(slashQuery));
+    const substr = SLASH_COMMANDS.filter(
+      (c) => !c.name.slice(1).startsWith(slashQuery) && c.name.slice(1).includes(slashQuery),
+    );
+    return [...prefix, ...substr];
+  });
+
+  $effect(() => {
+    void slashQuery;
+    slashDismissed = false;
+    slashIndex = 0;
+  });
+
+  function pickSlash(cmd: (typeof SLASH_COMMANDS)[number]) {
+    text = cmd.insert;
+    slashDismissed = true;
+    void tick().then(() => {
+      if (!field) return;
+      field.focus();
+      field.setSelectionRange(text.length, text.length);
+    });
+  }
+
   async function send(
     overrideText?: string,
     overrideAttachments?: import("./protocol").Attachment[],
@@ -134,6 +186,36 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
+    if (slashMatches.length) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        slashIndex = (slashIndex + 1) % slashMatches.length;
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        slashDismissed = true;
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        pickSlash(slashMatches[slashIndex] ?? slashMatches[0]);
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !touch) {
+        const chosen = slashMatches[slashIndex] ?? slashMatches[0];
+        if (chosen && text.trim().toLowerCase() !== chosen.name) {
+          event.preventDefault();
+          pickSlash(chosen);
+          return;
+        }
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !touch) {
       event.preventDefault();
       if (canSend) void send(undefined, undefined, event.metaKey || event.ctrlKey);
@@ -143,6 +225,32 @@
 
 <div class="mx-auto w-full max-w-column px-4 pt-2 pb-4 max-sm:px-2 max-sm:pb-safe-2">
   {#if error}<Alert class="mb-2">{error}</Alert>{/if}
+  {#if slashMatches.length}
+    <div
+      role="listbox"
+      aria-label="Slash commands"
+      class="mb-1.5 max-h-56 overflow-y-auto rounded-card border border-border bg-surface p-1 shadow-sm"
+    >
+      {#each slashMatches as cmd, i (cmd.name)}
+        <button
+          type="button"
+          role="option"
+          aria-selected={i === slashIndex}
+          class={[
+            "flex w-full items-baseline justify-between gap-3 rounded-control px-2.5 py-1.5 text-left text-small",
+            i === slashIndex ? "bg-active text-ink" : "text-ink hover:bg-hover",
+          ]}
+          onmousedown={(e) => {
+            e.preventDefault();
+            pickSlash(cmd);
+          }}
+        >
+          <span class="font-mono font-medium">{cmd.name}</span>
+          <span class="truncate text-muted">{cmd.description}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
   <ComposerCard
     accepts={!disabled}
     onfiles={(files) => tray?.add(files)}

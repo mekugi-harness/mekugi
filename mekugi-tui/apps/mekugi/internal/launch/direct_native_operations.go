@@ -60,9 +60,9 @@ func (c *directNativeConnection) Send(ctx context.Context, _ sessionapi.NativeTa
 		c.focused = *op.Focused
 		c.mu.Unlock()
 	case op.Completion != nil:
-		c.handleCompletion(*op.Completion)
+		c.handleCompletion(ctx, *op.Completion)
 	case op.Menu != nil:
-		c.handleMenu(*op.Menu, op.Editor)
+		err = c.handleMenu(ctx, *op.Menu, op.Editor)
 	case op.Receipt != nil:
 		c.handleReceipt(*op.Receipt)
 	case op.SaveDraft != nil, op.Panel != nil, op.Details != nil, op.Notice != nil, op.Recovery != nil, op.Reference != nil, op.StopProcess != nil:
@@ -218,23 +218,31 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 			return errors.New("no active thread")
 		}
 		if rest == "" {
-			return errors.New("specify a model name, e.g. /model gpt-5")
+			return c.openModelMenu(ctx)
 		}
 		return c.wire.Call(ctx, "thread/settings/update", map[string]any{
 			"threadId": mainID,
 			"model":    rest,
 		}, nil)
-	case "/effort":
+	case "/effort", "/reasoning":
 		if mainID == "" {
 			return errors.New("no active thread")
 		}
 		if rest == "" {
-			return errors.New("specify a reasoning effort, e.g. /effort high")
+			return c.openEffortMenu(ctx)
 		}
 		return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-			"threadId":        mainID,
-			"reasoningEffort": rest,
+			"threadId": mainID,
+			"effort":   rest,
 		}, nil)
+	case "/tier":
+		if mainID == "" {
+			return errors.New("no active thread")
+		}
+		if rest == "" {
+			return c.openTierMenu(ctx)
+		}
+		return c.applyServiceTier(ctx, mainID, rest)
 	case "/fast":
 		if mainID == "" {
 			return errors.New("no active thread")
@@ -242,13 +250,10 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 		c.mu.Lock()
 		nextTier := "fast"
 		if c.tier == "fast" {
-			nextTier = "standard"
+			nextTier = ""
 		}
 		c.mu.Unlock()
-		return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-			"threadId":    mainID,
-			"serviceTier": nextTier,
-		}, nil)
+		return c.applyServiceTier(ctx, mainID, nextTier)
 	case "/side":
 		return c.startSide(ctx, rest)
 	case "/btw", "/one-off":
@@ -315,8 +320,8 @@ func (c *directNativeConnection) stepReasoningEffort(ctx context.Context, delta 
 	}
 	next := min(max(idx+delta, 0), len(levels)-1)
 	return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-		"threadId":        mainID,
-		"reasoningEffort": levels[next],
+		"threadId": mainID,
+		"effort":   levels[next],
 	}, nil)
 }
 

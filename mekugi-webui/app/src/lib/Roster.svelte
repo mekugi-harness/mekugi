@@ -1,6 +1,6 @@
 <script lang="ts">
   import { doing, since, stateLabel, worked } from "./agents";
-  import { atLeast, cost, duration, progressText, tokens } from "./format";
+  import { atLeast, cost, duration, progressText, tokens, tps } from "./format";
   import { preferences } from "./preferences.svelte";
   import type { Agent, Counts, Entry, Roster } from "./protocol";
   import ContextCard from "./ui/ai/ContextCard.svelte";
@@ -274,6 +274,9 @@
                 {#if agent.cost != null}<span class="text-ink" title="Cost"
                     >{atLeast(cost(agent.cost), agent.costPartial)}</span
                   >{/if}
+                {#if agent.tps != null}<span class="text-muted" title="Output throughput"
+                    >{tps(agent.tps)}</span
+                  >{/if}
                 {#if agent.turns}{@render metric(
                     String(agent.turns),
                     unit(agent.turns, "turn"),
@@ -305,6 +308,10 @@
                     agent.cost != null && {
                       label: "Cost",
                       value: atLeast(cost(agent.cost), agent.costPartial),
+                    },
+                    agent.tps != null && {
+                      label: "Throughput",
+                      value: tps(agent.tps),
                     },
                     agent.turns && { label: "Turns", value: String(agent.turns) },
                   ].filter((row): row is { label: string; value: string } => Boolean(row))}

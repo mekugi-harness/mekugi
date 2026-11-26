@@ -43,7 +43,8 @@ globalThis.addEventListener = () => {};
 
 const { ThreadControl, serverRequestToPrompt, toNativeUserInput } =
   await import("./semantic.svelte.ts");
-const { Stream } = await import("./stream.svelte.ts");
+const { Stream, estimateCostUsd, itemToEntry, unwrapShellCommand } =
+  await import("./stream.svelte.ts");
 
 function fakeMachine(handlers = {}) {
   const notificationListeners = new Set();
@@ -392,4 +393,245 @@ test("Stream hydrates via thread/resume and applies live ServerNotification delt
   assert.ok(
     machine.requests.some((r) => r.method === "thread/unsubscribe" && r.params.threadId === "t1"),
   );
+});
+
+test("unwrapShellCommand strips shell -lc/-c wrappers across quote styles", () => {
+  assert.equal(unwrapShellCommand("/home/linuxbrew/.linuxbrew/bin/bash -lc pwd"), "pwd");
+  assert.equal(unwrapShellCommand("/bin/bash -lc 'rm -rf /tmp/foo'"), "rm -rf /tmp/foo");
+  assert.equal(unwrapShellCommand("bash -c 'echo '\\''hi'\\'''"), "echo 'hi'");
+  assert.equal(unwrapShellCommand('zsh -lc "echo \\"$HOME\\""'), 'echo "$HOME"');
+  assert.equal(unwrapShellCommand("git status -sb"), "git status -sb");
+});
+
+test("itemToEntry maps commandExecution with bash lang and fileChange as per-file op rows", () => {
+  const cmdEntry = itemToEntry(
+    {
+      id: "c1",
+      type: "commandExecution",
+      command: "/bin/bash -lc 'git diff --stat'",
+      cwd: "/repo",
+      status: "completed",
+      exitCode: 0,
+      durationMs: 42,
+      aggregatedOutput: "a.ts | 2 +-\n",
+    },
+    1,
+    "turn-1",
+    "/root",
+  );
+  assert.equal(cmdEntry.kind, "tool");
+  assert.equal(cmdEntry.values?.[0]?.kind, "op");
+  assert.equal(cmdEntry.values?.[0]?.verb, "Run");
+  assert.equal(cmdEntry.values?.[0]?.lang, "bash");
+  assert.equal(cmdEntry.values?.[0]?.code, "git diff --stat");
+
+  const editEntry = itemToEntry(
+    {
+      id: "f1",
+      type: "fileChange",
+      status: "completed",
+      changes: [
+        { path: "a.ts", kind: { type: "add" }, diff: "+line1\n+line2\n" },
+        {
+          path: "b.ts",
+          kind: { type: "update", move_path: "c.ts" },
+          diff: "@@ -1 +1 @@\n-old\n+new\n",
+        },
+        { path: "d.ts", kind: { type: "delete" }, diff: "-gone\n" },
+      ],
+    },
+    2,
+    "turn-1",
+    "/root",
+  );
+  assert.equal(editEntry.values?.length, 3);
+  assert.equal(editEntry.values?.[0]?.verb, "Create");
+  assert.equal(editEntry.values?.[0]?.label, "+2 −0");
+  assert.equal(editEntry.values?.[0]?.lang, "diff");
+  assert.equal(editEntry.values?.[1]?.verb, "Move");
+  assert.equal(editEntry.values?.[1]?.path, "b.ts => c.ts");
+  assert.equal(editEntry.values?.[1]?.label, "+1 −1");
+  assert.equal(editEntry.values?.[2]?.verb, "Delete");
+  assert.equal(editEntry.values?.[2]?.label, "+0 −1");
+});
+
+test("turn/completed with summary itemsView preserves existing turn items and tracks cost & TPS", async () => {
+  const machine = fakeMachine({
+    "thread/resume": () => ({
+      thread: {
+        id: "t-summary",
+        preview: "hi",
+        cwd: "/repo",
+        createdAt: 1700000000,
+        status: { type: "idle" },
+        turns: [],
+      },
+      model: "gpt-6.2-sol",
+      reasoningEffort: "medium",
+      serviceTier: null,
+    }),
+    "thread/subtree/list": () => ({ data: [] }),
+    "thread/changes/read": () => ({
+      threadId: "t-summary",
+      workspace: "/repo",
+      totalAdditions: 0,
+      totalDeletions: 0,
+      changes: [],
+      files: [],
+    }),
+  });
+  const s = new Stream();
+  s.connect("t-summary", machine);
+  await new Promise((r) => setTimeout(r, 15));
+
+  machine.emitNotification({
+    method: "turn/started",
+    params: {
+      threadId: "t-summary",
+      turn: { id: "turn-1", status: "inProgress", items: [], itemsView: "full", error: null },
+    },
+  });
+  machine.emitNotification({
+    method: "item/completed",
+    params: {
+      threadId: "t-summary",
+      turnId: "turn-1",
+      item: { id: "u1", type: "userMessage", content: [{ type: "text", text: "Run pwd" }] },
+    },
+  });
+  machine.emitNotification({
+    method: "item/completed",
+    params: {
+      threadId: "t-summary",
+      turnId: "turn-1",
+      item: {
+        id: "c1",
+        type: "commandExecution",
+        command: "/bin/bash -lc pwd",
+        cwd: "/repo",
+        status: "completed",
+        exitCode: 0,
+        aggregatedOutput: "/repo\n",
+      },
+    },
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  machine.emitNotification({
+    method: "thread/tokenUsage/updated",
+    params: {
+      threadId: "t-summary",
+      tokenUsage: {
+        total: {
+          totalTokens: 1500,
+          inputTokens: 1000,
+          cachedInputTokens: 200,
+          cacheWriteInputTokens: 0,
+          outputTokens: 500,
+          reasoningOutputTokens: 0,
+        },
+        last: {
+          totalTokens: 1500,
+          inputTokens: 1000,
+          cachedInputTokens: 200,
+          cacheWriteInputTokens: 0,
+          outputTokens: 500,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: 272000,
+      },
+    },
+  });
+  machine.emitNotification({
+    method: "turn/completed",
+    params: {
+      threadId: "t-summary",
+      turn: {
+        id: "turn-1",
+        status: "completed",
+        itemsView: "summary",
+        items: [{ id: "a1", type: "agentMessage", text: "Done." }],
+        error: null,
+      },
+    },
+  });
+
+  assert.equal(s.main.order.length, 3);
+  assert.equal(s.main.entries[s.main.order[0]].kind, "user");
+  assert.equal(s.main.entries[s.main.order[1]].kind, "tool");
+  assert.equal(s.main.entries[s.main.order[2]].kind, "assistant");
+
+  const root = s.roster.agents[0];
+  assert.ok(root.cost != null && root.cost > 0);
+  assert.ok(root.tps != null && root.tps > 0);
+  assert.ok(root.work != null && root.work > 0);
+  s.close();
+});
+
+test("estimateCostUsd computes standard, fast, cached, and unknown model prices", () => {
+  const std = estimateCostUsd("gpt-6.2-sol", undefined, {
+    inputTokens: 200_000,
+    cachedInputTokens: 100_000,
+    outputTokens: 100_000,
+  });
+  // gpt-6.2-sol standard (<=272k): $2/1M uncached (0.2), $0.1/1M cached (0.01), $10/1M output (1.0)
+  assert.ok(Math.abs(std - (0.2 + 0.01 + 1.0)) < 1e-9);
+  const fast = estimateCostUsd("openai/gpt-6.2-sol", "fast", {
+    inputTokens: 200_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  });
+  assert.ok(Math.abs(fast - 0.8) < 1e-9);
+  const longCtx = estimateCostUsd("gpt-6.2-sol", undefined, {
+    inputTokens: 300_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  });
+  // Long context (>272k): $4/1M input -> $1.20
+  assert.ok(Math.abs(longCtx - 1.2) < 1e-9);
+  assert.equal(
+    estimateCostUsd("unknown-model", undefined, { inputTokens: 100, outputTokens: 50 }),
+    undefined,
+  );
+});
+
+test("ThreadControl handles slash commands locally instead of forwarding to turn/start", async () => {
+  const machine = fakeMachine();
+  const control = new ThreadControl();
+  control.connect("t-slash", machine);
+
+  assert.equal(await control.sendInput("/compact", []), undefined);
+  assert.equal(await control.sendInput("/model gpt-6.2-sol", []), undefined);
+  assert.equal(await control.sendInput("/effort high", []), undefined);
+  assert.equal(await control.sendInput("/reasoning low", []), undefined);
+  assert.equal(await control.sendInput("/tier fast", []), undefined);
+  assert.equal(await control.sendInput("/tier standard", []), undefined);
+  assert.equal(await control.sendInput("/rename New Title", []), undefined);
+  assert.equal(await control.sendInput("/archive", []), undefined);
+  assert.match(await control.sendInput("/model", []), /Specify a model name/);
+
+  assert.equal(
+    machine.requests.some((r) => r.method === "turn/start"),
+    false,
+  );
+  assert.ok(machine.requests.some((r) => r.method === "thread/compact/start"));
+  assert.ok(
+    machine.requests.some(
+      (r) => r.method === "thread/settings/update" && r.params.model === "gpt-6.2-sol",
+    ),
+  );
+  assert.ok(
+    machine.requests.some(
+      (r) => r.method === "thread/settings/update" && r.params.effort === "high",
+    ),
+  );
+  assert.ok(
+    machine.requests.some(
+      (r) => r.method === "thread/settings/update" && r.params.serviceTier === null,
+    ),
+  );
+  assert.ok(
+    machine.requests.some((r) => r.method === "thread/name/set" && r.params.name === "New Title"),
+  );
+  assert.ok(machine.requests.some((r) => r.method === "thread/archive"));
+  control.release();
 });

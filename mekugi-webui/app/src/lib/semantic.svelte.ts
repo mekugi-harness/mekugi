@@ -408,6 +408,10 @@ export class ThreadControl {
     const id = this.#id;
     const machine = this.#machine;
     if (!id || !machine) return "Open a thread on an execution machine first.";
+    if (!attachments.length) {
+      const slash = await this.#trySlashCommand(text, options.signal);
+      if (slash.handled) return slash.error;
+    }
     const input = toNativeUserInput(text, attachments);
     if (!input.length) return "Write a message or attach something.";
     this.pending++;
@@ -439,6 +443,64 @@ export class ThreadControl {
       return message;
     } finally {
       this.pending = Math.max(0, this.pending - 1);
+    }
+  }
+
+  async #trySlashCommand(
+    raw: string,
+    signal?: AbortSignal,
+  ): Promise<{ handled: boolean; error?: string }> {
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith("/")) return { handled: false };
+    const spaceIdx = trimmed.search(/\s/);
+    const cmd = (spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed).toLowerCase();
+    const rest = spaceIdx >= 0 ? trimmed.slice(spaceIdx + 1).trim() : "";
+    if (cmd.indexOf("/", 1) >= 0) return { handled: false };
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || !machine)
+      return { handled: true, error: "Open a thread on an execution machine first." };
+    switch (cmd) {
+      case "/compact":
+        try {
+          await machine.request("thread/compact/start", { threadId: id }, { signal });
+          return { handled: true };
+        } catch (err) {
+          return { handled: true, error: errorText(err, true) };
+        }
+      case "/model":
+        if (!rest) return { handled: true, error: "Specify a model name, e.g. /model gpt-5" };
+        return { handled: true, error: await this.updateSettings({ model: rest }) };
+      case "/effort":
+      case "/reasoning":
+        if (!rest)
+          return { handled: true, error: "Specify reasoning effort (low, medium, high, xhigh)" };
+        return {
+          handled: true,
+          error: await this.updateSettings({ effort: rest as ReasoningEffort }),
+        };
+      case "/tier": {
+        if (!rest) return { handled: true, error: "Specify service tier (standard, fast)" };
+        const lower = rest.toLowerCase();
+        const tier = lower === "standard" || lower === "default" || lower === "none" ? null : rest;
+        return { handled: true, error: await this.updateSettings({ serviceTier: tier }) };
+      }
+      case "/fast": {
+        const next = stream.session?.serviceTier === "fast" ? null : "fast";
+        return { handled: true, error: await this.updateSettings({ serviceTier: next }) };
+      }
+      case "/rename":
+        if (!rest) return { handled: true, error: "Specify a thread title, e.g. /rename My task" };
+        return { handled: true, error: await this.rename(rest) };
+      case "/archive":
+        try {
+          await machine.request("thread/archive", { threadId: id }, { signal });
+          return { handled: true };
+        } catch (err) {
+          return { handled: true, error: errorText(err, true) };
+        }
+      default:
+        return { handled: false };
     }
   }
 

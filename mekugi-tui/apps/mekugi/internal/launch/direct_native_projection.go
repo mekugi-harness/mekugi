@@ -249,20 +249,42 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 		var p struct {
 			ThreadID        string `json:"threadId"`
 			Model           string `json:"model"`
+			Effort          string `json:"effort"`
 			ReasoningEffort string `json:"reasoningEffort"`
 			ServiceTier     string `json:"serviceTier"`
+			ThreadSettings  *struct {
+				Model       string  `json:"model"`
+				Effort      *string `json:"effort"`
+				ServiceTier *string `json:"serviceTier"`
+			} `json:"threadSettings"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
 			if p.ThreadID == "" || p.ThreadID == c.mainThread {
-				if p.Model != "" {
-					c.model = p.Model
-				}
-				if p.ReasoningEffort != "" {
-					c.effort = p.ReasoningEffort
-				}
-				if p.ServiceTier != "" {
-					c.tier = p.ServiceTier
+				if s := p.ThreadSettings; s != nil {
+					if s.Model != "" {
+						c.model = s.Model
+					}
+					if s.Effort != nil {
+						c.effort = *s.Effort
+					} else {
+						c.effort = ""
+					}
+					if s.ServiceTier != nil {
+						c.tier = *s.ServiceTier
+					} else {
+						c.tier = ""
+					}
+				} else {
+					if p.Model != "" {
+						c.model = p.Model
+					}
+					if effort := firstNonEmpty(p.Effort, p.ReasoningEffort); effort != "" {
+						c.effort = effort
+					}
+					if p.ServiceTier != "" {
+						c.tier = p.ServiceTier
+					}
 				}
 				c.publishLocked()
 			}
@@ -633,6 +655,7 @@ func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns
 		}
 	}
 	for _, rec := range c.items[threadID] {
+		rec.entry.Restored = true
 		if prevSeq, ok := preservedSeq[rec.id]; ok {
 			rec.seq = prevSeq
 			rec.entry.Seq = prevSeq
@@ -713,19 +736,42 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		}
 		refreshProjectedValues(rec)
 	case "commandExecution":
-		command := decodeJSONString(fields["command"])
+		command := unwrapDirectShellCommand(decodeJSONString(fields["command"]))
 		status := decodeJSONString(fields["status"])
+		cwd := decodeJSONString(fields["cwd"])
 		agg := decodeJSONString(fields["aggregatedOutput"])
 		if agg != "" {
 			rec.output = agg
 		}
+		running := status == "inProgress"
+		exited := status != "" && !running
+		var exitCode int
+		if raw, ok := fields["exitCode"]; ok && len(raw) > 0 {
+			_ = json.Unmarshal(raw, &exitCode)
+		}
+		var durationMs int64
+		if raw, ok := fields["durationMs"]; ok && len(raw) > 0 {
+			_ = json.Unmarshal(raw, &durationMs)
+		}
+		var tail []string
+		if rec.output != "" {
+			trimmed := strings.TrimSuffix(rec.output, "\n")
+			tail = strings.Split(trimmed, "\n")
+		}
 		val := activity.Value{
 			Content: activityfeed.Content{
-				Kind: "op",
-				Verb: "Run",
-				Code: command,
-				Body: rec.output,
+				Kind:   "op",
+				Verb:   "Run",
+				Code:   command,
+				Lang:   "bash",
+				Fenced: strings.Contains(command, "\n"),
 			},
+			Workdir:  cwd,
+			Running:  running,
+			Exited:   exited,
+			ExitCode: exitCode,
+			Duration: time.Duration(durationMs) * time.Millisecond,
+			Tail:     tail,
 		}
 		if rec.output != "" {
 			val.Output = 1
@@ -737,32 +783,47 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		rec.entry.Values = []activity.Value{val}
 		activity.Identify(rec.entry.Values, rec.entry.Seq)
 		rec.entry.Outcome = status
+		rec.entry.OutputComplete = exited
+		if exited && rec.entry.Completed.IsZero() {
+			rec.entry.Completed = time.Now()
+		}
 	case "fileChange":
 		var changeList []struct {
-			Path string `json:"path"`
-			Kind string `json:"kind"`
-			Diff string `json:"diff"`
+			Path string         `json:"path"`
+			Kind jsontext.Value `json:"kind"`
+			Diff string         `json:"diff"`
 		}
 		_ = json.Unmarshal(fields["changes"], &changeList)
+		status := decodeJSONString(fields["status"])
+		running := status == "inProgress"
+		exited := status != "" && !running
 		vals := make([]activity.Value, 0, len(changeList))
 		for _, ch := range changeList {
-			verb := "Edit"
-			if ch.Kind != "" {
-				verb = strings.ToUpper(ch.Kind[:1]) + ch.Kind[1:]
+			verb, label := decodeFileChangeKind(ch.Kind, ch.Path)
+			var tail []string
+			if ch.Diff != "" {
+				tail = strings.Split(strings.TrimSuffix(ch.Diff, "\n"), "\n")
 			}
 			vals = append(vals, activity.Value{
 				Content: activityfeed.Content{
 					Kind:  "op",
 					Verb:  verb,
-					Label: ch.Path,
+					Label: label,
 					Code:  ch.Diff,
 					Lang:  "diff",
 				},
+				Running: running,
+				Exited:  exited,
+				Tail:    tail,
 			})
 		}
 		rec.entry.Values = vals
 		activity.Identify(rec.entry.Values, rec.entry.Seq)
-		rec.entry.Outcome = decodeJSONString(fields["status"])
+		rec.entry.Outcome = status
+		rec.entry.OutputComplete = exited
+		if exited && rec.entry.Completed.IsZero() {
+			rec.entry.Completed = time.Now()
+		}
 	case "mcpToolCall", "dynamicToolCall":
 		tool := decodeJSONString(fields["tool"])
 		server := decodeJSONString(fields["server"])
@@ -874,6 +935,69 @@ func decodeJSONString(raw jsontext.Value) string {
 		return s
 	}
 	return ""
+}
+
+func unwrapDirectShellCommand(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	fields := strings.SplitN(trimmed, " ", 3)
+	if len(fields) != 3 {
+		return raw
+	}
+	shell := fields[0]
+	if idx := strings.LastIndex(shell, "/"); idx >= 0 {
+		shell = shell[idx+1:]
+	}
+	if shell != "bash" && shell != "sh" && shell != "zsh" && shell != "dash" {
+		return raw
+	}
+	if fields[1] != "-lc" && fields[1] != "-c" {
+		return raw
+	}
+	arg := strings.TrimSpace(fields[2])
+	if len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'' {
+		return strings.ReplaceAll(arg[1:len(arg)-1], "'\\''", "'")
+	}
+	if len(arg) >= 2 && arg[0] == '"' && arg[len(arg)-1] == '"' {
+		inner := arg[1 : len(arg)-1]
+		inner = strings.ReplaceAll(inner, "\\\"", "\"")
+		inner = strings.ReplaceAll(inner, "\\\\", "\\")
+		inner = strings.ReplaceAll(inner, "\\$", "$")
+		inner = strings.ReplaceAll(inner, "\\`", "`")
+		return inner
+	}
+	if !strings.ContainsAny(arg, " \t\r\n") {
+		return arg
+	}
+	return raw
+}
+
+func decodeFileChangeKind(raw jsontext.Value, path string) (verb, label string) {
+	label = path
+	if len(raw) == 0 {
+		return "Edit", label
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil && str != "" {
+		return strings.ToUpper(str[:1]) + str[1:], label
+	}
+	var obj struct {
+		Type     string `json:"type"`
+		MovePath string `json:"move_path"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		switch obj.Type {
+		case "add":
+			return "Create", label
+		case "delete":
+			return "Delete", label
+		case "update":
+			if obj.MovePath != "" {
+				return "Move", path + " => " + obj.MovePath
+			}
+			return "Edit", label
+		}
+	}
+	return "Edit", label
 }
 
 func firstNonEmpty(values ...string) string {

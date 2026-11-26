@@ -5,7 +5,6 @@ import type {
   Agent,
   AgentIdentity,
   AgentState,
-  Change,
   ContentReference,
   ContentResourceResponse,
   Entry,
@@ -28,6 +27,360 @@ import type {
   Turn,
   Value,
 } from "./protocol";
+
+type TokenPrice = {
+  input: number;
+  cachedInput: number;
+  output: number;
+  longInput: number;
+  longCachedInput: number;
+  longOutput: number;
+};
+
+// Reference list API prices in USD per million tokens (mirrors mekugi-tui accounting/cost.go).
+const TOKEN_REFERENCE_PRICES: Record<string, TokenPrice> = {
+  "gpt-6.2-astra": {
+    input: 8,
+    cachedInput: 0.4,
+    output: 40,
+    longInput: 16,
+    longCachedInput: 0.8,
+    longOutput: 60,
+  },
+  "gpt-6.2-sol": {
+    input: 2,
+    cachedInput: 0.1,
+    output: 10,
+    longInput: 4,
+    longCachedInput: 0.2,
+    longOutput: 15,
+  },
+  "gpt-6-astra": {
+    input: 10,
+    cachedInput: 1,
+    output: 50,
+    longInput: 20,
+    longCachedInput: 2,
+    longOutput: 75,
+  },
+  "gpt-6-astra-pro": {
+    input: 10,
+    cachedInput: 1,
+    output: 50,
+    longInput: 20,
+    longCachedInput: 2,
+    longOutput: 75,
+  },
+  "gpt-6.1-sol": {
+    input: 2,
+    cachedInput: 0.1,
+    output: 10,
+    longInput: 4,
+    longCachedInput: 0.2,
+    longOutput: 15,
+  },
+  "gpt-6.1-terra": {
+    input: 1,
+    cachedInput: 0.05,
+    output: 5,
+    longInput: 2,
+    longCachedInput: 0.1,
+    longOutput: 7.5,
+  },
+  "gpt-6-sol": {
+    input: 2,
+    cachedInput: 0.2,
+    output: 10,
+    longInput: 4,
+    longCachedInput: 0.4,
+    longOutput: 15,
+  },
+  "gpt-6-luna": {
+    input: 0.1,
+    cachedInput: 0.01,
+    output: 0.5,
+    longInput: 0.2,
+    longCachedInput: 0.02,
+    longOutput: 0.75,
+  },
+  "gpt-5.5": {
+    input: 5,
+    cachedInput: 0.5,
+    output: 30,
+    longInput: 10,
+    longCachedInput: 1,
+    longOutput: 45,
+  },
+  "gpt-5.6-sol": {
+    input: 4,
+    cachedInput: 0.4,
+    output: 20,
+    longInput: 8,
+    longCachedInput: 0.8,
+    longOutput: 30,
+  },
+  "gpt-5.6-terra": {
+    input: 2,
+    cachedInput: 0.2,
+    output: 12,
+    longInput: 4,
+    longCachedInput: 0.4,
+    longOutput: 18,
+  },
+  "gpt-5.6-luna": {
+    input: 0.2,
+    cachedInput: 0.02,
+    output: 1.2,
+    longInput: 0.4,
+    longCachedInput: 0.04,
+    longOutput: 1.8,
+  },
+  "gpt-5.4": {
+    input: 2.5,
+    cachedInput: 0.25,
+    output: 15,
+    longInput: 5,
+    longCachedInput: 0.5,
+    longOutput: 22.5,
+  },
+  "gpt-5.4-mini": {
+    input: 0.75,
+    cachedInput: 0.075,
+    output: 4.5,
+    longInput: 0,
+    longCachedInput: 0,
+    longOutput: 0,
+  },
+  "gpt-5.4-nano": {
+    input: 0.2,
+    cachedInput: 0.02,
+    output: 1.25,
+    longInput: 0,
+    longCachedInput: 0,
+    longOutput: 0,
+  },
+};
+
+const TOKEN_FAST_REFERENCE_PRICES: Record<string, TokenPrice> = {
+  "gpt-6.2-astra": {
+    input: 16,
+    cachedInput: 0.8,
+    output: 80,
+    longInput: 32,
+    longCachedInput: 1.6,
+    longOutput: 120,
+  },
+  "gpt-6.2-sol": {
+    input: 4,
+    cachedInput: 0.2,
+    output: 20,
+    longInput: 8,
+    longCachedInput: 0.4,
+    longOutput: 30,
+  },
+  "gpt-6-astra": {
+    input: 20,
+    cachedInput: 2,
+    output: 100,
+    longInput: 40,
+    longCachedInput: 4,
+    longOutput: 150,
+  },
+  "gpt-6.1-sol": {
+    input: 4,
+    cachedInput: 0.2,
+    output: 20,
+    longInput: 8,
+    longCachedInput: 0.4,
+    longOutput: 30,
+  },
+  "gpt-6.1-terra": {
+    input: 2,
+    cachedInput: 0.1,
+    output: 10,
+    longInput: 4,
+    longCachedInput: 0.2,
+    longOutput: 15,
+  },
+  "gpt-6-sol": {
+    input: 4,
+    cachedInput: 0.4,
+    output: 20,
+    longInput: 8,
+    longCachedInput: 0.8,
+    longOutput: 30,
+  },
+  "gpt-6-luna": {
+    input: 0.2,
+    cachedInput: 0.02,
+    output: 1,
+    longInput: 0.4,
+    longCachedInput: 0.04,
+    longOutput: 1.5,
+  },
+  "gpt-5.6-sol": {
+    input: 8,
+    cachedInput: 0.8,
+    output: 40,
+    longInput: 16,
+    longCachedInput: 1.6,
+    longOutput: 60,
+  },
+  "gpt-5.6-terra": {
+    input: 4,
+    cachedInput: 0.4,
+    output: 24,
+    longInput: 8,
+    longCachedInput: 0.8,
+    longOutput: 36,
+  },
+  "gpt-5.6-luna": {
+    input: 0.4,
+    cachedInput: 0.04,
+    output: 2.4,
+    longInput: 0.8,
+    longCachedInput: 0.08,
+    longOutput: 3.6,
+  },
+  "gpt-5.5": {
+    input: 12.5,
+    cachedInput: 1.25,
+    output: 75,
+    longInput: 0,
+    longCachedInput: 0,
+    longOutput: 0,
+  },
+  "gpt-5.4": {
+    input: 5,
+    cachedInput: 0.5,
+    output: 30,
+    longInput: 0,
+    longCachedInput: 0,
+    longOutput: 0,
+  },
+  "gpt-5.4-mini": {
+    input: 1.5,
+    cachedInput: 0.15,
+    output: 9,
+    longInput: 0,
+    longCachedInput: 0,
+    longOutput: 0,
+  },
+};
+
+const CACHE_WRITE_MODELS = new Set([
+  "gpt-6.2-astra",
+  "gpt-6.2-sol",
+  "gpt-6-astra",
+  "gpt-6.1-sol",
+  "gpt-6.1-terra",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
+
+export function estimateCostUsd(
+  model: string | undefined,
+  serviceTier: string | undefined,
+  usage: {
+    inputTokens: number;
+    cachedInputTokens?: number;
+    cacheWriteInputTokens?: number;
+    outputTokens: number;
+  },
+  longContextInputTokens?: number,
+): number | undefined {
+  if (!model) return undefined;
+  const normalizedModel = model
+    .trim()
+    .toLowerCase()
+    .replace(/^openai\//, "");
+  const standard = TOKEN_REFERENCE_PRICES[normalizedModel];
+  const tier = (serviceTier ?? "").trim().toLowerCase();
+  let price: TokenPrice | undefined = standard;
+  const checkInput = longContextInputTokens ?? usage.inputTokens;
+  if (tier === "" || tier === "default" || tier === "standard") {
+    price = standard;
+  } else if (tier === "fast" || tier === "priority") {
+    price = TOKEN_FAST_REFERENCE_PRICES[normalizedModel];
+    if (
+      standard &&
+      standard.longInput > 0 &&
+      checkInput > 272_000 &&
+      (!price || price.longInput === 0)
+    ) {
+      return undefined;
+    }
+  } else {
+    return undefined;
+  }
+  if (!price) return undefined;
+  if (usage.inputTokens < 0 || usage.outputTokens < 0) return undefined;
+  const cached = Math.min(Math.max(0, usage.cachedInputTokens ?? 0), usage.inputTokens);
+  const uncached = Math.max(0, usage.inputTokens - cached);
+  const cacheWrite = Math.min(Math.max(0, usage.cacheWriteInputTokens ?? 0), uncached);
+  const long = price.longInput > 0 && checkInput > 272_000;
+  const inputRate = long ? price.longInput : price.input;
+  const cachedRate = long ? price.longCachedInput : price.cachedInput;
+  const outputRate = long ? price.longOutput : price.output;
+  if (cacheWrite > 0 && !CACHE_WRITE_MODELS.has(normalizedModel)) return undefined;
+  const cacheWritePremium = (cacheWrite * inputRate * 0.25) / 1_000_000;
+  return (
+    (uncached * inputRate) / 1_000_000 +
+    cacheWritePremium +
+    (cached * cachedRate) / 1_000_000 +
+    (usage.outputTokens * outputRate) / 1_000_000
+  );
+}
+
+export function unwrapShellCommand(raw: string): string {
+  const trimmed = raw.trim();
+  const match = /^(?:\/\S+\/)?(?:bash|sh|zsh|dash)\s+-(?:lc|c)\s+([\s\S]+)$/.exec(trimmed);
+  if (!match) return raw;
+  const arg = match[1].trim();
+  if (arg.length >= 2 && arg.startsWith("'") && arg.endsWith("'")) {
+    return arg.slice(1, -1).replace(/'\\''/g, "'");
+  }
+  if (arg.length >= 2 && arg.startsWith('"') && arg.endsWith('"')) {
+    return arg
+      .slice(1, -1)
+      .replace(/\\(["\\$`])/g, "$1")
+      .replace(/\\n/g, "\n");
+  }
+  if (!/\s/.test(arg)) return arg;
+  return raw;
+}
+
+function countDiffLines(
+  diff: string | undefined,
+  kind: string,
+): { added: number; removed: number } {
+  if (!diff) return { added: 0, removed: 0 };
+  let added = 0;
+  let removed = 0;
+  let hasDiffMarkers = false;
+  const lines = diff.replace(/\n$/, "").split("\n");
+  for (const line of lines) {
+    if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) {
+      hasDiffMarkers = true;
+      continue;
+    }
+    if (line.startsWith("+")) {
+      hasDiffMarkers = true;
+      added++;
+    } else if (line.startsWith("-")) {
+      hasDiffMarkers = true;
+      removed++;
+    }
+  }
+  if (!hasDiffMarkers && lines.length && !(lines.length === 1 && lines[0] === "")) {
+    if (kind === "add") added = lines.length;
+    else if (kind === "delete") removed = lines.length;
+  }
+  return { added, removed };
+}
 
 export type { Connection } from "./transport";
 
@@ -138,9 +491,10 @@ export function itemToEntry(
       const failed = item.status === "failed" || item.status === "declined";
       const tail = item.aggregatedOutput ? item.aggregatedOutput.split("\n") : undefined;
       const value: Value = {
-        kind: "shell",
-        verb: "run",
-        code: item.command,
+        kind: "op",
+        verb: "Run",
+        code: unwrapShellCommand(item.command),
+        lang: "bash",
         workdir: item.cwd || undefined,
         exitCode: item.exitCode,
         duration: item.durationMs ?? undefined,
@@ -159,25 +513,41 @@ export function itemToEntry(
     case "fileChange": {
       const running = item.status === "inProgress";
       const failed = item.status === "failed" || item.status === "declined";
-      const changes: Change[] = item.changes.map((c) => ({
-        kind: c.kind.type,
-        path: c.path,
-        note: c.diff ? undefined : c.kind.type,
-        new: c.diff ? c.diff.split("\n") : undefined,
-      }));
-      const value: Value = {
-        kind: "edit",
-        verb: "edit",
-        running,
-        failed,
-        changes,
-      };
+      const values: Value[] = item.changes.length
+        ? item.changes.map((c) => {
+            const verb =
+              c.kind.type === "add"
+                ? "Create"
+                : c.kind.type === "delete"
+                  ? "Delete"
+                  : c.kind.type === "update" && c.kind.move_path
+                    ? "Move"
+                    : "Edit";
+            const path =
+              c.kind.type === "update" && c.kind.move_path
+                ? `${c.path} => ${c.kind.move_path}`
+                : c.path;
+            const { added, removed } = countDiffLines(c.diff, c.kind.type);
+            const label = added || removed ? `+${added} −${removed}` : undefined;
+            return {
+              kind: "op",
+              verb,
+              path,
+              label,
+              code: c.diff || undefined,
+              lang: c.diff ? "diff" : undefined,
+              foldSource: c.diff ? true : undefined,
+              running,
+              failed,
+            };
+          })
+        : [{ kind: "op", verb: "Edit", running, failed }];
       return {
         ...base,
         kind: "tool",
         running,
         outcome: failed ? "error" : undefined,
-        values: [value],
+        values,
       };
     }
     case "mcpToolCall": {
@@ -527,6 +897,8 @@ export class Stream {
   #stopNotifications?: () => void;
   #stopOpen?: () => void;
   #requests = new AbortController();
+  #turnStartedAt?: number;
+  #workMs = 0;
 
   get connection(): Connection {
     return this.#machine?.connection ?? "connecting";
@@ -548,6 +920,8 @@ export class Stream {
     this.#machine = machine;
     this.#turns = [];
     this.#liveItemIds.clear();
+    this.#turnStartedAt = undefined;
+    this.#workMs = 0;
     const cachedHooks = this.#hooksByThread.get(`${machine.id}:${id}`);
     // Only restore settled hooks across a subscription gap; running hooks may have
     // finished while the thread was unobserved.
@@ -682,7 +1056,25 @@ export class Stream {
       if (!threads.length) return;
       const root = threads.find((t) => !t.parentThreadId) ?? threads[0];
       this.family = { root: root.id, threads: threads.map((t) => t.id) };
-      const agents = threads.map((t) => threadToAgent(t, t.id === root.id ? 0 : 1));
+      const prevByThread = new Map(
+        this.roster.agents.filter((a) => a.thread).map((a) => [a.thread!, a]),
+      );
+      const agents = threads.map((t) => {
+        const next = threadToAgent(t, t.id === root.id ? 0 : 1);
+        const prev = prevByThread.get(t.id);
+        if (!prev) return next;
+        return {
+          ...next,
+          inputTokens: prev.inputTokens ?? next.inputTokens,
+          outputTokens: prev.outputTokens ?? next.outputTokens,
+          cost: prev.cost ?? next.cost,
+          tps: prev.tps ?? next.tps,
+          work: prev.work ?? next.work,
+          workSince: prev.workSince ?? next.workSince,
+          context: next.context ?? prev.context,
+          window: next.window ?? prev.window,
+        };
+      });
       this.roster = { total: agents.length, agents };
       this.#observeRoles();
     } catch {
@@ -773,6 +1165,19 @@ export class Stream {
       case "thread/tokenUsage/updated": {
         if (notification.params.threadId !== id) return;
         const usage = notification.params.tokenUsage;
+        const estimatedCost = estimateCostUsd(
+          this.session?.model,
+          this.session?.serviceTier,
+          usage.total,
+          usage.last?.inputTokens,
+        );
+        const workMs =
+          this.#workMs +
+          (this.#turnStartedAt != null ? Math.max(0, Date.now() - this.#turnStartedAt) : 0);
+        const outputTps =
+          workMs > 0 && usage.total.outputTokens > 0
+            ? usage.total.outputTokens / (workMs / 1000)
+            : undefined;
         this.roster = {
           ...this.roster,
           agents: this.roster.agents.map((a) =>
@@ -781,6 +1186,9 @@ export class Stream {
                   ...a,
                   inputTokens: usage.total.inputTokens,
                   outputTokens: usage.total.outputTokens,
+                  cost: estimatedCost ?? a.cost,
+                  tps: outputTps ?? a.tps,
+                  work: workMs > 0 ? workMs : a.work,
                   context: usage.last.totalTokens,
                   window: usage.modelContextWindow ?? a.window,
                 }
@@ -792,6 +1200,8 @@ export class Stream {
       case "turn/started": {
         if (notification.params.threadId !== id) return;
         const turn = notification.params.turn;
+        const startedAt = Date.now();
+        this.#turnStartedAt = startedAt;
         this.activeTurnId = turn.id;
         this.status = {
           ...this.status,
@@ -802,6 +1212,20 @@ export class Stream {
         };
         this.input = { ...this.input, stoppable: true };
         this.#upsertTurn(turn);
+        this.roster = {
+          ...this.roster,
+          agents: this.roster.agents.map((a) =>
+            a.thread === id || a.name === "/root"
+              ? {
+                  ...a,
+                  state: "working",
+                  work: this.#workMs,
+                  workSince: startedAt,
+                  turns: this.#turns.length,
+                }
+              : a,
+          ),
+        };
         this.#rebuildMain();
         break;
       }
@@ -809,10 +1233,17 @@ export class Stream {
         if (notification.params.threadId !== id) return;
         const turn = notification.params.turn;
         if (this.activeTurnId === turn.id) this.activeTurnId = undefined;
+        let elapsed: number | undefined;
+        if (this.#turnStartedAt != null) {
+          elapsed = Math.max(0, Date.now() - this.#turnStartedAt);
+          this.#workMs += elapsed;
+          this.#turnStartedAt = undefined;
+        }
         const failed = turn.status === "failed";
         this.status = {
           running: false,
           alert: failed,
+          completed: elapsed,
           failure: turn.error?.message,
           text: failed
             ? turn.error?.message
@@ -822,6 +1253,24 @@ export class Stream {
         };
         this.input = { ...this.input, stoppable: false };
         this.#upsertTurn(turn);
+        this.roster = {
+          ...this.roster,
+          agents: this.roster.agents.map((a) => {
+            if (a.thread !== id && a.name !== "/root") return a;
+            const outputTps =
+              this.#workMs > 0 && a.outputTokens != null && a.outputTokens > 0
+                ? a.outputTokens / (this.#workMs / 1000)
+                : a.tps;
+            return {
+              ...a,
+              state: failed ? "error" : "idle",
+              work: this.#workMs > 0 ? this.#workMs : a.work,
+              workSince: undefined,
+              turns: this.#turns.length,
+              tps: outputTps,
+            };
+          }),
+        };
         this.#liveItemIds.clear();
         if (this.#hooks.some((h) => h.run.status === "running" && h.turnId === turn.id)) {
           this.#hooks = this.#hooks.filter(
@@ -989,9 +1438,23 @@ export class Stream {
     const index = this.#turns.findIndex((t) => t.id === turn.id);
     if (index >= 0) {
       const existing = this.#turns[index];
+      let items: ThreadItem[];
+      if (turn.itemsView === "full" && turn.items.length) {
+        items = [...turn.items];
+      } else if (turn.items.length) {
+        items = [...existing.items];
+        for (const item of turn.items) {
+          const itemIdx = items.findIndex((e) => e.id === item.id);
+          if (itemIdx >= 0) items[itemIdx] = item;
+          else items.push(item);
+        }
+      } else {
+        items = existing.items;
+      }
       this.#turns[index] = {
         ...turn,
-        items: turn.items.length ? [...turn.items] : existing.items,
+        items,
+        itemsView: existing.itemsView === "full" ? "full" : turn.itemsView,
       };
     } else {
       this.#turns.push({ ...turn, items: [...turn.items] });

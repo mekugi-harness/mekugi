@@ -652,3 +652,21 @@ test("Transcript respects Thoughts modes and filters hidden completed thought se
     preferences.setHooks(prevHooks);
   }
 });
+
+test("ValueRow omits workspace root workdir and renders relative subdirectory workdir", () => {
+  const rootHtml = render(ValueRow, {
+    props: {
+      value: { kind: "op", verb: "Run", code: "pwd", lang: "bash", workdir: "/repo" },
+      workspace: "/repo",
+    },
+  }).body;
+  assert.doesNotMatch(text(rootHtml), /in \/repo/);
+
+  const subHtml = render(ValueRow, {
+    props: {
+      value: { kind: "op", verb: "Run", code: "ls", lang: "bash", workdir: "/repo/apps/web" },
+      workspace: "/repo",
+    },
+  }).body;
+  assert.match(text(subHtml), /in apps\/web/);
+});

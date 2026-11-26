@@ -47,9 +47,9 @@
   const result = $derived(value.batchExit && !value.code);
   const verb = $derived(result ? "" : (value.verb ?? value.kind ?? ""));
   const exited = $derived(value.exitCode !== undefined && value.exitCode !== 0);
+  const normalizedWorkdir = $derived(normalizeWorkdir(value.workdir, workspace));
   const showWorkdir = $derived(
-    !!value.workdir &&
-      (!groupWorkdir || normalizeWorkdir(value.workdir, workspace) !== groupWorkdir),
+    !!normalizedWorkdir && (!groupWorkdir || normalizedWorkdir !== groupWorkdir),
   );
   const displayPath = $derived(
     groupWorkdir && value.path
@@ -315,7 +315,9 @@
         >(auto reloaded)</span
       >{/if}
     {#if showWorkdir}<span class="text-muted"
-        >{` in `}<span class="font-mono"><Path path={value.workdir!} /></span></span
+        >{` in `}<span class="font-mono"
+          ><Path path={normalizedWorkdir} title={value.workdir} /></span
+        ></span
       >{/if}
   </div>
   {#if status}<span

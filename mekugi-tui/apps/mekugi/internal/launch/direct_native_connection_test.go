@@ -17,6 +17,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
@@ -158,6 +159,49 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 		return map[string]any{
 			"data": []map[string]any{
 				{"id": "thr-saved", "name": "Saved session", "cwd": "/tmp/ws", "updatedAt": 1700000001},
+			},
+		}
+	case "skills/list":
+		return map[string]any{
+			"data": []map[string]any{
+				{
+					"cwd": "/tmp/ws",
+					"skills": []map[string]any{
+						{"name": "review-pr", "path": "/tmp/ws/.agents/skills/review-pr/SKILL.md", "shortDescription": "Review a pull request", "enabled": true},
+						{"name": "disabled-skill", "path": "/tmp/ws/.agents/skills/disabled/SKILL.md", "description": "Disabled", "enabled": false},
+					},
+				},
+			},
+		}
+	case "fuzzyFileSearch":
+		return map[string]any{
+			"files": []map[string]any{
+				{"root": "/tmp/ws", "path": "cmd/main.go", "match_type": "file", "file_name": "main.go", "score": 100},
+			},
+		}
+	case "model/list":
+		return map[string]any{
+			"data": []map[string]any{
+				{
+					"id":          "gpt-6.2-sol",
+					"model":       "gpt-6.2-sol",
+					"displayName": "GPT-6.2 Sol",
+					"description": "Fast coding model",
+					"supportedReasoningEfforts": []map[string]any{
+						{"reasoningEffort": "low", "description": "Quick"},
+						{"reasoningEffort": "high", "description": "Deep"},
+					},
+					"serviceTiers": []map[string]any{
+						{"id": "standard", "displayName": "Standard", "description": "Default tier"},
+						{"id": "fast", "displayName": "Fast", "description": "Priority tier"},
+					},
+				},
+				{
+					"id":          "hidden-model",
+					"model":       "hidden-model",
+					"displayName": "Hidden",
+					"hidden":      true,
+				},
 			},
 		}
 	default:
@@ -644,5 +688,203 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 	})
 	if len(conn.effects) != 0 {
 		t.Fatalf("expected effects pruned on receipt, got %+v", conn.effects)
+	}
+}
+
+func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
+	conn := &directNativeConnection{
+		wire:          &nativeAppServerWire{userAgent: "mekugi/0.172.0"},
+		mainThread:    "thr-main",
+		items:         make(map[string][]*directItemRecord),
+		itemsByID:     make(map[string]*directItemRecord),
+		threadCallers: map[string]string{"thr-main": "main"},
+		events:        make(chan sessionapi.NativeEvent, 16),
+	}
+
+	conn.hydrateThreadTurnsLocked("thr-main", []directWireTurn{
+		{
+			ID: "turn-1",
+			Items: []jsontext.Value{
+				jsontext.Value("{\"id\":\"cmd-1\",\"type\":\"commandExecution\",\"command\":\"/home/linuxbrew/.linuxbrew/bin/bash -lc 'printf \\\"a\\\\nb\\\\nc\\\\n\\\"'\",\"cwd\":\"/tmp/ws\",\"status\":\"completed\",\"exitCode\":0,\"durationMs\":125,\"aggregatedOutput\":\"a\\nb\\nc\\n\"}"),
+				jsontext.Value("{\"id\":\"fc-1\",\"type\":\"fileChange\",\"status\":\"completed\",\"changes\":[{\"path\":\"a.go\",\"kind\":{\"type\":\"add\"},\"diff\":\"+line1\\n+line2\\n\"},{\"path\":\"b.go\",\"kind\":{\"type\":\"update\",\"move_path\":\"c.go\"},\"diff\":\"-old\\n+new\\n\"}]}"),
+			},
+		},
+	})
+
+	cmdRec := conn.itemsByID["cmd-1"]
+	if cmdRec == nil || len(cmdRec.entry.Values) != 1 {
+		t.Fatalf("expected projected commandExecution, got %+v", cmdRec)
+	}
+	val := cmdRec.entry.Values[0]
+	if val.Lang != "bash" || strings.Contains(val.Code, "bash -lc") {
+		t.Fatalf("expected unwrapped bash command, got lang=%q code=%q", val.Lang, val.Code)
+	}
+	if !val.Exited || val.Running || val.ExitCode != 0 || len(val.Tail) != 3 || !cmdRec.entry.OutputComplete || !cmdRec.entry.Restored {
+		t.Fatalf("expected completed restored Tail projection, got val=%+v entry=%+v", val, cmdRec.entry)
+	}
+
+	fcRec := conn.itemsByID["fc-1"]
+	if fcRec == nil || len(fcRec.entry.Values) != 2 {
+		t.Fatalf("expected 2 fileChange values, got %+v", fcRec)
+	}
+	if fcRec.entry.Values[0].Verb != "Create" || fcRec.entry.Values[1].Verb != "Move" || fcRec.entry.Values[1].Label != "b.go => c.go" {
+		t.Fatalf("unexpected fileChange decoding: %+v", fcRec.entry.Values)
+	}
+
+	// Verify terminalview collapses restored multi-line command output by default and ctrl+e cycles Expansion.
+	var tv terminalview.View
+	tv.Update(&activity.Publication{Entries: []activity.Entry{cmdRec.entry}}, terminalview.Display{})
+	if tv.Expansion != 0 {
+		t.Fatalf("expected default Expansion=0, got %d", tv.Expansion)
+	}
+	tv.ToggleExpansion()
+	if tv.Expansion != 1 {
+		t.Fatalf("expected Expansion=1 after first ctrl+e, got %d", tv.Expansion)
+	}
+	tv.ToggleExpansion()
+	if tv.Expansion != 2 {
+		t.Fatalf("expected Expansion=2 after second ctrl+e, got %d", tv.Expansion)
+	}
+	tv.ToggleExpansion()
+	if tv.Expansion != 0 {
+		t.Fatalf("expected Expansion=0 after third ctrl+e, got %d", tv.Expansion)
+	}
+}
+
+func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "native.sock")
+	srv := startMockNativeAppServer(t, socket)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
+	if err != nil {
+		t.Fatalf("openDirectNativeConnection: %v", err)
+	}
+	defer conn.Close()
+	<-srv.ready
+
+	drain := func() sessionapi.NativeEvent {
+		var last sessionapi.NativeEvent
+		for {
+			select {
+			case ev := <-conn.events:
+				last = ev
+			default:
+				return last
+			}
+		}
+	}
+	_ = drain()
+
+	// $ skill completion queries skills/list and filters enabled skills.
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Completion: &sessionapi.NativeEditorInput{
+			Target: conversation.EditorTarget{Revision: 1},
+			Draft:  composer.Draft{Text: "use $rev"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("$ completion: %v", err)
+	}
+	ev := drain()
+	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "$review-pr" {
+		t.Fatalf("expected $review-pr skill choice, got %+v", ev.Frame.View.Menu)
+	}
+
+	// @ file completion queries fuzzyFileSearch.
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Completion: &sessionapi.NativeEditorInput{
+			Target: conversation.EditorTarget{Revision: 2},
+			Draft:  composer.Draft{Text: "check @main"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("@ completion: %v", err)
+	}
+	ev = drain()
+	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "@cmd/main.go" {
+		t.Fatalf("expected @cmd/main.go file choice, got %+v", ev.Frame.View.Menu)
+	}
+
+	// Bare /model opens MenuSettings populated from model/list (filtering hidden models).
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Command: new("/model"),
+	})
+	if err != nil {
+		t.Fatalf("/model menu: %v", err)
+	}
+	ev = drain()
+	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "gpt-6.2-sol" {
+		t.Fatalf("expected /model settings menu, got %+v", ev.Frame.View.Menu)
+	}
+	modelMenuID := ev.Frame.View.Menu.ID
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Menu: &sessionpresentation.MenuAction{
+			Thread: "thr-main",
+			Menu:   modelMenuID,
+			Kind:   sessionpresentation.MenuAccept,
+			Choice: completion.ChoiceID{Name: "gpt-6.2-sol"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("accept /model menu: %v", err)
+	}
+
+	// Bare /tier opens MenuSettings and accepting "standard" sends serviceTier: null.
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Command: new("/tier"),
+	})
+	if err != nil {
+		t.Fatalf("/tier menu: %v", err)
+	}
+	ev = drain()
+	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings {
+		t.Fatalf("expected /tier settings menu, got %+v", ev.Frame.View.Menu)
+	}
+	tierMenuID := ev.Frame.View.Menu.ID
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Menu: &sessionpresentation.MenuAction{
+			Thread: "thr-main",
+			Menu:   tierMenuID,
+			Kind:   sessionpresentation.MenuAccept,
+			Choice: completion.ChoiceID{Name: "standard"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("accept /tier menu: %v", err)
+	}
+
+	// /effort high sends "effort" (not "reasoningEffort").
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Command: new("/effort high"),
+	})
+	if err != nil {
+		t.Fatalf("/effort high: %v", err)
+	}
+
+	srv.mu.Lock()
+	updates := slices.Clone(srv.params["thread/settings/update"])
+	srv.mu.Unlock()
+	if len(updates) < 3 {
+		t.Fatalf("expected 3 thread/settings/update calls, got %d", len(updates))
+	}
+	if !strings.Contains(string(updates[1]), "\"serviceTier\":null") {
+		t.Fatalf("expected serviceTier:null for standard tier, got %s", string(updates[1]))
+	}
+	if !strings.Contains(string(updates[2]), "\"effort\":\"high\"") {
+		t.Fatalf("expected effort:high, got %s", string(updates[2]))
+	}
+
+	// Nested thread/settings/updated notification updates model, effort, and clears tier on null.
+	conn.handleNotification(appserver.Message{
+		Method: "thread/settings/updated",
+		Params: jsontext.Value("{\"threadId\":\"thr-main\",\"threadSettings\":{\"model\":\"gpt-6.2-sol\",\"effort\":\"high\",\"serviceTier\":null}}"),
+	})
+	conn.mu.Lock()
+	gotModel, gotEffort, gotTier := conn.model, conn.effort, conn.tier
+	conn.mu.Unlock()
+	if gotModel != "gpt-6.2-sol" || gotEffort != "high" || gotTier != "" {
+		t.Fatalf("unexpected settings after nested update: model=%q effort=%q tier=%q", gotModel, gotEffort, gotTier)
 	}
 }

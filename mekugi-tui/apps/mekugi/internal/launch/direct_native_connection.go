@@ -140,6 +140,9 @@ type directNativeConnection struct {
 	menuSeq          uint64
 	completionTarget conversation.EditorTarget
 	dismissedComp    completion.Target
+	skillsCwd        string
+	skillsLoaded     bool
+	skills           []completion.Choice
 	effectSeq        uint64
 	effects          []sessionapi.NativeEffect
 }
