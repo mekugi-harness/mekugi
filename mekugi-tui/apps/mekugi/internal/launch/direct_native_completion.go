@@ -289,6 +289,7 @@ type directWireModel struct {
 	} `json:"supportedReasoningEfforts"`
 	ServiceTiers []struct {
 		ID          string `json:"id"`
+		Name        string `json:"name"`
 		DisplayName string `json:"displayName"`
 		Description string `json:"description"`
 	} `json:"serviceTiers"`
@@ -402,7 +403,8 @@ func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
 	defer c.mu.Unlock()
 	var choices []completion.Choice
 	hasDefault := false
-	if m, ok := findWireModel(models, c.model); ok {
+	m, foundModel := findWireModel(models, c.model)
+	if foundModel {
 		for _, tier := range m.ServiceTiers {
 			if tier.ID == "" {
 				continue
@@ -414,7 +416,7 @@ func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
 			}
 			choices = append(choices, completion.Choice{
 				Name:        tier.ID,
-				Display:     firstNonEmpty(tier.DisplayName, tier.ID),
+				Display:     firstNonEmpty(tier.Name, tier.DisplayName, tier.ID),
 				Description: tier.Description,
 				Current:     c.tier == tier.ID || (isStandard && (c.tier == "" || c.tier == "standard" || c.tier == "default")),
 			})
@@ -429,7 +431,7 @@ func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
 		}
 		choices = append([]completion.Choice{defaultChoice}, choices...)
 	}
-	if len(choices) == 1 {
+	if !foundModel && len(choices) == 1 {
 		choices = []completion.Choice{
 			choices[0],
 			{

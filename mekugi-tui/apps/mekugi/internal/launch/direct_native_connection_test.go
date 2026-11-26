@@ -192,7 +192,7 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 						{"reasoningEffort": "high", "description": "Deep"},
 					},
 					"serviceTiers": []map[string]any{
-						{"id": "priority", "displayName": "Fast", "description": "Priority tier"},
+						{"id": "priority", "name": "Fast", "description": "Priority tier"},
 					},
 				},
 				{
@@ -829,6 +829,12 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accept /model menu: %v", err)
 	}
+	// Server confirms the selected model via thread/settings/updated so /tier inspects gpt-6.2-sol's catalog entry.
+	conn.handleNotification(appserver.Message{
+		Method: "thread/settings/updated",
+		Params: jsontext.Value("{\"threadId\":\"thr-main\",\"threadSettings\":{\"model\":\"gpt-6.2-sol\",\"effort\":\"medium\",\"serviceTier\":null}}"),
+	})
+	_ = drain()
 
 	// Bare /tier opens MenuSettings and includes Standard even when catalog only advertises priority.
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
@@ -838,8 +844,8 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 		t.Fatalf("/tier menu: %v", err)
 	}
 	ev = drain()
-	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) < 2 || ev.Frame.View.Menu.Choices[0].Name != "default" {
-		t.Fatalf("expected /tier settings menu with default choice first, got %+v", ev.Frame.View.Menu)
+	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) != 2 || ev.Frame.View.Menu.Choices[0].Name != "default" || ev.Frame.View.Menu.Choices[1].Display != "Fast" {
+		t.Fatalf("expected /tier settings menu with default + Fast choices, got %+v", ev.Frame.View.Menu)
 	}
 	tierMenuID := ev.Frame.View.Menu.ID
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
