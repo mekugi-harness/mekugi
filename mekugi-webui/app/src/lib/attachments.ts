@@ -97,7 +97,11 @@ export async function prepareAttachments(
     result.push({
       source: item.reference === undefined ? "upload" : "selection",
       name: item.file.name,
-      ...(item.reference === undefined ? {} : { path: item.reference, inline: true }),
+      ...(item.reference === undefined
+        ? item.file.type
+          ? { mime: item.file.type }
+          : {}
+        : { path: item.reference, inline: true }),
       data,
     });
     read += item.file.size;

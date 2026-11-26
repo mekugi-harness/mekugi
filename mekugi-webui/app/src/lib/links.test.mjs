@@ -19,10 +19,11 @@ test("machine-local Markdown links retain the shared file target", () => {
     "[Source](</workspace/a b.go#L12-L14>) [Relative](src/a%20b.go#L12) " +
       "[File](file:///workspace/source.go#L12) [Legacy](/workspace/source.go:12)",
   );
-  assert.match(html, /href="#" data-file-link="\/workspace\/a b.go#L12-L14"/);
+  assert.match(html, /<span data-file-link="\/workspace\/a b.go#L12-L14"/);
   assert.match(html, /data-file-link="src\/a b.go#L12"/);
   assert.match(html, /data-file-link="file:\/\/\/workspace\/source.go#L12"/);
   assert.match(html, /data-file-link="\/workspace\/source.go:12"/);
+  assert.doesNotMatch(html, /href="#"/);
   assert.doesNotThrow(() => block("[Literal](a%ZZ.md)"));
 });
 
@@ -32,7 +33,8 @@ test("run Markdown links retain the native detail target without browser navigat
     `[Run](${run}) [Line](${run}#L3) [Range](${run}#L3-L5) [Legacy](${run}:3-5) [Other](mekugi:other/call_42)`,
   );
   for (const suffix of ["", "#L3", "#L3-L5", ":3-5"])
-    assert.ok(html.includes(`href="#panel-content" data-run-link="${run}${suffix}"`));
+    assert.ok(html.includes(`data-run-link="${run}${suffix}"`));
+  assert.doesNotMatch(html, /href="#panel-content"/);
   assert.doesNotMatch(html, /href="mekugi:|data-file-link|data-run-link="mekugi:other/);
 });
 

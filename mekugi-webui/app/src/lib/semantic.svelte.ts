@@ -1,52 +1,58 @@
-import type {
-  Draft,
-  EditorTarget,
-  NativeEvent,
-  NativeResult,
-  RemoteMutation,
-  RemoteOperation,
-  Version,
-  Question,
-  QuestionCall,
-  QuestionAnswer,
-} from "../../../protocol";
 import type { Machine } from "./hub.svelte";
-import { errorText, newIdentity, TransportError, type Connection } from "./transport";
-import { open, view } from "./view.svelte";
-import { referenceLabel, type PendingAttachment } from "./attachments";
-import type { Listed, Prompts } from "./protocol";
+import { errorText, type Connection } from "./transport";
+import { stream } from "./stream.svelte";
+import type { PendingAttachment } from "./attachments";
+import type {
+  Approval,
+  Attachment,
+  CommandExecutionRequestApprovalResponse,
+  FileChangeRequestApprovalResponse,
+  Prompts,
+  Question,
+  QuestionAnswer,
+  QuestionCall,
+  QueuedSubmission,
+  ReasoningEffort,
+  ServerNotification,
+  ServerRequest,
+  ShellGuardRequestApprovalResponse,
+  ThreadForkResponse,
+  ThreadQueueAddParams,
+  ThreadQueueListResponse,
+  ThreadRevertResponse,
+  ThreadSetNameParams,
+  ThreadSettingsUpdateParams,
+  ToolRequestUserInputAnswer,
+  ToolRequestUserInputResponse,
+  TurnInterruptParams,
+  TurnStartParams,
+  TurnSteerParams,
+  UserInput,
+} from "./protocol";
 
-export function textDraft(text = "", cursorBack = 0): Draft {
-  return {
-    Text: text,
-    CursorBack: cursorBack,
-    Images: [],
-    Files: [],
-    Skills: [],
-    Selections: [],
-    AnswerImages: [],
-    AnswerSelections: "",
-    Attachments: [],
-    AttachmentNotice: "",
-    InHistory: false,
-  };
-}
-const stale = "The thread changed before this arrived, so nothing was applied. Try again.";
 export type Editor = {
   text: string;
-  cursorBack: number;
-  revision: number;
   items: PendingAttachment[];
-  focus?: number;
+  revision: number;
   submission?: AbortController;
 };
+
 export type QuestionDraft = {
   choice: number | "skip" | undefined;
   text: string;
   note: string;
-  items: PendingAttachment[];
   sending: boolean;
   accepted: boolean;
+};
+
+export type PromptState = {
+  drafts: Record<string, QuestionDraft>;
+  deny?: number;
+  reason: string;
+  sending: boolean;
+  accepted: boolean;
+  error?: string;
+  resolved?: boolean;
 };
 
 export function questionDraft(question: Question): QuestionDraft {
@@ -55,7 +61,6 @@ export function questionDraft(question: Question): QuestionDraft {
     choice: recommended >= 0 ? recommended : question.options?.length ? undefined : 0,
     text: "",
     note: "",
-    items: [],
     sending: false,
     accepted: false,
   };
@@ -71,11 +76,7 @@ export function questionAnswers(
   return questions.map((q) => {
     const draft = drafts[q.id];
     const written = draft?.choice === (q.options?.length ?? 0);
-    if (
-      !draft ||
-      draft.choice === undefined ||
-      (written && !draft.text.trim() && !draft.items.length)
-    ) {
+    if (!draft || draft.choice === undefined || (written && !draft.text.trim())) {
       throw new Error(
         call.blocking
           ? "Answer every question or skip it."
@@ -93,832 +94,502 @@ export function questionAnswers(
   });
 }
 
-export type PromptState = {
-  drafts: Record<string, QuestionDraft>;
-  deny?: number;
-  reason: string;
-  sending: boolean;
-  accepted: boolean;
-  error?: string;
-  resolved?: boolean;
-};
-
-class ControlView {
-  lifetime = new AbortController();
-  stop?: () => void;
-  event?: NativeEvent;
-  received = false;
-  connection = $state<Connection>("connecting");
-  unavailable = $state(false);
-  noView?: boolean;
-  discovery?: Listed[];
-  error = $state<string>();
-  operationError?: string;
-  outcome?: TransportError["kind"];
-  work = 0;
-  inputs = 0;
-  pending = $state(0);
-  queue: Promise<unknown> = Promise.resolve();
-  effect = 0;
-  acknowledged = 0;
-  receipt = 0;
-  notice?: NoticePaint;
-  applied?: string;
-  prompts = $state<Record<string, PromptState>>({});
-
-  thread: string;
-  machine: Machine;
-  constructor(thread: string, machine: Machine) {
-    this.thread = thread;
-    this.machine = machine;
+function inferImageMime(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "bmp":
+      return "image/bmp";
+    case "avif":
+      return "image/avif";
+    default:
+      return "application/octet-stream";
   }
 }
 
-// Surfaces of one notice claim visibly painted so far, and whether its one
-// receipt is in flight or delivered.
-type NoticePaint = { claim: string; composer?: boolean; entries: Set<number>; sent?: boolean };
+function newClientMessageId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `msg-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  );
+}
 
-class Semantic {
-  event = $state.raw<NativeEvent>();
-  family = $state.raw<Pick<NonNullable<NativeEvent["frame"]["family"]>, "root" | "threads">>();
-  get connection(): Connection {
-    return this.#source?.connection ?? "connecting";
+export function formatShellArg(arg: string): string {
+  if (arg === "") return "''";
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)) return arg;
+  for (let i = 0; i < arg.length; i++) {
+    const code = arg.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return JSON.stringify(arg);
   }
-  get unavailable(): boolean {
-    return this.#source?.unavailable ?? false;
-  }
-  get connectionError(): string | undefined {
-    return this.#source?.error;
-  }
-  get pending(): number {
-    return this.#source?.pending ?? 0;
-  }
-  error = $state<string>();
-  resuming = $state<string>();
-  copied = $state<string>();
-  editors = $state<Record<string, Editor>>({});
-  emptyEditor = $state<Editor>({ text: "", cursorBack: 0, revision: 0, items: [] });
-  #settings = new Map<string, NonNullable<NativeEvent["frame"]["view"]["Menu"]>>();
-  #completions = new Map<string, NonNullable<NativeEvent["frame"]["view"]["Menu"]>>();
-  openingSetting = $state<string>();
-  #source = $state.raw<ControlView>();
-  #views = new Map<string, ControlView>();
-  #destination?: ControlView;
-  #settle = new Set<() => void>();
+  return `'${arg.replaceAll("'", "'\\''")}'`;
+}
 
-  get frame() {
-    return this.event?.frame;
+export function toNativeUserInput(text: string, attachments: Attachment[] = []): UserInput[] {
+  const items: UserInput[] = [];
+  if (text.trim()) {
+    items.push({ type: "text", text, text_elements: [] });
   }
+  for (const att of attachments) {
+    if (att.source === "path") {
+      items.push({ type: "localImage", path: att.path });
+    } else if (att.source === "upload") {
+      const url = att.data.startsWith("data:")
+        ? att.data
+        : `data:${att.mime || inferImageMime(att.name)};base64,${att.data}`;
+      items.push({ type: "image", url });
+    } else if (att.source === "selection") {
+      items.push({ type: "text", text: att.data, text_elements: [] });
+    }
+  }
+  return items;
+}
 
-  get prompts(): Prompts {
-    const frame = this.frame;
-    const agent = (thread: string) =>
-      thread && thread !== frame?.view.Main.ID
-        ? thread === frame?.view.SideThread?.ID
-          ? frame.view.SideThread.Caller
-          : undefined
-        : undefined;
-    return {
-      questions: (frame?.questions ?? [])
-        .filter((call) => !call.Sent && !call.Resolved)
-        .map((call) => ({
-          id: call.ID,
-          blocking: call.Sync || call.Local,
-          agent: call.agent || agent(call.Thread),
-          questions: call.Questions.filter((q) => q.Pending).map((q) => ({
-            id: q.ID,
-            secret: q.Secret,
-            header: q.Header,
-            text: q.Text,
-            options: q.Choices.map((choice) => ({
-              label: choice.Label,
-              description: choice.Description,
-              preview: choice.Preview,
-              recommended: choice.Recommended,
+// One-time-only choices: RemoteHuman connections are rejected by mekugi-app-server
+// if they submit acceptForSession, policy amendments, or secret prompt answers.
+const ONE_TIME_CHOICES = [
+  { id: 0, label: "Allow once", decision: "accept" as const },
+  { id: 1, label: "Deny", decision: "decline" as const, deny: true },
+];
+
+export function serverRequestToPrompt(
+  req: ServerRequest,
+  threadId: string,
+): { kind: "approval"; approval: Approval } | { kind: "question"; call: QuestionCall } | undefined {
+  switch (req.method) {
+    case "item/commandExecution/requestApproval": {
+      if (req.params.threadId !== threadId) return undefined;
+      const details: string[] = [];
+      if (req.params.cwd) details.push(`Directory: ${req.params.cwd}`);
+      if (req.params.reason) details.push(req.params.reason);
+      return {
+        kind: "approval",
+        approval: {
+          id: String(req.id),
+          requestId: req.id,
+          method: req.method,
+          threadId,
+          title: "Approve command execution",
+          subject: req.params.command ?? undefined,
+          details,
+          choices: [
+            { id: 0, label: "Allow once", decision: "accept" },
+            { id: 1, label: "Decline", decision: "decline" },
+          ],
+        },
+      };
+    }
+    case "item/fileChange/requestApproval": {
+      if (req.params.threadId !== threadId) return undefined;
+      const details: string[] = [];
+      if (req.params.reason) details.push(req.params.reason);
+      return {
+        kind: "approval",
+        approval: {
+          id: String(req.id),
+          requestId: req.id,
+          method: req.method,
+          threadId,
+          title: "Approve file change",
+          subject: req.params.grantRoot ?? undefined,
+          details,
+          choices: [
+            { id: 0, label: "Allow once", decision: "accept" },
+            { id: 1, label: "Decline", decision: "decline" },
+          ],
+        },
+      };
+    }
+    case "shellGuard/requestApproval": {
+      if (req.params.threadId !== threadId) return undefined;
+      const command = [req.params.executable, ...req.params.argv].map(formatShellArg).join(" ");
+      return {
+        kind: "approval",
+        approval: {
+          id: String(req.id),
+          requestId: req.id,
+          method: req.method,
+          threadId,
+          title: "Approve guarded shell action",
+          subject: command,
+          details: req.params.cwd ? [`Directory: ${req.params.cwd}`] : [],
+          choices: ONE_TIME_CHOICES,
+        },
+      };
+    }
+    case "item/tool/requestUserInput": {
+      if (req.params.threadId !== threadId) return undefined;
+      const hasSecret = req.params.questions.some((q) => q.isSecret);
+      return {
+        kind: "question",
+        call: {
+          id: String(req.id),
+          requestId: req.id,
+          threadId,
+          blocking: req.params.isBlocking,
+          secretBlocked: hasSecret,
+          questions: req.params.questions.map((q) => ({
+            id: q.id,
+            header: q.header ?? undefined,
+            question: q.question,
+            text: q.question,
+            isOther: q.isOther,
+            isSecret: q.isSecret,
+            secret: q.isSecret,
+            options: q.options?.map((o) => ({
+              label: o.label,
+              description: o.description ?? undefined,
+              preview: o.preview ?? undefined,
+              recommended: o.recommended,
             })),
           })),
-        })),
-      approvals: (frame?.approvals ?? []).map((approval) => ({
-        id: approval.ID,
-        agent: approval.agent || agent(approval.Thread),
-        title: approval.Title,
-        subject: approval.Subject,
-        details: approval.Details,
-        choices: approval.Choices.map((choice) => ({
-          id: choice.ID,
-          label: choice.Label,
-          deny: choice.Deny,
-        })),
-      })),
-    };
-  }
-
-  // Renderers report each visibly painted surface of the event's notice claim:
-  // its error feedback, or one of its event rows in the Main transcript. New
-  // frames report no surface but may replace the claimed feedback. One receipt
-  // reports the painted surfaces once either is complete or the feedback is
-  // replaced; the host retries the rest under a new claim.
-  async noticePainted(event: NativeEvent, painted?: "feedback" | number): Promise<void> {
-    const source = this.#source;
-    const { frame } = event;
-    if (!source || this.event !== event || !frame.notice) return;
-    const claim = `${event.attachment}:${frame.view.Version.Attachment}:${frame.notice}`;
-    if (source.notice?.claim !== claim) source.notice = { claim, entries: new Set() };
-    const notice = source.notice;
-    const required = frame.noticeFeedback;
-    const shown = required !== undefined && frame.view.Status.FeedbackRevision === required;
-    if (painted === "feedback") notice.composer ||= shown;
-    else if (painted !== undefined) notice.entries.add(painted);
-    const rows = frame.noticeEntries ?? [];
-    const content = rows.length > 0 && rows.every((seq) => notice.entries.has(seq));
-    const composer = !!notice.composer;
-    if (notice.sent || !(composer || content || (required !== undefined && !shown))) return;
-    notice.sent = true;
-    const error = await this.send(
-      {
-        receipt: {
-          Effect: source.effect,
-          Notice: {
-            Attachment: frame.view.Version.Attachment,
-            Claim: frame.notice,
-            Feedback: required ?? 0,
-            Composer: composer,
-            Content: content,
-          },
         },
-      },
-      undefined,
-      true,
-      event,
-    );
-    if (error && source.notice === notice) notice.sent = false;
+      };
+    }
+    default:
+      // shellGuard/requestSecret and other local-only requests are never answered remotely.
+      return undefined;
+  }
+}
+
+export class ThreadControl {
+  #id?: string;
+  #machine?: Machine;
+  #stopRequests?: () => void;
+  #stopNotifications?: () => void;
+  #editors = new Map<string, Editor>();
+  #promptStates = new Map<string, PromptState>();
+
+  pending = $state(0);
+  error = $state<string | undefined>();
+  prompts = $state.raw<Prompts>({ approvals: [], questions: [] });
+  queued = $state.raw<QueuedSubmission[]>([]);
+
+  get connection(): Connection {
+    return this.#machine?.connection ?? "connecting";
   }
 
-  // Cached menus are presentation only. Actions always use the live frame.
-  get settingsMenu() {
-    const shown = this.frame?.view;
-    if (!shown || shown.Displayed?.ID !== shown.Main.ID) return undefined;
-    const menu = shown.Menu;
-    if (menu?.Kind === "settings" && ["/model", "/effort", "/reasoning"].includes(menu.Setting))
-      return menu.Loading && !menu.Choices.length
-        ? { ...menu, Choices: this.#settings.get(this.settingKey(menu.Setting))?.Choices ?? [] }
-        : menu;
-    if (!this.openingSetting) return undefined;
-    const cached = this.#settings.get(this.settingKey(this.openingSetting));
-    return cached ? { ...cached, Loading: true } : undefined;
+  get threadId(): string | undefined {
+    return this.#id;
   }
-  private settingKey(command: string): string {
-    return `${this.frame?.view.Input.ID}:${this.frame?.view.Caption?.Model}:${command}`;
+
+  get machine(): Machine | undefined {
+    return this.#machine;
   }
-  async openSetting(command: string): Promise<void> {
-    const source = this.#source;
-    this.openingSetting = command;
-    await this.send({ command });
-    if (this.#source === source && this.openingSetting === command) this.openingSetting = undefined;
+
+  connect(id: string, machine: Machine): void {
+    if (this.#id === id && this.#machine === machine && this.#stopRequests) return;
+    this.release();
+    this.#id = id;
+    this.#machine = machine;
+    this.error = undefined;
+    this.prompts = { approvals: [], questions: [] };
+    this.queued = [];
+    this.#promptStates.clear();
+    this.#stopRequests = machine.onServerRequest((req) => this.#onServerRequest(req));
+    this.#stopNotifications = machine.onNotification((n) => this.#onNotification(n));
+    void this.#refreshQueue();
   }
-  private completionKey(): string {
-    const editor = this.editor();
-    return JSON.stringify([this.frame?.view.Input.ID, editor.text, editor.cursorBack]);
+
+  release(id?: string, machine?: Machine): void {
+    if (id && this.#id !== id) return;
+    if (machine && this.#machine !== machine) return;
+    this.#stopRequests?.();
+    this.#stopRequests = undefined;
+    this.#stopNotifications?.();
+    this.#stopNotifications = undefined;
+    this.#id = undefined;
+    this.#machine = undefined;
+    this.prompts = { approvals: [], questions: [] };
+    this.queued = [];
+    this.#promptStates.clear();
+    this.error = undefined;
   }
-  get liveCompletion() {
-    const frame = this.frame;
-    const menu = frame?.view.Menu;
-    const target = frame?.completionTarget;
-    if (
-      !menu ||
-      menu.Kind !== "" ||
-      menu.Dialog ||
-      !target ||
-      target.Call ||
-      target.Question ||
-      target.Request ||
-      target.Revision !== this.editor().revision
-    )
-      return undefined;
-    return menu;
-  }
-  get completionMenu() {
-    if (this.liveCompletion) {
-      const menu = this.liveCompletion;
-      return menu.Loading && !menu.Choices.length
-        ? { ...menu, Choices: this.#completions.get(this.completionKey())?.Choices ?? [] }
-        : menu;
+
+  editor(key = this.#id ?? "default"): Editor {
+    let entry = this.#editors.get(key);
+    if (!entry) {
+      entry = { text: "", items: [], revision: 0 };
+      this.#editors.set(key, entry);
     }
-    // A current response with no menu also represents an intentional dismissal.
-    if (this.frame?.completionTarget?.Revision === this.editor().revision) return undefined;
-    const cached = this.#completions.get(this.completionKey());
-    return cached ? { ...cached, Loading: true } : undefined;
-  }
-  private clearMenus(): void {
-    this.#settings.clear();
-    this.#completions.clear();
-    this.openingSetting = undefined;
-  }
-  editor(): Editor {
-    const id = this.frame?.view.Input.ID || this.#source?.thread || "";
-    return this.editors[id] ?? this.emptyEditor;
-  }
-  private ensureEditor(thread: string): Editor {
-    return (this.editors[thread] ??= { text: "", cursorBack: 0, revision: 0, items: [] });
-  }
-  target(): EditorTarget {
-    return { Call: "", Question: "", Request: "", Revision: this.editor().revision };
-  }
-  metadata() {
-    const editor = this.editor();
-    return { Target: this.target(), Draft: textDraft(editor.text, editor.cursorBack) };
+    return entry;
   }
 
   prompt(id: string): PromptState {
-    const source = this.#source;
-    if (!source) throw new Error("A prompt requires an attached control view.");
-    source.prompts[id] ??= { drafts: {}, reason: "", sending: false, accepted: false };
-    return source.prompts[id];
-  }
-
-  private reconcilePrompts(source: ControlView, ids: string[]): void {
-    const kept = new Set(ids);
-    for (const [id, prompt] of Object.entries(source.prompts)) {
-      if (kept.has(id)) delete prompt.resolved;
-      else if (prompt.sending || Object.values(prompt.drafts).some((draft) => draft.sending))
-        prompt.resolved = true;
-      else delete source.prompts[id];
-    }
-  }
-
-  private retire(source: ControlView): void {
-    if (
-      source === this.#source ||
-      source === this.#destination ||
-      this.#views.get(source.thread) !== source ||
-      (!this.#source?.event && !this.#source?.noView) ||
-      this.#source.connection !== "open" ||
-      source.work ||
-      source.inputs ||
-      source.outcome === "unknown"
-    )
-      return;
-    const frame = source.event?.frame;
-    if (
-      (!frame && source.received) ||
-      source.acknowledged < source.effect ||
-      frame?.pendingEffects ||
-      frame?.effects.some(
-        (effect) =>
-          effect.Recovery ||
-          source.event?.attachment !== source.applied ||
-          effect.ID > source.acknowledged,
-      ) ||
-      frame?.questions?.length ||
-      frame?.approvals?.length ||
-      Object.values(source.prompts).some(
-        (prompt) =>
-          !prompt.resolved ||
-          prompt.sending ||
-          Object.values(prompt.drafts).some((draft) => draft.sending),
-      )
-    )
-      return;
-    this.#views.delete(source.thread);
-    source.lifetime.abort();
-    source.stop?.();
-  }
-
-  private retireInactive(): void {
-    for (const source of this.#views.values()) this.retire(source);
-  }
-
-  connect(thread: string, machine: Machine): void {
-    if (this.#source?.thread === thread && this.#source.machine === machine) return;
-    if (this.#source && this.#source.machine !== machine) this.close();
-    if (!this.family?.threads.includes(thread)) this.family = undefined;
-    this.cancelResume();
-    let source = this.#views.get(thread);
-    if (!source) {
-      source = new ControlView(thread, machine);
-      this.#views.set(thread, source);
-    }
-    this.#source = source;
-    this.ensureEditor(source.thread);
-    this.event = undefined;
-    this.clearMenus();
-    this.error = source.operationError;
-    this.copied = undefined;
-    if (source.event) {
-      this.receive(source.event);
-      this.retireInactive();
-    }
-    if (!source.stop) this.subscribe(source);
-  }
-
-  // Component cleanup releases only the view it borrowed, not an adopted successor.
-  release(thread: string, machine: Machine): void {
-    if (this.#source?.machine !== machine) return;
-    // Keyed thread components are replaced during ordinary navigation. Their
-    // control views retain unresolved input and drafts on the selected machine.
-    if (view.machine === machine.id && view.session && view.session !== thread) return;
-    this.close();
-  }
-
-  recover(): void {
-    const source = this.#source;
-    if (
-      !source?.unavailable ||
-      source.discovery === source.machine.sessions ||
-      !source.machine.sessions?.some((session) => session.id === source.thread)
-    )
-      return;
-    source.stop?.();
-    this.subscribe(source);
-  }
-
-  retainInput(): (error?: string) => void {
-    const source = this.#source;
-    if (!source) return () => {};
-    source.inputs++;
-    return (error) => {
-      source.inputs--;
-      if (error) source.operationError = error;
-      if (this.#source !== source) {
-        this.retire(source);
-        return;
-      }
-      if (error) this.failResume(error);
-      this.advanceResume();
-    };
-  }
-
-  private subscribe(source: ControlView): void {
-    source.discovery = source.machine.sessions;
-    source.stop = source.machine.subscribe(
-      "view/attach",
-      {
-        get thread() {
-          return source.thread;
-        },
-      },
-      (event) => {
-        if (source.lifetime.signal.aborted || !["snapshot", "patch"].includes(event.kind)) return;
-        if (!source.event && event.kind !== "snapshot") return;
-        const initial = !source.event;
-        const next = event.data as NativeEvent;
-        if (
-          initial &&
-          (!next.attachment ||
-            !next.frame?.view?.Version ||
-            (next.frame.view.Main?.ID !== source.thread &&
-              !(
-                next.frame.switch?.From === source.thread &&
-                next.frame.switch.To === next.frame.view.Main?.ID &&
-                next.frame.switch.Origin === next.attachment
-              )))
-        ) {
-          const error = "The destination did not provide a valid thread view.";
-          if (source === this.#destination) this.failResume(error);
-          else {
-            source.connection = "lost";
-            source.error = error;
-          }
-          return;
-        }
-        source.event = next;
-        source.received = true;
-        source.connection = "open";
-        this.reconcilePrompts(source, [
-          ...(next.frame.questions ?? []).map((call) => call.ID),
-          ...(next.frame.approvals ?? []).map((approval) => approval.ID),
-        ]);
-        for (const settle of this.#settle) settle();
-        if (source === this.#source) {
-          this.receive(next);
-          if (initial) this.retireInactive();
-        } else if (source === this.#destination) this.advanceResume();
-        else this.retire(source);
-      },
-      (connection, failure) => {
-        if (source.lifetime.signal.aborted) return;
-        source.noView = failure?.status === 405 && source !== this.#destination;
-        if (source.noView) connection = "open";
-        source.connection = connection;
-        source.error = source.noView ? undefined : failure?.message;
-        source.unavailable = source.noView || failure?.status === 404 || failure?.status === 410;
-        if (connection !== "open" || source.noView) source.event = undefined;
-        if (source === this.#source) {
-          if (connection !== "open" || source.noView) {
-            this.clearMenus();
-            this.event = undefined;
-          }
-          if (source.noView) this.retireInactive();
-        } else if (source === this.#destination && failure) this.failResume(failure.message);
-      },
-    );
-  }
-
-  private receive(next: NativeEvent): void {
-    const source = this.#source;
-    if (!source) return;
-    if (next.frame.view.Input.ID !== this.frame?.view.Input.ID) this.clearMenus();
-    if (next.attachment !== source.applied) {
-      this.clearMenus();
-      source.effect = source.receipt = source.acknowledged = 0;
-      source.applied = next.attachment;
-    }
-    const switched = next.frame.switch;
-    if (switched?.To && switched.Origin === next.attachment && switched.From === source.thread) {
-      const selected = view.machine === source.machine.id && view.session === source.thread;
-      this.cancelResume();
-      this.#views.delete(source.thread);
-      source.thread = switched.To;
-      this.#views.set(source.thread, source);
-      if (selected) open(source.thread, true);
-    }
-    let destination: string | undefined;
-    this.ensureEditor(next.frame.view.Input.ID);
-    this.event = next;
-    void this.noticePainted(next);
-    this.family = next.frame.family
-      ? { root: next.frame.family.root, threads: next.frame.family.threads }
-      : undefined;
-    const menu = next.frame.view.Menu;
-    if (menu && !menu.Loading && !menu.Problem) {
-      if (menu.Kind === "settings" && ["/model", "/effort", "/reasoning"].includes(menu.Setting)) {
-        this.#settings.set(this.settingKey(menu.Setting), menu);
-        if (this.#settings.size > 24) this.#settings.delete(this.#settings.keys().next().value!);
-      }
-      if (this.liveCompletion) {
-        const key = this.completionKey();
-        this.#completions.delete(key);
-        this.#completions.set(key, menu);
-        if (this.#completions.size > 24)
-          this.#completions.delete(this.#completions.keys().next().value!);
-      }
-    }
-    for (const settle of this.#settle) settle();
-    for (const effect of next.frame.effects ?? []) {
-      if (effect.ID <= source.effect) continue;
-      if (effect.Recovery) {
-        source.effect = effect.ID;
-        continue;
-      }
-      const restored = effect.Restore ?? effect.ShellRestore;
-      if (
-        restored &&
-        (restored.Selections.length || restored.AnswerImages.length || restored.Attachments.length)
-      ) {
-        this.error =
-          "This completion needs the native editor. Use Attachments to include files here.";
-        source.effect = effect.ID;
-        continue;
-      }
-      const key = effect.Thread || next.frame.view.Main.ID;
-      const editor = this.ensureEditor(key);
-      if (effect.Target && effect.Target.Revision !== editor.revision) {
-        this.error = "The draft changed before the requested insertion completed.";
-      } else {
-        if (effect.Action) {
-          const action = effect.Action;
-          const bytes = new TextEncoder().encode(editor.text);
-          const decoder = new TextDecoder();
-          const caret = bytes.length - editor.cursorBack;
-          if (action.Kind === 1)
-            editor.text =
-              decoder.decode(bytes.slice(0, caret)) +
-              action.Text +
-              decoder.decode(bytes.slice(caret));
-          else if (action.Kind === 2)
-            editor.text =
-              decoder.decode(bytes.slice(0, action.Start)) +
-              decoder.decode(bytes.slice(action.End));
-          else if (action.Kind === 3) editor.cursorBack = bytes.length - action.Start;
-          else this.error = "This editor action is available in the native terminal.";
-          editor.revision++;
-        }
-        if (restored) {
-          // Completed `$skill` text rebinds at submission. Completed files and
-          // images become host paths; an image's `[Image N]` placeholder, in
-          // text order, is dropped because its attachment adds its own.
-          const bytes = new TextEncoder().encode(restored.Text);
-          const decoder = new TextDecoder();
-          let text = "";
-          let at = 0;
-          for (const image of restored.Images) {
-            text += decoder.decode(bytes.slice(at, image.Start));
-            at = image.End;
-          }
-          text += decoder.decode(bytes.slice(at));
-          for (const token of [...restored.Files, ...restored.Images])
-            if (!editor.items.some((item) => "path" in item && item.path === token.Path))
-              editor.items.push({ id: newIdentity(), path: token.Path });
-          if (!editor.text) {
-            const caret = bytes.length - restored.CursorBack;
-            editor.cursorBack =
-              restored.CursorBack -
-              restored.Images.reduce(
-                (removed, image) => removed + (image.Start >= caret ? image.End - image.Start : 0),
-                0,
-              );
-          }
-          editor.text = [text, editor.text].filter(Boolean).join("\n");
-          editor.revision++;
-          editor.focus = editor.revision;
-        }
-        if (effect.Selection) {
-          const selection = effect.Selection;
-          const description = selection.Description || "output";
-          let name = description;
-          for (
-            let n = 2;
-            editor.text.includes(`[Selected ${name}]`) ||
-            editor.items.some((item) => referenceLabel(item) === `[Selected ${name}]`);
-            n++
-          )
-            name = `${description} ${n}`;
-          const bytes = new TextEncoder().encode(editor.text);
-          const caret = bytes.length - editor.cursorBack;
-          const decoder = new TextDecoder();
-          editor.text =
-            decoder.decode(bytes.slice(0, caret)) +
-            `[Selected ${name}] ` +
-            decoder.decode(bytes.slice(caret));
-          editor.items.push({
-            id: newIdentity(),
-            file: new File([selection.Text], name),
-            reference: selection.Source || "",
-          });
-          editor.revision++;
-          editor.focus = editor.revision;
-        }
-        if (effect.Recall) {
-          editor.text = effect.Recall;
-          editor.cursorBack = 0;
-          editor.items = [];
-          editor.revision++;
-        }
-      }
-      if (effect.Clipboard !== null) this.copied = effect.Clipboard;
-      source.effect = effect.ID;
-      if (effect.Reattach) destination = effect.Reattach;
-    }
-    if (source.effect > source.receipt) {
-      const effect = (source.receipt = source.effect);
-      void this.send(
-        {
-          receipt: {
-            Effect: effect,
-            Notice: { Attachment: 0, Claim: "", Feedback: 0, Composer: false, Content: false },
-          },
-        },
-        undefined,
-        true,
-      ).then((error) => {
-        if (source.event?.attachment !== next.attachment) return;
-        if (error) {
-          source.operationError = error;
-          if (this.#source === source) {
-            this.error = error;
-            this.failResume(error);
-          }
-          return;
-        }
-        source.acknowledged = effect;
-        if (this.#source === source) this.advanceResume();
-        else this.retire(source);
+    let state = this.#promptStates.get(id);
+    if (!state) {
+      const created = $state<PromptState>({
+        drafts: {},
+        reason: "",
+        sending: false,
+        accepted: false,
       });
+      this.#promptStates.set(id, created);
+      state = created;
     }
-    if (destination && view.machine === source.machine.id && view.session === source.thread)
-      this.resume(destination);
-    this.advanceResume();
+    return state;
   }
 
-  private resume(thread: string): void {
-    const source = this.#source;
-    if (!source || thread === source.thread || this.#destination?.thread === thread) return;
-    this.cancelResume();
-    this.#destination = new ControlView(thread, source.machine);
-    this.resuming = "Opening resumed thread…";
-    this.subscribe(this.#destination);
+  #onServerRequest(req: ServerRequest): void {
+    if (!this.#id) return;
+    const mapped = serverRequestToPrompt(req, this.#id);
+    if (!mapped) return;
+    if (mapped.kind === "approval") {
+      if (this.prompts.approvals.some((a) => a.id === mapped.approval.id)) return;
+      this.prompts = {
+        ...this.prompts,
+        approvals: [...this.prompts.approvals, mapped.approval],
+      };
+    } else {
+      if (this.prompts.questions.some((q) => q.id === mapped.call.id)) return;
+      this.prompts = {
+        ...this.prompts,
+        questions: [...this.prompts.questions, mapped.call],
+      };
+    }
   }
 
-  private failResume(error: string): void {
-    if (!this.#destination) return;
-    this.cancelResume();
-    this.error = `Could not resume: ${error} The current thread is still open. Try resuming again.`;
-  }
-
-  private cancelResume(): void {
-    this.#destination?.lifetime.abort();
-    this.#destination?.stop?.();
-    this.#destination = undefined;
-    this.resuming = undefined;
-  }
-
-  private advanceResume(): void {
-    const source = this.#source,
-      destination = this.#destination;
-    if (!source || !destination?.event || !this.frame) return;
-    if (view.machine !== source.machine.id || view.session !== source.thread) {
-      this.cancelResume();
+  #onNotification(notification: ServerNotification): void {
+    if (!this.#id) return;
+    if (notification.method === "serverRequest/resolved") {
+      if (notification.params.threadId !== this.#id) return;
+      const resolvedId = String(notification.params.requestId);
+      this.prompts = {
+        approvals: this.prompts.approvals.filter((a) => a.id !== resolvedId),
+        questions: this.prompts.questions.filter((q) => q.id !== resolvedId),
+      };
+      this.#promptStates.delete(resolvedId);
       return;
     }
-    if (
-      source.work ||
-      source.inputs ||
-      source.acknowledged < source.effect ||
-      this.frame.pendingEffects ||
-      this.frame.effects?.some((effect) => effect.Recovery)
-    ) {
-      this.resuming = "Waiting for current input before resuming…";
-      return;
+    if (notification.method === "thread/queue/changed") {
+      if (notification.params.threadId !== this.#id) return;
+      void this.#refreshQueue();
     }
-    this.#destination = undefined;
-    const previous = this.#views.get(destination.thread);
-    previous?.lifetime.abort();
-    previous?.stop?.();
-    this.#views.set(destination.thread, destination);
-    this.#source = destination;
-    this.event = undefined;
-    this.error = this.resuming = undefined;
-    open(destination.thread, true);
-    this.receive(destination.event);
-    this.retireInactive();
   }
 
-  close(): void {
-    this.clearMenus();
-    this.cancelResume();
-    for (const source of this.#views.values()) {
-      source?.lifetime.abort();
-      source?.stop?.();
+  async #refreshQueue(): Promise<void> {
+    if (!this.#id || !this.#machine || this.#machine.connection !== "open") return;
+    const threadId = this.#id;
+    const machine = this.#machine;
+    try {
+      const all: QueuedSubmission[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const response = await machine.request<ThreadQueueListResponse>("thread/queue/list", {
+          threadId,
+          ...(cursor ? { cursor } : {}),
+        });
+        if (this.#id !== threadId || this.#machine !== machine) return;
+        for (const item of response.data ?? []) all.push(item);
+        const next = response.nextCursor ?? undefined;
+        if (!next || next === cursor) break;
+        cursor = next;
+      }
+      this.queued = all;
+    } catch {
+      // Queue listing is optional.
     }
-    this.#views.clear();
-    this.#source = undefined;
-    this.event = undefined;
-    this.family = undefined;
-    this.error = undefined;
-    this.resuming = undefined;
-    this.editors = {};
-    this.copied = undefined;
   }
-  async send(
-    operation: RemoteOperation,
-    signal?: AbortSignal,
-    quiet = false,
-    event = this.event,
+
+  async sendInput(
+    text: string,
+    attachments: Attachment[] = [],
+    options: { queue?: boolean; signal?: AbortSignal } = {},
   ): Promise<string | undefined> {
-    const active = this.#source;
-    const source =
-      active?.event?.attachment === event?.attachment
-        ? active
-        : [...this.#views.values(), this.#destination].find(
-            (candidate) => candidate && candidate.event?.attachment === event?.attachment,
-          );
-    if (!event || !source || source.connection !== "open") {
-      const error =
-        event && this.event && event.attachment !== this.event.attachment
-          ? "The control view changed. Select the action again."
-          : "Wait for this thread's control view to connect.";
-      if (!quiet) this.error = error;
-      return error;
-    }
-    const { machine, thread } = source;
-    const lifetime = source.lifetime.signal;
-    const body: RemoteMutation = {
-      attachment: event.attachment,
-      version: event.frame.view.Version,
-      operation,
-    };
-    const requestSignal = signal ? AbortSignal.any([signal, lifetime]) : lifetime;
-    const run = async () => {
-      if (requestSignal.aborted || source.event?.attachment !== body.attachment) {
-        const error = "The control view changed. Select the action again.";
-        if (!quiet) source.operationError = error;
-        if (!quiet && !lifetime.aborted && this.#source === source) this.error = error;
-        return error;
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || !machine) return "Open a thread on an execution machine first.";
+    const input = toNativeUserInput(text, attachments);
+    if (!input.length) return "Write a message or attach something.";
+    this.pending++;
+    this.error = undefined;
+    try {
+      if (options.queue) {
+        const params: ThreadQueueAddParams = {
+          threadId: id,
+          input,
+          clientUserMessageId: newClientMessageId(),
+        };
+        await machine.request("thread/queue/add", params, { signal: options.signal });
+        void this.#refreshQueue();
+      } else if (stream.activeTurnId) {
+        const params: TurnSteerParams = {
+          threadId: id,
+          expectedTurnId: stream.activeTurnId,
+          input,
+        };
+        await machine.request("turn/steer", params, { signal: options.signal });
+      } else {
+        const params: TurnStartParams = { threadId: id, input };
+        await machine.request("turn/start", params, { signal: options.signal });
       }
-      if (!quiet) {
-        source.operationError = undefined;
-        source.outcome = undefined;
-        source.pending++;
-        if (this.#source === source) this.error = undefined;
-      }
-      try {
-        const result = await machine.request<NativeResult>(
-          "view/intent",
-          { thread, body },
-          { signal: requestSignal },
-        );
-        if (!quiet) await this.settled(source, body.attachment, result.version, requestSignal);
-        return undefined;
-      } catch (failure) {
-        // A stale-target refusal asks for the action again on the current view.
-        const error =
-          failure instanceof TransportError &&
-          failure.status === 409 &&
-          /refresh/i.test(failure.message)
-            ? stale
-            : errorText(failure, true);
-        if (!lifetime.aborted && !quiet) {
-          source.operationError = error;
-          source.outcome = failure instanceof TransportError ? failure.kind : "unknown";
-          if (this.#source === source) {
-            this.error = error;
-            this.failResume(error);
-          }
-        }
-        return error;
-      } finally {
-        if (!quiet) {
-          source.pending--;
-        }
-      }
-    };
-    source.work++;
-    const result = source.queue.then(run, run).finally(() => {
-      source.work--;
-      if (this.#source === source) this.advanceResume();
-      else this.retire(source);
-    });
-    source.queue = result;
-    return result;
-  }
-  private settled(
-    source: ControlView,
-    attachment: string,
-    version: Version,
-    signal: AbortSignal,
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const done = (error?: Error) => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", abort);
-        this.#settle.delete(check);
-        if (error) reject(error);
-        else resolve();
-      };
-      const check = () => {
-        const current = source.event;
-        if (current?.attachment !== attachment)
-          return done(new Error("The view changed before confirmation."));
-        if (
-          current.frame.view.Version.Attachment === version.Attachment &&
-          current.frame.view.Version.Revision >= version.Revision
-        )
-          done();
-      };
-      const abort = () => done(new Error("The view disconnected before confirmation."));
-      const timer = setTimeout(
-        () => done(new Error("The operation was admitted but its updated view has not arrived.")),
-        10000,
-      );
-      this.#settle.add(check);
-      signal.addEventListener("abort", abort, { once: true });
-      if (signal.aborted) abort();
-      else check();
-    });
-  }
-  async steerWaiting(): Promise<void> {
-    const event = this.event;
-    if (!event) return;
-    await this.send({
-      composer: {
-        Intent: {
-          Thread: event.frame.view.Main.ID,
-          Version: event.frame.view.Version,
-          Target: this.target(),
-          Operation: 10,
-          Work: event.frame.view.Interrupt,
-        },
-        Draft: textDraft(),
-        Consumed: false,
-      },
-    });
-  }
-  async editWaiting(): Promise<void> {
-    const event = this.event;
-    if (!event) return;
-    const known = new Set(event.frame.effects.map((effect) => effect.ID));
-    const error = await this.send({
-      composer: {
-        Intent: {
-          Thread: event.frame.view.Main.ID,
-          Version: event.frame.view.Version,
-          Target: this.target(),
-          Operation: 6,
-          Work: event.frame.view.Interrupt,
-        },
-        Draft: textDraft(),
-        Consumed: false,
-      },
-    });
-    if (error || this.event?.attachment !== event.attachment) return;
-    for (const effect of this.frame?.effects ?? []) {
-      if (effect.Recovery && !known.has(effect.ID))
-        await this.send({ recovery: { effect: effect.ID, action: "edit" } });
+      return undefined;
+    } catch (err) {
+      const message = errorText(err, true);
+      this.error = message;
+      return message;
+    } finally {
+      this.pending = Math.max(0, this.pending - 1);
     }
   }
-  // Typing refreshes completions quietly.
-  complete(): Promise<string | undefined> {
-    return this.send({ completion: { ...this.metadata(), Explicit: false } }, undefined, true);
+
+  async interrupt(): Promise<string | undefined> {
+    const id = this.#id;
+    const machine = this.#machine;
+    const turnId = stream.activeTurnId;
+    if (!id || !machine || !turnId) return "No active turn to interrupt.";
+    this.pending++;
+    try {
+      const params: TurnInterruptParams = { threadId: id, turnId };
+      await machine.request("turn/interrupt", params);
+      return undefined;
+    } catch (err) {
+      return errorText(err, true);
+    } finally {
+      this.pending = Math.max(0, this.pending - 1);
+    }
+  }
+
+  async rename(name: string): Promise<string | undefined> {
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || !machine) return "Open a thread on an execution machine first.";
+    this.pending++;
+    try {
+      const params: ThreadSetNameParams = { threadId: id, name };
+      await machine.request("thread/name/set", params);
+      if (stream.session?.thread === id) {
+        stream.session = { ...stream.session, title: name };
+      }
+      return undefined;
+    } catch (err) {
+      return errorText(err, true);
+    } finally {
+      this.pending = Math.max(0, this.pending - 1);
+    }
+  }
+
+  async updateSettings(patch: {
+    model?: string | null;
+    effort?: ReasoningEffort | null;
+    serviceTier?: string | null;
+  }): Promise<string | undefined> {
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || !machine) return "Open a thread on an execution machine first.";
+    this.pending++;
+    try {
+      const params: ThreadSettingsUpdateParams = { threadId: id, ...patch };
+      await machine.request("thread/settings/update", params);
+      return undefined;
+    } catch (err) {
+      return errorText(err, true);
+    } finally {
+      this.pending = Math.max(0, this.pending - 1);
+    }
+  }
+
+  async fork(lastTurnId?: string): Promise<{ id: string } | { error: string }> {
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || !machine) return { error: "Open a thread on an execution machine first." };
+    this.pending++;
+    try {
+      const response = await machine.request<ThreadForkResponse>("thread/fork", {
+        threadId: id,
+        lastTurnId: lastTurnId ?? null,
+      });
+      return { id: response.thread.id };
+    } catch (err) {
+      return { error: errorText(err, true) };
+    } finally {
+      this.pending = Math.max(0, this.pending - 1);
+    }
+  }
+
+  async revert(beforeTurnId: string, beforeItemId?: string): Promise<string | undefined> {
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || !machine) return "Open a thread on an execution machine first.";
+    this.pending++;
+    try {
+      await machine.request<ThreadRevertResponse>("thread/revert", {
+        threadId: id,
+        beforeTurnId,
+        beforeItemId: beforeItemId ?? null,
+      });
+      return undefined;
+    } catch (err) {
+      return errorText(err, true);
+    } finally {
+      this.pending = Math.max(0, this.pending - 1);
+    }
+  }
+
+  decideApproval(approval: Approval, choiceIndex: number, reason = ""): string | undefined {
+    const machine = this.#machine;
+    if (!machine || machine.connection !== "open") {
+      return "Wait for this machine to reconnect before answering.";
+    }
+    const choice = approval.choices.find((c) => c.id === choiceIndex);
+    if (!choice || (choice.decision !== "accept" && choice.decision !== "decline")) {
+      return "Only one-time allow or decline decisions are permitted remotely.";
+    }
+    if (approval.method === "item/commandExecution/requestApproval") {
+      const response: CommandExecutionRequestApprovalResponse = { decision: choice.decision };
+      machine.respond(approval.requestId, response);
+    } else if (approval.method === "item/fileChange/requestApproval") {
+      const response: FileChangeRequestApprovalResponse = { decision: choice.decision };
+      machine.respond(approval.requestId, response);
+    } else if (approval.method === "shellGuard/requestApproval") {
+      const response: ShellGuardRequestApprovalResponse = {
+        decision: choice.decision,
+        reason: choice.decision === "decline" && reason.trim() ? reason.trim() : null,
+      };
+      machine.respond(approval.requestId, response);
+    }
+    this.prompts = {
+      ...this.prompts,
+      approvals: this.prompts.approvals.filter((a) => a.id !== approval.id),
+    };
+    this.#promptStates.delete(approval.id);
+    return undefined;
+  }
+
+  answerQuestions(call: QuestionCall, answers: QuestionAnswer[]): string | undefined {
+    const machine = this.#machine;
+    if (!machine || machine.connection !== "open") {
+      return "Wait for this machine to reconnect before answering.";
+    }
+    if (call.secretBlocked || call.questions.some((q) => q.isSecret)) {
+      return "Secret prompts can only be answered locally on the execution machine.";
+    }
+    const payload: ToolRequestUserInputResponse = {
+      answers: answers.map((answer): ToolRequestUserInputAnswer => ({
+        id: answer.question,
+        ...(answer.choice !== undefined ? { choice: answer.choice } : {}),
+        ...(answer.note ? { note: answer.note } : {}),
+        ...(answer.text ? { other: answer.text } : {}),
+        ...(answer.skip ? { skipped: true } : {}),
+      })),
+    };
+    machine.respond(call.requestId, payload);
+    this.prompts = {
+      ...this.prompts,
+      questions: this.prompts.questions.filter((q) => q.id !== call.id),
+    };
+    this.#promptStates.delete(call.id);
+    return undefined;
   }
 }
-export const semantic = new Semantic();
+
+export const semantic = new ThreadControl();

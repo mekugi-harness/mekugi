@@ -18,15 +18,19 @@ const defaultLinkOpen =
 md.renderer.rules.link_open = (tokens, i, options, env, self) => {
   const href = String(tokens[i].attrGet("href") ?? "");
   if (href.startsWith(runPrefix)) {
-    tokens[i].attrSet("href", "#panel-content");
+    tokens[i].attrs = [];
+    tokens[i].tag = "span";
+    tokens[i].attrSet("class", "file-link");
     tokens[i].attrSet("data-run-link", href);
-    return defaultLinkOpen(tokens, i, options, env, self);
+    tokens[i].attrSet("title", href);
+    const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
+    if (close) close.tag = "span";
+    return self.renderToken(tokens, i, options);
   }
   if (!web.test(href)) {
     tokens[i].attrs = [];
-    tokens[i].tag = local(href) ? "a" : "span";
+    tokens[i].tag = "span";
     if (local(href)) {
-      tokens[i].attrSet("href", "#");
       let path = href;
       if (!href.startsWith("file:")) {
         try {
@@ -40,7 +44,7 @@ md.renderer.rules.link_open = (tokens, i, options, env, self) => {
     tokens[i].attrSet("class", "file-link");
     tokens[i].attrSet("title", href);
     const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
-    if (close) close.tag = tokens[i].tag;
+    if (close) close.tag = "span";
     return self.renderToken(tokens, i, options);
   }
   tokens[i].attrSet("target", "_blank");

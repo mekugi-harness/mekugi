@@ -1,95 +1,369 @@
 import { roleColor } from "./agents";
-import type { Machine } from "./hub.svelte";
-import { errorText, isSuperseded, type Connection, type RPCMethod } from "./transport";
+import { threadStatusToStatus, type Machine } from "./hub.svelte";
+import { errorText, TransportError, type Connection } from "./transport";
 import type {
-  Action,
   Agent,
+  AgentIdentity,
+  AgentState,
+  Change,
+  ContentReference,
+  ContentResourceResponse,
   Entry,
-  FeedChange,
   Input,
-  Listed,
-  Message,
-  Playback,
   Preview,
+  ReviewedFile,
   Roster,
   SavedReview,
+  ServerNotification,
   Session,
   Status,
-  PageCursor,
-  PageResult,
-  ContentResult,
-  ContentReference,
-  DeferredSections,
-  AgentIdentity,
+  Thread,
+  ThreadChangesReadResponse,
+  ThreadItem,
+  ThreadListResponse,
+  ThreadReadResponse,
+  ThreadResumeResponse,
+  ThreadStatus,
+  Turn,
+  Value,
 } from "./protocol";
 
 export type { Connection } from "./transport";
+
 export interface Feed {
   attachment?: string;
   order: number[];
   entries: Record<number, Entry>;
   revision?: number;
-  earlier?: PageCursor | null;
-  loaded?: number[];
 }
+
 export interface Gone {
   status: number;
   text: string;
 }
-interface PageFailure {
-  attachment: string;
-  revision: number;
-  text: string;
-}
+
 const empty: Feed = { order: [], entries: {} };
+
+function threadStatusToAgentState(status: ThreadStatus): AgentState {
+  switch (status.type) {
+    case "active":
+      return status.activeFlags.includes("waitingOnApproval") ||
+        status.activeFlags.includes("waitingOnUserInput")
+        ? "waiting"
+        : "working";
+    case "systemError":
+      return "error";
+    case "idle":
+      return "idle";
+    case "notLoaded":
+      return "done";
+  }
+}
+
+function itemToEntry(
+  item: ThreadItem,
+  seq: number,
+  turnIndex: number,
+  turnId: string,
+  agent = "/root",
+): Entry {
+  const base: Entry = {
+    seq,
+    position: seq,
+    itemId: item.id,
+    turnId,
+    agent,
+    observed: item.startedAtMs ?? undefined,
+    content: { turnId, itemId: item.id },
+  };
+  switch (item.type) {
+    case "userMessage": {
+      const parts: string[] = [];
+      const images: string[] = [];
+      for (const input of item.content) {
+        if (input.type === "text") parts.push(input.text);
+        else if (input.type === "localImage") images.push(input.path);
+        else if (input.type === "image" && "url" in input) images.push(input.url);
+        else if (input.type === "skill") parts.push(`$${input.name}`);
+        else if (input.type === "mention") parts.push(`@${input.name}`);
+      }
+      return {
+        ...base,
+        kind: "user",
+        turn: turnIndex,
+        text: parts.join("\n"),
+        images: images.length ? images : undefined,
+      };
+    }
+    case "agentMessage":
+      return {
+        ...base,
+        kind: "assistant",
+        text: item.text,
+      };
+    case "plan":
+      return {
+        ...base,
+        kind: "plan",
+        text: item.text,
+      };
+    case "reasoning": {
+      const text = [...(item.summary ?? []), ...(item.content ?? [])].filter(Boolean).join("\n\n");
+      return {
+        ...base,
+        kind: "thinking",
+        text,
+      };
+    }
+    case "commandExecution": {
+      const running = item.status === "inProgress";
+      const failed = item.status === "failed" || item.status === "declined";
+      const tail = item.aggregatedOutput ? item.aggregatedOutput.split("\n") : undefined;
+      const value: Value = {
+        kind: "shell",
+        verb: "run",
+        code: item.command,
+        workdir: item.cwd || undefined,
+        exitCode: item.exitCode,
+        duration: item.durationMs ?? undefined,
+        running,
+        failed,
+        tail,
+      };
+      return {
+        ...base,
+        kind: "tool",
+        running,
+        outcome: failed ? "error" : undefined,
+        values: [value],
+      };
+    }
+    case "fileChange": {
+      const running = item.status === "inProgress";
+      const failed = item.status === "failed" || item.status === "declined";
+      const changes: Change[] = item.changes.map((c) => ({
+        kind: c.kind.type,
+        path: c.path,
+        note: c.diff ? undefined : c.kind.type,
+        new: c.diff ? c.diff.split("\n") : undefined,
+      }));
+      const value: Value = {
+        kind: "edit",
+        verb: "edit",
+        running,
+        failed,
+        changes,
+      };
+      return {
+        ...base,
+        kind: "tool",
+        running,
+        outcome: failed ? "error" : undefined,
+        values: [value],
+      };
+    }
+    case "mcpToolCall": {
+      const running = item.status === "inProgress";
+      const failed = item.status === "failed";
+      const value: Value = {
+        kind: "tool",
+        verb: `${item.server}:${item.tool}`,
+        running,
+        failed,
+        duration: item.durationMs ?? undefined,
+        details: item.error?.message,
+      };
+      return {
+        ...base,
+        kind: "tool",
+        running,
+        outcome: failed ? "error" : undefined,
+        values: [value],
+      };
+    }
+    case "dynamicToolCall": {
+      const running = item.status === "inProgress";
+      const failed = item.status === "failed" || item.success === false;
+      const value: Value = {
+        kind: "tool",
+        verb: item.tool,
+        running,
+        failed,
+        duration: item.durationMs ?? undefined,
+      };
+      return {
+        ...base,
+        kind: "tool",
+        running,
+        outcome: failed ? "error" : undefined,
+        values: [value],
+      };
+    }
+    case "webSearch":
+      return {
+        ...base,
+        kind: "tool",
+        values: [{ kind: "search", verb: "search", label: item.query }],
+      };
+    case "imageView":
+      return {
+        ...base,
+        kind: "tool",
+        images: [item.path],
+        values: [{ kind: "read", verb: "view", path: item.path }],
+      };
+    case "subAgentActivity":
+      return {
+        ...base,
+        kind: "agent",
+        assignment: !!item.assignment,
+        assignmentTo: item.agentPath,
+        assignmentText: item.assignment ?? undefined,
+        text: item.assignment ?? item.agentPath,
+      };
+    case "collabAgentToolCall":
+      return {
+        ...base,
+        kind: "agent",
+        text: item.prompt ?? item.tool,
+      };
+    case "contextCompaction":
+      return {
+        ...base,
+        kind: "system",
+        text: "Context compacted",
+      };
+    case "enteredReviewMode":
+    case "exitedReviewMode":
+      return {
+        ...base,
+        kind: "system",
+        text:
+          item.review ||
+          (item.type === "enteredReviewMode" ? "Entered review mode" : "Exited review mode"),
+      };
+    case "hookPrompt":
+      return {
+        ...base,
+        kind: "system",
+        text: item.fragments.map((f) => f.text).join("\n"),
+      };
+    default:
+      return {
+        ...base,
+        kind: "system",
+        text: item.type,
+      };
+  }
+}
+
+function buildFeed(turns: Turn[], attachment?: string): Feed {
+  const entries: Record<number, Entry> = {};
+  const order: number[] = [];
+  let seq = 0;
+  for (let t = 0; t < turns.length; t++) {
+    const turn = turns[t];
+    for (const item of turn.items) {
+      seq++;
+      entries[seq] = itemToEntry(item, seq, t + 1, turn.id);
+      order.push(seq);
+    }
+  }
+  return { attachment, order, entries, revision: seq };
+}
+
+function changesToReview(response: ThreadChangesReadResponse, revision: number): SavedReview {
+  const files: ReviewedFile[] = (response.files ?? []).map((file, index) => ({
+    key: `${index}:${file.path}`,
+    path: file.path,
+    status: file.status,
+    chunks: [
+      {
+        Key: `${index}:${file.path}`,
+        Status: file.status,
+        Stream: "saved",
+        Workspace: response.workspace ?? "",
+        CaptureOrder: index,
+        Change: response.changes[0]?.changeId ?? "saved",
+        Caller: "/root",
+        Source: response.changes[0]?.sourceKind ?? "turn",
+        Highlighted: false,
+        Review: {
+          Path: file.path,
+          Action: file.status,
+          Diff: file.unifiedDiff,
+          Binary: file.isBinary,
+          Added: file.additions,
+          Removed: file.deletions,
+        },
+      },
+    ],
+    origins: response.changes
+      .filter((c) => c.paths.includes(file.path))
+      .map((c) => ({ Change: c.changeId, Caller: "/root", Source: c.sourceKind })),
+    counts: { Added: file.additions, Removed: file.deletions },
+  }));
+  const net = { Added: response.totalAdditions, Removed: response.totalDeletions };
+  return {
+    fileCount: files.length,
+    revision,
+    workspace: response.workspace ?? "",
+    coverage: "full",
+    callers: files.length ? [{ caller: "/root", count: files.length }] : [],
+    counts: {
+      Callers: files.length ? { "/root": net } : {},
+      Net: files.length ? net : null,
+    },
+    files,
+  };
+}
+
+function threadToAgent(thread: Thread, depth: number): Agent {
+  const name = depth === 0 ? "/root" : thread.agentNickname || thread.id;
+  const label = depth === 0 ? "main" : thread.agentNickname || thread.name || thread.id;
+  return {
+    name,
+    label,
+    aliases: [name, thread.id],
+    thread: thread.id,
+    role: thread.agentRole ?? undefined,
+    depth,
+    state: threadStatusToAgentState(thread.status),
+    turns: thread.turns?.length || undefined,
+    context: thread.contextTokens,
+    window: thread.contextWindow ?? undefined,
+  };
+}
 
 export class Stream {
   connection = $state<Connection>("connecting");
   session = $state.raw<Session | undefined>();
-  playback = $state.raw<Playback | undefined>();
   input = $state.raw<Input | undefined>();
   status = $state.raw<Status>({});
   main = $state.raw<Feed>(empty);
   agents = $state.raw<Feed>(empty);
   histories = $state.raw<Record<string, Feed>>({});
-  historyLoading = $state.raw<Record<string, boolean>>({});
-  #historyErrors = $state.raw<Record<string, PageFailure | undefined>>({});
   roster = $state.raw<Roster>({ total: 0, agents: [] });
-  rosterLoading = $state(false);
-  rosterRetry = $state.raw<{ kind: "agent"; agent: Agent } | { kind: "page"; caller?: string }>();
-  rosterError = $state<string>();
-  unavailableAgents = $state.raw<string[]>([]);
-  #agentReads = new Set<string>();
-  #rosterNames = new Set<string>();
+  family = $state.raw<{ root: string; threads: string[] } | undefined>();
   review = $state.raw<SavedReview | null>(null);
   live = $state.raw<Preview[]>([]);
-  deferred = $state.raw<DeferredSections>({});
-  sectionLoading = $state.raw<Partial<Record<keyof DeferredSections, boolean>>>({});
-  sectionErrors = $state.raw<Partial<Record<keyof DeferredSections, string>>>({});
-  #hydratedSections = new Map<string, ContentReference>();
+  activeTurnId = $state<string | undefined>();
   byName = $derived(new Map(this.roster.agents.map((agent) => [agent.name, agent])));
-  contentIdentities = $state.raw<Record<string, AgentIdentity[]>>({});
   identities = $derived.by(() => {
     const identities = new Map<string, AgentIdentity>();
     const remember = (identity: AgentIdentity) => {
       for (const alias of identity.aliases) identities.set(alias, identity);
     };
-    for (const entry of Object.values(this.contentIdentities))
-      for (const identity of entry) remember(identity);
     for (const feed of [this.main, this.agents, ...Object.values(this.histories)])
       for (const seq of feed.order)
-        for (const identity of feed.entries[seq].identities ?? []) remember(identity);
+        for (const identity of feed.entries[seq]?.identities ?? []) remember(identity);
     for (const agent of this.roster.agents) {
       for (const identity of agent.identities ?? []) remember(identity);
       remember({ name: agent.name, label: agent.label, aliases: agent.aliases ?? [agent.name] });
     }
     return identities;
   });
-  // Roles in the order this viewer first saw them, which fixes their colours.
-  // Like the terminal view's, the order outlives connections, so moving
-  // between threads keeps each role's colour.
   roles = $state.raw<string[]>([]);
-  controlError = $state<string | undefined>();
   error = $state<string | undefined>();
   notice = $state<string | undefined>();
   gone = $state.raw<Gone | undefined>();
@@ -97,549 +371,439 @@ export class Stream {
 
   #id?: string;
   #machine?: Machine;
-  #source?: () => void;
-  #discovery?: Listed[];
-  #attachment?: string;
+  #turns: Turn[] = [];
+  #reviewRevision = 0;
+  #stopNotifications?: () => void;
+  #stopOpen?: () => void;
   #requests = new AbortController();
-  #pages: Promise<unknown> = Promise.resolve();
-  #historyRequests = new Map<string, AbortSignal>();
+
+  get machine(): Machine | undefined {
+    return this.#machine;
+  }
+
+  get threadId(): string | undefined {
+    return this.#id;
+  }
 
   connect(id: string, machine: Machine, preserveRoster = false): void {
-    if (id === this.#id && machine === this.#machine && this.#source) return;
+    if (id === this.#id && machine === this.#machine && this.#stopNotifications) return;
     preserveRoster &&= machine === this.#machine;
     this.close();
     this.#id = id;
     this.#machine = machine;
-    this.#attachment = undefined;
+    this.#turns = [];
     this.#requests = new AbortController();
-    this.connection = "connecting";
-    this.session = this.playback = this.input = this.gone = undefined;
+    this.connection = machine.connection;
+    this.session = this.input = this.gone = undefined;
+    this.activeTurnId = undefined;
     this.status = {};
     this.main = this.agents = empty;
     this.histories = {};
-    this.contentIdentities = {};
-    this.#historyErrors = {};
-    this.roster = preserveRoster
-      ? {
-          ...this.roster,
-          next: undefined,
-          agents: this.roster.agents.map((agent) => ({ ...agent, content: undefined })),
-        }
-      : { total: 0, agents: [] };
-    this.rosterRetry = undefined;
-    this.rosterError = undefined;
-    this.unavailableAgents = [];
+    if (!preserveRoster) {
+      this.roster = { total: 0, agents: [] };
+      this.family = undefined;
+    }
     this.review = null;
     this.live = [];
-    this.deferred = {};
-    this.sectionErrors = {};
-    this.#hydratedSections.clear();
-    this.controlError = this.error = this.notice = undefined;
-    this.#follow(id, machine);
-  }
-
-  // Fresh discovery or an acquired view permits one read retry. Prepared
-  // children are addressable through their view but absent from discovery.
-  recover(attachment?: string): void {
-    const machine = this.#machine;
-    const id = this.#id;
-    if (
-      !this.gone ||
-      !machine ||
-      !id ||
-      !this.#source ||
-      !(
-        (attachment && attachment !== this.#attachment) ||
-        (machine.sessions !== this.#discovery &&
-          machine.sessions?.some((session) => session.id === id))
-      )
-    )
-      return;
-    this.#attachment = attachment;
-    this.close();
-    if (!this.session) {
-      this.gone = undefined;
+    this.error = this.notice = undefined;
+    this.#stopNotifications = machine.onNotification((n) => this.#onNotification(n));
+    this.#stopOpen = machine.onOpen(() => {
+      this.connection = "open";
       this.error = undefined;
-      this.connection = "connecting";
+      void this.#hydrate(id, machine);
+    });
+    if (machine.connection === "open") {
+      void this.#hydrate(id, machine);
     }
-    this.#requests = new AbortController();
-    this.#follow(id, machine);
   }
 
-  #follow(id: string, machine: Machine): void {
-    this.#discovery = machine.sessions;
-    const lifetime = this.#requests.signal;
-    let snapshot = false;
-    this.#source = machine.subscribe(
-      "session/subscribe",
-      { thread: id },
-      (event) => {
-        if (lifetime.aborted) return;
-        if (event.kind !== "snapshot" && event.kind !== "patch") return;
-        if (!snapshot && event.kind !== "snapshot")
-          throw new Error("A fresh snapshot is required.");
-        this.#apply(event.data as Message, event.kind === "snapshot");
-        snapshot = true;
-      },
-      (connection, error) => {
-        if (lifetime.aborted) return;
-        this.connection = connection;
-        this.error = error?.message;
-        if (connection === "connecting") snapshot = false;
-        if (error?.status === 404 || error?.status === 410)
-          this.gone = { status: error.status, text: error.message };
-      },
-    );
+  async refresh(): Promise<void> {
+    if (!this.#id || !this.#machine) return;
+    await this.#hydrate(this.#id, this.#machine);
+  }
+
+  async #hydrate(id: string, machine: Machine): Promise<void> {
+    const signal = this.#requests.signal;
+    try {
+      let thread: Thread;
+      let model: string | undefined;
+      let effort: string | undefined;
+      let serviceTier: string | undefined;
+      try {
+        const resumed = await machine.request<ThreadResumeResponse>(
+          "thread/resume",
+          { threadId: id },
+          { signal },
+        );
+        thread = resumed.thread;
+        model = resumed.model || thread.model || undefined;
+        effort = resumed.reasoningEffort ?? thread.reasoningEffort ?? undefined;
+        serviceTier = resumed.serviceTier ?? thread.serviceTier ?? undefined;
+      } catch (err) {
+        if (signal.aborted) return;
+        if (err instanceof TransportError && (err.status === 404 || err.status === 410)) {
+          this.gone = { status: err.status, text: err.message };
+          return;
+        }
+        const read = await machine.request<ThreadReadResponse>(
+          "thread/read",
+          { threadId: id, includeTurns: true },
+          { signal },
+        );
+        thread = read.thread;
+        model = thread.model ?? undefined;
+        effort = thread.reasoningEffort ?? undefined;
+        serviceTier = thread.serviceTier ?? undefined;
+      }
+      if (signal.aborted) return;
+      this.gone = undefined;
+      this.connection = "open";
+      this.error = undefined;
+      this.#applyThread(thread, model, effort, serviceTier);
+      const subtreeRoot = this.family?.threads.includes(id)
+        ? this.family.root
+        : (thread.parentThreadId ?? id);
+      void this.#loadSubtree(subtreeRoot, machine, signal);
+      void this.#loadChanges(id, machine, signal);
+    } catch (err) {
+      if (signal.aborted) return;
+      this.error = errorText(err);
+      if (err instanceof TransportError && (err.status === 404 || err.status === 410)) {
+        this.gone = { status: err.status, text: err.message };
+      }
+    }
+  }
+
+  #applyThread(thread: Thread, model?: string, effort?: string, serviceTier?: string): void {
+    this.#turns = (thread.turns ?? []).map((t) => ({ ...t, items: [...t.items] }));
+    let activeTurn: Turn | undefined;
+    for (let i = this.#turns.length - 1; i >= 0; i--) {
+      if (this.#turns[i].status === "inProgress") {
+        activeTurn = this.#turns[i];
+        break;
+      }
+    }
+    this.activeTurnId = activeTurn?.id;
+    const status = threadStatusToStatus(thread.status);
+    if (activeTurn) status.running = true;
+    this.status = status;
+    this.input = { stoppable: !!activeTurn || !!status.running };
+    this.session = {
+      thread: thread.id,
+      title: thread.name || thread.preview || undefined,
+      workspace: thread.cwd || undefined,
+      started: thread.createdAt ? thread.createdAt * 1000 : undefined,
+      model: model ?? thread.model ?? this.session?.model,
+      effort: effort ?? thread.reasoningEffort ?? this.session?.effort,
+      serviceTier: serviceTier ?? thread.serviceTier ?? this.session?.serviceTier,
+    };
+    this.main = buildFeed(this.#turns, thread.id);
+    if (!this.roster.agents.length) {
+      this.roster = { total: 1, agents: [threadToAgent(thread, 0)] };
+      this.#observeRoles();
+    }
+    this.jumps++;
+  }
+
+  async #loadSubtree(id: string, machine: Machine, signal: AbortSignal): Promise<void> {
+    try {
+      const response = await machine.request<ThreadListResponse>(
+        "thread/subtree/list",
+        { threadId: id },
+        { signal },
+      );
+      if (signal.aborted) return;
+      const threads = response.data ?? [];
+      if (!threads.length) return;
+      const root = threads.find((t) => !t.parentThreadId) ?? threads[0];
+      this.family = { root: root.id, threads: threads.map((t) => t.id) };
+      const agents = threads.map((t) => threadToAgent(t, t.id === root.id ? 0 : 1));
+      this.roster = { total: agents.length, agents };
+      this.#observeRoles();
+    } catch {
+      // Subtree listing is optional for single-agent threads.
+    }
+  }
+
+  async #loadChanges(id: string, machine: Machine, signal: AbortSignal): Promise<void> {
+    try {
+      const response = await machine.request<ThreadChangesReadResponse>(
+        "thread/changes/read",
+        { threadId: id },
+        { signal },
+      );
+      if (signal.aborted) return;
+      this.review = changesToReview(response, ++this.#reviewRevision);
+    } catch {
+      // Change history may be unavailable for threads with no edits.
+    }
+  }
+
+  #onNotification(notification: ServerNotification): void {
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || !machine) return;
+    switch (notification.method) {
+      case "thread/started": {
+        const started = notification.params.thread;
+        const parent = started.parentThreadId;
+        if (
+          parent &&
+          (parent === id || parent === this.family?.root || this.family?.threads.includes(parent))
+        ) {
+          const rootId = this.family?.root ?? parent;
+          const threads = this.family?.threads ?? [rootId];
+          if (!threads.includes(started.id)) {
+            this.family = { root: rootId, threads: [...threads, started.id] };
+          }
+          const nextAgent = threadToAgent(started, 1);
+          const existingIdx = this.roster.agents.findIndex((a) => a.thread === started.id);
+          const agents =
+            existingIdx >= 0
+              ? this.roster.agents.map((a, idx) => (idx === existingIdx ? nextAgent : a))
+              : [...this.roster.agents, nextAgent];
+          this.roster = { total: agents.length, agents };
+          this.#observeRoles();
+        }
+        break;
+      }
+      case "thread/status/changed": {
+        const targetId = notification.params.threadId;
+        if (targetId === id) {
+          const status = threadStatusToStatus(notification.params.status);
+          this.status = status;
+          this.input = { ...this.input, stoppable: !!status.running || !!this.activeTurnId };
+        }
+        if (this.roster.agents.some((a) => a.thread === targetId)) {
+          this.roster = {
+            ...this.roster,
+            agents: this.roster.agents.map((a) =>
+              a.thread === targetId
+                ? { ...a, state: threadStatusToAgentState(notification.params.status) }
+                : a,
+            ),
+          };
+        }
+        break;
+      }
+      case "thread/name/updated": {
+        if (notification.params.threadId !== id || !this.session) return;
+        this.session = {
+          ...this.session,
+          title: notification.params.threadName || this.session.title,
+        };
+        break;
+      }
+      case "thread/settings/updated": {
+        if (notification.params.threadId !== id || !this.session) return;
+        const settings = notification.params.threadSettings;
+        this.session = {
+          ...this.session,
+          model: settings.model || this.session.model,
+          effort: settings.effort ?? undefined,
+          serviceTier: settings.serviceTier ?? undefined,
+        };
+        break;
+      }
+      case "thread/tokenUsage/updated": {
+        if (notification.params.threadId !== id) return;
+        const usage = notification.params.tokenUsage;
+        this.roster = {
+          ...this.roster,
+          agents: this.roster.agents.map((a) =>
+            a.thread === id || a.name === "/root"
+              ? {
+                  ...a,
+                  inputTokens: usage.total.inputTokens,
+                  outputTokens: usage.total.outputTokens,
+                  context: usage.last.totalTokens,
+                  window: usage.modelContextWindow ?? a.window,
+                }
+              : a,
+          ),
+        };
+        break;
+      }
+      case "turn/started": {
+        if (notification.params.threadId !== id) return;
+        const turn = notification.params.turn;
+        this.activeTurnId = turn.id;
+        this.status = {
+          ...this.status,
+          running: true,
+          text: "Working",
+          failure: undefined,
+          alert: false,
+        };
+        this.input = { ...this.input, stoppable: true };
+        this.#upsertTurn(turn);
+        this.main = buildFeed(this.#turns, id);
+        break;
+      }
+      case "turn/completed": {
+        if (notification.params.threadId !== id) return;
+        const turn = notification.params.turn;
+        if (this.activeTurnId === turn.id) this.activeTurnId = undefined;
+        const failed = turn.status === "failed";
+        this.status = {
+          running: false,
+          alert: failed,
+          failure: turn.error?.message,
+          text: failed
+            ? turn.error?.message
+            : turn.status === "interrupted"
+              ? "Interrupted"
+              : undefined,
+        };
+        this.input = { ...this.input, stoppable: false };
+        this.#upsertTurn(turn);
+        this.main = buildFeed(this.#turns, id);
+        void this.#loadChanges(id, machine, this.#requests.signal);
+        break;
+      }
+      case "item/started":
+      case "item/completed": {
+        if (notification.params.threadId !== id) return;
+        this.#upsertItem(notification.params.turnId, notification.params.item);
+        this.main = buildFeed(this.#turns, id);
+        if (
+          notification.params.item.type === "collabAgentToolCall" &&
+          (notification.params.item.tool === "spawnAgent" ||
+            notification.params.item.tool === "resumeAgent" ||
+            notification.params.item.tool === "closeAgent")
+        ) {
+          void this.#loadSubtree(this.family?.root ?? id, machine, this.#requests.signal);
+        }
+        break;
+      }
+      case "item/agentMessage/delta": {
+        if (notification.params.threadId !== id) return;
+        this.#appendItemDelta(notification.params.turnId, notification.params.itemId, (item) => {
+          if (item.type === "agentMessage")
+            return { ...item, text: item.text + notification.params.delta };
+          return item;
+        });
+        this.main = buildFeed(this.#turns, id);
+        break;
+      }
+      case "item/plan/delta": {
+        if (notification.params.threadId !== id) return;
+        this.#appendItemDelta(notification.params.turnId, notification.params.itemId, (item) => {
+          if (item.type === "plan") return { ...item, text: item.text + notification.params.delta };
+          return item;
+        });
+        this.main = buildFeed(this.#turns, id);
+        break;
+      }
+      case "item/commandExecution/outputDelta": {
+        if (notification.params.threadId !== id) return;
+        this.#appendItemDelta(notification.params.turnId, notification.params.itemId, (item) => {
+          if (item.type === "commandExecution")
+            return {
+              ...item,
+              aggregatedOutput: (item.aggregatedOutput ?? "") + notification.params.delta,
+            };
+          return item;
+        });
+        this.main = buildFeed(this.#turns, id);
+        break;
+      }
+      case "item/reasoning/summaryTextDelta": {
+        if (notification.params.threadId !== id) return;
+        this.#appendItemDelta(notification.params.turnId, notification.params.itemId, (item) => {
+          if (item.type !== "reasoning") return item;
+          const summary = [...item.summary];
+          const idx = notification.params.summaryIndex;
+          while (summary.length <= idx) summary.push("");
+          summary[idx] += notification.params.delta;
+          return { ...item, summary };
+        });
+        this.main = buildFeed(this.#turns, id);
+        break;
+      }
+      case "item/reasoning/textDelta": {
+        if (notification.params.threadId !== id) return;
+        this.#appendItemDelta(notification.params.turnId, notification.params.itemId, (item) => {
+          if (item.type !== "reasoning") return item;
+          const content = [...item.content];
+          const idx = notification.params.contentIndex;
+          while (content.length <= idx) content.push("");
+          content[idx] += notification.params.delta;
+          return { ...item, content };
+        });
+        this.main = buildFeed(this.#turns, id);
+        break;
+      }
+      case "turn/diff/updated": {
+        if (notification.params.threadId !== id) return;
+        void this.#loadChanges(id, machine, this.#requests.signal);
+        break;
+      }
+      case "thread/reverted": {
+        if (notification.params.threadId !== id) return;
+        void this.#hydrate(id, machine);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  #upsertTurn(turn: Turn): void {
+    const index = this.#turns.findIndex((t) => t.id === turn.id);
+    if (index >= 0) {
+      const existing = this.#turns[index];
+      this.#turns[index] = {
+        ...turn,
+        items: turn.items.length ? [...turn.items] : existing.items,
+      };
+    } else {
+      this.#turns.push({ ...turn, items: [...turn.items] });
+    }
+  }
+
+  #upsertItem(turnId: string, item: ThreadItem): void {
+    let turn = this.#turns.find((t) => t.id === turnId);
+    if (!turn) {
+      const created: Turn = {
+        id: turnId,
+        rootTurnId: null,
+        items: [],
+        itemsView: "full",
+        status: "inProgress",
+        error: null,
+        startedAt: null,
+        completedAt: null,
+        durationMs: null,
+      };
+      this.#turns.push(created);
+      turn = created;
+    }
+    const index = turn.items.findIndex((existing) => existing.id === item.id);
+    if (index >= 0) turn.items[index] = item;
+    else turn.items.push(item);
+  }
+
+  #appendItemDelta(turnId: string, itemId: string, update: (item: ThreadItem) => ThreadItem): void {
+    const turn = this.#turns.find((t) => t.id === turnId);
+    if (!turn) return;
+    const index = turn.items.findIndex((existing) => existing.id === itemId);
+    if (index < 0) return;
+    turn.items[index] = update(turn.items[index]);
   }
 
   close(): void {
-    this.#source?.();
-    this.#source = undefined;
+    const prevId = this.#id;
+    const prevMachine = this.#machine;
+    this.#id = undefined;
+    this.#machine = undefined;
+    this.#stopNotifications?.();
+    this.#stopNotifications = undefined;
+    this.#stopOpen?.();
+    this.#stopOpen = undefined;
     this.#requests.abort();
-    this.#pages = Promise.resolve();
-    this.#historyRequests.clear();
-    this.historyLoading = {};
-    this.rosterLoading = false;
-    this.#agentReads.clear();
-    this.sectionLoading = {};
-  }
-
-  #apply(message: Message, snapshot: boolean): void {
-    if (snapshot) this.gone = undefined;
-    if (
-      snapshot &&
-      this.session &&
-      (message.session?.thread !== this.session.thread ||
-        message.main?.attachment !== this.main.attachment)
-    ) {
-      this.roster = { total: 0, agents: [] };
-      this.contentIdentities = {};
-    }
-    snapshot &&=
-      message.session?.thread !== this.session?.thread ||
-      message.main?.attachment !== this.main.attachment ||
-      message.main?.revision !== this.main.revision ||
-      message.agents?.attachment !== this.agents.attachment ||
-      message.agents?.revision !== this.agents.revision;
-    if (snapshot) this.#hydratedSections.clear();
-    message = { ...message };
-    if (message.deferred !== undefined) {
-      this.deferred = Object.fromEntries(
-        Object.entries(message.deferred ?? {}).filter(([kind, ref]) => {
-          if (kind === "prompts") return false;
-          const loaded = this.#hydratedSections.get(kind);
-          if (ref && loaded?.attachment === ref.attachment && loaded?.revision === ref.revision)
-            delete message[kind as keyof DeferredSections];
-          return (
-            ref && (loaded?.attachment !== ref.attachment || loaded?.revision !== ref.revision)
-          );
-        }),
-      );
-    }
-    if (snapshot) {
-      this.gone = undefined;
-      this.session = message.session ?? undefined;
-      this.playback = message.playback ?? undefined;
-      this.input = message.input ?? undefined;
-      this.status = message.status ?? {};
-      this.#updateRoster(message.roster ?? { total: 0, agents: [] });
-      this.unavailableAgents = [];
-      this.#observeRoles();
-      this.review = message.review ?? null;
-      this.live = message.live ?? [];
-      this.main = merge(empty, message.main);
-      this.agents = merge(empty, message.agents);
-      this.histories = {};
-      this.#pruneIdentities();
-      this.jumps++;
-      return;
-    }
-    if (message.session) this.session = message.session ?? undefined;
-    if (message.playback) this.playback = message.playback ?? undefined;
-    if (message.input) this.input = message.input ?? undefined;
-    if (message.status) this.status = message.status;
-    if (message.roster) {
-      this.#updateRoster(message.roster);
-      this.unavailableAgents = [];
-      this.#observeRoles();
-    }
-    if (message.review !== undefined) this.review = message.review;
-    if (message.live !== undefined) this.live = message.live ?? [];
-    if (message.main) this.main = merge(this.main, message.main);
-    if (message.agents) {
-      this.agents = merge(this.agents, message.agents);
-      const histories: Record<string, Feed> = {};
-      for (const [caller, feed] of Object.entries(this.histories)) {
-        if (feed.attachment !== this.agents.attachment || feed.revision !== this.agents.revision)
-          continue;
-        const added = (message.agents.entries ?? []).filter((entry) => entry.agent === caller);
-        const order = ordered(
-          { ...feed.entries, ...Object.fromEntries(added.map((entry) => [entry.seq, entry])) },
-          feed.order,
-          added.map((entry) => entry.seq),
-        );
-        histories[caller] = merge(feed, {
-          entries: added,
-          order: feed.loaded?.length ? order : order.slice(-50),
-          revision: feed.revision,
-          attachment: feed.attachment,
-          earlier:
-            feed.earlier && !feed.loaded?.length
-              ? { ...feed.earlier, before: order.slice(-50)[0] }
-              : feed.earlier,
-        });
-      }
-      this.histories = histories;
-    }
-    if (message.main || message.agents) this.#pruneIdentities();
-  }
-
-  #pruneIdentities(): Set<string> {
-    const cached = Object.entries(this.contentIdentities);
-    const retained = new Set<string>();
-    for (const feed of [this.main, this.agents, ...Object.values(this.histories)])
-      for (const seq of feed.order) {
-        const ref = feed.entries[seq].content;
-        if (ref) retained.add(`${ref.attachment}:${ref.kind}:${ref.seq}`);
-      }
-    const kept = cached.filter(([key]) => retained.has(key));
-    if (kept.length !== cached.length) this.contentIdentities = Object.fromEntries(kept);
-    return retained;
-  }
-
-  history(caller?: string): Feed {
-    return caller ? (this.histories[caller] ?? this.agents) : this.main;
-  }
-
-  // The next page request for a feed. A caller's first filtered page starts
-  // from the newest entry of the aggregate publication; its later pages
-  // continue the caller's own retained feed.
-  nextPage(caller?: string): PageCursor | undefined {
-    const cursor = this.history(caller).earlier;
-    if (!cursor) return undefined;
-    return caller && !this.histories[caller]
-      ? { ...cursor, caller, before: undefined }
-      : { ...cursor, caller };
-  }
-
-  // A failure is shown only while its feed still publishes the failed
-  // reference; a replacement publication retires it.
-  historyError(caller?: string): string | undefined {
-    const failure = this.#historyErrors[caller ?? ""];
-    const feed = this.history(caller);
-    return failure && failure.attachment === feed.attachment && failure.revision === feed.revision
-      ? failure.text
-      : undefined;
-  }
-
-  async prepareHistory(caller: string, signal?: AbortSignal): Promise<boolean> {
-    const pending = this.#historyRequests.get(caller);
-    if (this.histories[caller] || (pending && !pending.aborted)) return false;
-    const cursor = this.nextPage(caller);
-    return !!cursor && this.#page(cursor, caller, true, signal);
-  }
-
-  // Resolves whether a page joined the feed. Superseded and refused reads
-  // leave it unchanged and record no failure.
-  async earlier(caller?: string, signal?: AbortSignal): Promise<boolean> {
-    if (caller && !this.histories[caller]) return this.prepareHistory(caller, signal);
-    const cursor = this.nextPage(caller);
-    return !!cursor && this.#page(cursor, caller, false, signal);
-  }
-
-  async #page(
-    cursor: PageCursor,
-    caller?: string,
-    initial = false,
-    signal?: AbortSignal,
-  ): Promise<boolean> {
-    const key = caller ?? "";
-    const pending = this.#historyRequests.get(key);
-    if ((pending && !pending.aborted) || !this.#machine || !this.#id) return false;
-    const session = this.#requests.signal;
-    const lifetime = AbortSignal.any([session, ...(signal ? [signal] : [])]);
-    this.#historyRequests.set(key, lifetime);
-    this.historyLoading = { ...this.historyLoading, [key]: true };
-    this.#historyErrors = { ...this.#historyErrors, [key]: undefined };
-    let result: PageResult | undefined;
-    try {
-      result = await this.page(cursor, lifetime);
-      // Later filtered pages belong to the caller's retained feed; its first
-      // page belongs to the aggregate publication.
-      const feed = this.history(caller);
-      if (
-        lifetime.aborted ||
-        cursor.attachment !== feed.attachment ||
-        cursor.revision !== feed.revision
-      )
-        return false;
-      const entries = result.entries as Entry[];
-      if (initial) {
-        const last = entries.at(-1)?.position ?? -1;
-        for (const value of Object.values(feed.entries)) {
-          if (value.agent !== caller) continue;
-          const index = entries.findIndex((entry) => entry.seq === value.seq);
-          if (index < 0 && (value.position ?? -1) > last) entries.push(value);
-          else if (index >= 0 && (value.revision ?? 0) > (entries[index].revision ?? 0))
-            entries[index] = value;
-        }
-      }
-      const previous = initial ? empty : this.history(caller);
-      const loaded = initial
-        ? []
-        : [...new Set([...previous.order, ...entries.map((entry) => entry.seq)])];
-      const combined = {
-        ...previous.entries,
-        ...Object.fromEntries(entries.map((entry) => [entry.seq, entry])),
-      };
-      const next: Feed = {
-        order: ordered(
-          combined,
-          previous.order,
-          entries.map((entry) => entry.seq),
-        ),
-        entries: combined,
-        attachment: cursor.attachment,
-        revision: cursor.revision,
-        earlier: result.earlier,
-        loaded,
-      };
-      if (caller) this.histories = { ...this.histories, [caller]: next };
-      else this.main = next;
-      this.#pruneIdentities();
-      return true;
-    } catch (error) {
-      const feed = this.history(caller);
-      // Only owner-confirmed supersession waits for the next publication.
-      if (
-        !lifetime.aborted &&
-        cursor.attachment === feed.attachment &&
-        cursor.revision === feed.revision &&
-        !isSuperseded(error)
-      )
-        this.#historyErrors = {
-          ...this.#historyErrors,
-          [key]: {
-            attachment: cursor.attachment,
-            revision: cursor.revision,
-            text: errorText(error),
-          },
-        };
-      return false;
-    } finally {
-      result?.acknowledge?.();
-      if (this.#historyRequests.get(key) === lifetime) {
-        this.#historyRequests.delete(key);
-        if (!session.aborted) this.historyLoading = { ...this.historyLoading, [key]: false };
-      }
-    }
-  }
-
-  async content(entry: Entry, signal: AbortSignal): Promise<Entry> {
-    if (!entry.content || !this.#machine || !this.#id) return entry;
-    const result = await this.readContent(entry.content, signal);
-    if (!result.entry) throw new Error("The complete entry is unavailable.");
-    return result.entry as Entry;
-  }
-
-  async readContent(reference: ContentReference, signal: AbortSignal): Promise<ContentResult> {
-    if (!this.#machine || !this.#id) throw new Error("The content's machine is disconnected.");
-    const result = await this.#machine.resource<ContentResult>(
-      "content",
-      { thread: this.#id, body: reference },
-      { signal: AbortSignal.any([signal, this.#requests.signal]) },
-    );
-    const key = `${reference.attachment}:${reference.kind}:${result.entry?.seq}`;
-    if (result.entry?.identities && this.#pruneIdentities().has(key)) {
-      this.contentIdentities = {
-        ...this.contentIdentities,
-        [key]: result.entry.identities,
-      };
-    }
-    return result;
-  }
-
-  async page(cursor: PageCursor, signal: AbortSignal): Promise<PageResult> {
-    if (!this.#machine || !this.#id) throw new Error("The history's machine is disconnected.");
-    const machine = this.#machine,
-      thread = this.#id;
-    const lifetime = AbortSignal.any([signal, this.#requests.signal]);
-    const read = this.#pages.then(() =>
-      machine.request<PageResult>("session/page", { thread, body: cursor }, { signal: lifetime }),
-    );
-    this.#pages = read.then(
-      () => undefined,
-      () => undefined,
-    );
-    return read;
-  }
-
-  async moreRoster(caller?: string, signal?: AbortSignal): Promise<void> {
-    const cursor = this.roster.next;
-    if (!cursor || (caller ? this.#agentReads.has(caller) : this.rosterLoading)) return;
-    const session = this.#requests.signal;
-    const lifetime = signal ? AbortSignal.any([session, signal]) : session;
-    if (caller) this.#agentReads.add(caller);
-    else this.rosterLoading = true;
-    this.rosterError = undefined;
-    let result: PageResult | undefined;
-    try {
-      result = await this.page(
-        { ...cursor, caller, before: caller ? undefined : cursor.before },
-        lifetime,
-      );
-      if (
-        lifetime.aborted ||
-        this.roster.next?.attachment !== cursor.attachment ||
-        this.roster.next?.revision !== cursor.revision ||
-        !result.roster
-      )
-        return;
-      const page = result.roster as Roster;
-      this.#updateRoster(
-        {
-          ...this.roster,
-          agents: page.agents,
-          next: caller ? this.roster.next : page.next,
-        },
-        true,
-      );
-      if (caller && !page.agents.length)
-        this.unavailableAgents = [...this.unavailableAgents, caller];
-      this.#observeRoles();
-    } catch (error) {
-      if (
-        !lifetime.aborted &&
-        this.roster.next?.revision === cursor.revision &&
-        !isSuperseded(error)
-      ) {
-        this.rosterRetry = { kind: "page", caller };
-        this.rosterError = errorText(error);
-      }
-    } finally {
-      result?.acknowledge?.();
-      if (!session.aborted) {
-        if (caller) this.#agentReads.delete(caller);
-        else this.rosterLoading = false;
-        // A publication arriving during a targeted read cannot start its
-        // replacement while this caller is in flight. Resume it here.
-        if (
-          caller &&
-          !lifetime.aborted &&
-          this.roster.next &&
-          (this.roster.next.attachment !== cursor.attachment ||
-            this.roster.next.revision !== cursor.revision) &&
-          !this.agent(caller) &&
-          !this.unavailableAgents.includes(caller)
-        )
-          await this.moreRoster(caller, signal);
-      }
-    }
-  }
-
-  async completeAgent(agent: Agent, signal?: AbortSignal): Promise<void> {
-    if (!agent.content) return;
-    this.rosterError = undefined;
-    const reference = agent.content,
-      lifetime = signal ? AbortSignal.any([this.#requests.signal, signal]) : this.#requests.signal;
-    try {
-      const result = await this.readContent(reference, lifetime);
-      if (lifetime.aborted || !result.agent) return;
-      const current = this.agent(agent.name)?.content;
-      if (current?.attachment !== reference.attachment || current.revision !== reference.revision)
-        return;
-      this.roster = {
-        ...this.roster,
-        agents: this.roster.agents.map((value) =>
-          value.name === agent.name ? (result.agent as Agent) : value,
-        ),
-      };
-    } catch (error) {
-      if (
-        !lifetime.aborted &&
-        this.agent(agent.name)?.content === reference &&
-        !isSuperseded(error)
-      ) {
-        this.rosterRetry = { kind: "agent", agent };
-        this.rosterError = errorText(error);
-      }
-    }
-  }
-
-  // Keep acquired rows visible while the next revision's bounded pages arrive.
-  // Only a complete publication can prove that an older member disappeared.
-  #updateRoster(page: Roster, append = false): void {
-    if (!append) this.#rosterNames.clear();
-    const agents = new Map(
-      this.roster.agents.map((agent) => [
-        agent.name,
-        append ? agent : { ...agent, content: undefined },
-      ]),
-    );
-    for (const agent of page.agents) {
-      this.#rosterNames.add(agent.name);
-      agents.set(agent.name, agent);
-    }
-    this.roster = {
-      ...page,
-      agents: page.next
-        ? [...agents.values()]
-        : [...this.#rosterNames].map((name) => agents.get(name)!),
-    };
-    this.rosterError = undefined;
-  }
-
-  async loadSection(kind: keyof DeferredSections, signal?: AbortSignal): Promise<void> {
-    const ref = this.deferred[kind],
-      session = this.#requests.signal,
-      lifetime = signal ? AbortSignal.any([session, signal]) : session;
-    if (!ref || this.sectionLoading[kind]) return;
-    this.sectionLoading = { ...this.sectionLoading, [kind]: true };
-    this.sectionErrors = { ...this.sectionErrors, [kind]: "" };
-    try {
-      const result = await this.readContent(ref, lifetime);
-      const current = this.deferred[kind];
-      if (
-        lifetime.aborted ||
-        current?.attachment !== ref.attachment ||
-        current.revision !== ref.revision
-      )
-        return;
-      switch (kind) {
-        case "session":
-          if (result.session) this.session = result.session;
-          break;
-        case "input":
-          if (result.input) this.input = result.input;
-          break;
-        case "status":
-          if (result.status) this.status = result.status as Status;
-          break;
-        case "review":
-          if (result.reviewInfo)
-            this.review = { ...(result.reviewInfo as SavedReview), page: this.review?.page };
-          break;
-        case "live":
-          this.live = result.live ?? [];
-          break;
-      }
-      this.#hydratedSections.set(kind, ref);
-      const next = { ...this.deferred };
-      delete next[kind];
-      this.deferred = next;
-    } catch (error) {
-      const current = this.deferred[kind];
-      // A newer publication supplies the next reference; retrying this one
-      // cannot recover a revision conflict.
-      if (
-        !lifetime.aborted &&
-        current?.attachment === ref.attachment &&
-        current.revision === ref.revision &&
-        !isSuperseded(error)
-      )
-        this.sectionErrors = { ...this.sectionErrors, [kind]: errorText(error) };
-    } finally {
-      if (!session.aborted) this.sectionLoading = { ...this.sectionLoading, [kind]: false };
+    if (prevId && prevMachine && prevMachine.connection === "open") {
+      void prevMachine.request("thread/unsubscribe", { threadId: prevId }).catch(() => {});
     }
   }
 
@@ -652,14 +816,13 @@ export class Stream {
     if (added.length) this.roles = [...seen, ...added];
   }
 
-  // A role's colour, once the roster has shown it.
   roleColor(role: string | undefined): string | undefined {
     const index = role ? this.roles.indexOf(role) : -1;
     return index < 0 ? undefined : roleColor(index);
   }
 
   label(name: string | undefined): string {
-    if (!name) return "main";
+    if (!name || name === "/root") return "main";
     return this.identities.get(name)?.label ?? name;
   }
 
@@ -667,90 +830,39 @@ export class Stream {
     return name ? this.byName.get(this.address(name)) : undefined;
   }
 
-  // Presentation supplies canonical identities independently of roster paging.
   address(name: string): string {
     return this.identities.get(name)?.name ?? name;
   }
 
-  async control(action: Action, position?: number): Promise<void> {
-    const lifetime = this.#requests.signal;
-    if (action !== "toggle-pause" && action !== "faster" && action !== "slower") this.jumps++;
-    const error = await this.#request("session/control", { action, position });
-    if (!lifetime.aborted) this.controlError = error;
+  async readContent(ref: ContentReference, signal?: AbortSignal): Promise<ContentResourceResponse> {
+    const machine = this.#machine;
+    const id = this.#id;
+    if (!machine || !id) throw new Error("Open a thread on an execution machine first.");
+    const lifetime = signal
+      ? AbortSignal.any([signal, this.#requests.signal])
+      : this.#requests.signal;
+    return machine.resource<ContentResourceResponse>(
+      "content",
+      { thread: id, body: { thread: id, turnId: ref.turnId, itemId: ref.itemId } },
+      { signal: lifetime },
+    );
   }
 
   async image(
-    entry: Pick<Entry, "seq" | "agent">,
+    entry: Pick<Entry, "itemId" | "seq" | "agent">,
     index: number,
     image: string,
     signal: AbortSignal,
   ): Promise<Blob> {
-    const machine = this.#machine,
-      id = this.#id;
+    const machine = this.#machine;
+    const id = this.#id;
     if (!machine || !id) throw new Error("The image's machine is disconnected.");
     return machine.resource<Blob>(
       "image",
-      { thread: id, body: { seq: entry.seq, agent: entry.agent ?? "", index, image } },
+      { thread: id, body: { itemId: entry.itemId, index, image } },
       { signal: AbortSignal.any([signal, this.#requests.signal]) },
     );
   }
-
-  async #request(method: RPCMethod, body: unknown): Promise<string | undefined> {
-    const machine = this.#machine;
-    const id = this.#id;
-    const lifetime = this.#requests.signal;
-    if (!machine || !id || lifetime.aborted) return "Open a session on an execution machine first.";
-    try {
-      const result = await machine.request<{ notice?: string } | null>(
-        method,
-        { thread: id, body },
-        {
-          signal: lifetime,
-        },
-      );
-      if (!lifetime.aborted) this.notice = result?.notice;
-      return undefined;
-    } catch (error) {
-      return errorText(error, true);
-    }
-  }
-}
-
-function ordered(entries: Record<number, Entry>, ...groups: number[][]): number[] {
-  const values = [...new Set(groups.flat())];
-  // ES2022 has no toSorted; this array is newly owned by the merge.
-  // oxlint-disable-next-line unicorn/no-array-sort
-  return values.sort((a, b) => (entries[a]?.position ?? a) - (entries[b]?.position ?? b));
-}
-
-function merge(feed: Feed, change: FeedChange | undefined): Feed {
-  if (!change) return feed;
-  if (
-    change.revision !== undefined &&
-    (change.attachment !== feed.attachment || change.revision !== feed.revision)
-  )
-    feed = empty;
-  const entries = { ...feed.entries };
-  for (const entry of change.entries ?? []) {
-    if ((entry.revision ?? 0) >= (entries[entry.seq]?.revision ?? 0)) entries[entry.seq] = entry;
-  }
-  const order = change.order ? ordered(entries, feed.loaded ?? [], change.order) : feed.order;
-  if (change.order) {
-    const kept = new Set(order);
-    for (const key of Object.keys(entries)) if (!kept.has(Number(key))) delete entries[Number(key)];
-  }
-  return {
-    order,
-    entries,
-    attachment: change.attachment ?? feed.attachment,
-    revision: change.revision ?? feed.revision,
-    earlier: feed.loaded?.length
-      ? feed.earlier
-      : change.earlier !== undefined
-        ? change.earlier
-        : feed.earlier,
-    loaded: feed.loaded,
-  };
 }
 
 export const stream = new Stream();

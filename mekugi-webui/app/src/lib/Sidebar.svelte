@@ -162,7 +162,6 @@
                           ><Path path={basename(s.workspace)} title={s.workspace} /></span
                         >{/if}
                     </span>
-                    {#if s.replay}<Tag>Replay</Tag>{/if}
                     {#if s.waiting}<span
                         class="min-w-[18px] flex-none rounded-full bg-warning-tint px-[5px] text-center text-tiny text-warning-ink tabular-nums ring-1 ring-warning-edge ring-inset"
                         title="Prompts waiting">{s.waiting}</span

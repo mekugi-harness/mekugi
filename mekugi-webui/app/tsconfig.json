@@ -8,7 +8,10 @@
     "noEmit": true,
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
-    "paths": { "$lib/*": ["./src/lib/*"] },
+    "paths": {
+      "$lib/*": ["./src/lib/*"],
+      "@codex-protocol/*": ["../../codex-rs/app-server-protocol/schema/typescript/*"]
+    },
     "types": ["vite/client"]
   },
   "include": ["src/**/*.ts", "src/**/*.svelte", "vite.config.ts"]

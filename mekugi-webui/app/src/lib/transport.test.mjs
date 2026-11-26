@@ -1,821 +1,311 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, test } from "node:test";
 import { registerHooks } from "node:module";
+import { afterEach, test } from "node:test";
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    return nextResolve(specifier === "../../../protocol" ? `${specifier}.ts` : specifier, context);
-  },
-});
-const {
-  Connector,
-  endpointURL,
-  errorText,
-  isSuperseded,
-  readFailure,
-  parseSelection,
-  selectionHash,
-  unknownOutcome,
-} = await import("./transport.ts");
-const { protocolVersion, subprotocol, readSuperseded } = await import("../../../protocol.ts");
-
-const originalWebSocket = globalThis.WebSocket;
-let sockets;
-let connectors;
-function connect(endpoint, token) {
-  const connector = new Connector(endpoint, token);
-  connectors.push(connector);
-  return connector;
-}
-let handler;
-class Socket extends EventTarget {
-  static OPEN = 1;
-  readyState = 0;
-  bufferedAmount = 0;
-  sent = [];
-  constructor(url, protocol) {
-    super();
-    this.url = new URL(url);
-    this.protocol = protocol;
-    sockets.push(this);
-    queueMicrotask(() => {
-      if (this.readyState === 0) {
-        this.readyState = 1;
-        this.dispatchEvent(new Event("open"));
-      }
-    });
-  }
-  send(data) {
-    assert.equal(this.readyState, 1);
-    const message = JSON.parse(data);
-    assert.equal(message.jsonrpc, "2.0");
-    assert.ok(message.id);
-    this.sent.push(message);
-    queueMicrotask(() => handler(this, message));
-  }
-  reply(request, result) {
-    this.receive({ jsonrpc: "2.0", id: request.id, result });
-  }
-  refuse(request, status, outcome = "not_admitted") {
-    this.receive({
-      jsonrpc: "2.0",
-      id: request.id,
-      error: { code: -32000, message: "Request refused", data: { status, outcome } },
-    });
-  }
-  receive(message) {
-    if (this.readyState === 1)
-      this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(message) }));
-  }
-  publish(subscription, kind, data) {
-    this.receive({
-      jsonrpc: "2.0",
-      method: "subscription/event",
-      params: { subscription, kind, data },
-    });
-  }
-  close() {
-    if (this.readyState === 3) return;
-    this.readyState = 3;
-    queueMicrotask(() => this.dispatchEvent(new Event("close")));
-  }
-}
-function initialize(socket, message) {
-  if (message.method !== "initialize") return false;
-  assert.equal(socket.protocol, subprotocol);
-  assert.equal(message.params.version, protocolVersion);
-  socket.reply(message, { version: protocolVersion, serverTime: 1_800_000_000_000 });
-  return true;
-}
-function publication(socket, message, data = { generation: 1 }) {
-  assert.ok(message.params.subscription);
-  socket.reply(message, { subscription: message.params.subscription });
-  socket.publish(message.params.subscription, "snapshot", data);
-}
-beforeEach(() => {
-  sockets = [];
-  connectors = [];
-  globalThis.WebSocket = Socket;
-});
-afterEach(() => {
-  for (const connector of connectors) connector.close();
-  for (const socket of sockets) socket.close();
-  globalThis.WebSocket = originalWebSocket;
-});
-
-test("connector URLs and viewer addresses preserve explicit composite identity", () => {
-  assert.equal(endpointURL("https://example.test/connector/"), "https://example.test/connector");
-  for (const input of [
-    "/api",
-    "file:///etc/passwd",
-    "https://user:secret@example.test",
-    "https://example.test/?token=secret",
-    "https://example.test/#token",
-  ])
-    assert.throws(() => endpointURL(input));
-  const first = { machine: "one", session: "same/id", agent: "/root/child one" };
-  assert.deepEqual(parseSelection(selectionHash(first)), first);
-  assert.notEqual(selectionHash(first), selectionHash({ ...first, machine: "two" }));
-  assert.equal(parseSelection("#thread=same").session, undefined);
-});
-
-test("observations pipeline behind initialization while clock and mutation gates remain ordered", async (t) => {
-  t.mock.method(performance, "now", () => 100);
-  const connector = connect("https://example.test", "private-token");
-  const calls = [];
-  handler = (socket, message) => calls.push({ socket, message });
-  const events = [];
-  const observe = (event) => {
-    assert.equal(connector.now, 1_800_000_000_000);
-    events.push(event);
-  };
-  const stops = [
-    connector.subscribe("session/subscribe", {}, observe, () => {}),
-    connector.subscribe("view/attach", { thread: "thread" }, observe, () => {}),
-  ];
-  const mutation = connector.request("session/interrupt", { thread: "thread" });
-  void mutation.catch(() => {});
-  await new Promise(setImmediate);
-  assert.deepEqual(
-    calls.map((call) => call.message.method),
-    ["initialize", "session/subscribe", "view/attach"],
-  );
-  assert.equal(connector.now, undefined);
-  const first = calls[0];
-  first.socket.reply(first.message, { version: protocolVersion, serverTime: 1_800_000_000_000 });
-  // Consume immediate wire-ordered replies, before a promise continuation can
-  // initialize the clock or reinterpret an acknowledgement.
-  for (const call of calls.slice(1)) publication(call.socket, call.message);
-  assert.equal(events.length, 2);
-  await new Promise(setImmediate);
-  assert.equal(calls.at(-1).message.method, "session/interrupt");
-  calls.at(-1).socket.reply(calls.at(-1).message, null);
-  await mutation;
-  for (const stop of stops) stop();
-});
-
-test("queued observations retain initialization refusals and cancellation", async () => {
-  for (const failure of ["token", "version", "clock", "cancel"]) {
-    const connector = connect(`https://${failure}.test`, "token");
-    const calls = [];
-    handler = (socket, message) => calls.push({ socket, message });
-    const refused = Promise.withResolvers();
-    const stop = connector.subscribe(
-      "session/subscribe",
-      { thread: "thread" },
-      () => assert.fail("retired observation published"),
-      (state, error) => {
-        if (error) refused.resolve({ state, error });
-      },
-    );
-    await new Promise(setImmediate);
-    assert.deepEqual(
-      calls.map((call) => call.message.method),
-      ["initialize", "session/subscribe"],
-    );
-    const { socket, message } = calls[0];
-    if (failure === "cancel") {
-      stop();
-      socket.reply(message, { version: protocolVersion, serverTime: 1_800_000_000_000 });
-      publication(socket, calls[1].message);
-      assert.ok(
-        socket.sent.some(
-          (call) =>
-            call.method === "subscription/cancel" &&
-            call.params.subscription === calls[1].message.params.subscription,
-        ),
-      );
-    } else {
-      if (failure === "token") socket.refuse(message, 401);
-      else
-        socket.reply(message, {
-          version: failure === "version" ? "old" : protocolVersion,
-          serverTime: failure === "clock" ? 0 : 1_800_000_000_000,
-        });
-      const result = await refused.promise;
-      assert.equal(
-        result.state,
-        failure === "token" ? "required" : failure === "version" ? "incompatible" : "lost",
-      );
-      if (failure === "clock") assert.match(result.error.message, /clock/);
-      assert.equal(connector.now, undefined);
-      stop();
+    if (
+      specifier.startsWith("./") &&
+      context.parentURL?.includes("/app/src/lib/") &&
+      !/\.(?:ts|mjs|js)$/.test(specifier)
+    ) {
+      specifier += ".ts";
     }
-    connector.close();
-  }
+    return nextResolve(specifier, context);
+  },
 });
 
-test("server clock advances monotonically without depending on browser wall time", async (t) => {
-  let monotonic = 100;
-  t.mock.method(performance, "now", () => monotonic);
-  t.mock.method(Date, "now", () => 123);
-  handler = (socket, message) => {
-    if (!initialize(socket, message)) socket.reply(message, []);
-  };
-  const connector = connect("https://example.test", "token");
-  assert.equal(connector.now, undefined);
-  await connector.request("session/list");
-  assert.equal(connector.now, 1_800_000_000_000);
-  monotonic += 2000;
-  assert.equal(connector.now, 1_800_000_002_000);
-  const reinitializing = Promise.withResolvers();
-  handler = (socket, message) => {
-    if (message.method === "initialize") reinitializing.resolve(message);
-    else socket.reply(message, []);
-  };
-  sockets[0].close();
-  await Promise.resolve();
-  const refreshed = connector.request("session/list");
-  const initialization = await reinitializing.promise;
-  monotonic += 3000;
-  assert.equal(connector.now, 1_800_000_005_000);
-  sockets[1].reply(initialization, { version: protocolVersion, serverTime: 1_800_000_005_100 });
-  await refreshed;
-  assert.equal(connector.now, 1_800_000_005_100);
-});
+const { Connector, TransportError, endpointURL, parseSelection, selectionHash, unknownOutcome } =
+  await import("./transport.ts");
+const { protocolVersion, subprotocol } = await import("./protocol.ts");
 
-test(
-  "one authenticated connection correlates replies and supplied subscription acknowledgements",
-  { timeout: 2000 },
-  async () => {
-    const connector = connect("https://example.test/prefix", "private-token");
-    const snapshot = Promise.withResolvers();
-    handler = (socket, message) => {
-      if (initialize(socket, message)) return;
-      if (message.method === "session/subscribe") publication(socket, message, { sessions: [] });
-      else socket.reply(message, { ready: true });
-    };
-    const stop = connector.subscribe("session/subscribe", {}, snapshot.resolve, () => {});
-    const event = await snapshot.promise;
-    assert.deepEqual(event.data, { sessions: [] });
-    assert.deepEqual(await connector.request("session/options"), { ready: true });
-    assert.equal(sockets.length, 1);
-    assert.equal(sockets[0].url.href, "wss://example.test/prefix/api/control");
-    assert.deepEqual(sockets[0].sent[0].params, {
-      version: protocolVersion,
-      token: "private-token",
-    });
-    assert.ok(!JSON.stringify(connector).includes("private-token"));
-    assert.ok(
-      !sockets[0].sent
-        .slice(1)
-        .some((message) => JSON.stringify(message).includes("private-token")),
-    );
-    stop();
-    assert.equal(sockets[0].sent.at(-1).method, "subscription/cancel");
-    assert.equal(sockets[0].sent.at(-1).params.subscription, event.subscription);
-    connector.close();
-  },
-);
-
-test(
-  "physical reconnect replaces subscriptions with fresh identities and snapshots",
-  { timeout: 4000 },
-  async () => {
-    const connector = connect("http://example.test", "token");
-    const resumed = Promise.withResolvers();
-    const received = [];
-    handler = (socket, message) => {
-      if (initialize(socket, message)) return;
-      if (message.method !== "session/subscribe") return;
-      publication(socket, message, { generation: sockets.length });
-      if (sockets.length === 1) socket.close();
-    };
-    const stop = connector.subscribe(
-      "session/subscribe",
-      { thread: "same" },
-      (event) => {
-        received.push(event);
-        if (received.length === 2) resumed.resolve();
-      },
-      () => {},
-    );
-    await resumed.promise;
-    assert.deepEqual(
-      received.map((event) => event.data.generation),
-      [1, 2],
-    );
-    assert.notEqual(received[0].subscription, received[1].subscription);
-    stop();
-    connector.close();
-  },
-);
-
-test("timed-out subscription admission cancels its known identity and ignores late data", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const connector = connect("https://example.test", "token");
-  const requested = Promise.withResolvers();
-  const canceled = Promise.withResolvers();
-  const events = [];
-  handler = (socket, message) => {
-    if (initialize(socket, message)) return;
-    if (message.method === "session/subscribe") requested.resolve(message);
-    if (message.method === "subscription/cancel") canceled.resolve(message);
-  };
-  const stop = connector.subscribe(
-    "session/subscribe",
-    { thread: "large" },
-    (event) => events.push(event),
-    () => {},
-  );
-  const request = await requested.promise;
-  t.mock.timers.tick(15_000);
-  assert.equal((await canceled.promise).params.subscription, request.params.subscription);
-  publication(sockets[0], request);
-  assert.deepEqual(events, []);
-  stop();
-});
-
-test(
-  "subscription/closed refreshes only that subscription without ending server work",
-  { timeout: 4000 },
-  async () => {
-    const connector = connect("https://example.test", "token");
-    const resumed = Promise.withResolvers();
-    let publications = 0;
-    handler = (socket, message) => {
-      if (initialize(socket, message)) return;
-      if (message.method !== "session/subscribe") return;
-      publication(socket, message);
-      if (++publications === 1)
-        socket.receive({
-          jsonrpc: "2.0",
-          method: "subscription/closed",
-          params: {
-            subscription: message.params.subscription,
-            error: {
-              code: -32000,
-              message: "Slow subscription",
-              data: { status: 503, outcome: "not_admitted" },
-            },
-          },
-        });
-    };
-    let count = 0;
-    const stop = connector.subscribe(
-      "session/subscribe",
-      {},
-      () => {
-        if (++count === 2) resumed.resolve();
-      },
-      () => {},
-    );
-    await resumed.promise;
-    assert.equal(sockets.length, 1);
-    assert.ok(sockets[0].sent.every((message) => message.method !== "session/end"));
-    stop();
-    connector.close();
-  },
-);
-
-test(
-  "lost mutation replies are unknown without retries and explicit refusals retain outcome",
-  { timeout: 2000 },
-  async () => {
-    const connector = connect("https://example.test", "token");
-    handler = (socket, message) => {
-      if (!initialize(socket, message)) socket.close();
-    };
-    await assert.rejects(
-      connector.request("session/input", { thread: "same", body: { text: "once" } }),
-      (error) => {
-        assert.equal(error.kind, "unknown");
-        assert.equal(errorText(error, true), unknownOutcome);
-        return true;
-      },
-    );
-    assert.equal(sockets[0].sent.filter((message) => message.method === "session/input").length, 1);
-    handler = (socket, message) => {
-      if (!initialize(socket, message)) socket.refuse(message, 409);
-    };
-    await assert.rejects(connector.request("session/input", { thread: "same" }), {
-      kind: "refused",
-      status: 409,
-    });
-    handler = (socket, message) => {
-      if (!initialize(socket, message)) socket.refuse(message, 503, "unknown");
-    };
-    await assert.rejects(connector.request("session/input", { thread: "same" }), {
-      kind: "unknown",
-      status: 503,
-    });
-    connector.close();
-  },
-);
-
-test(
-  "attachment submissions reuse one bulk connection independently of control",
-  { timeout: 2000 },
-  async () => {
-    const connector = connect("https://example.test", "token");
-    const snapshot = Promise.withResolvers();
-    const dispatched = Promise.withResolvers();
-    let attachmentRequest;
-    handler = (socket, message) => {
-      if (initialize(socket, message)) return;
-      if (message.method === "view/attach") publication(socket, message);
-      else if (message.method === "view/intent") {
-        attachmentRequest = { socket, message };
-        dispatched.resolve();
-      } else socket.reply(message, null);
-    };
-    const stop = connector.subscribe("view/attach", { thread: "same" }, snapshot.resolve, () => {});
-    await snapshot.promise;
-    const body = {
-      attachment: "view-one",
-      version: { Attachment: 1, Revision: 4 },
-      operation: {
-        composer: {
-          input: { text: "", attachments: [{ source: "upload", name: "notes.txt", data: "aGk=" }] },
-        },
-      },
-    };
-    const submission = connector.request("view/intent", { thread: "same", body });
-    await dispatched.promise;
-    assert.equal(sockets.length, 2);
-    assert.equal(sockets[1].sent[0].params.token, "token");
-    assert.deepEqual(attachmentRequest.message.params.body, body);
-    await connector.request("session/interrupt", { thread: "same" });
-    assert.equal(sockets[0].sent.at(-1).method, "session/interrupt");
-    attachmentRequest.socket.reply(attachmentRequest.message, {
-      version: { Attachment: 1, Revision: 5 },
-    });
-    await submission;
-    assert.equal(sockets[1].readyState, 1);
-    assert.equal(sockets[0].readyState, 1);
-    await connector.request("session/input", {
-      thread: "same",
-      body: { text: "", attachments: [{ source: "path", path: "notes.txt" }] },
-    });
-    assert.equal(sockets[1].sent.at(-1).method, "session/input");
-    assert.equal(sockets[1].readyState, 1);
-    assert.equal(sockets[0].readyState, 1);
-    assert.equal(sockets.length, 2);
-    handler = (socket, message) => {
-      if (!initialize(socket, message)) socket.reply(message, null);
-    };
-    for (const [method, payload] of [
-      [
-        "session/answer",
-        {
-          call: "ask",
-          answers: [
-            { question: "q", attachments: [{ source: "upload", name: "image.png", data: "aGk=" }] },
-          ],
-        },
-      ],
-      [
-        "view/intent",
-        {
-          operation: {
-            answers: {
-              call: "ask",
-              answers: [
-                {
-                  question: "q",
-                  attachments: [{ source: "upload", name: "image.png", data: "aGk=" }],
-                },
-              ],
-            },
-          },
-        },
-      ],
-    ]) {
-      await connector.request(method, { thread: "same", body: payload });
-      assert.equal(sockets[1].sent.at(-1).method, method);
-      assert.equal(sockets[1].readyState, 1);
-      assert.equal(sockets[0].readyState, 1);
-    }
-    assert.equal(sockets.length, 2);
-    stop();
-    connector.close();
-  },
-);
-
-test("bulk loss and reauthorization preserve channel ownership", async () => {
-  const connector = connect("https://example.test", "old-token");
-  const pending = [];
-  handler = (socket, message) => {
-    if (initialize(socket, message)) return;
-    if (message.method === "session/input") pending.push({ socket, message });
-    else socket.reply(message, null);
-  };
-  await connector.request("session/options");
-  const submission = connector.request("session/input", {
-    body: { attachments: [{ source: "path", path: "notes.txt" }] },
-  });
-  await new Promise(setImmediate);
-  sockets[1].close();
-  await assert.rejects(submission, { kind: "unknown" });
-  handler = (socket, message) => {
-    if (!initialize(socket, message)) socket.reply(message, null);
-  };
-  const params = { body: { attachments: [{ source: "path", path: "notes.txt" }] } };
-  await connector.request("session/input", params);
-  assert.equal(sockets.length, 3);
-  assert.equal(sockets[0].readyState, Socket.OPEN);
-  assert.equal(pending.filter(({ message }) => message.method === "session/input").length, 1);
-  connector.authorize("new-token");
-  assert.ok(sockets.every((socket) => socket.readyState === 3));
-  await Promise.all([
-    connector.request("session/options"),
-    connector.request("session/input", params),
-  ]);
-  assert.equal(sockets.length, 5);
-  assert.ok(sockets.slice(3).every((socket) => socket.sent[0].params.token === "new-token"));
-  connector.close();
-  assert.ok(sockets.every((socket) => socket.readyState === 3));
-});
-
-test(
-  "request cancellation addresses the dispatched request and preserves other machines",
-  { timeout: 2000 },
-  async () => {
-    const first = connect("https://first.test", "one");
-    const second = connect("https://second.test", "two");
-    const sent = Promise.withResolvers();
-    handler = (socket, message) => {
-      if (initialize(socket, message)) return;
-      if (message.method === "session/input") sent.resolve(message);
-      else socket.reply(message, null);
-    };
-    await second.request("session/list");
-    const controller = new AbortController();
-    const request = first.request(
-      "session/input",
-      { thread: "same", body: { text: "once" } },
-      { signal: controller.signal },
-    );
-    const original = await sent.promise;
-    controller.abort();
-    await assert.rejects(request, { kind: "unknown" });
-    const firstSocket = sockets.find((socket) => socket.url.hostname === "first.test");
-    assert.deepEqual(firstSocket.sent.at(-1).params, { body: { id: original.id } });
-    assert.equal(firstSocket.sent.at(-1).method, "request/cancel");
-    first.close();
-    assert.equal(sockets.find((socket) => socket.url.hostname === "second.test").readyState, 1);
-    first.close();
-    second.close();
-  },
-);
-
-test(
-  "credential replacement reconnects only its machine; initialization cancellation dispatches no mutation",
-  { timeout: 2000 },
-  async () => {
-    const first = connect("https://first.test", "expired");
-    const second = connect("https://second.test", "two");
-    const denied = Promise.withResolvers();
-    const admitted = Promise.withResolvers();
-    handler = (socket, message) => {
-      if (message.method === "initialize" && message.params.token === "expired") {
-        socket.refuse(message, 401);
-        return;
-      }
-      if (initialize(socket, message)) return;
-      if (message.method === "session/subscribe") publication(socket, message);
-      else socket.reply(message, null);
-    };
-    const stop = first.subscribe("session/subscribe", {}, admitted.resolve, (state) => {
-      if (state === "required") denied.resolve();
-    });
-    await Promise.all([denied.promise, second.request("session/list")]);
-    const secondSocket = sockets.find((socket) => socket.url.hostname === "second.test");
-    first.authorize("replacement");
-    await admitted.promise;
-    assert.equal(secondSocket.readyState, 1);
-    assert.equal(sockets.filter((socket) => socket.url.hostname === "second.test").length, 1);
-    stop();
-    first.close();
-    second.close();
-    const waiting = connect("https://waiting.test", "token");
-    const initialization = Promise.withResolvers();
-    handler = (_socket, message) => {
-      if (message.method === "initialize") initialization.resolve();
-    };
-    const controller = new AbortController();
-    const pending = waiting.request(
-      "session/start",
-      { body: { workspace: "/workspace", model: "codex" } },
-      { signal: controller.signal },
-    );
-    await initialization.promise;
-    controller.abort();
-    await assert.rejects(pending, { kind: "canceled" });
-    assert.ok(sockets.at(-1).sent.every((message) => message.method === "initialize"));
-    waiting.close();
-  },
-);
-
-test(
-  "incompatible initialization is visible and never resubmits subscriptions",
-  { timeout: 2000 },
-  async () => {
-    const connector = connect("https://example.test", "token");
-    const rejected = Promise.withResolvers();
-    handler = (socket, message) => socket.refuse(message, 409);
-    const stop = connector.subscribe(
-      "session/subscribe",
-      {},
-      () => assert.fail("unexpected publication"),
-      (state) => {
-        if (state === "incompatible") rejected.resolve();
-      },
-    );
-    await rejected.promise;
-    assert.equal(sockets[0].sent.length, 1);
-    stop();
-    connector.close();
-  },
-);
-
-test(
-  "a mismatched subscription acknowledgement closes its connection before publication",
-  { timeout: 2000 },
-  async () => {
-    const connector = connect("https://example.test", "token");
-    const rejected = Promise.withResolvers();
-    handler = (socket, message) => {
-      if (!initialize(socket, message)) socket.reply(message, { subscription: "different" });
-    };
-    const stop = connector.subscribe(
-      "session/subscribe",
-      {},
-      () => assert.fail("unexpected publication"),
-      (state) => {
-        if (state === "lost") rejected.resolve();
-      },
-    );
-    await rejected.promise;
-    assert.equal(sockets[0].readyState, 3);
-    stop();
-    connector.close();
-  },
-);
-
-test("delivery receipts follow application or stale discard on their originating channel", async () => {
-  const connector = connect("https://example.test", "token");
-  handler = (socket, message) => {
-    if (initialize(socket, message)) return;
-    if (message.method === "session/page")
-      socket.reply(message, { entries: [], earlier: null, delivery: "page" });
-    else if (message.method === "session/subscribe") publication(socket, message);
-    else socket.reply(message, null);
-  };
-  const page = await connector.request("session/page", { thread: "one" });
-  assert.equal(
-    sockets[0].sent.some((message) => message.method === "publication/ack"),
-    false,
-  );
-  page.acknowledge();
-  assert.equal(sockets[0].sent.at(-1).params.body.delivery, "page");
-  const stale = await connector.request("session/page", { thread: "one" });
-  connector.authorize("replacement");
-  await connector.request("session/list");
-  stale.acknowledge();
-  assert.equal(
-    sockets[1].sent.some((message) => message.method === "publication/ack"),
-    false,
-    "a stale receipt cannot release a new connection's credit",
-  );
-  const ready = Promise.withResolvers();
-  let received = 0;
-  const stop = connector.subscribe(
-    "session/subscribe",
-    { thread: "one" },
-    (event) => {
-      received++;
-      if (event.delivery)
-        assert.notEqual(sockets[1].sent.at(-1).params.body?.delivery, event.delivery);
-      ready.resolve();
-    },
-    () => {},
-  );
-  await ready.promise;
-  const subscription = sockets[1].sent.find((message) => message.method === "session/subscribe")
-    .params.subscription;
-  const event = (delivery) => ({
-    jsonrpc: "2.0",
-    method: "subscription/event",
-    params: { subscription, kind: "patch", data: {}, delivery },
-  });
-  sockets[1].receive(event("applied"));
-  assert.equal(sockets[1].sent.at(-1).params.body.delivery, "applied");
-  stop();
-  await new Promise(setImmediate);
-  const before = received;
-  sockets[1].receive(event("discarded"));
-  assert.equal(received, before);
-  assert.equal(sockets[1].sent.at(-1).params.body.delivery, "discarded");
-});
-
-test("HTTP resources run concurrently, survive control deadlines and cancel independently", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const connector = connect("https://example.test/prefix", "old-token");
-  const requests = [];
-  t.mock.method(globalThis, "fetch", (url, options) => {
-    const result = Promise.withResolvers();
-    requests.push({ url, options, result });
-    options.signal.addEventListener("abort", () => result.reject(options.signal.reason));
-    return result.promise;
-  });
-  handler = (socket, message) => {
-    if (!initialize(socket, message)) socket.reply(message, null);
-  };
-  const controller = new AbortController();
-  const params = {
-    thread: "same",
-    body: { attachment: "retained", kind: "main", seq: 1, revision: 1 },
-  };
-  const slow = connector.resource("content", params, { signal: controller.signal });
-  const image = connector.resource("image", { thread: "same", body: { image: "bound" } });
-  const preview = connector.resource("attachment-image", {
-    body: { path: "image.png", workspace: "/work" },
-  });
-  assert.equal(requests.length, 3);
-  assert.equal(requests[0].url, "https://example.test/prefix/api/resources/content");
-  assert.deepEqual(JSON.parse(requests[0].options.body), params);
-  for (const { url, options } of requests) {
-    assert.ok(!url.includes("token"));
-    assert.equal(options.headers.Authorization, "Bearer old-token");
-    assert.equal(options.headers["Mekugi-Protocol"], protocolVersion);
-    assert.equal(options.credentials, "omit");
-    assert.equal(options.redirect, "error");
-  }
-  await connector.request("session/options");
-  assert.equal(sockets.length, 1);
-  t.mock.timers.tick(60_000);
-  assert.equal(requests[0].options.signal.aborted, false);
-  requests[1].result.resolve(
-    new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/png" } }),
-  );
-  assert.deepEqual(new Uint8Array(await (await image).arrayBuffer()), new Uint8Array([1, 2, 3]));
-  controller.abort();
-  await assert.rejects(slow, { kind: "canceled" });
-  assert.equal(requests[2].options.signal.aborted, false);
-  requests[2].result.resolve(new Response(new Uint8Array([4])));
-  await preview;
-  const old = connector.resource("content", params);
-  connector.authorize("new-token");
-  await assert.rejects(old, { kind: "canceled" });
-  const fresh = connector.resource("content", params);
-  assert.equal(requests.at(-1).options.headers.Authorization, "Bearer new-token");
-  requests.at(-1).result.resolve(Response.json({ entry: { text: "complete" } }));
-  assert.deepEqual(await fresh, { entry: { text: "complete" } });
-  const removed = connector.resource("content", params);
-  connector.close();
-  await assert.rejects(removed, { kind: "canceled" });
-});
-
-test("HTTP resource failures retain authentication and semantic status", async (t) => {
-  const connector = connect("https://example.test", "token");
-  t.mock.method(globalThis, "fetch", async () => new Response("unauthorized", { status: 401 }));
-  await assert.rejects(connector.resource("image", {}), { kind: "required", status: 401 });
-  t.mock.method(globalThis, "fetch", async () =>
-    Response.json(
-      { code: -32000, message: "Entry changed", data: { status: 409, outcome: "not_admitted" } },
-      { status: 409 },
-    ),
-  );
-  await assert.rejects(connector.resource("content", {}), {
-    kind: "refused",
-    status: 409,
-    message: "Entry changed",
-  });
-});
-
-const assertSuperseded = (error) => {
-  assert.equal(isSuperseded(error), true);
-  assert.deepEqual(readFailure(error), { kind: "superseded" });
-  return true;
+const initResponse = {
+  userAgent: "mekugi-app-server/0.1",
+  codexHome: "/home/test/.codex",
+  platformFamily: "unix",
+  platformOs: "linux",
 };
 
-test("only owner-confirmed read replacement is superseded on both transports", async (t) => {
-  const connector = connect("https://example.test", "token");
-  const failure = {
-    code: readSuperseded,
-    message: "Source changed",
-    data: { status: 409, outcome: "not_admitted" },
-  };
-  t.mock.method(globalThis, "fetch", async () => Response.json(failure, { status: 409 }));
-  await assert.rejects(connector.resource("content", {}), assertSuperseded);
-  handler = (socket, message) => {
-    if (!initialize(socket, message))
-      socket.receive({ jsonrpc: "2.0", id: message.id, error: failure });
-  };
-  await assert.rejects(connector.request("session/page", {}), assertSuperseded);
-  t.mock.method(globalThis, "fetch", async () => new Response("incompatible", { status: 409 }));
-  await assert.rejects(connector.resource("content", {}), (error) => {
-    assert.equal(error.kind, "incompatible");
-    assert.equal(isSuperseded(error), false);
-    assert.equal(readFailure(error).kind, "failed");
-    return true;
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  t.mock.method(globalThis, "fetch", async () =>
-    Response.json({ ...failure, code: -32000 }, { status: 409 }),
+  return { promise, resolve, reject };
+}
+
+class FakeSocket extends EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances = [];
+  static onSend = null;
+  static autoOpen = true;
+  static negotiatedProtocol = subprotocol;
+
+  readyState = FakeSocket.CONNECTING;
+  bufferedAmount = 0;
+  sent = [];
+
+  constructor(url, protocol) {
+    super();
+    this.url = String(url);
+    this.requestedProtocol = protocol;
+    this.protocol = FakeSocket.negotiatedProtocol;
+    FakeSocket.instances.push(this);
+    if (FakeSocket.autoOpen) {
+      queueMicrotask(() => this.open());
+    }
+  }
+
+  open() {
+    if (this.readyState !== FakeSocket.CONNECTING) return;
+    this.readyState = FakeSocket.OPEN;
+    this.dispatchEvent(new Event("open"));
+  }
+
+  send(raw) {
+    const parsed = JSON.parse(raw);
+    this.sent.push(parsed);
+    FakeSocket.onSend?.(this, parsed);
+  }
+
+  receive(payload) {
+    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) }));
+  }
+
+  reply(request, result, includeJsonrpc = false) {
+    const frame = includeJsonrpc
+      ? { jsonrpc: "2.0", id: request.id, result }
+      : { id: request.id, result };
+    this.receive(frame);
+  }
+
+  replyError(request, error) {
+    this.receive({ jsonrpc: "2.0", id: request.id, error });
+  }
+
+  close() {
+    if (this.readyState === FakeSocket.CLOSED) return;
+    this.readyState = FakeSocket.CLOSED;
+    this.dispatchEvent(new Event("close"));
+  }
+}
+
+const originalWebSocket = globalThis.WebSocket;
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  FakeSocket.instances = [];
+  FakeSocket.onSend = null;
+  FakeSocket.autoOpen = true;
+  FakeSocket.negotiatedProtocol = subprotocol;
+  globalThis.WebSocket = originalWebSocket;
+  globalThis.fetch = originalFetch;
+});
+
+test("endpointURL normalizes valid HTTP/HTTPS URLs and rejects invalid ones", () => {
+  assert.equal(endpointURL("https://box.example/"), "https://box.example");
+  assert.equal(endpointURL("http://127.0.0.1:7778///"), "http://127.0.0.1:7778");
+  assert.throws(() => endpointURL("ws://box.example"));
+  assert.throws(() => endpointURL("https://user:pass@box.example"));
+  assert.throws(() => endpointURL("https://box.example/?token=abc"));
+});
+
+test("selectionHash and parseSelection round-trip machine, thread, and agent", () => {
+  const hash = selectionHash({ machine: "m1", session: "t1", agent: "/root/helper" });
+  assert.deepEqual(parseSelection(hash), { machine: "m1", session: "t1", agent: "/root/helper" });
+  assert.deepEqual(
+    parseSelection(selectionHash({ machine: "m1", session: "t1", agent: "/root" })),
+    {
+      machine: "m1",
+      session: "t1",
+      agent: undefined,
+    },
   );
-  await assert.rejects(connector.resource("content", {}), (error) => {
-    assert.equal(error.kind, "refused");
-    assert.deepEqual(readFailure(error), { kind: "failed", text: "Source changed" });
-    return true;
+});
+
+test("native handshake sends initialize with token + capabilities and follows with initialized notification", async () => {
+  globalThis.WebSocket = FakeSocket;
+  const connector = new Connector("https://box.example", "secret-token");
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") {
+      assert.equal(message.jsonrpc, "2.0");
+      assert.equal(message.params.token, "secret-token");
+      assert.equal(message.params.clientInfo.name, "mekugi-webui");
+      assert.equal(message.params.capabilities.experimentalApi, true);
+      assert.equal(message.params.capabilities.requiredHumanApproval, true);
+      // Native app-server omits "jsonrpc" on responses
+      socket.reply(message, initResponse, false);
+    } else if (message.method === "thread/list") {
+      socket.reply(message, { data: [], nextCursor: null, backwardsCursor: null }, false);
+    }
+  };
+
+  const result = await connector.request("thread/list", { limit: 10 });
+  assert.deepEqual(result.data, []);
+  const socket = FakeSocket.instances[0];
+  assert.equal(socket.requestedProtocol, subprotocol);
+  assert.equal(socket.url, "wss://box.example/api/control");
+  assert.deepEqual(
+    socket.sent.map((m) => m.method),
+    ["initialize", "initialized", "thread/list"],
+  );
+  assert.equal(socket.sent[1].id, undefined);
+  connector.close();
+});
+
+test("server notifications and server requests dispatch and respond over the native channel", async () => {
+  globalThis.WebSocket = FakeSocket;
+  const connector = new Connector("https://box.example", "token-1");
+  const notifications = [];
+  const serverRequests = [];
+  connector.onNotification((n) => notifications.push(n));
+  connector.onServerRequest((r) => serverRequests.push(r));
+
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") {
+      socket.reply(message, initResponse);
+    } else if (message.method === "thread/list") {
+      socket.reply(message, { data: [], nextCursor: null, backwardsCursor: null });
+    }
+  };
+
+  await connector.request("thread/list", {});
+  const socket = FakeSocket.instances[0];
+
+  // Native notification without jsonrpc field
+  socket.receive({
+    method: "thread/name/updated",
+    params: { threadId: "t1", threadName: "Renamed" },
   });
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].method, "thread/name/updated");
+
+  // Native server request (approval)
+  socket.receive({
+    id: 42,
+    method: "item/commandExecution/requestApproval",
+    params: {
+      kind: "command",
+      threadId: "t1",
+      turnId: "turn1",
+      itemId: "item1",
+      startedAtMs: 1000,
+      environmentId: null,
+      command: "ls -la",
+    },
+  });
+  assert.equal(serverRequests.length, 1);
+  assert.equal(serverRequests[0].id, 42);
+
+  connector.respond(42, { decision: "accept" });
+  assert.deepEqual(socket.sent.at(-1), {
+    jsonrpc: "2.0",
+    id: 42,
+    result: { decision: "accept" },
+  });
+  connector.close();
+});
+
+test("401 refusal surfaces required state and mutations fail with unknownOutcome on disconnect", async () => {
+  globalThis.WebSocket = FakeSocket;
+  const connector = new Connector("https://box.example", "bad-token");
+  const states = [];
+  const sawRequired = deferred();
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") {
+      socket.replyError(message, {
+        code: -32000,
+        message: "A valid connector token is required.",
+        data: { status: 401, outcome: "not_admitted" },
+      });
+    }
+  };
+  const stop = connector.connect((state) => {
+    states.push(state);
+    if (state === "required") sawRequired.resolve();
+  });
+  await sawRequired.promise;
+  assert.ok(states.includes("required"));
+  stop();
+  connector.close();
+
+  // Disconnect during in-flight mutation produces unknownOutcome
+  const connector2 = new Connector("https://box.example", "good-token");
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") socket.reply(message, initResponse);
+    else if (message.method === "turn/start") queueMicrotask(() => socket.close());
+  };
+  await assert.rejects(
+    connector2.request("turn/start", {
+      threadId: "t1",
+      input: [{ type: "text", text: "hi", text_elements: [] }],
+    }),
+    (err) =>
+      err instanceof TransportError && err.kind === "unknown" && err.message === unknownOutcome,
+  );
+  connector2.close();
+});
+
+test("attachment-bearing turn/start uses a separate bulk channel", async () => {
+  globalThis.WebSocket = FakeSocket;
+  const connector = new Connector("https://box.example", "token-1");
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") socket.reply(message, initResponse);
+    else if (message.id !== undefined) socket.reply(message, { ok: true });
+  };
+  await connector.request("thread/list", {});
+  await connector.request("turn/start", {
+    threadId: "t1",
+    input: [{ type: "image", url: "data:image/png;base64,AAAA" }],
+  });
+  assert.equal(FakeSocket.instances.length, 2);
+  assert.equal(FakeSocket.instances[1].sent.at(-1).method, "turn/start");
+  connector.close();
+});
+
+test("HTTP resources send Mekugi-Protocol header and bearer token for content and image", async () => {
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/api/resources/content")) {
+      return new Response(
+        JSON.stringify({
+          threadId: "t1",
+          turnId: "turn1",
+          item: { id: "i1", type: "plan", text: "ok" },
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+    return new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { "Content-Type": "image/png" },
+    });
+  };
+
+  const connector = new Connector("https://box.example", "tok");
+  const content = await connector.resource("content", {
+    thread: "t1",
+    body: { thread: "t1", turnId: "turn1", itemId: "i1" },
+  });
+  assert.equal(content.item.id, "i1");
+
+  const blob = await connector.resource("image", {
+    thread: "t1",
+    body: { itemId: "i1", index: 0, image: "abc" },
+  });
+  assert.equal(blob.size, 3);
+
+  for (const call of calls) {
+    assert.equal(call.options.headers["Mekugi-Protocol"], protocolVersion);
+    assert.equal(call.options.headers.Authorization, "Bearer tok");
+  }
+  connector.close();
 });

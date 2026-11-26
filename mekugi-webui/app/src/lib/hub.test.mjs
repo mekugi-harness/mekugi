@@ -12,7 +12,6 @@ registerHooks({
       !/\.(?:ts|mjs|js)$/.test(specifier)
     )
       specifier += ".ts";
-    if (specifier === "../../../protocol") specifier += ".ts";
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {

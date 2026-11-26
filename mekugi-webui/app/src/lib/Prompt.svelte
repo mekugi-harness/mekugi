@@ -1,7 +1,5 @@
 <script lang="ts">
   import Alert from "./ui/Alert.svelte";
-  import Attachments from "./Attachments.svelte";
-  import { prepareAttachments } from "./attachments";
   import { onDestroy, tick, untrack } from "svelte";
   import type { Approval, QuestionCall } from "./protocol";
   import { stream } from "./stream.svelte";
@@ -44,8 +42,6 @@
   });
   let card: HTMLElement;
   let submittedWithFocus = false;
-  let trays: Record<string, ReturnType<typeof Attachments>> = {};
-  const acquisitions = new Set<AbortController>();
   let hovered = $state<Record<string, number | undefined>>({});
   let focused = $state<Record<string, number | undefined>>({});
   const activeDraft = $derived(
@@ -53,13 +49,14 @@
       ? promptState.drafts[call.questions[questionIndex].id]
       : undefined,
   );
-  let progress = $state("");
   const disabled = $derived(
-    unavailable || promptState.sending || (!!call?.blocking && promptState.accepted),
+    unavailable ||
+      !!call?.secretBlocked ||
+      promptState.sending ||
+      (!!call?.blocking && promptState.accepted),
   );
 
   onDestroy(() => {
-    for (const controller of acquisitions) controller.abort();
     const active = document.activeElement;
     if (!card?.contains(active) && !(submittedWithFocus && active === document.body)) return;
     tick().then(() =>
@@ -88,10 +85,6 @@
     const drafts = answers.map((answer) => pending.drafts[answer.question]);
     if (drafts.some((draft) => draft.sending || draft.accepted)) return;
     submittedWithFocus = card.contains(document.activeElement);
-    const release = semantic.retainInput();
-    const captured = semantic.event;
-    const controller = new AbortController();
-    acquisitions.add(controller);
     if (target.blocking) pending.sending = true;
     for (const draft of drafts) {
       draft.sending = true;
@@ -100,43 +93,15 @@
     pending.error = undefined;
     pending.accepted = false;
     try {
-      for (const answer of answers) {
-        const q = target.questions.find((candidate) => candidate.id === answer.question)!;
-        const draft = pending.drafts[q.id];
-        if (draft.choice === (q.options?.length ?? 0)) {
-          answer.attachments = await prepareAttachments(
-            draft.items,
-            controller.signal,
-            (read, size) => {
-              progress = size
-                ? `Reading images: ${Math.round((read / size) * 100)}%`
-                : "Preparing answers…";
-            },
-          );
-        }
-      }
-      progress = "Sending…";
-      const error = await semantic.send(
-        { answers: { call: target.id, answers } },
-        controller.signal,
-        false,
-        captured,
-      );
+      const error = semantic.answerQuestions(target, answers);
       pending.error = error;
       if (target.blocking) pending.accepted = !error;
       for (const draft of drafts) draft.accepted = !error;
     } catch (failure) {
-      pending.error = controller.signal.aborted
-        ? "Attachment preparation cancelled."
-        : failure instanceof Error
-          ? failure.message
-          : "Could not prepare answers.";
+      pending.error = failure instanceof Error ? failure.message : "Could not send answers.";
     } finally {
-      acquisitions.delete(controller);
-      progress = "";
       if (target.blocking) pending.sending = false;
       for (const draft of drafts) draft.sending = false;
-      release(pending.error);
     }
   }
 
@@ -144,27 +109,14 @@
     if (!approval || disabled) return;
     submittedWithFocus = card.contains(document.activeElement);
     const pending = promptState;
-    const release = semantic.retainInput();
     pending.sending = true;
-    const event = semantic.event;
-    pending.error = event
-      ? await semantic.send(
-          {
-            approval: {
-              Version: event.frame.view.Version,
-              Request: approval.id,
-              Choice: choice,
-              Reason: choice === pending.deny ? pending.reason : "",
-            },
-          },
-          undefined,
-          false,
-          event,
-        )
-      : "Wait for this thread's control view to connect.";
+    pending.error = semantic.decideApproval(
+      approval,
+      choice,
+      choice === pending.deny ? pending.reason : "",
+    );
     pending.accepted = !pending.error;
     pending.sending = false;
-    release();
   }
 
   const text = "my-2 whitespace-pre-wrap";
@@ -230,6 +182,9 @@
       </div>
     {/if}
   {:else if call}
+    {#if call.secretBlocked}
+      <Alert>Secret prompts can only be answered locally on the execution machine.</Alert>
+    {/if}
     <form
       onsubmit={(event) => {
         event.preventDefault();
@@ -346,23 +301,8 @@
                   name={question.id + "-answer"}
                   autocomplete="off"
                   bind:value={promptState.drafts[question.id].text}
-                  onpaste={(event) => {
-                    if (questionDisabled) return;
-                    const files = Array.from(event.clipboardData?.files ?? []).filter(
-                      (file) => !file.type || file.type.startsWith("image/"),
-                    );
-                    if (!files.length) return;
-                    if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
-                    trays[question.id]?.add(files);
-                  }}
                   rows="2"></textarea>
               </label>
-              <Attachments
-                bind:this={trays[question.id]}
-                bind:items={promptState.drafts[question.id].items}
-                machine=""
-                disabled={questionDisabled}
-              />
             {/if}
             <label class={option}>
               <input
@@ -401,7 +341,7 @@
     >
       {promptState.accepted || activeDraft?.accepted
         ? "Submitted. Waiting for the session…"
-        : progress || "Sending…"}
+        : "Sending…"}
     </p>{/if}
 </article>
 

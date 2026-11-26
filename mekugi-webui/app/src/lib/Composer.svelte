@@ -1,522 +1,187 @@
 <script lang="ts">
-  import Path from "./Path.svelte";
-  import Code from "./Code.svelte";
   import Alert from "./ui/Alert.svelte";
   import { onDestroy, tick, untrack } from "svelte";
-  import type { ChoiceID } from "../../../protocol";
   import Attachments from "./Attachments.svelte";
-  import { hub } from "./hub.svelte";
-  import {
-    activeAttachments,
-    inlineReferences,
-    prepareAttachments,
-    submissionAttachments,
-    type InitialInput,
-  } from "./attachments";
-  import type { Attachment, Input } from "./protocol";
-  import { semantic, textDraft } from "./semantic.svelte";
+  import { prepareAttachments, type InitialInput, type PendingAttachment } from "./attachments";
+  import type { Machine } from "./hub.svelte";
+  import type { Input } from "./protocol";
+  import { semantic } from "./semantic.svelte";
   import { stream } from "./stream.svelte";
+  import ThreadSettings from "./ThreadSettings.svelte";
   import Button from "./ui/Button.svelte";
   import ComposerCard from "./ui/ComposerCard.svelte";
   import * as InputGroup from "./ui/input-group";
   import Menu from "./ui/Menu.svelte";
   import MenuItem from "./ui/MenuItem.svelte";
-  import { composerText, composerTools, floating, kbd } from "./ui/styles";
   import Tag from "./ui/Tag.svelte";
-  import ThreadSettings from "./ThreadSettings.svelte";
+  import { composerText, composerTools } from "./ui/styles";
 
-  // The thread's composer, as in the terminal: a leading slash is a command,
-  // a leading ! a shell command on the execution machine, and / @ $ open the
-  // server's completions. Enter sends or steers; Tab queues for the next turn.
   let {
-    input,
     machine,
-    unavailable,
-    agentName = "main",
+    thread,
+    input,
+    agent = "/root",
     role,
     initial,
     oninitial,
+    asking = false,
+    unavailable,
   }: {
+    machine: Machine;
+    thread: string;
     input?: Input;
-    machine: string;
-    unavailable?: string;
-    agentName?: string;
+    agent?: string;
     role?: string;
     initial?: InitialInput;
-    oninitial?: () => void;
+    oninitial: () => void;
+    asking?: boolean;
+    unavailable?: string;
   } = $props();
-  const editor = $derived(semantic.editor());
-  const view = $derived(semantic.frame?.view);
-  const targetName = $derived(
-    view?.Side && view.Input.ID === view.SideThread.ID ? view.Side.Label : agentName,
-  );
-  const sideStatus = $derived(
-    view?.SideThread.ID && view.Displayed.ID === view.SideThread.ID
-      ? view.Status.Composer
-      : undefined,
-  );
-  const previewThread = $derived(view?.Input.ID);
-  const previewTarget = $derived(
-    hub.selected && previewThread ? { machine: hub.selected, thread: previewThread } : undefined,
-  );
-  const shell = $derived(editor.text.startsWith("!"));
-  const pending = $derived(editor.submission);
-  let acquisition: AbortController | undefined;
-  let stopping = $state(false);
-  let error = $state<string>();
-  let progress = $state("");
+
+  let editor = $derived(semantic.editor(thread));
+  let text = $state("");
+  let items = $state<PendingAttachment[]>([]);
   let pathing = $state(false);
-  let field = $state<HTMLTextAreaElement>();
-  $effect(() => {
-    if (editor.focus)
-      untrack(
-        () =>
-          void tick().then(() => {
-            field?.focus();
-            const bytes = new TextEncoder().encode(editor.text);
-            const position = new TextDecoder().decode(
-              bytes.slice(0, bytes.length - editor.cursorBack),
-            ).length;
-            field?.setSelectionRange(position, position);
-          }),
-      );
-  });
-  const references = $derived(inlineReferences(editor.text, editor.items));
-  const activeItems = $derived(activeAttachments(editor.text, editor.items));
-  const painted = $derived(shell || references.length > 0);
-  let syntax = $state<HTMLElement>();
+  let sending = $state(false);
+  let progress = $state("");
+  let error = $state<string>();
   let tray = $state<ReturnType<typeof Attachments>>();
+  let field = $state<HTMLTextAreaElement>();
+  let controller = $state<AbortController>();
   const touch = matchMedia("(pointer: coarse)").matches;
-  const running = $derived(!!input?.stoppable);
-  const empty = $derived(!editor.text.trim() && !activeItems.length);
-  const refusal = $derived(
-    unavailable ??
-      (shell
-        ? undefined
-        : view?.Admission.Reason || (input ? input.reason : "Waiting for the session…")),
-  );
-  // Navigation may cancel file acquisition, but admitted input belongs to its
-  // retained control view until confirmation or explicit cancellation.
-  onDestroy(() => acquisition?.abort());
 
-  // Completions belong to the draft revision they were computed for.
-  let dismissed = $state<string>();
-  const completionIdentity = $derived(
-    JSON.stringify([semantic.event?.attachment, view?.Input.ID, editor.revision]),
-  );
-  const completion = $derived(
-    dismissed === completionIdentity ? undefined : semantic.completionMenu,
-  );
-  // Only @ choices are files; skills keep their display names beside a source path.
-  const fileChoices = $derived(completion?.Target.Kind === "@".charCodeAt(0));
-  let active = $state(0);
   $effect(() => {
-    const menu = completion;
-    if (!menu) return;
-    const preferred = menu.Choices.findIndex(
-      (choice) => choice.ID === menu.Preferred.ID && choice.Name === menu.Preferred.Name,
-    );
-    untrack(() => (active = Math.max(0, preferred)));
-  });
-  $effect(() => {
-    if (completion)
-      document.getElementById(`completion-${active}`)?.scrollIntoView({ block: "nearest" });
-  });
-  function choose(kind: number, choice: ChoiceID = { ID: 0, Name: "", Path: "" }) {
-    if (kind === 1) dismissed = completionIdentity;
-    const menu = semantic.liveCompletion;
-    if (!view || !menu || menu.Loading) return;
-    void semantic.send({
-      menu: { Version: view.Version, Menu: menu.ID, Kind: kind, Choice: choice, Query: "" },
-      editor: semantic.metadata(),
+    const current = editor;
+    untrack(() => {
+      text = current.text;
+      items = current.items;
     });
-    field?.focus();
-  }
-
-  // One quiet completion request at a time; the newest draft is sampled when
-  // it finishes. Drafts without a trigger character need none, except to
-  // close a picker that is still open.
-  let asked = "";
-  let asking = false;
-  function refresh() {
-    const frame = semantic.frame;
-    if (asking || !frame || semantic.connection !== "open") return;
-    const current = semantic.editor();
-    const key = `${semantic.event?.attachment}:${frame.view.Input.ID}:${current.revision}:${frame.completionCatalog}`;
-    if (key === asked || !(/[/@$]/.test(current.text) || frame.view.Menu?.Kind === "")) return;
-    asked = key;
-    asking = true;
-    void semantic.complete().finally(() => {
-      asking = false;
-      refresh();
-    });
-  }
-  $effect(() => {
-    void editor.revision;
-    void semantic.frame?.view.Input.ID;
-    void semantic.frame?.completionCatalog;
-    void semantic.event?.attachment;
-    untrack(refresh);
   });
 
+  $effect(() => {
+    editor.text = text;
+    editor.items = items;
+  });
+
+  // Deliver the first message entered on the New Thread screen once connected.
   $effect(() => {
     const first = initial;
-    if (!first || semantic.connection !== "open" || !semantic.event || refusal) return;
+    if (!first || semantic.connection !== "open" || unavailable) return;
     untrack(() => {
-      oninitial?.();
-      editor.text = first.text;
-      editor.items = first.items;
-      editor.cursorBack = 0;
-      editor.revision++;
-      void send(false, first.attachments);
+      oninitial();
+      void send(first.text, first.attachments);
     });
   });
-  function caret() {
-    return new TextEncoder().encode(editor.text.slice(field?.selectionEnd ?? editor.text.length))
-      .length;
-  }
-  function edited() {
-    editor.revision++;
-    editor.cursorBack = caret();
+
+  onDestroy(() => {
+    controller?.abort();
+  });
+
+  const disabled = $derived(!!unavailable || sending || semantic.connection !== "open");
+  const stoppable = $derived(!!input?.stoppable || !!stream.activeTurnId);
+  const canSend = $derived(!disabled && (!!text.trim() || !!items.length));
+
+  async function send(
+    overrideText?: string,
+    overrideAttachments?: import("./protocol").Attachment[],
+    queue = false,
+  ) {
+    if (sending) return;
+    const bodyText = overrideText ?? text;
+    if (!bodyText.trim() && !(overrideAttachments?.length ?? items.length)) return;
+    const pending = new AbortController();
+    controller = pending;
+    sending = true;
     error = undefined;
-  }
-  async function rewrite(text: string) {
-    editor.text = text;
-    editor.cursorBack = 0;
-    editor.revision++;
-    error = undefined;
-    await tick();
-    field?.focus();
-    field?.setSelectionRange(text.length, text.length);
-  }
-  async function send(queue = false, initialAttachments?: Attachment[]) {
-    if (empty || pending || refusal) return;
-    const destination = editor;
-    const controller = new AbortController();
-    destination.submission = controller;
-    const release = semantic.retainInput();
-    const text = destination.text,
-      items = destination.items,
-      back = destination.cursorBack;
-    const capturedEvent = semantic.event;
-    const captured = capturedEvent?.frame;
-    const target = semantic.target();
-    // The server clears a command's text once it applies; other input leaves
-    // the editor now and returns if it is refused.
-    const command = text.trimStart().startsWith("/") && !activeItems.length;
-    let detached: number | undefined;
     try {
-      if (!captured) {
-        error = "Wait for the thread controls to connect.";
+      const attachments =
+        overrideAttachments ??
+        (await prepareAttachments(items, pending.signal, (read, total) => {
+          progress = total
+            ? `Reading attachments: ${Math.round((read / total) * 100)}%`
+            : "Preparing input…";
+        }));
+      progress = "Sending…";
+      const result = await semantic.sendInput(bodyText, attachments, {
+        queue,
+        signal: pending.signal,
+      });
+      if (result) {
+        error = result;
         return;
       }
-      acquisition = !command && !initialAttachments ? controller : undefined;
-      const prepared = command
-        ? []
-        : (initialAttachments ??
-          (await prepareAttachments(
-            submissionAttachments(text, items),
-            controller.signal,
-            (read, total) =>
-              (progress = total
-                ? `Reading files: ${Math.round((read / total) * 100)}%`
-                : "Preparing input…"),
-          )));
-      acquisition = undefined;
-      progress = command ? "Running command…" : "Sending…";
-      if (!command) {
-        destination.text = "";
-        destination.items = [];
-        destination.cursorBack = 0;
-        detached = ++destination.revision;
+      if (overrideText === undefined) {
+        text = "";
+        items = [];
+        editor.text = "";
+        editor.items = [];
       }
-      error = await semantic.send(
-        {
-          composer: {
-            Intent: {
-              Thread: captured.view.Input.ID,
-              Version: captured.view.Version,
-              Target: target,
-              Operation: queue ? 2 : 1,
-            },
-            // Remote input travels only in its public descriptor.
-            Draft: textDraft(),
-            Consumed: !command,
-            input: { text, attachments: prepared },
-          },
-        },
-        controller.signal,
-        false,
-        capturedEvent,
-      );
-    } catch (failure) {
-      error = controller.signal.aborted
-        ? "Attachment preparation cancelled."
-        : failure instanceof Error
-          ? failure.message
-          : "Could not prepare input.";
-    } finally {
-      acquisition = undefined;
-      if (error && detached !== undefined && destination.revision === detached) {
-        destination.text = text;
-        destination.items = items;
-        destination.cursorBack = back;
-        destination.revision++;
-      }
-      if (destination.submission === controller) destination.submission = undefined;
-      progress = "";
+      await tick();
       field?.focus();
-      release(error);
+    } catch (failure) {
+      if (!pending.signal.aborted) {
+        error = failure instanceof Error ? failure.message : "Could not send message.";
+      }
+    } finally {
+      sending = false;
+      controller = undefined;
+      progress = "";
     }
   }
+
   async function stop() {
-    stopping = true;
-    const event = semantic.event;
-    error = event
-      ? await semantic.send(
-          {
-            interrupt: {
-              Version: event.frame.view.Version,
-              Target: event.frame.view.Interrupt,
-              Mode: 0,
-            },
-          },
-          undefined,
-          false,
-          event,
-        )
-      : "Wait for this thread's control view to connect.";
-    stopping = false;
-    field?.focus();
+    error = await semantic.interrupt();
   }
+
   function onkeydown(event: KeyboardEvent) {
-    if (event.isComposing) return;
-    if (field && !event.shiftKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
-      const position = field.selectionStart;
-      const token = references.find(({ start, end }) =>
-        event.key === "ArrowLeft"
-          ? position > start && position <= end
-          : position >= start && position < end,
-      );
-      if (token && position === field.selectionEnd) {
-        event.preventDefault();
-        const at = event.key === "ArrowLeft" ? token.start : token.end;
-        field.setSelectionRange(at, at);
-        return;
-      }
-    }
-    const choices = completion?.Choices ?? [];
-    if (completion && choices.length) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        const step = event.key === "ArrowDown" ? 1 : -1;
-        active = (active + step + choices.length) % choices.length;
-        return;
-      }
-      if ((event.key === "Enter" && !event.shiftKey) || (event.key === "Tab" && !event.shiftKey)) {
-        event.preventDefault();
-        const choice = choices[active];
-        choose(2, { ID: choice.ID, Name: choice.Name, Path: choice.Path });
-        return;
-      }
-    }
-    if (completion && event.key === "Escape") {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !touch) {
       event.preventDefault();
-      choose(1);
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey && !touch) {
-      event.preventDefault();
-      void send();
-    } else if (event.key === "Tab" && !event.shiftKey && running && !shell && !empty && !refusal) {
-      event.preventDefault();
-      void send(true);
+      if (canSend) void send(undefined, undefined, event.metaKey || event.ctrlKey);
     }
   }
-  function onpaste(event: ClipboardEvent) {
-    const files = event.clipboardData?.files;
-    if (!files?.length || shell || pending) return;
-    if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
-    tray?.add(files);
-  }
-  function beforeinput(event: InputEvent) {
-    if (!field || event.isComposing || event.inputType.startsWith("history")) return;
-    let start = field.selectionStart,
-      end = field.selectionEnd;
-    if (start === end) {
-      if (event.inputType === "deleteContentBackward") start--;
-      if (event.inputType === "deleteContentForward") end++;
-    }
-    for (const token of references) {
-      if (start < token.end && end > token.start) {
-        start = Math.min(start, token.start);
-        end = Math.max(end, token.end);
-      }
-    }
-    // Let the native edit run, retaining the browser's undo history.
-    if (references.some((token) => start <= token.start && end >= token.end))
-      field.setSelectionRange(Math.max(0, start), end);
-  }
-  const hint = $derived(
-    error ||
-      progress ||
-      (pending ? "Sending…" : undefined) ||
-      refusal ||
-      stream.notice ||
-      sideStatus?.Text ||
-      (touch
-        ? ""
-        : shell
-          ? `Enter runs this on the machine. Remove the leading ! to message ${targetName}.`
-          : running
-            ? `Enter steers ${targetName}'s turn · Tab queues for the next turn · Shift+Enter adds a line`
-            : "Enter sends · Shift+Enter adds a line · / for commands · ! for shell"),
-  );
 </script>
 
-<div class="relative mx-auto w-full max-w-column px-4 pb-2.5 max-sm:px-2 max-sm:pb-safe-1.5">
-  {#if completion}
-    <div
-      class="menu-enter absolute inset-x-4 bottom-[calc(100%-4px)] z-5 max-h-[min(320px,45dvh)] overflow-y-auto p-1 {floating} max-sm:inset-x-2"
-    >
-      {#if completion.Problem}<Alert class="px-2.5 py-2">
-          {completion.Problem}
-        </Alert>
-      {:else if completion.Loading && !completion.Choices.length}<p
-          class="px-2.5 py-2 text-small text-muted"
-          role="status"
-        >
-          Loading suggestions…
-        </p>
-      {:else if !completion.Choices.length}<p
-          class="px-2.5 py-2 text-small text-muted"
-          role="status"
-        >
-          No matches.
-        </p>{/if}
-      {#if completion.Choices.length}
-        <ul id="completions" role="listbox" aria-label="Suggestions">
-          {#each completion.Choices as choice, i (JSON.stringify( [choice.ID, choice.Name, choice.Path] ))}
-            <li
-              id="completion-{i}"
-              role="option"
-              aria-selected={i === active}
-              aria-disabled={!semantic.liveCompletion || completion.Loading}
-              class="flex min-h-[34px] cursor-pointer items-baseline gap-3 rounded-control px-2.5 py-[7px] transition-colors hover:bg-raised aria-selected:bg-active max-sm:min-h-11 max-sm:items-center"
-              onpointerdown={(event) => event.preventDefault()}
-              onclick={() => choose(2, { ID: choice.ID, Name: choice.Name, Path: choice.Path })}
-              onkeydown={() => {}}
-            >
-              <span class="max-w-1/2 flex-none truncate font-mono"
-                >{#if fileChoices}<Path path={choice.Path} />{:else}{choice.Display ||
-                    choice.Name}{/if}</span
-              >
-              {#if choice.Description}<span
-                  class={[
-                    "min-w-0 truncate text-small text-muted",
-                    !choice.Preset && "max-sm:hidden",
-                  ]}>{choice.Description}</span
-                >{/if}
-            </li>
-          {/each}
-        </ul>
-        <div
-          class="mt-1 flex items-center justify-between border-t border-rule px-2.5 pt-1.5 pb-1 text-tiny text-muted max-sm:hidden"
-        >
-          <span class="inline-flex items-center gap-1.5">
-            <kbd class={kbd}>↑↓</kbd> navigate
-            <kbd class={kbd}>↵</kbd> select
-          </span>
-          <span class="inline-flex items-center gap-1"><kbd class={kbd}>Esc</kbd> close</span>
-        </div>
-      {/if}
-    </div>
-  {/if}
+<div class="mx-auto w-full max-w-column px-4 pt-2 pb-4 max-sm:px-2 max-sm:pb-safe-2">
+  {#if error}<Alert class="mb-2">{error}</Alert>{/if}
   <ComposerCard
-    accepts={!shell && !pending}
+    accepts={!disabled}
     onfiles={(files) => tray?.add(files)}
     onsubmit={() => void send()}
-    invalid={!!error}
   >
     <Attachments
       bind:this={tray}
-      bind:items={editor.items}
-      text={editor.text}
+      bind:items
       bind:pathing
-      {machine}
-      {previewTarget}
-      disabled={!!pending || shell}
+      machine={machine.label}
+      previewTarget={{ machine, thread }}
+      {disabled}
     />
-    <label class="sr-only" for="composer-text"
-      >{shell ? "Shell command" : `Message ${targetName}`}</label
-    >
-    <div class="relative">
-      {#if painted}<div
-          class="pointer-events-none absolute inset-0 overflow-hidden"
-          aria-hidden="true"
-          bind:this={syntax}
-        >
-          <pre
-            class="{composerText} min-h-12 pt-3 pb-1 whitespace-pre-wrap wrap-break-word {shell
-              ? 'font-mono'
-              : 'font-sans'}">{#if shell}<Code
-              code={editor.text + (editor.text.endsWith("\n") ? " " : "")}
-              lang="bash"
-            />{:else}{#each references as token, i}{editor.text.slice(
-              i ? references[i - 1].end : 0,
-              token.start,
-            )}<span class="text-accent">{editor.text.slice(token.start, token.end)}</span
-            >{/each}{editor.text.slice(references.at(-1)?.end ?? 0)}{editor.text.endsWith("\n")
-              ? " "
-              : ""}{/if}</pre>
-        </div>{/if}
-      <textarea
-        id="composer-text"
-        data-slot="input-group-control"
-        class={[composerText, "min-h-12 pt-3 pb-1", shell && "font-mono"]}
-        role="combobox"
-        aria-expanded={!!completion?.Choices.length}
-        aria-controls={completion?.Choices.length ? "completions" : undefined}
-        aria-activedescendant={completion?.Choices.length ? `completion-${active}` : undefined}
-        aria-autocomplete="list"
-        bind:this={field}
-        bind:value={editor.text}
-        style:color={painted ? "transparent" : undefined}
-        style:caret-color="var(--text)"
-        onscroll={() => {
-          if (syntax && field) {
-            syntax.scrollTop = field.scrollTop;
-            syntax.scrollLeft = field.scrollLeft;
-          }
-        }}
-        {onkeydown}
-        {onpaste}
-        onbeforeinput={beforeinput}
-        oninput={edited}
-        onselect={() => {
-          const at = caret();
-          if (at !== editor.cursorBack) {
-            editor.cursorBack = at;
-            editor.revision++;
-          }
-        }}
-        readonly={!!pending || !!initial}
-        rows="1"
-        placeholder={shell
-          ? `Shell command on ${machine}`
-          : running
-            ? `Steer ${targetName}'s turn`
-            : `Message ${targetName}`}
-        aria-describedby="composer-hint"
-        aria-invalid={error ? "true" : undefined}></textarea>
-    </div>
-    <!-- A query container: where one row cannot hold every control, the thread
-      settings take their own row (ThreadSettings) and Send keeps the corner. -->
+    <label class="sr-only" for="composer-text">Message {stream.label(agent)}</label>
+    <textarea
+      id="composer-text"
+      bind:this={field}
+      data-slot="input-group-control"
+      class="{composerText} min-h-14 pt-3 pb-1.5"
+      bind:value={text}
+      {onkeydown}
+      onpaste={(event) => {
+        const files = event.clipboardData?.files;
+        if (!files?.length || disabled) return;
+        if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
+        tray?.add(files);
+      }}
+      rows="2"
+      {disabled}
+      placeholder={asking
+        ? "Answer the prompt above, or write a follow-up…"
+        : stoppable
+          ? "Steer the active turn…"
+          : `Message ${stream.label(agent)}`}></textarea>
     <InputGroup.Addon
       align="block-end"
-      class="{composerTools} @container cursor-default flex-wrap gap-x-0.5 gap-y-1 text-body font-normal select-auto"
+      class="{composerTools} cursor-default flex-wrap gap-1 text-body font-normal select-auto"
     >
-      <Menu label="Add files or paths" icon="plus" disabled={!!pending || shell}>
+      <Menu label="Attach" icon="plus" {disabled}>
         {#snippet children(close)}
           <MenuItem
             icon="attach"
@@ -530,79 +195,36 @@
             onclick={() => {
               close();
               pathing = true;
-            }}>Attach path on {machine}</MenuItem
+            }}>Attach path on {machine.label}</MenuItem
           >
         {/snippet}
       </Menu>
-      <Button
-        variant="quiet"
-        icon="slash"
-        label="Start a command"
-        title="Start a command (/)"
-        disabled={!!pending || !!editor.text || !!initial}
-        onclick={() => rewrite("/")}
-      />
-      <Button
-        variant="quiet"
-        icon="terminal"
-        label="Shell command"
-        title="Run a shell command on {machine} (!)"
-        aria-pressed={shell}
-        disabled={!!pending || activeItems.length > 0 || !!initial}
-        onclick={() => rewrite(shell ? editor.text.slice(1) : `!${editor.text}`)}
-      />
-      {#if shell}<Tag mono class="ml-1.5">Shell</Tag>{/if}
-      <!-- On phones the breadcrumb above already names the role. -->
+      <ThreadSettings {disabled} />
       {#if role}<Tag color={stream.roleColor(role)} class="ml-1.5 max-sm:hidden">{role}</Tag>{/if}
-      {#if view && view.Displayed.ID === view.Main.ID}
+      <span class="flex-1"></span>
+      {#if progress}<span class="text-small text-muted">{progress}</span>{/if}
+      {#if stoppable}
         <Button
           variant="quiet"
-          icon="presets"
-          label="Presets"
-          disabled={!!pending || !!unavailable || !!initial}
-          onclick={() => semantic.send({ command: "/presets", editor: semantic.metadata() })}
+          icon="stop"
+          label="Interrupt turn"
+          disabled={semantic.connection !== "open"}
+          onclick={() => void stop()}
         />
       {/if}
-      {#if view && view.Displayed.ID === view.Main.ID}<ThreadSettings
-          caption={view.Caption}
-          disabled={!!pending || !!unavailable}
-        />
-      {:else if !shell && view?.Caption.Model}<span
-          class="ml-1.5 min-w-0 truncate text-small text-muted max-sm:hidden"
-          title="Model and reasoning effort"
-          >{view.Caption.Model}{#if view.Caption.Effort}<span class="ml-2"
-              >{view.Caption.Effort}</span
-            >{/if}</span
-        >{/if}
-      <span class="flex-1"></span>
-      {#if pending}<Button variant="quiet" onclick={() => pending?.abort()}>Cancel</Button>
-      {/if}
-      <div class="ml-auto flex flex-none items-center gap-2">
-        {#if input?.stoppable}<Button
-            shape="round"
-            icon="stop"
-            label="Stop"
-            title={`Stop ${targetName}'s turn`}
-            onclick={stop}
-            disabled={stopping || !!unavailable}
-          />{/if}
-        <Button
-          type="submit"
-          variant="primary"
-          shape="round"
-          icon="send"
-          label="Send"
-          title={running ? "Steer (Enter)" : "Send (Enter)"}
-          disabled={!!pending || !!refusal || empty}
-        />
-      </div>
+      <Button
+        type="submit"
+        variant="primary"
+        shape="round"
+        icon="send"
+        label={stoppable ? "Steer turn" : "Send message"}
+        disabled={!canSend}
+      />
     </InputGroup.Addon>
   </ComposerCard>
-  <p
-    id="composer-hint"
-    class={["mx-1 mt-1.5 min-h-4 text-small", error ? "text-negative" : "text-muted"]}
-    aria-live="polite"
-  >
-    {hint}
-  </p>
+  {#if unavailable}
+    <p class="mt-1.5 px-1 text-small text-muted">{unavailable}</p>
+  {:else if stream.notice}
+    <p class="mt-1.5 px-1 text-small text-muted">{stream.notice}</p>
+  {/if}
 </div>

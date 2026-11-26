@@ -1,58 +1,30 @@
 <script lang="ts">
-  import Path from "./Path.svelte";
-  let selectedQuestion = $state("");
-  const questionChannel = $derived(
-    (semantic.prompts?.questions ?? []).flatMap((call) =>
-      call.questions.map((question, index) => ({ call, question, index })),
-    ),
-  );
-  const questionPosition = $derived(
-    Math.max(
-      0,
-      questionChannel.findIndex((item) => item.question.id === selectedQuestion),
-    ),
-  );
-  const currentQuestion = $derived(questionChannel[questionPosition]);
-  import { tick, untrack } from "svelte";
-  import { stateLabel, worked } from "./agents";
+  import { untrack } from "svelte";
   import type { InitialInput } from "./attachments";
   import Composer from "./Composer.svelte";
-  import AutoPage from "./AutoPage.svelte";
   import DetailsPanel from "./DetailsPanel.svelte";
   import DiffPanel from "./DiffPanel.svelte";
-  import LiveSource from "./LiveSource.svelte";
-  import { basename, duration, statusText } from "./format";
+  import { basename, statusText } from "./format";
   import type { Machine } from "./hub.svelte";
-  import PlaybackBar from "./PlaybackBar.svelte";
+  import Path from "./Path.svelte";
   import Prompt from "./Prompt.svelte";
-  import ReferenceSelection from "./ReferenceSelection.svelte";
-  import type { Action, Agent } from "./protocol";
+  import type { Entry } from "./protocol";
   import Roster from "./Roster.svelte";
   import { semantic } from "./semantic.svelte";
-  import SemanticDialogs from "./SemanticDialogs.svelte";
   import SessionInfo from "./SessionInfo.svelte";
   import { stream } from "./stream.svelte";
-  import type { DeferredSections } from "./protocol";
-  import { newIdentity } from "./transport";
-  import { visiblyPainted } from "./paint";
   import ThreadDocks from "./ThreadDocks.svelte";
   import Transcript from "./Transcript.svelte";
-  import Button from "./ui/Button.svelte";
-  import Dot from "./ui/Dot.svelte";
-  import Dialog from "./ui/Dialog.svelte";
-  import Icon from "./ui/Icon.svelte";
-  import Notice from "./ui/Notice.svelte";
-  import Field from "./ui/Field.svelte";
   import Alert from "./ui/Alert.svelte";
-  import Popover from "./ui/Popover.svelte";
-  import { floating, input as inputStyle, segment, segments, skeleton } from "./ui/styles";
   import { Badge } from "./ui/badge";
-  import Tag from "./ui/Tag.svelte";
+  import Button from "./ui/Button.svelte";
+  import Dialog from "./ui/Dialog.svelte";
+  import Dot from "./ui/Dot.svelte";
+  import Field from "./ui/Field.svelte";
+  import Popover from "./ui/Popover.svelte";
+  import { input as inputStyle, segment, segments } from "./ui/styles";
   import { show, view } from "./view.svelte";
 
-  // One thread: its transcript, the composer or playback controls at the
-  // foot, and a right panel whose tabs hold the agents, the session's changes
-  // and one activity's details.
   let {
     machine,
     id,
@@ -68,879 +40,299 @@
     oninitial: () => void;
     sidebar: boolean;
     onsidebar: () => void;
-    onend: (target: { machine: Machine; id: string; title: string; replay: boolean }) => void;
+    onend: (target: { machine: Machine; id: string; title: string }) => void;
   } = $props();
 
+  let selectedQuestion = $state("");
+  let panel = $state<"agents" | "changes" | "details" | undefined>();
+  let selectedEntry = $state<Entry | undefined>();
+  let renameOpen = $state(false);
+  let renameValue = $state("");
+  let savingName = $state(false);
+  let renameError = $state<string | undefined>();
+  let wall = $state(Date.now());
+  let narrow = $state(false);
+
   $effect(() => {
-    const thread = id,
-      owner = machine;
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(max-width: 68.74rem)");
+    const sync = () => (narrow = mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  });
+
+  $effect(() => {
+    const timer = setInterval(() => (wall = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
+
+  $effect(() => {
+    const thread = id;
+    const owner = machine;
     untrack(() => {
-      stream.connect(thread, owner, semantic.family?.threads.includes(thread));
+      stream.connect(thread, owner, stream.family?.threads.includes(thread));
       semantic.connect(thread, owner);
-      renameEvent = undefined;
-      savingName = false;
+      selectedEntry = undefined;
+      renameOpen = false;
       renameError = undefined;
-      copied = failureOpen = false;
-      copyRequest = {};
+      savingName = false;
     });
-    return () => stream.close();
-  });
-  $effect(() => {
-    // A cold child's view prepares its runtime independently of discovery.
-    const attachment =
-      semantic.connection === "open" && frame ? semantic.event?.attachment : undefined;
-    if (stream.gone && (machine.sessions || attachment)) untrack(() => stream.recover(attachment));
-  });
-  $effect(() => {
-    if (live && !ended && semantic.unavailable && machine.sessions)
-      untrack(() => semantic.recover());
-  });
-  $effect(() => {
-    if (ended) untrack(() => semantic.release(id, machine));
-    else if (live) untrack(() => semantic.connect(id, machine));
-  });
-  $effect(() => {
-    const thread = id,
-      owner = machine;
-    return () =>
-      queueMicrotask(() => {
-        // Svelte teardown reads the departing route's values. Reconcile only
-        // after navigation, and never close a newly mounted view of this thread.
-        if (view.machine === owner.id && view.session === thread) return;
-        semantic.release(thread, owner);
-      });
+    return () => {
+      stream.close();
+      semantic.release(thread, owner);
+    };
   });
 
   const session = $derived(stream.session);
-  const gone = $derived(!session && semantic.connection === "connecting" ? undefined : stream.gone);
-  // A session shown here that no longer answers has ended.
-  const ended = $derived(!!gone && !!session);
-  const playback = $derived(stream.playback);
-  const live = $derived(!!session && !playback);
-  const start = $derived(session?.started ?? 0);
-  const root = $derived(stream.agent("/root"));
   const title = $derived(
-    session?.title || (session?.workspace ? basename(session.workspace) : "Thread"),
+    session?.title || (session?.workspace ? basename(session.workspace) : undefined) || id,
   );
-  $effect(() => {
-    document.title = session ? `${title} · Mekugi` : "Mekugi";
-    return () => (document.title = "Mekugi");
-  });
-  const statusLabel = $derived(ended ? "Ended" : statusText(stream.status));
-  // The header names the state; a failure's message opens beneath it on request.
-  const failure = $derived(ended ? undefined : stream.status.failure);
-  const headline = $derived(
-    ended ? "Ended" : statusText({ ...stream.status, failure: undefined }) || "Failed",
+  const root = $derived(
+    stream.roster.agents.find((a) => a.name === "/root") ?? stream.roster.agents[0],
   );
-  const failureID = `failure-${newIdentity()}`;
-  let failureOpen = $state(false);
-  const main = $derived(stream.main.order.map((seq) => stream.main.entries[seq]));
-
-  // Arriving from the thread list moves focus to the thread's heading.
-  let heading = $state<HTMLElement>();
-  $effect(() => {
-    const from = document.activeElement;
-    if (!from || from === document.body || from.closest("nav"))
-      tick().then(() => heading?.focus({ preventScroll: true }));
-  });
-
-  // Live selections name ordinary thread IDs. An agent route selects only
-  // retained activity within the current recording or historical publication.
-  const recorded = $derived<import("./protocol").Agent | undefined>(
-    view.agent && view.agent !== "/root" && !stream.agent(view.agent)?.nonAttachable
-      ? (stream.agent(view.agent) ??
-          (stream.roster.next && !stream.unavailableAgents.includes(view.agent)
-            ? {
-                name: view.agent,
-                aliases: [view.agent],
-                label: stream.label(view.agent),
-                state: "idle" as const,
-                depth: 0,
-                thread: undefined,
-                role: undefined,
-              }
-            : undefined))
-      : undefined,
+  const mainEntries = $derived(
+    stream.main.order
+      .map((seq) => stream.main.entries[seq])
+      .filter((entry): entry is Entry => !!entry),
   );
-  $effect(() => {
-    const caller = view.agent;
-    if (
-      caller &&
-      stream.roster.next &&
-      !stream.agent(caller) &&
-      !stream.unavailableAgents.includes(caller)
-    )
-      untrack(() => void stream.moreRoster(caller));
-  });
-  const selected = $derived(stream.roster.agents.find((agent) => agent.thread === id));
-  const shown = $derived(recorded ?? (selected?.name !== "/root" ? selected : undefined));
-  // Seeking back to before the chosen agent started returns to Main for good,
-  // rather than switching again once the agent starts.
-  $effect(() => {
-    if (view.agent && stream.roster.agents.length && !recorded) show(undefined, true);
-  });
-  $effect(() => {
-    if (live && recorded?.thread && frame?.family?.threads.includes(recorded.thread))
-      show(recorded.name, true);
-  });
-  const owner = $derived(shown?.name ?? session?.caller ?? "/root");
-  const entries = $derived(
-    recorded
-      ? stream
-          .history(recorded.name)
-          .order.map((seq) => stream.history(recorded.name).entries[seq])
-          .filter((e) => e.agent === recorded.name)
-      : main,
+  const status = $derived(statusText(stream.status));
+  const questionChannel = $derived(
+    (semantic.prompts?.questions ?? []).flatMap((call) =>
+      call.questions.map((question, index) => ({ call, question, index })),
+    ),
   );
-  // A view changed from inside the transcript removes the control that changed
-  // it; focus then moves to the new transcript, which names whose it is.
-  let feed = $state<HTMLElement>();
-  let viewed: string | undefined;
-  $effect(() => {
-    const current = owner;
-    const changed = viewed !== undefined && viewed !== current;
-    viewed = current;
-    if (changed && feed && (!document.activeElement || document.activeElement === document.body))
-      feed.focus({ preventScroll: true });
-  });
-
-  // The recorded clock during replay; agents' timers count on it.
-  let wall = $state(0);
-  $effect(() => {
-    if (playback || !session) return;
-    wall = machine.now ?? 0;
-    const timer = setInterval(() => (wall = machine.now ?? 0), 1000);
-    return () => clearInterval(timer);
-  });
-  const now = $derived(playback ? start + playback.position : wall);
-  // An agent's newest entry describes its current work only if it came after
-  // that work started; a new task otherwise shows the end of the old one.
-  const activity = (agent: Agent) => {
-    const entry = agent.activity;
-    return entry && (!agent.workSince || (entry.observed ?? 0) >= agent.workSince)
-      ? entry
-      : undefined;
-  };
-
-  // The right panel is open by default where it fits beside the transcript.
-  const wide = matchMedia("(min-width: 1100px)");
-  let panelOpen = $state(wide.matches);
-  $effect(() => {
-    const change = () => (panelOpen = wide.matches);
-    wide.addEventListener("change", change);
-    return () => wide.removeEventListener("change", change);
-  });
-  const frame = $derived(semantic.frame?.view.Main.ID === id ? semantic.frame : undefined);
-  const sview = $derived(frame?.view);
-  const workspace = $derived(
-    sview?.DisplayedWorkspace || sview?.Info.Workspace || session?.workspace,
+  const questionPosition = $derived(
+    Math.max(
+      0,
+      questionChannel.findIndex((item) => item.question.id === selectedQuestion),
+    ),
   );
-  const details = $derived(live && !ended ? frame?.details : undefined);
-  // Saved changes exist for live sessions; recorded playback has none.
-  const changes = $derived(!!stream.review);
-  const sections = $derived(Object.keys(stream.deferred) as (keyof DeferredSections)[]);
-  const sectionLabels: Record<keyof DeferredSections, string> = {
-    session: "session information",
-    input: "input information",
-    prompts: "pending prompts",
-    status: "status",
-    review: "review totals",
-    live: "live preview",
-  };
-  const net = $derived(stream.review?.counts.Net);
-  type Tab = "agents" | "changes" | "details";
-  let chosen = $state<Tab>("agents");
-  // Requested details show at once; once closed, the tab shown before returns.
-  let before: Tab = "agents";
-  $effect(() => {
-    if (details?.view.ID.Selection === undefined) return;
-    untrack(() => {
-      if (chosen !== "details") before = chosen;
-      chosen = "details";
-      panelOpen = true;
-    });
-  });
-  const tab = $derived.by(() => {
-    const current = chosen === "details" && !details ? before : chosen;
-    return current === "changes" && !changes ? "agents" : current;
-  });
-  const panel = $derived(panelOpen ? tab : undefined);
-  function select(name: string) {
-    show(name);
-    if (!wide.matches) panelOpen = false;
-  }
-  function closeDetails() {
-    if (details) void semantic.send({ closeDetails: details.view.ID });
-  }
-  function closePanel() {
-    closeDetails();
-    panelOpen = false;
-  }
-  // A header toggle opens its tab, or closes the panel showing it.
-  function toggle(target: Tab) {
-    if (panel === target) closePanel();
-    else {
-      chosen = target;
-      panelOpen = true;
-    }
-  }
-
-  const side = $derived(!recorded && !!sview && sview.Displayed.ID !== sview.Main.ID);
-  const tabs = $derived(!recorded && !!sview && (!!sview.Side || side));
-
-  // A notice claim's event rows are acknowledged only where this view's own
-  // live Main transcript paints them.
-  const eventPainted = $derived.by(() => {
-    const event = semantic.event;
-    const rows = frame?.noticeEntries;
-    if (!live || ended || recorded || side || !event || event.frame !== frame || !rows?.length)
-      return undefined;
-    return (seq: number) =>
-      rows.includes(seq)
-        ? visiblyPainted(() => void semantic.noticePainted(event, seq))
-        : undefined;
-  });
-
-  const notice = $derived.by(() => {
-    if (!session && stream.gone && semantic.connection === "connecting") return undefined;
-    if (gone) return ended ? "This thread has ended. Its last state stays here." : undefined;
-    if (stream.connection === "open") return stream.controlError;
-    if (stream.error) return stream.error;
-    if (stream.connection === "lost") return "Connection to this machine lost. Retrying…";
-    return session ? "Connection lost. Reconnecting…" : undefined;
-  });
-
-  // Each feed keeps only its newest rows, so an agent that finished long ago
-  // may have none left.
-  const empty = $derived(
-    shown?.turns && shown.state !== "working"
-      ? `${shown.label}'s activity is no longer kept; the transcript keeps only the newest.`
-      : live
-        ? shown
-          ? `Nothing from ${shown.label} yet.`
-          : ended
-            ? "Nothing happened in this thread."
-            : "Nothing here yet. Send main a message to start."
-        : shown
-          ? `Nothing from ${shown.label} yet at this point.`
-          : playback?.paused
-            ? "Nothing recorded yet at this point. Press play or drag along the clock."
-            : "Nothing recorded yet at this point.",
+  const currentQuestion = $derived(questionChannel[questionPosition]);
+  const hasPrompts = $derived(
+    !!(semantic.prompts.approvals.length || semantic.prompts.questions.length),
   );
 
-  const keys: Record<string, Action> = {
-    " ": "toggle-pause",
-    p: "toggle-pause",
-    "+": "faster",
-    "=": "faster",
-    "-": "slower",
-    "[": "back",
-    "]": "forward",
-    r: "restart",
-  };
-  function onkeydown(event: KeyboardEvent) {
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key === ".") {
-      event.preventDefault();
-      if (panel) closePanel();
-      else panelOpen = true;
-      return;
-    }
-    if (event.key === "Escape" && panel && !wide.matches && !event.defaultPrevented) {
-      const target = event.target as HTMLElement;
-      if (
-        !target.closest(
-          "[role=dialog], [role=menu], [role=listbox], [role=combobox], [popover], textarea, input",
-        )
-      ) {
-        event.preventDefault();
-        closePanel();
-        return;
-      }
-    }
-    if (
-      event.defaultPrevented ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.altKey ||
-      !playback ||
-      !session
-    )
-      return;
-    const target = event.target as HTMLElement;
-    if (
-      target.closest(
-        "input, textarea, select, [role=dialog], [role=menu], [role=listbox], [role=combobox], [contenteditable=true]",
-      )
-    )
-      return;
-    if (event.key === " " && target.closest("button, [role=slider], summary")) return;
-    let action = keys[event.key];
-    if (!action) return;
-    event.preventDefault();
-    // At the end, playing again means starting over, as the play button does.
-    if (action === "toggle-pause" && playback.position >= playback.until) action = "restart";
-    stream.control(action);
+  function openDetails(entry: Entry) {
+    selectedEntry = entry;
+    panel = "details";
   }
 
-  let copied = $state(false);
-  let copyRequest = {};
-  let renameEvent = $state<{ event: typeof semantic.event }>();
-  let name = $state("");
-  let renameError = $state<string>();
-  let savingName = $state(false);
-  function editTitle() {
-    name = session?.title || "";
-    renameError = undefined;
-    savingName = false;
-    renameEvent = { event: semantic.event };
-  }
-  async function rename() {
-    if (!name.trim() || savingName) return;
-    const target = renameEvent;
+  async function saveRename() {
+    const trimmed = renameValue.trim();
+    if (!trimmed || savingName) return;
     savingName = true;
-    const error = await semantic.send(
-      { command: `/title ${name.trim()}` },
-      undefined,
-      false,
-      target?.event,
-    );
-    if (renameEvent !== target) return;
-    renameError = error;
+    renameError = undefined;
+    const err = await semantic.rename(trimmed);
     savingName = false;
-    if (!renameError) renameEvent = undefined;
-  }
-  function focusTitle(node: HTMLInputElement) {
-    void tick().then(() => {
-      node.focus();
-      node.select();
-    });
-  }
-  async function copyResume() {
-    const request = (copyRequest = {}),
-      command = `mekugi resume ${id}`;
-    try {
-      await navigator.clipboard.writeText(command);
-      if (copyRequest !== request) return;
-      copied = true;
-      setTimeout(() => {
-        if (copyRequest === request) copied = false;
-      }, 1500);
-    } catch {
-      if (copyRequest === request) semantic.copied = command;
+    if (err) {
+      renameError = err;
+      return;
     }
+    renameOpen = false;
   }
-  // Notices, tabs and the agent bar share the composer's column.
-  const column = "mx-auto w-[calc(100%-32px)] max-w-column";
 </script>
 
-<svelte:window {onkeydown} />
-
-<div
-  class="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[calc(var(--topbar)+env(safe-area-inset-top,0px))_minmax(0,1fr)]"
->
-  <header
-    class="flex min-w-0 items-center gap-2 border-b border-rule pt-safe pr-2.5 pl-4 max-sm:gap-1 max-sm:px-1.5"
-  >
-    {#if !sidebar}<Button
-        variant="quiet"
-        icon="sidebar"
-        label="Show sidebar"
-        tooltip
-        onclick={onsidebar}
-      />{/if}
-    <div class="flex min-w-0 flex-1 items-center gap-2 max-sm:gap-1">
-      <!-- One element throughout, so focus moved here stays as it loads. -->
-      <h1
-        bind:this={heading}
-        class="max-w-[50%] min-w-0 truncate text-base font-semibold focus:outline-none max-sm:pl-2"
-        {title}
-        aria-describedby={workspace ? "thread-workspace" : undefined}
-        tabindex="-1"
-      >
-        {#if session}{#if !session.title && session.workspace}<Path
-              path={title}
-            />{:else}{title}{/if}
-        {:else if gone}Thread unavailable
-        {:else}<span class="sr-only">Loading thread</span><span
-            class="{skeleton} inline-block w-40 text-transparent"
-            aria-hidden="true">&nbsp;</span
-          >{/if}
-      </h1>
-      {#if workspace}<span
-          id="thread-workspace"
-          class="min-w-0 flex-1 truncate text-small text-muted"
-          title={workspace}
-          ><span class="sr-only">Working directory: </span><Path path={workspace} /></span
-        >{/if}
-    </div>
-    {#if live && !ended && !recorded && frame}
-      <Button
-        variant="quiet"
-        icon="rename"
-        label="Rename thread"
-        tooltip
-        disabled={side || semantic.connection !== "open" || semantic.pending > 0}
-        onclick={editTitle}
+<div class="flex min-h-0 flex-1 flex-col">
+  <header class="flex h-12 flex-none items-center gap-2 border-b border-rule px-3">
+    {#if !sidebar}
+      <Button variant="quiet" icon="sidebar" label="Show sidebar" onclick={onsidebar} />
+    {/if}
+    <div class="flex min-w-0 flex-1 items-center gap-2">
+      <Dot
+        tone={stream.status.alert ? "alert" : stream.status.running ? "running" : "none"}
+        size={7}
       />
-    {/if}
-    {#if session}
-      <Popover label="Session details" icon="info" tooltip>
-        {#snippet children(close)}
-          <SessionInfo
-            {session}
-            {playback}
-            {root}
-            status={statusLabel}
-            alert={!ended && !!stream.status.alert}
-          />
-          <div class="grid gap-2 px-4.5 pb-4">
-            <p class="text-small text-muted">Continue in a terminal on {machine.label}</p>
-            <div class="flex items-center gap-1 rounded-control bg-raised py-0.5 pr-0.5 pl-2.5">
-              <code class="min-w-0 flex-1 text-small wrap-anywhere">mekugi resume {id}</code>
-              <Button
-                variant="quiet"
-                icon={copied ? "check" : "copy"}
-                label="Copy resume command"
-                title={copied ? "Copied" : "Copy"}
-                onclick={copyResume}
-              />
-            </div>
-            {#if !ended}<Button
-                variant="danger"
-                onclick={() => {
-                  close();
-                  onend({ machine, id, title, replay: !!playback });
-                }}>{playback ? "End replay" : "End thread"}</Button
-              >{/if}
-          </div>
-        {/snippet}
-      </Popover>
-    {/if}
-    <span class="contents max-sm:hidden">
-      {#if playback}<Badge size="chrome">Replay</Badge>{:else if live && !ended}<Badge
-          variant="live"
-          size="chrome">Live</Badge
-        >{/if}
-      <span class="flex-none text-small text-muted">{machine.label}</span>
-    </span>
-    <div class="ml-auto flex min-w-0 items-center justify-end gap-0.5">
-      {#if session && failure}
+      <h1 class="truncate font-semibold">{title}</h1>
+      {#if session?.workspace}
+        <span class="hidden truncate font-mono text-small text-muted md:inline">
+          <Path path={basename(session.workspace)} title={session.workspace} />
+        </span>
+      {/if}
+      {#if stream.connection !== "open"}
+        <Badge size="chrome">{machine.state.text}</Badge>
+      {/if}
+    </div>
+    <div class="flex flex-none items-center gap-1.5">
+      <div class={segments} role="group" aria-label="Side panels">
         <button
           type="button"
-          popovertarget={failureID}
-          aria-expanded={failureOpen}
-          aria-label="{headline}: show the error"
-          title="Show the error"
-          class="mr-1 inline-flex min-h-8 min-w-0 items-center gap-2 rounded-control px-2 text-small text-negative hover:bg-active aria-expanded:bg-active max-sm:mr-0 max-sm:min-h-11"
-          ><Dot tone="alert" /><span class="truncate max-sm:hidden">{headline}</span><span
-            class="flex flex-none"><Icon name="chevron" size={12} /></span
-          ></button
-        >
-        <div
-          id={failureID}
-          class="fixed inset-auto top-[calc(var(--topbar)+env(safe-area-inset-top,0px)+6px)] right-2 m-0 max-h-[calc(100dvh-var(--topbar)-24px)] w-[min(480px,calc(100vw-24px))] overflow-y-auto p-0 {floating}"
-          popover="auto"
-          onbeforetoggle={(e) => (failureOpen = e.newState === "open")}
-        >
-          <p class="px-4 pt-3 font-semibold text-negative">{headline}</p>
-          <p class="px-4 pt-1 pb-4 text-small whitespace-pre-wrap wrap-anywhere">{failure}</p>
-        </div>
-      {:else if session && statusLabel}
-        {@const tone =
-          !ended && stream.status.alert
-            ? "alert"
-            : !ended && stream.status.running
-              ? "running"
-              : "idle"}
-        <!-- A long status shrinks and truncates within a bounded width, leaving
-             the title room; phones show the status as its dot alone. -->
-        <Badge
-          variant={tone === "alert" ? "destructive" : tone === "running" ? "live" : "quiet"}
-          size="chrome"
-          class="mr-2 max-w-64 min-w-0 flex-initial max-sm:hidden"
-          title={statusLabel}><Dot {tone} /><span class="truncate">{statusLabel}</span></Badge
-        >
-        <span class="mr-0.5 hidden flex-none max-sm:flex" title={statusLabel}
-          ><Dot {tone} /><span class="sr-only">{statusLabel}</span></span
-        >
-      {/if}
-      {#if session || !gone}
-        <Button
-          variant="quiet"
-          icon="agents"
-          label="Agents ({stream.roster.agents.length})"
-          title="Agents"
-          tooltip
+          class={segment}
           aria-pressed={panel === "agents"}
-          onclick={() => toggle("agents")}
-          ><span class="tabular-nums">{stream.roster.agents.length}</span></Button
+          onclick={() => (panel = panel === "agents" ? undefined : "agents")}
         >
-      {/if}
-      {#if changes}
-        <Button
-          variant="quiet"
-          icon="diff"
-          label="Changes"
-          title="Changes"
-          tooltip
+          Agents
+        </button>
+        <button
+          type="button"
+          class={segment}
           aria-pressed={panel === "changes"}
-          onclick={() => toggle("changes")}
-          >{#if net && net.Added >= 0 && net.Removed >= 0 && (net.Added || net.Removed)}<span
-              class="font-mono text-small tabular-nums max-sm:hidden"
-              ><span class="text-positive">+{net.Added}</span>
-              <span class="text-negative">−{net.Removed}</span></span
-            >{/if}</Button
+          onclick={() => (panel = panel === "changes" ? undefined : "changes")}
         >
+          Changes {#if stream.review?.fileCount}({stream.review.fileCount}){/if}
+        </button>
+        {#if selectedEntry}
+          <button
+            type="button"
+            class={segment}
+            aria-pressed={panel === "details"}
+            onclick={() => (panel = panel === "details" ? undefined : "details")}
+          >
+            Details
+          </button>
+        {/if}
+      </div>
+      {#if session}
+        <Popover label="Session details" icon="info">
+          <SessionInfo {session} {root} {status} alert={stream.status.alert} />
+          <div class="flex items-center justify-between gap-2 border-t border-rule px-4 py-2.5">
+            <Button
+              size="sm"
+              variant="quiet"
+              onclick={() => {
+                renameValue = title;
+                renameError = undefined;
+                renameOpen = true;
+              }}>Rename</Button
+            >
+            <Button size="sm" variant="danger" onclick={() => onend({ machine, id, title })}
+              >End thread</Button
+            >
+          </div>
+        </Popover>
       {/if}
     </div>
   </header>
 
-  <div class="relative flex min-h-0">
-    {#key id}
-      <main class="flex min-h-0 min-w-0 flex-1 flex-col">
-        {#if notice}
-          <Notice class="{column} mt-3" role={stream.connection === "open" ? "alert" : "status"}
-            >{notice}</Notice
-          >
-        {/if}
-
-        {#if tabs && sview}
-          <div class="{column} {segments} mt-2.5 flex" role="tablist" aria-label="Conversation">
-            <button
-              type="button"
-              role="tab"
-              class="{segment} flex-1"
-              aria-selected={!side}
-              disabled={semantic.pending > 0}
-              onclick={() =>
-                !side || semantic.send({ display: { Version: sview.Version, Thread: sview.Main } })}
-              >Main</button
-            >
-            <span class="relative flex min-w-0 flex-1">
-              <button
-                type="button"
-                role="tab"
-                class="{segment} w-full pr-8 max-sm:pr-12"
-                aria-selected={side}
-                disabled={semantic.pending > 0 || !sview.Side}
-                onclick={() =>
-                  side ||
-                  semantic.send({ display: { Version: sview.Version, Thread: sview.SideThread } })}
-                >{sview.Side?.Label || "Side conversation"}</button
-              >
-              {#if sview.Side}<button
-                  type="button"
-                  class="absolute top-1/2 right-[3px] flex size-6 -translate-y-1/2 items-center justify-center rounded-chip text-muted hover:bg-active hover:text-ink max-sm:size-11"
-                  aria-label="Close side"
-                  title="Close side"
-                  disabled={semantic.pending > 0}
-                  onclick={() =>
-                    semantic.send({
-                      side: {
-                        Version: sview.Version,
-                        Key: sview.Side!.Key,
-                        Exchange: sview.Side!.ID,
-                      },
-                    })}><Icon name="close" size={14} /></button
-                >{/if}
-            </span>
+  {#if stream.gone}
+    <div class="grid flex-1 place-content-center p-6 text-center">
+      <Alert>{stream.gone.text}</Alert>
+    </div>
+  {:else}
+    <div class="flex min-h-0 flex-1">
+      <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+        {#if stream.error}
+          <div class="mx-auto w-full max-w-column px-4 pt-3 max-sm:px-2">
+            <Alert>{stream.error}</Alert>
           </div>
         {/if}
-
-        {#each sections as kind (kind)}
-          {#if (kind !== "review" || panel === "changes") && (kind !== "live" || (live && !recorded && !side))}
-            <AutoPage
-              cursor={JSON.stringify(stream.deferred[kind])}
-              ready={!Object.values(stream.sectionLoading).some(Boolean) &&
-                !stream.sectionErrors[kind]}
-              onpage={(signal) => stream.loadSection(kind, signal)}
-            />
-            {#if stream.sectionErrors[kind]}<Alert class="{column} mt-2.5"
-                >{stream.sectionErrors[kind]}<Button
-                  variant="quiet"
-                  onclick={() => stream.loadSection(kind)}>Retry {sectionLabels[kind]}</Button
-                ></Alert
-              >{/if}
-          {/if}
-        {/each}
-        {#if shown}
-          {@const time = worked(shown, now)}
-          {@const color = stream.roleColor(shown.role)}
-          <div class="{column} mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-small">
-            <Button
-              variant="quiet"
-              size="sm"
-              icon="left"
-              label="Back to main"
-              onclick={() => select("/root")}>main</Button
-            >
-            <span class="text-control" aria-hidden="true">/</span>
-            <span class={["text-body font-semibold", color && "text-role"]} style:--role={color}
-              >{shown.label}</span
-            >
-            {#if shown.role}<Tag {color}>{shown.role}</Tag>{/if}
-            <span
-              class={shown.state === "working"
-                ? "text-accent"
-                : shown.state === "error"
-                  ? "text-negative"
-                  : "text-muted"}>{stateLabel[shown.state]}</span
-            >
-            {#if time !== undefined}<span class="font-mono text-muted tabular-nums"
-                >{duration(time)}</span
-              >{/if}
-          </div>
-        {/if}
-
-        <section
-          class="relative min-h-0 flex-1 focus:outline-none"
-          tabindex="-1"
-          bind:this={feed}
-          aria-label={shown ? `${shown.label}'s activity` : "Transcript"}
-        >
-          {#if live && !ended && !recorded && frame}
-            <ReferenceSelection root={feed} />
-          {/if}
-          {#if session}
-            {#key side ? sview?.Displayed.ID : owner}
-              <Transcript
-                entries={side ? (frame?.conversation ?? []) : entries}
-                owner={side ? sview!.Displayed.Caller : owner}
-                {workspace}
-                retained={!side}
-                caller={recorded?.name}
-                {start}
-                span={playback?.until ?? 0}
-                jumps={stream.jumps}
-                {empty}
-                {live}
-                painted={eventPainted}
-                ondetails={live && !ended && sview
-                  ? (seq) =>
-                      semantic.send({
-                        details: {
-                          Displayed: sview.Displayed,
-                          Kind: "entry",
-                          Source: seq,
-                          Output: 0,
-                          Sources: [],
-                          Agent: side || !!recorded,
-                          Path: "",
-                          Caller: side ? sview.Displayed.Caller : owner,
-                        },
-                      })
-                  : undefined}
-              ></Transcript>
-              {#if live && !ended && !recorded && !side && frame}<LiveSource
-                  previews={stream.live}
-                  {owner}
-                />{/if}
-            {/key}
-          {:else if gone}
-            <div class="mx-auto grid max-w-column gap-1.5 px-4 py-6">
-              <p>{gone.text}</p>
-              <p class="text-small text-muted">Choose another thread, or start a new one.</p>
-            </div>
-          {:else}
-            <div
-              class="mx-auto max-w-column px-4 py-6"
-              aria-busy="true"
-              aria-label="Loading thread"
-            >
-              {#each [72, 48, 88, 36] as width, i (i)}
-                <div class="{skeleton} mb-4 h-5" style:width="{width}%">&nbsp;</div>
-              {/each}
-            </div>
-          {/if}
-        </section>
-
-        {#if playback}
-          <div class="flex-none">
-            <PlaybackBar {playback} {start} entries={main} />
-          </div>
-        {:else if live && !ended}
-          <div
-            class="relative flex-none pt-1 before:pointer-events-none before:absolute before:inset-x-0 before:-top-5 before:h-5 before:bg-gradient-to-t before:from-surface before:to-transparent"
-          >
-            {#if recorded}
-              <p class="{column} py-3 text-small text-muted">
-                This agent's retained activity is read-only.
-              </p>
-            {:else}
-              {#if frame && semantic.prompts && (semantic.prompts.approvals.length || semantic.prompts.questions.length)}
-                <section
-                  class="mx-auto flex max-h-[50dvh] w-full max-w-column flex-col gap-3 overflow-y-auto overscroll-contain px-4 pb-2"
-                  aria-label="Pending prompts"
-                >
-                  {#each semantic.prompts.approvals.slice(0, 1) as approval (approval.id)}
-                    <Prompt
-                      item={approval}
-                      count={semantic.prompts.approvals.length}
-                      unavailable={stream.connection !== "open" || semantic.connection !== "open"}
-                    />
-                  {/each}
-                  {#each currentQuestion ? [currentQuestion] : [] as current (current.call.id)}
-                    <Prompt
-                      item={current.call}
-                      questionIndex={current.index}
-                      position={questionPosition}
-                      total={questionChannel.length}
-                      onquestion={(index) => {
-                        selectedQuestion = current.call.questions[index].id;
-                      }}
-                      onprevious={() => {
-                        selectedQuestion =
-                          questionChannel[questionPosition - 1]?.question.id ?? current.question.id;
-                      }}
-                      onnext={() => {
-                        selectedQuestion =
-                          questionChannel[questionPosition + 1]?.question.id ?? current.question.id;
-                      }}
-                      unavailable={stream.connection !== "open" || semantic.connection !== "open"}
-                    />
-                  {/each}
-                </section>
-              {/if}
-              {#if frame}<ThreadDocks />{/if}
-              <Composer
-                input={frame ? stream.input : undefined}
-                agentName={shown?.label ?? "main"}
-                role={session?.role || selected?.role}
-                machine={machine.label}
-                {initial}
-                {oninitial}
-                unavailable={frame && stream.connection === "open" && semantic.connection === "open"
-                  ? undefined
-                  : "Not connected to the thread."}
+        <Transcript
+          entries={mainEntries}
+          owner={view.agent ?? "/root"}
+          workspace={session?.workspace}
+          jumps={stream.jumps}
+          onselect={openDetails}
+        />
+        <ThreadDocks />
+        {#if hasPrompts}
+          <div class="mx-auto grid w-full max-w-column gap-2 px-4 pt-2 max-sm:px-2">
+            {#each semantic.prompts.approvals.slice(0, 1) as approval (approval.id)}
+              <Prompt
+                item={approval}
+                count={semantic.prompts.approvals.length}
+                unavailable={stream.connection !== "open"}
+              />
+            {/each}
+            {#if currentQuestion}
+              <Prompt
+                item={currentQuestion.call}
+                questionIndex={currentQuestion.index}
+                position={questionPosition}
+                total={questionChannel.length}
+                onquestion={(index) => {
+                  const target = currentQuestion.call.questions[index];
+                  if (target) selectedQuestion = target.id;
+                }}
+                onprevious={() => {
+                  const prev = questionChannel[questionPosition - 1];
+                  if (prev) selectedQuestion = prev.question.id;
+                }}
+                onnext={() => {
+                  const next = questionChannel[questionPosition + 1];
+                  if (next) selectedQuestion = next.question.id;
+                }}
+                unavailable={stream.connection !== "open"}
               />
             {/if}
           </div>
         {/if}
-      </main>
-    {/key}
+        <Composer
+          {machine}
+          thread={id}
+          input={stream.input}
+          agent={view.agent ?? "/root"}
+          role={root?.role}
+          {initial}
+          {oninitial}
+          asking={hasPrompts}
+          unavailable={stream.connection !== "open"
+            ? machine.error || machine.state.text
+            : undefined}
+        />
+      </div>
 
-    {#if panel}
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions (Escape and the panel's close button also close it) -->
-      <div
-        class="hidden max-lg:absolute max-lg:inset-0 max-lg:z-9 max-lg:block max-lg:bg-scrim"
-        onclick={closePanel}
-      ></div>
-      <!-- Beside the transcript where it fits; a sheet over it otherwise. -->
-      <aside
-        class={[
-          "flex min-h-0 flex-none flex-col border-l border-rule bg-surface",
-          panel === "agents"
-            ? "w-side"
-            : panel === "details"
-              ? "w-[min(480px,40vw)]"
-              : "w-[min(640px,46vw)]",
-          "max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-10 max-lg:w-[min(560px,92vw)] max-lg:border-border max-lg:shadow-float",
-          "max-sm:w-full max-sm:border-l-0 max-sm:pb-safe",
-        ]}
-        aria-label="Thread panel"
-      >
-        <!-- Text tabs; the selected one is underlined. -->
-        <div class="flex min-h-12 flex-none items-center gap-2 border-b border-rule pr-1.5 pl-1.5">
-          <div class="flex min-w-0 self-stretch" role="tablist" aria-label="Panel">
-            {#snippet tabButton(target: Tab, label: string)}
-              <button
-                type="button"
-                role="tab"
-                class="relative min-w-0 truncate px-3 text-small font-medium text-muted transition-colors after:absolute after:inset-x-2.5 after:-bottom-px after:h-0.5 after:rounded-full hover:text-ink aria-selected:text-ink aria-selected:after:bg-accent"
-                aria-selected={panel === target}
-                aria-controls="panel-content"
-                onclick={() => (chosen = target)}>{label}</button
-              >
-            {/snippet}
-            {@render tabButton("agents", "Agents")}
-            {#if changes}{@render tabButton("changes", "Changes")}{/if}
-            {#if details}{@render tabButton("details", "Details")}{/if}
-          </div>
-          <Button
-            variant="quiet"
-            icon="close"
-            label="Close panel"
-            class="ml-auto"
-            onclick={closePanel}
-          />
-        </div>
-        <div id="panel-content" role="tabpanel" class="flex min-h-0 flex-1 flex-col">
-          {#if panel === "details" && details}
-            <DetailsPanel
-              {details}
-              onclose={closeDetails}
-              onreference={() => {
-                if (!wide.matches) closePanel();
-              }}
-            />
-          {:else if panel === "changes"}
-            <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3.5 pb-6">
-              <DiffPanel review={stream.review} {owner} />
-            </div>
-          {:else}
-            <!-- Positioned, so the overflow clips hidden labels, which are positioned. -->
-            <div class="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-1 pb-5">
+      {#if panel}
+        {#snippet panelContent()}
+          {#if panel === "agents"}
+            <div class="h-full overflow-y-auto px-3 pb-4">
               <Roster
                 roster={stream.roster}
-                lines={stream.review?.counts.Callers}
-                net={stream.review?.counts.Net}
-                loading={!session && !stream.roster.agents.length}
-                selected={owner}
-                {now}
-                {activity}
-                onselect={select}
+                selected={view.agent ?? "/root"}
+                now={wall}
+                loading={stream.connection === "connecting"}
+                activity={(agent) => agent.activity ?? undefined}
+                onselect={(name) => show(name)}
               />
-              {#if stream.rosterError}<Alert
-                  >{stream.rosterError}<Button
-                    variant="quiet"
-                    onclick={() => {
-                      const retry = stream.rosterRetry;
-                      return retry?.kind === "agent"
-                        ? stream.completeAgent(retry.agent)
-                        : stream.moreRoster(retry?.caller);
-                    }}>Retry</Button
-                  ></Alert
-                >{/if}
-              {#if stream.roster.next}<AutoPage
-                  cursor={JSON.stringify(stream.roster.next)}
-                  ready={stream.connection === "open" &&
-                    !stream.rosterLoading &&
-                    !stream.rosterError}
-                  onpage={(signal) => stream.moreRoster(undefined, signal)}
-                />{/if}
             </div>
+          {:else if panel === "changes"}
+            <DiffPanel review={stream.review} />
+          {:else if panel === "details" && selectedEntry}
+            <DetailsPanel
+              entry={selectedEntry}
+              onclose={() => {
+                panel = undefined;
+                selectedEntry = undefined;
+              }}
+            />
           {/if}
-        </div>
-      </aside>
-    {/if}
-  </div>
-  {#key id}{#if live && !ended && !recorded && frame}<SemanticDialogs />{/if}{/key}
-  {#if renameEvent}
-    <Dialog title="Rename thread" onclose={() => (renameEvent = undefined)}>
-      <form
-        class="grid gap-3"
-        onsubmit={(event) => {
-          event.preventDefault();
-          void rename();
-        }}
-      >
-        <Field label="Title"
-          ><input
-            id="thread-title"
-            class={inputStyle}
-            bind:value={name}
-            use:focusTitle
-            disabled={savingName}
-          /></Field
-        >
-        {#if renameError}<Alert>{renameError}</Alert>{/if}
-        <div class="flex justify-end gap-2">
-          <Button variant="quiet" onclick={() => (renameEvent = undefined)}>Cancel</Button>
-          <Button type="submit" variant="primary" disabled={savingName || !name.trim()}
-            >{savingName ? "Saving…" : "Save"}</Button
+        {/snippet}
+        {#if narrow}
+          <Dialog
+            title={panel === "agents" ? "Agents" : panel === "changes" ? "Changes" : "Details"}
+            onclose={() => (panel = undefined)}
           >
-        </div>
-      </form>
-    </Dialog>
+            <div class="max-h-[70vh] overflow-y-auto">
+              {@render panelContent()}
+            </div>
+          </Dialog>
+        {:else}
+          <aside class="w-80 flex-none border-l border-rule bg-ground">
+            {@render panelContent()}
+          </aside>
+        {/if}
+      {/if}
+    </div>
   {/if}
 </div>
+
+{#if renameOpen}
+  <Dialog title="Rename thread" onclose={() => (renameOpen = false)}>
+    <form
+      onsubmit={(event) => {
+        event.preventDefault();
+        void saveRename();
+      }}
+    >
+      <Field label="Thread name">
+        <input class={inputStyle} bind:value={renameValue} required autocomplete="off" />
+      </Field>
+      {#if renameError}<Alert class="mt-2">{renameError}</Alert>{/if}
+      <div class="mt-4 flex justify-end gap-2">
+        <Button variant="quiet" onclick={() => (renameOpen = false)}>Cancel</Button>
+        <Button type="submit" variant="primary" disabled={savingName || !renameValue.trim()}>
+          {savingName ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </form>
+  </Dialog>
+{/if}

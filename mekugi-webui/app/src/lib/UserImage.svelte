@@ -26,12 +26,13 @@
   // The read is keyed by the published image's identity, not the entry object,
   // which shared snapshots and window replacements recreate unchanged.
   const seq = $derived(entry.seq);
+  const itemId = $derived(entry.itemId);
   const agent = $derived(entry.agent);
   const attachment = $derived(stream.main.attachment);
   $effect(() => {
     if (!element) return;
     void attachment;
-    const request = { seq, agent, index, image, retry };
+    const request = { seq, itemId, agent, index, image, retry };
     const controller = new AbortController();
     let objectURL: string | undefined;
     url = error = undefined;

@@ -66,7 +66,7 @@
       usd = 0,
       tokensKnown = false,
       costKnown = false,
-      partial = !!roster.next;
+      partial = false;
     for (const a of agents) {
       if (a.inputTokens != null) {
         input += a.inputTokens;
@@ -134,14 +134,11 @@
 
 <div class="mt-3.5 mb-0.5 flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
   <h2 class="font-semibold">Agents</h2>
-  {#if roster.next}<span class="text-small whitespace-nowrap text-muted"
-      >Showing {agents.length} of {roster.total}</span
-    >{/if}
-  {#if !loading && (!roster.next || tallies.length)}
+  {#if !loading}
     <span class="flex flex-wrap gap-x-2 text-small text-muted tabular-nums">
       {#if single}<span class={["whitespace-nowrap", tallyInk[tallies[0].state]]}
           >{tallies[0].text}</span
-        >{:else}{#if !roster.next}{agents.length}{/if}{#each tallies as tally (tally.state)}<span
+        >{:else}{agents.length}{#each tallies as tally (tally.state)}<span
             class="whitespace-nowrap {tallyInk[tally.state] ?? ''}">{tally.text}</span
           >{/each}{/if}
     </span>
@@ -295,15 +292,6 @@
             />
           {/if}
         </button>
-        {#if agent.content}<AutoPage
-            cursor={JSON.stringify(agent.content)}
-            ready={stream.connection === "open" && !completing && !stream.rosterError}
-            onpage={async (signal) => {
-              completing = true;
-              await stream.completeAgent(agent, signal);
-              completing = false;
-            }}
-          />{/if}
       </li>
     {/each}
   </ul>
