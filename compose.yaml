@@ -36,8 +36,8 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: "/tmp/codex-daemon-${MEKUGI_UID:-1000}"
-        target: "/tmp/codex-daemon-${MEKUGI_UID:-1000}"
+        source: "${MEKUGI_DAEMON_DIR:-/tmp/codex-daemon-${MEKUGI_UID:-1000}}"
+        target: "${MEKUGI_DAEMON_DIR:-/tmp/codex-daemon-${MEKUGI_UID:-1000}}"
         read_only: true
         bind:
           create_host_path: false

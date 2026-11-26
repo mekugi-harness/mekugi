@@ -8,6 +8,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 )
 
 var directSlashCommands = []completion.Choice{
@@ -87,6 +88,7 @@ func (c *directNativeConnection) handleCompletion(in sessionapi.NativeEditorInpu
 	defer c.mu.Unlock()
 	if !ok {
 		c.dismissedComp = completion.Target{}
+		c.completionTarget = conversation.EditorTarget{}
 		if c.menu != nil && c.menu.Kind == sessionpresentation.MenuCompletion {
 			c.menu = nil
 			c.publishLocked()
@@ -99,6 +101,7 @@ func (c *directNativeConnection) handleCompletion(in sessionapi.NativeEditorInpu
 	c.dismissedComp = completion.Target{}
 	choices := matchDirectSlashCommands(target.Query)
 	if len(choices) == 0 {
+		c.completionTarget = conversation.EditorTarget{}
 		if c.menu != nil && c.menu.Kind == sessionpresentation.MenuCompletion {
 			c.menu = nil
 			c.publishLocked()
@@ -110,6 +113,7 @@ func (c *directNativeConnection) handleCompletion(in sessionapi.NativeEditorInpu
 		c.menuSeq++
 		id = c.menuSeq
 	}
+	c.completionTarget = in.Target
 	c.menu = &sessionpresentation.MenuView{
 		ID:           id,
 		Kind:         sessionpresentation.MenuCompletion,
@@ -135,10 +139,12 @@ func (c *directNativeConnection) handleMenu(action sessionpresentation.MenuActio
 			c.dismissedComp = c.menu.Target
 		}
 		c.menu = nil
+		c.completionTarget = conversation.EditorTarget{}
 		c.publishLocked()
 	case sessionpresentation.MenuAccept:
 		menu := c.menu
 		c.menu = nil
+		c.completionTarget = conversation.EditorTarget{}
 		c.dismissedComp = completion.Target{}
 		if menu.Kind == sessionpresentation.MenuCompletion && editor != nil && action.Choice.Name != "" {
 			target := editor.Target

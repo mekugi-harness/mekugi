@@ -580,6 +580,9 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuCompletion || len(ev.Frame.View.Menu.Choices) == 0 {
 		t.Fatalf("expected slash completion menu, got %+v", ev.Frame.View.Menu)
 	}
+	if ev.Frame.CompletionTarget != (conversation.EditorTarget{Revision: 1}) {
+		t.Fatalf("expected CompletionTarget revision 1 so renderer keeps menu visible, got %+v", ev.Frame.CompletionTarget)
+	}
 	menuID := ev.Frame.View.Menu.ID
 
 	// Filtering "/res" narrows to /resume.
@@ -592,6 +595,9 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 	ev = <-conn.events
 	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "/resume" {
 		t.Fatalf("expected /resume match, got %+v", ev.Frame.View.Menu)
+	}
+	if ev.Frame.CompletionTarget != (conversation.EditorTarget{Revision: 2}) {
+		t.Fatalf("expected CompletionTarget revision 2, got %+v", ev.Frame.CompletionTarget)
 	}
 
 	// Accepting emits Delete + Insert effects targeting the editor revision sequence.

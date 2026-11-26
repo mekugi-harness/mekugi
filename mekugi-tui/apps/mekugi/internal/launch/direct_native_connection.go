@@ -124,23 +124,24 @@ type directNativeConnection struct {
 	mainOutput  []activity.OutputResult
 	agentOutput []activity.OutputResult
 
-	family        *sessionapi.Family
-	threadCallers map[string]string
-	review        *changes.ReviewView
-	reviewRev     uint64
-	queue         []conversation.PendingText
-	resumeView    *sessionpresentation.ResumeView
-	resumeCursor  string
-	requests      map[string]*directPendingServerRequest
-	requestOrder  []string
-	details       *sessionapi.NativeDetails
-	preferences   jsontext.Value
-	focused       bool
-	menu          *sessionpresentation.MenuView
-	menuSeq       uint64
-	dismissedComp completion.Target
-	effectSeq     uint64
-	effects       []sessionapi.NativeEffect
+	family           *sessionapi.Family
+	threadCallers    map[string]string
+	review           *changes.ReviewView
+	reviewRev        uint64
+	queue            []conversation.PendingText
+	resumeView       *sessionpresentation.ResumeView
+	resumeCursor     string
+	requests         map[string]*directPendingServerRequest
+	requestOrder     []string
+	details          *sessionapi.NativeDetails
+	preferences      jsontext.Value
+	focused          bool
+	menu             *sessionpresentation.MenuView
+	menuSeq          uint64
+	completionTarget conversation.EditorTarget
+	dismissedComp    completion.Target
+	effectSeq        uint64
+	effects          []sessionapi.NativeEffect
 }
 
 func openDirectNativeConnection(ctx context.Context, socket, workspace string, routerArgs, args []string, resume, profile string) (*directNativeConnection, error) {
@@ -538,17 +539,18 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	}
 
 	frame := sessionapi.NativeFrame{
-		Questions:   questions,
-		Approvals:   approvals,
-		View:        view,
-		Main:        mainPub,
-		Agents:      agentsPub,
-		Family:      c.family,
-		Review:      c.review,
-		Details:     c.details,
-		MainOutput:  slices.Clone(c.mainOutput),
-		AgentOutput: slices.Clone(c.agentOutput),
-		Effects:     slices.Clone(c.effects),
+		Questions:        questions,
+		Approvals:        approvals,
+		View:             view,
+		Main:             mainPub,
+		Agents:           agentsPub,
+		Family:           c.family,
+		Review:           c.review,
+		Details:          c.details,
+		MainOutput:       slices.Clone(c.mainOutput),
+		AgentOutput:      slices.Clone(c.agentOutput),
+		Effects:          slices.Clone(c.effects),
+		CompletionTarget: c.completionTarget,
 		Facts: sessionapi.NativeSessionFacts{
 			Preferences:      c.preferences,
 			Usage:            c.usage,
