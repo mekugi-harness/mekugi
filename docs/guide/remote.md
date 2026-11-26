@@ -109,7 +109,7 @@ The root `Dockerfile` builds browser assets with Bun and embeds them in a CGO-en
 Go binary. `compose.yaml` runs separate web UI and connector containers. The
 execution server, Codex, credentials and workspaces stay on the execution machine.
 
-For a Docker Engine on that machine with Tailscale connected, start `mekugi-app-server` listening on `$CODEX_HOME/app-server-control/app-server-control.sock`, then:
+For a Docker Engine on that machine with Tailscale connected, start `mekugi-app-server --listen unix://` (which binds `$CODEX_HOME/app-server-control/app-server-control.sock`), then:
 
 ```sh
 cp .env.example .env

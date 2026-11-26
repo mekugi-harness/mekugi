@@ -19,7 +19,6 @@ var directSlashCommands = []completion.Choice{
 	{Name: "/clear", Description: "Start a fresh session"},
 	{Name: "/new", Description: "Start a fresh session"},
 	{Name: "/resume", Description: "Resume a saved session"},
-	{Name: "/rewind", Description: "Rewind before a previous turn"},
 	{Name: "/archive", Description: "Archive this session"},
 	{Name: "/side", Description: "Open or switch to an ephemeral side fork"},
 	{Name: "/btw", Description: "Ask a read-only side question"},
