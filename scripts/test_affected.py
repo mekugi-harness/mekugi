@@ -455,6 +455,12 @@ class AffectedPlanTests(unittest.TestCase):
         self.assertIn("./mekugi-tui/apps/mekugi/internal/launch", plan.go_packages)
         self.assertIn("codex-app-server-protocol", plan.rust_packages)
 
+        exp_plan = AFFECTED.plan_affected(
+            ["codex-rs/app-server-protocol/src/protocol/common.rs"],
+            self.repo,
+        )
+        self.assertIn("./mekugi-tui/apps/mekugi/internal/launch", exp_plan.go_packages)
+
 
 if __name__ == "__main__":
     unittest.main()

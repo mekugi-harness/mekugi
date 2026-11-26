@@ -280,6 +280,8 @@ def plan_affected(
                 rust_packages.add(pkg)
             if rel_path.startswith("codex-rs/app-server-protocol/schema/json/"):
                 go_packages.add("./mekugi-tui/apps/mekugi/internal/launch")
+            if rel_path == "codex-rs/app-server-protocol/src/protocol/common.rs":
+                go_packages.add("./mekugi-tui/apps/mekugi/internal/launch")
             if rel_path.startswith("codex-rs/app-server-protocol/schema/typescript/"):
                 webui = True
 

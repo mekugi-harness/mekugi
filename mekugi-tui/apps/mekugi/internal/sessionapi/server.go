@@ -45,25 +45,3 @@ type Decide struct {
 }
 
 const inputLimit = 1 << 20
-
-type feedPatch struct {
-	Attachment string           `json:"attachment"`
-	Entries    []jsontext.Value `json:"entries,omitzero"`
-	Order      []uint64         `json:"order,omitzero"`
-	Revision   uint64           `json:"revision"`
-	Earlier    *PageCursor      `json:"earlier"`
-}
-
-type message struct {
-	Deferred *DeferredSections `json:"deferred"`
-	Session  *Session          `json:"session,omitzero"`
-	Playback *Playback         `json:"playback,omitzero"`
-	Input    *Input            `json:"input,omitzero"`
-	Prompts  jsontext.Value    `json:"prompts,omitzero"`
-	Status   jsontext.Value    `json:"status,omitzero"`
-	Main     *feedPatch        `json:"main,omitzero"`
-	Agents   *feedPatch        `json:"agents,omitzero"`
-	Roster   jsontext.Value    `json:"roster,omitzero"`
-	Review   jsontext.Value    `json:"review,omitzero"`
-	Live     jsontext.Value    `json:"live,omitzero"`
-}

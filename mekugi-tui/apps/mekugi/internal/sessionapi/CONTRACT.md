@@ -4,9 +4,11 @@ Wire contract for [Session API requirements](SPEC.md#requirements). Endpoint pat
 version, field names, and queue bounds below are replaceable across coordinated consumer updates;
 the 32 MiB decoded-upload budget is a required message constraint.
 
-Rust-generated app-server schemas in `codex-rs/app-server-protocol/schema/typescript/` (WebUI) and
-`codex-rs/app-server-protocol/schema/json/` (Go TUI contract tests) are the single source of truth
-for wire payload schemas. Schema types do not grant endpoint authority.
+Native app-server JSON-RPC methods and payloads are governed by the Rust-generated schemas in
+`codex-rs/app-server-protocol/schema/typescript/` (WebUI, with experimental extensions in
+`mekugi-webui/app/src/lib/protocol.ts`) and `codex-rs/app-server-protocol/schema/json/` (Go TUI
+contract tests). Legacy connector/sessionapi envelope types remain documented below; schema types
+do not grant endpoint authority.
 
 ## Transport, version, and authority
 

@@ -102,19 +102,6 @@ type Summary struct {
 	Waiting   int  // Questions and approvals Main waits on.
 }
 
-// listed is a detached thread-list entry addressed by logical identity.
-type listed struct {
-	ParentThread string `json:"parentThread,omitzero"`
-	ID           string `json:"id,omitzero"`
-	Replay       bool   `json:"replay,omitzero"`
-	Thread       string `json:"thread,omitzero"`
-	Title        string `json:"title,omitzero"`
-	Workspace    string `json:"workspace,omitzero"`
-	Started      int64  `json:"started,omitzero"`
-	Status       status `json:"status"`
-	Waiting      int    `json:"waiting,omitzero"`
-}
-
 type Playback struct {
 	Position  int64   `json:"position"` // Recorded milliseconds.
 	Until     int64   `json:"until"`

@@ -48,41 +48,30 @@ func loadSchemaMethods(t *testing.T, schemaDir, filename string) map[string]bool
 	return methods
 }
 
-func repoRootFromTest(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "codex-rs", "app-server-protocol", "schema", "json")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("could not locate repo root from %s", dir)
-		}
-		dir = parent
-	}
-}
-
 func TestGoNativeProtocolMethodsMatchRustSchema(t *testing.T) {
-	root := repoRootFromTest(t)
-	schemaDir := filepath.Join(root, "codex-rs", "app-server-protocol", "schema", "json")
+	// Read Rust schemas through package-local testdata symlinks so Go's test cache
+	// tracks edits and works cleanly under -trimpath.
+	schemaDir := filepath.Join("testdata", "app-server-protocol-json")
 	clientRequests := loadSchemaMethods(t, schemaDir, "ClientRequest.json")
 	// Also admit experimental ClientRequest methods declared in protocol/common.rs.
-	commonSrc, err := os.ReadFile(filepath.Join(root, "codex-rs", "app-server-protocol", "src", "protocol", "common.rs"))
+	commonSrc, err := os.ReadFile(filepath.Join("testdata", "app-server-protocol-common.rs"))
 	if err != nil {
 		t.Fatalf("read protocol/common.rs: %v", err)
 	}
+	commonText := string(commonSrc)
+	startIdx := strings.Index(commonText, "client_request_definitions! {")
+	endIdx := strings.Index(commonText, "server_request_definitions! {")
+	if startIdx < 0 || endIdx <= startIdx {
+		t.Fatal("could not locate client_request_definitions! block in protocol/common.rs")
+	}
 	expRe := regexp.MustCompile(`#\[experimental\("([a-zA-Z0-9_/]+)"\)\]`)
-	for _, match := range expRe.FindAllStringSubmatch(string(commonSrc), -1) {
+	for _, match := range expRe.FindAllStringSubmatch(commonText[startIdx:endIdx], -1) {
 		clientRequests[match[1]] = true
 	}
 	serverNotifications := loadSchemaMethods(t, schemaDir, "ServerNotification.json")
 	serverRequests := loadSchemaMethods(t, schemaDir, "ServerRequest.json")
 
-	launchDir := filepath.Join(root, "mekugi-tui", "apps", "mekugi", "internal", "launch")
+	launchDir := "."
 	callRe := regexp.MustCompile(`\.Call\(\s*[^,]+,\s*"([a-zA-Z0-9_/]+)"`)
 	caseRe := regexp.MustCompile(`case\s+([^:]+):`)
 	quotedMethodRe := regexp.MustCompile(`"([a-zA-Z0-9_]+/[a-zA-Z0-9_/]+)"`)
