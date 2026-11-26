@@ -82,10 +82,8 @@
   const canSend = $derived(!disabled && (!!text.trim() || !!items.length));
 
   const SLASH_COMMANDS = [
-    { name: "/fast", description: "Toggle fast service tier", insert: "/fast" },
-    { name: "/compact", description: "Compact conversation context", insert: "/compact" },
-    { name: "/rename", description: "Rename this thread", insert: "/rename " },
-    { name: "/archive", description: "Archive this thread", insert: "/archive" },
+    { name: "/compact", description: "Compact context now", insert: "/compact" },
+    { name: "/archive", description: "Archive this session", insert: "/archive" },
   ];
 
   let slashDismissed = $state(false);

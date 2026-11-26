@@ -485,12 +485,8 @@ export class ThreadControl {
         const tier = lower === "standard" || lower === "default" || lower === "none" ? null : rest;
         return { handled: true, error: await this.updateSettings({ serviceTier: tier }) };
       }
-      case "/fast": {
-        const next = stream.session?.serviceTier === "fast" ? null : "fast";
-        return { handled: true, error: await this.updateSettings({ serviceTier: next }) };
-      }
-      case "/rename":
-        if (!rest) return { handled: true, error: "Specify a thread title, e.g. /rename My task" };
+      case "/title":
+        if (!rest) return { handled: true, error: "Specify a session title, e.g. /title My task" };
         return { handled: true, error: await this.rename(rest) };
       case "/archive":
         try {

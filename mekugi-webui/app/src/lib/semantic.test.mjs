@@ -605,7 +605,7 @@ test("ThreadControl handles slash commands locally instead of forwarding to turn
   assert.equal(await control.sendInput("/reasoning low", []), undefined);
   assert.equal(await control.sendInput("/tier fast", []), undefined);
   assert.equal(await control.sendInput("/tier standard", []), undefined);
-  assert.equal(await control.sendInput("/rename New Title", []), undefined);
+  assert.equal(await control.sendInput("/title New Title", []), undefined);
   assert.equal(await control.sendInput("/archive", []), undefined);
   assert.match(await control.sendInput("/model", []), /Specify a model name/);
 
