@@ -1,4 +1,0 @@
-
- ● fast  idle                      
- ● zero  idle                      
- ● absent  idle                    

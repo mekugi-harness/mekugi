@@ -1,4 +1,0 @@
-Ran     make test \
-          TEST_PACKAGES=./internal/router
-Diff   amber1 · mchanges --net
-Ran     combined output                    3m11s

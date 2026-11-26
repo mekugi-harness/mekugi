@@ -1,3 +1,0 @@
-❯ Review @src                                                           12:34:56
-
-└ Attach src (5 lines)

@@ -1,7 +1,0 @@
-
-› review  [Preset] Preset 1: Review carefully.                                  
-  review  [Skill] Review code changes
-
-
-
-  enter insert · esc close

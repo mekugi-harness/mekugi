@@ -1,0 +1,24 @@
+└ Ran     go test ./internal/launch
+    Edited  main.go
+
+● main                                                                                                                             12:00:00
+┃ Fixed native TUI projection.
+
+
+
+
+
+
+
+
+  ── Ran · go test ./internal/launch · 6 lines ──────────────────────────────────────────────────────────────────────────────────── [×] ──  
+                                                                                                                                            
+  1 ┆ ok 1                                                                                                                                  
+  2 ┆ ok 2                                                                                                                                  
+  3 ┆ ok 3                                                                                                                                  
+  4 ┆ ok 4                                                                                                                                  
+  5 ┆ ok 5                                                                                                                                  
+  6 ┆ PASS                                                                                                                                  
+  ↑↓ PgUp/PgDn g/G scroll · / find · y copy · ← back · esc close                                                                            
+  gpt-5 (medium) · standard | ━━╸─────── 25% 100K/400K | $0.12 · total $0.48 | ↑ 12K ↓ 3K | 96.0 tok/s | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /workspace/demo • ↓ roster • → diff • ctrl+e view

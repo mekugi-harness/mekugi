@@ -21,20 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
-
-	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
-
-	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
-
-	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
-
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
-
 	"github.com/charmbracelet/x/vt"
-	"github.com/creack/pty"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 	"golang.org/x/term"
 )
 
@@ -155,7 +142,7 @@ func TestAppServerResumeNativeCodex(t *testing.T) {
 				if entry.IsDir() || !strings.HasSuffix(path, ".jsonl") {
 					return nil
 				}
-				if saved := rollout.ResumeSettings(thread, path, time.Time{}); saved["model"] != nil {
+				if saved := e2eRolloutResumeSettings(thread, path); saved["model"] != nil {
 					foundSaved = true
 					if saved["model"] != "gpt-6-sol" || saved["model_reasoning_effort"] != "high" || saved["service_tier"] != "priority" {
 						t.Fatalf("host persisted settings: %#v", saved)
@@ -243,34 +230,9 @@ func startAppResumeTerminal(t *testing.T, newCommand func(context.Context) *exec
 	return startAppResumeTerminalWithIntegration(t, newCommand, resumeThread, appServerIntegration{})
 }
 
-func startAppResumeTerminalWithIntegration(t *testing.T, newCommand func(context.Context) *exec.Cmd, resumeThread string, integration appServerIntegration, capture ...*transportcapture.Recorder) *appResumeTerminal {
+func startAppResumeTerminalWithIntegration(t *testing.T, newCommand func(context.Context) *exec.Cmd, resumeThread string, integration appServerIntegration) *appResumeTerminal {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
-	outer, inner, err := pty.Open()
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { cancel(); outer.Close(); inner.Close() })
-	if err := pty.Setsize(outer, &pty.Winsize{Cols: 100, Rows: 30}); err != nil {
-		t.Fatal(err)
-	}
-	before, err := term.GetState(int(inner.Fd()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var recorder *transportcapture.Recorder
-	if len(capture) > 0 {
-		recorder = capture[0]
-	}
-	conversation := new(conversationmodel.Service)
-	observations := conversationbinding.Codex.Observation(conversation)
-	reviewSource := new(changecapture.Service)
-	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, newCommand(ctx), inner, inner, integration, nil, resumeThread, true, recorder, nil, "", &observations, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return observeAppResumeTerminal(t, ctx, cancel, outer, inner, before, wait)
+	return startAppResumeTerminalWithDirectNative(t, newCommand, resumeThread, integration)
 }
 
 func observeAppResumeTerminal(t *testing.T, ctx context.Context, cancel context.CancelFunc, outer, inner *os.File, before *term.State, wait func() error) *appResumeTerminal {
@@ -475,7 +437,7 @@ func TestAppServerResumePickerNativeCodex(t *testing.T) {
 		t.Fatalf("switched input did not reach the chosen thread: %q", threads)
 	}
 
-	third := startAppResumeTerminal(t, newCommand, sessioncontrol.ResumePicker)
+	third := startAppResumeTerminal(t, newCommand, "--pick")
 	third.await("Resume a previous session")
 	third.await("esc start new")
 	// The follow-up made the first session the most recently updated.

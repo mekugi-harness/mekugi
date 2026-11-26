@@ -52,3 +52,17 @@ func TestWorkspaceSnapshotPackageDiscoveryRejectsEmpty(t *testing.T) {
 		t.Fatalf("empty selection error=%v", err)
 	}
 }
+
+func TestWorkspaceSnapshotPackageDiscoveryRejectsOrphans(t *testing.T) {
+	workspaceFixture(t, []string{"./mekugi-tui/libraries/first"}, map[string]string{"mekugi-tui/libraries/first": prefix + "/mekugi-tui/libraries/first"})
+	writeWorkspaceSource(t, "mekugi-tui/libraries/first/render/snapshot_test.go", "package render\nimport \"testing\"\nfunc TestUISnapshotFrame(t *testing.T) {}\n")
+	writeWorkspaceSource(t, "mekugi-tui/libraries/first/orphan/plain_test.go", "package orphan\nimport \"testing\"\nfunc TestPlain(t *testing.T) {}\n")
+	writeWorkspaceSource(t, "mekugi-tui/libraries/first/orphan/testdata/snapshots/stale.txt", "stale baseline\n")
+	members, err := workspaceMembers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := expand([]string{"@snapshots"}, members); err == nil || !strings.Contains(err.Error(), "orphan/testdata/snapshots") {
+		t.Fatalf("expected orphaned snapshot error, got %v", err)
+	}
+}

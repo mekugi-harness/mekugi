@@ -1,4 +1,0 @@
-
- ✓ child  done                                                                                               0%  ↑≥100K ↓≥10K  ≥$0.30  ≥T+2
- ✓ gap  done                                                                                                 0%                        ≥T+1
- ✓ historical  done                                                                                          0%  ↑≥100K ↓≥10K  ≥$0.30  ≥T+1

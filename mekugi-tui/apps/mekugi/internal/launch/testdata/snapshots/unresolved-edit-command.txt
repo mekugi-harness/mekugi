@@ -1,1 +1,0 @@
-└ Ran     from pathlib import Path (+3 lines) · via python3

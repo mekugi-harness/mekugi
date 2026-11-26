@@ -1,8 +1,0 @@
-✉ worker → main                                                                             11:50:00
-│ An unrelated reply.
-├─✉ worker → main · 1s
-│ Summary
-│ ───────
-│ Fixed exact reply navigation and kept the original evidence available. Focused checks pass, while
-│ live model compliance remains unverified.…
-╰─↩ Open reply · +8 lines

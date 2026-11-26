@@ -97,7 +97,7 @@ func TestShellGuardBrowserAndTerminalNativeCodex(t *testing.T) {
 		duringTurn: func(t *testing.T, outer io.Writer, await func(string), _ func(func(string) bool), _ *vt.Emulator) {
 			await("Allow this sudo command?")
 			run("wait", "--text", "Allow this sudo command?")
-			run("find", "role", "button", "click", "--name", "Yes, run it", "--exact")
+			run("find", "role", "button", "click", "--name", "Allow once", "--exact")
 			await("Enter your sudo password:")
 			run("wait", "--text", "Answer this secret prompt in the terminal.")
 			run("wait", "--fn", `document.querySelector('[data-prompt]') && !document.querySelector('[data-prompt] input, [data-prompt] textarea')`)

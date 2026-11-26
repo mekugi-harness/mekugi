@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
 const (
@@ -110,7 +109,7 @@ func fixtureResponsesSSE(events ...any) string {
 	var stream strings.Builder
 	for _, event := range events {
 		stream.WriteString("data: ")
-		stream.Write(responses.MustMarshalJSON(event))
+		stream.Write(e2eMustMarshalJSON(event))
 		stream.WriteString("\n\n")
 	}
 	return stream.String()
@@ -125,7 +124,7 @@ func fixtureResponsesStream(wire string) *http.Response {
 }
 
 func writeFixtureResponseSocket(ctx context.Context, conn *websocket.Conn, value any) error {
-	return conn.Write(ctx, websocket.MessageText, responses.MustMarshalJSON(value))
+	return conn.Write(ctx, websocket.MessageText, e2eMustMarshalJSON(value))
 }
 
 func readFixtureResponseSocket(ctx context.Context, conn *websocket.Conn) (map[string]jsonv1.RawMessage, error) {

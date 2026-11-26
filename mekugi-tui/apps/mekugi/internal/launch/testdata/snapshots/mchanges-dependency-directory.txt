@@ -1,3 +1,0 @@
-└ Diff mine · mchanges --summary
-       Edited node_modules/
-       Edited FIXME.md       +1 -1 ━━━━━━━━

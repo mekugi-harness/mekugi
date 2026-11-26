@@ -122,13 +122,13 @@ test *args='@workspace': workspace-check
 test-host:
     set -eu
     {{ just }} _test-env codex --version
-    set -- TestAppServerNativeMRunAndPTY \
-        TestMChangesNestedNativeCodexE2E \
-        TestAppServerExecTrackNativeCodex \
-        TestAppServerExecTrackNativeCodexDash \
-        TestAppServerExecTrackNativeCodexMovedWorkspace \
-        TestAppServerExecTrackNativeCodexSandbox \
-        TestAppServerSteerAndQueueNativeCodex
+    set -- TestAppServerSteerAndQueueNativeCodex \
+        TestAppServerResumeNativeCodex \
+        TestComposerPickersNativeCodexE2E \
+        TestNativeApprovalDenialSameTurnCodexE2E \
+        TestAppServerBTWNativeCodexE2E \
+        TestAppServerOneoffNativeCodexE2E \
+        TestAppServerSessionTitleManualNativeCodexE2E
     pattern=$(IFS='|'; printf '^(%s)$' "$*")
     if ! available=$({{ just }} _test-env go test -trimpath -tags=codex_e2e {{ launch }} -list "$pattern"); then
         printf '%s\n' "$available"

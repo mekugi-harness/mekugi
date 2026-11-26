@@ -120,6 +120,12 @@ jobs:
       - name: Test offline suite
         if: matrix.platform == 'linux_amd64'
         run: just test @workspace -count=1
+      - name: Compile-check codex_e2e suite
+        if: matrix.platform == 'linux_amd64'
+        run: just test @workspace -tags=codex_e2e -run '^$'
+      - name: Check UI snapshots
+        if: matrix.platform == 'linux_amd64'
+        run: just test-ui-snapshots
       - name: Check documentation and generated references
         if: matrix.platform == 'linux_amd64'
         run: just docs-check check-generated
@@ -147,9 +153,15 @@ jobs:
         run: just test ./mekugi-tui/apps/mekugi/cmd/mekugi
       - name: Test welcome and linked version
         run: |
-          MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" just test ./mekugi-tui/apps/mekugi/internal/launch \
-            -run '^(TestMekugi(BuildVersion|LinkedBuildVersion)|TestNativeWelcome|TestUISnapshotNativeWelcome)' \
-            -ldflags="-X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG"
+          out=$(RTK= MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" just test ./mekugi-tui/apps/mekugi/internal/launch \
+            -run '^(TestMekugi(BuildVersion|LinkedBuildVersion)|TestUISnapshotDirectNative)' \
+            -ldflags="-X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG" \
+            -count=1 -v)
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -q '\[no tests to run\]'; then
+            echo "error: linked version test filter matched zero tests" >&2
+            exit 1
+          fi
       - name: Resolve native runtime archive key
         id: native_key
         env:
@@ -360,6 +372,9 @@ jobs:
           "$installed/mekugi-app-server" --help
           "$installed/codex-code-mode-host" --help
           test -s "$installed/mekugi-models.json"
+          MEKUGI_REQUIRE_NATIVE_INTEGRATION=1 PATH="$installed:$PATH" \
+            just test ./mekugi-tui/apps/mekugi/internal/launch \
+            -run '^TestDirectNativeRealAppServerIntegration$' -count=1 -v
           if [[ "$RUNNER_OS" == Linux ]]; then
             "$installed/bwrap" --unshare-user --unshare-net \
               --ro-bind / / -- /bin/true

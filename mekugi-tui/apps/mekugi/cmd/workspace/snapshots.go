@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -17,6 +18,7 @@ import (
 // Scan all platforms conservatively; Go still selects runnable files and tests.
 func snapshotPackages(members []member) ([]string, error) {
 	packages := map[string]bool{}
+	baselineDirs := map[string]bool{}
 	for _, m := range members {
 		err := filepath.WalkDir(m.directory, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -24,7 +26,19 @@ func snapshotPackages(members []member) ([]string, error) {
 			}
 			if entry.IsDir() {
 				if path != m.directory {
-					if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") || entry.Name() == "testdata" || entry.Name() == "vendor" || entry.Name() == "node_modules" || entry.Name() == "dist" {
+					if entry.Name() == "testdata" {
+						snapDir := filepath.Join(path, "snapshots")
+						if entries, err := os.ReadDir(snapDir); err == nil {
+							for _, se := range entries {
+								if !se.IsDir() && strings.HasSuffix(se.Name(), ".txt") {
+									baselineDirs[filepath.ToSlash(filepath.Dir(path))] = true
+									break
+								}
+							}
+						}
+						return filepath.SkipDir
+					}
+					if strings.HasPrefix(entry.Name(), ".") || strings.HasPrefix(entry.Name(), "_") || entry.Name() == "vendor" || entry.Name() == "node_modules" || entry.Name() == "dist" {
 						return filepath.SkipDir
 					}
 					if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
@@ -59,6 +73,16 @@ func snapshotPackages(members []member) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	var orphans []string
+	for dir := range baselineDirs {
+		if !packages["./"+dir+"/..."] {
+			orphans = append(orphans, dir+"/testdata/snapshots")
+		}
+	}
+	if len(orphans) > 0 {
+		slices.Sort(orphans)
+		return nil, fmt.Errorf("orphaned UI snapshot baselines with no TestUISnapshot/TestSnapshot tests: %s", strings.Join(orphans, ", "))
 	}
 	if len(packages) == 0 {
 		return nil, errors.New("workspace has no snapshot test packages")

@@ -14,8 +14,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
 )
 
 // Each UI/router integration and Codex host runs in a separate process. Only
@@ -85,7 +83,7 @@ func testAppServerAppliedSettingsFreshProcessNativeCodex(t *testing.T, commandRe
 					if err != nil {
 						return err
 					}
-					if !entry.IsDir() && strings.HasSuffix(path, ".jsonl") && rollout.ResumeSettings(threads[0], path, time.Time{})["model"] != nil {
+					if !entry.IsDir() && strings.HasSuffix(path, ".jsonl") && e2eRolloutResumeSettings(threads[0], path)["model"] != nil {
 						compressResumeSettingsRollout(t, path)
 						found = true
 					}
