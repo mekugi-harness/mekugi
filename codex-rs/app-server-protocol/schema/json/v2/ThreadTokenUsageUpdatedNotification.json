@@ -3,6 +3,17 @@
   "definitions": {
     "ThreadTokenUsage": {
       "properties": {
+        "costPartial": {
+          "type": "boolean"
+        },
+        "estimatedCostUsd": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "last": {
           "$ref": "#/definitions/TokenUsageBreakdown"
         },
@@ -13,8 +24,32 @@
             "null"
           ]
         },
+        "outputTokensPerSecond": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "roundtrips": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "total": {
           "$ref": "#/definitions/TokenUsageBreakdown"
+        },
+        "workDurationMs": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [

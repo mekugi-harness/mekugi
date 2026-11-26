@@ -10479,6 +10479,11 @@ fn token_usage_notification(
                 reasoning_output_tokens: 0,
             },
             model_context_window,
+            estimated_cost_usd: None,
+            cost_partial: false,
+            output_tokens_per_second: None,
+            work_duration_ms: None,
+            roundtrips: None,
         },
     })
 }

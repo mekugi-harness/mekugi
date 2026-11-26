@@ -1168,8 +1168,14 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::TokenCount(token_count_event) => {
-            handle_token_count_event(conversation_id, event_turn_id, token_count_event, &outgoing)
-                .await;
+            handle_token_count_event(
+                conversation_id,
+                event_turn_id,
+                token_count_event,
+                &thread_state,
+                &outgoing,
+            )
+            .await;
         }
         EventMsg::Error(ev) => {
             thread_watch_manager
@@ -1760,10 +1766,16 @@ async fn handle_token_count_event(
     conversation_id: ThreadId,
     turn_id: String,
     token_count_event: TokenCountEvent,
+    thread_state: &Arc<Mutex<ThreadState>>,
     outgoing: &ThreadScopedOutgoingMessageSender,
 ) {
     let TokenCountEvent { info, rate_limits } = token_count_event;
-    if let Some(token_usage) = info.map(ThreadTokenUsage::from) {
+    if let Some(mut token_usage) = info.map(ThreadTokenUsage::from) {
+        thread_state
+            .lock()
+            .await
+            .usage_metrics
+            .apply_to(&mut token_usage);
         let notification = ThreadTokenUsageUpdatedNotification {
             thread_id: conversation_id.to_string(),
             turn_id,
@@ -4118,6 +4130,7 @@ mod tests {
             rate_limit_reached_type: None,
         };
 
+        let thread_state = Arc::new(Mutex::new(ThreadState::default()));
         handle_token_count_event(
             conversation_id,
             turn_id.clone(),
@@ -4125,6 +4138,7 @@ mod tests {
                 info: Some(info),
                 rate_limits: Some(rate_limits),
             },
+            &thread_state,
             &outgoing,
         )
         .await;
@@ -4171,6 +4185,7 @@ mod tests {
             ThreadId::new(),
         );
 
+        let thread_state = Arc::new(Mutex::new(ThreadState::default()));
         handle_token_count_event(
             conversation_id,
             turn_id.clone(),
@@ -4178,6 +4193,7 @@ mod tests {
                 info: None,
                 rate_limits: None,
             },
+            &thread_state,
             &outgoing,
         )
         .await;

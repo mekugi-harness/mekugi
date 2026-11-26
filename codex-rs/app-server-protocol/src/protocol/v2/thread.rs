@@ -2306,6 +2306,18 @@ pub struct ThreadTokenUsage {
     // TODO(aibrahim): make this not optional
     #[ts(type = "number | null")]
     pub model_context_window: Option<i64>,
+    #[serde(default)]
+    pub estimated_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cost_partial: bool,
+    #[serde(default)]
+    pub output_tokens_per_second: Option<f64>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub work_duration_ms: Option<i64>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub roundtrips: Option<i64>,
 }
 
 impl From<CoreTokenUsageInfo> for ThreadTokenUsage {
@@ -2314,6 +2326,11 @@ impl From<CoreTokenUsageInfo> for ThreadTokenUsage {
             total: value.total_token_usage.into(),
             last: value.last_token_usage.into(),
             model_context_window: value.model_context_window,
+            estimated_cost_usd: None,
+            cost_partial: false,
+            output_tokens_per_second: None,
+            work_duration_ms: None,
+            roundtrips: None,
         }
     }
 }

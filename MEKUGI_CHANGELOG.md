@@ -220,6 +220,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   context-reset cancellation and events, mid-turn `beforeItemId` revert targets
   on `thread/revert`, and feature-use reads. Native observation supplies assignment,
   usage, and progress facts to Mekugi without a second agent registry.
+  `ThreadTokenUsage` carries per-thread reference cost (`estimatedCostUsd`,
+  `costPartial`), measured output throughput (`outputTokensPerSecond`),
+  cumulative work duration (`workDurationMs`), and response roundtrip count
+  (`roundtrips`), computed per completed response in `mekugi-app-server` so
+  renderers share one accounting owner without repricing earlier turns.
   A subtree read during child startup returns its readable members without
   waiting for the child or reporting the parent missing.
 - The private Unix control socket serves a restricted remote-human WebSocket

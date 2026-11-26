@@ -1207,9 +1207,10 @@ impl ThreadRequestProcessor {
                 .first()
                 .map(|r| r.metadata.workspace_root.display().to_string())
         });
-        let composed = codex_change_history::compose_diff(&store, &records, &[]).map_err(|error| {
-            internal_error(format!("failed to compose native change diffs: {error}"))
-        })?;
+        let composed =
+            codex_change_history::compose_diff(&store, &records, &[]).map_err(|error| {
+                internal_error(format!("failed to compose native change diffs: {error}"))
+            })?;
         let changes = records
             .iter()
             .map(|record| codex_app_server_protocol::ThreadChangeOrigin {
@@ -5146,6 +5147,7 @@ impl ThreadRequestProcessor {
                     // still filling the status line before the next turn lifecycle begins.
                     send_thread_token_usage_update_to_connection(
                         &self.outgoing,
+                        &self.thread_state_manager,
                         connection_id,
                         thread_id,
                         codex_thread.as_ref(),
@@ -6502,6 +6504,7 @@ impl ThreadRequestProcessor {
             // as the response arrives, so restored usage must follow immediately.
             send_thread_token_usage_update_to_connection(
                 &self.outgoing,
+                &self.thread_state_manager,
                 connection_id,
                 thread_id,
                 forked_thread.as_ref(),

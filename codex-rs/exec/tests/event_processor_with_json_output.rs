@@ -1360,6 +1360,11 @@ fn token_usage_update_is_emitted_on_turn_completion() {
                         reasoning_output_tokens: 7,
                     },
                     model_context_window: Some(128_000),
+                    estimated_cost_usd: None,
+                    cost_partial: false,
+                    output_tokens_per_second: None,
+                    work_duration_ms: None,
+                    roundtrips: None,
                 },
             },
         ));
