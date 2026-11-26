@@ -19,7 +19,7 @@ func assertRowsSnapshot(t *testing.T, name string, rows []string) {
 
 func TestUISnapshotDiffPreview(t *testing.T) {
 	edit := previewmodel.Preview{ID: "edit", Workspace: "/workspace", Caller: "/root/worker", Status: previewmodel.PreviewEdit,
-		Files: []diffmodel.ReviewFile{diffmodel.RenderReviewFile("/workspace/src/main.go", "/workspace/src/main.go", "package main\n\nconst label = \"old\"\n", "package main\n\nconst label = \"a long replacement that wraps inside a narrow preview\"\n")}}
+		Files: []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("/workspace/src/main.go", "/workspace/src/main.go", "package main\n\nconst label = \"old\"\n", "package main\n\nconst label = \"a long replacement that wraps inside a narrow preview\"\n")}}
 	tail := previewmodel.Preview{ID: "tail", Workspace: "/workspace", Caller: "/root", Status: previewmodel.PreviewRunning,
 		Input: "+++ \"src/main.go\"\n@@ -1,3 +1,3 @@\n package main\n-const label = \"old\"\n+const label = \"a long replacement that wraps in the preview\"\n", DiffText: true, Truncated: true}
 	pending := previewmodel.Preview{ID: "pending", Workspace: "/workspace", Caller: "/root", Status: previewmodel.PreviewPending,

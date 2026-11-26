@@ -2,6 +2,7 @@ package terminalview
 
 // Source: internal/ui/diffview/preview_batch_test.go@[a42ac9f1]
 import (
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 	"fmt"
 	"slices"
 	"strings"
@@ -20,7 +21,7 @@ func batchTestPreview(id, caller string, paths ...string) previewmodel.Preview {
 	preview := previewmodel.Preview{ID: id, Workspace: "/workspace", Caller: caller, Status: previewmodel.PreviewEdit}
 	for _, path := range paths {
 		path = "/workspace/" + path
-		preview.Files = append(preview.Files, diffmodel.RenderReviewFile(path, path,
+		preview.Files = append(preview.Files, uisnapshot.RenderReviewFile(path, path,
 			"package main\n\nconst value = 1\n", "package main\n\nconst value = 2\n"))
 	}
 	return preview
@@ -29,7 +30,7 @@ func batchTestPreview(id, caller string, paths ...string) previewmodel.Preview {
 func TestNativeBatchSourceScrollAndFollow(t *testing.T) {
 	pane := PreviewPane{}
 	preview := batchTestPreview("stream", "/root", "src/stream.go")
-	preview.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("", "/workspace/src/stream.go", "", strings.Repeat("source line\n", 40))}
+	preview.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("", "/workspace/src/stream.go", "", strings.Repeat("source line\n", 40))}
 	pane.Update(preview, time.Now())
 	view := pane.batches["/root"].files[previewFileKey{"stream", "/workspace/src/stream.go"}]
 	if view.Source != nil || view.Rendered.ID != "" {
@@ -41,7 +42,7 @@ func TestNativeBatchSourceScrollAndFollow(t *testing.T) {
 		t.Fatal("page-up did not pause the file's source viewport")
 	}
 	pausedAt := view.ScrollRow
-	preview.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("", "/workspace/src/stream.go", "", strings.Repeat("source line\n", 60))}
+	preview.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("", "/workspace/src/stream.go", "", strings.Repeat("source line\n", 60))}
 	pane.Update(preview, time.Now())
 	batchTestRender(t, &pane, 16)
 	if !view.Paused || view.ScrollRow != pausedAt || view.Focus <= initialFocus {
@@ -79,7 +80,7 @@ func batchTestRender(t *testing.T, pane *PreviewPane, height int) []string {
 func TestNativeBatchScrollStopsAfterDeletedSuffix(t *testing.T) {
 	var pane PreviewPane
 	p := batchTestPreview("rewrite", "/root", "source.txt")
-	p.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt",
+	p.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt",
 		"retained\n"+strings.Repeat("old baseline\n", 60), strings.Repeat("new source\n", 30)+"retained\n")}
 	pane.Update(p, time.Time{})
 	batchTestRender(t, &pane, 16)
@@ -103,7 +104,7 @@ func TestNativeBatchScrollStopsAfterDeletedSuffix(t *testing.T) {
 			t.Fatal("deleted suffix did not retain its clamped viewport")
 		}
 	}
-	p.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt",
+	p.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt",
 		"retained\n"+strings.Repeat("old baseline\n", 60), strings.Repeat("new source\n", 30)+"new tip\nretained\n")}
 	pane.Update(p, time.Time{})
 	if rows := batchTestRender(t, &pane, 24); !strings.Contains(strings.Join(rows, "\n"), "new tip") {
@@ -127,7 +128,7 @@ func TestNativeBatchContextBottomResumesNewSource(t *testing.T) {
 	}
 	before := source.String()
 	after := strings.Replace(before, "line_040\n", "new first\n", 1)
-	p.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt", before, after)}
+	p.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt", before, after)}
 	pane.Update(p, time.Time{})
 	batchTestRender(t, &pane, 16)
 	pane.ScrollBatch("/root", 'b')
@@ -146,7 +147,7 @@ func TestNativeBatchContextBottomResumesNewSource(t *testing.T) {
 		}
 	}
 	after = strings.Replace(after, "line_100\n", "new last\n", 1)
-	p.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt", before, after)}
+	p.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt", before, after)}
 	pane.Update(p, time.Time{})
 	if rows := batchTestRender(t, &pane, 16); !strings.Contains(strings.Join(rows, "\n"), "new last") {
 		t.Fatal("scrolling to the context bottom failed to follow a later edit")
@@ -155,7 +156,7 @@ func TestNativeBatchContextBottomResumesNewSource(t *testing.T) {
 	// physical bottom can enable addition-focused deletion compaction.
 	after += "existing added tail\n"
 	publish := func(source string) []string {
-		p.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt", before, source)}
+		p.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("/workspace/source.txt", "/workspace/source.txt", before, source)}
 		pane.Update(p, time.Time{})
 		return batchTestRender(t, &pane, 16)
 	}
@@ -411,8 +412,8 @@ func TestUISnapshotNativeBatchMixedToolCall(t *testing.T) {
 func TestUISnapshotNativeBatchOmitsDeletedFiles(t *testing.T) {
 	pane := PreviewPane{}
 	preview := batchTestPreview("mixed", "/root", "src/kept.go")
-	preview.Files[0] = diffmodel.RenderReviewFile("", "/workspace/src/kept.go", "", strings.Repeat("source line\n", 24))
-	preview.Files = append(preview.Files, diffmodel.RenderReviewFile("/workspace/src/deleted.go", "", "package old\n", ""))
+	preview.Files[0] = uisnapshot.RenderReviewFile("", "/workspace/src/kept.go", "", strings.Repeat("source line\n", 24))
+	preview.Files = append(preview.Files, uisnapshot.RenderReviewFile("/workspace/src/deleted.go", "", "package old\n", ""))
 	pane.Update(preview, time.Now())
 	assertRowsSnapshot(t, "native_batch_omits_deleted", batchTestRender(t, &pane, 31))
 	if !slices.Equal(pane.Callers(), []string{"/root"}) || len(pane.batches["/root"].files) != 1 {
@@ -426,14 +427,14 @@ func TestNativeBatchDeletedFileRemovesRetainedViewport(t *testing.T) {
 	batchTestRender(t, &pane, 31)
 	pane.NextBatch("/root") // Pin a.go before it disappears.
 	preview := batchTestPreview("call", "/root", "src/b.go")
-	preview.Files = append(preview.Files, diffmodel.RenderReviewFile("/workspace/src/a.go", "", "package old\n", ""))
+	preview.Files = append(preview.Files, uisnapshot.RenderReviewFile("/workspace/src/a.go", "", "package old\n", ""))
 	pane.Update(preview, time.Now())
 	batchTestRender(t, &pane, 31)
 	b := pane.batches["/root"]
 	if len(b.order) != 1 || b.selected.path != "/workspace/src/b.go" || b.pinned {
 		t.Fatalf("deleted viewport retained: %+v", b)
 	}
-	preview.Files = []diffmodel.ReviewFile{diffmodel.RenderReviewFile("/workspace/src/b.go", "", "package old\n", "")}
+	preview.Files = []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("/workspace/src/b.go", "", "package old\n", "")}
 	pane.Update(preview, time.Now())
 	if rows := batchTestRender(t, &pane, 31); len(rows) != 0 || len(pane.Callers()) != 0 {
 		t.Fatal("deletion-only call still opens dock")

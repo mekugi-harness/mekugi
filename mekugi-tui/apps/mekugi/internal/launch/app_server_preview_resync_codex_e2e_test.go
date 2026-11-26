@@ -3,6 +3,7 @@
 package launch
 
 import (
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -53,7 +54,7 @@ func TestAppServerPreviewResyncNativeCodex(t *testing.T) {
 			}
 			return previewmodel.Preview{ID: id, Caller: "/root", Workspace: workspace, Thread: thread,
 				Status: previewmodel.PreviewEdit, Tool: "apply_patch",
-				Files: []diffmodel.ReviewFile{diffmodel.RenderReviewFile("", filepath.Join(workspace, id+".go"), "", source.String())}}
+				Files: []diffmodel.ReviewFile{uisnapshot.RenderReviewFile("", filepath.Join(workspace, id+".go"), "", source.String())}}
 		}
 		write := func(keys string) {
 			t.Helper()

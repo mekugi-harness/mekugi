@@ -4,8 +4,6 @@ import (
 	"slices"
 
 	"time"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/notifications/notice"
 )
 
 // Model belongs to one attached view. Geometry and display receipts stay with
@@ -17,13 +15,12 @@ type Model struct {
 	Alert    bool
 	Until    time.Time
 	setAt    time.Time
-	errors   []notice.Message
 }
 
 func (m *Model) Set(text string, alert bool, now time.Time) {
 	m.Revision++
 	m.Text, m.Alert, m.Until = text, alert, time.Time{}
-	m.setAt, m.errors = now, nil
+	m.setAt = now
 	if text != "" && !alert {
 		m.Until = now.Add(3 * time.Second)
 	}

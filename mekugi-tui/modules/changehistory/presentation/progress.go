@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"iter"
 	"slices"
+	"strconv"
 	"strings"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/changes"
 )
 
 type CaptureProgress struct {
@@ -24,10 +23,10 @@ func (p Publication) Progress(callers map[string]bool, seen map[string]int) iter
 	return func(yield func(CaptureProgress) bool) {
 		groups := make(map[string][]*Chunk)
 		for chunk := range p.progressCaptures() {
-			if chunk.Change != "" && callers[chunk.Caller] && (changes.AuthoredReview(chunk.Review) || changes.GitDiagnosticReview(chunk.Review)) {
+			if chunk.Change != "" && callers[chunk.Caller] && (authoredReview(chunk.Review) || gitDiagnosticReview(chunk.Review)) {
 				// One change can gain late writer intervals. Each retained
 				// record has its own capture identity, even out of ID order.
-				key := changes.CaptureKey(chunk.Workspace, chunk.Caller, chunk.Change, chunk.CaptureOrder)
+				key := captureKey(chunk.Workspace, chunk.Caller, chunk.Change, chunk.CaptureOrder)
 				if key == "" {
 					key = chunk.Workspace + "\x00" + chunk.Caller + "\x00" + chunk.Change + "\x00" + chunk.Key
 				}
@@ -56,6 +55,13 @@ func (p Publication) Progress(callers map[string]bool, seen map[string]int) iter
 			}
 		}
 	}
+}
+
+func captureKey(workspace, caller, change string, order uint64) string {
+	if order == 0 {
+		return ""
+	}
+	return workspace + "\x00" + caller + "\x00" + change + "\x00" + strconv.FormatUint(order, 10)
 }
 
 func (p Publication) progressCaptures() iter.Seq[*Chunk] {

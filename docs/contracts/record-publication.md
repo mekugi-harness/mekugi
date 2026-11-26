@@ -21,15 +21,12 @@
 - **Lease safety**: snapshot leases bridge validation to publication locks without deadlock; session
   leases protect retained evidence until consumer delivery completes. Compaction removes ancestry
   from one request view without retiring records needed by another branch.
-- **Owner boundaries**: [Session history](../../mekugi-tui/modules/sessionhistory/SPEC.md) owns namespaces,
-  catalogs, leases, and retention; feature modules own their record codecs and retirement policies;
-  [Change evidence](change-evidence.md) owns capture reconciliation;
-  Native `mekugi-app-server` (`codex-arg0`) owns helper delivery;
-  [Diagnostics](../../mekugi-tui/modules/diagnostics/SPEC.md) owns private debug bundles separately.
+- **Owner boundaries**: Native `mekugi-app-server` owns namespaces,
+  catalogs, leases, retention, and helper delivery (`codex-arg0`);
+  [Change evidence](change-evidence.md) owns capture reconciliation.
 
 ## Current approach (replaceable)
 
-- Retained host call records live in `modules/sessionhistory/history`; new features publish
-  owner-typed records with neutral dependency graphs.
+- Retained host call records live in the native `mekugi-app-server` storage layer.
 - Fork initialization retains inherited records before cloning indexes and publishes the new
   namespace last so interrupted setup is retryable.

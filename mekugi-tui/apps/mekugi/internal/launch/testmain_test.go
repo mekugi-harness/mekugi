@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/dlclark/regexp2/v2"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/agentmetrics/evidence"
 )
 
 func listenPrivateUnix(path string) (net.Listener, error) {
@@ -63,7 +62,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "start regexp2 timeout clock:", err)
 		os.Exit(1)
 	}
-	if err := os.Unsetenv(evidence.AXReadOutputEnvironment); err != nil {
+	if err := os.Unsetenv(axReadOutputEnvironment); err != nil {
 		fmt.Fprintln(os.Stderr, "isolate AX test instrumentation:", err)
 		os.Exit(1)
 	}

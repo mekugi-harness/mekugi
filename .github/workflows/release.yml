@@ -144,7 +144,7 @@ jobs:
         run: just lint
       - name: Test commands
         if: matrix.platform != 'linux_amd64'
-        run: just test ./mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec
+        run: just test ./mekugi-tui/apps/mekugi/cmd/mekugi
       - name: Test welcome and linked version
         run: |
           MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" just test ./mekugi-tui/apps/mekugi/internal/launch \
@@ -310,7 +310,7 @@ jobs:
           package_dir="$RUNNER_TEMP/package"
           mkdir -p "$package_dir" "$RUNNER_TEMP/artifacts"
           just webui build
-          GOWORK="$PWD/mekugi-tui/go.work" go build -trimpath -ldflags="-s -w -X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG" -o "$package_dir/" ./mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec
+          GOWORK="$PWD/mekugi-tui/go.work" go build -trimpath -ldflags="-s -w -X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG" -o "$package_dir/" ./mekugi-tui/apps/mekugi/cmd/mekugi
           native_files=(mekugi-app-server codex-code-mode-host mekugi-models.json)
           if [ "$RUNNER_OS" = Linux ]; then
             native_files+=(bwrap)
@@ -357,7 +357,6 @@ jobs:
           HOME="$smoke/home" PATH="$smoke/bin:$PATH" sh install.sh
           installed="$smoke/home/.local/bin"
           "$installed/mekugi" --help
-          "$installed/mekugi-exec" --created-path ''
           "$installed/mekugi-app-server" --help
           "$installed/codex-code-mode-host" --help
           test -s "$installed/mekugi-models.json"

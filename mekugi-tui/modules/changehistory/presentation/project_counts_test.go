@@ -1,6 +1,7 @@
 package presentation
 
 import (
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 	"fmt"
 	"strings"
 	"testing"
@@ -40,7 +41,7 @@ func liveDiffNetCapture(order uint64, caller, beforePath, afterPath, before, aft
 	return Chunk{
 		Key: fmt.Sprintf("net-%d", order), CaptureOrder: order, Workspace: "/w",
 		Change: fmt.Sprintf("change-%d", order), Caller: caller,
-		Review: diffmodel.RenderReviewFile(beforePath, afterPath, before, after),
+		Review: uisnapshot.RenderReviewFile(beforePath, afterPath, before, after),
 	}
 }
 
@@ -112,7 +113,7 @@ func TestLiveDiffNetCountsRejectsUnknownProjectEvidence(t *testing.T) {
 			case "incomplete", "hidden incomplete":
 				first.Review.Incomplete = "before content unavailable"
 			case "inconsistent":
-				second.Review = diffmodel.RenderReviewFile("/w/a", "/w/a", "unobserved\n", "final\n")
+				second.Review = uisnapshot.RenderReviewFile("/w/a", "/w/a", "unobserved\n", "final\n")
 			}
 			view := View{}
 			view.Merge(GroupCaptures([]Chunk{first, second}))
