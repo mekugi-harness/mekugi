@@ -17,6 +17,7 @@ export type { CommandExecutionRequestApprovalResponse } from "@codex-protocol/v2
 export type { FileChangeApprovalDecision } from "@codex-protocol/v2/FileChangeApprovalDecision";
 export type { FileChangeRequestApprovalParams } from "@codex-protocol/v2/FileChangeRequestApprovalParams";
 export type { FileChangeRequestApprovalResponse } from "@codex-protocol/v2/FileChangeRequestApprovalResponse";
+export type { HookRunSummary } from "@codex-protocol/v2/HookRunSummary";
 export type { Model } from "@codex-protocol/v2/Model";
 export type { ModelListParams } from "@codex-protocol/v2/ModelListParams";
 export type { ModelListResponse } from "@codex-protocol/v2/ModelListResponse";

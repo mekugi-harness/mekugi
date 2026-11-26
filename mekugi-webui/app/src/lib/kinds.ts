@@ -94,6 +94,7 @@ const editVerbs = new Set([
 export function isEditEntry(entry: Entry): boolean {
   const values = entry.values;
   if (!values?.length) return false;
+  if (entry.outcome === "error" || values.some(failed)) return false;
   return values.every((value) => {
     const verb = (value.verb ?? "").toLowerCase();
     if (editVerbs.has(verb)) return true;
@@ -104,11 +105,15 @@ export function isEditEntry(entry: Entry): boolean {
 
 export function editEntryPaths(entry: Entry): string[] {
   const out: string[] = [];
+  const push = (path?: string) => {
+    if (path && !out.includes(path)) out.push(path);
+  };
   for (const value of entry.values ?? []) {
-    if (value.path && !out.includes(value.path)) out.push(value.path);
-    else if (value.label) {
+    push(value.path);
+    for (const change of value.changes ?? []) push(change.path);
+    if (!value.path && !value.changes?.length && value.label) {
       const match = value.label.match(/^`([^`]+)`/);
-      if (match?.[1] && !out.includes(match[1])) out.push(match[1]);
+      push(match?.[1]);
     }
   }
   return out;
@@ -120,12 +125,17 @@ export function isView(entry: Entry): boolean {
     entry.kind === "tool" &&
     !!entry.images?.length &&
     entry.values?.length === 1 &&
-    ["View", "Generated"].includes(entry.values[0].verb ?? "")
+    ["view", "generated"].includes((entry.values[0].verb ?? "").toLowerCase())
   );
 }
 
 // Delivered replies retain their complete authored body alongside summary/details.
 export function responseText(kind?: string, text = "", body = ""): string {
-  const response = kind === "reply" ? body : kind === "text" || kind === "final" ? text : "";
+  const response =
+    kind === "reply"
+      ? body
+      : kind === "text" || kind === "final" || kind === "assistant"
+        ? text
+        : "";
   return response.trim() ? response : "";
 }

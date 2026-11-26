@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { preferredScrollBehavior } from "./diff";
   import EntryView from "./EntryView.svelte";
   import { date } from "./format";
   import {
@@ -29,6 +30,7 @@
     empty = "No messages yet.",
     onselect,
     onchanges,
+    hasSavedChange,
     onhiddenhooks,
   }: {
     entries: Entry[];
@@ -40,10 +42,12 @@
     empty?: string;
     onselect?: (entry: Entry) => void;
     onchanges?: (paths: string[]) => void;
+    hasSavedChange?: (paths: string[]) => boolean;
     onhiddenhooks?: (count: number) => void;
   } = $props();
 
   let scroller = $state<HTMLElement>();
+  let contentEl = $state<HTMLElement>();
   let pinned = $state(true);
 
   const isHiddenHook = (entry: Entry): boolean => {
@@ -99,21 +103,28 @@
         hiddenHooks++;
         continue;
       }
+      let entry = row.entry;
+      let rawAt = row.rawAt;
       let thoughts = row.thoughts;
       if (thoughts && preferences.thoughts === "hidden") {
-        const liveThoughts = thoughts.filter((e) => e.values?.some((v) => v.live));
+        const liveThoughts: Entry[] = thoughts.flatMap((e) => {
+          const liveValues = e.values?.filter((v) => v.live);
+          return liveValues?.length ? [{ ...e, values: liveValues }] : [];
+        });
         if (!liveThoughts.length) continue;
         thoughts = liveThoughts;
+        entry = liveThoughts[0];
+        rawAt = entry.observed ? date(entry.observed).slice(11) : "";
       }
-      const user = isUser(row.entry);
+      const user = isUser(entry);
       out.push({
-        entry: row.entry,
-        at: user || row.rawAt !== previous ? row.rawAt : "",
+        entry,
+        at: user || rawAt !== previous ? rawAt : "",
         turn: row.turn,
         views: row.views,
         thoughts,
       });
-      previous = row.rawAt;
+      previous = rawAt;
     }
     return { rows: out, hiddenHooks };
   });
@@ -134,7 +145,7 @@
   }
 
   $effect(() => {
-    void entries.length;
+    void entries;
     void jumps;
     if (!pinned || !scroller) return;
     void tick().then(() => {
@@ -142,15 +153,28 @@
     });
   });
 
+  $effect(() => {
+    if (!scroller || !contentEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinned && scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  });
+
   function jumpToLatest() {
     pinned = true;
-    scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+    scroller?.scrollTo({ top: scroller.scrollHeight, behavior: preferredScrollBehavior() });
   }
 </script>
 
 {#snippet transcriptRow(row: (typeof rows)[number], groupWorkdir?: string)}
   {@const entry = row.entry}
-  {@const openChanges = !!onchanges && isEditEntry(entry)}
+  {@const editPaths = isEditEntry(entry) ? editEntryPaths(entry) : []}
+  {@const openChanges =
+    !!onchanges &&
+    isEditEntry(entry) &&
+    (!hasSavedChange || (editPaths.length > 0 && hasSavedChange(editPaths)))}
   {@const details = !!onselect && (!!entry.content?.itemId || hasDetails(entry, owner))}
   {@const hasRowAction = openChanges || details}
   {@const response =
@@ -171,7 +195,7 @@
       {groupWorkdir}
       {workspace}
       ondetails={openChanges
-        ? () => onchanges?.(editEntryPaths(entry))
+        ? () => onchanges?.(editPaths)
         : details
           ? () => onselect?.(entry)
           : undefined}
@@ -182,7 +206,7 @@
         class="{rowAction} {revealed} absolute top-1 -right-9 text-muted max-sm:-right-10"
         aria-label="View changes"
         title="View changes"
-        onclick={() => onchanges?.(editEntryPaths(entry))}
+        onclick={() => onchanges?.(editPaths)}
       >
         <Icon name="diff" size={14} />
       </button>
@@ -206,6 +230,7 @@
 <div class="relative min-h-0 flex-1">
   <div bind:this={scroller} {onscroll} class="@container h-full overflow-y-auto overscroll-contain">
     <div
+      bind:this={contentEl}
       class="mx-auto max-w-[calc(var(--container-column)+184px)] pt-3 pr-23 pb-10 pl-4 @max-[980px]:pr-11 max-sm:pt-2 max-sm:pb-6"
     >
       {#if segments.length}

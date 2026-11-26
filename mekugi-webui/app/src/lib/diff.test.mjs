@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { diffRows, diffWords, diffTokens } from "./diff.ts";
+import { diffRows, diffTokens, diffWords, matchReviewedFile } from "./diff.ts";
 import { diffSyntax } from "./highlight.ts";
 
 const changed = (rows) => {
@@ -91,4 +91,18 @@ test("unknown, oversized and CRLF-normalized syntax falls back without losing wo
   const syntax = await diffSyntax(crlf, "file.ts", "file.ts");
   for (const [i, line] of syntax)
     assert.equal(line.map((token) => token.text).join(""), crlf[i].text);
+});
+
+test("matchReviewedFile prefers exact workspace-relative matches over earlier suffix matches", () => {
+  const files = [
+    { key: "0", path: "/workspace/docs/README.md" },
+    { key: "1", path: "/workspace/README.md" },
+  ];
+  assert.equal(matchReviewedFile(files, "README.md", "/workspace")?.key, "1");
+  assert.equal(matchReviewedFile(files, "./README.md", "/workspace")?.key, "1");
+  assert.equal(matchReviewedFile(files, "docs/README.md", "/workspace")?.key, "0");
+  // Unambiguous suffix matches when workspace root is absent.
+  assert.equal(matchReviewedFile(files, "docs/README.md", "")?.key, "0");
+  // Ambiguous suffix returns undefined rather than picking arbitrarily.
+  assert.equal(matchReviewedFile(files, "README.md", ""), undefined);
 });

@@ -121,7 +121,7 @@
     observer.observe(node);
     return () => observer.disconnect();
   };
-  const unclamped = "group-focus-visible/card:max-h-none group-aria-[current=true]/card:max-h-none";
+  const unclamped = "group-focus-within/card:max-h-none group-data-[selected=true]/card:max-h-none";
 </script>
 
 <!-- A value with its unit in muted ink: 33.72M in, 7 turns. -->
@@ -191,8 +191,8 @@
         class={agent.depth ? "border-l border-rule pl-1.5" : undefined}
         style:margin-left={agent.depth ? `${agent.depth * 16 - 6}px` : undefined}
       >
-        <button
-          type="button"
+        <div
+          data-selected={agent.name === selected ? "true" : undefined}
           class={[
             "group/card relative grid w-full min-w-0 gap-1 rounded-card px-2.5 py-2 text-left transition-colors pointer-coarse:py-[11px]",
             agent.context != null && agent.window && "pb-3 pointer-coarse:pb-[13px]",
@@ -200,22 +200,27 @@
               ? "bg-accent-tint"
               : !agent.nonAttachable && "hover:bg-raised/80",
           ]}
-          disabled={agent.nonAttachable}
-          title={agent.nonAttachable ? "Interactive view unavailable" : undefined}
-          aria-current={agent.name === selected ? "true" : undefined}
-          onclick={() => onselect(agent.name)}
         >
           <span class="flex min-w-0 items-center gap-2">
-            <Dot tone={dots[agent.state]} size={8} {color} />
-            <span
-              class={["min-w-0 truncate font-semibold", color && "text-role"]}
-              style:--role={color}>{name(agent)}</span
+            <button
+              type="button"
+              class="flex min-w-0 flex-1 items-center gap-2 text-left after:absolute after:inset-0 after:rounded-card focus-visible:outline-none disabled:cursor-default"
+              disabled={agent.nonAttachable}
+              title={agent.nonAttachable ? "Interactive view unavailable" : undefined}
+              aria-current={agent.name === selected ? "true" : undefined}
+              onclick={() => onselect(agent.name)}
             >
-            {#if agent.role}<Tag {color}>{agent.role}</Tag>{/if}
-            {#if time !== undefined}<span
-                class="ml-auto pl-2 font-mono text-small whitespace-nowrap text-muted tabular-nums"
-                title="Time spent working">{duration(time)}</span
-              >{/if}
+              <Dot tone={dots[agent.state]} size={8} {color} />
+              <span
+                class={["min-w-0 truncate font-semibold", color && "text-role"]}
+                style:--role={color}>{name(agent)}</span
+              >
+              {#if agent.role}<Tag {color}>{agent.role}</Tag>{/if}
+              {#if time !== undefined}<span
+                  class="ml-auto pl-2 font-mono text-small whitespace-nowrap text-muted tabular-nums"
+                  title="Time spent working">{duration(time)}</span
+                >{/if}
+            </button>
           </span>
           <span class="{sub} truncate {stateInk[agent.state] ?? 'text-muted'}" title={waiting}>
             {#if agent.state === "waiting" && agent.wait && waiting}
@@ -308,6 +313,10 @@
                     usedLabel={tokens(agent.context)}
                     limitLabel={agent.window ? tokens(agent.window) : undefined}
                     rows={breakdown}
+                    label={`Context breakdown for ${name(agent)}`}
+                    class={preferences.telemetry === "compact" && !compact
+                      ? "relative z-10 col-span-2"
+                      : "relative z-10"}
                   >
                     <span class="whitespace-nowrap" title="Context used"
                       >{#if pct !== undefined}<span class="text-ink">{pct}%</span>
@@ -322,7 +331,7 @@
               </span>
               <!-- Screen readers already read every value. -->
               {#if compact && clipped[agent.name]}<span
-                  class="flex-none text-muted group-focus-visible/card:hidden group-aria-[current=true]/card:hidden"
+                  class="flex-none text-muted group-focus-within/card:hidden group-data-[selected=true]/card:hidden"
                   aria-hidden="true">+{clipped[agent.name]}</span
                 >{/if}
             </span>
@@ -344,7 +353,7 @@
               aria-hidden="true"
             />
           {/if}
-        </button>
+        </div>
       </li>
     {/each}
   </ul>

@@ -3,6 +3,7 @@
   import type { InitialInput } from "./attachments";
   import Composer from "./Composer.svelte";
   import DetailsPanel from "./DetailsPanel.svelte";
+  import { matchReviewedFile } from "./diff";
   import DiffPanel from "./DiffPanel.svelte";
   import DisplayPopover from "./DisplayPopover.svelte";
   import { basename, statusText } from "./format";
@@ -121,15 +122,32 @@
   const net = $derived(stream.review?.counts.Net);
   const hasChanges = $derived(!!stream.review?.files.length);
 
+  function resolveChangePath(paths: string[]): string | undefined {
+    const review = stream.review;
+    if (!review?.files.length) return undefined;
+    for (const path of paths) {
+      const match = matchReviewedFile(review.files, path, review.workspace);
+      if (match) return match.path;
+    }
+    return undefined;
+  }
+
+  function hasSavedChange(paths: string[]): boolean {
+    return resolveChangePath(paths) !== undefined;
+  }
+
   function openChanges(paths: string[] = []) {
-    focusChangePath = paths[0];
+    focusChangePath = resolveChangePath(paths) ?? paths[0];
     panel = "changes";
   }
 
   function openDetails(entry: Entry) {
     if (isEditEntry(entry) && hasChanges) {
-      openChanges(editEntryPaths(entry));
-      return;
+      const target = resolveChangePath(editEntryPaths(entry));
+      if (target) {
+        openChanges([target]);
+        return;
+      }
     }
     selectedEntry = entry;
     panel = "details";
@@ -296,6 +314,7 @@
           jumps={stream.jumps}
           onhiddenhooks={(count) => (hiddenHooks = count)}
           onchanges={hasChanges ? openChanges : undefined}
+          hasSavedChange={hasChanges ? hasSavedChange : undefined}
           onselect={openDetails}
         />
         <ThreadDocks />

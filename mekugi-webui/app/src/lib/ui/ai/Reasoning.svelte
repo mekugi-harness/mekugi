@@ -17,10 +17,7 @@
     defaultOpen?: boolean;
     children?: Snippet;
   } = $props();
-  let open = $state(false);
-  $effect(() => {
-    open = defaultOpen;
-  });
+  let open = $derived(defaultOpen);
 </script>
 
 {#snippet line()}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import * as HoverCard from "../hover-card";
+  import * as Popover from "../popover";
   import { Progress } from "../progress";
   import { Separator } from "../separator";
 
@@ -9,23 +9,40 @@
     usedLabel,
     limitLabel,
     rows = [],
+    label = "Context window breakdown",
+    class: className = "",
     children,
   }: {
     percent?: number;
     usedLabel: string;
     limitLabel?: string;
     rows?: { label: string; value: string }[];
+    label?: string;
+    class?: string;
     children: Snippet;
   } = $props();
 </script>
 
-<HoverCard.Root openDelay={150} closeDelay={100}>
-  <HoverCard.Trigger class="inline-flex min-w-0 items-center">
-    {@render children()}
-  </HoverCard.Trigger>
-  <HoverCard.Content
+<Popover.Root>
+  <Popover.Trigger>
+    {#snippet child({ props })}
+      <button
+        type="button"
+        {...props}
+        aria-label={label}
+        class={[
+          "inline-flex min-w-0 items-center rounded-sm text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+          className,
+        ]}
+      >
+        {@render children()}
+      </button>
+    {/snippet}
+  </Popover.Trigger>
+  <Popover.Content
     data-ai-element="context"
     align="end"
+    sideOffset={6}
     class="flex w-60 flex-col gap-2.5 rounded-float border-0 bg-surface p-3 text-small shadow-float ring-1 ring-border/70"
   >
     <div class="flex items-center justify-between gap-2">
@@ -61,5 +78,5 @@
         {/each}
       </div>
     {/if}
-  </HoverCard.Content>
-</HoverCard.Root>
+  </Popover.Content>
+</Popover.Root>

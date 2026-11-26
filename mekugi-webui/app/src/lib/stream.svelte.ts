@@ -9,6 +9,7 @@ import type {
   ContentReference,
   ContentResourceResponse,
   Entry,
+  HookRunSummary,
   Input,
   Preview,
   ReviewedFile,
@@ -60,12 +61,13 @@ function threadStatusToAgentState(status: ThreadStatus): AgentState {
   }
 }
 
-function itemToEntry(
+export function itemToEntry(
   item: ThreadItem,
   seq: number,
   turnIndex: number,
   turnId: string,
   agent = "/root",
+  live = false,
 ): Entry {
   const base: Entry = {
     seq,
@@ -108,11 +110,27 @@ function itemToEntry(
         text: item.text,
       };
     case "reasoning": {
-      const text = [...(item.summary ?? []), ...(item.content ?? [])].filter(Boolean).join("\n\n");
+      const sections = [...(item.summary ?? []), ...(item.content ?? [])]
+        .map((part) => part.trim())
+        .filter(Boolean);
+      const values: Value[] = sections.length
+        ? sections.map((body, index) => {
+            const heading = body.match(/^\*\*([^\n*]+)\*\*/)?.[1]?.trim();
+            return {
+              kind: "reasoning",
+              label: heading || undefined,
+              body,
+              live: live && index === sections.length - 1,
+            };
+          })
+        : live
+          ? [{ kind: "reasoning", body: "", live: true }]
+          : [];
       return {
         ...base,
-        kind: "thinking",
-        text,
+        kind: "reasoning",
+        running: live || undefined,
+        values,
       };
     }
     case "commandExecution": {
@@ -210,7 +228,7 @@ function itemToEntry(
         ...base,
         kind: "tool",
         images: [item.path],
-        values: [{ kind: "read", verb: "view", path: item.path }],
+        values: [{ kind: "read", verb: "View", path: item.path }],
       };
     case "subAgentActivity":
       return {
@@ -257,18 +275,101 @@ function itemToEntry(
   }
 }
 
-function buildFeed(turns: Turn[], attachment?: string): Feed {
+export interface HookRecord {
+  id: string;
+  turnId: string | null;
+  afterItemCount: number;
+  run: HookRunSummary;
+}
+
+export function hookRunToEntry(
+  run: HookRunSummary,
+  seq: number,
+  turnId?: string,
+  agent = "/root",
+): Entry {
+  const running = run.status === "running";
+  const failed = run.status === "failed" || run.status === "blocked" || run.status === "stopped";
+  const sourceName = run.sourcePath ? run.sourcePath.split("/").at(-1) : undefined;
+  const labelParts = [
+    run.eventName,
+    sourceName ? `\`${sourceName}\`` : undefined,
+    run.statusMessage || undefined,
+  ].filter(Boolean);
+  const tail = run.entries
+    .flatMap((entry) => entry.text.split("\n"))
+    .filter((line) => line.length > 0);
+  if (failed && !tail.length && run.statusMessage) tail.push(run.statusMessage);
+  const rawStarted = Number(run.startedAt);
+  const observed =
+    Number.isFinite(rawStarted) && rawStarted > 0
+      ? rawStarted < 1e12
+        ? rawStarted * 1000
+        : rawStarted
+      : undefined;
+  return {
+    seq,
+    position: seq,
+    itemId: `hook:${run.id}`,
+    turnId,
+    agent,
+    observed,
+    kind: "hook",
+    running: running || undefined,
+    outcome: failed ? "error" : undefined,
+    values: [
+      {
+        kind: "hook",
+        label: labelParts.join(" · "),
+        duration: run.durationMs != null ? Number(run.durationMs) : undefined,
+        running,
+        failed,
+        tail: tail.length ? tail : undefined,
+        hook: {
+          event: run.eventName,
+          name: sourceName,
+          message: run.statusMessage ?? undefined,
+          status: run.status,
+          hasError: failed,
+          blocked: run.status === "blocked",
+        },
+      },
+    ],
+  };
+}
+
+export function buildFeed(
+  turns: Turn[],
+  attachment?: string,
+  liveItemIds?: ReadonlySet<string>,
+  hooks: readonly HookRecord[] = [],
+): Feed {
   const entries: Record<number, Entry> = {};
   const order: number[] = [];
   let seq = 0;
+  const emittedHooks = new Set<string>();
+  const emitHook = (record: HookRecord) => {
+    if (emittedHooks.has(record.id)) return;
+    emittedHooks.add(record.id);
+    seq++;
+    entries[seq] = hookRunToEntry(record.run, seq, record.turnId ?? undefined);
+    order.push(seq);
+  };
   for (let t = 0; t < turns.length; t++) {
     const turn = turns[t];
-    for (const item of turn.items) {
+    const turnHooks = hooks.filter((h) => h.turnId === turn.id);
+    for (let i = 0; i < turn.items.length; i++) {
+      for (const hook of turnHooks) {
+        if (hook.afterItemCount <= i) emitHook(hook);
+      }
+      const item = turn.items[i];
       seq++;
-      entries[seq] = itemToEntry(item, seq, t + 1, turn.id);
+      entries[seq] = itemToEntry(item, seq, t + 1, turn.id, "/root", !!liveItemIds?.has(item.id));
       order.push(seq);
     }
+    for (const hook of turnHooks) emitHook(hook);
   }
+  for (const hook of hooks) emitHook(hook);
   return { attachment, order, entries, revision: seq };
 }
 
@@ -336,7 +437,6 @@ function threadToAgent(thread: Thread, depth: number): Agent {
 }
 
 export class Stream {
-  connection = $state<Connection>("connecting");
   session = $state.raw<Session | undefined>();
   input = $state.raw<Input | undefined>();
   status = $state.raw<Status>({});
@@ -370,12 +470,18 @@ export class Stream {
   jumps = $state(0);
 
   #id?: string;
-  #machine?: Machine;
+  #machine = $state<Machine | undefined>();
   #turns: Turn[] = [];
+  #liveItemIds = new Set<string>();
+  #hooks: HookRecord[] = [];
   #reviewRevision = 0;
   #stopNotifications?: () => void;
   #stopOpen?: () => void;
   #requests = new AbortController();
+
+  get connection(): Connection {
+    return this.#machine?.connection ?? "connecting";
+  }
 
   get machine(): Machine | undefined {
     return this.#machine;
@@ -392,8 +498,9 @@ export class Stream {
     this.#id = id;
     this.#machine = machine;
     this.#turns = [];
+    this.#liveItemIds.clear();
+    this.#hooks = [];
     this.#requests = new AbortController();
-    this.connection = machine.connection;
     this.session = this.input = this.gone = undefined;
     this.activeTurnId = undefined;
     this.status = {};
@@ -408,7 +515,6 @@ export class Stream {
     this.error = this.notice = undefined;
     this.#stopNotifications = machine.onNotification((n) => this.#onNotification(n));
     this.#stopOpen = machine.onOpen(() => {
-      this.connection = "open";
       this.error = undefined;
       void this.#hydrate(id, machine);
     });
@@ -457,7 +563,6 @@ export class Stream {
       }
       if (signal.aborted) return;
       this.gone = undefined;
-      this.connection = "open";
       this.error = undefined;
       this.#applyThread(thread, model, effort, serviceTier);
       const subtreeRoot = this.family?.threads.includes(id)
@@ -476,6 +581,8 @@ export class Stream {
 
   #applyThread(thread: Thread, model?: string, effort?: string, serviceTier?: string): void {
     this.#turns = (thread.turns ?? []).map((t) => ({ ...t, items: [...t.items] }));
+    this.#liveItemIds.clear();
+    this.#hooks = [];
     let activeTurn: Turn | undefined;
     for (let i = this.#turns.length - 1; i >= 0; i--) {
       if (this.#turns[i].status === "inProgress") {
@@ -497,7 +604,7 @@ export class Stream {
       effort: effort ?? thread.reasoningEffort ?? this.session?.effort,
       serviceTier: serviceTier ?? thread.serviceTier ?? this.session?.serviceTier,
     };
-    this.main = buildFeed(this.#turns, thread.id);
+    this.#rebuildMain();
     if (!this.roster.agents.length) {
       this.roster = { total: 1, agents: [threadToAgent(thread, 0)] };
       this.#observeRoles();
@@ -637,7 +744,7 @@ export class Stream {
         };
         this.input = { ...this.input, stoppable: true };
         this.#upsertTurn(turn);
-        this.main = buildFeed(this.#turns, id);
+        this.#rebuildMain();
         break;
       }
       case "turn/completed": {
@@ -657,15 +764,28 @@ export class Stream {
         };
         this.input = { ...this.input, stoppable: false };
         this.#upsertTurn(turn);
-        this.main = buildFeed(this.#turns, id);
+        this.#liveItemIds.clear();
+        this.#rebuildMain();
         void this.#loadChanges(id, machine, this.#requests.signal);
+        break;
+      }
+      case "hook/started":
+      case "hook/completed": {
+        if (notification.params.threadId !== id) return;
+        this.#upsertHook(notification.params.turnId ?? null, notification.params.run);
+        this.#rebuildMain();
         break;
       }
       case "item/started":
       case "item/completed": {
         if (notification.params.threadId !== id) return;
+        if (notification.method === "item/started") {
+          this.#liveItemIds.add(notification.params.item.id);
+        } else {
+          this.#liveItemIds.delete(notification.params.item.id);
+        }
         this.#upsertItem(notification.params.turnId, notification.params.item);
-        this.main = buildFeed(this.#turns, id);
+        this.#rebuildMain();
         if (
           notification.params.item.type === "collabAgentToolCall" &&
           (notification.params.item.tool === "spawnAgent" ||
@@ -683,7 +803,7 @@ export class Stream {
             return { ...item, text: item.text + notification.params.delta };
           return item;
         });
-        this.main = buildFeed(this.#turns, id);
+        this.#rebuildMain();
         break;
       }
       case "item/plan/delta": {
@@ -692,7 +812,7 @@ export class Stream {
           if (item.type === "plan") return { ...item, text: item.text + notification.params.delta };
           return item;
         });
-        this.main = buildFeed(this.#turns, id);
+        this.#rebuildMain();
         break;
       }
       case "item/commandExecution/outputDelta": {
@@ -705,7 +825,7 @@ export class Stream {
             };
           return item;
         });
-        this.main = buildFeed(this.#turns, id);
+        this.#rebuildMain();
         break;
       }
       case "item/reasoning/summaryTextDelta": {
@@ -718,7 +838,7 @@ export class Stream {
           summary[idx] += notification.params.delta;
           return { ...item, summary };
         });
-        this.main = buildFeed(this.#turns, id);
+        this.#rebuildMain();
         break;
       }
       case "item/reasoning/textDelta": {
@@ -731,7 +851,7 @@ export class Stream {
           content[idx] += notification.params.delta;
           return { ...item, content };
         });
-        this.main = buildFeed(this.#turns, id);
+        this.#rebuildMain();
         break;
       }
       case "turn/diff/updated": {
@@ -747,6 +867,26 @@ export class Stream {
       default:
         break;
     }
+  }
+
+  #rebuildMain(): void {
+    this.main = buildFeed(this.#turns, this.#id, this.#liveItemIds, this.#hooks);
+  }
+
+  #upsertHook(turnId: string | null, run: HookRunSummary): void {
+    const existing = this.#hooks.find((h) => h.id === run.id);
+    if (existing) {
+      existing.run = run;
+      if (turnId) existing.turnId = turnId;
+      return;
+    }
+    const turn = turnId ? this.#turns.find((t) => t.id === turnId) : undefined;
+    this.#hooks.push({
+      id: run.id,
+      turnId,
+      afterItemCount: turn ? turn.items.length : 0,
+      run,
+    });
   }
 
   #upsertTurn(turn: Turn): void {
@@ -797,6 +937,8 @@ export class Stream {
     const prevMachine = this.#machine;
     this.#id = undefined;
     this.#machine = undefined;
+    this.#liveItemIds.clear();
+    this.#hooks = [];
     this.#stopNotifications?.();
     this.#stopNotifications = undefined;
     this.#stopOpen?.();

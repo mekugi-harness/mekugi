@@ -135,10 +135,12 @@
       <div class="grid gap-3.5">
         <ToggleGroup.Root
           type="single"
-          value={preferences.preset === "custom" ? "" : preferences.preset}
-          onValueChange={(value) => {
-            if (value) preferences.applyPreset(value as ViewPreset);
-          }}
+          bind:value={
+            () => (preferences.preset === "custom" ? "" : preferences.preset),
+            (value) => {
+              if (value) preferences.applyPreset(value as ViewPreset);
+            }
+          }
           class={groupTrack}
           aria-label="View preset"
         >
@@ -154,10 +156,12 @@
             <span class="font-medium text-ink">Hooks</span>
             <ToggleGroup.Root
               type="single"
-              value={preferences.hooks}
-              onValueChange={(value) => {
-                if (value) preferences.setHooks(value as HookMode);
-              }}
+              bind:value={
+                () => preferences.hooks,
+                (value) => {
+                  if (value) preferences.setHooks(value as HookMode);
+                }
+              }
               class="{groupTrack} w-[238px] shrink-0 max-sm:w-full"
               aria-label="Hooks visibility"
             >
@@ -173,10 +177,12 @@
             <span class="font-medium text-ink">Thoughts</span>
             <ToggleGroup.Root
               type="single"
-              value={preferences.thoughts}
-              onValueChange={(value) => {
-                if (value) preferences.setThoughts(value as ThoughtMode);
-              }}
+              bind:value={
+                () => preferences.thoughts,
+                (value) => {
+                  if (value) preferences.setThoughts(value as ThoughtMode);
+                }
+              }
               class="{groupTrack} w-[238px] shrink-0 max-sm:w-full"
               aria-label="Thoughts"
             >
@@ -192,10 +198,12 @@
             <span class="font-medium text-ink">Timestamps</span>
             <ToggleGroup.Root
               type="single"
-              value={preferences.timestamps}
-              onValueChange={(value) => {
-                if (value) preferences.setTimestamps(value as TimestampMode);
-              }}
+              bind:value={
+                () => preferences.timestamps,
+                (value) => {
+                  if (value) preferences.setTimestamps(value as TimestampMode);
+                }
+              }
               class="{groupTrack} w-[238px] shrink-0 max-sm:w-full"
               aria-label="Inline timestamps"
             >
@@ -211,10 +219,12 @@
             <span class="font-medium text-ink">Telemetry</span>
             <ToggleGroup.Root
               type="single"
-              value={preferences.telemetry}
-              onValueChange={(value) => {
-                if (value) preferences.setTelemetry(value as TelemetryMode);
-              }}
+              bind:value={
+                () => preferences.telemetry,
+                (value) => {
+                  if (value) preferences.setTelemetry(value as TelemetryMode);
+                }
+              }
               class="{groupTrack} w-[238px] shrink-0 max-sm:w-full"
               aria-label="Agent telemetry"
             >

@@ -153,7 +153,10 @@
     return `${reasoning.length} thoughts${ms >= 1000 ? ` for ${duration(ms)}` : ""}`;
   });
   const prose = $derived(
-    entry.kind === "text" || entry.kind === "final" || entry.kind === "message",
+    entry.kind === "text" ||
+      entry.kind === "final" ||
+      entry.kind === "message" ||
+      entry.kind === "assistant",
   );
   const edges: Record<string, string> = {
     final: "border-l-positive/55",
@@ -394,7 +397,9 @@
             )}</pre>
         {/if}
       {:else if views}
-        {@const paths = views.map((view) => view.values?.[0]?.reads?.[0]?.path ?? "")}
+        {@const paths = views.map(
+          (view) => view.values?.[0]?.reads?.[0]?.path ?? view.values?.[0]?.path ?? "",
+        )}
         <div
           class="grid grid-cols-[max-content_minmax(0,1fr)_auto] gap-x-3 max-sm:grid-cols-[minmax(0,1fr)_auto]"
         >
@@ -419,7 +424,7 @@
                     entry={view}
                     {image}
                     {index}
-                    label="{view.values?.[0]?.verb === 'Generated'
+                    label="{(view.values?.[0]?.verb ?? '').toLowerCase() === 'generated'
                       ? 'Generated'
                       : 'Viewed'} image {paths[i]}"
                     small={views.length > 1}

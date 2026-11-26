@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import type { Attachment } from "svelte/attachments";
-  import { workspacePath } from "./diff";
+  import { matchReviewedFile, preferredScrollBehavior, workspacePath } from "./diff";
   import DiffView from "./DiffView.svelte";
   import Path from "./Path.svelte";
   import type { ReviewedFile, SavedReview } from "./protocol";
@@ -79,12 +79,7 @@
   $effect(() => {
     const target = focusPath;
     if (!target || !files.length || !scroller) return;
-    const match = files.find(
-      (file) =>
-        file.path === target ||
-        workspacePath(file.path, review?.workspace ?? "") === target ||
-        file.path.endsWith(`/${target}`),
-    );
+    const match = matchReviewedFile(files, target, review?.workspace ?? "");
     if (!match) return;
     untrack(() => {
       toggled[match.key] = true;
@@ -93,7 +88,7 @@
         const el = [...scroller!.querySelectorAll<HTMLElement>("[data-file]")].find(
           (node) => node.dataset.file === match.key,
         );
-        el?.scrollIntoView({ block: "start", behavior: "smooth" });
+        el?.scrollIntoView({ block: "start", behavior: preferredScrollBehavior() });
         onfocused?.();
       });
     });
