@@ -942,6 +942,7 @@ export class Stream {
   }
 
   #upsertHook(started: boolean, turnId: string | null, run: HookRunSummary): void {
+    let matched = false;
     if (!started) {
       for (let i = this.#hooks.length - 1; i >= 0; i--) {
         const candidate = this.#hooks[i];
@@ -952,18 +953,21 @@ export class Stream {
         ) {
           candidate.run = run;
           if (turnId) candidate.turnId = turnId;
-          return;
+          matched = true;
+          break;
         }
       }
     }
-    const turn = turnId ? this.#turns.find((t) => t.id === turnId) : undefined;
-    this.#hooks.push({
-      key: `${run.id}:${++this.#hookSeq}`,
-      id: run.id,
-      turnId,
-      afterItemCount: turn ? turn.items.length : 0,
-      run,
-    });
+    if (!matched) {
+      const turn = turnId ? this.#turns.find((t) => t.id === turnId) : undefined;
+      this.#hooks.push({
+        key: `${run.id}:${++this.#hookSeq}`,
+        id: run.id,
+        turnId,
+        afterItemCount: turn ? turn.items.length : 0,
+        run,
+      });
+    }
     this.#hooks = trimHooks(this.#hooks);
     if (this.#machine && this.#id) {
       this.#rememberHooks(`${this.#machine.id}:${this.#id}`, this.#hooks);
