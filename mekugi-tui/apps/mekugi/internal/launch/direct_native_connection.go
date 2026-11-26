@@ -7,21 +7,26 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/presentation"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
+	usagepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/presentation"
 )
 
 // nativeSessionConnection abstracts the frame stream and semantic operation
@@ -54,6 +59,39 @@ type directItemRecord struct {
 	seq      uint64
 	entry    activity.Entry
 	output   string
+}
+
+type directThreadUsage struct {
+	TotalTokens           uint64
+	InputTokens           uint64
+	OutputTokens          uint64
+	CachedInputTokens     uint64
+	CacheWriteInputTokens uint64
+	ReasoningOutputTokens uint64
+	ContextTokens         uint64
+	ContextWindow         uint64
+	EstimatedCostUSD      float64
+	CostKnown             bool
+	CostPartial           bool
+	OutputTokensPerSecond float64
+	HasThroughput         bool
+	WorkDurationMs        int64
+	Roundtrips            uint64
+}
+
+func (u directThreadUsage) outputThroughput() inference.OutputThroughput {
+	if !u.HasThroughput {
+		return inference.OutputThroughput{}
+	}
+	measured := u.Roundtrips
+	if measured == 0 {
+		measured = 1
+	}
+	return inference.OutputThroughput{
+		OutputTokens:     uint64(math.Round(u.OutputTokensPerSecond * 1000)),
+		DurationNanos:    uint64(1000 * time.Second),
+		MeasuredRequests: measured,
+	}
 }
 
 type directNativeOptions struct {
@@ -113,6 +151,8 @@ type directNativeConnection struct {
 	usage           sessionapi.NativeUsage
 	contextTokens   uint64
 	contextWindow   uint64
+	threadUsage     map[string]directThreadUsage
+	rateLimits      [2]*sessionpresentation.CaptionLimit
 	prediction      string
 	predictionTurn  string
 	feedbackText    string
@@ -191,6 +231,7 @@ func newDirectNativeConnection(ctx context.Context, opts directNativeOptions, at
 		items:         make(map[string][]*directItemRecord),
 		itemsByID:     make(map[string]*directItemRecord),
 		threadCallers: make(map[string]string),
+		threadUsage:   make(map[string]directThreadUsage),
 		requests:      make(map[string]*directPendingServerRequest),
 		focused:       true,
 	}
@@ -331,7 +372,7 @@ func (c *directNativeConnection) applyThreadBootstrapLocked(threadID, cwd, name,
 	if tier != "" {
 		c.tier = tier
 	}
-	c.threadCallers[threadID] = "main"
+	c.threadCallers[threadID] = "/root"
 	c.resumeView = nil
 }
 
@@ -342,6 +383,7 @@ func (c *directNativeConnection) refreshAuxiliary(ctx context.Context, threadID 
 	c.refreshSubtree(ctx, threadID)
 	c.refreshChanges(ctx, threadID)
 	c.refreshQueue(ctx, threadID)
+	c.refreshRateLimits(ctx)
 }
 
 func (c *directNativeConnection) Next() (sessionapi.NativeEvent, error) {
@@ -437,7 +479,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	}
 	mainCaller := c.threadCallers[c.mainThread]
 	if mainCaller == "" {
-		mainCaller = "main"
+		mainCaller = "/root"
 	}
 	displayedCaller := c.threadCallers[displayed]
 	if displayedCaller == "" {
@@ -450,6 +492,24 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	var sideThread sessionpresentation.Thread
 	if c.sideThread != "" {
 		sideThread = sessionpresentation.Thread{ID: c.sideThread, Caller: "side"}
+	}
+
+	displayedUsage, hasDisplayedUsage := c.threadUsage[displayed]
+	if !hasDisplayedUsage {
+		displayedUsage = c.threadUsage[c.mainThread]
+	}
+	captionCtxTokens := c.contextTokens
+	captionCtxWindow := c.contextWindow
+	if displayedUsage.ContextWindow > 0 || displayedUsage.ContextTokens > 0 {
+		captionCtxTokens = displayedUsage.ContextTokens
+		captionCtxWindow = displayedUsage.ContextWindow
+	}
+	var captionItems []presentation.Item
+	if label := usagepresentation.OutputThroughputLabel(displayedUsage.outputThroughput()); label != "" {
+		captionItems = append(captionItems, presentation.Item{
+			ID:   usagepresentation.Throughput.ID,
+			Text: label,
+		})
 	}
 
 	view := sessionpresentation.View{
@@ -477,9 +537,11 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Model:         c.model,
 			Effort:        c.effort,
 			Tier:          c.tier,
-			ContextTokens: c.contextTokens,
-			ContextWindow: c.contextWindow,
-			ContextKnown:  c.contextWindow > 0,
+			ContextTokens: captionCtxTokens,
+			ContextWindow: captionCtxWindow,
+			ContextKnown:  captionCtxWindow > 0,
+			Items:         captionItems,
+			Limits:        directCaptionLimits(c.rateLimits),
 		},
 		Pending: conversation.PendingView{
 			CanSteer: c.busy,
@@ -541,6 +603,13 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	if displayed != c.mainThread {
 		agentsPub = c.publicationForThreadLocked(displayed)
 	}
+	var family *sessionapi.Family
+	if c.family != nil {
+		cp := *c.family
+		cp.Agents = &activity.Publication{Roster: c.rosterLocked()}
+		cp.Status = sessionpresentation.Label{Text: c.statusTextLocked(), Running: c.busy}
+		family = &cp
+	}
 
 	frame := sessionapi.NativeFrame{
 		Questions:        questions,
@@ -548,7 +617,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		View:             view,
 		Main:             mainPub,
 		Agents:           agentsPub,
-		Family:           c.family,
+		Family:           family,
 		Review:           c.review,
 		Details:          c.details,
 		MainOutput:       slices.Clone(c.mainOutput),
@@ -606,11 +675,59 @@ func (c *directNativeConnection) publicationForThreadLocked(threadID string) *ac
 	pub := &activity.Publication{
 		Entries: entries,
 		LastSeq: lastSeq,
-	}
-	if c.family != nil && c.family.Agents != nil {
-		pub.Roster = slices.Clone(c.family.Agents.Roster)
+		Roster:  c.rosterLocked(),
 	}
 	return pub
+}
+
+func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
+	var rows []activity.AgentRow
+	if c.family != nil && c.family.Agents != nil && len(c.family.Agents.Roster) > 0 {
+		rows = slices.Clone(c.family.Agents.Roster)
+	} else if c.mainThread != "" {
+		caller := c.threadCallers[c.mainThread]
+		if caller == "" {
+			caller = "/root"
+		}
+		rows = []activity.AgentRow{{
+			Agent: activity.Agent{
+				AgentFacts: activity.AgentFacts{
+					Name:   caller,
+					Thread: c.mainThread,
+				},
+			},
+		}}
+	}
+	for i := range rows {
+		agent := &rows[i].Agent
+		if agent.Thread == c.mainThread {
+			agent.Responding = c.busy
+		}
+		if u, ok := c.threadUsage[agent.Thread]; ok {
+			agent.InputTokens = u.InputTokens
+			agent.OutputTokens = u.OutputTokens
+			agent.TokensKnown = u.TotalTokens > 0 || u.InputTokens > 0 || u.OutputTokens > 0
+			agent.ContextTokens = u.ContextTokens
+			agent.ContextWindow = u.ContextWindow
+			agent.ContextKnown = u.ContextWindow > 0
+			agent.Cost = u.EstimatedCostUSD
+			agent.CostKnown = u.CostKnown
+			agent.CostPartial = u.CostPartial
+			agent.Roundtrips = u.Roundtrips
+			if u.WorkDurationMs > 0 {
+				agent.WorkElapsed = time.Duration(u.WorkDurationMs) * time.Millisecond
+				agent.WorkKnown = true
+			}
+			agent.OutputThroughput = u.outputThroughput()
+			if label := usagepresentation.OutputThroughputLabel(agent.OutputThroughput); label != "" {
+				agent.StatusItems = []presentation.Item{{
+					ID:   usagepresentation.Throughput.ID,
+					Text: label,
+				}}
+			}
+		}
+	}
+	return rows
 }
 
 func parseDirectConfigOverrides(args []string) map[string]any {

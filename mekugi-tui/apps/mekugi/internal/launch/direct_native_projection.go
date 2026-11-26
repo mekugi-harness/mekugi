@@ -206,30 +206,78 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 					InputTokens           uint64 `json:"inputTokens"`
 					OutputTokens          uint64 `json:"outputTokens"`
 					CachedInputTokens     uint64 `json:"cachedInputTokens"`
+					CacheWriteInputTokens uint64 `json:"cacheWriteInputTokens"`
 					ReasoningOutputTokens uint64 `json:"reasoningOutputTokens"`
 				} `json:"total"`
 				Last struct {
 					TotalTokens uint64 `json:"totalTokens"`
 				} `json:"last"`
-				ModelContextWindow uint64 `json:"modelContextWindow"`
+				ModelContextWindow    uint64   `json:"modelContextWindow"`
+				EstimatedCostUSD      *float64 `json:"estimatedCostUsd"`
+				CostPartial           bool     `json:"costPartial"`
+				OutputTokensPerSecond *float64 `json:"outputTokensPerSecond"`
+				WorkDurationMs        *int64   `json:"workDurationMs"`
+				Roundtrips            *int64   `json:"roundtrips"`
 			} `json:"tokenUsage"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
-			if p.ThreadID == "" || p.ThreadID == c.mainThread {
-				c.usage = sessionapi.NativeUsage{
+			target := p.ThreadID
+			if target == "" {
+				target = c.mainThread
+			}
+			if target != "" {
+				if c.threadUsage == nil {
+					c.threadUsage = make(map[string]directThreadUsage)
+				}
+				u := directThreadUsage{
 					TotalTokens:           p.TokenUsage.Total.TotalTokens,
 					InputTokens:           p.TokenUsage.Total.InputTokens,
 					OutputTokens:          p.TokenUsage.Total.OutputTokens,
 					CachedInputTokens:     p.TokenUsage.Total.CachedInputTokens,
+					CacheWriteInputTokens: p.TokenUsage.Total.CacheWriteInputTokens,
 					ReasoningOutputTokens: p.TokenUsage.Total.ReasoningOutputTokens,
+					ContextTokens:         p.TokenUsage.Last.TotalTokens,
+					ContextWindow:         p.TokenUsage.ModelContextWindow,
+					CostPartial:           p.TokenUsage.CostPartial,
 				}
-				c.contextTokens = p.TokenUsage.Last.TotalTokens
-				c.contextWindow = p.TokenUsage.ModelContextWindow
+				if p.TokenUsage.EstimatedCostUSD != nil {
+					u.EstimatedCostUSD = *p.TokenUsage.EstimatedCostUSD
+					u.CostKnown = true
+				}
+				if p.TokenUsage.OutputTokensPerSecond != nil {
+					u.OutputTokensPerSecond = *p.TokenUsage.OutputTokensPerSecond
+					u.HasThroughput = true
+				}
+				if p.TokenUsage.WorkDurationMs != nil && *p.TokenUsage.WorkDurationMs > 0 {
+					u.WorkDurationMs = *p.TokenUsage.WorkDurationMs
+				}
+				if p.TokenUsage.Roundtrips != nil && *p.TokenUsage.Roundtrips > 0 {
+					u.Roundtrips = uint64(*p.TokenUsage.Roundtrips)
+				}
+				c.threadUsage[target] = u
+				if target == c.mainThread {
+					c.usage = sessionapi.NativeUsage{
+						TotalTokens:           u.TotalTokens,
+						InputTokens:           u.InputTokens,
+						OutputTokens:          u.OutputTokens,
+						CachedInputTokens:     u.CachedInputTokens,
+						ReasoningOutputTokens: u.ReasoningOutputTokens,
+					}
+					c.contextTokens = u.ContextTokens
+					c.contextWindow = u.ContextWindow
+				}
 				c.publishLocked()
 			}
 			c.mu.Unlock()
 		}
+
+	case "account/rateLimits/updated":
+		c.mu.Lock()
+		if directObserveRateLimits(&c.rateLimits, msg.Params) == nil {
+			c.publishLocked()
+		}
+		c.mu.Unlock()
 
 	case "thread/name/updated":
 		var p struct {
@@ -301,20 +349,18 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 	case "thread/queue/changed":
 		var p struct {
 			ThreadID string `json:"threadId"`
-			Items    []struct {
-				Text string `json:"text"`
-			} `json:"items"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
-			if p.ThreadID == "" || p.ThreadID == c.mainThread {
-				c.queue = make([]conversation.PendingText, 0, len(p.Items))
-				for _, item := range p.Items {
-					c.queue = append(c.queue, conversation.PendingText{Text: item.Text})
-				}
-				c.publishLocked()
+			target := p.ThreadID
+			if target == "" {
+				target = c.mainThread
 			}
+			isMain := target != "" && target == c.mainThread
 			c.mu.Unlock()
+			if isMain && c.wire != nil {
+				go c.refreshQueue(c.ctx, target)
+			}
 		}
 
 	case "thread/prediction/updated":
@@ -622,7 +668,7 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 	c.seq++
 	caller := c.threadCallers[threadID]
 	if caller == "" {
-		caller = "main"
+		caller = "/root"
 	}
 	rec := &directItemRecord{
 		id:       itemID,
@@ -1032,22 +1078,30 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 		name := th.AgentPath
 		if name == "" {
 			if th.ID == rootThread {
-				name = "main"
+				name = "/root"
 			} else {
-				name = fmt.Sprintf("agent-%d", i)
+				name = fmt.Sprintf("/root/agent-%d", i)
 			}
 		}
 		c.threadCallers[th.ID] = name
-		depth := strings.Count(name, "/")
+		depth := strings.Count(strings.TrimPrefix(name, "/"), "/")
 		if th.ID == rootThread {
 			depth = 0
 		}
+		var statusObj struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(th.Status, &statusObj)
+		responding := statusObj.Type == "active"
+		final := statusObj.Type == "idle" && th.ID != rootThread
 		roster = append(roster, activity.AgentRow{
 			Agent: activity.Agent{
 				AgentFacts: activity.AgentFacts{
-					Name:   name,
-					Role:   th.AgentRole,
-					Thread: th.ID,
+					Name:       name,
+					Role:       th.AgentRole,
+					Thread:     th.ID,
+					Responding: responding,
+					Final:      final,
 				},
 			},
 			Depth: depth,
@@ -1125,18 +1179,112 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 
 func (c *directNativeConnection) refreshQueue(ctx context.Context, threadID string) {
 	var resp struct {
-		Items []struct {
-			Text string `json:"text"`
-		} `json:"items"`
+		Data []struct {
+			ID    string         `json:"id"`
+			Input jsontext.Value `json:"input"`
+		} `json:"data"`
 	}
 	if err := c.wire.Call(ctx, "thread/queue/list", map[string]any{"threadId": threadID}, &resp); err != nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.queue = make([]conversation.PendingText, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		c.queue = append(c.queue, conversation.PendingText{Text: item.Text})
+	if threadID != c.mainThread {
+		return
+	}
+	c.queue = make([]conversation.PendingText, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		text := extractUserMessageText(item.Input)
+		if text == "" {
+			text = "(queued input)"
+		}
+		c.queue = append(c.queue, conversation.PendingText{Text: text})
+	}
+	c.publishLocked()
+}
+
+type directRateLimitWindow struct {
+	Used    float64 `json:"usedPercent"`
+	Minutes *int64  `json:"windowDurationMins"`
+	Resets  *int64  `json:"resetsAt"`
+}
+
+func (w directRateLimitWindow) label(position int) string {
+	if w.Minutes == nil {
+		return []string{"primary", "secondary"}[position]
+	}
+	switch minutes := *w.Minutes; {
+	case minutes == 10080:
+		return "weekly"
+	case minutes > 0 && minutes%60 == 0:
+		return fmt.Sprintf("%dh", minutes/60)
+	default:
+		return fmt.Sprintf("%dm", minutes)
+	}
+}
+
+type directRateLimitSnapshot struct {
+	ID        *string                `json:"limitId"`
+	Name      string                 `json:"limitName"`
+	Primary   *directRateLimitWindow `json:"primary"`
+	Secondary *directRateLimitWindow `json:"secondary"`
+}
+
+func directObserveRateLimitSnapshot(windows *[2]*sessionpresentation.CaptionLimit, snapshot directRateLimitSnapshot) {
+	if windows == nil {
+		return
+	}
+	for i, w := range []*directRateLimitWindow{snapshot.Primary, snapshot.Secondary} {
+		if w != nil {
+			windows[i] = &sessionpresentation.CaptionLimit{
+				Label: w.label(i),
+				Used:  max(0, min(100, w.Used)),
+			}
+		}
+	}
+}
+
+func directObserveRateLimits(windows *[2]*sessionpresentation.CaptionLimit, params []byte) error {
+	var update struct {
+		RateLimits directRateLimitSnapshot `json:"rateLimits"`
+	}
+	if err := json.Unmarshal(params, &update); err != nil {
+		return err
+	}
+	if id := update.RateLimits.ID; id != nil && *id != "" && *id != "codex" {
+		return nil
+	}
+	directObserveRateLimitSnapshot(windows, update.RateLimits)
+	return nil
+}
+
+func directCaptionLimits(windows [2]*sessionpresentation.CaptionLimit) []sessionpresentation.CaptionLimit {
+	var limits []sessionpresentation.CaptionLimit
+	for _, w := range windows {
+		if w != nil {
+			limits = append(limits, *w)
+		}
+	}
+	return limits
+}
+
+func (c *directNativeConnection) refreshRateLimits(ctx context.Context) {
+	if c.wire == nil {
+		return
+	}
+	var resp struct {
+		RateLimits directRateLimitSnapshot            `json:"rateLimits"`
+		ByID       map[string]directRateLimitSnapshot `json:"rateLimitsByLimitId"`
+	}
+	if err := c.wire.Call(ctx, "account/rateLimits/read", nil, &resp); err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if codex, ok := resp.ByID["codex"]; ok {
+		directObserveRateLimitSnapshot(&c.rateLimits, codex)
+	} else {
+		directObserveRateLimitSnapshot(&c.rateLimits, resp.RateLimits)
 	}
 	c.publishLocked()
 }

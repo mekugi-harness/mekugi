@@ -30,6 +30,7 @@ type mockNativeAppServer struct {
 	methods   []string
 	params    map[string][]jsontext.Value
 	responses map[string]jsontext.Value
+	queueData []map[string]any
 	ready     chan struct{}
 }
 
@@ -121,8 +122,8 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 	case "thread/subtree/list":
 		return map[string]any{
 			"data": []map[string]any{
-				{"id": "thr-main", "agentPath": "main", "agentRole": "root"},
-				{"id": "thr-worker", "agentPath": "main/worker", "agentRole": "explorer"},
+				{"id": "thr-main", "agentPath": "/root", "agentRole": "root", "status": map[string]any{"type": "idle"}},
+				{"id": "thr-worker", "agentPath": "/root/worker", "agentRole": "explorer", "status": map[string]any{"type": "active"}},
 			},
 		}
 	case "thread/changes/read":
@@ -139,7 +140,21 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 			},
 		}
 	case "thread/queue/list":
-		return map[string]any{"items": []any{}}
+		m.mu.Lock()
+		data := slices.Clone(m.queueData)
+		m.mu.Unlock()
+		if data == nil {
+			data = []map[string]any{}
+		}
+		return map[string]any{"data": data, "nextCursor": nil}
+	case "account/rateLimits/read":
+		return map[string]any{
+			"rateLimits": map[string]any{
+				"limitId":   "codex",
+				"primary":   map[string]any{"usedPercent": 12.0, "windowDurationMins": 300},
+				"secondary": map[string]any{"usedPercent": 21.0, "windowDurationMins": 10080},
+			},
+		}
 	case "thread/read":
 		return map[string]any{
 			"thread": map[string]any{
@@ -194,6 +209,13 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 					"serviceTiers": []map[string]any{
 						{"id": "priority", "name": "Fast", "description": "Priority tier"},
 					},
+				},
+				{
+					"id":           "gpt-5-standard",
+					"model":        "gpt-5-standard",
+					"displayName":  "GPT-5 Standard",
+					"description":  "Standard-only model",
+					"serviceTiers": []map[string]any{},
 				},
 				{
 					"id":          "hidden-model",
@@ -814,8 +836,8 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 		t.Fatalf("/model menu: %v", err)
 	}
 	ev = drain()
-	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "gpt-6.2-sol" {
-		t.Fatalf("expected /model settings menu, got %+v", ev.Frame.View.Menu)
+	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) != 2 || ev.Frame.View.Menu.Choices[0].Name != "gpt-6.2-sol" || ev.Frame.View.Menu.Choices[1].Name != "gpt-5-standard" {
+		t.Fatalf("expected /model settings menu with 2 visible models, got %+v", ev.Frame.View.Menu)
 	}
 	modelMenuID := ev.Frame.View.Menu.ID
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
@@ -908,5 +930,160 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	srv.mu.Unlock()
 	if len(modelListParams) == 0 || !strings.Contains(string(modelListParams[0]), "\"threadId\":\"thr-main\"") {
 		t.Fatalf("expected model/list to include threadId, got %v", modelListParams)
+	}
+
+	// Listed model with empty serviceTiers offers only Standard (no synthetic fast fallback).
+	conn.handleNotification(appserver.Message{
+		Method: "thread/settings/updated",
+		Params: jsontext.Value(`{"threadId":"thr-main","threadSettings":{"model":"gpt-5-standard","effort":"medium","serviceTier":null}}`),
+	})
+	_ = drain()
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/tier")}); err != nil {
+		t.Fatalf("/tier for listed model without serviceTiers: %v", err)
+	}
+	ev = drain()
+	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "default" {
+		t.Fatalf("expected only Standard choice for listed model with empty serviceTiers, got %+v", ev.Frame.View.Menu)
+	}
+
+	// Unlisted model falls back to Standard + Fast choices.
+	conn.handleNotification(appserver.Message{
+		Method: "thread/settings/updated",
+		Params: jsontext.Value(`{"threadId":"thr-main","threadSettings":{"model":"custom-unlisted-model","effort":"medium","serviceTier":null}}`),
+	})
+	_ = drain()
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/tier")}); err != nil {
+		t.Fatalf("/tier for unlisted model: %v", err)
+	}
+	ev = drain()
+	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 2 || ev.Frame.View.Menu.Choices[0].Name != "default" || ev.Frame.View.Menu.Choices[1].Name != "fast" {
+		t.Fatalf("expected Standard + fast fallback choices for unlisted model, got %+v", ev.Frame.View.Menu)
+	}
+}
+
+func TestDirectNativeUsageRateLimitsAndQueueRefresh(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "native.sock")
+	srv := startMockNativeAppServer(t, socket)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
+	if err != nil {
+		t.Fatalf("openDirectNativeConnection: %v", err)
+	}
+	defer conn.Close()
+	<-srv.ready
+
+	drain := func() sessionapi.NativeEvent {
+		var last sessionapi.NativeEvent
+		for {
+			select {
+			case ev := <-conn.events:
+				last = ev
+			default:
+				return last
+			}
+		}
+	}
+
+	// Initial bootstrap calls account/rateLimits/read and populates Caption.Limits.
+	ev := drain()
+	if len(ev.Frame.View.Caption.Limits) != 2 || ev.Frame.View.Caption.Limits[0].Label != "5h" || ev.Frame.View.Caption.Limits[0].Used != 12 || ev.Frame.View.Caption.Limits[1].Label != "weekly" || ev.Frame.View.Caption.Limits[1].Used != 21 {
+		t.Fatalf("expected 5h (12%%) and weekly (21%%) caption limits, got %+v", ev.Frame.View.Caption.Limits)
+	}
+
+	// Push tokenUsage updates for both main and child worker threads.
+	conn.handleNotification(appserver.Message{
+		Method: "thread/tokenUsage/updated",
+		Params: jsontext.Value(`{
+			"threadId":"thr-main",
+			"tokenUsage":{
+				"total":{"totalTokens":15000,"inputTokens":12000,"outputTokens":3000,"cachedInputTokens":2000,"cacheWriteInputTokens":500,"reasoningOutputTokens":400},
+				"last":{"totalTokens":100000},
+				"modelContextWindow":400000,
+				"estimatedCostUsd":0.12,
+				"costPartial":false,
+				"outputTokensPerSecond":96.0,
+				"workDurationMs":1500,
+				"roundtrips":2
+			}
+		}`),
+	})
+	conn.handleNotification(appserver.Message{
+		Method: "thread/tokenUsage/updated",
+		Params: jsontext.Value(`{
+			"threadId":"thr-worker",
+			"tokenUsage":{
+				"total":{"totalTokens":8000,"inputTokens":6000,"outputTokens":2000,"cachedInputTokens":0,"reasoningOutputTokens":0},
+				"last":{"totalTokens":20000},
+				"modelContextWindow":200000,
+				"estimatedCostUsd":0.36,
+				"costPartial":true,
+				"outputTokensPerSecond":64.5,
+				"workDurationMs":900,
+				"roundtrips":1
+			}
+		}`),
+	})
+	ev = drain()
+
+	// Main caption carries tok/s item and context window.
+	if ev.Frame.View.Caption.ContextTokens != 100000 || ev.Frame.View.Caption.ContextWindow != 400000 {
+		t.Fatalf("unexpected caption context: %+v", ev.Frame.View.Caption)
+	}
+	if len(ev.Frame.View.Caption.Items) != 1 || ev.Frame.View.Caption.Items[0].Text != "96.0 tok/s" {
+		t.Fatalf("expected 96.0 tok/s caption item, got %+v", ev.Frame.View.Caption.Items)
+	}
+
+	// Both main (/root) and child (/root/worker) rows in Main.Roster carry cost, tokens, and throughput.
+	if ev.Frame.Main == nil || len(ev.Frame.Main.Roster) != 2 {
+		t.Fatalf("expected 2 roster rows, got %+v", ev.Frame.Main)
+	}
+	rootAgent := ev.Frame.Main.Roster[0].Agent
+	workerAgent := ev.Frame.Main.Roster[1].Agent
+	if rootAgent.Name != "/root" || !rootAgent.CostKnown || rootAgent.Cost != 0.12 || rootAgent.InputTokens != 12000 || rootAgent.OutputTokens != 3000 {
+		t.Fatalf("unexpected root roster agent: %+v", rootAgent)
+	}
+	if workerAgent.Name != "/root/worker" || !workerAgent.CostKnown || !workerAgent.CostPartial || workerAgent.Cost != 0.36 || len(workerAgent.StatusItems) != 1 || workerAgent.StatusItems[0].Text != "64.5 tok/s" {
+		t.Fatalf("unexpected worker roster agent: %+v", workerAgent)
+	}
+
+	// Sparse account/rateLimits/updated merges updated primary window while preserving secondary.
+	conn.handleNotification(appserver.Message{
+		Method: "account/rateLimits/updated",
+		Params: jsontext.Value(`{"rateLimits":{"limitId":"codex","primary":{"usedPercent":45.0,"windowDurationMins":300}}}`),
+	})
+	ev = drain()
+	if len(ev.Frame.View.Caption.Limits) != 2 || ev.Frame.View.Caption.Limits[0].Used != 45 || ev.Frame.View.Caption.Limits[1].Used != 21 {
+		t.Fatalf("expected merged caption limits [45%%, 21%%], got %+v", ev.Frame.View.Caption.Limits)
+	}
+
+	// thread/queue/changed (which sends only threadId) triggers thread/queue/list and decodes data[].input.
+	srv.mu.Lock()
+	srv.queueData = []map[string]any{
+		{
+			"id": "q-1",
+			"input": []map[string]any{
+				{"type": "text", "text": "run tests next"},
+			},
+			"clientUserMessageId": "msg-q-1",
+		},
+	}
+	srv.mu.Unlock()
+	srv.send(t, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "thread/queue/changed",
+		"params":  map[string]any{"threadId": "thr-main"},
+	})
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case next := <-conn.events:
+			if len(next.Frame.View.Pending.Queued) == 1 && next.Frame.View.Pending.Queued[0].Text == "run tests next" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for thread/queue/changed to refresh queued submissions from thread/queue/list")
+		}
 	}
 }
