@@ -449,7 +449,39 @@ function threadToAgent(thread: Thread, depth: number): Agent {
 }
 
 const maxCachedHookThreads = 20;
-const maxHooksPerThread = 200;
+const maxRoutineHooksPerThread = 200;
+const maxFailedHooksPerThread = 200;
+
+function isHookFailed(run: HookRunSummary): boolean {
+  return run.status === "failed" || run.status === "blocked" || run.status === "stopped";
+}
+
+function trimHooks(hooks: HookRecord[]): HookRecord[] {
+  let routine = 0;
+  let failed = 0;
+  for (const h of hooks) {
+    if (isHookFailed(h.run)) failed++;
+    else if (h.run.status !== "running") routine++;
+  }
+  if (routine <= maxRoutineHooksPerThread && failed <= maxFailedHooksPerThread) return hooks;
+  let dropRoutine = Math.max(0, routine - maxRoutineHooksPerThread);
+  let dropFailed = Math.max(0, failed - maxFailedHooksPerThread);
+  return hooks.filter((h) => {
+    if (h.run.status === "running") return true;
+    if (isHookFailed(h.run)) {
+      if (dropFailed > 0) {
+        dropFailed--;
+        return false;
+      }
+      return true;
+    }
+    if (dropRoutine > 0) {
+      dropRoutine--;
+      return false;
+    }
+    return true;
+  });
+}
 
 export class Stream {
   session = $state.raw<Session | undefined>();
@@ -603,17 +635,8 @@ export class Stream {
   #applyThread(thread: Thread, model?: string, effort?: string, serviceTier?: string): void {
     this.#turns = (thread.turns ?? []).map((t) => ({ ...t, items: [...t.items] }));
     this.#liveItemIds.clear();
-    const activeTurnIds = new Set(
-      this.#turns.filter((t) => t.status === "inProgress").map((t) => t.id),
-    );
-    if (
-      this.#hooks.some(
-        (h) => h.run.status === "running" && (!h.turnId || !activeTurnIds.has(h.turnId)),
-      )
-    ) {
-      this.#hooks = this.#hooks.filter(
-        (h) => h.run.status !== "running" || (!!h.turnId && activeTurnIds.has(h.turnId)),
-      );
+    if (this.#hooks.some((h) => h.run.status === "running")) {
+      this.#hooks = this.#hooks.filter((h) => h.run.status !== "running");
       if (this.#machine && this.#id) {
         this.#rememberHooks(`${this.#machine.id}:${this.#id}`, this.#hooks);
       }
@@ -800,6 +823,12 @@ export class Stream {
         this.input = { ...this.input, stoppable: false };
         this.#upsertTurn(turn);
         this.#liveItemIds.clear();
+        if (this.#hooks.some((h) => h.run.status === "running" && h.turnId === turn.id)) {
+          this.#hooks = this.#hooks.filter(
+            (h) => !(h.run.status === "running" && h.turnId === turn.id),
+          );
+          this.#rememberHooks(`${machine.id}:${id}`, this.#hooks);
+        }
         this.#rebuildMain();
         void this.#loadChanges(id, machine, this.#requests.signal);
         break;
@@ -935,9 +964,7 @@ export class Stream {
       afterItemCount: turn ? turn.items.length : 0,
       run,
     });
-    if (this.#hooks.length > maxHooksPerThread) {
-      this.#hooks.splice(0, this.#hooks.length - maxHooksPerThread);
-    }
+    this.#hooks = trimHooks(this.#hooks);
     if (this.#machine && this.#id) {
       this.#rememberHooks(`${this.#machine.id}:${this.#id}`, this.#hooks);
     }
