@@ -2,6 +2,7 @@ package uisnapshot
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
@@ -30,7 +31,7 @@ func RenderReviewFile(beforePath, afterPath, before, after string) diffmodel.Rev
 			if p == "" {
 				return "/dev/null"
 			}
-			return fmt.Sprintf("%q", p)
+			return strconv.Quote(p)
 		}
 		fmt.Fprintf(&diff, "--- %s\n+++ %s\n", pathLabel(file.BeforePath), pathLabel(file.AfterPath))
 	}
