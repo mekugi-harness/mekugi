@@ -34,6 +34,7 @@ import { select, view } from "./view.svelte";
 
 type SavedMachine = { id: string; label: string; endpoint: string; token: string };
 const storagePrefix = "mekugi.machine.v1:";
+const normalizeEndpoint = (u: string) => u.trim().replace(/\/+$/, "");
 
 export function threadStatusToStatus(status: ThreadStatus): Status {
   switch (status.type) {
@@ -386,8 +387,7 @@ class Hub {
     }
     let added = 0;
     let skipped = 0;
-    const norm = (u: string) => u.trim().replace(/\/+$/, "");
-    const existing = new Set(this.machines.map((m) => norm(m.endpoint)));
+    const existing = new Set(this.machines.map((m) => normalizeEndpoint(m.endpoint)));
     for (const item of entries) {
       if (!item || typeof item !== "object") {
         skipped++;
@@ -405,7 +405,7 @@ class Hub {
               ? rec.target
               : "";
       const token = typeof rec.token === "string" ? rec.token : "";
-      const key = norm(endpoint);
+      const key = normalizeEndpoint(endpoint);
       if (!label.trim() || !key || !token.trim() || existing.has(key)) {
         skipped++;
         continue;
