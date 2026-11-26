@@ -278,6 +278,10 @@ def plan_affected(
                 rust_fallback = True
             else:
                 rust_packages.add(pkg)
+            if rel_path.startswith("codex-rs/app-server-protocol/schema/json/"):
+                go_packages.add("./mekugi-tui/apps/mekugi/internal/launch")
+            if rel_path.startswith("codex-rs/app-server-protocol/schema/typescript/"):
+                webui = True
 
     resolved_go = ("@workspace",) if go_workspace else tuple(sorted(go_packages))
     if resolved_go and resolved_go != ("@workspace",):

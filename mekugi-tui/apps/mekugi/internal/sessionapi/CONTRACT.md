@@ -4,9 +4,9 @@ Wire contract for [Session API requirements](SPEC.md#requirements). Endpoint pat
 version, field names, and queue bounds below are replaceable across coordinated consumer updates;
 the 32 MiB decoded-upload budget is a required message constraint.
 
-Generated TypeScript wire types (`protocol.ts`) are authoritative for exact payload schemas; run
-`just generate` to regenerate and `just check-generated` to verify.
-TypeScript types do not grant endpoint authority.
+Rust-generated app-server schemas in `codex-rs/app-server-protocol/schema/typescript/` (WebUI) and
+`codex-rs/app-server-protocol/schema/json/` (Go TUI contract tests) are the single source of truth
+for wire payload schemas. Schema types do not grant endpoint authority.
 
 ## Transport, version, and authority
 
