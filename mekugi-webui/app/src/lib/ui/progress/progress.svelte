@@ -15,21 +15,16 @@
   bind:ref
   data-slot="progress"
   class={cn(
-    "bg-raised relative flex h-1 w-full items-center overflow-hidden rounded-full",
+    "bg-ui-muted h-1 rounded-full relative flex w-full items-center overflow-x-hidden",
     className,
   )}
   {value}
   {max}
   {...restProps}
 >
-  {#snippet child({ props })}
-    <!-- Context indicators also appear inside agent navigation buttons. -->
-    <span {...props}>
-      <span
-        data-slot="progress-indicator"
-        class="bg-primary size-full flex-1 transition-transform motion-reduce:transition-none"
-        style="transform: translateX(-{100 - (100 * (value ?? 0)) / (max ?? 1)}%)"
-      ></span>
-    </span>
-  {/snippet}
+  <div
+    data-slot="progress-indicator"
+    class="bg-primary size-full flex-1 transition-all"
+    style="transform: translateX(-{100 - (100 * (value ?? 0)) / (max ?? 1)}%)"
+  ></div>
 </ProgressPrimitive.Root>

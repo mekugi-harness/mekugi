@@ -78,18 +78,64 @@ export function hasDetails(entry: Entry, owner = "/root", labelClipped = false):
   );
 }
 
+const editVerbs = new Set([
+  "edit",
+  "edited",
+  "create",
+  "created",
+  "delete",
+  "deleted",
+  "move",
+  "moved",
+]);
+
+// An entry whose values are file-edit operations (or apply_patch edits) opens
+// the Changes pane instead of raw Activity details when saved changes exist.
+export function isEditEntry(entry: Entry): boolean {
+  const values = entry.values;
+  if (!values?.length) return false;
+  if (entry.outcome === "error" || values.some(failed)) return false;
+  return values.every((value) => {
+    const verb = (value.verb ?? "").toLowerCase();
+    if (editVerbs.has(verb)) return true;
+    if (value.sources?.includes("apply_patch")) return true;
+    return false;
+  });
+}
+
+export function editEntryPaths(entry: Entry): string[] {
+  const out: string[] = [];
+  const push = (path?: string) => {
+    if (path && !out.includes(path)) out.push(path);
+  };
+  for (const value of entry.values ?? []) {
+    push(value.path);
+    for (const change of value.changes ?? []) push(change.path);
+    if (!value.path && !value.changes?.length && value.label) {
+      const match = value.label.match(/^`([^`]+)`/);
+      push(match?.[1]);
+    }
+  }
+  return out;
+}
+
 // An image artifact has a bound source, never inferred from a path label.
 export function isView(entry: Entry): boolean {
   return (
     entry.kind === "tool" &&
     !!entry.images?.length &&
     entry.values?.length === 1 &&
-    ["View", "Generated"].includes(entry.values[0].verb ?? "")
+    ["view", "generated"].includes((entry.values[0].verb ?? "").toLowerCase())
   );
 }
 
 // Delivered replies retain their complete authored body alongside summary/details.
 export function responseText(kind?: string, text = "", body = ""): string {
-  const response = kind === "reply" ? body : kind === "text" || kind === "final" ? text : "";
+  const response =
+    kind === "reply"
+      ? body
+      : kind === "text" || kind === "final" || kind === "assistant"
+        ? text
+        : "";
   return response.trim() ? response : "";
 }

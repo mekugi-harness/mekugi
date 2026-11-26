@@ -96,13 +96,13 @@
 <svelte:window {onkeydown} />
 
 <Tooltip.Provider delayDuration={300}>
-  <div class="relative flex h-dvh bg-ground">
+  <div class="relative flex h-dvh bg-surface">
     {#if sidebar}
       <div
         bind:this={drawer}
         class={wide
-          ? "min-h-0 w-sidebar flex-none bg-ground"
-          : "fixed inset-y-0 left-0 z-30 w-[min(var(--container-sidebar),86vw)] border-r border-border bg-ground shadow-float"}
+          ? "min-h-0 w-sidebar flex-none border-r border-rule/70 bg-ground"
+          : "fixed inset-y-0 left-0 z-30 w-[min(var(--container-sidebar),86vw)] border-r border-rule bg-ground shadow-float"}
       >
         <Sidebar
           onhide={() => (modal ? closeDrawer() : (sidebar = false))}
@@ -123,15 +123,8 @@
       {/if}
     {/if}
 
-    <!-- The main area is a crisp inset sheet beside the sidebar. On a phone
-         the frame disappears and the sheet becomes the screen. -->
-    <div
-      class={[
-        "relative my-2 mr-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-sheet bg-surface shadow-sheet max-sm:m-0 max-sm:rounded-none max-sm:shadow-none",
-        sidebar && wide ? "ml-0" : "ml-2",
-      ]}
-      inert={modal}
-    >
+    <!-- Seamless edge-to-edge main canvas beside the sidebar. -->
+    <div class="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-surface" inert={modal}>
       {#if hub.storageError && !settings}<Notice role="alert" class="m-3 flex-none"
           >{hub.storageError}</Notice
         >{/if}

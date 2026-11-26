@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { markedBlock, toolLabel } from "./markdown.ts";
-import { hasDetails, isView, reasoningBody, responseText } from "./kinds.ts";
+import {
+  editEntryPaths,
+  hasDetails,
+  isEditEntry,
+  isView,
+  reasoningBody,
+  responseText,
+} from "./kinds.ts";
 import { diffRows, workspacePath } from "./diff.ts";
 import { progressText } from "./format.ts";
 
@@ -110,4 +117,37 @@ test("only a bound viewed image is a View entry", () => {
   assert.ok(!isView({ ...view, images: [] }));
   assert.ok(!isView({ ...view, values: [{ verb: "Read", reads: [{ path: "a.png" }] }] }));
   assert.ok(!isView({ ...view, kind: "text" }));
+});
+
+test("edit and apply_patch entries route to Changes and extract target paths", () => {
+  const patchEntry = {
+    seq: 10,
+    kind: "tool",
+    values: [
+      { verb: "Edit", path: "src/assessment-explanation.ts", sources: ["apply_patch"] },
+      { verb: "Create", label: "`src/diagnostics.ts` · +4 −2", sources: ["apply_patch"] },
+    ],
+  };
+  assert.ok(isEditEntry(patchEntry));
+  assert.deepEqual(editEntryPaths(patchEntry), [
+    "src/assessment-explanation.ts",
+    "src/diagnostics.ts",
+  ]);
+  assert.ok(
+    !isEditEntry({
+      seq: 11,
+      kind: "tool",
+      values: [{ verb: "Run", label: "bun test" }],
+    }),
+  );
+  assert.ok(
+    !isEditEntry({
+      seq: 12,
+      kind: "tool",
+      values: [
+        { verb: "Run", label: "python3 fix.py" },
+        { verb: "Edit", path: "file.py" },
+      ],
+    }),
+  );
 });

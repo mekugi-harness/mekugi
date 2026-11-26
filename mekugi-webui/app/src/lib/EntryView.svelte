@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ImageIcon from "@lucide/svelte/icons/image";
   import Path from "./Path.svelte";
   import AgentName from "./AgentName.svelte";
   import UserImage from "./UserImage.svelte";
@@ -9,10 +10,12 @@
   import Markdown from "./Markdown.svelte";
   import { inline, referenceContext } from "./markdown";
   import { observeOverflow } from "./overflow";
+  import type { TimestampMode } from "./preferences.svelte";
   import type { Entry, Value } from "./protocol";
   import { stream } from "./stream.svelte";
   import Icon from "./ui/Icon.svelte";
   import Reasoning from "./ui/ai/Reasoning.svelte";
+  import * as Bubble from "./ui/bubble";
   import * as Message from "./ui/message";
   import * as Trace from "./ui/trace";
   import { caret } from "./ui/styles";
@@ -28,6 +31,8 @@
     entry,
     at,
     stamp,
+    timestampMode = "auto",
+    expandThoughts = false,
     turn,
     owner,
     views,
@@ -41,6 +46,8 @@
     entry: Entry;
     at: string;
     stamp: string;
+    timestampMode?: TimestampMode;
+    expandThoughts?: boolean;
     turn?: number;
     owner: string;
     views?: Entry[];
@@ -146,7 +153,10 @@
     return `${reasoning.length} thoughts${ms >= 1000 ? ` for ${duration(ms)}` : ""}`;
   });
   const prose = $derived(
-    entry.kind === "text" || entry.kind === "final" || entry.kind === "message",
+    entry.kind === "text" ||
+      entry.kind === "final" ||
+      entry.kind === "message" ||
+      entry.kind === "assistant",
   );
   const edges: Record<string, string> = {
     final: "border-l-positive/55",
@@ -180,6 +190,7 @@
       heading={value.live ? "Thinking" : thought(value.thought)}
       label={value.label}
       running={value.live}
+      defaultOpen={expandThoughts}
     >
       <Markdown text={content} quiet />
     </Reasoning>
@@ -188,6 +199,7 @@
       heading={value.live ? "Thinking" : thought(value.thought)}
       label={value.label}
       running={value.live}
+      defaultOpen={expandThoughts}
     />
   {/if}
 {/snippet}
@@ -236,7 +248,7 @@
     user
       ? "mt-5 flex justify-end pb-3"
       : [
-          "group/entry grid grid-cols-[60px_minmax(0,1fr)] gap-x-4 max-sm:grid-cols-1",
+          "group/entry relative grid grid-cols-[60px_minmax(0,1fr)] gap-x-4 max-sm:grid-cols-1",
           prose ? "py-2.5" : "py-1",
         ],
   ]}
@@ -244,34 +256,49 @@
 >
   {#if user}
     <Message.Root align="end">
-      <Message.Content
-        class="w-auto max-w-[min(680px,85%)] gap-0 rounded-[16px_16px_4px_16px] border border-border/80 bg-accent-tint px-4 pt-2.5 pb-3 max-sm:max-w-[90%]"
-      >
-        <Message.Header
-          class="mb-1 items-baseline gap-2.5 px-0 text-small font-semibold text-accent"
-        >
-          <span>You</span>{#if turn}<span class="font-normal text-muted tabular-nums"
-              >Turn {turn}</span
-            >{/if}
-          {#if at}<time
-              class="ml-auto pl-3 font-mono font-normal text-muted tabular-nums"
-              title={stamp}>{at}</time
-            >{/if}
-        </Message.Header>
-        {#if entry.images?.length}<div class="mb-3 flex flex-wrap gap-2">
-            {#each entry.images as image, index (`${image}:${index}`)}<UserImage
-                {entry}
-                {image}
-                {index}
-              />{/each}
-          </div>{/if}
-        <Markdown text={entry.text ?? ""} spans={entry.spans} />
+      <Message.Content class="w-auto max-w-[min(680px,85%)] max-sm:max-w-[90%]">
+        <Bubble.Root align="end" variant="tinted" class="max-w-full">
+          <Bubble.Content
+            class="rounded-[16px_16px_4px_16px] border-0 bg-accent-tint px-4 pt-2.5 pb-3 text-body text-ink"
+          >
+            <Message.Header
+              class="mb-1 items-baseline gap-2.5 px-0 text-small font-semibold text-accent-ink"
+            >
+              <span>You</span>{#if turn}<span class="font-normal text-muted tabular-nums"
+                  >Turn {turn}</span
+                >{/if}
+              {#if at && timestampMode !== "off"}<time
+                  class={[
+                    "ml-auto pl-3 font-mono font-normal text-muted tabular-nums",
+                    timestampMode === "hover" &&
+                      "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 touch:opacity-100",
+                  ]}
+                  title={stamp}>{at}</time
+                >{/if}
+            </Message.Header>
+            {#if entry.images?.length}<div class="mb-3 flex flex-wrap gap-2">
+                {#each entry.images as image, index (`${image}:${index}`)}<UserImage
+                    {entry}
+                    {image}
+                    {index}
+                  />{/each}
+              </div>{/if}
+            <Markdown text={entry.text ?? ""} spans={entry.spans} />
+          </Bubble.Content>
+        </Bubble.Root>
       </Message.Content>
     </Message.Root>
   {:else}
     <time
-      class="pt-px text-right font-mono text-small leading-[22px] text-muted tabular-nums max-sm:hidden"
-      title={stamp}>{at}</time
+      class={[
+        "pt-px text-right font-mono text-small leading-[22px] text-muted tabular-nums",
+        timestampMode === "auto" && at
+          ? "max-sm:text-left max-sm:text-tiny max-sm:leading-4"
+          : "max-sm:hidden",
+        timestampMode === "hover" &&
+          "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100 touch:opacity-100",
+      ]}
+      title={timestampMode === "off" ? undefined : stamp}>{timestampMode === "off" ? "" : at}</time
     >
     <div class="min-w-0">
       {#if traffic}
@@ -341,6 +368,7 @@
           heading={latestThought?.live ? "Thinking" : thinking}
           label={latestThought?.label}
           running={latestThought?.live}
+          defaultOpen={expandThoughts}
         >
           {#each reasoning as value, i (i)}{@render thoughtRow(value)}{/each}
         </Reasoning>
@@ -348,8 +376,11 @@
         {#each reasoning as value, i (i)}{@render thoughtRow(value)}{/each}
       {:else if entry.kind === "hook"}
         <div class="flex min-h-[26px] items-center gap-2 text-small text-muted">
-          <span class={["flex flex-none", hookFailed && "text-negative"]}
-            ><Icon name="hook" size={13} /></span
+          <span
+            class={[
+              "flex size-3.5 flex-none items-center justify-center",
+              hookFailed && "text-negative",
+            ]}><Icon name="hook" size={14} /></span
           >
           <span class="min-w-0 truncate" title={first?.label ?? entry.text} {@attach measureHook}
             >{@html inline(first?.label ?? entry.text ?? "")}</span
@@ -366,7 +397,9 @@
             )}</pre>
         {/if}
       {:else if views}
-        {@const paths = views.map((view) => view.values?.[0]?.reads?.[0]?.path ?? "")}
+        {@const paths = views.map(
+          (view) => view.values?.[0]?.reads?.[0]?.path ?? view.values?.[0]?.path ?? "",
+        )}
         <div
           class="grid grid-cols-[max-content_minmax(0,1fr)_auto] gap-x-3 max-sm:grid-cols-[minmax(0,1fr)_auto]"
         >
@@ -374,9 +407,12 @@
             <ValueRow value={entry.values![0]} {groupWorkdir} {workspace} />
           {:else}
             <div class="col-span-full grid grid-cols-subgrid items-baseline py-[5px]">
-              <span class="text-small font-medium text-kind-read max-sm:col-span-full"
-                >{first?.verb}</span
+              <Trace.Line
+                class="gap-2 text-small font-medium whitespace-nowrap max-sm:col-span-full"
               >
+                <Trace.Icon class="size-3.5 text-kind-read"><ImageIcon /></Trace.Icon>
+                <Trace.Title class="text-muted">{first?.verb}</Trace.Title>
+              </Trace.Line>
               <span class="text-muted">{views.length} images</span>
             </div>
           {/if}
@@ -388,7 +424,7 @@
                     entry={view}
                     {image}
                     {index}
-                    label="{view.values?.[0]?.verb === 'Generated'
+                    label="{(view.values?.[0]?.verb ?? '').toLowerCase() === 'generated'
                       ? 'Generated'
                       : 'Viewed'} image {paths[i]}"
                     small={views.length > 1}

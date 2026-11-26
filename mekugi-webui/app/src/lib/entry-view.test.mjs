@@ -40,7 +40,10 @@ registerHooks({
 globalThis.location ??= new URL("http://localhost/");
 globalThis.addEventListener ??= () => {};
 const { default: EntryView } = await import("./EntryView.svelte");
-const { stream } = await import("./stream.svelte.ts");
+const { default: Transcript } = await import("./Transcript.svelte");
+const { editEntryPaths, isEditEntry, isView, responseText } = await import("./kinds.ts");
+const { preferences } = await import("./preferences.svelte.ts");
+const { buildFeed, hookRunToEntry, itemToEntry, stream } = await import("./stream.svelte.ts");
 const { default: ValueRow } = await import("./ValueRow.svelte");
 
 const view = (values, kind = "tool") =>
@@ -430,4 +433,222 @@ test("reasoning composes Trace disclosure without a control for empty thoughts",
   const empty = view([{ label: "A thought", body: "**A thought**" }], "reasoning");
   assert.match(empty, /data-slot="trace-line"/);
   assert.doesNotMatch(empty, /data-slot="trace-collapsible-trigger"/);
+});
+
+test("native stream projections map reasoning, hooks, edits, imageView, and assistant replies", () => {
+  const liveReasoning = itemToEntry(
+    {
+      id: "r1",
+      type: "reasoning",
+      summary: ["**Plan**\nFirst step", "**Verify**\nSecond step"],
+      content: [],
+    },
+    1,
+    1,
+    "t1",
+    "/root",
+    true,
+  );
+  assert.equal(liveReasoning.kind, "reasoning");
+  assert.equal(liveReasoning.values?.length, 2);
+  assert.equal(liveReasoning.values?.[0]?.live, false);
+  assert.equal(liveReasoning.values?.[1]?.live, true);
+  assert.equal(liveReasoning.values?.[1]?.label, "Verify");
+
+  const failedEdit = itemToEntry(
+    {
+      id: "fc-fail",
+      type: "fileChange",
+      status: "failed",
+      changes: [{ path: "/workspace/b.go", kind: { type: "update" }, diff: "" }],
+    },
+    2,
+    1,
+    "t1",
+  );
+  assert.equal(isEditEntry(failedEdit), false);
+
+  const okEdit = itemToEntry(
+    {
+      id: "fc-ok",
+      type: "fileChange",
+      status: "completed",
+      changes: [
+        { path: "/workspace/a.ts", kind: { type: "update" }, diff: "" },
+        { path: "/workspace/z.ts", kind: { type: "update" }, diff: "" },
+      ],
+    },
+    3,
+    1,
+    "t1",
+  );
+  assert.equal(isEditEntry(okEdit), true);
+  assert.deepEqual(editEntryPaths(okEdit), ["/workspace/a.ts", "/workspace/z.ts"]);
+
+  const img = itemToEntry(
+    { id: "img1", type: "imageView", path: "/workspace/shot.png" },
+    4,
+    1,
+    "t1",
+  );
+  assert.equal(isView(img), true);
+
+  const reply = itemToEntry(
+    { id: "msg1", type: "agentMessage", text: "Hello **world**", phase: null },
+    5,
+    1,
+    "t1",
+  );
+  assert.equal(responseText(reply.kind, reply.text), "Hello **world**");
+
+  const failedHook = hookRunToEntry(
+    {
+      id: "h1",
+      eventName: "PreToolUse",
+      handlerType: "command",
+      executionMode: "sync",
+      scope: "project",
+      sourcePath: "/workspace/.mekugi/hooks/check.sh",
+      source: "project",
+      displayOrder: 0n,
+      status: "failed",
+      statusMessage: "lint failed",
+      startedAt: 1700000000000n,
+      completedAt: 1700000000500n,
+      durationMs: 500n,
+      entries: [{ kind: "stderr", text: "error on line 1" }],
+    },
+    6,
+    "t1",
+  );
+  assert.equal(failedHook.kind, "hook");
+  assert.equal(failedHook.outcome, "error");
+  assert.equal(failedHook.values?.[0]?.hook?.hasError, true);
+  assert.deepEqual(failedHook.values?.[0]?.tail, ["error on line 1"]);
+
+  const feed = buildFeed(
+    [
+      {
+        id: "t1",
+        rootTurnId: null,
+        items: [],
+        itemsView: "full",
+        status: "completed",
+        error: null,
+        startedAt: null,
+        completedAt: null,
+        durationMs: null,
+      },
+    ],
+    "thread-1",
+    new Set(),
+    [
+      {
+        key: "h1:1",
+        id: "h1",
+        turnId: "t1",
+        afterItemCount: 0,
+        run: {
+          id: "h1",
+          eventName: "PreToolUse",
+          handlerType: "command",
+          executionMode: "sync",
+          scope: "project",
+          sourcePath: "/workspace/.mekugi/hooks/check.sh",
+          source: "project",
+          displayOrder: 0n,
+          status: "failed",
+          statusMessage: "first failed",
+          startedAt: 1700000000000n,
+          completedAt: 1700000000100n,
+          durationMs: 100n,
+          entries: [],
+        },
+      },
+      {
+        key: "h1:2",
+        id: "h1",
+        turnId: "t1",
+        afterItemCount: 0,
+        run: {
+          id: "h1",
+          eventName: "PreToolUse",
+          handlerType: "command",
+          executionMode: "sync",
+          scope: "project",
+          sourcePath: "/workspace/.mekugi/hooks/check.sh",
+          source: "project",
+          displayOrder: 0n,
+          status: "completed",
+          statusMessage: null,
+          startedAt: 1700000001000n,
+          completedAt: 1700000001100n,
+          durationMs: 100n,
+          entries: [],
+        },
+      },
+    ],
+  );
+  assert.equal(feed.order.length, 2);
+  assert.equal(feed.entries[1]?.kind, "hook");
+  assert.equal(feed.entries[1]?.outcome, "error");
+  assert.equal(feed.entries[2]?.kind, "hook");
+  assert.equal(feed.entries[2]?.outcome, undefined);
+});
+
+test("Transcript respects Thoughts modes and filters hidden completed thought sections and timestamps", () => {
+  const prevThoughts = preferences.thoughts;
+  const prevHooks = preferences.hooks;
+  try {
+    const completedThought = itemToEntry(
+      { id: "r-done", type: "reasoning", summary: ["**Old**\nDone reasoning"], content: [] },
+      1,
+      1,
+      "t1",
+      "/root",
+      false,
+    );
+    completedThought.observed = Date.UTC(2026, 0, 1, 10, 0, 0);
+
+    const mixedThought = itemToEntry(
+      {
+        id: "r-live",
+        type: "reasoning",
+        summary: ["**Earlier**\nCompleted section", "**Now**\nLive section"],
+        content: [],
+      },
+      2,
+      1,
+      "t1",
+      "/root",
+      true,
+    );
+    mixedThought.observed = Date.UTC(2026, 0, 1, 10, 5, 0);
+
+    preferences.setThoughts("hidden");
+    const hiddenHtml = render(Transcript, {
+      props: { entries: [completedThought, mixedThought] },
+    }).body;
+    assert.doesNotMatch(hiddenHtml, /Done reasoning/);
+    assert.doesNotMatch(hiddenHtml, /Completed section/);
+    assert.match(hiddenHtml, /Live section/);
+    assert.match(hiddenHtml, /data-entry="2"/);
+
+    preferences.setThoughts("collapsed");
+    const collapsedHtml = render(Transcript, {
+      props: { entries: [completedThought] },
+    }).body;
+    assert.match(collapsedHtml, /Done reasoning/);
+    assert.match(collapsedHtml, /aria-expanded="false"/);
+
+    preferences.setThoughts("expanded");
+    const expandedHtml = render(Transcript, {
+      props: { entries: [completedThought] },
+    }).body;
+    assert.match(expandedHtml, /Done reasoning/);
+    assert.match(expandedHtml, /aria-expanded="true"/);
+  } finally {
+    preferences.setThoughts(prevThoughts);
+    preferences.setHooks(prevHooks);
+  }
 });
