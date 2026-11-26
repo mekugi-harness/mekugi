@@ -159,13 +159,13 @@
   aria-labelledby="new-heading"
 >
   <div class="mx-auto w-full max-w-column">
-    <div class="mb-6 flex flex-col items-center gap-2 text-center max-sm:mb-auto max-sm:pb-6">
+    <div class="mb-7 flex flex-col items-center gap-2.5 text-center max-sm:mb-auto max-sm:pb-6">
       <div class="mb-1 flex items-center justify-center">
         <Mark size={28} />
       </div>
       <h1
         id="new-heading"
-        class="text-heading font-semibold tracking-[-0.02em] focus:outline-none"
+        class="text-heading font-medium tracking-[-0.025em] text-ink focus:outline-none"
         tabindex="-1"
       >
         {mode === "resume" ? "Resume a saved thread" : "What should main work on?"}

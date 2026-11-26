@@ -8,8 +8,6 @@
   import Button from "./ui/Button.svelte";
   import Dot from "./ui/Dot.svelte";
   import Icon from "./ui/Icon.svelte";
-  import * as Kbd from "./ui/kbd";
-  import { Separator } from "./ui/separator";
   import { Skeleton } from "./ui/skeleton";
   import Tag from "./ui/Tag.svelte";
   import { appearance, themes, type Theme } from "./theme.svelte";
@@ -45,14 +43,16 @@
   // The theme button shows the current choice and moves to the next.
   const themeIcons = { system: "monitor", light: "sun", dark: "moon" } as const;
   const title = (theme: Theme) => theme[0].toUpperCase() + theme.slice(1);
-  // The sidebar's rows: quiet hover on the tinted rail, crisp elevated surface when active.
+  // Clean pill rows: quiet hover on the soft rail, tonal active fill without heavy shadows.
   const row =
-    "flex w-full items-center rounded-control text-left text-ink transition-colors hover:bg-active/60 aria-[current=page]:bg-surface aria-[current=page]:shadow-xs max-sm:min-h-11";
+    "flex w-full items-center rounded-full text-left text-ink/90 transition-colors hover:bg-active/60 hover:text-ink aria-[current=page]:bg-active aria-[current=page]:text-ink max-sm:min-h-11";
 </script>
 
-<nav class="flex h-full min-h-0 flex-col px-2.5 pt-safe pb-safe" aria-label="Threads">
-  <div class="flex h-12 items-center justify-between pl-1.5">
-    <span class="flex items-center gap-2 font-semibold tracking-[-0.01em]"><Mark />Mekugi</span>
+<nav class="flex h-full min-h-0 flex-col px-3 pt-safe pb-safe" aria-label="Threads">
+  <div class="flex h-13 items-center justify-between pl-2">
+    <span class="flex items-center gap-2.5 text-[15px] font-semibold tracking-[-0.015em] text-ink"
+      ><Mark />Mekugi</span
+    >
     <div class="flex items-center gap-0.5">
       {#if onswitcher}
         <Button
@@ -76,35 +76,32 @@
   </div>
   <button
     type="button"
-    class="flex min-h-9 w-full items-center gap-2.5 rounded-control bg-raised px-2.5 text-left font-medium text-ink transition-colors hover:bg-active aria-[current=page]:bg-surface aria-[current=page]:shadow-xs max-sm:min-h-11"
+    class="{row} min-h-10 gap-3 px-3 font-medium"
     aria-current={!view.session && !!view.machine ? "page" : undefined}
     onclick={() => start()}
   >
-    <span class="flex flex-none text-muted"><Icon name="compose" size={15} /></span>
+    <span class="flex flex-none text-ink/75"><Icon name="compose" size={16} /></span>
     <span class="flex-1 truncate">New thread</span>
-    {#if onswitcher}<Kbd.Root class="bg-surface/70 font-mono text-tiny text-muted max-sm:hidden"
-        >⌘K</Kbd.Root
-      >{/if}
   </button>
 
-  <div class="mt-3 min-h-0 flex-1 overflow-y-auto overscroll-contain">
+  <div class="mt-4 min-h-0 flex-1 overflow-y-auto overscroll-contain">
     {#each hub.machines as machine (machine.id)}
       {@const state = machine.state}
       {@const open = !collapsed[machine.id]}
-      <section class="group/machine not-first:mt-3.5" aria-labelledby="machine-{machine.id}">
+      <section class="group/machine not-first:mt-5" aria-labelledby="machine-{machine.id}">
         <div class="relative flex items-center">
           <button
             type="button"
             id="machine-{machine.id}"
-            class="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-control px-2 text-left text-small font-semibold text-muted transition-colors hover:bg-active/60 hover:text-ink max-sm:min-h-11"
+            class="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-full px-3 text-left text-small font-medium text-muted transition-colors hover:bg-active/50 hover:text-ink max-sm:min-h-11"
             aria-label="{machine.label}, {state.text}"
             aria-expanded={open}
             onclick={() => (collapsed[machine.id] = open)}
           >
             <span class={["inline-flex transition-transform duration-150", !open && "-rotate-90"]}
-              ><Icon name="chevron" size={14} /></span
+              ><Icon name="chevron" size={13} /></span
             >
-            <Dot tone={state.tone || "idle"} />
+            <Dot tone={state.tone || "idle"} size={6} />
             <span class="min-w-0 flex-1 truncate">{machine.label}</span>
             {#if machine.sessions?.length}
               <span
@@ -125,7 +122,7 @@
         {#if state.tone === "alert" || state.tone === "warn"}
           <p
             class={[
-              "mb-1 ml-6 text-small",
+              "mt-0.5 px-3 py-1 text-small",
               state.tone === "alert" ? "text-negative" : "text-warning-ink",
             ]}
           >
@@ -138,11 +135,11 @@
         {#if open}
           {#if !machine.sessions}
             {#if machine.connection === "connecting"}<Skeleton
-                class="mt-2 mr-2.5 ml-6 h-5 bg-active"
+                class="mx-3 mt-2 h-5 bg-active"
                 aria-label="Loading threads"
               />{/if}
           {:else if !machine.sessions.length}
-            <p class="mt-0.5 py-1.5 pr-2.5 pl-6 text-small text-muted">No open threads</p>
+            <p class="mt-0.5 px-3 py-1.5 text-small text-muted">No open threads</p>
           {:else}
             <ul class="mt-1 space-y-0.5">
               {#each machine.sessions as s (s.id)}
@@ -150,20 +147,21 @@
                 {@const current = view.machine === machine.id && view.session === s.id}
                 <li>
                   <a
-                    class="{row} min-h-[48px] gap-2 py-1.5 pr-2.5 pl-6 no-underline aria-[current=page]:font-medium"
+                    class="{row} min-h-9 gap-2.5 px-3 py-1.5 no-underline aria-[current=page]:font-medium"
                     href={selectionHash({ machine: machine.id, session: s.id })}
                     aria-current={current ? "page" : undefined}
                     title={[name(s), s.workspace, status].filter(Boolean).join("\n")}
                     onclick={onnavigate}
                   >
                     <span class="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span class="truncate leading-[19px]"
+                      <span class="truncate leading-5"
                         >{#if !s.title && s.workspace}<Path
                             path={name(s)}
                             title={s.workspace}
                           />{:else}{name(s)}{/if}</span
                       >
-                      {#if s.workspace}<span class="truncate text-small font-normal text-muted"
+                      {#if s.title && s.workspace}<span
+                          class="truncate text-tiny font-normal text-muted"
                           ><Path path={basename(s.workspace)} title={s.workspace} /></span
                         >{/if}
                     </span>
@@ -183,21 +181,20 @@
         {/if}
       </section>
     {:else}
-      <p class="mt-0.5 py-1.5 pr-2.5 pl-6 text-small text-muted">
+      <p class="mt-0.5 px-3 py-1.5 text-small text-muted">
         Connect a machine to see its threads here.
       </p>
     {/each}
   </div>
 
-  <Separator class="mt-2 bg-rule" />
-  <div class="py-2">
+  <div class="pt-2 pb-3">
     <div class="flex items-center gap-1">
       <button
         type="button"
-        class="{row} min-h-9 min-w-0 flex-1 gap-2.5 px-2.5 font-medium"
+        class="{row} min-h-10 min-w-0 flex-1 gap-3 px-3 font-medium"
         onclick={() => onmachines()}
       >
-        <span class="flex flex-none text-muted"><Icon name="server" size={15} /></span>Machines
+        <span class="flex flex-none text-ink/75"><Icon name="server" size={16} /></span>Machines
         {#if hub.machines.length}<span
             class="ml-auto rounded-full bg-active px-1.5 py-px text-tiny font-medium text-muted tabular-nums"
             aria-hidden="true">{hub.machines.length}</span

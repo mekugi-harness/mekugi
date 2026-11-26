@@ -192,7 +192,7 @@
 
 <div class="flex min-h-0 flex-1 flex-col">
   <header
-    class="flex h-12 flex-none items-center gap-2 border-b border-rule px-3 max-sm:gap-1 max-sm:px-1.5"
+    class="flex h-13 flex-none items-center gap-2 border-b border-rule/70 px-4 max-sm:gap-1 max-sm:px-2"
   >
     {#if !sidebar}
       <Button variant="quiet" icon="sidebar" label="Show sidebar" onclick={onsidebar} />
