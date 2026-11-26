@@ -156,7 +156,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           PROFILE: ${{ env.NATIVE_PACKAGE_PROFILE }}
           RUNNER_LABEL: ${{ matrix.runner }}
-          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'justfile', 'runtime/build.py') }}
+          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'runtime/build.py') }}
         run: |
           native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
           image="$RUNNER_LABEL-${ImageVersion:-$GITHUB_RUN_ID}"
