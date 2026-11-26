@@ -360,7 +360,7 @@ async fn handle_image(
             "This attached image is no longer available.",
         );
     };
-    read_image_source(&workspace, &source).await
+    read_image_source(&workspace, &source, false).await
 }
 
 fn extract_item_image_sources(payload: &ThreadItemPayload) -> Vec<String> {
@@ -513,7 +513,7 @@ async fn handle_attachment_image(
         PathBuf::from(response.thread.cwd.as_str())
     } else {
         let path = PathBuf::from(&request.workspace);
-        if !path.is_absolute() || !tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_dir()) {
+        if !path.is_absolute() {
             return error_response(
                 StatusCode::BAD_REQUEST,
                 "Choose an existing absolute workspace directory.",
@@ -521,11 +521,28 @@ async fn handle_attachment_image(
         }
         path
     };
-    read_image_source(&workspace, &request.path).await
+    read_image_source(&workspace, &request.path, true).await
 }
 
-async fn read_image_source(workspace: &Path, source: &str) -> Response {
+async fn open_image_file(path: &Path, no_follow: bool) -> std::io::Result<tokio::fs::File> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    if no_follow {
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let _ = no_follow;
+    options.open(path).await
+}
+
+async fn read_image_source(workspace: &Path, source: &str, confine_to_workspace: bool) -> Response {
     let data = if let Some(rest) = source.strip_prefix("data:") {
+        if confine_to_workspace {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Choose an attachment path on the execution machine.",
+            );
+        }
         let Some((header, encoded)) = rest.split_once(',') else {
             return error_response(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -555,8 +572,36 @@ async fn read_image_source(workspace: &Path, source: &str) -> Response {
                 "Remote image URLs are not loaded automatically.",
             );
         }
+        let unavailable = || {
+            error_response(
+                StatusCode::NOT_FOUND,
+                "The attached image file is unavailable.",
+            )
+        };
         let candidate = Path::new(source);
-        let resolved = if candidate.is_absolute() {
+        let resolved = if confine_to_workspace {
+            let Ok(canonical_workspace) = tokio::fs::canonicalize(workspace).await else {
+                return unavailable();
+            };
+            if !tokio::fs::metadata(&canonical_workspace)
+                .await
+                .is_ok_and(|m| m.is_dir())
+            {
+                return unavailable();
+            }
+            let joined = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                canonical_workspace.join(candidate)
+            };
+            let Ok(canonical_resolved) = tokio::fs::canonicalize(&joined).await else {
+                return unavailable();
+            };
+            if !canonical_resolved.starts_with(&canonical_workspace) {
+                return unavailable();
+            }
+            canonical_resolved
+        } else if candidate.is_absolute() {
             candidate.to_path_buf()
         } else {
             if !workspace.is_absolute() {
@@ -564,15 +609,13 @@ async fn read_image_source(workspace: &Path, source: &str) -> Response {
             }
             workspace.join(candidate)
         };
-        let mut file = match tokio::fs::File::open(&resolved).await {
+        let mut file = match open_image_file(&resolved, confine_to_workspace).await {
             Ok(file) => file,
-            Err(_) => {
-                return error_response(
-                    StatusCode::NOT_FOUND,
-                    "The attached image file is unavailable.",
-                );
-            }
+            Err(_) => return unavailable(),
         };
+        if confine_to_workspace && !file.metadata().await.is_ok_and(|m| m.is_file()) {
+            return unavailable();
+        }
         let mut bytes = Vec::new();
         let mut limited = (&mut file).take((UPLOAD_LIMIT + 1) as u64);
         if limited.read_to_end(&mut bytes).await.is_err() {
@@ -738,5 +781,63 @@ mod tests {
             ),
             Some(mcp_url)
         );
+    }
+
+    #[tokio::test]
+    async fn confined_attachment_image_reads_only_workspace_files_and_hides_outside_existence() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let workspace = root.path().join("workspace");
+        let outside = root.path().join("outside");
+        tokio::fs::create_dir_all(&workspace).await.expect("mkdir ws");
+        tokio::fs::create_dir_all(&outside).await.expect("mkdir out");
+
+        let png_bytes = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+        let inside_png = workspace.join("pic.png");
+        let inside_txt = workspace.join("notes.txt");
+        let outside_png = outside.join("secret.png");
+        let outside_txt = outside.join("secret.txt");
+        tokio::fs::write(&inside_png, png_bytes).await.expect("write inside png");
+        tokio::fs::write(&inside_txt, b"plain text").await.expect("write inside txt");
+        tokio::fs::write(&outside_png, png_bytes).await.expect("write outside png");
+        tokio::fs::write(&outside_txt, b"not an image").await.expect("write outside txt");
+
+        let ok_rel = read_image_source(&workspace, "pic.png", true).await;
+        assert_eq!(ok_rel.status(), StatusCode::OK);
+        assert_eq!(
+            ok_rel.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some("image/png")
+        );
+
+        let ok_abs = read_image_source(&workspace, &inside_png.to_string_lossy(), true).await;
+        assert_eq!(ok_abs.status(), StatusCode::OK);
+
+        let inside_non_image = read_image_source(&workspace, "notes.txt", true).await;
+        assert_eq!(inside_non_image.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let sub_dir = workspace.join("subdir");
+        tokio::fs::create_dir_all(&sub_dir).await.expect("mkdir subdir");
+        let dir_resp = read_image_source(&workspace, "subdir", true).await;
+        assert_eq!(dir_resp.status(), StatusCode::NOT_FOUND);
+
+        let trav_png = read_image_source(&workspace, "../outside/secret.png", true).await;
+        let trav_txt = read_image_source(&workspace, "../outside/secret.txt", true).await;
+        let abs_out_png = read_image_source(&workspace, &outside_png.to_string_lossy(), true).await;
+        let abs_out_txt = read_image_source(&workspace, &outside_txt.to_string_lossy(), true).await;
+        let missing_out = read_image_source(&workspace, "../outside/does-not-exist.png", true).await;
+        for resp in [&trav_png, &trav_txt, &abs_out_png, &abs_out_txt, &missing_out] {
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+
+        #[cfg(unix)]
+        {
+            let escape_link = workspace.join("escape.png");
+            std::os::unix::fs::symlink(&outside_png, &escape_link).expect("symlink");
+            let link_resp = read_image_source(&workspace, "escape.png", true).await;
+            assert_eq!(link_resp.status(), StatusCode::NOT_FOUND);
+        }
+
+        let missing_ws = root.path().join("no-such-workspace");
+        let missing_ws_resp = read_image_source(&missing_ws, "pic.png", true).await;
+        assert_eq!(missing_ws_resp.status(), StatusCode::NOT_FOUND);
     }
 }

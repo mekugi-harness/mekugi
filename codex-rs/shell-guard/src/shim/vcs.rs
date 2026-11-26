@@ -43,11 +43,22 @@ pub(crate) fn run_vcs(
         if args.iter().any(|arg| arg.to_str().is_none()) {
             return None;
         }
+        // Strip write-observer interposition vars from the read-only git config probe
+        // so DYLD_INSERT_LIBRARIES does not interfere with alias resolution on macOS.
         let mut cmd = Command::new(&real);
         cmd.args(globals)
             .args(["config", "--get", &format!("alias.{alias}")])
+            .stdin(std::process::Stdio::null())
             .env_clear()
-            .envs(environment.iter().map(|(k, v)| (k, v)));
+            .envs(
+                environment
+                    .iter()
+                    .filter(|(k, _)| {
+                        *k != std::ffi::OsStr::new("DYLD_INSERT_LIBRARIES")
+                            && *k != std::ffi::OsStr::new("MEKUGI_WRITE_OBSERVER_SOCK")
+                    })
+                    .map(|(k, v)| (k, v)),
+            );
         let output = cmd.output().ok()?;
         if !output.status.success() {
             return None;
