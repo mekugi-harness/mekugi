@@ -19,6 +19,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
 )
@@ -123,18 +124,23 @@ type directNativeConnection struct {
 	mainOutput  []activity.OutputResult
 	agentOutput []activity.OutputResult
 
-	family         *sessionapi.Family
-	threadCallers  map[string]string
-	review         *changes.ReviewView
-	reviewRev      uint64
-	queue          []conversation.PendingText
-	resumeView     *sessionpresentation.ResumeView
-	resumeCursor   string
-	requests       map[string]*directPendingServerRequest
-	requestOrder   []string
-	details        *sessionapi.NativeDetails
-	preferences    jsontext.Value
-	focused        bool
+	family        *sessionapi.Family
+	threadCallers map[string]string
+	review        *changes.ReviewView
+	reviewRev     uint64
+	queue         []conversation.PendingText
+	resumeView    *sessionpresentation.ResumeView
+	resumeCursor  string
+	requests      map[string]*directPendingServerRequest
+	requestOrder  []string
+	details       *sessionapi.NativeDetails
+	preferences   jsontext.Value
+	focused       bool
+	menu          *sessionpresentation.MenuView
+	menuSeq       uint64
+	dismissedComp completion.Target
+	effectSeq     uint64
+	effects       []sessionapi.NativeEffect
 }
 
 func openDirectNativeConnection(ctx context.Context, socket, workspace string, routerArgs, args []string, resume, profile string) (*directNativeConnection, error) {
@@ -168,20 +174,20 @@ func newDirectNativeConnection(ctx context.Context, opts directNativeOptions, at
 	connCtx, cancel := context.WithCancel(context.Background())
 	attachID := directAttachmentSeq.Add(1)
 	c := &directNativeConnection{
-		opts:           opts,
-		wire:           wire,
-		attachment:     fmt.Sprintf("direct-%d", attachID),
-		attachID:       attachID,
-		ctx:            connCtx,
-		cancel:         cancel,
-		events:         make(chan sessionapi.NativeEvent, 64),
-		errCh:          make(chan error, 1),
-		workspace:      opts.workspace,
-		items:          make(map[string][]*directItemRecord),
-		itemsByID:      make(map[string]*directItemRecord),
-		threadCallers:  make(map[string]string),
-		requests:       make(map[string]*directPendingServerRequest),
-		focused:        true,
+		opts:          opts,
+		wire:          wire,
+		attachment:    fmt.Sprintf("direct-%d", attachID),
+		attachID:      attachID,
+		ctx:           connCtx,
+		cancel:        cancel,
+		events:        make(chan sessionapi.NativeEvent, 64),
+		errCh:         make(chan error, 1),
+		workspace:     opts.workspace,
+		items:         make(map[string][]*directItemRecord),
+		itemsByID:     make(map[string]*directItemRecord),
+		threadCallers: make(map[string]string),
+		requests:      make(map[string]*directPendingServerRequest),
+		focused:       true,
 	}
 
 	if err := c.bootstrap(ctx, attachThread); err != nil {
@@ -450,6 +456,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Caller:         mainCaller,
 		},
 		Resume:    c.resumeView,
+		Menu:      cloneMenuView(c.menu),
 		Version:   sessionpresentation.Version{Attachment: c.attachID, Revision: c.revision},
 		Main:      sessionpresentation.Thread{ID: c.mainThread, Caller: mainCaller},
 		Displayed: sessionpresentation.Thread{ID: displayed, Caller: displayedCaller},
@@ -541,6 +548,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		Details:     c.details,
 		MainOutput:  slices.Clone(c.mainOutput),
 		AgentOutput: slices.Clone(c.agentOutput),
+		Effects:     slices.Clone(c.effects),
 		Facts: sessionapi.NativeSessionFacts{
 			Preferences:      c.preferences,
 			Usage:            c.usage,
