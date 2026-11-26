@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"crypto/subtle"
 	json "encoding/json/v2"
 	"errors"
 	"net/http"
@@ -162,15 +163,34 @@ func fleetProbeURL(endpoint string) (string, error) {
 }
 
 func (c *Connector) fleet(w http.ResponseWriter, r *http.Request) {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+	}
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.Header().Set("Access-Control-Allow-Headers", "Authorization, "+sessionapi.ProtocolHeader)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.NotFound(w, r)
 		return
 	}
-	gen, ok := c.authorizeBearer(r)
-	if !ok {
+	c.mu.Lock()
+	credentials := r.Header.Values("Authorization")
+	valid := len(credentials) == 1 && strings.HasPrefix(credentials[0], "Bearer ") && subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(credentials[0], "Bearer ")), []byte(c.token)) == 1
+	if !valid {
+		c.mu.Unlock()
 		http.Error(w, "A valid connector token is required.", http.StatusUnauthorized)
 		return
 	}
+	if c.closed || c.connections >= connectionLimit {
+		c.mu.Unlock()
+		http.Error(w, "The connector cannot accept another request now.", http.StatusServiceUnavailable)
+		return
+	}
+	gen := c.generation
+	c.mu.Unlock()
 	nodes, err := LoadFleetFromEnv()
 	if err != nil {
 		http.Error(w, "Invalid devbox fleet configuration.", http.StatusInternalServerError)

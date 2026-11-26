@@ -77,7 +77,9 @@
               class={[
                 "flex-none text-small",
                 state.tone === "alert" ? "text-negative" : "text-muted",
-              ]}>{state.text}{#if machine.latencyMs !== undefined && state.tone === "open"} · {machine.latencyMs}ms{/if}</span
+              ]}
+              >{state.text}{#if machine.latencyMs !== undefined && state.tone === "open"}
+                · {machine.latencyMs}ms{/if}</span
             >
           </div>
           {#if machine.error && state.tone !== "open"}<p class="{inset} text-small text-negative">
@@ -153,7 +155,7 @@
           data-first
           required
           bind:value={fleetJson}
-          placeholder='[{"name":"netcup","endpoint":"https://box.example","token":"..."}]'
+          placeholder={'[{"name":"netcup","endpoint":"https://box.example","token":"..."}]'}
         ></textarea>
       </Field>
       {#if error}<Alert>{error}</Alert>{/if}
@@ -170,7 +172,8 @@
         Spawns an isolated Docker Sandbox using <code>sandbox-kit/mekugi-dev.yaml</code> pre-wired
         with <code>mekugi-app-server</code> so you can attach it to this workbench fleet.
       </p>
-      <pre class="overflow-x-auto rounded-card bg-raised p-2.5 font-mono text-small">{sandboxCommand}</pre>
+      <pre
+        class="overflow-x-auto rounded-card bg-raised p-2.5 font-mono text-small">{sandboxCommand}</pre>
       <div class="flex justify-end gap-2">
         <Button variant="quiet" onclick={() => edit(undefined)}>Close</Button>
         <Button
@@ -178,8 +181,8 @@
           onclick={async () => {
             await navigator.clipboard?.writeText(sandboxCommand);
             copiedSandbox = true;
-          }}
-        >{copiedSandbox ? "Copied" : "Copy command"}</Button>
+          }}>{copiedSandbox ? "Copied" : "Copy command"}</Button
+        >
       </div>
     </div>
   {:else}
