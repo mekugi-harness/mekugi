@@ -2,7 +2,6 @@
 // peer-checked local Unix socket transport for the connector and TUI client.
 package sessionapi
 
-import "encoding/json/jsontext"
 
 // Action is one renderer-neutral request from a viewer.
 type Action string
