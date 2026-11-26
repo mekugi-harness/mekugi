@@ -186,7 +186,12 @@
         json: true,
         lines: lines(value.codeLines ?? json?.split("\n").length ?? codeLines),
       };
-    if (multiline || excerpt !== undefined || (value.codePreview && value.codePreview !== code)) {
+    if (
+      multiline ||
+      excerpt !== undefined ||
+      (value.codePreview && value.codePreview !== code) ||
+      (value.foldSource && !!code)
+    ) {
       const name = value.foldSource ? "Source" : "Script";
       return { name, short: name, lines: lines(codeLines) };
     }

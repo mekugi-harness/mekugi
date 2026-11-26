@@ -291,6 +291,13 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			c.mu.Unlock()
 		}
 
+	case "skills/changed":
+		c.mu.Lock()
+		c.skillsGen++
+		c.skillsLoaded = false
+		c.skills = nil
+		c.mu.Unlock()
+
 	case "thread/queue/changed":
 		var p struct {
 			ThreadID string `json:"threadId"`

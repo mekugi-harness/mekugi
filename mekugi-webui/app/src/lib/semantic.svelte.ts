@@ -462,6 +462,7 @@ export class ThreadControl {
       return { handled: true, error: "Open a thread on an execution machine first." };
     switch (cmd) {
       case "/compact":
+        if (rest) return { handled: false };
         try {
           await machine.request("thread/compact/start", { threadId: id }, { signal });
           return { handled: true };
@@ -489,6 +490,7 @@ export class ThreadControl {
         if (!rest) return { handled: true, error: "Specify a session title, e.g. /title My task" };
         return { handled: true, error: await this.rename(rest) };
       case "/archive":
+        if (rest) return { handled: false };
         try {
           await machine.request("thread/archive", { threadId: id }, { signal });
           return { handled: true };

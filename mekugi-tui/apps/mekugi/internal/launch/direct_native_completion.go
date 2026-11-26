@@ -138,6 +138,7 @@ func (c *directNativeConnection) loadSkills(ctx context.Context, cwd string) []c
 		c.mu.Unlock()
 		return cached
 	}
+	gen := c.skillsGen
 	c.mu.Unlock()
 	if c.wire == nil {
 		return nil
@@ -175,9 +176,11 @@ func (c *directNativeConnection) loadSkills(ctx context.Context, cwd string) []c
 		}
 	}
 	c.mu.Lock()
-	c.skillsCwd = cwd
-	c.skillsLoaded = true
-	c.skills = slices.Clone(choices)
+	if c.skillsGen == gen {
+		c.skillsCwd = cwd
+		c.skillsLoaded = true
+		c.skills = slices.Clone(choices)
+	}
 	c.mu.Unlock()
 	return choices
 }
@@ -295,10 +298,17 @@ func (c *directNativeConnection) listWireModels(ctx context.Context) ([]directWi
 	if c.wire == nil {
 		return nil, errors.New("not connected")
 	}
+	c.mu.Lock()
+	threadID := c.mainThread
+	c.mu.Unlock()
+	params := map[string]any{}
+	if threadID != "" {
+		params["threadId"] = threadID
+	}
 	var resp struct {
 		Data []directWireModel `json:"data"`
 	}
-	if err := c.wire.Call(ctx, "model/list", map[string]any{}, &resp); err != nil {
+	if err := c.wire.Call(ctx, "model/list", params, &resp); err != nil {
 		return nil, fmt.Errorf("list models: %w", err)
 	}
 	return resp.Data, nil
@@ -391,6 +401,7 @@ func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var choices []completion.Choice
+	hasDefault := false
 	if m, ok := findWireModel(models, c.model); ok {
 		for _, tier := range m.ServiceTiers {
 			if tier.ID == "" {
@@ -398,6 +409,9 @@ func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
 			}
 			lower := strings.ToLower(tier.ID)
 			isStandard := lower == "standard" || lower == "default"
+			if isStandard {
+				hasDefault = true
+			}
 			choices = append(choices, completion.Choice{
 				Name:        tier.ID,
 				Display:     firstNonEmpty(tier.DisplayName, tier.ID),
@@ -406,13 +420,18 @@ func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
 			})
 		}
 	}
-	if len(choices) == 0 {
+	if !hasDefault {
+		defaultChoice := completion.Choice{
+			Name:        "default",
+			Display:     "Standard",
+			Description: "Default service tier",
+			Current:     c.tier == "" || c.tier == "standard" || c.tier == "default",
+		}
+		choices = append([]completion.Choice{defaultChoice}, choices...)
+	}
+	if len(choices) == 1 {
 		choices = []completion.Choice{
-			{
-				Name:        "standard",
-				Description: "Default service tier",
-				Current:     c.tier == "" || c.tier == "standard" || c.tier == "default",
-			},
+			choices[0],
 			{
 				Name:        "fast",
 				Description: "Faster responses at priority pricing",

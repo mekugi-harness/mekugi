@@ -669,4 +669,21 @@ test("ValueRow omits workspace root workdir and renders relative subdirectory wo
     },
   }).body;
   assert.match(text(subHtml), /in apps\/web/);
+
+  // Single-line file diff with foldSource opens a Source disclosure so users can inspect it.
+  const oneLineCreate = render(ValueRow, {
+    props: {
+      value: {
+        kind: "op",
+        verb: "Create",
+        path: "hello.txt",
+        label: "+1 −0",
+        code: "hello\n",
+        lang: "diff",
+        foldSource: true,
+      },
+      workspace: "/repo",
+    },
+  }).body;
+  assert.match(oneLineCreate, /Source/);
 });

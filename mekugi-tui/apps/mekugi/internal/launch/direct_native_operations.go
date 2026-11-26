@@ -249,7 +249,7 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 		}
 		c.mu.Lock()
 		nextTier := "fast"
-		if c.tier == "fast" {
+		if c.tier == "fast" || c.tier == "priority" {
 			nextTier = ""
 		}
 		c.mu.Unlock()

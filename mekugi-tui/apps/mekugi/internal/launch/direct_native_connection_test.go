@@ -192,8 +192,7 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 						{"reasoningEffort": "high", "description": "Deep"},
 					},
 					"serviceTiers": []map[string]any{
-						{"id": "standard", "displayName": "Standard", "description": "Default tier"},
-						{"id": "fast", "displayName": "Fast", "description": "Priority tier"},
+						{"id": "priority", "displayName": "Fast", "description": "Priority tier"},
 					},
 				},
 				{
@@ -831,7 +830,7 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 		t.Fatalf("accept /model menu: %v", err)
 	}
 
-	// Bare /tier opens MenuSettings and accepting "standard" sends serviceTier: null.
+	// Bare /tier opens MenuSettings and includes Standard even when catalog only advertises priority.
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
 		Command: new("/tier"),
 	})
@@ -839,8 +838,8 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 		t.Fatalf("/tier menu: %v", err)
 	}
 	ev = drain()
-	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings {
-		t.Fatalf("expected /tier settings menu, got %+v", ev.Frame.View.Menu)
+	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) < 2 || ev.Frame.View.Menu.Choices[0].Name != "default" {
+		t.Fatalf("expected /tier settings menu with default choice first, got %+v", ev.Frame.View.Menu)
 	}
 	tierMenuID := ev.Frame.View.Menu.ID
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
@@ -848,7 +847,7 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 			Thread: "thr-main",
 			Menu:   tierMenuID,
 			Kind:   sessionpresentation.MenuAccept,
-			Choice: completion.ChoiceID{Name: "standard"},
+			Choice: completion.ChoiceID{Name: "default"},
 		},
 	})
 	if err != nil {
@@ -886,5 +885,22 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	conn.mu.Unlock()
 	if gotModel != "gpt-6.2-sol" || gotEffort != "high" || gotTier != "" {
 		t.Fatalf("unexpected settings after nested update: model=%q effort=%q tier=%q", gotModel, gotEffort, gotTier)
+	}
+
+	// skills/changed invalidates cached skills so the next $ completion refreshes from skills/list.
+	conn.handleNotification(appserver.Message{Method: "skills/changed"})
+	conn.mu.Lock()
+	loadedAfterInvalidation := conn.skillsLoaded
+	conn.mu.Unlock()
+	if loadedAfterInvalidation {
+		t.Fatalf("expected skills/changed to invalidate cached skills")
+	}
+
+	// model/list passes threadId so custom provider catalogs are queried.
+	srv.mu.Lock()
+	modelListParams := slices.Clone(srv.params["model/list"])
+	srv.mu.Unlock()
+	if len(modelListParams) == 0 || !strings.Contains(string(modelListParams[0]), "\"threadId\":\"thr-main\"") {
+		t.Fatalf("expected model/list to include threadId, got %v", modelListParams)
 	}
 }

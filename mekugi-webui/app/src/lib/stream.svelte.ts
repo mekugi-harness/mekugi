@@ -360,24 +360,26 @@ function countDiffLines(
   if (!diff) return { added: 0, removed: 0 };
   let added = 0;
   let removed = 0;
-  let hasDiffMarkers = false;
   const lines = diff.replace(/\n$/, "").split("\n");
+  const nonEmpty = lines.length > 0 && !(lines.length === 1 && lines[0] === "");
+  const hasUnifiedHeader = lines.some(
+    (line) => line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@"),
+  );
+  if ((kind === "add" || kind === "delete") && !hasUnifiedHeader) {
+    if (!nonEmpty) return { added: 0, removed: 0 };
+    return kind === "add"
+      ? { added: lines.length, removed: 0 }
+      : { added: 0, removed: lines.length };
+  }
   for (const line of lines) {
     if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) {
-      hasDiffMarkers = true;
       continue;
     }
     if (line.startsWith("+")) {
-      hasDiffMarkers = true;
       added++;
     } else if (line.startsWith("-")) {
-      hasDiffMarkers = true;
       removed++;
     }
-  }
-  if (!hasDiffMarkers && lines.length && !(lines.length === 1 && lines[0] === "")) {
-    if (kind === "add") added = lines.length;
-    else if (kind === "delete") removed = lines.length;
   }
   return { added, removed };
 }
@@ -899,6 +901,8 @@ export class Stream {
   #requests = new AbortController();
   #turnStartedAt?: number;
   #workMs = 0;
+  #observedOutputTokens = 0;
+  #lastTotalOutputTokens?: number;
 
   get connection(): Connection {
     return this.#machine?.connection ?? "connecting";
@@ -922,6 +926,8 @@ export class Stream {
     this.#liveItemIds.clear();
     this.#turnStartedAt = undefined;
     this.#workMs = 0;
+    this.#observedOutputTokens = 0;
+    this.#lastTotalOutputTokens = undefined;
     const cachedHooks = this.#hooksByThread.get(`${machine.id}:${id}`);
     // Only restore settled hooks across a subscription gap; running hooks may have
     // finished while the thread was unobserved.
@@ -1174,9 +1180,21 @@ export class Stream {
         const workMs =
           this.#workMs +
           (this.#turnStartedAt != null ? Math.max(0, Date.now() - this.#turnStartedAt) : 0);
+        const totalOut = usage.total.outputTokens;
+        if (this.#lastTotalOutputTokens !== undefined) {
+          if (
+            totalOut > this.#lastTotalOutputTokens &&
+            (this.#turnStartedAt != null || this.#workMs > 0)
+          ) {
+            this.#observedOutputTokens += totalOut - this.#lastTotalOutputTokens;
+          }
+        } else if (this.#turnStartedAt != null) {
+          this.#observedOutputTokens += usage.last?.outputTokens ?? totalOut;
+        }
+        this.#lastTotalOutputTokens = totalOut;
         const outputTps =
-          workMs > 0 && usage.total.outputTokens > 0
-            ? usage.total.outputTokens / (workMs / 1000)
+          workMs > 0 && this.#observedOutputTokens > 0
+            ? this.#observedOutputTokens / (workMs / 1000)
             : undefined;
         this.roster = {
           ...this.roster,
@@ -1258,8 +1276,8 @@ export class Stream {
           agents: this.roster.agents.map((a) => {
             if (a.thread !== id && a.name !== "/root") return a;
             const outputTps =
-              this.#workMs > 0 && a.outputTokens != null && a.outputTokens > 0
-                ? a.outputTokens / (this.#workMs / 1000)
+              this.#workMs > 0 && this.#observedOutputTokens > 0
+                ? this.#observedOutputTokens / (this.#workMs / 1000)
                 : a.tps;
             return {
               ...a,

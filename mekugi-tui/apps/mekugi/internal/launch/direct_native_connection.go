@@ -143,6 +143,7 @@ type directNativeConnection struct {
 	skillsCwd        string
 	skillsLoaded     bool
 	skills           []completion.Choice
+	skillsGen        uint64
 	effectSeq        uint64
 	effects          []sessionapi.NativeEffect
 }
