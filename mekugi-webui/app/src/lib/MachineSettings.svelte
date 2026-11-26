@@ -13,7 +13,10 @@
   // Every machine this page is connected to: add one, replace a refused
   // token, or remove one. Removing leaves the machine's threads running.
   let { focus, onclose }: { focus?: Machine; onclose: () => void } = $props();
-  type Editing = { kind: "add" } | { kind: "replace" | "remove"; id: string } | undefined;
+  type Editing =
+    | { kind: "add" | "fleet" | "sandbox" }
+    | { kind: "replace" | "remove"; id: string }
+    | undefined;
   // Opening for a machine starts on its token; an empty page starts on adding one.
   let editing = $state<Editing>(
     untrack(() =>
@@ -21,12 +24,31 @@
     ),
   );
   let token = $state("");
+  let fleetJson = $state("");
+  let fleetStatus = $state<string>();
   let error = $state<string>();
+  const sandboxCommand = "sbx run --config sandbox-kit/mekugi-dev.yaml";
+  let copiedSandbox = $state(false);
   function edit(next: Editing) {
     editing = next;
     token = "";
+    fleetJson = "";
+    fleetStatus = undefined;
     error = undefined;
+    copiedSandbox = false;
     tick().then(() => document.querySelector<HTMLElement>("[role=dialog] [data-first]")?.focus());
+  }
+  async function importFleet(event: SubmitEvent) {
+    event.preventDefault();
+    error = undefined;
+    fleetStatus = undefined;
+    const res = await hub.importFleetJson(fleetJson);
+    if (res.error) {
+      error = res.error;
+      return;
+    }
+    fleetStatus = `Imported ${res.added} devbox${res.added === 1 ? "" : "es"}${res.skipped ? ` (${res.skipped} skipped)` : ""}.`;
+    if (res.added > 0) edit(undefined);
   }
   function reconnect(event: SubmitEvent, machine: Machine) {
     event.preventDefault();
@@ -55,7 +77,7 @@
               class={[
                 "flex-none text-small",
                 state.tone === "alert" ? "text-negative" : "text-muted",
-              ]}>{state.text}</span
+              ]}>{state.text}{#if machine.latencyMs !== undefined && state.tone === "open"} · {machine.latencyMs}ms{/if}</span
             >
           </div>
           {#if machine.error && state.tone !== "open"}<p class="{inset} text-small text-negative">
@@ -122,7 +144,49 @@
         oncancel={hub.machines.length ? () => edit(undefined) : undefined}
       />
     </section>
+  {:else if editing?.kind === "fleet"}
+    <form class="grid gap-2.5 pt-1" onsubmit={importFleet}>
+      <h3 class="font-semibold">Import DEVBOXES_JSON fleet</h3>
+      <Field label="DEVBOXES_JSON">
+        <textarea
+          class="{input} min-h-24 font-mono text-small"
+          data-first
+          required
+          bind:value={fleetJson}
+          placeholder='[{"name":"netcup","endpoint":"https://box.example","token":"..."}]'
+        ></textarea>
+      </Field>
+      {#if error}<Alert>{error}</Alert>{/if}
+      {#if fleetStatus}<Notice>{fleetStatus}</Notice>{/if}
+      <div class="flex justify-end gap-2">
+        <Button variant="quiet" onclick={() => edit(undefined)}>Cancel</Button>
+        <Button type="submit" variant="primary">Import fleet</Button>
+      </div>
+    </form>
+  {:else if editing?.kind === "sandbox"}
+    <div class="grid gap-2.5 pt-1">
+      <h3 class="font-semibold">Launch ephemeral mekugi-dev sandbox</h3>
+      <p class="text-small text-muted">
+        Spawns an isolated Docker Sandbox using <code>sandbox-kit/mekugi-dev.yaml</code> pre-wired
+        with <code>mekugi-app-server</code> so you can attach it to this workbench fleet.
+      </p>
+      <pre class="overflow-x-auto rounded-card bg-raised p-2.5 font-mono text-small">{sandboxCommand}</pre>
+      <div class="flex justify-end gap-2">
+        <Button variant="quiet" onclick={() => edit(undefined)}>Close</Button>
+        <Button
+          variant="primary"
+          onclick={async () => {
+            await navigator.clipboard?.writeText(sandboxCommand);
+            copiedSandbox = true;
+          }}
+        >{copiedSandbox ? "Copied" : "Copy command"}</Button>
+      </div>
+    </div>
   {:else}
-    <Button onclick={() => edit({ kind: "add" })}>Add machine</Button>
+    <div class="flex flex-wrap gap-2">
+      <Button onclick={() => edit({ kind: "add" })}>Add machine</Button>
+      <Button variant="quiet" onclick={() => edit({ kind: "fleet" })}>Import DEVBOXES_JSON</Button>
+      <Button variant="quiet" onclick={() => edit({ kind: "sandbox" })}>Launch sandbox</Button>
+    </div>
   {/if}
 </Dialog>

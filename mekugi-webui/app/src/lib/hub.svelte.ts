@@ -104,6 +104,7 @@ export class Machine {
   sessions = $state.raw<Listed[] | undefined>();
   connection = $state<Connection>("connecting");
   error = $state<string | undefined>();
+  latencyMs = $state<number | undefined>();
   info = $state.raw<InitializeResponse | undefined>();
   models = $state.raw<Model[]>([]);
   #connector: Connector;
@@ -156,6 +157,7 @@ export class Machine {
 
   async refreshThreads(): Promise<void> {
     try {
+      const startedAt = performance.now();
       const all: Listed[] = [];
       let cursor: string | undefined;
       for (let page = 0; page < 10; page++) {
@@ -170,6 +172,7 @@ export class Machine {
         cursor = next;
       }
       this.sessions = all;
+      this.latencyMs = Math.max(1, Math.round(performance.now() - startedAt));
     } catch {
       // Transient refresh failures are surfaced through the connection state.
     }
@@ -354,6 +357,62 @@ class Hub {
     } catch (error) {
       return error instanceof Error ? error.message : "Could not add this machine.";
     }
+  }
+
+  async importFleetJson(raw: string): Promise<{ added: number; skipped: number; error?: string }> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { added: 0, skipped: 0, error: "Invalid DEVBOXES_JSON syntax." };
+    }
+    const entries: unknown[] = Array.isArray(parsed)
+      ? parsed
+      : parsed &&
+          typeof parsed === "object" &&
+          "boxes" in parsed &&
+          Array.isArray((parsed as { boxes: unknown[] }).boxes)
+        ? (parsed as { boxes: unknown[] }).boxes
+        : parsed &&
+            typeof parsed === "object" &&
+            "nodes" in parsed &&
+            Array.isArray((parsed as { nodes: unknown[] }).nodes)
+          ? (parsed as { nodes: unknown[] }).nodes
+          : [];
+    if (!entries.length) {
+      return { added: 0, skipped: 0, error: "No devbox entries found in DEVBOXES_JSON." };
+    }
+    let added = 0;
+    let skipped = 0;
+    const existing = new Set(this.machines.map((m) => m.endpoint));
+    for (const item of entries) {
+      if (!item || typeof item !== "object") {
+        skipped++;
+        continue;
+      }
+      const rec = item as Record<string, unknown>;
+      const label =
+        typeof rec.name === "string" ? rec.name : typeof rec.label === "string" ? rec.label : "";
+      const endpoint =
+        typeof rec.endpoint === "string"
+          ? rec.endpoint
+          : typeof rec.url === "string"
+            ? rec.url
+            : "";
+      const token = typeof rec.token === "string" ? rec.token : "";
+      if (!label.trim() || !endpoint.trim() || !token.trim() || existing.has(endpoint.trim())) {
+        skipped++;
+        continue;
+      }
+      const err = await this.add(label, endpoint, token);
+      if (err) {
+        skipped++;
+      } else {
+        existing.add(endpoint.trim());
+        added++;
+      }
+    }
+    return { added, skipped };
   }
 
   remove(id: string): void {

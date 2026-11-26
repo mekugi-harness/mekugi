@@ -32,7 +32,7 @@
 
   type Entry = {
     id: string;
-    group: "Threads" | "Actions";
+    group: "Machines" | "Threads" | "Actions";
     title: string;
     subtitle?: string;
     machine?: string;
@@ -59,6 +59,24 @@
 
   const items = $derived.by((): Entry[] => {
     const q = query.trim().toLowerCase();
+    const machines: Entry[] = [];
+    for (const machine of hub.machines) {
+      const state = machine.state;
+      const latency = machine.latencyMs !== undefined ? `${machine.latencyMs}ms` : undefined;
+      const subtitle = [state.text, latency, machine.endpoint].filter(Boolean).join(" · ");
+      const haystack = [machine.label, machine.endpoint, state.text].join(" ").toLowerCase();
+      if (q && !haystack.includes(q)) continue;
+      machines.push({
+        id: `machine:${machine.id}`,
+        group: "Machines",
+        title: machine.label,
+        subtitle,
+        icon: "server",
+        tone: state.tone === "alert" ? "alert" : state.tone === "open" ? "running" : "none",
+        current: view.machine === machine.id && !view.session,
+        run: () => startMachine(machine),
+      });
+    }
     const threads: Entry[] = [];
     for (const machine of hub.machines) {
       for (const s of machine.sessions ?? []) {
@@ -134,7 +152,7 @@
       (item) => !q || `${item.title} ${item.subtitle ?? ""}`.toLowerCase().includes(q),
     );
 
-    return [...threads, ...actions];
+    return [...machines, ...threads, ...actions];
   });
 
   $effect(() => {
