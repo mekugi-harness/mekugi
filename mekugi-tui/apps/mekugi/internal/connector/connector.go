@@ -247,7 +247,7 @@ func (c *Connector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.fleet(w, r)
 		return
 	}
-	if r.URL.Path == sessionapi.VersionPath {
+	if r.URL.Path == VersionPath {
 		c.version(w, r)
 		return
 	}

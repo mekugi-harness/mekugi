@@ -17,6 +17,7 @@ import (
 
 const (
 	FleetPath        = "/api/fleet"
+	VersionPath      = "/api/version"
 	fleetProbeBudget = 3 * time.Second
 )
 
@@ -227,7 +228,7 @@ func (c *Connector) version(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unsupported Mekugi protocol version.", http.StatusConflict)
 		return
 	}
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://unix"+sessionapi.VersionPath, nil)
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://unix"+VersionPath, nil)
 	if err != nil {
 		http.Error(w, "Could not build upstream readiness probe.", http.StatusInternalServerError)
 		return
