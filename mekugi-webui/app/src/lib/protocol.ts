@@ -61,6 +61,7 @@ export type { TurnInterruptParams } from "@codex-protocol/v2/TurnInterruptParams
 export type { TurnStartParams } from "@codex-protocol/v2/TurnStartParams";
 export type { TurnStartResponse } from "@codex-protocol/v2/TurnStartResponse";
 export type { TurnSteerParams } from "@codex-protocol/v2/TurnSteerParams";
+export type { TurnsPage } from "@codex-protocol/v2/TurnsPage";
 export type { UserInput } from "@codex-protocol/v2/UserInput";
 
 import type { ReasoningEffort } from "@codex-protocol/ReasoningEffort";

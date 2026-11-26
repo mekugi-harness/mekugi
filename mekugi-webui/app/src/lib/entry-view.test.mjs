@@ -687,3 +687,125 @@ test("ValueRow omits workspace root workdir and renders relative subdirectory wo
   }).body;
   assert.match(oneLineCreate, /Source/);
 });
+
+test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => {
+  // Running commandExecution with exitCode: null must NOT render as failed or emit an empty exit tag.
+  const runningCmd = itemToEntry(
+    {
+      id: "cmd-run",
+      type: "commandExecution",
+      command: "/bin/bash -lc 'sleep 1'",
+      cwd: "/repo",
+      status: "inProgress",
+      exitCode: null,
+      durationMs: null,
+      aggregatedOutput: null,
+    },
+    1,
+    1,
+    "t1",
+  );
+  const runningHtml = render(EntryView, {
+    props: { entry: runningCmd, at: "", stamp: "", owner: "/root", workspace: "/repo" },
+  }).body;
+  assert.match(runningHtml, /sleep 1/);
+  assert.match(runningHtml, />running</);
+  assert.doesNotMatch(runningHtml, /text-negative/);
+  assert.doesNotMatch(runningHtml, /exit /);
+
+  // Completed fileChange renders per-file op rows and Source disclosure through EntryView.
+  const fileEdit = itemToEntry(
+    {
+      id: "fc-render",
+      type: "fileChange",
+      status: "completed",
+      changes: [
+        { path: "src/app.ts", kind: { type: "update" }, diff: "@@ -1 +1 @@\n-old\n+new\n" },
+        { path: "hello.txt", kind: { type: "add" }, diff: "hello\n" },
+      ],
+    },
+    2,
+    1,
+    "t1",
+  );
+  const editHtml = render(EntryView, {
+    props: { entry: fileEdit, at: "", stamp: "", owner: "/root", workspace: "/repo" },
+  }).body;
+  assert.match(editHtml, /src\/app\.ts/);
+  assert.match(editHtml, /hello\.txt/);
+  assert.match(editHtml, /Source/);
+
+  // mcpToolCall and dynamicToolCall render arguments disclosure and output/error tails.
+  const mcpFail = itemToEntry(
+    {
+      id: "mcp-1",
+      type: "mcpToolCall",
+      server: "docs",
+      tool: "lookup",
+      status: "failed",
+      arguments: { query: "stream" },
+      result: null,
+      error: { message: "connection refused" },
+      durationMs: 120,
+    },
+    3,
+    1,
+    "t1",
+  );
+  const mcpHtml = render(EntryView, {
+    props: { entry: mcpFail, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(mcpHtml, /docs:lookup/);
+  assert.match(mcpHtml, /Arguments/);
+  assert.match(mcpHtml, /connection refused/);
+
+  const dynTool = itemToEntry(
+    {
+      id: "dyn-1",
+      type: "dynamicToolCall",
+      namespace: "custom",
+      tool: "ping",
+      arguments: { target: "box" },
+      status: "completed",
+      contentItems: [{ type: "inputText", text: "pong" }],
+      success: true,
+      durationMs: 15,
+    },
+    4,
+    1,
+    "t1",
+  );
+  const dynHtml = render(EntryView, {
+    props: { entry: dynTool, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(dynHtml, /custom:ping/);
+  assert.match(dynHtml, /pong/);
+
+  // contextCompaction renders compaction divider, plan renders prose + copyable responseText,
+  // and subAgentActivity renders the structured subagent traffic card.
+  const compact = itemToEntry({ id: "cmp-1", type: "contextCompaction" }, 5, 1, "t1");
+  const compactHtml = render(EntryView, {
+    props: { entry: compact, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(compactHtml, /◉.*Context compacted/);
+
+  const plan = itemToEntry({ id: "pl-1", type: "plan", text: "1. Ship fix" }, 6, 1, "t1");
+  assert.equal(responseText(plan.kind, plan.text), "1. Ship fix");
+  const planHtml = render(EntryView, {
+    props: { entry: plan, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(planHtml, /data-slot="message"/);
+  assert.match(planHtml, /Ship fix/);
+
+  const sub = itemToEntry(
+    { id: "sub-1", type: "subAgentActivity", agentPath: "/root/worker", assignment: "Run tests" },
+    7,
+    1,
+    "t1",
+  );
+  const subHtml = render(EntryView, {
+    props: { entry: sub, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(subHtml, /data-ai-element="subagent"/);
+  assert.match(subHtml, /Run tests/);
+});

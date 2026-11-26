@@ -67,7 +67,7 @@
     !value.codeLines &&
     !value.tailLines &&
     !value.tail?.length &&
-    value.exitCode === undefined &&
+    value.exitCode == null &&
     !value.duration &&
     !value.running;
   const first = $derived(entry.values?.[0]);
@@ -156,7 +156,8 @@
     entry.kind === "text" ||
       entry.kind === "final" ||
       entry.kind === "message" ||
-      entry.kind === "assistant",
+      entry.kind === "assistant" ||
+      entry.kind === "plan",
   );
   const edges: Record<string, string> = {
     final: "border-l-positive/55",

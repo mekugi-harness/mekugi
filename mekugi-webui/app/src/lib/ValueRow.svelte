@@ -46,7 +46,7 @@
   // ran, so the row holds only the outcome and the combined output.
   const result = $derived(value.batchExit && !value.code);
   const verb = $derived(result ? "" : (value.verb ?? value.kind ?? ""));
-  const exited = $derived(value.exitCode !== undefined && value.exitCode !== 0);
+  const exited = $derived(value.exitCode != null && value.exitCode !== 0);
   const normalizedWorkdir = $derived(normalizeWorkdir(value.workdir, workspace));
   const showWorkdir = $derived(
     !!normalizedWorkdir && (!groupWorkdir || normalizedWorkdir !== groupWorkdir),

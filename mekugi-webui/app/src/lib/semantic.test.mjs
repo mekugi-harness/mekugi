@@ -43,8 +43,7 @@ globalThis.addEventListener = () => {};
 
 const { ThreadControl, serverRequestToPrompt, toNativeUserInput } =
   await import("./semantic.svelte.ts");
-const { Stream, estimateCostUsd, itemToEntry, unwrapShellCommand } =
-  await import("./stream.svelte.ts");
+const { Stream, itemToEntry, unwrapShellCommand } = await import("./stream.svelte.ts");
 
 function fakeMachine(handlers = {}) {
   const notificationListeners = new Set();
@@ -538,6 +537,11 @@ test("turn/completed with summary itemsView preserves existing turn items and tr
           reasoningOutputTokens: 0,
         },
         modelContextWindow: 272000,
+        estimatedCostUsd: 0.00662,
+        costPartial: false,
+        outputTokensPerSecond: 42.5,
+        workDurationMs: 1200,
+        roundtrips: 2,
       },
     },
   });
@@ -550,6 +554,7 @@ test("turn/completed with summary itemsView preserves existing turn items and tr
         status: "completed",
         itemsView: "summary",
         items: [{ id: "a1", type: "agentMessage", text: "Done." }],
+        durationMs: 1200,
         error: null,
       },
     },
@@ -561,37 +566,146 @@ test("turn/completed with summary itemsView preserves existing turn items and tr
   assert.equal(s.main.entries[s.main.order[2]].kind, "assistant");
 
   const root = s.roster.agents[0];
-  assert.ok(root.cost != null && root.cost > 0);
-  assert.ok(root.tps != null && root.tps > 0);
-  assert.ok(root.work != null && root.work > 0);
+  assert.equal(root.cost, 0.00662);
+  assert.equal(root.costPartial, false);
+  assert.equal(root.tps, 42.5);
+  assert.equal(root.work, 1200);
+  assert.equal(root.roundtrips, 2);
   s.close();
 });
 
-test("estimateCostUsd computes standard, fast, cached, and unknown model prices", () => {
-  const std = estimateCostUsd("gpt-6.2-sol", undefined, {
-    inputTokens: 200_000,
-    cachedInputTokens: 100_000,
-    outputTokens: 100_000,
+test("Stream tracks child agent metrics/activity, supports earlier() paging, and normalizes image resource identity", async () => {
+  const sha = "a".repeat(64);
+  const machine = fakeMachine({
+    "thread/resume": () => ({
+      thread: {
+        id: "t-root",
+        preview: "hi",
+        cwd: "/repo",
+        createdAt: 1700000000,
+        status: { type: "idle" },
+        turns: [
+          {
+            id: "turn-2",
+            status: "completed",
+            itemsView: "full",
+            items: [{ id: "a2", type: "agentMessage", text: "Newer turn" }],
+            error: null,
+          },
+        ],
+      },
+      model: "gpt-6.2-sol",
+      turnsBackwardsCursor: "cursor-1",
+    }),
+    "thread/subtree/list": () => ({
+      data: [
+        { id: "t-root", cwd: "/repo", status: { type: "idle" }, turns: [] },
+        {
+          id: "t-worker",
+          parentThreadId: "t-root",
+          agentNickname: "worker",
+          agentRole: "explorer",
+          cwd: "/repo",
+          status: { type: "active", activeFlags: [] },
+          turns: [],
+        },
+      ],
+    }),
+    "thread/turns/list": () => ({
+      data: [
+        {
+          id: "turn-1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "a1", type: "agentMessage", text: "Older turn" }],
+          error: null,
+        },
+      ],
+      nextCursor: null,
+      backwardsCursor: null,
+    }),
+    "thread/changes/read": () => ({
+      threadId: "t-root",
+      workspace: "/repo",
+      totalAdditions: 0,
+      totalDeletions: 0,
+      changes: [],
+      files: [],
+    }),
+    image: () => new Blob(["ok"]),
   });
-  // gpt-6.2-sol standard (<=272k): $2/1M uncached (0.2), $0.1/1M cached (0.01), $10/1M output (1.0)
-  assert.ok(Math.abs(std - (0.2 + 0.01 + 1.0)) < 1e-9);
-  const fast = estimateCostUsd("openai/gpt-6.2-sol", "fast", {
-    inputTokens: 200_000,
-    cachedInputTokens: 0,
-    outputTokens: 0,
+
+  const s = new Stream();
+  s.connect("t-root", machine);
+  await new Promise((r) => setTimeout(r, 15));
+
+  assert.equal(s.hasEarlier, true);
+  assert.equal(await s.earlier(), true);
+  assert.equal(s.hasEarlier, false);
+  assert.equal(s.main.order.length, 2);
+  assert.equal(s.main.entries[s.main.order[0]].text, "Older turn");
+  assert.equal(s.main.entries[s.main.order[1]].text, "Newer turn");
+
+  machine.emitNotification({
+    method: "thread/tokenUsage/updated",
+    params: {
+      threadId: "t-worker",
+      tokenUsage: {
+        total: {
+          totalTokens: 500,
+          inputTokens: 400,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTokens: 100,
+          reasoningOutputTokens: 0,
+        },
+        last: {
+          totalTokens: 500,
+          inputTokens: 400,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTokens: 100,
+          reasoningOutputTokens: 0,
+        },
+        modelContextWindow: 128000,
+        estimatedCostUsd: 0.012,
+        costPartial: true,
+        outputTokensPerSecond: 33.3,
+        workDurationMs: 3000,
+        roundtrips: 1,
+      },
+    },
   });
-  assert.ok(Math.abs(fast - 0.8) < 1e-9);
-  const longCtx = estimateCostUsd("gpt-6.2-sol", undefined, {
-    inputTokens: 300_000,
-    cachedInputTokens: 0,
-    outputTokens: 0,
+  machine.emitNotification({
+    method: "item/started",
+    params: {
+      threadId: "t-worker",
+      turnId: "child-turn-1",
+      item: {
+        id: "child-cmd",
+        type: "commandExecution",
+        command: "/bin/bash -lc 'rg foo'",
+        cwd: "/repo",
+        status: "inProgress",
+        exitCode: null,
+      },
+    },
   });
-  // Long context (>272k): $4/1M input -> $1.20
-  assert.ok(Math.abs(longCtx - 1.2) < 1e-9);
-  assert.equal(
-    estimateCostUsd("unknown-model", undefined, { inputTokens: 100, outputTokens: 50 }),
-    undefined,
-  );
+  const worker = s.roster.agents.find((a) => a.thread === "t-worker");
+  assert.equal(worker?.cost, 0.012);
+  assert.equal(worker?.costPartial, true);
+  assert.equal(worker?.tps, 33.3);
+  assert.equal(worker?.activity?.values?.[0]?.code, "rg foo");
+
+  // Raw paths/URLs are omitted from body.image so http_resources matches by itemId + index;
+  // SHA-256 hex identities pass through verbatim.
+  const ac = new AbortController();
+  await s.image({ itemId: "img-1", seq: 1, agent: "/root" }, 0, "/repo/shot.png", ac.signal);
+  await s.image({ itemId: "img-2", seq: 2, agent: "/root" }, 0, sha, ac.signal);
+  const imageReqs = machine.requests.filter((r) => r.kind === "image");
+  assert.equal(imageReqs[0].params.body.image, "");
+  assert.equal(imageReqs[1].params.body.image, sha);
+  s.close();
 });
 
 test("ThreadControl handles slash commands locally instead of forwarding to turn/start", async () => {

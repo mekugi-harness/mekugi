@@ -21,8 +21,30 @@
     if (rendered.includes("<pre>"))
       highlightWithin(node, "pre > code", (code) => /language-(\S+)/.exec(code.className)?.[1]);
   };
+  function onLinkClick(event: MouseEvent) {
+    const target =
+      event.target instanceof Element
+        ? event.target.closest<HTMLElement>("[data-file-link], [data-run-link]")
+        : null;
+    if (!target) return;
+    const value = target.dataset.fileLink || target.dataset.runLink;
+    if (!value) return;
+    event.preventDefault();
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(value).catch(() => {});
+    }
+    const prev = target.title;
+    target.title = `Copied ${value}`;
+    setTimeout(() => {
+      if (target.title === `Copied ${value}`) target.title = prev;
+    }, 1500);
+  }
+  const links = (node: HTMLElement) => {
+    node.addEventListener("click", onLinkClick);
+    return () => node.removeEventListener("click", onLinkClick);
+  };
 </script>
 
-<div class={["prose", quiet && "text-muted"]} {@attach fences(html)}>
+<div class={["prose", quiet && "text-muted"]} {@attach fences(html)} {@attach links}>
   {@html html}
 </div>

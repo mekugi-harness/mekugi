@@ -25,314 +25,60 @@ import type {
   ThreadResumeResponse,
   ThreadStatus,
   Turn,
+  TurnsPage,
   Value,
 } from "./protocol";
 
-type TokenPrice = {
-  input: number;
-  cachedInput: number;
-  output: number;
-  longInput: number;
-  longCachedInput: number;
-  longOutput: number;
-};
-
-// Reference list API prices in USD per million tokens (mirrors mekugi-tui accounting/cost.go).
-const TOKEN_REFERENCE_PRICES: Record<string, TokenPrice> = {
-  "gpt-6.2-astra": {
-    input: 8,
-    cachedInput: 0.4,
-    output: 40,
-    longInput: 16,
-    longCachedInput: 0.8,
-    longOutput: 60,
-  },
-  "gpt-6.2-sol": {
-    input: 2,
-    cachedInput: 0.1,
-    output: 10,
-    longInput: 4,
-    longCachedInput: 0.2,
-    longOutput: 15,
-  },
-  "gpt-6-astra": {
-    input: 10,
-    cachedInput: 1,
-    output: 50,
-    longInput: 20,
-    longCachedInput: 2,
-    longOutput: 75,
-  },
-  "gpt-6-astra-pro": {
-    input: 10,
-    cachedInput: 1,
-    output: 50,
-    longInput: 20,
-    longCachedInput: 2,
-    longOutput: 75,
-  },
-  "gpt-6.1-sol": {
-    input: 2,
-    cachedInput: 0.1,
-    output: 10,
-    longInput: 4,
-    longCachedInput: 0.2,
-    longOutput: 15,
-  },
-  "gpt-6.1-terra": {
-    input: 1,
-    cachedInput: 0.05,
-    output: 5,
-    longInput: 2,
-    longCachedInput: 0.1,
-    longOutput: 7.5,
-  },
-  "gpt-6-sol": {
-    input: 2,
-    cachedInput: 0.2,
-    output: 10,
-    longInput: 4,
-    longCachedInput: 0.4,
-    longOutput: 15,
-  },
-  "gpt-6-luna": {
-    input: 0.1,
-    cachedInput: 0.01,
-    output: 0.5,
-    longInput: 0.2,
-    longCachedInput: 0.02,
-    longOutput: 0.75,
-  },
-  "gpt-5.5": {
-    input: 5,
-    cachedInput: 0.5,
-    output: 30,
-    longInput: 10,
-    longCachedInput: 1,
-    longOutput: 45,
-  },
-  "gpt-5.6-sol": {
-    input: 4,
-    cachedInput: 0.4,
-    output: 20,
-    longInput: 8,
-    longCachedInput: 0.8,
-    longOutput: 30,
-  },
-  "gpt-5.6-terra": {
-    input: 2,
-    cachedInput: 0.2,
-    output: 12,
-    longInput: 4,
-    longCachedInput: 0.4,
-    longOutput: 18,
-  },
-  "gpt-5.6-luna": {
-    input: 0.2,
-    cachedInput: 0.02,
-    output: 1.2,
-    longInput: 0.4,
-    longCachedInput: 0.04,
-    longOutput: 1.8,
-  },
-  "gpt-5.4": {
-    input: 2.5,
-    cachedInput: 0.25,
-    output: 15,
-    longInput: 5,
-    longCachedInput: 0.5,
-    longOutput: 22.5,
-  },
-  "gpt-5.4-mini": {
-    input: 0.75,
-    cachedInput: 0.075,
-    output: 4.5,
-    longInput: 0,
-    longCachedInput: 0,
-    longOutput: 0,
-  },
-  "gpt-5.4-nano": {
-    input: 0.2,
-    cachedInput: 0.02,
-    output: 1.25,
-    longInput: 0,
-    longCachedInput: 0,
-    longOutput: 0,
-  },
-};
-
-const TOKEN_FAST_REFERENCE_PRICES: Record<string, TokenPrice> = {
-  "gpt-6.2-astra": {
-    input: 16,
-    cachedInput: 0.8,
-    output: 80,
-    longInput: 32,
-    longCachedInput: 1.6,
-    longOutput: 120,
-  },
-  "gpt-6.2-sol": {
-    input: 4,
-    cachedInput: 0.2,
-    output: 20,
-    longInput: 8,
-    longCachedInput: 0.4,
-    longOutput: 30,
-  },
-  "gpt-6-astra": {
-    input: 20,
-    cachedInput: 2,
-    output: 100,
-    longInput: 40,
-    longCachedInput: 4,
-    longOutput: 150,
-  },
-  "gpt-6.1-sol": {
-    input: 4,
-    cachedInput: 0.2,
-    output: 20,
-    longInput: 8,
-    longCachedInput: 0.4,
-    longOutput: 30,
-  },
-  "gpt-6.1-terra": {
-    input: 2,
-    cachedInput: 0.1,
-    output: 10,
-    longInput: 4,
-    longCachedInput: 0.2,
-    longOutput: 15,
-  },
-  "gpt-6-sol": {
-    input: 4,
-    cachedInput: 0.4,
-    output: 20,
-    longInput: 8,
-    longCachedInput: 0.8,
-    longOutput: 30,
-  },
-  "gpt-6-luna": {
-    input: 0.2,
-    cachedInput: 0.02,
-    output: 1,
-    longInput: 0.4,
-    longCachedInput: 0.04,
-    longOutput: 1.5,
-  },
-  "gpt-5.6-sol": {
-    input: 8,
-    cachedInput: 0.8,
-    output: 40,
-    longInput: 16,
-    longCachedInput: 1.6,
-    longOutput: 60,
-  },
-  "gpt-5.6-terra": {
-    input: 4,
-    cachedInput: 0.4,
-    output: 24,
-    longInput: 8,
-    longCachedInput: 0.8,
-    longOutput: 36,
-  },
-  "gpt-5.6-luna": {
-    input: 0.4,
-    cachedInput: 0.04,
-    output: 2.4,
-    longInput: 0.8,
-    longCachedInput: 0.08,
-    longOutput: 3.6,
-  },
-  "gpt-5.5": {
-    input: 12.5,
-    cachedInput: 1.25,
-    output: 75,
-    longInput: 0,
-    longCachedInput: 0,
-    longOutput: 0,
-  },
-  "gpt-5.4": {
-    input: 5,
-    cachedInput: 0.5,
-    output: 30,
-    longInput: 0,
-    longCachedInput: 0,
-    longOutput: 0,
-  },
-  "gpt-5.4-mini": {
-    input: 1.5,
-    cachedInput: 0.15,
-    output: 9,
-    longInput: 0,
-    longCachedInput: 0,
-    longOutput: 0,
-  },
-};
-
-const CACHE_WRITE_MODELS = new Set([
-  "gpt-6.2-astra",
-  "gpt-6.2-sol",
-  "gpt-6-astra",
-  "gpt-6.1-sol",
-  "gpt-6.1-terra",
-  "gpt-6-sol",
-  "gpt-6-luna",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-]);
-
-export function estimateCostUsd(
-  model: string | undefined,
-  serviceTier: string | undefined,
-  usage: {
-    inputTokens: number;
-    cachedInputTokens?: number;
-    cacheWriteInputTokens?: number;
-    outputTokens: number;
-  },
-  longContextInputTokens?: number,
-): number | undefined {
-  if (!model) return undefined;
-  const normalizedModel = model
-    .trim()
-    .toLowerCase()
-    .replace(/^openai\//, "");
-  const standard = TOKEN_REFERENCE_PRICES[normalizedModel];
-  const tier = (serviceTier ?? "").trim().toLowerCase();
-  let price: TokenPrice | undefined = standard;
-  const checkInput = longContextInputTokens ?? usage.inputTokens;
-  if (tier === "" || tier === "default" || tier === "standard") {
-    price = standard;
-  } else if (tier === "fast" || tier === "priority") {
-    price = TOKEN_FAST_REFERENCE_PRICES[normalizedModel];
-    if (
-      standard &&
-      standard.longInput > 0 &&
-      checkInput > 272_000 &&
-      (!price || price.longInput === 0)
-    ) {
-      return undefined;
-    }
-  } else {
+function formatJsonCode(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value.trim() ? value : undefined;
+  try {
+    const serialized = JSON.stringify(value, null, 2);
+    return serialized && serialized !== "{}" && serialized !== "[]" ? serialized : undefined;
+  } catch {
     return undefined;
   }
-  if (!price) return undefined;
-  if (usage.inputTokens < 0 || usage.outputTokens < 0) return undefined;
-  const cached = Math.min(Math.max(0, usage.cachedInputTokens ?? 0), usage.inputTokens);
-  const uncached = Math.max(0, usage.inputTokens - cached);
-  const cacheWrite = Math.min(Math.max(0, usage.cacheWriteInputTokens ?? 0), uncached);
-  const long = price.longInput > 0 && checkInput > 272_000;
-  const inputRate = long ? price.longInput : price.input;
-  const cachedRate = long ? price.longCachedInput : price.cachedInput;
-  const outputRate = long ? price.longOutput : price.output;
-  if (cacheWrite > 0 && !CACHE_WRITE_MODELS.has(normalizedModel)) return undefined;
-  const cacheWritePremium = (cacheWrite * inputRate * 0.25) / 1_000_000;
-  return (
-    (uncached * inputRate) / 1_000_000 +
-    cacheWritePremium +
-    (cached * cachedRate) / 1_000_000 +
-    (usage.outputTokens * outputRate) / 1_000_000
-  );
+}
+
+function linesOf(text: string | undefined): string[] | undefined {
+  if (!text) return undefined;
+  const trimmed = text.replace(/\n$/, "");
+  return trimmed ? trimmed.split("\n") : undefined;
+}
+
+function extractMcpTail(
+  result: { content?: unknown[]; structuredContent?: unknown } | null | undefined,
+  error: { message: string } | null | undefined,
+): string[] | undefined {
+  if (error?.message) return linesOf(error.message);
+  if (!result) return undefined;
+  const parts: string[] = [];
+  for (const entry of result.content ?? []) {
+    if (entry && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+      parts.push(entry.text);
+    }
+  }
+  if (parts.length) return linesOf(parts.join("\n"));
+  if (result.structuredContent !== undefined && result.structuredContent !== null) {
+    return linesOf(formatJsonCode(result.structuredContent));
+  }
+  return undefined;
+}
+
+function extractDynamicToolTail(
+  items:
+    | Array<{ type: string; text?: string; imageUrl?: string; audioUrl?: string }>
+    | null
+    | undefined,
+): string[] | undefined {
+  if (!items?.length) return undefined;
+  const parts: string[] = [];
+  for (const item of items) {
+    if (item.type === "inputText" && item.text) parts.push(item.text);
+    else if (item.type === "inputImage" && item.imageUrl) parts.push(`[image] ${item.imageUrl}`);
+    else if (item.type === "inputAudio" && item.audioUrl) parts.push(`[audio] ${item.audioUrl}`);
+  }
+  return parts.length ? linesOf(parts.join("\n")) : undefined;
 }
 
 export function unwrapShellCommand(raw: string): string {
@@ -498,7 +244,7 @@ export function itemToEntry(
         code: unwrapShellCommand(item.command),
         lang: "bash",
         workdir: item.cwd || undefined,
-        exitCode: item.exitCode,
+        exitCode: item.exitCode ?? undefined,
         duration: item.durationMs ?? undefined,
         running,
         failed,
@@ -555,13 +301,18 @@ export function itemToEntry(
     case "mcpToolCall": {
       const running = item.status === "inProgress";
       const failed = item.status === "failed";
+      const argsCode = formatJsonCode(item.arguments);
+      const tail = extractMcpTail(item.result, item.error);
       const value: Value = {
-        kind: "tool",
-        verb: `${item.server}:${item.tool}`,
+        kind: "op",
+        verb: "Call",
+        label: `${item.server}:${item.tool}`,
+        code: argsCode,
+        lang: argsCode ? "json" : undefined,
         running,
         failed,
         duration: item.durationMs ?? undefined,
-        details: item.error?.message,
+        tail,
       };
       return {
         ...base,
@@ -574,12 +325,19 @@ export function itemToEntry(
     case "dynamicToolCall": {
       const running = item.status === "inProgress";
       const failed = item.status === "failed" || item.success === false;
+      const argsCode = formatJsonCode(item.arguments);
+      const tail = extractDynamicToolTail(item.contentItems);
+      const label = item.namespace ? `${item.namespace}:${item.tool}` : item.tool;
       const value: Value = {
-        kind: "tool",
-        verb: item.tool,
+        kind: "op",
+        verb: "Call",
+        label,
+        code: argsCode,
+        lang: argsCode ? "json" : undefined,
         running,
         failed,
         duration: item.durationMs ?? undefined,
+        tail,
       };
       return {
         ...base,
@@ -602,26 +360,66 @@ export function itemToEntry(
         images: [item.path],
         values: [{ kind: "read", verb: "View", path: item.path }],
       };
-    case "subAgentActivity":
+    case "subAgentActivity": {
+      const target = item.agentPath;
+      const body = item.assignment ?? "";
       return {
         ...base,
-        kind: "agent",
+        kind: item.assignment ? "start" : "agent",
         assignment: !!item.assignment,
-        assignmentTo: item.agentPath,
+        assignmentTo: target,
         assignmentText: item.assignment ?? undefined,
-        text: item.assignment ?? item.agentPath,
+        text: body || target,
+        traffic: {
+          kind: item.assignment ? "start" : "message",
+          to: target,
+          detail: item.assignment ? "assigned" : undefined,
+        },
+        values: [
+          {
+            kind: item.assignment ? "start" : "message",
+            to: target,
+            body,
+          },
+        ],
       };
-    case "collabAgentToolCall":
+    }
+    case "collabAgentToolCall": {
+      const target = item.receiverThreadIds?.[0];
+      const failed = item.status === "failed";
+      const body = item.prompt ?? "";
+      const kind = failed
+        ? "error"
+        : item.tool === "spawnAgent" || item.tool === "resumeAgent"
+          ? "start"
+          : "message";
       return {
         ...base,
         kind: "agent",
-        text: item.prompt ?? item.tool,
+        outcome: failed ? "error" : undefined,
+        text: body || item.tool,
+        traffic: {
+          kind,
+          from: agent,
+          to: target,
+          detail: item.tool,
+        },
+        values: [
+          {
+            kind: "message",
+            from: agent,
+            to: target,
+            body,
+          },
+        ],
       };
+    }
     case "contextCompaction":
       return {
         ...base,
-        kind: "system",
+        kind: "compaction",
         text: "Context compacted",
+        values: [{ kind: "compaction", label: "Context compacted" }],
       };
     case "enteredReviewMode":
     case "exitedReviewMode":
@@ -860,22 +658,21 @@ export class Stream {
   input = $state.raw<Input | undefined>();
   status = $state.raw<Status>({});
   main = $state.raw<Feed>(empty);
-  agents = $state.raw<Feed>(empty);
-  histories = $state.raw<Record<string, Feed>>({});
   roster = $state.raw<Roster>({ total: 0, agents: [] });
   family = $state.raw<{ root: string; threads: string[] } | undefined>();
   review = $state.raw<SavedReview | null>(null);
   live = $state.raw<Preview[]>([]);
   activeTurnId = $state<string | undefined>();
+  hasEarlier = $state(false);
+  loadingEarlier = $state(false);
   byName = $derived(new Map(this.roster.agents.map((agent) => [agent.name, agent])));
   identities = $derived.by(() => {
     const identities = new Map<string, AgentIdentity>();
     const remember = (identity: AgentIdentity) => {
       for (const alias of identity.aliases) identities.set(alias, identity);
     };
-    for (const feed of [this.main, this.agents, ...Object.values(this.histories)])
-      for (const seq of feed.order)
-        for (const identity of feed.entries[seq]?.identities ?? []) remember(identity);
+    for (const seq of this.main.order)
+      for (const identity of this.main.entries[seq]?.identities ?? []) remember(identity);
     for (const agent of this.roster.agents) {
       for (const identity of agent.identities ?? []) remember(identity);
       remember({ name: agent.name, label: agent.label, aliases: agent.aliases ?? [agent.name] });
@@ -891,6 +688,7 @@ export class Stream {
   #id?: string;
   #machine = $state<Machine | undefined>();
   #turns: Turn[] = [];
+  #turnsBackwardsCursor?: string;
   #liveItemIds = new Set<string>();
   #hooks: HookRecord[] = [];
   #hooksByThread = new Map<string, HookRecord[]>();
@@ -899,10 +697,7 @@ export class Stream {
   #stopNotifications?: () => void;
   #stopOpen?: () => void;
   #requests = new AbortController();
-  #turnStartedAt?: number;
-  #workMs = 0;
-  #observedOutputTokens = 0;
-  #lastTotalOutputTokens?: number;
+  #turnStartedAtByThread = new Map<string, number>();
 
   get connection(): Connection {
     return this.#machine?.connection ?? "connecting";
@@ -923,11 +718,11 @@ export class Stream {
     this.#id = id;
     this.#machine = machine;
     this.#turns = [];
+    this.#turnsBackwardsCursor = undefined;
+    this.hasEarlier = false;
+    this.loadingEarlier = false;
     this.#liveItemIds.clear();
-    this.#turnStartedAt = undefined;
-    this.#workMs = 0;
-    this.#observedOutputTokens = 0;
-    this.#lastTotalOutputTokens = undefined;
+    this.#turnStartedAtByThread.clear();
     const cachedHooks = this.#hooksByThread.get(`${machine.id}:${id}`);
     // Only restore settled hooks across a subscription gap; running hooks may have
     // finished while the thread was unobserved.
@@ -937,8 +732,7 @@ export class Stream {
     this.session = this.input = this.gone = undefined;
     this.activeTurnId = undefined;
     this.status = {};
-    this.main = this.agents = empty;
-    this.histories = {};
+    this.main = empty;
     if (!preserveRoster) {
       this.roster = { total: 0, agents: [] };
       this.family = undefined;
@@ -961,6 +755,40 @@ export class Stream {
     await this.#hydrate(this.#id, this.#machine);
   }
 
+  async earlier(): Promise<boolean> {
+    const id = this.#id;
+    const machine = this.#machine;
+    const cursor = this.#turnsBackwardsCursor;
+    if (!id || !machine || !cursor || this.loadingEarlier) return false;
+    const signal = this.#requests.signal;
+    this.loadingEarlier = true;
+    try {
+      const page = await machine.request<TurnsPage>(
+        "thread/turns/list",
+        { threadId: id, cursor, sortDirection: "desc", limit: 20, itemsView: "full" },
+        { signal },
+      );
+      if (signal.aborted || this.#id !== id || this.#machine !== machine) return false;
+      const nextCursor = page.backwardsCursor ?? page.nextCursor ?? undefined;
+      this.#turnsBackwardsCursor = nextCursor && nextCursor !== cursor ? nextCursor : undefined;
+      this.hasEarlier = !!this.#turnsBackwardsCursor;
+      const existingIds = new Set(this.#turns.map((t) => t.id));
+      const older: Turn[] = [];
+      for (let i = (page.data?.length ?? 0) - 1; i >= 0; i--) {
+        const t = page.data[i];
+        if (!existingIds.has(t.id)) older.push({ ...t, items: [...t.items] });
+      }
+      if (!older.length) return false;
+      this.#turns = [...older, ...this.#turns];
+      this.#rebuildMain();
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (this.#id === id && this.#machine === machine) this.loadingEarlier = false;
+    }
+  }
+
   async #hydrate(id: string, machine: Machine): Promise<void> {
     const signal = this.#requests.signal;
     try {
@@ -968,6 +796,7 @@ export class Stream {
       let model: string | undefined;
       let effort: string | undefined;
       let serviceTier: string | undefined;
+      let turnsBackwardsCursor: string | undefined;
       try {
         const resumed = await machine.request<ThreadResumeResponse>(
           "thread/resume",
@@ -978,6 +807,7 @@ export class Stream {
         model = resumed.model || thread.model || undefined;
         effort = resumed.reasoningEffort ?? thread.reasoningEffort ?? undefined;
         serviceTier = resumed.serviceTier ?? thread.serviceTier ?? undefined;
+        turnsBackwardsCursor = resumed.turnsBackwardsCursor ?? undefined;
       } catch (err) {
         if (signal.aborted) return;
         if (err instanceof TransportError && (err.status === 404 || err.status === 410)) {
@@ -997,6 +827,8 @@ export class Stream {
       if (signal.aborted) return;
       this.gone = undefined;
       this.error = undefined;
+      this.#turnsBackwardsCursor = turnsBackwardsCursor;
+      this.hasEarlier = !!turnsBackwardsCursor;
       this.#applyThread(thread, model, effort, serviceTier);
       const subtreeRoot = this.family?.threads.includes(id)
         ? this.family.root
@@ -1074,9 +906,12 @@ export class Stream {
           inputTokens: prev.inputTokens ?? next.inputTokens,
           outputTokens: prev.outputTokens ?? next.outputTokens,
           cost: prev.cost ?? next.cost,
+          costPartial: prev.costPartial ?? next.costPartial,
           tps: prev.tps ?? next.tps,
           work: prev.work ?? next.work,
           workSince: prev.workSince ?? next.workSince,
+          roundtrips: prev.roundtrips ?? next.roundtrips,
+          activity: prev.activity ?? next.activity,
           context: next.context ?? prev.context,
           window: next.window ?? prev.window,
         };
@@ -1169,44 +1004,24 @@ export class Stream {
         break;
       }
       case "thread/tokenUsage/updated": {
-        if (notification.params.threadId !== id) return;
+        const targetId = notification.params.threadId;
+        const matchesMain = targetId === id;
+        const matchesRoster = this.roster.agents.some((a) => a.thread === targetId);
+        if (!matchesMain && !matchesRoster) return;
         const usage = notification.params.tokenUsage;
-        const estimatedCost = estimateCostUsd(
-          this.session?.model,
-          this.session?.serviceTier,
-          usage.total,
-          usage.last?.inputTokens,
-        );
-        const workMs =
-          this.#workMs +
-          (this.#turnStartedAt != null ? Math.max(0, Date.now() - this.#turnStartedAt) : 0);
-        const totalOut = usage.total.outputTokens;
-        if (this.#lastTotalOutputTokens !== undefined) {
-          if (
-            totalOut > this.#lastTotalOutputTokens &&
-            (this.#turnStartedAt != null || this.#workMs > 0)
-          ) {
-            this.#observedOutputTokens += totalOut - this.#lastTotalOutputTokens;
-          }
-        } else if (this.#turnStartedAt != null) {
-          this.#observedOutputTokens += usage.last?.outputTokens ?? totalOut;
-        }
-        this.#lastTotalOutputTokens = totalOut;
-        const outputTps =
-          workMs > 0 && this.#observedOutputTokens > 0
-            ? this.#observedOutputTokens / (workMs / 1000)
-            : undefined;
         this.roster = {
           ...this.roster,
           agents: this.roster.agents.map((a) =>
-            a.thread === id || a.name === "/root"
+            a.thread === targetId || (matchesMain && !a.thread && a.name === "/root")
               ? {
                   ...a,
                   inputTokens: usage.total.inputTokens,
                   outputTokens: usage.total.outputTokens,
-                  cost: estimatedCost ?? a.cost,
-                  tps: outputTps ?? a.tps,
-                  work: workMs > 0 ? workMs : a.work,
+                  cost: usage.estimatedCostUsd ?? a.cost,
+                  costPartial: usage.costPartial ?? a.costPartial,
+                  tps: usage.outputTokensPerSecond ?? a.tps,
+                  work: usage.workDurationMs ?? a.work,
+                  roundtrips: usage.roundtrips ?? a.roundtrips,
                   context: usage.last.totalTokens,
                   window: usage.modelContextWindow ?? a.window,
                 }
@@ -1216,88 +1031,98 @@ export class Stream {
         break;
       }
       case "turn/started": {
-        if (notification.params.threadId !== id) return;
+        const targetId = notification.params.threadId;
+        const matchesMain = targetId === id;
+        const matchesRoster = this.roster.agents.some((a) => a.thread === targetId);
+        if (!matchesMain && !matchesRoster) return;
         const turn = notification.params.turn;
         const startedAt = Date.now();
-        this.#turnStartedAt = startedAt;
-        this.activeTurnId = turn.id;
-        this.status = {
-          ...this.status,
-          running: true,
-          text: "Working",
-          failure: undefined,
-          alert: false,
-        };
-        this.input = { ...this.input, stoppable: true };
-        this.#upsertTurn(turn);
+        this.#turnStartedAtByThread.set(targetId, startedAt);
+        if (matchesMain) {
+          this.activeTurnId = turn.id;
+          this.status = {
+            ...this.status,
+            running: true,
+            text: "Working",
+            failure: undefined,
+            alert: false,
+          };
+          this.input = { ...this.input, stoppable: true };
+          this.#upsertTurn(turn);
+          this.#rebuildMain();
+        }
         this.roster = {
           ...this.roster,
           agents: this.roster.agents.map((a) =>
-            a.thread === id || a.name === "/root"
+            a.thread === targetId || (matchesMain && !a.thread && a.name === "/root")
               ? {
                   ...a,
                   state: "working",
-                  work: this.#workMs,
                   workSince: startedAt,
-                  turns: this.#turns.length,
+                  turns: matchesMain ? this.#turns.length : (a.turns ?? 0) + 1,
                 }
               : a,
           ),
         };
-        this.#rebuildMain();
         break;
       }
       case "turn/completed": {
-        if (notification.params.threadId !== id) return;
+        const targetId = notification.params.threadId;
+        const matchesMain = targetId === id;
+        const matchesRoster = this.roster.agents.some((a) => a.thread === targetId);
+        if (!matchesMain && !matchesRoster) return;
         const turn = notification.params.turn;
-        if (this.activeTurnId === turn.id) this.activeTurnId = undefined;
-        let elapsed: number | undefined;
-        if (this.#turnStartedAt != null) {
-          elapsed = Math.max(0, Date.now() - this.#turnStartedAt);
-          this.#workMs += elapsed;
-          this.#turnStartedAt = undefined;
-        }
+        const startedAt = this.#turnStartedAtByThread.get(targetId);
+        this.#turnStartedAtByThread.delete(targetId);
+        const elapsed =
+          turn.durationMs != null
+            ? Math.max(0, Number(turn.durationMs))
+            : startedAt != null
+              ? Math.max(0, Date.now() - startedAt)
+              : undefined;
         const failed = turn.status === "failed";
-        this.status = {
-          running: false,
-          alert: failed,
-          completed: elapsed,
-          failure: turn.error?.message,
-          text: failed
-            ? turn.error?.message
-            : turn.status === "interrupted"
-              ? "Interrupted"
-              : undefined,
-        };
-        this.input = { ...this.input, stoppable: false };
-        this.#upsertTurn(turn);
+        if (matchesMain) {
+          if (this.activeTurnId === turn.id) this.activeTurnId = undefined;
+          this.status = {
+            running: false,
+            alert: failed,
+            completed: elapsed,
+            failure: turn.error?.message,
+            text: failed
+              ? turn.error?.message
+              : turn.status === "interrupted"
+                ? "Interrupted"
+                : undefined,
+          };
+          this.input = { ...this.input, stoppable: false };
+          this.#upsertTurn(turn);
+          this.#liveItemIds.clear();
+          if (this.#hooks.some((h) => h.run.status === "running" && h.turnId === turn.id)) {
+            this.#hooks = this.#hooks.filter(
+              (h) => !(h.run.status === "running" && h.turnId === turn.id),
+            );
+            this.#rememberHooks(`${machine.id}:${id}`, this.#hooks);
+          }
+          this.#rebuildMain();
+          void this.#loadChanges(id, machine, this.#requests.signal);
+        }
         this.roster = {
           ...this.roster,
           agents: this.roster.agents.map((a) => {
-            if (a.thread !== id && a.name !== "/root") return a;
-            const outputTps =
-              this.#workMs > 0 && this.#observedOutputTokens > 0
-                ? this.#observedOutputTokens / (this.#workMs / 1000)
-                : a.tps;
+            if (a.thread !== targetId && !(matchesMain && !a.thread && a.name === "/root"))
+              return a;
+            const work = a.work != null ? a.work : elapsed != null ? elapsed : undefined;
             return {
               ...a,
               state: failed ? "error" : "idle",
-              work: this.#workMs > 0 ? this.#workMs : a.work,
+              work,
               workSince: undefined,
-              turns: this.#turns.length,
-              tps: outputTps,
+              lastResponse: Date.now(),
+              activity: undefined,
+              turns: matchesMain ? this.#turns.length : a.turns,
             };
           }),
         };
-        this.#liveItemIds.clear();
-        if (this.#hooks.some((h) => h.run.status === "running" && h.turnId === turn.id)) {
-          this.#hooks = this.#hooks.filter(
-            (h) => !(h.run.status === "running" && h.turnId === turn.id),
-          );
-          this.#rememberHooks(`${machine.id}:${id}`, this.#hooks);
-        }
-        this.#rebuildMain();
-        void this.#loadChanges(id, machine, this.#requests.signal);
         break;
       }
       case "hook/started":
@@ -1313,14 +1138,53 @@ export class Stream {
       }
       case "item/started":
       case "item/completed": {
-        if (notification.params.threadId !== id) return;
-        if (notification.method === "item/started") {
+        const targetId = notification.params.threadId;
+        const started = notification.method === "item/started";
+        if (targetId !== id) {
+          const agent = this.roster.agents.find((a) => a.thread === targetId);
+          if (agent) {
+            const activity = itemToEntry(
+              notification.params.item,
+              0,
+              0,
+              notification.params.turnId,
+              agent.name,
+              started,
+            );
+            this.roster = {
+              ...this.roster,
+              agents: this.roster.agents.map((a) =>
+                a.thread === targetId ? { ...a, activity } : a,
+              ),
+            };
+          }
+          return;
+        }
+        if (started) {
           this.#liveItemIds.add(notification.params.item.id);
         } else {
           this.#liveItemIds.delete(notification.params.item.id);
         }
         this.#upsertItem(notification.params.turnId, notification.params.item);
         this.#rebuildMain();
+        const latestActivity = itemToEntry(
+          notification.params.item,
+          0,
+          0,
+          notification.params.turnId,
+          "/root",
+          started,
+        );
+        if (this.roster.agents.some((a) => a.thread === id || a.name === "/root")) {
+          this.roster = {
+            ...this.roster,
+            agents: this.roster.agents.map((a) =>
+              a.thread === id || (!a.thread && a.name === "/root")
+                ? { ...a, activity: latestActivity }
+                : a,
+            ),
+          };
+        }
         if (
           notification.params.item.type === "collabAgentToolCall" &&
           (notification.params.item.tool === "spawnAgent" ||
@@ -1576,9 +1440,12 @@ export class Stream {
     const machine = this.#machine;
     const id = this.#id;
     if (!machine || !id) throw new Error("The image's machine is disconnected.");
+    // http_resources.rs matches body.image against SHA-256 hex digest or "".
+    // When itemId is present, omit raw file paths/URLs so lookup matches by itemId + index.
+    const identity = /^[0-9a-f]{64}$/i.test(image) ? image : "";
     return machine.resource<Blob>(
       "image",
-      { thread: id, body: { itemId: entry.itemId, index, image } },
+      { thread: id, body: { itemId: entry.itemId, index, image: identity } },
       { signal: AbortSignal.any([signal, this.#requests.signal]) },
     );
   }

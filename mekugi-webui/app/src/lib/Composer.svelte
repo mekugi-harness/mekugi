@@ -4,7 +4,7 @@
   import Attachments from "./Attachments.svelte";
   import { prepareAttachments, type InitialInput, type PendingAttachment } from "./attachments";
   import type { Machine } from "./hub.svelte";
-  import type { Input } from "./protocol";
+  import type { Input, SkillsListResponse } from "./protocol";
   import { semantic } from "./semantic.svelte";
   import { stream } from "./stream.svelte";
   import ThreadSettings from "./ThreadSettings.svelte";
@@ -86,36 +86,114 @@
     { name: "/archive", description: "Archive this session", insert: "/archive" },
   ];
 
-  let slashDismissed = $state(false);
-  let slashIndex = $state(0);
+  type CompletionChoice = {
+    name: string;
+    description: string;
+    insert: string;
+    start: number;
+    end: number;
+  };
 
-  const slashQuery = $derived.by(() => {
-    if (!text.startsWith("/") || /\s/.test(text) || text.indexOf("/", 1) >= 0) return undefined;
-    return text.slice(1).toLowerCase();
+  let skillCatalog = $state.raw<{ name: string; description: string }[]>([]);
+  let skillsLoadedFor = $state<string>();
+  let menuDismissed = $state(false);
+  let menuIndex = $state(0);
+
+  $effect(() => {
+    const cwd = stream.session?.workspace;
+    const key = `${machine.id}:${cwd ?? ""}`;
+    if (machine.connection !== "open" || skillsLoadedFor === key) return;
+    skillsLoadedFor = key;
+    const params = cwd ? { cwds: [cwd] } : {};
+    void machine
+      .request<SkillsListResponse>("skills/list", params)
+      .then((res) => {
+        if (skillsLoadedFor !== key) return;
+        const seen = new Set<string>();
+        const loaded: { name: string; description: string }[] = [];
+        for (const bucket of res.data ?? []) {
+          for (const skill of bucket.skills ?? []) {
+            if (!skill.enabled || !skill.name || seen.has(skill.name)) continue;
+            seen.add(skill.name);
+            loaded.push({
+              name: `$${skill.name}`,
+              description:
+                skill.shortDescription ||
+                skill.interface?.shortDescription ||
+                skill.description ||
+                "",
+            });
+          }
+        }
+        skillCatalog = loaded;
+      })
+      .catch(() => {});
   });
-  const slashMatches = $derived.by(() => {
-    if (slashQuery === undefined || slashDismissed) return [];
-    if (!slashQuery) return SLASH_COMMANDS;
-    const prefix = SLASH_COMMANDS.filter((c) => c.name.slice(1).startsWith(slashQuery));
-    const substr = SLASH_COMMANDS.filter(
-      (c) => !c.name.slice(1).startsWith(slashQuery) && c.name.slice(1).includes(slashQuery),
-    );
-    return [...prefix, ...substr];
+
+  const completionTarget = $derived.by(() => {
+    if (text.startsWith("/") && !/\s/.test(text) && text.indexOf("/", 1) < 0) {
+      return { kind: "/" as const, query: text.slice(1).toLowerCase(), start: 0, end: text.length };
+    }
+    const match = /(?:^|\s)(\$[^\s]*)$/.exec(text);
+    if (match) {
+      const token = match[1];
+      const start = text.length - token.length;
+      return {
+        kind: "$" as const,
+        query: token.slice(1).toLowerCase(),
+        start,
+        end: text.length,
+      };
+    }
+    return undefined;
+  });
+
+  const menuMatches = $derived.by((): CompletionChoice[] => {
+    const target = completionTarget;
+    if (!target || menuDismissed) return [];
+    const pool =
+      target.kind === "/"
+        ? SLASH_COMMANDS.map((c) => ({
+            name: c.name,
+            description: c.description,
+            insert: c.insert,
+          }))
+        : skillCatalog.map((s) => ({
+            name: s.name,
+            description: s.description,
+            insert: `${s.name} `,
+          }));
+    const q = target.query;
+    const matched = !q
+      ? pool
+      : [
+          ...pool.filter((c) => c.name.slice(1).toLowerCase().startsWith(q)),
+          ...pool.filter(
+            (c) =>
+              !c.name.slice(1).toLowerCase().startsWith(q) &&
+              (c.name.slice(1).toLowerCase().includes(q) ||
+                c.description.toLowerCase().includes(q)),
+          ),
+        ];
+    return matched.map((c) => ({ ...c, start: target.start, end: target.end }));
   });
 
   $effect(() => {
-    void slashQuery;
-    slashDismissed = false;
-    slashIndex = 0;
+    void completionTarget?.kind;
+    void completionTarget?.query;
+    menuDismissed = false;
+    menuIndex = 0;
   });
 
-  function pickSlash(cmd: (typeof SLASH_COMMANDS)[number]) {
-    text = cmd.insert;
-    slashDismissed = true;
+  function pickCompletion(choice: CompletionChoice) {
+    const next = text.slice(0, choice.start) + choice.insert + text.slice(choice.end);
+    const caret = choice.start + choice.insert.length;
+    text = next;
+    menuDismissed = true;
     void tick().then(() => {
       if (!field) return;
       field.focus();
-      field.setSelectionRange(text.length, text.length);
+      field.setSelectionRange(caret, caret);
     });
   }
 
@@ -172,32 +250,35 @@
   }
 
   function onkeydown(event: KeyboardEvent) {
-    if (slashMatches.length) {
+    if (menuMatches.length) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        slashIndex = (slashIndex + 1) % slashMatches.length;
+        menuIndex = (menuIndex + 1) % menuMatches.length;
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        slashIndex = (slashIndex - 1 + slashMatches.length) % slashMatches.length;
+        menuIndex = (menuIndex - 1 + menuMatches.length) % menuMatches.length;
         return;
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        slashDismissed = true;
+        menuDismissed = true;
         return;
       }
       if (event.key === "Tab") {
         event.preventDefault();
-        pickSlash(slashMatches[slashIndex] ?? slashMatches[0]);
+        pickCompletion(menuMatches[menuIndex] ?? menuMatches[0]);
         return;
       }
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !touch) {
-        const chosen = slashMatches[slashIndex] ?? slashMatches[0];
-        if (chosen && text.trim().toLowerCase() !== chosen.name) {
+        const chosen = menuMatches[menuIndex] ?? menuMatches[0];
+        if (
+          chosen &&
+          (completionTarget?.kind === "$" || text.trim().toLowerCase() !== chosen.name)
+        ) {
           event.preventDefault();
-          pickSlash(chosen);
+          pickCompletion(chosen);
           return;
         }
       }
@@ -211,24 +292,24 @@
 
 <div class="mx-auto w-full max-w-column px-4 pt-2 pb-4 max-sm:px-2 max-sm:pb-safe-2">
   {#if error}<Alert class="mb-2">{error}</Alert>{/if}
-  {#if slashMatches.length}
+  {#if menuMatches.length}
     <div
       role="listbox"
-      aria-label="Slash commands"
+      aria-label={completionTarget?.kind === "$" ? "Skills" : "Slash commands"}
       class="mb-1.5 max-h-56 overflow-y-auto rounded-card border border-border bg-surface p-1 shadow-sm"
     >
-      {#each slashMatches as cmd, i (cmd.name)}
+      {#each menuMatches as cmd, i (cmd.name)}
         <button
           type="button"
           role="option"
-          aria-selected={i === slashIndex}
+          aria-selected={i === menuIndex}
           class={[
             "flex w-full items-baseline justify-between gap-3 rounded-control px-2.5 py-1.5 text-left text-small",
-            i === slashIndex ? "bg-active text-ink" : "text-ink hover:bg-hover",
+            i === menuIndex ? "bg-active text-ink" : "text-ink hover:bg-hover",
           ]}
           onmousedown={(e) => {
             e.preventDefault();
-            pickSlash(cmd);
+            pickCompletion(cmd);
           }}
         >
           <span class="font-mono font-medium">{cmd.name}</span>

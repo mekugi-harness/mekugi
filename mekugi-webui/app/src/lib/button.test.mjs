@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { registerHooks, stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +15,7 @@ import { pathToFileURL } from "node:url";
 import { compile, compileModule } from "svelte/compiler";
 import { render } from "svelte/server";
 
-const fixtures = pathToFileURL(mkdtempSync(join(tmpdir(), "mekugi-button-"))).href;
+const fixtures = pathToFileURL(realpathSync(mkdtempSync(join(tmpdir(), "mekugi-button-")))).href;
 after(() => rmSync(new URL(fixtures), { recursive: true, force: true }));
 
 registerHooks({

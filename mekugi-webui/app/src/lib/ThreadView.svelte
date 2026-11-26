@@ -28,7 +28,7 @@
   import Popover from "./ui/Popover.svelte";
   import { Separator } from "./ui/separator";
   import { input as inputStyle } from "./ui/styles";
-  import { show, view } from "./view.svelte";
+  import { open, show, view } from "./view.svelte";
 
   let {
     machine,
@@ -173,6 +173,11 @@
     }
   }
 
+  async function forkThread() {
+    const res = await semantic.fork();
+    if ("id" in res) open(res.id);
+  }
+
   async function saveRename() {
     const trimmed = renameValue.trim();
     if (!trimmed || savingName) return;
@@ -277,15 +282,18 @@
         <Popover label="Session details" icon="info">
           <SessionInfo {session} {root} {status} alert={stream.status.alert} />
           <div class="flex items-center justify-between gap-2 border-t border-rule px-4 py-2.5">
-            <Button
-              size="sm"
-              variant="quiet"
-              onclick={() => {
-                renameValue = title;
-                renameError = undefined;
-                renameOpen = true;
-              }}>Rename</Button
-            >
+            <div class="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="quiet"
+                onclick={() => {
+                  renameValue = title;
+                  renameError = undefined;
+                  renameOpen = true;
+                }}>Rename</Button
+              >
+              <Button size="sm" variant="quiet" onclick={() => void forkThread()}>Fork</Button>
+            </div>
             <Button size="sm" variant="danger" onclick={() => onend({ machine, id, title })}
               >End thread</Button
             >
@@ -371,6 +379,8 @@
             <div class="h-full overflow-y-auto px-3 pb-4">
               <Roster
                 roster={stream.roster}
+                lines={stream.review?.counts.Callers}
+                {net}
                 selected={view.agent ?? "/root"}
                 now={wall}
                 loading={stream.connection === "connecting"}
