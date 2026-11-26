@@ -4,11 +4,11 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
 use std::fs::Metadata;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 pub(crate) fn same_file(a: &Metadata, b: &Metadata) -> bool {
     a.dev() == b.dev() && a.ino() == b.ino()
@@ -23,6 +23,33 @@ pub(crate) fn forwarded_argv0(argv0: &str, target: &str) -> String {
         return argv0.to_owned();
     }
     target.to_owned()
+}
+
+/// Queries POSIX `_CS_PATH` via `confstr(3)` directly instead of spawning
+/// `/usr/bin/getconf PATH`, avoiding subprocess overhead and inherited
+/// `DYLD_INSERT_LIBRARIES` / sandbox interference on macOS.
+fn standard_utility_path() -> Result<OsString, String> {
+    // SAFETY: passing null buffer with size 0 queries the required buffer size.
+    let len = unsafe { libc::confstr(libc::_CS_PATH, std::ptr::null_mut(), 0) };
+    if len == 0 {
+        return Err("resolve standard utility path failed".to_owned());
+    }
+    let mut buf = vec![0u8; len];
+    // SAFETY: `buf` is writable for `len` bytes.
+    let written = unsafe {
+        libc::confstr(
+            libc::_CS_PATH,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            len,
+        )
+    };
+    if written == 0 {
+        return Err("resolve standard utility path failed".to_owned());
+    }
+    if let Some(nul) = buf.iter().position(|&b| b == 0) {
+        buf.truncate(nul);
+    }
+    Ok(OsString::from_vec(buf))
 }
 
 /// Resolves the guard directory (if invoked through a symlink) and the real target
@@ -60,14 +87,7 @@ pub(crate) fn guard_paths(
     }
 
     let path_list: OsString = if default_path {
-        let output = Command::new("/usr/bin/getconf")
-            .arg("PATH")
-            .output()
-            .map_err(|err| format!("resolve standard utility path: {err}"))?;
-        if !output.status.success() {
-            return Err("resolve standard utility path failed".to_owned());
-        }
-        OsString::from(String::from_utf8_lossy(&output.stdout).trim())
+        standard_utility_path()?
     } else {
         std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/bin:/usr/bin"))
     };

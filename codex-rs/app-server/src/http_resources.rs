@@ -519,35 +519,41 @@ async fn handle_attachment_image(
                 "Choose an existing absolute workspace directory.",
             );
         }
-        let offered_root = thread_processor.config.cwd.as_path();
-        let Ok(canonical_req) = tokio::fs::canonicalize(&path).await else {
-            return unavailable_image_response();
-        };
-        let mut authorized = tokio::fs::canonicalize(offered_root)
-            .await
-            .is_ok_and(|root| canonical_req.starts_with(&root));
-        if !authorized {
-            for tid in thread_processor.thread_manager.list_thread_ids().await {
-                if let Ok(resp) = thread_processor
-                    .thread_read_response_inner(ThreadReadParams {
-                        thread_id: tid.to_string(),
-                        include_turns: false,
-                    })
-                    .await
-                    && let Ok(cwd) = tokio::fs::canonicalize(resp.thread.cwd.as_path()).await
-                    && canonical_req.starts_with(&cwd)
-                {
-                    authorized = true;
-                    break;
-                }
+        // Collect all authorized roots before inspecting `path` so missing vs.
+        // unauthorized workspaces follow the same lookup path and timing.
+        let mut candidate_roots = vec![thread_processor.config.cwd.to_path_buf()];
+        for tid in thread_processor.thread_manager.list_thread_ids().await {
+            if let Ok(resp) = thread_processor
+                .thread_read_response_inner(ThreadReadParams {
+                    thread_id: tid.to_string(),
+                    include_turns: false,
+                })
+                .await
+            {
+                candidate_roots.push(PathBuf::from(resp.thread.cwd.as_str()));
             }
         }
-        if !authorized {
+        if !is_authorized_preview_workspace(&path, &candidate_roots).await {
             return unavailable_image_response();
         }
         path
     };
     read_image_source(&workspace, &request.path, ImageReadMode::WorkspaceConfined).await
+}
+
+async fn is_authorized_preview_workspace(requested: &Path, candidate_roots: &[PathBuf]) -> bool {
+    let mut canonical_roots = Vec::with_capacity(candidate_roots.len());
+    for root in candidate_roots {
+        if let Ok(canonical_root) = tokio::fs::canonicalize(root).await {
+            canonical_roots.push(canonical_root);
+        }
+    }
+    let Ok(canonical_req) = tokio::fs::canonicalize(requested).await else {
+        return false;
+    };
+    canonical_roots
+        .iter()
+        .any(|root| canonical_req.starts_with(root))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -985,5 +991,24 @@ mod tests {
         let missing_ws = root.path().join("no-such-workspace");
         let missing_ws_resp = read_image_source(&missing_ws, "pic.png", ImageReadMode::WorkspaceConfined).await;
         assert_eq!(missing_ws_resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn preview_workspace_authorization_checks_config_and_loaded_threads() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let offered_root = root.path().join("offered");
+        let thread_ws = root.path().join("thread-ws");
+        let thread_sub = thread_ws.join("nested");
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(&offered_root).expect("offered");
+        std::fs::create_dir_all(&thread_sub).expect("thread_sub");
+        std::fs::create_dir_all(&outside).expect("outside");
+
+        let roots = vec![offered_root.clone(), thread_ws.clone()];
+        assert!(is_authorized_preview_workspace(&offered_root, &roots).await);
+        assert!(is_authorized_preview_workspace(&thread_ws, &roots).await);
+        assert!(is_authorized_preview_workspace(&thread_sub, &roots).await);
+        assert!(!is_authorized_preview_workspace(&outside, &roots).await);
+        assert!(!is_authorized_preview_workspace(&root.path().join("missing"), &roots).await);
     }
 }
