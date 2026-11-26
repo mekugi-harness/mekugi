@@ -43,9 +43,11 @@
   // The theme button shows the current choice and moves to the next.
   const themeIcons = { system: "monitor", light: "sun", dark: "moon" } as const;
   const title = (theme: Theme) => theme[0].toUpperCase() + theme.slice(1);
-  // Clean pill rows: quiet hover on the soft rail, tonal active fill without heavy shadows.
-  const row =
-    "flex w-full items-center rounded-full text-left text-ink/90 transition-colors hover:bg-active/60 hover:text-ink aria-[current=page]:bg-active aria-[current=page]:text-ink max-sm:min-h-11 pointer-coarse:min-h-11";
+  // Flat transparent action rows; only active thread links carry a subtle pill highlight.
+  const flatRow =
+    "flex w-full items-center rounded-lg text-left text-ink/90 transition-colors hover:bg-active/45 hover:text-ink max-sm:min-h-11 pointer-coarse:min-h-11";
+  const threadRow =
+    "flex w-full items-center rounded-full text-left text-ink/90 transition-colors hover:bg-active/45 hover:text-ink aria-[current=page]:bg-active/75 aria-[current=page]:text-ink max-sm:min-h-11 pointer-coarse:min-h-11";
 </script>
 
 <nav class="flex h-full min-h-0 flex-col px-3 pt-safe pb-safe" aria-label="Threads">
@@ -76,7 +78,7 @@
   </div>
   <button
     type="button"
-    class="{row} min-h-10 gap-3 px-3 font-medium"
+    class="{flatRow} min-h-9 gap-3 px-2.5 font-medium"
     aria-current={!view.session && !!view.machine ? "page" : undefined}
     onclick={() => start()}
   >
@@ -147,7 +149,7 @@
                 {@const current = view.machine === machine.id && view.session === s.id}
                 <li>
                   <a
-                    class="{row} min-h-9 gap-2.5 px-3 py-1.5 no-underline aria-[current=page]:font-medium"
+                    class="{threadRow} min-h-9 gap-2.5 px-3 py-1.5 no-underline aria-[current=page]:font-medium"
                     href={selectionHash({ machine: machine.id, session: s.id })}
                     aria-current={current ? "page" : undefined}
                     title={[name(s), s.workspace, status].filter(Boolean).join("\n")}
@@ -191,7 +193,7 @@
     <div class="flex items-center gap-1">
       <button
         type="button"
-        class="{row} min-h-10 min-w-0 flex-1 gap-3 px-3 font-medium"
+        class="{flatRow} min-h-9 min-w-0 flex-1 gap-3 px-2.5 font-medium"
         onclick={() => onmachines()}
       >
         <span class="flex flex-none text-ink/75"><Icon name="server" size={16} /></span>Machines
