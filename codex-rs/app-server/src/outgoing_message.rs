@@ -2069,7 +2069,9 @@ mod tests {
             )
             .await;
 
-        let first = rx.try_recv().expect("local connection should receive secret request");
+        let first = rx
+            .try_recv()
+            .expect("local connection should receive secret request");
         assert!(matches!(
             first,
             OutgoingEnvelope::ToConnection { connection_id, .. } if connection_id == local_conn
@@ -2106,7 +2108,12 @@ mod tests {
                 serde_json::json!({ "decision": "decline" }),
             )
             .await;
-        assert!(secret_waiter.await.expect("local response should resolve").is_ok());
+        assert!(
+            secret_waiter
+                .await
+                .expect("local response should resolve")
+                .is_ok()
+        );
 
         // 2. Secret ToolRequestUserInput (is_secret: true) is also blocked from remote_conn.
         let (secret_q_id, mut secret_q_waiter) = outgoing
@@ -2159,15 +2166,26 @@ mod tests {
                 Some(thread_id),
             )
             .await;
-        let delivered = rx.try_recv().expect("remote-human should receive non-secret question");
+        let delivered = rx
+            .try_recv()
+            .expect("remote-human should receive non-secret question");
         assert!(matches!(
             delivered,
             OutgoingEnvelope::ToConnection { connection_id, .. } if connection_id == remote_conn
         ));
         outgoing
-            .notify_client_response(remote_conn, plain_q_id, serde_json::json!({ "answers": {} }))
+            .notify_client_response(
+                remote_conn,
+                plain_q_id,
+                serde_json::json!({ "answers": {} }),
+            )
             .await;
-        assert!(plain_q_waiter.await.expect("remote non-secret answer resolves").is_ok());
+        assert!(
+            plain_q_waiter
+                .await
+                .expect("remote non-secret answer resolves")
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -2235,9 +2253,18 @@ mod tests {
 
         // One-time approval still succeeds.
         outgoing
-            .notify_client_response(remote_conn, cmd_id, serde_json::json!({ "decision": "accept" }))
+            .notify_client_response(
+                remote_conn,
+                cmd_id,
+                serde_json::json!({ "decision": "accept" }),
+            )
             .await;
-        assert!(cmd_waiter.await.expect("one-time accept should resolve").is_ok());
+        assert!(
+            cmd_waiter
+                .await
+                .expect("one-time accept should resolve")
+                .is_ok()
+        );
 
         // Session-scoped permission grant is also rejected on remote-human.
         let (perm_id, mut perm_waiter) = outgoing
@@ -2278,6 +2305,11 @@ mod tests {
                 serde_json::json!({ "permissions": {}, "scope": "turn" }),
             )
             .await;
-        assert!(perm_waiter.await.expect("turn-scoped grant should resolve").is_ok());
+        assert!(
+            perm_waiter
+                .await
+                .expect("turn-scoped grant should resolve")
+                .is_ok()
+        );
     }
 }

@@ -3551,9 +3551,9 @@ async fn prediction_fork_inherits_updated_service_tier_after_typed_startup_overr
     let update_id = mcp
         .send_thread_settings_update_request(
             codex_app_server_protocol::ThreadSettingsUpdateParams {
-            thread_id: parent_id.clone(),
-            service_tier: Some(Some("flex".to_string())),
-            ..Default::default()
+                thread_id: parent_id.clone(),
+                service_tier: Some(Some("flex".to_string())),
+                ..Default::default()
             },
         )
         .await?;

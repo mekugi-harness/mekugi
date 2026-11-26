@@ -451,8 +451,9 @@ fn find_published_image_source(
             {
                 continue;
             }
-            for (image_index, candidate) in
-                extract_item_image_sources(&item.payload).into_iter().enumerate()
+            for (image_index, candidate) in extract_item_image_sources(&item.payload)
+                .into_iter()
+                .enumerate()
             {
                 let index_ok = image_body.index.is_none_or(|idx| idx == image_index);
                 let identity_ok =
@@ -479,9 +480,7 @@ async fn handle_attachment_image(
             return error_response(StatusCode::BAD_REQUEST, "Invalid attachment image request.");
         }
     };
-    if request.path.is_empty()
-        || request.path.starts_with("data:")
-        || request.path.contains("://")
+    if request.path.is_empty() || request.path.starts_with("data:") || request.path.contains("://")
     {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -625,7 +624,10 @@ mod tests {
             detect_raster_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
             Some("image/png")
         );
-        assert_eq!(detect_raster_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(
+            detect_raster_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
         assert_eq!(detect_raster_mime(b"GIF89a..."), Some("image/gif"));
         assert_eq!(detect_raster_mime(b"RIFF0000WEBP"), Some("image/webp"));
         assert_eq!(detect_raster_mime(b"<svg></svg>"), None);

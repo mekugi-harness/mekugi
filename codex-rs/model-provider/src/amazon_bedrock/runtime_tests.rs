@@ -58,7 +58,8 @@ async fn rejects_invalid_caller_region_in_runtime_base_url() {
     .await
     .expect_err("URL delimiter in caller AWS_REGION must be rejected");
     assert!(
-        err.to_string().contains("Amazon Bedrock region `attacker.example/v1#` is invalid"),
+        err.to_string()
+            .contains("Amazon Bedrock region `attacker.example/v1#` is invalid"),
         "unexpected error: {err:?}"
     );
 }
