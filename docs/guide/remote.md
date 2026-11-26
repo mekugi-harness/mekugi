@@ -109,12 +109,14 @@ The root `Dockerfile` builds browser assets with Bun and embeds them in a CGO-en
 Go binary. `compose.yaml` runs separate web UI and connector containers. The
 execution server, Codex, credentials and workspaces stay on the execution machine.
 
-For a Docker Engine on that machine with Tailscale connected, start `mekugi server`, then:
+For a Docker Engine on that machine with Tailscale connected, start `mekugi-app-server --listen unix://` (which binds `$CODEX_HOME/app-server-control/app-server-control.sock`), then:
 
 ```sh
 cp .env.example .env
-# Edit .env: set MEKUGI_SERVER_DIR to the printed socket's parent directory,
+# Edit .env: set MEKUGI_SERVER_DIR to $CODEX_HOME/app-server-control,
 # and MEKUGI_UID / MEKUGI_GID to the server user's numeric id -u / id -g.
+# If /tmp is symlinked on the host, also set MEKUGI_DAEMON_DIR to the canonical
+# directory printed by: dirname "$(readlink -f "$MEKUGI_SERVER_DIR/app-server-control.sock")"
 # Set TAILNET_IP from tailscale ip -4 and WEBUI_ORIGIN to http://TAILNET_IP:7777.
 install -d -m 700 .docker/connector
 docker compose up --build -d

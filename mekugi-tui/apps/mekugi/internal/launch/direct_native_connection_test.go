@@ -17,7 +17,9 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
+	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
 )
 
@@ -505,5 +507,142 @@ func TestDirectNativeNewClearsActiveTurnBeforeRewind(t *testing.T) {
 	}
 	if conn.activeTurn != "" {
 		t.Fatalf("expected activeTurn cleared on main thread switch, got %q", conn.activeTurn)
+	}
+}
+
+func TestDirectNativeProjectionPopulatesEntryValues(t *testing.T) {
+	conn := &directNativeConnection{
+		wire:          &nativeAppServerWire{userAgent: "mekugi/0.172.0"},
+		mainThread:    "thr-main",
+		items:         make(map[string][]*directItemRecord),
+		itemsByID:     make(map[string]*directItemRecord),
+		threadCallers: map[string]string{"thr-main": "main"},
+		events:        make(chan sessionapi.NativeEvent, 16),
+	}
+
+	conn.handleNotification(appserver.Message{
+		Method: "item/agentMessage/delta",
+		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","itemId":"msg-1","delta":"Hello "}`),
+	})
+	rec := conn.itemsByID["msg-1"]
+	if rec == nil || len(rec.entry.Values) != 1 || rec.entry.Values[0].Kind != "final" || rec.entry.Values[0].Body != "Hello " {
+		t.Fatalf("streaming agentMessage did not project Values: %+v", rec)
+	}
+
+	conn.handleNotification(appserver.Message{
+		Method: "item/completed",
+		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","item":{"type":"agentMessage","id":"msg-1","text":"Hello world"}}`),
+	})
+	if len(rec.entry.Values) != 1 || rec.entry.Values[0].Kind != "final" || rec.entry.Values[0].Body != "Hello world" || rec.entry.Values[0].Owner != "main" {
+		t.Fatalf("completed agentMessage did not project Values: %+v", rec.entry.Values)
+	}
+
+	conn.handleNotification(appserver.Message{
+		Method: "item/completed",
+		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","item":{"type":"reasoning","id":"rsn-1","summary":["Thinking step"]}}`),
+	})
+	rsn := conn.itemsByID["rsn-1"]
+	if rsn == nil || len(rsn.entry.Values) == 0 {
+		t.Fatalf("reasoning item did not project Values: %+v", rsn)
+	}
+
+	conn.handleNotification(appserver.Message{
+		Method: "item/completed",
+		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","item":{"type":"plan","id":"pln-1","text":"1. Fix bug"}}`),
+	})
+	pln := conn.itemsByID["pln-1"]
+	if pln == nil || len(pln.entry.Values) != 1 || pln.entry.Values[0].Body != "1. Fix bug" {
+		t.Fatalf("plan item did not project Values: %+v", pln)
+	}
+}
+
+func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
+	conn := &directNativeConnection{
+		wire:          &nativeAppServerWire{userAgent: "mekugi/0.172.0"},
+		mainThread:    "thr-main",
+		items:         make(map[string][]*directItemRecord),
+		itemsByID:     make(map[string]*directItemRecord),
+		threadCallers: map[string]string{"thr-main": "main"},
+		events:        make(chan sessionapi.NativeEvent, 16),
+	}
+
+	// Typing "/" opens slash command menu.
+	_, err := conn.Send(context.Background(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Completion: &sessionapi.NativeEditorInput{
+			Target: conversation.EditorTarget{Revision: 1},
+			Draft:  composer.Draft{Text: "/"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("completion failed: %v", err)
+	}
+	ev := <-conn.events
+	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuCompletion || len(ev.Frame.View.Menu.Choices) == 0 {
+		t.Fatalf("expected slash completion menu, got %+v", ev.Frame.View.Menu)
+	}
+	if ev.Frame.CompletionTarget != (conversation.EditorTarget{Revision: 1}) {
+		t.Fatalf("expected CompletionTarget revision 1 so renderer keeps menu visible, got %+v", ev.Frame.CompletionTarget)
+	}
+	menuID := ev.Frame.View.Menu.ID
+
+	// Filtering "/res" narrows to /resume.
+	_, _ = conn.Send(context.Background(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Completion: &sessionapi.NativeEditorInput{
+			Target: conversation.EditorTarget{Revision: 2},
+			Draft:  composer.Draft{Text: "/res"},
+		},
+	})
+	ev = <-conn.events
+	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "/resume" {
+		t.Fatalf("expected /resume match, got %+v", ev.Frame.View.Menu)
+	}
+	if ev.Frame.CompletionTarget != (conversation.EditorTarget{Revision: 2}) {
+		t.Fatalf("expected CompletionTarget revision 2, got %+v", ev.Frame.CompletionTarget)
+	}
+
+	// Accepting emits Delete + Insert effects targeting the editor revision sequence.
+	_, _ = conn.Send(context.Background(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Menu: &sessionpresentation.MenuAction{
+			Thread: "thr-main",
+			Menu:   menuID,
+			Kind:   sessionpresentation.MenuAccept,
+			Choice: completion.ChoiceID{Name: "/resume"},
+		},
+		Editor: &sessionapi.NativeEditorInput{
+			Target: conversation.EditorTarget{Revision: 2},
+			Draft:  composer.Draft{Text: "/res"},
+		},
+	})
+	ev = <-conn.events
+	if ev.Frame.View.Menu != nil {
+		t.Fatalf("expected menu closed after accept, got %+v", ev.Frame.View.Menu)
+	}
+	if len(ev.Frame.Effects) != 2 {
+		t.Fatalf("expected 2 editor effects (delete+insert), got %+v", ev.Frame.Effects)
+	}
+	var ed composer.Editor
+	ed.Replace(composer.Draft{Text: "/res"})
+	// Align editor revision to 2
+	for ed.Revision() < 2 {
+		ed.Changed()
+	}
+	for _, eff := range ev.Frame.Effects {
+		if eff.Target.Revision != ed.Revision() {
+			t.Fatalf("effect target revision %d != editor revision %d", eff.Target.Revision, ed.Revision())
+		}
+		if _, err := ed.Apply(*eff.Action); err != nil {
+			t.Fatalf("apply effect %+v: %v", eff.Action, err)
+		}
+	}
+	if ed.Text != "/resume" {
+		t.Fatalf("expected editor text /resume, got %q", ed.Text)
+	}
+
+	// Receipt prunes acknowledged effects.
+	_, _ = conn.Send(context.Background(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Receipt: &sessionapi.NativeReceipt{Effect: ev.Frame.Effects[len(ev.Frame.Effects)-1].ID},
+	})
+	if len(conn.effects) != 0 {
+		t.Fatalf("expected effects pruned on receipt, got %+v", conn.effects)
 	}
 }

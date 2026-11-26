@@ -6,7 +6,6 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	"go/ast"
 	"go/parser"
 	"go/token"
 	"io"
@@ -217,13 +216,6 @@ func expand(args []string, members []member) ([]string, error) {
 func checkImports(members []member) error {
 	var failures []error
 	for _, m := range members {
-		feature := strings.HasPrefix(filepath.ToSlash(m.directory), "mekugi-tui/modules/")
-		mode := parser.ImportsOnly
-		var files map[string]*ast.File
-		if feature {
-			mode = 0
-			files = make(map[string]*ast.File)
-		}
 		err := filepath.WalkDir(m.directory, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -242,12 +234,9 @@ func checkImports(members []member) error {
 			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
-			file, err := parser.ParseFile(token.NewFileSet(), path, nil, mode)
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
 			if err != nil {
 				return err
-			}
-			if feature {
-				files[path] = file
 			}
 			for _, imported := range file.Imports {
 				name, err := strconv.Unquote(imported.Path.Value)
@@ -263,11 +252,6 @@ func checkImports(members []member) error {
 		})
 		if err != nil {
 			failures = append(failures, err)
-		}
-		if feature {
-			if err := checkRequires(m, files); err != nil {
-				failures = append(failures, err)
-			}
 		}
 	}
 	return errors.Join(failures...)
@@ -323,7 +307,6 @@ func allowedImport(directory, pkg, imported string) error {
 		}
 		allowed := map[string][]string{
 			"commandanalysis":      {"sourceanalysis", "commandargs"},
-			"shellinstrumentation": {"commandanalysis", "commandargs"},
 			"diffrender":           {"diffmodel", "pathdisplay", "textsanitize"},
 			"terminalui":           {"diffrender", "pathdisplay", "sourceanalysis", "textsanitize"},
 		}
@@ -357,7 +340,7 @@ func allowedImport(directory, pkg, imported string) error {
 			if len(parts) < 3 || slices.Contains([]string{"internal", "codexbinding", "terminalview", "presentation"}, parts[2]) {
 				return deny()
 			}
-			return nil // Requires is checked against the descriptor and typed Deps.
+			return nil // Public packages of sibling feature modules are allowed.
 		}
 		return deny()
 	}

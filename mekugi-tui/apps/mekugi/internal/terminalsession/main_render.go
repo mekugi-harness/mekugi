@@ -116,6 +116,9 @@ func (m *Main) Render(transcript *activityui.View, painter *activityui.Painter, 
 
 // Source: apps/mekugi/internal/router/native_welcome.go:46:58@ceef0946.
 func welcome(version, backendVersion string) string {
+	if strings.Contains(backendVersion, "/") {
+		return "\x1b[1m" + backendVersion + terminalui.Reset
+	}
 	label := "Mekugi " + version
 	if strings.HasPrefix(version, "v") {
 		label = "mekugi-" + version

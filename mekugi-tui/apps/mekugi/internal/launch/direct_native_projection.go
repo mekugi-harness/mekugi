@@ -140,6 +140,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 				rec.entry.Text += p.Delta
 				rec.entry.Live = true
 				rec.entry.Running = true
+				refreshProjectedValues(rec)
 				rec.entry.Revision++
 			}
 			c.publishLocked()
@@ -163,6 +164,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			rec.entry.Text += p.Delta
 			rec.entry.Live = true
 			rec.entry.Running = true
+			refreshProjectedValues(rec)
 			rec.entry.Revision++
 			c.publishLocked()
 			c.mu.Unlock()
@@ -687,8 +689,17 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		if text := decodeJSONString(fields["text"]); text != "" {
 			rec.entry.Text = text
 		}
+		refreshProjectedValues(rec)
 	case "plan":
 		rec.entry.Text = decodeJSONString(fields["text"])
+		rec.entry.Values = []activity.Value{{
+			Content: activityfeed.Content{
+				Kind: "message",
+				Verb: "Plan",
+				Body: rec.entry.Text,
+			},
+		}}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 	case "reasoning":
 		var summary, content []string
 		_ = json.Unmarshal(fields["summary"], &summary)
@@ -700,6 +711,7 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		if joined != "" {
 			rec.entry.Text = joined
 		}
+		refreshProjectedValues(rec)
 	case "commandExecution":
 		command := decodeJSONString(fields["command"])
 		status := decodeJSONString(fields["status"])
@@ -723,6 +735,7 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			rec.entry.Outputs[1]++
 		}
 		rec.entry.Values = []activity.Value{val}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 		rec.entry.Outcome = status
 	case "fileChange":
 		var changeList []struct {
@@ -739,15 +752,16 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			}
 			vals = append(vals, activity.Value{
 				Content: activityfeed.Content{
-					Kind: "op",
-					Verb: verb,
+					Kind:  "op",
+					Verb:  verb,
 					Label: ch.Path,
-					Code: ch.Diff,
-					Lang: "diff",
+					Code:  ch.Diff,
+					Lang:  "diff",
 				},
 			})
 		}
 		rec.entry.Values = vals
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 		rec.entry.Outcome = decodeJSONString(fields["status"])
 	case "mcpToolCall", "dynamicToolCall":
 		tool := decodeJSONString(fields["tool"])
@@ -758,22 +772,24 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		}
 		rec.entry.Values = []activity.Value{{
 			Content: activityfeed.Content{
-				Kind: "op",
-				Verb: "Call",
+				Kind:  "op",
+				Verb:  "Call",
 				Label: label,
 			},
 		}}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 		rec.entry.Outcome = decodeJSONString(fields["status"])
 	case "collabAgentToolCall":
 		tool := decodeJSONString(fields["tool"])
 		promptText := decodeJSONString(fields["prompt"])
 		rec.entry.Values = []activity.Value{{
 			Content: activityfeed.Content{
-				Kind: "op",
-				Verb: tool,
+				Kind:  "op",
+				Verb:  tool,
 				Label: promptText,
 			},
 		}}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 		rec.entry.Outcome = decodeJSONString(fields["status"])
 	case "subAgentActivity":
 		agentPath := decodeJSONString(fields["agentPath"])
@@ -782,9 +798,18 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		rec.entry.AssignmentTo = agentPath
 		rec.entry.AssignmentText = assignment
 		rec.entry.Text = assignment
+		rec.entry.Values = []activity.Value{{
+			To: agentPath,
+			Content: activityfeed.Content{
+				Kind: "message",
+				Body: assignment,
+			},
+		}}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 	case "contextCompaction":
 		rec.entry.ContextBoundary = true
 		rec.entry.Text = "Context compacted"
+		refreshProjectedValues(rec)
 	default:
 		// Render server-owned inline cards and future ThreadItem models directly
 		// from their server-published fields without adding Go backend state.
@@ -808,10 +833,19 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 				Body: body,
 			},
 		}}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 		rec.entry.Outcome = decodeJSONString(fields["status"])
 	}
 	rec.entry.Revision++
 	return itemType
+}
+
+func refreshProjectedValues(rec *directItemRecord) {
+	content := activity.ItemContent{Facts: rec.entry.Facts}
+	if rec.entry.Kind == "reasoning" {
+		content.Details = &activity.ItemDetails{ReasoningLive: rec.entry.Live}
+	}
+	rec.entry.Values = content.Values()
 }
 
 func extractUserMessageText(raw jsontext.Value) string {

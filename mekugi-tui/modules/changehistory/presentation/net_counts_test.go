@@ -2,6 +2,7 @@ package presentation
 
 // Source: internal/livediff/net_counts_test.go@[ebde9ad5]
 import (
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 	"fmt"
 	"testing"
 
@@ -12,7 +13,7 @@ func netCountsCapture(order uint64, caller, beforePath, afterPath, before, after
 	return Chunk{
 		Key: fmt.Sprintf("capture-%d", order), CaptureOrder: order,
 		Change: fmt.Sprintf("change-%d", order), Caller: caller,
-		Review: diffmodel.RenderReviewFile(beforePath, afterPath, before, after),
+		Review: uisnapshot.RenderReviewFile(beforePath, afterPath, before, after),
 	}
 }
 
@@ -76,7 +77,7 @@ func TestFileNetCountsUnknownEvidence(t *testing.T) {
 			case "incomplete", "hidden incomplete":
 				first.Review.Incomplete = "before content unavailable"
 			case "inconsistent":
-				second.Review = diffmodel.RenderReviewFile("a", "a", "unobserved\n", "final\n")
+				second.Review = uisnapshot.RenderReviewFile("a", "a", "unobserved\n", "final\n")
 			}
 			view.Merge(GroupCaptures([]Chunk{first, second}))
 			if kind == "hidden incomplete" {

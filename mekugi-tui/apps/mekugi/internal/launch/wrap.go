@@ -14,7 +14,6 @@ import (
 
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/shellinstrumentation"
 	"golang.org/x/term"
 )
 
@@ -116,7 +115,7 @@ func withoutInheritedFrontend(environment []string) []string {
 	result := make([]string, 0, len(environment))
 	for _, entry := range environment {
 		key, value, _ := strings.Cut(entry, "=")
-		if slices.Contains([]string{"CODEX_THREAD_ID", userBashEnvEnvironment, shellinstrumentation.Guard, shellinstrumentation.ShTrackerEnvironment, "CODEX_SHELL_GUARD_SOCKET", "CODEX_SHELL_GUARD_VCS_DIR", "CODEX_SHELL_GUARD_SUDO_DIR"}, key) {
+		if slices.Contains([]string{"CODEX_THREAD_ID", userBashEnvEnvironment, "MEKUGI_EXEC_TRACK", "MEKUGI_SH_TRACKER", "CODEX_SHELL_GUARD_SOCKET", "CODEX_SHELL_GUARD_VCS_DIR", "CODEX_SHELL_GUARD_SUDO_DIR"}, key) {
 			continue
 		}
 		if key == "BASH_ENV" && frontendDirectory != "" {

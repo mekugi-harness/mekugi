@@ -1,6 +1,7 @@
 package terminalview
 
 import (
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 	"testing"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
@@ -10,7 +11,7 @@ import (
 
 func TestLiveDiffHunkNavigationAndFileMemory(t *testing.T) {
 	c := NewPane("", diffrender.DarkTheme)
-	c.files = []presentation.File{{Path: "a.go", Chunks: []presentation.Chunk{{Key: "a", Review: diffmodel.ReviewFile{BeforePath: "a.go", AfterPath: "a.go", Diff: "@@ -1 +1 @@\n-old\n+new\n@@ -20 +20 @@\n-before\n+after\n"}}}}, {Path: "b.go", Chunks: []presentation.Chunk{{Key: "b", Review: diffmodel.RenderReviewFile("", "b.go", "", "second\n")}}}}
+	c.files = []presentation.File{{Path: "a.go", Chunks: []presentation.Chunk{{Key: "a", Review: diffmodel.ReviewFile{BeforePath: "a.go", AfterPath: "a.go", Diff: "@@ -1 +1 @@\n-old\n+new\n@@ -20 +20 @@\n-before\n+after\n"}}}}, {Path: "b.go", Chunks: []presentation.Chunk{{Key: "b", Review: uisnapshot.RenderReviewFile("", "b.go", "", "second\n")}}}}
 	c.view.Files = c.files
 	var err error
 	c.rendering, err = c.renderer.Render(t.Context(), diffrender.DarkTheme, c.files, "", 80)

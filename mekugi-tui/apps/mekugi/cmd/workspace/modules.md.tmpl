@@ -1,23 +1,15 @@
 # Module reference
 
-Generated from feature descriptors, Codex binding declarations and application
-composition. {{.SelectedCount}} of {{len .Modules}} feature modules are selected.
+Generated from workspace module membership and module specifications.
+{{len .Modules}} feature modules are present in the Go workspace.
 Regenerate with `just generate`; verify with `just check-generated`.
 
 The [composition contract](../contracts/composition.md) defines ownership and
-lifecycle. Declared connections and requirements do not establish installed-host
-availability. Each module's specification owns its behavior and acceptance.
+lifecycle. Each module's specification owns its behavior and acceptance.
 {{range .Modules}}
-## [{{.Descriptor.ID}}](../../{{.Directory}}/SPEC.md)
+## [{{.ID}}](../../{{.Directory}}/SPEC.md)
 
-{{.Descriptor.Summary}}
+{{if .Summary}}{{.Summary}}{{else}}Module `{{.ID}}`.{{end}}
 
-- Composition: {{if .Selected}}selected{{else}}unselected{{end}}; lifetime: `{{.Descriptor.Lifetime}}`.
-- Requires: {{range $i, $v := .Descriptor.Requires}}{{if $i}}, {{end}}`{{$v}}`{{else}}none{{end}}.
-{{if .Descriptor.Resources}}- Resources: {{range $i, $v := .Descriptor.Resources}}{{if $i}}, {{end}}{{$v}}{{end}}.
-{{end}}{{if .Descriptor.Contributes}}- Contributes: {{range $i, $v := .Descriptor.Contributes}}{{if $i}}, {{end}}`{{$v}}`{{end}}.
-{{end}}{{if .Descriptor.Hosts}}- Hosts: {{range $i, $v := .Descriptor.Hosts}}{{if $i}}, {{end}}`{{$v}}`{{end}}.
-{{end}}{{if .Descriptor.Commands}}- Commands: {{range $i, $v := .Descriptor.Commands}}{{if $i}}, {{end}}`{{$v}}`{{end}}.
-{{end}}{{if .Descriptor.Records}}- Records: {{range $i, $v := .Descriptor.Records}}{{if $i}}, {{end}}`{{$v}}`{{end}}.
-{{end}}- Codex connections: {{range $i, $v := .Binding.Mechanisms}}{{if $i}}, {{end}}`{{$v}}`{{else}}none{{end}}.
+- Packages: {{range $i, $v := .Packages}}{{if $i}}, {{end}}`{{$v}}`{{else}}none{{end}}.
 {{end}}

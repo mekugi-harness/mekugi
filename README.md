@@ -105,7 +105,7 @@ Requirements:
 | Linux ARM64 | `mekugi_linux_arm64.tar.gz` | glibc 2.39 (e.g. Ubuntu 24.04) |
 | macOS Apple Silicon | `mekugi_darwin_arm64.tar.gz` | macOS 15 |
 
-Install `mekugi`, `mekugi-exec`, the native server, helpers, and model catalog
+Install `mekugi`, the native server, helpers, and model catalog
 into `~/.local/bin` (checksum-verified):
 
 ```sh

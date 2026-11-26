@@ -166,7 +166,7 @@ Click output/errors/excerpts for retained content; `Ctrl-B !` opens the newest e
 Command output links in replies open the output sheet. Links to retained lines
 jump to those lines. Local file and command output links use `#L12` for one
 line or `#L12-L18` for an inclusive range. Older colon-suffixed links still work.
-With `mekugi-exec`, supported Bash and Linux dash-backed sh command lists show each
+Supported command lists show each
 command's streamed output, exit status and timing; missing boundaries are labeled
 combined. Supported single commands and pipelines, including Bash timed commands,
 show measured command time excluding startup and matching. Host-omitted text
@@ -175,8 +175,7 @@ moves matches, and `y` copies. Left returns from Model-visible output to the
 original view. Esc or `q` closes the sheet.
 Select text to copy portions.
 Local links read current UTF-8 files up to 8 MiB; relative paths use the workspace,
-`:line` scrolls, reopening rereads. See [activity](../../mekugi-tui/modules/activity/SPEC.md)
-and [command tracking](../../mekugi-tui/modules/commandsegments/SPEC.md).
+`:line` scrolls, reopening rereads. See [activity](../../mekugi-tui/modules/activity/SPEC.md).
 
 ## Image previews
 

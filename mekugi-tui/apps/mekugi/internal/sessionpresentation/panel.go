@@ -1,9 +1,5 @@
 package sessionpresentation
 
-import (
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
-)
-
 // PanelView contains source values, never layout or a request handle.
 type PanelView struct {
 	// MetricViews names the metric tabs in order for renderers; empty outside /session.
@@ -12,7 +8,7 @@ type PanelView struct {
 	MetricExchange            uint64
 	ID                        uint64
 	Fields                    []StatusField
-	Metrics                   *transportcapture.MetricsSnapshot
+	Metrics                   *MetricsSnapshot
 	Features                  *FeatureMetrics
 	Workspace, DebugDirectory string
 }

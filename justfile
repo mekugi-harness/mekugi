@@ -5,7 +5,7 @@ export GOWORK := justfile_directory() / 'mekugi-tui/go.work'
 
 just := quote(just_executable())
 workspace := 'go run -trimpath ./mekugi-tui/apps/mekugi/cmd/workspace'
-go_commands := './mekugi-tui/apps/mekugi/cmd/mekugi ./mekugi-tui/apps/mekugi/cmd/mekugi-exec'
+go_commands := './mekugi-tui/apps/mekugi/cmd/mekugi'
 launch := './mekugi-tui/apps/mekugi/internal/launch'
 native_files := 'mekugi-app-server codex-code-mode-host' + if os() == 'linux' { ' bwrap' } else { '' }
 go_bin := 'dir=$(go env GOBIN); if [ -z "$dir" ]; then dir=$(go env GOPATH); dir=${dir%%:*}/bin; fi'
@@ -88,7 +88,6 @@ check-generated:
 # Diagnostic build, with symbols and the same optimized code as production.
 mekugi-pprof:
     go build -trimpath -tags pprof -o bin/mekugi-pprof ./mekugi-tui/apps/mekugi/cmd/mekugi
-    go build -trimpath -o bin/mekugi-exec ./mekugi-tui/apps/mekugi/cmd/mekugi-exec
 
 # Real terminal preview with an isolated, scripted local Responses provider.
 [script('sh')]

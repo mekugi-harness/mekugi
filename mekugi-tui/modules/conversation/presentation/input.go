@@ -6,19 +6,9 @@ import (
 	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/scope"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/transcript"
 )
-
-// Service accesses only conversation-owned entries in application scope stores.
-type Service struct {
-	transcript scope.Key[transcript.State]
-}
-
-func (s *Service) Transcript(store *scope.Store) *transcript.State { return s.transcript.Value(store) }
 
 // CompactIntent marks a queued command, independently of literal message text.
 // Host operation gates stay in session control.

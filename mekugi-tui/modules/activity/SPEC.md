@@ -28,6 +28,6 @@
 - **Retained output & bounds**: retains normalized command/segment output in memory (up to 1 MiB
   per output / 16 MiB shared per session, protecting running commands; newest 2,000 feed records)
   and replaces streamed output with the host aggregate on completion. Retains historical
-  wait-target snapshots through [Session history](../sessionhistory/SPEC.md) (presentation-only;
+  wait-target snapshots from native session history (presentation-only;
   never restores live waits).
 - See [Terminal UI guide](../../../docs/guide/terminal-ui.md) for user-visible layout and dialogs.

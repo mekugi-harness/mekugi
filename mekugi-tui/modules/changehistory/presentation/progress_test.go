@@ -1,14 +1,14 @@
 package presentation
 
 import (
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 	"testing"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
 
 func TestProgressExposesTypedLegacyIntervalWithoutParsingLabels(t *testing.T) {
 	chunk := Chunk{Key: "/workspace\x00call/0", Workspace: "/workspace", Origin: Origin{Caller: "/root/worker", Change: "amber1"},
-		Review: diffmodel.RenderReviewFile("old", "new", "before\n", "after\n")}
+		Review: uisnapshot.RenderReviewFile("old", "new", "before\n", "after\n")}
 	publication := Publication{Files: []File{{Chunks: []Chunk{chunk}}}}
 	count := 0
 	for capture := range publication.Progress(map[string]bool{"/root/worker": true}, nil) {

@@ -3,6 +3,7 @@ package terminalview_test
 // Source: apps/mekugi/internal/launch/live_diff_preview_view_test.go:1:336@[71ea6979c]
 
 import (
+	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 	"fmt"
 	"slices"
 	"strings"
@@ -156,8 +157,8 @@ func BenchmarkLiveDiffConcurrentPreviewFrame(b *testing.B) {
 
 func TestLiveDiffPreviewTitleShowsFileStatusAndCounts(t *testing.T) {
 	t.Parallel()
-	modified := diffmodel.RenderReviewFile("/workspace/a.go", "/workspace/a.go", "one\ntwo\n", "one\nTWO\nthree\n")
-	added := diffmodel.RenderReviewFile("", "/workspace/new.txt", "", "x\n")
+	modified := uisnapshot.RenderReviewFile("/workspace/a.go", "/workspace/a.go", "one\ntwo\n", "one\nTWO\nthree\n")
+	added := uisnapshot.RenderReviewFile("", "/workspace/new.txt", "", "x\n")
 	for _, tc := range []struct {
 		name    string
 		preview previewmodel.Preview
@@ -295,7 +296,7 @@ func TestLiveDiffPreviewFadesOnlyChangedText(t *testing.T) {
 	t.Parallel()
 	path := "/workspace/a.txt"
 	view := previewview.PreviewView{Current: previewmodel.Preview{ID: "fade", Workspace: "/workspace", Thread: "thread", Status: previewmodel.PreviewEdit,
-		Files: []diffmodel.ReviewFile{diffmodel.RenderReviewFile(path, path, "keep\nold\n", "keep\nnew\n")}}}
+		Files: []diffmodel.ReviewFile{uisnapshot.RenderReviewFile(path, path, "keep\nold\n", "keep\nnew\n")}}}
 	motion := previewview.PreviewMotion{Enabled: true, Canvas: diffrender.DarkTheme.Canvas(), Now: time.Now()}
 	fading, err := view.Render(t.Context(), "/workspace", diffrender.DarkTheme, 60, 6, motion)
 	if err != nil {

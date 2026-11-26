@@ -12,22 +12,14 @@ use (
 	./libraries/modelprotocol
 	./libraries/pathdisplay
 	./libraries/persistence
-	./libraries/shellinstrumentation
 	./libraries/sourceanalysis
 	./libraries/terminalui
 	./libraries/textsanitize
 	./modules/activity
-	./modules/agentmetrics
 	./modules/changehistory
-	./modules/commandsegments
 	./modules/conversation
-	./modules/diagnostics
 	./modules/livepreview
 	./modules/notifications
-	./modules/sessionhistory
-	./modules/sessionpreferences
-	./modules/transportdiagnostics
 	./modules/usage
-	./testsupport/moduletest
 	./testsupport/uisnapshot
 )

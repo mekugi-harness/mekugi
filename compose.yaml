@@ -21,7 +21,7 @@ services:
       - --listen
       - 0.0.0.0:7778
       - --socket
-      - /run/mekugi/server/control.sock
+      - /run/mekugi/server/app-server-control.sock
       - --token-file
       - /var/lib/mekugi/connector/token
       - --origin
@@ -32,6 +32,12 @@ services:
       - type: bind
         source: "${MEKUGI_SERVER_DIR:?Set MEKUGI_SERVER_DIR in .env to the private server socket directory}"
         target: /run/mekugi/server
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${MEKUGI_DAEMON_DIR:-/tmp/codex-daemon-${MEKUGI_UID:-1000}}"
+        target: "${MEKUGI_DAEMON_DIR:-/tmp/codex-daemon-${MEKUGI_UID:-1000}}"
         read_only: true
         bind:
           create_host_path: false

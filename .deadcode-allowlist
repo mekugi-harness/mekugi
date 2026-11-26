@@ -1,5 +1,2 @@
 # Production reachability only. Test-inclusive reachability has no exceptions.
-# Workspace reference collector imports descriptors from generated Go source.
-github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module.Descriptor.Reference
-github.com/mekugi-harness/mekugi/mekugi-tui/contracts/module.NoBindings.Reference
-github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding.Bindings.Reference
+# Add explicit symbols only when externally invoked outside Go workspace packages.

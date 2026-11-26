@@ -28,7 +28,7 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 
 | Owner | Responsibility |
 | --- | --- |
-| `composition` | Renderer-only module view selection (`NativeRenderer`); `contracts` holds shared interfaces; `testsupport/moduletest` holds harness |
+| `composition` | Renderer-only module view selection (`NativeRenderer`); `contracts` holds shared presentation/observation/scope/inference types |
 | `launch` | CLI dispatch, profile selection, direct native `mekugi-app-server` startup/attachment, connector, web, and headless |
 | `headless` | Noninteractive automation client and JSONL host evidence |
 | `sessioncontrol` | Minimal headless request correlation and shared interrupt/thread types |
@@ -42,8 +42,8 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 
 Go owner paths below are relative to `mekugi-tui/`; shared contracts are at root.
 
-- `backends/codex/{appserver,binding,rollout,responses,shellhook,messagehistory,nativetrace}`
-  owns Codex RPC, protocol decoding, rollout reads and shell hook protocols.
+- `backends/codex/{appserver,binding}`
+  owns Codex app-server RPC transport and protocol decoding.
 - `apps/mekugi/cmd/workspace` owns workspace enumeration and import checks,
   plus `just docs-check`, the module index, and `just integrate`
   (`docs/contributing/development.md#integrate-reviewed-work`).
