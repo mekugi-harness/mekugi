@@ -122,9 +122,41 @@ async fn shell_guard_remote_write_accept_deny_and_non_write_under_yolo() -> Resu
         mock_bin.path(),
         "git",
         r#"#!/bin/bash
+configs=()
+is_config=0
+want=""
+prev=""
 for arg in "$@"; do
-    if [[ $arg = config ]]; then exec /usr/bin/git "$@"; fi
+    if [[ $prev = -c ]]; then
+        configs+=("$arg")
+        prev=""
+        continue
+    fi
+    if [[ $prev = --get ]]; then
+        want="$arg"
+        prev=""
+        continue
+    fi
+    case "$arg" in
+        -c) prev="-c" ;;
+        config) is_config=1 ;;
+        --get) prev="--get" ;;
+        -c*) configs+=("${arg#-c}") ;;
+    esac
 done
+if [[ $is_config -eq 1 && -n $want ]]; then
+    found=""
+    for kv in "${configs[@]}"; do
+        if [[ "${kv%%=*}" = "$want" ]]; then
+            found="${kv#*=}"
+        fi
+    done
+    if [[ -n $found ]]; then
+        printf '%s\n' "$found"
+        exit 0
+    fi
+    exec /usr/bin/git "$@"
+fi
 printf 'MOCK_GIT:%s\n' "$*"
 "#,
     )?;

@@ -156,7 +156,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           PROFILE: ${{ env.NATIVE_PACKAGE_PROFILE }}
           RUNNER_LABEL: ${{ matrix.runner }}
-          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'justfile', 'runtime/build.py') }}
+          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'runtime/build.py') }}
         run: |
           native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
           image="$RUNNER_LABEL-${ImageVersion:-$GITHUB_RUN_ID}"
@@ -296,12 +296,12 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: |
           # App-server integration fixtures use debug-only startup options.
-          just test-native
+          TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" python3 runtime/build.py test
       - name: Package native runtime
         if: steps.native_plan.outputs.package == 'true'
         env: *native_env
         run: |
-          just package-native --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
+          python3 runtime/build.py package --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
       - name: Build and package
         env:
           PLATFORM: ${{ matrix.platform }}
