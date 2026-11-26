@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -20,7 +21,21 @@ import (
 	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 )
+
+const directCommandTailLimit = 3
+
+func directCommandTail(output string) ([]string, int) {
+	if output == "" {
+		return nil, 0
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) <= directCommandTailLimit {
+		return lines, 0
+	}
+	return lines[len(lines)-directCommandTailLimit:], len(lines) - directCommandTailLimit
+}
 
 func (c *directNativeConnection) handleServerMessage(msg appserver.Message) {
 	if len(msg.ID) > 0 && msg.Method != "" {
@@ -85,6 +100,10 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			if p.Turn.Error != nil && p.Turn.Error.Message != "" {
 				c.setFeedbackLocked(p.Turn.Error.Message, true)
 			}
+			if len(c.live) > 0 {
+				c.live = nil
+				c.liveDirty = true
+			}
 			mainID := c.mainThread
 			c.publishLocked()
 			c.mu.Unlock()
@@ -136,7 +155,11 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 				if threadID == "" {
 					threadID = c.mainThread
 				}
-				rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "agentMessage", "final")
+				msgKind := "final"
+				if threadID == c.mainThread {
+					msgKind = "text"
+				}
+				rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "agentMessage", msgKind)
 				rec.entry.Text += p.Delta
 				rec.entry.Live = true
 				rec.entry.Running = true
@@ -187,6 +210,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			rec.output += p.Delta
 			if len(rec.entry.Values) > 0 {
 				rec.entry.Values[0].Output = 1
+				rec.entry.Values[0].Tail, rec.entry.Values[0].TailOmitted = directCommandTail(rec.output)
 			}
 			if rec.entry.Outputs == nil {
 				rec.entry.Outputs = map[int]int{}
@@ -327,7 +351,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 					if p.Model != "" {
 						c.model = p.Model
 					}
-					if effort := firstNonEmpty(p.Effort, p.ReasoningEffort); effort != "" {
+					if effort := cmp.Or(p.Effort, p.ReasoningEffort); effort != "" {
 						c.effort = effort
 					}
 					if p.ServiceTier != "" {
@@ -361,6 +385,44 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			if isMain && c.wire != nil {
 				go c.refreshQueue(c.ctx, target)
 			}
+		}
+
+	case "turn/diff/updated":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			Diff     string `json:"diff"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			threadID := p.ThreadID
+			if threadID == "" {
+				threadID = c.mainThread
+			}
+			caller := c.threadCallers[threadID]
+			if caller == "" {
+				caller = "/root"
+			}
+			if strings.TrimSpace(p.Diff) == "" {
+				c.live = nil
+			} else {
+				files := parseUnifiedDiffReviewFiles(p.Diff)
+				if len(files) > 0 {
+					c.live = []preview.Preview{{
+						ID:        "turn-diff:" + cmp.Or(p.TurnID, threadID),
+						Workspace: c.workspace,
+						Caller:    caller,
+						Turn:      p.TurnID,
+						Thread:    threadID,
+						Files:     files,
+						DiffText:  true,
+						Status:    "Editing",
+					}}
+				}
+			}
+			c.liveDirty = true
+			c.publishLocked()
+			c.mu.Unlock()
 		}
 
 	case "thread/prediction/updated":
@@ -666,9 +728,13 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 		}
 	}
 	c.seq++
-	caller := c.threadCallers[threadID]
-	if caller == "" {
-		caller = "/root"
+	agent := c.threadCallers[threadID]
+	if threadID == "" || threadID == c.mainThread || agent == "" || agent == "/root" {
+		if kind == "user" {
+			agent = "You"
+		} else {
+			agent = "Main"
+		}
 	}
 	rec := &directItemRecord{
 		id:       itemID,
@@ -679,7 +745,7 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 		entry: activity.Entry{
 			Facts: activity.Facts{
 				Seq:      c.seq,
-				Agent:    caller,
+				Agent:    agent,
 				Kind:     kind,
 				Observed: time.Now(),
 			},
@@ -739,7 +805,11 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 	case "userMessage":
 		kind = "user"
 	case "agentMessage":
-		kind = "final"
+		if threadID == "" || threadID == c.mainThread {
+			kind = "text"
+		} else {
+			kind = "final"
+		}
 	case "reasoning":
 		kind = "reasoning"
 	case "plan":
@@ -806,11 +876,7 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		if raw, ok := fields["durationMs"]; ok && len(raw) > 0 {
 			_ = json.Unmarshal(raw, &durationMs)
 		}
-		var tail []string
-		if rec.output != "" {
-			trimmed := strings.TrimSuffix(rec.output, "\n")
-			tail = strings.Split(trimmed, "\n")
-		}
+		tail, tailOmitted := directCommandTail(rec.output)
 		val := activity.Value{
 			Content: activityfeed.Content{
 				Kind:   "op",
@@ -819,12 +885,13 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 				Lang:   "bash",
 				Fenced: strings.Contains(command, "\n"),
 			},
-			Workdir:  cwd,
-			Running:  running,
-			Exited:   exited,
-			ExitCode: exitCode,
-			Duration: time.Duration(durationMs) * time.Millisecond,
-			Tail:     tail,
+			Workdir:     cwd,
+			Running:     running,
+			Exited:      exited,
+			ExitCode:    exitCode,
+			Duration:    time.Duration(durationMs) * time.Millisecond,
+			Tail:        tail,
+			TailOmitted: tailOmitted,
 		}
 		if rec.output != "" {
 			val.Output = 1
@@ -853,21 +920,19 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		vals := make([]activity.Value, 0, len(changeList))
 		for _, ch := range changeList {
 			verb, label := decodeFileChangeKind(ch.Kind, ch.Path)
-			var tail []string
-			if ch.Diff != "" {
-				tail = strings.Split(strings.TrimSuffix(ch.Diff, "\n"), "\n")
-			}
 			vals = append(vals, activity.Value{
+				Path:   ch.Path,
+				Effect: true,
 				Content: activityfeed.Content{
-					Kind:  "op",
-					Verb:  verb,
-					Label: label,
-					Code:  ch.Diff,
-					Lang:  "diff",
+					Kind:   "op",
+					Verb:   verb,
+					Label:  "`" + label + "`",
+					Code:   ch.Diff,
+					Lang:   "diff",
+					Fenced: ch.Diff != "",
 				},
 				Running: running,
 				Exited:  exited,
-				Tail:    tail,
 			})
 		}
 		rec.entry.Values = vals
@@ -876,6 +941,30 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		rec.entry.OutputComplete = exited
 		if exited && rec.entry.Completed.IsZero() {
 			rec.entry.Completed = time.Now()
+		}
+		if running && len(changeList) > 0 {
+			liveFiles := make([]diffmodel.ReviewFile, 0, len(changeList))
+			for _, ch := range changeList {
+				liveFiles = append(liveFiles, diffmodel.ReviewFile{
+					AfterPath: ch.Path,
+					Diff:      ch.Diff,
+				})
+			}
+			caller := c.threadCallers[threadID]
+			if caller == "" {
+				caller = "/root"
+			}
+			c.live = []preview.Preview{{
+				ID:        "filechange:" + cmp.Or(rec.id, rec.turnID),
+				Workspace: c.workspace,
+				Caller:    caller,
+				Turn:      rec.turnID,
+				Thread:    threadID,
+				Files:     liveFiles,
+				DiffText:  true,
+				Status:    "Editing",
+			}}
+			c.liveDirty = true
 		}
 	case "mcpToolCall", "dynamicToolCall":
 		tool := decodeJSONString(fields["tool"])
@@ -927,13 +1016,13 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 	default:
 		// Render server-owned inline cards and future ThreadItem models directly
 		// from their server-published fields without adding Go backend state.
-		title := firstNonEmpty(
+		title := cmp.Or(
 			decodeJSONString(fields["title"]),
 			decodeJSONString(fields["header"]),
 			decodeJSONString(fields["label"]),
 			itemType,
 		)
-		body := firstNonEmpty(
+		body := cmp.Or(
 			decodeJSONString(fields["body"]),
 			decodeJSONString(fields["markdown"]),
 			decodeJSONString(fields["text"]),
@@ -1053,13 +1142,59 @@ func decodeFileChangeKind(raw jsontext.Value, path string) (verb, label string) 
 	return "Edit", label
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
+func parseUnifiedDiffReviewFiles(raw string) []diffmodel.ReviewFile {
+	var files []diffmodel.ReviewFile
+	var current *diffmodel.ReviewFile
+	var buf strings.Builder
+	flush := func() {
+		if current != nil {
+			current.Diff = strings.TrimRight(buf.String(), "\n")
+			files = append(files, *current)
+			current = nil
+			buf.Reset()
 		}
 	}
-	return ""
+	for line := range strings.SplitSeq(raw, "\n") {
+		if strings.HasPrefix(line, "diff --git ") {
+			flush()
+			current = &diffmodel.ReviewFile{}
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				current.BeforePath = strings.TrimPrefix(parts[2], "a/")
+				current.AfterPath = strings.TrimPrefix(parts[3], "b/")
+			}
+			continue
+		}
+		if current == nil && (strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "@@ ")) {
+			current = &diffmodel.ReviewFile{}
+		}
+		if current == nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "--- "):
+			p := strings.TrimSpace(strings.TrimPrefix(line, "--- "))
+			if p == "/dev/null" {
+				current.BeforePath = ""
+			} else {
+				current.BeforePath = strings.TrimPrefix(p, "a/")
+			}
+		case strings.HasPrefix(line, "+++ "):
+			p := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+			if p == "/dev/null" {
+				current.AfterPath = ""
+			} else {
+				current.AfterPath = strings.TrimPrefix(p, "b/")
+			}
+		default:
+			if buf.Len() > 0 {
+				buf.WriteByte('\n')
+			}
+			buf.WriteString(line)
+		}
+	}
+	flush()
+	return files
 }
 
 func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread string) {

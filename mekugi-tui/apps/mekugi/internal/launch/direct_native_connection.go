@@ -26,6 +26,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 	usagepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/presentation"
 )
 
@@ -164,28 +165,38 @@ type directNativeConnection struct {
 	mainOutput  []activity.OutputResult
 	agentOutput []activity.OutputResult
 
-	family           *sessionapi.Family
-	threadCallers    map[string]string
-	review           *changes.ReviewView
-	reviewRev        uint64
-	queue            []conversation.PendingText
-	resumeView       *sessionpresentation.ResumeView
-	resumeCursor     string
-	requests         map[string]*directPendingServerRequest
-	requestOrder     []string
-	details          *sessionapi.NativeDetails
-	preferences      jsontext.Value
-	focused          bool
-	menu             *sessionpresentation.MenuView
-	menuSeq          uint64
-	completionTarget conversation.EditorTarget
-	dismissedComp    completion.Target
-	skillsCwd        string
-	skillsLoaded     bool
-	skills           []completion.Choice
-	skillsGen        uint64
-	effectSeq        uint64
-	effects          []sessionapi.NativeEffect
+	family              *sessionapi.Family
+	threadCallers       map[string]string
+	review              *changes.ReviewView
+	reviewRev           uint64
+	queue               []conversation.PendingText
+	resumeView          *sessionpresentation.ResumeView
+	resumeCursor        string
+	requests            map[string]*directPendingServerRequest
+	requestOrder        []string
+	details             *sessionapi.NativeDetails
+	detailSeq           uint64
+	panel               *sessionpresentation.PanelView
+	panelKind           string
+	panelSeq            uint64
+	processes           []sessionpresentation.Process
+	live                []preview.Preview
+	liveDirty           bool
+	liveHidden          bool
+	interruptLocked     bool
+	predictionsDisabled bool
+	preferences         jsontext.Value
+	focused             bool
+	menu                *sessionpresentation.MenuView
+	menuSeq             uint64
+	completionTarget    conversation.EditorTarget
+	dismissedComp       completion.Target
+	skillsCwd           string
+	skillsLoaded        bool
+	skills              []completion.Choice
+	skillsGen           uint64
+	effectSeq           uint64
+	effects             []sessionapi.NativeEffect
 }
 
 func openDirectNativeConnection(ctx context.Context, socket, workspace string, routerArgs, args []string, resume, profile string) (*directNativeConnection, error) {
@@ -383,6 +394,7 @@ func (c *directNativeConnection) refreshAuxiliary(ctx context.Context, threadID 
 	c.refreshSubtree(ctx, threadID)
 	c.refreshChanges(ctx, threadID)
 	c.refreshQueue(ctx, threadID)
+	c.refreshProcesses(ctx, threadID)
 	c.refreshRateLimits(ctx)
 }
 
@@ -522,6 +534,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		},
 		Resume:    c.resumeView,
 		Menu:      cloneMenuView(c.menu),
+		Panel:     clonePanelView(c.panel),
 		Version:   sessionpresentation.Version{Attachment: c.attachID, Revision: c.revision},
 		Main:      sessionpresentation.Thread{ID: c.mainThread, Caller: mainCaller},
 		Displayed: sessionpresentation.Thread{ID: displayed, Caller: displayedCaller},
@@ -531,6 +544,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 				Text:    c.statusTextLocked(),
 				Running: c.busy,
 			},
+			Processes: len(c.processes),
 			Animating: c.busy,
 		},
 		Caption: sessionpresentation.Caption{
@@ -611,7 +625,17 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		family = &cp
 	}
 
+	var liveScope preview.Scope
+	if c.liveDirty && c.workspace != "" {
+		liveScope = preview.Scope{
+			Workspaces: map[string]map[string]bool{
+				c.workspace: {displayedCaller: true},
+			},
+		}
+	}
+
 	frame := sessionapi.NativeFrame{
+		Processes:        slices.Clone(c.processes),
 		Questions:        questions,
 		Approvals:        approvals,
 		View:             view,
@@ -619,6 +643,8 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		Agents:           agentsPub,
 		Family:           family,
 		Review:           c.review,
+		Live:             slices.Clone(c.live),
+		LiveScope:        liveScope,
 		Details:          c.details,
 		MainOutput:       slices.Clone(c.mainOutput),
 		AgentOutput:      slices.Clone(c.agentOutput),
@@ -714,6 +740,9 @@ func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
 			agent.CostKnown = u.CostKnown
 			agent.CostPartial = u.CostPartial
 			agent.Roundtrips = u.Roundtrips
+			if u.CostKnown || u.TotalTokens > 0 {
+				agent.Turns = max(1, u.Roundtrips)
+			}
 			if u.WorkDurationMs > 0 {
 				agent.WorkElapsed = time.Duration(u.WorkDurationMs) * time.Millisecond
 				agent.WorkKnown = true

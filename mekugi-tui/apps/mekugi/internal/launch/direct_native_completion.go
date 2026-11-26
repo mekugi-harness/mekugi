@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -18,20 +19,29 @@ import (
 var directSlashCommands = []completion.Choice{
 	{Name: "/model", Description: "Choose the model"},
 	{Name: "/effort", Description: "Choose the reasoning effort"},
-	{Name: "/reasoning", Description: "Choose the reasoning effort"},
+	{Name: "/live", Description: "Show or hide Live edits for this session"},
 	{Name: "/tier", Description: "Choose the service tier"},
 	{Name: "/fast", Description: "Toggle fast service tier"},
-	{Name: "/compact", Description: "Compact conversation context"},
-	{Name: "/clear", Description: "Start a fresh session"},
-	{Name: "/new", Description: "Start a fresh session"},
+	{Name: "/skills", Description: "List skills"},
+	{Name: "/side", Description: "Open or switch to an ephemeral side fork"},
+	{Name: "/oneoff", Description: "Run a task in an isolated work-capable fork"},
+	{Name: "/btw", Description: "Ask a side question without changing Main"},
+	{Name: "/ps", Description: "Show running processes"},
+	{Name: "/predictions", Description: "Enable or disable next-message suggestions: on|off"},
+	{Name: "/session", Description: "Show session usage and metrics"},
+	{Name: "/title", Description: "Rename this session"},
+	{Name: "/status", Description: "Show session settings and usage limits"},
+	{Name: "/copy", Description: "Copy the last response"},
+	{Name: "/rewind", Description: "Rewind before a user turn"},
+	{Name: "/fork", Description: "Fork this conversation and switch to the branch"},
 	{Name: "/resume", Description: "Resume a saved session"},
 	{Name: "/archive", Description: "Archive this session"},
-	{Name: "/side", Description: "Open or switch to an ephemeral side fork"},
-	{Name: "/btw", Description: "Ask a read-only side question"},
-	{Name: "/one-off", Description: "Ask a read-only side question"},
-	{Name: "/detach", Description: "Detach terminal; keep session running"},
+	{Name: "/compact", Description: "Compact context now; Tab queues while busy"},
+	{Name: "/clear", Description: "Clear the transcript and start a new session"},
+	{Name: "/lock", Description: "Prevent accidental keyboard interruption"},
+	{Name: "/unlock", Description: "Allow keyboard interruption again"},
 	{Name: "/quit", Description: "Quit the session"},
-	{Name: "/exit", Description: "Quit the session"},
+	{Name: "/detach", Description: "Leave the terminal; keep the session running"},
 }
 
 func directCompletionTarget(draft composer.Draft) (completion.Target, bool) {
@@ -350,13 +360,13 @@ func (c *directNativeConnection) openModelMenu(ctx context.Context) error {
 		if m.Hidden {
 			continue
 		}
-		name := firstNonEmpty(m.Model, m.ID)
+		name := cmp.Or(m.Model, m.ID)
 		if name == "" {
 			continue
 		}
 		choices = append(choices, completion.Choice{
 			Name:        name,
-			Display:     firstNonEmpty(m.DisplayName, name),
+			Display:     cmp.Or(m.DisplayName, name),
 			Description: m.Description,
 			Current:     c.model != "" && (m.Model == c.model || m.ID == c.model),
 		})
@@ -416,7 +426,7 @@ func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
 			}
 			choices = append(choices, completion.Choice{
 				Name:        tier.ID,
-				Display:     firstNonEmpty(tier.Name, tier.DisplayName, tier.ID),
+				Display:     cmp.Or(tier.Name, tier.DisplayName, tier.ID),
 				Description: tier.Description,
 				Current:     c.tier == tier.ID || (isStandard && (c.tier == "" || c.tier == "standard" || c.tier == "default")),
 			})

@@ -65,8 +65,18 @@ func (c *directNativeConnection) Send(ctx context.Context, _ sessionapi.NativeTa
 		err = c.handleMenu(ctx, *op.Menu, op.Editor)
 	case op.Receipt != nil:
 		c.handleReceipt(*op.Receipt)
-	case op.SaveDraft != nil, op.Panel != nil, op.Details != nil, op.Notice != nil, op.Recovery != nil, op.Reference != nil, op.StopProcess != nil:
-		// No-op or handled locally; return current version.
+	case op.Details != nil:
+		err = c.handleOpenDetails(ctx, *op.Details)
+	case op.Panel != nil:
+		err = c.handlePanelAction(ctx, *op.Panel)
+	case op.StopProcess != nil:
+		err = c.handleStopProcess(ctx, *op.StopProcess)
+	case op.Reference != nil:
+		c.handleReference(*op.Reference)
+	case op.Notice != nil:
+		c.handleNotice(*op.Notice)
+	case op.SaveDraft != nil, op.Recovery != nil:
+		// Draft storage and recovery remain client-local.
 	}
 	c.mu.Lock()
 	ver := sessionpresentation.Version{Attachment: c.attachID, Revision: c.revision}
@@ -117,10 +127,24 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 		if threadID == "" {
 			return errors.New("no active thread")
 		}
-		return c.wire.Call(ctx, "thread/shellCommand", map[string]any{
+		if err := c.wire.Call(ctx, "thread/shellCommand", map[string]any{
 			"threadId": threadID,
 			"command":  cmd,
-		}, nil)
+		}, nil); err != nil {
+			draftCopy := in.Draft
+			c.mu.Lock()
+			c.effectSeq++
+			c.effects = append(c.effects, sessionapi.NativeEffect{
+				ID:           c.effectSeq,
+				Thread:       threadID,
+				ShellRestore: &draftCopy,
+			})
+			c.setFeedbackLocked("Shell command failed: "+err.Error(), true)
+			c.publishLocked()
+			c.mu.Unlock()
+			return err
+		}
+		return nil
 	}
 
 	c.mu.Lock()
@@ -254,10 +278,92 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 		}
 		c.mu.Unlock()
 		return c.applyServiceTier(ctx, mainID, nextTier)
-	case "/side":
+	case "/side", "/oneoff":
 		return c.startSide(ctx, rest)
 	case "/btw", "/one-off":
 		return c.startBTW(ctx, rest)
+	case "/title":
+		if mainID == "" {
+			return errors.New("no active thread")
+		}
+		if rest == "" {
+			c.mu.Lock()
+			c.setFeedbackLocked("Usage: /title <new title>", true)
+			c.publishLocked()
+			c.mu.Unlock()
+			return nil
+		}
+		if err := c.wire.Call(ctx, "thread/name/set", map[string]any{
+			"threadId": mainID,
+			"name":     rest,
+		}, nil); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		c.title = rest
+		c.setFeedbackLocked("Title updated", false)
+		c.publishLocked()
+		c.mu.Unlock()
+		return nil
+	case "/status":
+		return c.openStatusPanel(ctx)
+	case "/session":
+		return c.openSessionPanel()
+	case "/ps":
+		return c.handleOpenDetails(ctx, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeProcessDetails})
+	case "/skills":
+		return c.handleOpenDetails(ctx, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeSkillDetails})
+	case "/fork":
+		return c.forkAndSwitchThread(ctx)
+	case "/lock":
+		c.mu.Lock()
+		c.interruptLocked = true
+		c.emitPresentationEffectLocked("Keyboard interrupt locked (/unlock to re-enable)")
+		c.mu.Unlock()
+		return nil
+	case "/unlock":
+		c.mu.Lock()
+		c.interruptLocked = false
+		c.emitPresentationEffectLocked("Keyboard interrupt unlocked")
+		c.mu.Unlock()
+		return nil
+	case "/live":
+		c.mu.Lock()
+		switch strings.ToLower(rest) {
+		case "on", "show":
+			c.liveHidden = false
+		case "off", "hide":
+			c.liveHidden = true
+		default:
+			c.liveHidden = !c.liveHidden
+		}
+		msg := "Live edits shown"
+		if c.liveHidden {
+			msg = "Live edits hidden"
+		}
+		c.emitPresentationEffectLocked(msg)
+		c.mu.Unlock()
+		return nil
+	case "/predictions":
+		c.mu.Lock()
+		switch strings.ToLower(rest) {
+		case "on", "enable":
+			c.predictionsDisabled = false
+		case "off", "disable":
+			c.predictionsDisabled = true
+		default:
+			c.predictionsDisabled = !c.predictionsDisabled
+		}
+		msg := "Predictions enabled"
+		if c.predictionsDisabled {
+			msg = "Predictions disabled"
+		}
+		c.emitPresentationEffectLocked(msg)
+		c.mu.Unlock()
+		return nil
+	case "/copy":
+		c.handleCopyLastResponse()
+		return nil
 	default:
 		c.mu.Lock()
 		c.setFeedbackLocked("Unknown command: "+verb, true)
@@ -645,7 +751,7 @@ func (c *directNativeConnection) handleOutputDemand(demand sessionapi.NativeOutp
 			if rec.seq == d.Source {
 				var lines []string
 				if rec.output != "" {
-					lines = strings.Split(rec.output, "\n")
+					lines = strings.Split(strings.TrimSuffix(rec.output, "\n"), "\n")
 				}
 				results = append(results, activity.OutputResult{
 					Demand: d,
@@ -660,15 +766,5 @@ func (c *directNativeConnection) handleOutputDemand(demand sessionapi.NativeOutp
 	} else {
 		c.mainOutput = results
 	}
-	c.publishLocked()
-}
-
-func (c *directNativeConnection) handleDetailOutput(req sessionpresentation.DetailOutputRequest) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.details == nil || c.details.View.ID != req.ID {
-		return
-	}
-	c.details.Output = &sessionpresentation.DetailOutput{Page: req.Page, Version: req.Version}
 	c.publishLocked()
 }

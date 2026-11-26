@@ -25,13 +25,15 @@ import (
 )
 
 type mockNativeAppServer struct {
-	mu        sync.Mutex
-	conn      *websocket.Conn
-	methods   []string
-	params    map[string][]jsontext.Value
-	responses map[string]jsontext.Value
-	queueData []map[string]any
-	ready     chan struct{}
+	mu           sync.Mutex
+	conn         *websocket.Conn
+	methods      []string
+	params       map[string][]jsontext.Value
+	responses    map[string]jsontext.Value
+	queueData    []map[string]any
+	bgTerminals  []map[string]any
+	shellFailMsg string
+	ready        chan struct{}
 }
 
 func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer {
@@ -81,6 +83,15 @@ func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer 
 				continue
 			}
 			result := m.handleCall(msg.Method, msg.Params)
+			if errMsg, ok := result.(mockRPCError); ok {
+				reply, _ := json.Marshal(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      msg.ID,
+					"error":   map[string]any{"code": -32000, "message": string(errMsg)},
+				})
+				_ = conn.Write(r.Context(), websocket.MessageText, reply)
+				continue
+			}
 			reply, _ := json.Marshal(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      msg.ID,
@@ -97,13 +108,22 @@ func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer 
 	return m
 }
 
+type mockRPCError string
+
 func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) any {
 	switch method {
 	case "initialize":
 		return map[string]any{"userAgent": "mekugi-app-server/test"}
 	case "thread/start":
+		cwd := "/tmp/ws"
+		var startParams struct {
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal(params, &startParams) == nil && startParams.Cwd != "" {
+			cwd = startParams.Cwd
+		}
 		return map[string]any{
-			"thread":          map[string]any{"id": "thr-main", "cwd": "/tmp/ws", "name": "Direct Session"},
+			"thread":          map[string]any{"id": "thr-main", "cwd": cwd, "name": "Direct Session"},
 			"model":           "gpt-5",
 			"reasoningEffort": "medium",
 			"serviceTier":     "standard",
@@ -147,6 +167,14 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 			data = []map[string]any{}
 		}
 		return map[string]any{"data": data, "nextCursor": nil}
+	case "account/read":
+		return map[string]any{
+			"account": map[string]any{
+				"type":     "chatgpt",
+				"email":    "dev@example.com",
+				"planType": "pro",
+			},
+		}
 	case "account/rateLimits/read":
 		return map[string]any{
 			"rateLimits": map[string]any{
@@ -155,6 +183,33 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 				"secondary": map[string]any{"usedPercent": 21.0, "windowDurationMins": 10080},
 			},
 		}
+	case "thread/backgroundTerminals/list":
+		m.mu.Lock()
+		procs := slices.Clone(m.bgTerminals)
+		m.mu.Unlock()
+		if procs == nil {
+			procs = []map[string]any{}
+		}
+		return map[string]any{"data": procs, "nextCursor": nil}
+	case "thread/backgroundTerminals/terminate":
+		var req struct {
+			ProcessID string `json:"processId"`
+		}
+		_ = json.Unmarshal(params, &req)
+		m.mu.Lock()
+		m.bgTerminals = slices.DeleteFunc(m.bgTerminals, func(p map[string]any) bool {
+			return p["processId"] == req.ProcessID
+		})
+		m.mu.Unlock()
+		return map[string]any{"terminated": true}
+	case "thread/shellCommand":
+		m.mu.Lock()
+		msg := m.shellFailMsg
+		m.mu.Unlock()
+		if msg != "" {
+			return mockRPCError(msg)
+		}
+		return map[string]any{}
 	case "thread/read":
 		return map[string]any{
 			"thread": map[string]any{
@@ -590,7 +645,7 @@ func TestDirectNativeProjectionPopulatesEntryValues(t *testing.T) {
 		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","itemId":"msg-1","delta":"Hello "}`),
 	})
 	rec := conn.itemsByID["msg-1"]
-	if rec == nil || len(rec.entry.Values) != 1 || rec.entry.Values[0].Kind != "final" || rec.entry.Values[0].Body != "Hello " {
+	if rec == nil || len(rec.entry.Values) != 1 || rec.entry.Values[0].Kind != "text" || rec.entry.Values[0].Body != "Hello " {
 		t.Fatalf("streaming agentMessage did not project Values: %+v", rec)
 	}
 
@@ -598,7 +653,7 @@ func TestDirectNativeProjectionPopulatesEntryValues(t *testing.T) {
 		Method: "item/completed",
 		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","item":{"type":"agentMessage","id":"msg-1","text":"Hello world"}}`),
 	})
-	if len(rec.entry.Values) != 1 || rec.entry.Values[0].Kind != "final" || rec.entry.Values[0].Body != "Hello world" || rec.entry.Values[0].Owner != "main" {
+	if len(rec.entry.Values) != 1 || rec.entry.Values[0].Kind != "text" || rec.entry.Values[0].Body != "Hello world" || rec.entry.Agent != "Main" {
 		t.Fatalf("completed agentMessage did not project Values: %+v", rec.entry.Values)
 	}
 
@@ -748,7 +803,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 	if fcRec == nil || len(fcRec.entry.Values) != 2 {
 		t.Fatalf("expected 2 fileChange values, got %+v", fcRec)
 	}
-	if fcRec.entry.Values[0].Verb != "Create" || fcRec.entry.Values[1].Verb != "Move" || fcRec.entry.Values[1].Label != "b.go => c.go" {
+	if fcRec.entry.Values[0].Verb != "Create" || fcRec.entry.Values[1].Verb != "Move" || fcRec.entry.Values[1].Label != "`b.go => c.go`" {
 		t.Fatalf("unexpected fileChange decoding: %+v", fcRec.entry.Values)
 	}
 
