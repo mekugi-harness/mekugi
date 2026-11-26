@@ -59,7 +59,13 @@ func (c *directNativeConnection) Send(ctx context.Context, _ sessionapi.NativeTa
 		c.mu.Lock()
 		c.focused = *op.Focused
 		c.mu.Unlock()
-	case op.Receipt != nil, op.SaveDraft != nil, op.Completion != nil, op.Menu != nil, op.Panel != nil, op.Details != nil, op.Notice != nil, op.Recovery != nil, op.Reference != nil, op.StopProcess != nil:
+	case op.Completion != nil:
+		c.handleCompletion(*op.Completion)
+	case op.Menu != nil:
+		c.handleMenu(*op.Menu, op.Editor)
+	case op.Receipt != nil:
+		c.handleReceipt(*op.Receipt)
+	case op.SaveDraft != nil, op.Panel != nil, op.Details != nil, op.Notice != nil, op.Recovery != nil, op.Reference != nil, op.StopProcess != nil:
 		// No-op or handled locally; return current version.
 	}
 	c.mu.Lock()
