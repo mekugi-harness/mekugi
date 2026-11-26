@@ -16,10 +16,10 @@ import (
 )
 
 var directSlashCommands = []completion.Choice{
-	{Name: "/model", Description: "Set the model (e.g. /model gpt-5)"},
-	{Name: "/effort", Description: "Set reasoning effort (low, medium, high, xhigh)"},
-	{Name: "/reasoning", Description: "Set reasoning effort (low, medium, high, xhigh)"},
-	{Name: "/tier", Description: "Set service tier (standard, fast)"},
+	{Name: "/model", HideRemote: true, Description: "Choose the model"},
+	{Name: "/effort", HideRemote: true, Description: "Choose the reasoning effort"},
+	{Name: "/reasoning", HideRemote: true, Description: "Choose the reasoning effort"},
+	{Name: "/tier", HideRemote: true, Description: "Choose the service tier"},
 	{Name: "/fast", Description: "Toggle fast service tier"},
 	{Name: "/compact", Description: "Compact conversation context"},
 	{Name: "/clear", Description: "Start a fresh session"},

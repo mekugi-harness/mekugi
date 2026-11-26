@@ -82,18 +82,6 @@
   const canSend = $derived(!disabled && (!!text.trim() || !!items.length));
 
   const SLASH_COMMANDS = [
-    { name: "/model", description: "Set the model (e.g. /model gpt-5)", insert: "/model " },
-    {
-      name: "/effort",
-      description: "Set reasoning effort (low, medium, high, xhigh)",
-      insert: "/effort ",
-    },
-    {
-      name: "/reasoning",
-      description: "Set reasoning effort (low, medium, high, xhigh)",
-      insert: "/reasoning ",
-    },
-    { name: "/tier", description: "Set service tier (standard, fast)", insert: "/tier " },
     { name: "/fast", description: "Toggle fast service tier", insert: "/fast" },
     { name: "/compact", description: "Compact conversation context", insert: "/compact" },
     { name: "/rename", description: "Rename this thread", insert: "/rename " },
