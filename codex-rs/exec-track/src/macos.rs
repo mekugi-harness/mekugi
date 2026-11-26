@@ -13,6 +13,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -87,6 +88,16 @@ impl MacosObserver {
         if argv.is_empty() {
             return None;
         }
+        if !dylib_compatible_with_system_binaries(&self.dylib_path) {
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record_partial_reason(
+                    "DYLD_INSERT_LIBRARIES is incompatible with system binaries on this host"
+                        .to_string(),
+                );
+            return None;
+        }
         let mut new_argv = argv.to_vec();
         if is_sip_path(&new_argv[0]) {
             if let Some(alt_shell) = find_non_sip_shell(&new_argv[0]) {
@@ -143,6 +154,22 @@ impl MacosObserver {
             let _ = handle.join();
         }
     }
+}
+
+/// Verifies that injecting `DYLD_INSERT_LIBRARIES` with our compiled dylib
+/// does not cause Apple system binaries (e.g. `arm64e` `/usr/bin/true`) to
+/// abort on hosts where SIP is disabled.
+fn dylib_compatible_with_system_binaries(dylib_path: &Path) -> bool {
+    static COMPATIBLE: OnceLock<bool> = OnceLock::new();
+    *COMPATIBLE.get_or_init(|| {
+        std::process::Command::new("/usr/bin/true")
+            .env("DYLD_INSERT_LIBRARIES", dylib_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 fn is_sip_path(path: &str) -> bool {
