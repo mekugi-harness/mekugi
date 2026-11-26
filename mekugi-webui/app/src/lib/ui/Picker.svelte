@@ -1,5 +1,6 @@
 <script lang="ts" module>
-  export type Choice = { value: string; label: string; detail?: string };
+  import type { Tone } from "./Dot.svelte";
+  export type Choice = { value: string; label: string; detail?: string; tone?: Tone };
   export type ChoiceGroup = { label?: string; choices: Choice[] };
 </script>
 
@@ -8,6 +9,7 @@
   import { Combobox } from "bits-ui";
   import ChevronDownIcon from "@lucide/svelte/icons/chevron-down";
   import { cn } from "$lib/utils.js";
+  import Dot from "./Dot.svelte";
   import Icon, { type IconName } from "./Icon.svelte";
   import * as Select from "./select";
   import * as Popover from "./popover";
@@ -81,6 +83,7 @@
 
 {#snippet triggerLabel()}
   {#if icon}<span class="flex flex-none"><Icon name={icon} size={14} /></span>{/if}
+  {#if current?.tone}<Dot tone={current.tone} size={6} />{/if}
   <span class="sr-only">{label}:</span>
   <span class="min-w-0 flex-1 truncate text-left text-ink"
     >{#if path && value}<Path path={text ?? current?.label ?? value} {title} />{:else}{text ??
@@ -95,12 +98,15 @@
       {#if group.label}<Select.GroupHeading>{group.label}</Select.GroupHeading>{/if}
       {#each group.choices as choice (choice.value)}
         <Select.Item value={choice.value} label={choice.label}>
-          <span class="block min-w-0"
-            >{#if path}<Path
-                path={choice.label}
-                title={choice.detail ?? choice.value}
-              />{:else}<span class="block truncate">{choice.label}</span>{/if}</span
-          >
+          <span class="flex min-w-0 items-center gap-2">
+            {#if choice.tone}<Dot tone={choice.tone} size={6} />{/if}
+            <span class="block min-w-0"
+              >{#if path}<Path
+                  path={choice.label}
+                  title={choice.detail ?? choice.value}
+                />{:else}<span class="block truncate">{choice.label}</span>{/if}</span
+            >
+          </span>
           {#if choice.detail}<span class="block truncate text-small text-muted"
               >{#if path}<Path path={choice.detail} />{:else}{choice.detail}{/if}</span
             >{/if}

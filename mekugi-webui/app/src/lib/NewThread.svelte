@@ -5,11 +5,9 @@
   import { prepareAttachments, type InitialInput, type PendingAttachment } from "./attachments";
   import { basename } from "./format";
   import { hub, type Machine } from "./hub.svelte";
-  import Mark from "./Mark.svelte";
   import type { Start, StartOptions } from "./protocol";
   import Button from "./ui/Button.svelte";
   import ComposerCard from "./ui/ComposerCard.svelte";
-  import Dot from "./ui/Dot.svelte";
   import * as InputGroup from "./ui/input-group";
   import Icon from "./ui/Icon.svelte";
   import Menu from "./ui/Menu.svelte";
@@ -159,10 +157,7 @@
   aria-labelledby="new-heading"
 >
   <div class="mx-auto w-full max-w-column">
-    <div class="mb-7 flex flex-col items-center gap-2.5 text-center max-sm:mb-auto max-sm:pb-6">
-      <div class="mb-1 flex items-center justify-center">
-        <Mark size={28} />
-      </div>
+    <div class="mb-6 flex flex-col items-center text-center max-sm:mb-auto max-sm:pb-6">
       <h1
         id="new-heading"
         class="text-heading font-medium tracking-[-0.025em] text-ink focus:outline-none"
@@ -170,14 +165,6 @@
       >
         {mode === "resume" ? "Resume a saved thread" : "What should main work on?"}
       </h1>
-      <p class="inline-flex items-center gap-1.5 text-small text-muted">
-        <Dot tone={machine.state.tone || "idle"} size={6} />
-        <span>{machine.label}</span>
-        {#if workspace}
-          <span aria-hidden="true">·</span>
-          <span class="font-mono text-tiny">{basename(workspace)}</span>
-        {/if}
-      </p>
     </div>
     <ComposerCard
       accepts={!busy}
@@ -275,6 +262,7 @@
               choices: hub.machines.map((candidate) => ({
                 value: candidate.id,
                 label: candidate.label,
+                tone: candidate.state.tone || "idle",
               })),
             },
           ]}
