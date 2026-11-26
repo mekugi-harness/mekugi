@@ -201,6 +201,10 @@ func (c *Connector) fleet(w http.ResponseWriter, r *http.Request) {
 	stop := context.AfterFunc(gen, cancel)
 	defer stop()
 	statuses := ProbeFleet(ctx, nil, nodes)
+	if gen.Err() != nil {
+		http.Error(w, "Connector token was rotated.", http.StatusUnauthorized)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	payload, err := json.Marshal(struct {
 		Nodes []FleetNodeStatus `json:"nodes"`
@@ -210,4 +214,32 @@ func (c *Connector) fleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write(payload)
+}
+
+// version exposes a lightweight readiness check that verifies the private
+// upstream app-server socket responds to GET /api/version with Mekugi-Protocol.
+func (c *Connector) version(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Header.Get(sessionapi.ProtocolHeader) != sessionapi.ProtocolVersion {
+		http.Error(w, "Unsupported Mekugi protocol version.", http.StatusConflict)
+		return
+	}
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://unix"+sessionapi.VersionPath, nil)
+	if err != nil {
+		http.Error(w, "Could not build upstream readiness probe.", http.StatusInternalServerError)
+		return
+	}
+	upstreamReq.Header.Set(sessionapi.ProtocolHeader, sessionapi.ProtocolVersion)
+	client := &http.Client{Transport: c.transport, Timeout: fleetProbeBudget}
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, "Upstream app-server is unavailable.", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set(sessionapi.ProtocolHeader, sessionapi.ProtocolVersion)
+	w.WriteHeader(resp.StatusCode)
 }

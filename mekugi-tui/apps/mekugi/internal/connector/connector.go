@@ -247,6 +247,10 @@ func (c *Connector) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.fleet(w, r)
 		return
 	}
+	if r.URL.Path == sessionapi.VersionPath {
+		c.version(w, r)
+		return
+	}
 	if r.Method != http.MethodGet || r.URL.Path != sessionapi.RPCPath {
 		http.NotFound(w, r)
 		return

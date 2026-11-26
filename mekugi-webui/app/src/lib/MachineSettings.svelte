@@ -27,7 +27,7 @@
   let fleetJson = $state("");
   let fleetStatus = $state<string>();
   let error = $state<string>();
-  const sandboxCommand = "sbx run --config sandbox-kit/mekugi-dev.yaml";
+  const sandboxCommand = "sbx run ghcr.io/mekugi-harness/mekugi-dev:latest .";
   let copiedSandbox = $state(false);
   function edit(next: Editing) {
     editing = next;
@@ -141,10 +141,7 @@
   {#if editing?.kind === "add"}
     <section class="pt-1" aria-label="Add machine">
       {#if hub.machines.length}<h3 class="mb-3 font-semibold">Add machine</h3>{/if}
-      <MachineForm
-        onadded={onclose}
-        oncancel={hub.machines.length ? () => edit(undefined) : undefined}
-      />
+      <MachineForm onadded={onclose} oncancel={() => edit(undefined)} />
     </section>
   {:else if editing?.kind === "fleet"}
     <form class="grid gap-2.5 pt-1" onsubmit={importFleet}>
@@ -169,8 +166,10 @@
     <div class="grid gap-2.5 pt-1">
       <h3 class="font-semibold">Launch ephemeral mekugi-dev sandbox</h3>
       <p class="text-small text-muted">
-        Spawns an isolated Docker Sandbox using <code>sandbox-kit/mekugi-dev.yaml</code> pre-wired
-        with <code>mekugi-app-server</code> so you can attach it to this workbench fleet.
+        Spawns an isolated <code>mekugi-dev</code> Docker Sandbox. Inside the sandbox, start
+        <code>mekugi server</code> and <code>mekugi connector</code> (see
+        <code>docs/guide/remote.md</code>), then add its URL and token under Machines or
+        <code>Import DEVBOXES_JSON</code>.
       </p>
       <pre
         class="overflow-x-auto rounded-card bg-raised p-2.5 font-mono text-small">{sandboxCommand}</pre>
@@ -179,8 +178,10 @@
         <Button
           variant="primary"
           onclick={async () => {
-            await navigator.clipboard?.writeText(sandboxCommand);
-            copiedSandbox = true;
+            if (navigator.clipboard?.writeText) {
+              await navigator.clipboard.writeText(sandboxCommand);
+              copiedSandbox = true;
+            }
           }}>{copiedSandbox ? "Copied" : "Copy command"}</Button
         >
       </div>

@@ -157,22 +157,24 @@ export class Machine {
 
   async refreshThreads(): Promise<void> {
     try {
-      const startedAt = performance.now();
       const all: Listed[] = [];
       let cursor: string | undefined;
       for (let page = 0; page < 10; page++) {
+        const pageStart = page === 0 ? performance.now() : 0;
         const response = await this.request<ThreadListResponse>("thread/list", {
           limit: 100,
           archived: false,
           ...(cursor ? { cursor } : {}),
         });
+        if (page === 0) {
+          this.latencyMs = Math.max(1, Math.round(performance.now() - pageStart));
+        }
         for (const thread of response.data ?? []) all.push(threadToListed(thread));
         const next = response.nextCursor ?? undefined;
         if (!next || next === cursor) break;
         cursor = next;
       }
       this.sessions = all;
-      this.latencyMs = Math.max(1, Math.round(performance.now() - startedAt));
     } catch {
       // Transient refresh failures are surfaced through the connection state.
     }
@@ -384,7 +386,8 @@ class Hub {
     }
     let added = 0;
     let skipped = 0;
-    const existing = new Set(this.machines.map((m) => m.endpoint));
+    const norm = (u: string) => u.trim().replace(/\/+$/, "");
+    const existing = new Set(this.machines.map((m) => norm(m.endpoint)));
     for (const item of entries) {
       if (!item || typeof item !== "object") {
         skipped++;
@@ -398,9 +401,12 @@ class Hub {
           ? rec.endpoint
           : typeof rec.url === "string"
             ? rec.url
-            : "";
+            : typeof rec.target === "string"
+              ? rec.target
+              : "";
       const token = typeof rec.token === "string" ? rec.token : "";
-      if (!label.trim() || !endpoint.trim() || !token.trim() || existing.has(endpoint.trim())) {
+      const key = norm(endpoint);
+      if (!label.trim() || !key || !token.trim() || existing.has(key)) {
         skipped++;
         continue;
       }
@@ -408,7 +414,7 @@ class Hub {
       if (err) {
         skipped++;
       } else {
-        existing.add(endpoint.trim());
+        existing.add(key);
         added++;
       }
     }
