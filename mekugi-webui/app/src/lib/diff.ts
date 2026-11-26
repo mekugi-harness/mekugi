@@ -237,13 +237,18 @@ export function matchReviewedFile<T extends { path: string }>(
 ): T | undefined {
   const normalized = target.replace(/^\.\//, "");
   if (!normalized) return undefined;
+  const targetRel = workspacePath(normalized, workspace);
   const exact = files.find(
     (file) =>
       file.path === target ||
       file.path === normalized ||
-      workspacePath(file.path, workspace) === normalized,
+      file.path === targetRel ||
+      workspacePath(file.path, workspace) === normalized ||
+      workspacePath(file.path, workspace) === targetRel,
   );
   if (exact) return exact;
+  // Never suffix-match an unmatched absolute path.
+  if (normalized.startsWith("/")) return undefined;
   const suffix = `/${normalized}`;
   const suffixMatches = files.filter((file) => file.path.endsWith(suffix));
   return suffixMatches.length === 1 ? suffixMatches[0] : undefined;

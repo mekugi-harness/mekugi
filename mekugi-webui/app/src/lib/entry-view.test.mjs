@@ -544,6 +544,29 @@ test("native stream projections map reasoning, hooks, edits, imageView, and assi
     new Set(),
     [
       {
+        key: "h1:1",
+        id: "h1",
+        turnId: "t1",
+        afterItemCount: 0,
+        run: {
+          id: "h1",
+          eventName: "PreToolUse",
+          handlerType: "command",
+          executionMode: "sync",
+          scope: "project",
+          sourcePath: "/workspace/.mekugi/hooks/check.sh",
+          source: "project",
+          displayOrder: 0n,
+          status: "failed",
+          statusMessage: "first failed",
+          startedAt: 1700000000000n,
+          completedAt: 1700000000100n,
+          durationMs: 100n,
+          entries: [],
+        },
+      },
+      {
+        key: "h1:2",
         id: "h1",
         turnId: "t1",
         afterItemCount: 0,
@@ -558,16 +581,19 @@ test("native stream projections map reasoning, hooks, edits, imageView, and assi
           displayOrder: 0n,
           status: "completed",
           statusMessage: null,
-          startedAt: 1700000000000n,
-          completedAt: 1700000000100n,
+          startedAt: 1700000001000n,
+          completedAt: 1700000001100n,
           durationMs: 100n,
           entries: [],
         },
       },
     ],
   );
-  assert.equal(feed.order.length, 1);
+  assert.equal(feed.order.length, 2);
   assert.equal(feed.entries[1]?.kind, "hook");
+  assert.equal(feed.entries[1]?.outcome, "error");
+  assert.equal(feed.entries[2]?.kind, "hook");
+  assert.equal(feed.entries[2]?.outcome, undefined);
 });
 
 test("Transcript respects Thoughts modes and filters hidden completed thought sections and timestamps", () => {

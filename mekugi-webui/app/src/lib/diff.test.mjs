@@ -105,4 +105,13 @@ test("matchReviewedFile prefers exact workspace-relative matches over earlier su
   assert.equal(matchReviewedFile(files, "docs/README.md", "")?.key, "0");
   // Ambiguous suffix returns undefined rather than picking arbitrarily.
   assert.equal(matchReviewedFile(files, "README.md", ""), undefined);
+
+  // Native direction: absolute patch path matched against workspace-relative saved path.
+  const relFiles = [
+    { key: "0", path: "docs/README.md" },
+    { key: "1", path: "src/app.ts" },
+  ];
+  assert.equal(matchReviewedFile(relFiles, "/workspace/src/app.ts", "/workspace")?.key, "1");
+  // Unmatched external absolute path must not fall back to a suffix match.
+  assert.equal(matchReviewedFile(relFiles, "/other/src/app.ts", "/workspace"), undefined);
 });

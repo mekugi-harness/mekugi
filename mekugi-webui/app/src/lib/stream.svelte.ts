@@ -276,6 +276,7 @@ export function itemToEntry(
 }
 
 export interface HookRecord {
+  key: string;
   id: string;
   turnId: string | null;
   afterItemCount: number;
@@ -349,25 +350,33 @@ export function buildFeed(
   let seq = 0;
   const emittedHooks = new Set<string>();
   const emitHook = (record: HookRecord) => {
-    if (emittedHooks.has(record.id)) return;
-    emittedHooks.add(record.id);
+    if (emittedHooks.has(record.key)) return;
+    emittedHooks.add(record.key);
     seq++;
     entries[seq] = hookRunToEntry(record.run, seq, record.turnId ?? undefined);
     order.push(seq);
   };
+  const hooksByTurn = new Map<string, HookRecord[]>();
+  for (const hook of hooks) {
+    if (!hook.turnId) continue;
+    const list = hooksByTurn.get(hook.turnId);
+    if (list) list.push(hook);
+    else hooksByTurn.set(hook.turnId, [hook]);
+  }
   for (let t = 0; t < turns.length; t++) {
     const turn = turns[t];
-    const turnHooks = hooks.filter((h) => h.turnId === turn.id);
+    const turnHooks = hooksByTurn.get(turn.id) ?? [];
+    let hookIdx = 0;
     for (let i = 0; i < turn.items.length; i++) {
-      for (const hook of turnHooks) {
-        if (hook.afterItemCount <= i) emitHook(hook);
+      while (hookIdx < turnHooks.length && turnHooks[hookIdx].afterItemCount <= i) {
+        emitHook(turnHooks[hookIdx++]);
       }
       const item = turn.items[i];
       seq++;
       entries[seq] = itemToEntry(item, seq, t + 1, turn.id, "/root", !!liveItemIds?.has(item.id));
       order.push(seq);
     }
-    for (const hook of turnHooks) emitHook(hook);
+    while (hookIdx < turnHooks.length) emitHook(turnHooks[hookIdx++]);
   }
   for (const hook of hooks) emitHook(hook);
   return { attachment, order, entries, revision: seq };
@@ -474,6 +483,8 @@ export class Stream {
   #turns: Turn[] = [];
   #liveItemIds = new Set<string>();
   #hooks: HookRecord[] = [];
+  #hooksByThread = new Map<string, HookRecord[]>();
+  #hookSeq = 0;
   #reviewRevision = 0;
   #stopNotifications?: () => void;
   #stopOpen?: () => void;
@@ -499,7 +510,7 @@ export class Stream {
     this.#machine = machine;
     this.#turns = [];
     this.#liveItemIds.clear();
-    this.#hooks = [];
+    this.#hooks = this.#hooksByThread.get(`${machine.id}:${id}`) ?? [];
     this.#requests = new AbortController();
     this.session = this.input = this.gone = undefined;
     this.activeTurnId = undefined;
@@ -582,7 +593,6 @@ export class Stream {
   #applyThread(thread: Thread, model?: string, effort?: string, serviceTier?: string): void {
     this.#turns = (thread.turns ?? []).map((t) => ({ ...t, items: [...t.items] }));
     this.#liveItemIds.clear();
-    this.#hooks = [];
     let activeTurn: Turn | undefined;
     for (let i = this.#turns.length - 1; i >= 0; i--) {
       if (this.#turns[i].status === "inProgress") {
@@ -772,7 +782,11 @@ export class Stream {
       case "hook/started":
       case "hook/completed": {
         if (notification.params.threadId !== id) return;
-        this.#upsertHook(notification.params.turnId ?? null, notification.params.run);
+        this.#upsertHook(
+          notification.method === "hook/started",
+          notification.params.turnId ?? null,
+          notification.params.run,
+        );
         this.#rebuildMain();
         break;
       }
@@ -873,20 +887,32 @@ export class Stream {
     this.main = buildFeed(this.#turns, this.#id, this.#liveItemIds, this.#hooks);
   }
 
-  #upsertHook(turnId: string | null, run: HookRunSummary): void {
-    const existing = this.#hooks.find((h) => h.id === run.id);
-    if (existing) {
-      existing.run = run;
-      if (turnId) existing.turnId = turnId;
-      return;
+  #upsertHook(started: boolean, turnId: string | null, run: HookRunSummary): void {
+    if (!started) {
+      for (let i = this.#hooks.length - 1; i >= 0; i--) {
+        const candidate = this.#hooks[i];
+        if (
+          candidate.id === run.id &&
+          candidate.run.status === "running" &&
+          (!turnId || !candidate.turnId || candidate.turnId === turnId)
+        ) {
+          candidate.run = run;
+          if (turnId) candidate.turnId = turnId;
+          return;
+        }
+      }
     }
     const turn = turnId ? this.#turns.find((t) => t.id === turnId) : undefined;
     this.#hooks.push({
+      key: `${run.id}:${++this.#hookSeq}`,
       id: run.id,
       turnId,
       afterItemCount: turn ? turn.items.length : 0,
       run,
     });
+    if (this.#machine && this.#id) {
+      this.#hooksByThread.set(`${this.#machine.id}:${this.#id}`, this.#hooks);
+    }
   }
 
   #upsertTurn(turn: Turn): void {

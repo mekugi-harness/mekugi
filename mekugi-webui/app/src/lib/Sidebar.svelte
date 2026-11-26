@@ -45,7 +45,7 @@
   const title = (theme: Theme) => theme[0].toUpperCase() + theme.slice(1);
   // Clean pill rows: quiet hover on the soft rail, tonal active fill without heavy shadows.
   const row =
-    "flex w-full items-center rounded-full text-left text-ink/90 transition-colors hover:bg-active/60 hover:text-ink aria-[current=page]:bg-active aria-[current=page]:text-ink max-sm:min-h-11";
+    "flex w-full items-center rounded-full text-left text-ink/90 transition-colors hover:bg-active/60 hover:text-ink aria-[current=page]:bg-active aria-[current=page]:text-ink max-sm:min-h-11 pointer-coarse:min-h-11";
 </script>
 
 <nav class="flex h-full min-h-0 flex-col px-3 pt-safe pb-safe" aria-label="Threads">
@@ -93,7 +93,7 @@
           <button
             type="button"
             id="machine-{machine.id}"
-            class="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-full px-3 text-left text-small font-medium text-muted transition-colors hover:bg-active/50 hover:text-ink max-sm:min-h-11"
+            class="flex min-h-8 min-w-0 flex-1 items-center gap-2 rounded-full px-3 text-left text-small font-medium text-muted transition-colors hover:bg-active/50 hover:text-ink max-sm:min-h-11 pointer-coarse:min-h-11"
             aria-label="{machine.label}, {state.text}"
             aria-expanded={open}
             onclick={() => (collapsed[machine.id] = open)}
