@@ -55,6 +55,19 @@ struct SourceBody {
     expand_references: bool,
 }
 
+enum SourceReadError {
+    NotFound(String),
+    Other(String),
+}
+
+impl SourceReadError {
+    fn message(&self) -> &str {
+        match self {
+            Self::NotFound(message) | Self::Other(message) => message,
+        }
+    }
+}
+
 #[derive(Clone, Hash, PartialEq, Eq)]
 enum ResolvedSource {
     File(PathUri),
@@ -132,7 +145,7 @@ async fn read_sources(
         .map(|source| (source, cwd.clone(), 1))
         .collect::<VecDeque<_>>();
     let mut cached_bytes = 0usize;
-    let mut files: HashMap<ResolvedSource, Result<SourceBody, String>> = HashMap::new();
+    let mut files: HashMap<ResolvedSource, Result<SourceBody, SourceReadError>> = HashMap::new();
     let mut seen = HashSet::new();
     let mut changes_seen = HashSet::new();
     let mut omitted_change = false;
@@ -264,12 +277,15 @@ async fn read_sources(
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let result = match &resolved {
-                    ResolvedSource::ManagedSkill(skill) => skill_sources.read(access, skill).await,
-                    ResolvedSource::File(path) => read_file(access, path).await,
+                    ResolvedSource::ManagedSkill(skill) => skill_sources
+                        .read(access, skill)
+                        .await
+                        .map_err(SourceReadError::Other),
+                    ResolvedSource::File(path) => read_file_checked(access, path).await,
                 };
                 cached_bytes = cached_bytes.saturating_add(match &result {
                     Ok(body) => body.text.len(),
-                    Err(error) => error.len(),
+                    Err(error) => error.message().len(),
                 });
                 check_capacity(cached_bytes)?;
                 entry.insert(result)
@@ -277,8 +293,11 @@ async fn read_sources(
         };
         let acquired = match body {
             Ok(body) => body,
+            Err(SourceReadError::NotFound(_)) if depth > 1 => {
+                continue;
+            }
             Err(error) => {
-                append(Err(error))?;
+                append(Err(error.message()))?;
                 continue;
             }
         };
@@ -318,32 +337,56 @@ fn expands_references(name: &str) -> bool {
 }
 
 async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<SourceBody, String> {
+    read_file_checked(access, path)
+        .await
+        .map_err(|error| error.message().to_string())
+}
+
+async fn read_file_checked(
+    access: &dyn EnvironmentAccess,
+    path: &PathUri,
+) -> Result<SourceBody, SourceReadError> {
     let metadata = access
         .get_metadata(path, GetMetadataOptions::default())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                SourceReadError::NotFound(error.to_string())
+            } else {
+                SourceReadError::Other(error.to_string())
+            }
+        })?;
     if metadata.is_directory {
-        return directory::read(access, path).await.map(|text| SourceBody {
-            text,
-            relative_to: None,
-            expand_references: false,
-        });
+        return directory::read(access, path)
+            .await
+            .map(|text| SourceBody {
+                text,
+                relative_to: None,
+                expand_references: false,
+            })
+            .map_err(SourceReadError::Other);
     }
     if !metadata.is_file {
-        return Err("source is not a regular file".to_string());
+        return Err(SourceReadError::Other(
+            "source is not a regular file".to_string(),
+        ));
     }
     if metadata.size > MAX_SOURCE_BYTES as u64 {
-        return Err("source exceeds retained capture capacity".to_string());
+        return Err(SourceReadError::Other(
+            "source exceeds retained capture capacity".to_string(),
+        ));
     }
     let mut stream = access
         .read_file_stream(path)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| SourceReadError::Other(error.to_string()))?;
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| error.to_string())?;
+        let chunk = chunk.map_err(|error| SourceReadError::Other(error.to_string()))?;
         if bytes.len().saturating_add(chunk.len()) > MAX_SOURCE_BYTES {
-            return Err("source exceeds retained capture capacity".to_string());
+            return Err(SourceReadError::Other(
+                "source exceeds retained capture capacity".to_string(),
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -353,7 +396,7 @@ async fn read_file(access: &dyn EnvironmentAccess, path: &PathUri) -> Result<Sou
             relative_to: path.parent(),
             expand_references: path.basename().as_deref().is_some_and(expands_references),
         })
-        .map_err(|error| error.to_string())
+        .map_err(|error| SourceReadError::Other(error.to_string()))
 }
 
 fn selected_lines<'a>(
@@ -912,6 +955,33 @@ mod tests {
         assert!(!text.contains(r#"Source "@ignored""#));
         assert!(!text.contains("EXCLUDED"));
         assert!(!text.contains("not-selected"));
+    }
+
+    #[tokio::test]
+    async fn nested_missing_at_tokens_in_markdown_are_silently_skipped() {
+        let (directory, session, step) = fixture().await;
+        std::fs::write(
+            directory.path().join("guide.md"),
+            "Use @workspace, @types/react, @starting-style, and @real.txt.\n",
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("real.txt"), "REAL_CONTENT").unwrap();
+        let text = acquire_message(
+            &session,
+            &step,
+            "Read @guide.md @explicit-missing.txt",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(text.contains("REAL_CONTENT"));
+        assert!(text.contains(r#"Source "@explicit-missing.txt": CONTENT NOT ATTACHED"#));
+        for ignored in ["@workspace", "@types/react", "@starting-style"] {
+            assert!(
+                !text.contains(&format!(r#"Source "{ignored}""#)),
+                "unexpected nested failure for {ignored}: {text}"
+            );
+        }
     }
 
     #[tokio::test]

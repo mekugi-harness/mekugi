@@ -231,7 +231,7 @@ impl SpawnAgentArgs {
             .as_deref()
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
-            .unwrap_or("all");
+            .unwrap_or("none");
 
         if fork_turns.eq_ignore_ascii_case("none") {
             return Ok(None);
@@ -257,6 +257,22 @@ pub(crate) enum SpawnAgentResult {
     HiddenMetadata {
         task_name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn omitted_fork_turns_defaults_to_fresh_context() {
+        let args: SpawnAgentArgs = serde_json::from_value(serde_json::json!({
+            "task_name": "worker",
+            "message": "Do the task."
+        }))
+        .expect("parse spawn args");
+        assert_eq!(args.fork_mode().expect("default fork mode"), None);
+    }
 }
 
 impl ToolOutput for SpawnAgentResult {

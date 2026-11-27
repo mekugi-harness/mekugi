@@ -48,6 +48,11 @@ pub(crate) const CHILD_REPLY_SUMMARY: &str = "For substantial messages and final
      to three sentences, then use headings for supporting detail. Keep short replies \
      plain and honor higher-priority exact-output requirements.";
 
+pub(crate) const SOURCE_REFERENCE_SYNTAX: &str = "Source references (used in `new_context` `reload.sources`, `spawn_agent` `preload.sources`, \
+     and messages) accept `@path`, `@path#Lstart-Lend,Lstart2-Lend2` (inclusive line ranges; quote \
+     paths with spaces as `@\"path with spaces\"#L1-L20`), `$skill` or `$skill/references/file.md`, \
+     and `mchanges:ID` or `mchanges:ID..ID`. Bare paths without `@` are invalid.";
+
 pub(crate) fn shell_guidance(path: &OsStr) -> String {
     let directories: Vec<_> = std::env::split_paths(path)
         .filter(|directory| directory.is_absolute())
@@ -75,6 +80,8 @@ pub(crate) fn shell_guidance(path: &OsStr) -> String {
         write!(description, "\n\n#### `{name}`\n\n{help}")
             .expect("writing to a String cannot fail");
     }
+    write!(description, "\n\n### Source references\n\n{SOURCE_REFERENCE_SYNTAX}")
+        .expect("writing to a String cannot fail");
     description
 }
 

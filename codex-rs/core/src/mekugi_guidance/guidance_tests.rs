@@ -42,6 +42,8 @@ fn available_helpers_use_the_native_command_entry() -> anyhow::Result<()> {
     assert!(!entry.contains("#### `mread`"));
     assert!(!entry.contains("mread"));
     assert!(!entry.contains("#### `mrun`"));
+    assert!(entry.contains("### Source references\n\nSource references"));
+    assert!(entry.contains("@path#Lstart-Lend,Lstart2-Lend2"));
     assert!(entry.contains("exec_command(args: {cmd: string}): Promise<string>"));
     Ok(())
 }

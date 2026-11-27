@@ -10,14 +10,14 @@ pub(crate) const NEW_CONTEXT_WINDOW_TOOL_NAME: &str = "new_context";
 pub fn create_new_context_window_tool(messages: Option<&ToolMessage>) -> ToolSpec {
     let tool = ResponsesApiTool {
         name: NEW_CONTEXT_WINDOW_TOOL_NAME.to_string(),
-        description: "Start a summary-free context window and continue unfinished work. Use at a safe checkpoint when discarding obsolete context materially reduces what remaining work must carry, or at the 90% context notice; smaller notices and waiting alone do not trigger reset. Finish current executions and save needed state first. Omitted reload reuses the retained selection; sources:[] clears it. Sources are read before inference after this and later manual or automatic resets. Environment state is unchanged.".to_string(),
+        description: "Start a summary-free context window and continue unfinished work. Use at a safe checkpoint when discarding obsolete context materially reduces what remaining work must carry, or at the 90% context notice; smaller notices and waiting alone do not trigger reset. Finish current executions and save needed state first. Omitted reload reuses the retained selection; sources:[] clears it. Reload the active task record or handoff, immediately needed guidance, and targeted file line ranges for the next resume step rather than deferring them until after reset. Sources are read before inference after this and later manual or automatic resets. Environment state is unchanged.".to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
             BTreeMap::from([("reload".to_string(), JsonSchema::object(
                 BTreeMap::from([("sources".to_string(), JsonSchema::array(
                     JsonSchema::string(None),
-                    Some("Source references to reacquire.".to_string()),
+                    Some("Source references to reacquire (see ### Source references).".to_string()),
                 ))]),
                 Some(vec!["sources".to_string()]),
                 Some(false.into()),
@@ -28,4 +28,36 @@ pub fn create_new_context_window_tool(messages: Option<&ToolMessage>) -> ToolSpe
         output_schema: None,
     };
     ToolSpec::Function(with_catalog_tool_message(tool, messages))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_context_spec_points_to_shared_source_references() {
+        let ToolSpec::Function(tool) = create_new_context_window_tool(None) else {
+            panic!("expected function tool");
+        };
+        assert!(tool.description.contains("targeted file line ranges"));
+        let reload = tool
+            .parameters
+            .properties
+            .as_ref()
+            .expect("parameters properties")
+            .get("reload")
+            .expect("reload property");
+        let sources = reload
+            .properties
+            .as_ref()
+            .expect("reload properties")
+            .get("sources")
+            .expect("sources property");
+        assert!(
+            sources
+                .description
+                .as_deref()
+                .is_some_and(|text| text.contains("### Source references"))
+        );
+    }
 }

@@ -676,7 +676,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                     "sources".to_string(),
                     JsonSchema::array(
                         JsonSchema::string(None),
-                        Some("Use @path for files, $skill for skills, or mchanges:ID for changes. Bare paths are invalid. Requires fork_turns: none.".to_string()),
+                        Some("Source references to preload (see ### Source references). Requires fork_turns: none (default).".to_string()),
                     ),
                 )]),
                 Some(vec!["sources".to_string()]),
@@ -700,7 +700,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Parent history to inherit. Defaults to `all`; use `none` to start without parent history. Only `all` and `none` are supported.".to_string(),
+                "Parent history to inherit. Defaults to `none` (fresh context without parent history); use `all` to inherit full parent history. Only `none` and `all` are supported.".to_string(),
             )),
         ),
         (
@@ -840,9 +840,9 @@ The spawned agent will have the same tools as you and the ability to spawn its o
 {inherited_model_guidance}{catalog_suffix}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.
-For fork_turns=none, preload full applicable instructions/skills and needed owner evidence, not policy recaps; defer later-phase sources.
+For fresh spawns (`fork_turns="none"`, default), preload full applicable instructions/skills plus the target file line ranges, artifacts, and owner evidence needed to start without exploratory re-reads; defer later-phase sources.
 
-Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context."#
+Note that `fork_turns="none"` (default) starts without parent history, whereas `fork_turns="all"` provides the subagent with full surrounding parent context."#
         )
     };
 
