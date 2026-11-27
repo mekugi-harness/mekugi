@@ -833,12 +833,27 @@ test("eviction orders a pending resume, unsubscribe, and subsequent reopen of th
   assert.equal(threads.current.session.thread, "a");
 });
 
-test("reconnect joins a gap to the loaded transcript before applying newer live changes", async () => {
+test("reconnect joins earlier history, then applies live deltas and keeps the fresh terminal list", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const root = resumedThread("a").thread;
+  const child = { ...root, id: "b", parentThreadId: root.id };
+  let processId = "before-reconnect";
+  let failTerminalRead = false;
   let latest = transcriptTurnPage(10, 6, "after6");
   const gapPageRequested = Promise.withResolvers();
   const gapPage = Promise.withResolvers();
   const machine = fakeMachine({
-    "thread/resume": () => resumedThread("a", latest),
+    "thread/resume": ({ threadId }) =>
+      threadId === root.id ? resumedThread(root.id, latest) : { thread: child },
+    "thread/subtree/list": () => ({ data: [root, child] }),
+    "thread/backgroundTerminals/list": ({ threadId }) => {
+      if (threadId !== root.id) return { data: [] };
+      if (failTerminalRead) {
+        failTerminalRead = false;
+        throw new Error("Terminal list temporarily unavailable");
+      }
+      return { data: [{ processId }] };
+    },
     "thread/turns/list": ({ cursor }) => {
       if (cursor === "after6") return transcriptTurnPage(5, 1);
       if (cursor === "after33") return transcriptTurnPage(32, 13, "after13");
@@ -847,16 +862,26 @@ test("reconnect joins a gap to the loaded transcript before applying newer live 
       return gapPage.promise;
     },
   });
-  const stream = new Stream();
-  stream.connect("a", machine);
+  const threads = new ThreadStreams();
+  threads.connect(root.id, machine);
+  const stream = threads.current;
   await stream.refresh();
   assert.equal(await stream.earlier(), true);
+  threads.connect(child.id, machine);
+  await threads.current.refresh();
+  threads.connect(root.id, machine);
   const visibleText = () => stream.transcriptEntries.map(({ seq }) => stream.entry(seq).text);
   const retained = visibleText();
 
   latest = transcriptTurnPage(37, 33, "after33");
   machine.emitOpen();
   await gapPageRequested.promise;
+  processId = "after-reconnect";
+  failTerminalRead = true;
+  machine.emitNotification({
+    method: "thread/backgroundTerminals/changed",
+    params: { threadId: root.id },
+  });
   machine.emitNotification({
     method: "item/agentMessage/delta",
     params: { threadId: "a", turnId: "t37", itemId: "m37", delta: " streamed" },
@@ -868,6 +893,8 @@ test("reconnect joins a gap to the loaded transcript before applying newer live 
   const expected = Array.from({ length: 36 }, (_, index) => `turn ${index + 1}`);
   assert.deepEqual(visibleText(), [...expected, "turn 37 streamed"]);
   assert.equal(stream.hasEarlier, false);
+  await new Promise(setImmediate);
+  assert.deepEqual(stream.processes, [{ processId: "after-reconnect", threadId: root.id }]);
   await stream.close();
 });
 

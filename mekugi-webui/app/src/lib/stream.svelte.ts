@@ -1666,6 +1666,13 @@ export class Stream {
     const id = this.#id;
     const machine = this.#machine;
     if (!id || !machine) return;
+    // Terminal refreshes are independent of transcript catch-up. Do not replay
+    // one after reconnect has already requested a fresh process list.
+    if (notification.method === "thread/backgroundTerminals/changed") {
+      if (this.#inFamily(notification.params.threadId))
+        void this.#loadProcesses(notification.params.threadId, machine, notification);
+      return;
+    }
     if (
       this.#catchupNotifications &&
       "threadId" in notification.params &&
@@ -1702,11 +1709,6 @@ export class Stream {
             void this.#loadLiveShell(started.id, machine, this.#requests.signal);
           }
         }
-        break;
-      }
-      case "thread/backgroundTerminals/changed": {
-        if (this.#inFamily(notification.params.threadId))
-          void this.#loadProcesses(notification.params.threadId, machine, notification);
         break;
       }
       case "thread/closed": {
