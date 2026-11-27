@@ -160,23 +160,23 @@ func (r *nativeClientRuntime) deliver(message nativeClientMessage) error {
 	return nil
 }
 
-// Input capacity is reserved before taking a draft. A second submission remains
-// editable in its existing editor while the first admission/outcome is pending.
+// Reserve input capacity per composer. The runtime still sends input requests
+// serially, including when /clear has displayed a new thread before its request settles.
 func (c *nativeClient) inputAvailable() bool {
 	if c.runtime == nil {
 		return true
 	}
-	if slices.ContainsFunc(c.requests[:], func(call *nativeClientCall) bool {
-		return call != nil && (call.operation.Composer != nil || call.operation.Answers != nil)
-	}) {
-		return false
+	thread := c.event.Frame.View.Input.ID
+	reserved := func(call *nativeClientCall) bool {
+		if call == nil {
+			return false
+		}
+		if input := call.operation.Composer; input != nil {
+			return thread == "" || input.Intent.Thread == "" || input.Intent.Thread == thread
+		}
+		return call.operation.Answers != nil
 	}
-	if slices.ContainsFunc(c.calls, func(call *nativeClientCall) bool {
-		return call.operation.Composer != nil || call.operation.Answers != nil
-	}) {
-		return false
-	}
-	return true
+	return !slices.ContainsFunc(c.requests[:], reserved) && !slices.ContainsFunc(c.calls, reserved)
 }
 
 func (r *nativeClientRuntime) schedule() {
@@ -200,6 +200,7 @@ func (r *nativeClientRuntime) schedule() {
 	if c.request(nativeAcquisitionCall) == nil && !slices.ContainsFunc(c.calls, func(call *nativeClientCall) bool { return nativeCallLane(call.operation) == nativeAcquisitionCall }) {
 		c.acquireCompletion()
 	}
+	c.acquirePrediction()
 	for _, owner := range r.owners {
 		if owner.closed {
 			continue
@@ -226,10 +227,16 @@ func (r *nativeClientRuntime) send(call *nativeClientCall, operation sessionapi.
 	owner := call.owner
 	ctx, cancel := context.WithCancel(owner.ctx)
 	call.cancel, call.complete = cancel, false
+	if operation.Preferences != nil {
+		call.preferenceWritten = make(chan struct{})
+	}
 	connection := owner.connection
 	owner.workers.Go(func() {
 		defer cancel()
 		call.result, call.err = connection.Send(ctx, call.target, operation)
+		if call.preferenceWritten != nil {
+			close(call.preferenceWritten)
+		}
 		select {
 		case r.results <- call:
 		case <-owner.ctx.Done():

@@ -185,6 +185,10 @@ pub(crate) async fn emit_explicit_skill_invocations(
     let injected_host_skill_prompts = turn_context
         .extension_data
         .get::<InjectedHostSkillPrompts>();
+    let observation = sess
+        .services
+        .thread_extension_data
+        .get::<codex_skills_extension::SkillsThreadState>();
     for skill in injected_skills {
         let skill_resource = skill.path_to_skills_md.inferred_native_path_string();
         if injected_host_skill_prompts
@@ -192,6 +196,9 @@ pub(crate) async fn emit_explicit_skill_invocations(
             .is_some_and(|prompts| prompts.is_superseded_path(&skill_resource))
         {
             continue;
+        }
+        if let Some(observation) = &observation {
+            observation.record_skill_use(&skill.name);
         }
         turn_context
             .session_telemetry

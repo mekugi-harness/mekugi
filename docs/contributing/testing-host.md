@@ -4,15 +4,18 @@
 against local mock providers with fake credentials and isolated configuration.
 
 Run `just build-native` to stage the runtime and its companions in `bin/native`.
-Stock-CLI fixtures also need `codex` on `PATH`. If you run compaction fixtures
-with raw `go test`, set `MEKUGI_E2E_MODEL` yourself.
+Separate stock-CLI fixtures need `codex` on `PATH`, but `test-host` does not.
+If you run compaction fixtures with raw `go test`, set `MEKUGI_E2E_MODEL`
+yourself.
 
 ## Running fixtures
 
-Run the focused host suite: native `mrun` with piped input, PTY
-yield/`write_stdin`, terminal steering and queues, and command tracking through
-approval, workspace relocation, Dash, and the Linux sandbox. Nested `mchanges`
-uses the stock CLI.
+Run the focused host suite against the managed runtime. It
+checks terminal resume, pickers, steering and queues, approval denial,
+side questions, one-off execution, and manual titles. Managed-runtime cases
+also exercise native `mrun` with piped input, PTY yield/`write_stdin`, durable
+change history through `mchanges`, and command execution through a user hook,
+workspace relocation, Dash, and both restricted Linux sandbox modes.
 
 ```sh
 PATH="$PWD/bin/native:$PATH" just test-host

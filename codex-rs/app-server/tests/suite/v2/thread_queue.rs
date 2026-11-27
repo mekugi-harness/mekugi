@@ -15,12 +15,18 @@ use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
+use codex_app_server_protocol::CommandExecutionSource;
+use codex_app_server_protocol::ImageReference;
 use codex_app_server_protocol::InitializeCapabilities;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::QueuedSubmission;
+use codex_app_server_protocol::QueuedSubmissionKind;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadChangesReadParams;
+use codex_app_server_protocol::ThreadChangesReadResponse;
 use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -34,14 +40,20 @@ use codex_app_server_protocol::ThreadQueueListParams;
 use codex_app_server_protocol::ThreadQueueListResponse;
 use codex_app_server_protocol::ThreadQueueReorderParams;
 use codex_app_server_protocol::ThreadQueueReorderResponse;
+use codex_app_server_protocol::ThreadQueueShellCommandParams;
+use codex_app_server_protocol::ThreadQueueShellCommandResponse;
 use codex_app_server_protocol::ThreadQueueStartParams;
 use codex_app_server_protocol::ThreadQueueStartResponse;
+use codex_app_server_protocol::ThreadQueueTakeParams;
+use codex_app_server_protocol::ThreadQueueTakeResponse;
 use codex_app_server_protocol::ThreadQueueUpdateParams;
 use codex_app_server_protocol::ThreadQueueUpdateResponse;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadSetNameParams;
+use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
@@ -54,6 +66,8 @@ use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
 use codex_protocol::openai_models::ReasoningEffort;
 use core_test_support::skip_if_remote;
@@ -1030,6 +1044,278 @@ async fn a_new_turn_preserves_queued_messages_until_it_completes() -> Result<()>
     }
     assert!(list_queue(&mut app, &thread_id).await?.data.is_empty());
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn queue_take_and_steer_preserve_waiting_inputs_until_admitted() -> Result<()> {
+    skip_if_remote!(Ok(()), "uses the app-server host shell and workspace");
+    let (mut app, _home, server) = queue_app(vec![
+        blocked_turn_response()?,
+        create_final_assistant_message_sse_response("steered turn done")?,
+    ])
+    .await?;
+    let thread_id = app
+        .start_thread(ThreadStartParams::default())
+        .await?
+        .thread
+        .id;
+    let _: ThreadSetNameResponse = app
+        .request(|request_id| ClientRequest::ThreadSetName {
+            request_id,
+            params: ThreadSetNameParams {
+                thread_id: thread_id.clone(),
+                name: "Waiting inputs".into(),
+            },
+        })
+        .await?;
+    let (turn_id, approval) = start_blocked_turn(&mut app, &thread_id).await?;
+    let first = queue_item(&mut app, submission(&thread_id, "draft one")).await?;
+    let _: ThreadQueueShellCommandResponse = app
+        .request(|request_id| ClientRequest::ThreadQueueShellCommand {
+            request_id,
+            params: ThreadQueueShellCommandParams {
+                thread_id: thread_id.clone(),
+                command: "printf shell-only".into(),
+            },
+        })
+        .await?;
+    let mut with_attachment = submission(&thread_id, "draft two");
+    with_attachment.input.push(UserInput::Image {
+        image: ImageReference::Inline {
+            url: "data:image/png;base64,AA==".into(),
+        },
+        detail: None,
+    });
+    let second = queue_item(&mut app, with_attachment).await?;
+    let steer = queue_item(&mut app, submission(&thread_id, "use this steer")).await?;
+    let before = list_queue(&mut app, &thread_id).await?.data;
+    let shell = before[1].clone();
+    assert_eq!(shell.kind, QueuedSubmissionKind::ShellCommand);
+
+    let steer_params = TurnSteerParams {
+        thread_id: thread_id.clone(),
+        client_user_message_id: Some(steer.client_user_message_id.clone()),
+        input: steer.input.clone(),
+        responsesapi_client_metadata: steer.responsesapi_client_metadata.clone(),
+        expected_turn_id: turn_id.clone(),
+        ..Default::default()
+    };
+    let id = app
+        .send_raw_request(
+            "turn/steer",
+            Some(serde_json::to_value(TurnSteerParams {
+                expected_turn_id: "obsolete-turn".into(),
+                ..steer_params.clone()
+            })?),
+        )
+        .await?;
+    let error = timeout(
+        READ_TIMEOUT,
+        app.read_stream_until_error_message(RequestId::Integer(id)),
+    )
+    .await??;
+    assert!(
+        error.error.message.contains("expected active turn id"),
+        "{error:?}"
+    );
+    assert_eq!(list_queue(&mut app, &thread_id).await?.data, before);
+
+    let taken: ThreadQueueTakeResponse = app
+        .request(|request_id| ClientRequest::ThreadQueueTake {
+            request_id,
+            params: ThreadQueueTakeParams {
+                thread_id: thread_id.clone(),
+                queued_submission_ids: vec![
+                    second.id.clone(),
+                    "already-removed".into(),
+                    first.id.clone(),
+                ],
+            },
+        })
+        .await?;
+    assert_eq!(taken.data, vec![first, second]);
+    assert_eq!(
+        list_queue(&mut app, &thread_id).await?.data,
+        vec![shell.clone(), steer.clone()]
+    );
+    let steered: TurnSteerResponse = app
+        .request(|request_id| ClientRequest::TurnSteer {
+            request_id,
+            params: steer_params,
+        })
+        .await?;
+    assert_eq!(steered.turn_id, turn_id);
+    let deleted: ThreadQueueDeleteResponse = app
+        .request(|request_id| ClientRequest::ThreadQueueDelete {
+            request_id,
+            params: ThreadQueueDeleteParams {
+                thread_id: thread_id.clone(),
+                queued_submission_id: steer.id,
+            },
+        })
+        .await?;
+    assert!(deleted.deleted);
+    assert_eq!(list_queue(&mut app, &thread_id).await?.data, vec![shell]);
+
+    decline_approval(&mut app, approval).await?;
+    let done: TurnCompletedNotification =
+        timeout(READ_TIMEOUT, app.read_notification("turn/completed")).await??;
+    assert_eq!(done.turn.id, turn_id);
+    let requests = server.received_requests().await.context("mock requests")?;
+    let provider_input = requests[1].body_json::<Value>()?["input"].to_string();
+    assert!(provider_input.contains("use this steer"));
+    assert!(!provider_input.contains("draft one") && !provider_input.contains("shell-only"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn queue_drains_shell_before_prompt_and_persists_shell_edits() -> Result<()> {
+    skip_if_remote!(Ok(()), "uses the app-server host shell and workspace");
+    let responses = vec![
+        blocked_turn_response()?,
+        create_final_assistant_message_sse_response("original turn done")?,
+        create_final_assistant_message_sse_response("queued prompt done")?,
+    ];
+    let (mut app, _codex_home, server) = queue_app(responses).await?;
+    let workspace = TempDir::new()?;
+    let output_path = workspace.path().join("queued-shell.txt");
+    let second_path = workspace.path().join("second.txt");
+    let started: ThreadStartResponse = app
+        .request(|request_id| ClientRequest::ThreadStart {
+            request_id,
+            params: ThreadStartParams {
+                cwd: Some(workspace.path().display().to_string()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let thread_id = started.thread.id;
+    let _: ThreadSetNameResponse = app
+        .request(|request_id| ClientRequest::ThreadSetName {
+            request_id,
+            params: ThreadSetNameParams {
+                thread_id: thread_id.clone(),
+                name: "Queue ordering".into(),
+            },
+        })
+        .await?;
+    let (original_turn, approval) = start_blocked_turn(&mut app, &thread_id).await?;
+
+    let command = format!(
+        "printf 'saved shell change\\n' > {}; printf 'another\\n' > {}",
+        shlex::try_quote(&output_path.to_string_lossy())?,
+        shlex::try_quote(&second_path.to_string_lossy())?,
+    );
+    let _: ThreadQueueShellCommandResponse = app
+        .request(|request_id| ClientRequest::ThreadQueueShellCommand {
+            request_id,
+            params: ThreadQueueShellCommandParams {
+                thread_id: thread_id.clone(),
+                command: command.clone(),
+            },
+        })
+        .await?;
+    let after = queue_item(&mut app, submission(&thread_id, "queued prompt")).await?;
+    let queued = list_queue(&mut app, &thread_id).await?.data;
+    assert_eq!(queued.len(), 2);
+    assert_eq!(queued[0].input, vec![text(&format!("!{command}"))]);
+    assert_eq!(queued[1], after);
+    assert!(!output_path.exists());
+
+    decline_approval(&mut app, approval).await?;
+    let original: TurnCompletedNotification =
+        timeout(READ_TIMEOUT, app.read_notification("turn/completed")).await??;
+    assert_eq!(original.turn.id, original_turn);
+    let first_completed: TurnCompletedNotification =
+        timeout(READ_TIMEOUT, app.read_notification("turn/completed")).await??;
+    let second_completed: TurnCompletedNotification =
+        timeout(READ_TIMEOUT, app.read_notification("turn/completed")).await??;
+    let shell_item: ItemCompletedNotification = loop {
+        let item: ItemCompletedNotification =
+            timeout(READ_TIMEOUT, app.read_notification("item/completed")).await??;
+        if matches!(
+            &item.item.payload,
+            ThreadItemPayload::CommandExecution {
+                source: CommandExecutionSource::UserShell,
+                ..
+            }
+        ) {
+            break item;
+        }
+    };
+    assert_eq!(shell_item.turn_id, first_completed.turn.id);
+    assert_ne!(shell_item.turn_id, second_completed.turn.id);
+    assert_eq!(
+        std::fs::read_to_string(output_path).context("queued shell output file")?,
+        "saved shell change\n"
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .context("mock request recording")?
+            .len(),
+        3
+    );
+
+    let saved: ThreadChangesReadResponse = app
+        .request(|request_id| ClientRequest::ThreadChangesRead {
+            request_id,
+            params: ThreadChangesReadParams {
+                thread_id: thread_id.clone(),
+                include_ephemeral: Some(true),
+                caller_thread_id: None,
+                item_id: Some(shell_item.item.id().to_string()),
+                per_capture: false,
+                limit: Some(1),
+                cursor: None,
+            },
+        })
+        .await?;
+    assert!(
+        saved
+            .changes
+            .iter()
+            .any(|change| change.source_kind == "UserShell"
+                && change.author_thread_id.is_none()
+                && change.turn_id == first_completed.turn.id
+                && change.item_id == shell_item.item.id())
+    );
+    assert_eq!((saved.file_count, saved.total_additions), (2, 2));
+    assert_eq!(
+        saved.files[0].change_ids,
+        vec![saved.changes[0].change_id.clone()]
+    );
+    let next: ThreadChangesReadResponse = app
+        .request(|request_id| ClientRequest::ThreadChangesRead {
+            request_id,
+            params: ThreadChangesReadParams {
+                thread_id: thread_id.clone(),
+                include_ephemeral: Some(true),
+                caller_thread_id: None,
+                item_id: Some(shell_item.item.id().to_string()),
+                per_capture: false,
+                limit: Some(1),
+                cursor: saved.next_cursor.clone(),
+            },
+        })
+        .await?;
+    assert_eq!(next.files.len(), 1);
+    assert!(next.files[0].path.ends_with("second.txt"));
+    assert!(next.next_cursor.is_none());
+    assert!(
+        saved
+            .files
+            .iter()
+            .any(
+                |file| std::path::Path::new(&file.path).ends_with("queued-shell.txt")
+                    && file.unified_diff.contains("+saved shell change")
+            ),
+        "{saved:?}"
+    );
+    assert!(list_queue(&mut app, &thread_id).await?.data.is_empty());
     Ok(())
 }
 

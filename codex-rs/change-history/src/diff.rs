@@ -40,6 +40,8 @@ pub struct ComposedSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComposedFileDiff {
     pub rel_path: String,
+    pub abs_path: PathBuf,
+    pub change_ids: Vec<ChangeId>,
     pub moved_from: Option<String>,
     pub unified_diff: String,
     pub stats: FileDiffStats,
@@ -52,6 +54,7 @@ pub(crate) struct ComposedFileTransition {
     pub(crate) before: FileSnapshot,
     pub(crate) after: FileSnapshot,
     pub(crate) coverage_notes: Vec<String>,
+    change_ids: Vec<ChangeId>,
 }
 
 pub(crate) fn normalize_filter_path(path: &str) -> String {
@@ -205,6 +208,7 @@ pub(crate) fn compose_transitions_with_continuity(
                     ));
                 }
                 *last_seq = record.sequence;
+                existing.change_ids.push(record.id.clone());
                 existing.after = after;
                 existing.rel_path = file.rel_path.clone();
                 existing.abs_path = file.abs_path.clone();
@@ -230,6 +234,7 @@ pub(crate) fn compose_transitions_with_continuity(
                             before,
                             after,
                             coverage_notes,
+                            change_ids: vec![record.id.clone()],
                         },
                     ),
                 );
@@ -255,6 +260,8 @@ pub fn compose_diff(
         let (unified_diff, stats) = render_transition_diff(&tr);
         out.push(ComposedFileDiff {
             rel_path: tr.rel_path,
+            abs_path: tr.abs_path,
+            change_ids: tr.change_ids,
             moved_from: tr.moved_from,
             unified_diff,
             stats,

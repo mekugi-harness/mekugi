@@ -29,6 +29,8 @@ use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadSetNameParams;
+use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TokenUsageBreakdown;
@@ -334,6 +336,7 @@ async fn compaction_error_window_reaches_analytics(
     send_turn_and_wait(&mut mcp, &thread_id, "seed history").await?;
     let compact_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
+            mode: None,
             context_reset_request_id: None,
             reload: None,
             thread_id: thread_id.clone(),
@@ -375,7 +378,9 @@ async fn compaction_error_window_reaches_analytics(
 #[test_case(CompactionRoute::Local; "local")]
 #[test_case(CompactionRoute::Remote; "streamed remote")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_compaction_emits_started_and_completed_items(route: CompactionRoute) -> Result<()> {
+async fn automatic_context_reset_emits_started_and_completed_items(
+    route: CompactionRoute,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -387,25 +392,11 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         responses::ev_assistant_message("m2", "SECOND_REPLY"),
         responses::ev_completed_with_tokens("r2", /*total_tokens*/ 330_000),
     ]);
-    let summary = match route {
-        CompactionRoute::Local => responses::ev_assistant_message("m3", "LOCAL_SUMMARY"),
-        CompactionRoute::Remote => serde_json::json!({
-            "type": "response.output_item.done",
-            "item": {
-                "type": "compaction",
-                "encrypted_content": "ENCRYPTED_COMPACTION_SUMMARY",
-            },
-        }),
-    };
     let sse3 = responses::sse(vec![
-        summary,
-        responses::ev_completed_with_tokens("r3", /*total_tokens*/ 200),
+        responses::ev_assistant_message("m3", "FINAL_REPLY"),
+        responses::ev_completed_with_tokens("r3", /*total_tokens*/ 120),
     ]);
-    let sse4 = responses::sse(vec![
-        responses::ev_assistant_message("m4", "FINAL_REPLY"),
-        responses::ev_completed_with_tokens("r4", /*total_tokens*/ 120),
-    ]);
-    let requests = responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
+    let requests = responses::mount_sse_sequence(&server, vec![sse1, sse2, sse3]).await;
 
     let codex_home = TempDir::new()?;
     let mut config = compaction_config(&server.uri(), /*auto_compact_limit*/ 200_000);
@@ -428,6 +419,7 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
         .await?;
 
     let thread_id = start_thread(&mut mcp).await?;
+    name_compaction_fixture(&mut mcp, &thread_id).await?;
     for message in ["first", "second", "third"] {
         send_turn_and_wait(&mut mcp, &thread_id, message).await?;
     }
@@ -435,43 +427,37 @@ async fn auto_compaction_emits_started_and_completed_items(route: CompactionRout
     let started = wait_for_context_compaction_started(&mut mcp).await?;
     let completed = wait_for_context_compaction_completed(&mut mcp).await?;
 
-    let ThreadItemPayload::ContextCompaction { id: started_id, .. } = started.item.payload else {
-        unreachable!("started item should be context compaction");
+    let ThreadItemPayload::ContextCompaction {
+        id: started_id,
+        summary_free: true,
+        summary: None,
+        ..
+    } = started.item.payload
+    else {
+        unreachable!("started item should be a summary-free reset");
     };
     let ThreadItemPayload::ContextCompaction {
-        id: completed_id, ..
+        id: completed_id,
+        summary_free: true,
+        summary: None,
+        ..
     } = completed.item.payload
     else {
-        unreachable!("completed item should be context compaction");
+        unreachable!("completed item should be a summary-free reset");
     };
 
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
     let requests = requests.requests();
-    assert_eq!(requests.len(), 4);
-    let compact_request = &requests[2];
-    assert_eq!(compact_request.path(), "/v1/responses");
-    match route {
-        CompactionRoute::Local => {
-            assert!(
-                compact_request
-                    .inputs_of_type("compaction_trigger")
-                    .is_empty()
-            );
-            assert!(compact_request.body_contains_text(COMPACT_PROMPT));
-        }
-        CompactionRoute::Remote => {
-            assert_eq!(
-                compact_request.inputs_of_type("compaction_trigger").len(),
-                1
-            );
-            assert_eq!(
-                requests[3].inputs_of_type("compaction")[0]["encrypted_content"],
-                "ENCRYPTED_COMPACTION_SUMMARY"
-            );
-        }
-    }
+    assert_eq!(requests.len(), 3);
+    let continuation = &requests[2];
+    assert_eq!(continuation.path(), "/v1/responses");
+    assert!(continuation.body_contains_text("third"));
+    assert!(!continuation.body_contains_text("FIRST_REPLY"));
+    assert!(!continuation.body_contains_text(COMPACT_PROMPT));
+    assert!(continuation.inputs_of_type("compaction_trigger").is_empty());
+    assert!(continuation.inputs_of_type("compaction").is_empty());
 
     Ok(())
 }
@@ -543,6 +529,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
 
     let compact_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
+            mode: None,
             context_reset_request_id: None,
             reload: None,
             thread_id: thread_id.clone(),
@@ -662,6 +649,7 @@ async fn thread_compact_start_rejects_invalid_thread_id() -> Result<()> {
 
     let request_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
+            mode: None,
             context_reset_request_id: None,
             reload: None,
             thread_id: "not-a-thread-id".to_string(),
@@ -694,6 +682,7 @@ async fn thread_compact_start_rejects_unknown_thread_id() -> Result<()> {
 
     let request_id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
+            mode: None,
             context_reset_request_id: None,
             reload: None,
             thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
@@ -721,6 +710,18 @@ async fn start_thread(mcp: &mut TestAppServer) -> Result<String> {
     let ThreadStartResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_id)).await??;
     Ok(thread.id)
+}
+
+async fn name_compaction_fixture(mcp: &mut TestAppServer, thread_id: &str) -> Result<()> {
+    // Background automatic naming must not consume the compaction response sequence.
+    let id = mcp
+        .send_thread_set_name_request(ThreadSetNameParams {
+            thread_id: thread_id.to_string(),
+            name: "Compaction fixture".to_string(),
+        })
+        .await?;
+    let _: ThreadSetNameResponse = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
+    Ok(())
 }
 
 async fn send_turn_and_wait(
@@ -991,6 +992,7 @@ async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
     let ThreadStartResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(id)).await??;
     let thread_id = thread.id;
+    name_compaction_fixture(&mut mcp, &thread_id).await?;
     send_turn_and_wait(&mut mcp, &thread_id, "discarded seed marker").await?;
     mcp.clear_message_buffer();
 
@@ -1023,6 +1025,8 @@ async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
         }
     );
     let ThreadItemPayload::ContextCompaction {
+        summary_free: true,
+        summary: None,
         source_acquisition: Some(acquisition),
         ..
     } = completed.item.payload
@@ -1075,6 +1079,7 @@ async fn manual_reset_reloads_sources_and_settles_the_request() -> Result<()> {
 
     let id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
+            mode: None,
             context_reset_request_id: None,
             reload: None,
             thread_id: thread_id.clone(),
@@ -1119,6 +1124,7 @@ async fn manual_reset_cancel_settles_the_active_request() -> Result<()> {
     let thread_id = start_thread(&mut mcp).await?;
     let id = mcp
         .send_thread_compact_start_request(ThreadCompactStartParams {
+            mode: None,
             context_reset_request_id: Some("cancel-request".to_string()),
             reload: None,
             thread_id: thread_id.clone(),

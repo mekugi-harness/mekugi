@@ -29,7 +29,7 @@ func TestRewindCacheEligibilityLiveOpenAI(t *testing.T) {
 		return cmd
 	}, "")
 
-	terminal.await("Ready")
+	terminal.awaitReady()
 	for _, parts := range []string{"KEEP, _, READY", "KEEP, _, WARM", "DROP, _, ANSWER"} {
 		terminal.send(parts + ". Without using tools, join those parts with no spaces and reply with only the result.\r")
 		terminal.await(strings.ReplaceAll(parts, ", ", ""))

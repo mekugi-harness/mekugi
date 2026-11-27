@@ -14,6 +14,7 @@
   } from "./kinds";
   import Path from "./Path.svelte";
   import { preferences } from "./preferences.svelte";
+  import ReferenceSelection from "./ReferenceSelection.svelte";
   import ResponseCopy from "./ResponseCopy.svelte";
   import type { Entry } from "./protocol";
   import { stream } from "./stream.svelte";
@@ -29,6 +30,7 @@
     jumps = 0,
     empty = "No messages yet.",
     onselect,
+    onreference,
     onchanges,
     hasSavedChange,
     onhiddenhooks,
@@ -41,6 +43,7 @@
     jumps?: number;
     empty?: string;
     onselect?: (entry: Entry) => void;
+    onreference?: (text: string, description: string, source: string) => boolean;
     onchanges?: (paths: string[]) => void;
     hasSavedChange?: (paths: string[]) => boolean;
     onhiddenhooks?: (count: number) => void;
@@ -289,6 +292,9 @@
       {/if}
     </div>
   </div>
+  {#if onreference}
+    <ReferenceSelection root={scroller} {onreference} />
+  {/if}
   {#if !pinned}
     <button
       type="button"

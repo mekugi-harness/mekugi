@@ -303,6 +303,9 @@ pub struct ChangeRecord {
     pub schema_version: u32,
     pub id: ChangeId,
     pub sequence: u64,
+    /// Unix milliseconds when the completed capture was published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_at_ms: Option<i64>,
     pub metadata: ChangeMetadata,
     pub files: Vec<FileEvidence>,
 }

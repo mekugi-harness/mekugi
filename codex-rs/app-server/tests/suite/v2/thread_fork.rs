@@ -56,6 +56,7 @@ use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::TokenUsageBreakdown;
 use codex_app_server_protocol::TurnItemsView;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
@@ -79,6 +80,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
@@ -1384,7 +1386,7 @@ async fn thread_fork_can_cut_before_unfinished_stored_turn() -> Result<()> {
 }
 
 #[tokio::test]
-async fn thread_fork_emits_restored_token_usage_before_next_turn() -> Result<()> {
+async fn thread_fork_emits_restored_context_without_inheriting_usage() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
@@ -1425,11 +1427,13 @@ async fn thread_fork_emits_restored_token_usage_before_next_turn() -> Result<()>
 
     assert_eq!(notification.thread_id, thread.id);
     assert_eq!(notification.turn_id, thread.turns[0].id);
-    assert_eq!(notification.token_usage.total.total_tokens, 150);
-    assert_eq!(notification.token_usage.total.input_tokens, 120);
-    assert_eq!(notification.token_usage.total.cached_input_tokens, 20);
-    assert_eq!(notification.token_usage.total.output_tokens, 30);
-    assert_eq!(notification.token_usage.total.reasoning_output_tokens, 10);
+    assert_eq!(
+        notification.token_usage.total,
+        TokenUsageBreakdown::from(TokenUsage::default())
+    );
+    assert!(notification.token_usage.usage_unavailable);
+    assert_eq!(notification.token_usage.last_response_at, None);
+    assert_eq!(thread.token_usage.as_ref(), Some(&notification.token_usage));
     assert_eq!(notification.token_usage.last.total_tokens, 90);
     assert_eq!(notification.token_usage.model_context_window, Some(200_000));
     assert_eq!(thread.context_tokens, Some(90));

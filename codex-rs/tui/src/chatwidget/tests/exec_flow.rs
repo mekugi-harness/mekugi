@@ -64,6 +64,7 @@ async fn replayed_background_terminals_belong_to_the_displayed_thread() {
     let live = codex_app_server_protocol::ThreadBackgroundTerminal {
         item_id: "child-call".into(),
         process_id: "43".into(),
+        turn_id: "turn-1".into(),
         command: "sleep 200".into(),
         cwd: fork.config.cwd.clone().into(),
         os_pid: None,
@@ -297,6 +298,7 @@ async fn adjacent_exploration_groups_across_reasoning_live_and_replayed() {
                 script_path: None,
                 source: ExecCommandSource::UnifiedExecStartup,
                 status: AppServerCommandExecutionStatus::InProgress,
+                display: None,
                 command_actions: codex_shell_command::parse_command::parse_command(&command)
                     .into_iter()
                     .map(|parsed| {
@@ -392,6 +394,7 @@ async fn replayed_commands_preserve_individual_output_and_failure_status() {
             script_path: None,
             source,
             status: AppServerCommandExecutionStatus::Completed,
+            display: None,
             command_actions: Vec::new(),
             aggregated_output: Some(format!("{output}\n")),
             exit_code: Some(0),
@@ -595,6 +598,7 @@ async fn exec_end_without_begin_uses_event_command() {
             script_path: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::Completed,
+            display: None,
             command_actions,
             aggregated_output: Some("done".to_string()),
             exit_code: Some(0),

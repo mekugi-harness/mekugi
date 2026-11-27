@@ -14,7 +14,6 @@ use std::sync::Arc;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryBuilder;
-use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::ThreadTokenUsageUpdatedNotification;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnStatus;
@@ -25,14 +24,17 @@ use codex_rollout::RolloutItem;
 
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::OutgoingMessageSender;
-use crate::thread_state::ThreadStateManager;
 
-/// Attach the context measurement to the accepted thread itself, including
+/// Attach usage to the accepted thread itself, including
 /// metadata-only resumes that do not replay turn notifications.
-pub(super) async fn set_context_usage(thread: &mut Thread, conversation: &CodexThread) {
-    if let Some(info) = conversation.token_usage_info().await {
-        thread.context_tokens = info.last_token_usage.total_tokens.try_into().ok();
-        thread.context_window = info
+pub(super) async fn set_thread_usage(thread: &mut Thread, conversation: &CodexThread) {
+    thread.extra = conversation.observed_thread_extra();
+    thread.token_usage = conversation.observed_token_usage().await;
+    if let Some(usage) = thread.token_usage.as_ref() {
+        if usage.last.total_tokens > 0 {
+            thread.context_tokens = usage.last.total_tokens.try_into().ok();
+        }
+        thread.context_window = usage
             .model_context_window
             .and_then(|window| window.try_into().ok());
     }
@@ -47,7 +49,6 @@ pub(super) async fn set_context_usage(thread: &mut Thread, conversation: &CodexT
 /// rendering live turn events.
 pub(super) async fn send_thread_token_usage_update_to_connection(
     outgoing: &Arc<OutgoingMessageSender>,
-    thread_state_manager: &ThreadStateManager,
     connection_id: ConnectionId,
     thread_id: ThreadId,
     conversation: &CodexThread,
@@ -56,18 +57,9 @@ pub(super) async fn send_thread_token_usage_update_to_connection(
     if token_usage_turn_id.is_empty() {
         return;
     }
-    let Some(info) = conversation.token_usage_info().await else {
+    let Some(token_usage) = conversation.observed_token_usage().await else {
         return;
     };
-    let mut token_usage = ThreadTokenUsage::from(info);
-    let thread_state = thread_state_manager.thread_state(thread_id).await;
-    {
-        let mut guard = thread_state.lock().await;
-        if !guard.usage_metrics.has_observed_responses() && token_usage.total.total_tokens > 0 {
-            guard.usage_metrics.mark_prior_unknown();
-        }
-        guard.usage_metrics.apply_to(&mut token_usage);
-    }
     let notification = ThreadTokenUsageUpdatedNotification {
         thread_id: thread_id.to_string(),
         turn_id: token_usage_turn_id,

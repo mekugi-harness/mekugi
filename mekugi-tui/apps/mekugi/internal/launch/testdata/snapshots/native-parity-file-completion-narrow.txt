@@ -1,0 +1,12 @@
+
+
+› internal/uisnapshot/snapshot.go         
+  internal/terminalview/snapshot_test.go
+
+  @! include excluded files
+
+──────────────────────────────────────────
+❯ @snapshot 
+──────────────────────────────────────────
+  gpt-5 (medium) · standard
+  Main • Direct… • /tmp/ws • ctrl+e view

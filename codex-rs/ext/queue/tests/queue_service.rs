@@ -38,6 +38,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput;
 use codex_queue_extension::QueueServiceError;
+use codex_queue_extension::QueuedInput;
 use codex_queue_extension::QueuedItemService;
 use codex_state::SqliteConfig;
 use codex_state::StateRuntime;
@@ -262,6 +263,7 @@ async fn emit_idle_with_cause(
         service,
         ThreadIdleInput {
             cause,
+            compact_to_continue: None,
             session_store: &session_store,
             thread_store: &thread_store,
         },
@@ -340,10 +342,10 @@ async fn queued_input_and_unique_event_ids_round_trip() -> anyhow::Result<()> {
         serde_json::from_str::<TurnInput>(&records[0].payload)?
     );
     let second = service.enqueue(thread_id, user_input("next")).await?;
-    let TurnInput::UserInput {
+    let QueuedInput::Message(TurnInput::UserInput {
         client_id: Some(generated_client_id),
         ..
-    } = &second.input
+    }) = &second.input
     else {
         anyhow::bail!("queued message did not receive a client message id");
     };
@@ -355,7 +357,7 @@ async fn queued_input_and_unique_event_ids_round_trip() -> anyhow::Result<()> {
         vec![first.clone(), second.clone()],
         service.list(thread_id).await?
     );
-    assert_eq!(input, first.input);
+    assert_eq!(QueuedInput::Message(input), first.input);
 
     {
         let events = sink
@@ -395,7 +397,7 @@ async fn editing_reordering_and_deleting_preserve_queue_identity() -> anyhow::Re
         .await?
         .context("queued item missing")?;
     assert_eq!(first.id, edited.id);
-    let TurnInput::UserInput { client_id, .. } = &edited.input else {
+    let QueuedInput::Message(TurnInput::UserInput { client_id, .. }) = &edited.input else {
         anyhow::bail!("edited queue item does not contain user input");
     };
     assert_eq!(Some("stable-client-message"), client_id.as_deref());
@@ -937,7 +939,10 @@ async fn local_attachments_are_snapshotted_before_enqueue_and_update() -> anyhow
     std::fs::remove_file(&image_path)?;
     std::fs::remove_file(&audio_path)?;
 
-    assert_eq!(expected_queued_input, queued.input);
+    assert_eq!(
+        QueuedInput::Message(expected_queued_input.clone()),
+        queued.input
+    );
     assert_eq!(vec![queued.clone()], service.list(thread_id).await?);
     let queued_record = queue
         .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
@@ -984,7 +989,10 @@ async fn local_attachments_are_snapshotted_before_enqueue_and_update() -> anyhow
     std::fs::remove_file(&edited_image_path)?;
     std::fs::remove_file(&edited_audio_path)?;
 
-    assert_eq!(expected_edited_input, edited.input);
+    assert_eq!(
+        QueuedInput::Message(expected_edited_input.clone()),
+        edited.input
+    );
     assert_eq!(vec![edited.clone()], service.list(thread_id).await?);
     let edited_record = queue
         .list_page(thread_id, /*offset*/ 0, /*limit*/ 1)
@@ -1106,7 +1114,7 @@ async fn queued_text_limit_counts_characters_and_ignores_non_text_items() -> any
     }
 
     let queued = service.enqueue(ThreadId::new(), input.clone()).await?;
-    assert_eq!(input, queued.input);
+    assert_eq!(QueuedInput::Message(input), queued.input);
 
     Ok(())
 }

@@ -1551,7 +1551,7 @@ impl TurnRequestProcessor {
 
         // Reply when the target completes or aborts.
         let thread_state = self.thread_state_manager.thread_state(thread_uuid).await;
-        let submit_interrupt = {
+        let interrupt_target = {
             let mut thread_state = thread_state.lock().await;
             // Serialize registration with listener shutdown. A handler may also have
             // loaded the old runtime before a replacement listener was installed.
@@ -1603,19 +1603,22 @@ impl TurnRequestProcessor {
             let terminal_turn_id = terminal_turn_id.to_owned();
             thread_state
                 .pending_interrupts
-                .push((terminal_turn_id, request_id.clone()));
-            submit_interrupt
+                .push((terminal_turn_id.clone(), request_id.clone()));
+            submit_interrupt.then_some(terminal_turn_id)
         };
 
         self.outgoing
             .record_request_turn_id(request_id, &turn_id)
             .await;
-        if !submit_interrupt {
+        let Some(interrupt_target) = interrupt_target else {
             return Ok(None);
-        }
+        };
 
-        match self
-            .submit_core_op(request_id, thread.as_ref(), Op::Interrupt)
+        match thread
+            .submit_turn_interrupt(
+                interrupt_target,
+                self.request_trace_context(request_id).await,
+            )
             .await
         {
             Ok(_) => Ok(None),

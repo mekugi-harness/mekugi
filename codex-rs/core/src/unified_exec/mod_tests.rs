@@ -51,6 +51,7 @@ async fn exec_command(
     exec_command_with_tty(
         session,
         turn,
+        /*call_id*/ "call",
         cmd,
         yield_time_ms,
         workdir,
@@ -93,6 +94,7 @@ fn test_exec_request(
 async fn exec_command_with_tty(
     session: &Arc<Session>,
     turn: &Arc<TurnContext>,
+    call_id: &str,
     cmd: &str,
     yield_time_ms: u64,
     workdir: Option<PathBuf>,
@@ -128,7 +130,7 @@ async fn exec_command_with_tty(
         Arc::clone(session),
         crate::session::step_context::StepContext::for_test(Arc::clone(turn)),
         tokio_util::sync::CancellationToken::new(),
-        "call".to_string(),
+        call_id.to_string(),
     );
     let started_at = Instant::now();
     let process_started_alive = !process.has_exited() && process.exit_code().is_none();
@@ -137,6 +139,7 @@ async fn exec_command_with_tty(
             process: Arc::clone(&process),
             plugin_metrics_sidecar: None,
             call_id: context.call_id.clone(),
+            turn_id: turn.sub_id.clone(),
             process_id,
             cwd: cwd.clone().into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -353,6 +356,7 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
         vec![BackgroundTerminalInfo {
             item_id: "call".to_string(),
             process_id: process_id.to_string(),
+            turn_id: turn.sub_id.clone(),
             command: "bash -i".to_string(),
             cwd: cwd.into(),
         }]
@@ -382,10 +386,91 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
         "expected environment variable output"
     );
 
-    assert!(session.terminate_background_terminal(process_id).await);
-    assert!(!session.terminate_background_terminal(process_id).await);
+    assert!(
+        !session
+            .terminate_background_terminal(process_id, Some(("different-turn", "call")))
+            .await
+    );
+    assert_eq!(session.list_background_terminals().await.len(), 1);
+    assert!(
+        session
+            .terminate_background_terminal(process_id, Some((&turn.sub_id, "call")))
+            .await
+    );
+    assert!(
+        !session
+            .terminate_background_terminal(process_id, Some((&turn.sub_id, "call")))
+            .await
+    );
     assert!(session.list_background_terminals().await.is_empty());
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_stop_does_not_terminate_a_reused_process_id() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+
+    let (session, turn) = test_session_and_turn().await;
+    let old = exec_command_with_tty(
+        &session,
+        &turn,
+        "original-call",
+        "cat",
+        /*yield_time_ms*/ 250,
+        /*workdir*/ None,
+        /*tty*/ true,
+    )
+    .await?;
+    let process_id = old.process_id.expect("running original command");
+    let saved = session.list_background_terminals().await.remove(0);
+    let old_invocation = Some((saved.turn_id.as_str(), saved.item_id.as_str()));
+    assert!(
+        session
+            .terminate_background_terminal(process_id, old_invocation)
+            .await
+    );
+
+    // Test allocation reserves retired IDs; permit exactly this retired ID to
+    // be chosen again, as the production allocator may do.
+    assert!(
+        session
+            .services
+            .unified_exec_manager
+            .process_store
+            .lock()
+            .await
+            .reserved_process_ids
+            .remove(&process_id)
+    );
+    let replacement = exec_command_with_tty(
+        &session,
+        &turn,
+        "replacement-call",
+        "while IFS= read -r line; do printf 'replacement:%s\\n' \"$line\"; done",
+        /*yield_time_ms*/ 250,
+        /*workdir*/ None,
+        /*tty*/ true,
+    )
+    .await?;
+    assert_eq!(replacement.process_id, Some(process_id));
+
+    assert!(
+        !session
+            .terminate_background_terminal(process_id, old_invocation)
+            .await
+    );
+    let output = write_stdin(&session, &turn, process_id, "still running\n", 250).await?;
+    assert!(
+        output
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("replacement:still running")
+    );
+    assert!(
+        session
+            .terminate_background_terminal(process_id, Some((&turn.sub_id, "replacement-call")))
+            .await
+    );
     Ok(())
 }
 
@@ -610,6 +695,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
             process,
             plugin_metrics_sidecar: None,
             call_id: "call".to_string(),
+            turn_id: turn.sub_id.clone(),
             process_id,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -634,7 +720,11 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
 
     let terminate_task = tokio::spawn({
         let session = Arc::clone(&session);
-        async move { session.terminate_background_terminal(process_id).await }
+        async move {
+            session
+                .terminate_background_terminal(process_id, /*expected_invocation*/ None)
+                .await
+        }
     });
     tokio::time::timeout(
         Duration::from_secs(2),
@@ -700,6 +790,7 @@ async fn terminating_during_stdin_poll_returns_exited_response(
             process: Arc::clone(&process),
             plugin_metrics_sidecar: None,
             call_id: "call".to_string(),
+            turn_id: turn.sub_id.clone(),
             process_id,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1084,7 +1175,11 @@ async fn stdin_approval_preserves_the_reviewed_terminal() -> anyhow::Result<()> 
         matches!(stale, Err(UnifiedExecError::UnknownProcessId { process_id: id }) if id == process_id)
     );
     original.process.terminate();
-    assert!(session.terminate_background_terminal(process_id).await);
+    assert!(
+        session
+            .terminate_background_terminal(process_id, /*expected_invocation*/ None)
+            .await
+    );
     Ok(())
 }
 
@@ -1145,6 +1240,10 @@ async fn stdin_approval_observes_strict_review_enabled_while_queued() -> anyhow:
         Err(UnifiedExecError::StdinApproval(ToolError::Rejected(reason)))
             if reason.contains("NUL byte")
     ));
-    assert!(session.terminate_background_terminal(process_id).await);
+    assert!(
+        session
+            .terminate_background_terminal(process_id, /*expected_invocation*/ None)
+            .await
+    );
     Ok(())
 }

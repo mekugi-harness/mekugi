@@ -81,7 +81,7 @@ func TestAppServerReasoningStreamNativeCodexE2E(t *testing.T) {
 	}, "")
 	// Cancel an unfinished provider before closing its HTTP server on failure.
 	defer terminal.cancel()
-	terminal.await("Ready")
+	terminal.awaitReady()
 	terminal.send("Exercise incremental public reasoning.\r")
 	terminal.await("Working")
 	if strings.Contains(terminal.screen.String(), "public checkpoint") {

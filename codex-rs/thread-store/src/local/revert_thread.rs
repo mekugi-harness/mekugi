@@ -184,6 +184,14 @@ pub(super) async fn revert(
     recorder.persist().await.map_err(thread_store_io_error)?;
     recorder.shutdown().await.map_err(thread_store_io_error)?;
 
+    if has_aborted_turn {
+        super::thread_history_materialization::materialize_to_sqlite(
+            store,
+            rollout_id,
+            replacement_path.as_path(),
+        )
+        .await?;
+    }
     let replaced = state_db
         .replace_rollout_path_if_current(
             thread_id,
@@ -199,14 +207,6 @@ pub(super) async fn revert(
         return Err(ThreadStoreError::Conflict {
             message: format!("thread {thread_id} changed while it was being reverted"),
         });
-    }
-    if has_aborted_turn {
-        super::thread_history_materialization::materialize_to_sqlite(
-            store,
-            rollout_id,
-            replacement_path.as_path(),
-        )
-        .await?;
     }
     Ok(())
 }

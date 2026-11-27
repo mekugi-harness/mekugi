@@ -37,7 +37,5 @@ Secret prompts (`sudo`/GPG) and native-local filesystem/editor actions remain na
   and Retry/Edit/Discard recovery for rejected submissions. Right panel (sheet on phone) hosts
   Agents roster, Changes (per-caller composed diffs), and Details; live edits replace the
   transcript while streaming with independent per-card scrolling.
-- **Replay**: opens read-only server-owned playback on the selected machine with shared transport
-  controls across viewers (mutually exclusive with a live owner for the same thread).
 - See [Server, connector and browser guide](../docs/guide/remote.md) for deployment and
   Docker Compose setup.

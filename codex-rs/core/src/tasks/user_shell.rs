@@ -181,6 +181,7 @@ pub(crate) async fn execute_user_shell_command(
             Some(crate::exec_env::session_tmp_path(session.session_id())),
             cwd.as_path().to_path_buf(),
             crate::exec_env::change_history_dir(session.session_id()),
+            session.thread_id().to_string(),
             session.session_id().to_string(),
             turn_context.sub_id.clone(),
             call_id.clone(),

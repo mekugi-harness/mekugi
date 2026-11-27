@@ -9,6 +9,8 @@ use crate::exec_env::CODEX_SESSION_ID_ENV_VAR;
 use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
 use crate::exec_env::CODEX_TOOL_CALL_ID_ENV_VAR;
 use crate::exec_env::CODEX_VERSION_ENV_VAR;
+use crate::exec_env::MEKUGI_CHANGE_HISTORY_DIR_ENV_VAR;
+use crate::exec_env::SESSION_TMP_ENV_VAR;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::Shell;
 use crate::shell::ShellType;
@@ -444,6 +446,8 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         CODEX_THREAD_ID_ENV_VAR,
         CODEX_TOOL_CALL_ID_ENV_VAR,
         CODEX_VERSION_ENV_VAR,
+        SESSION_TMP_ENV_VAR,
+        MEKUGI_CHANGE_HISTORY_DIR_ENV_VAR,
         CODEX_PERMISSION_PROFILE_ENV_VAR,
         CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
         PLUGIN_METRICS_OUTPUT_ENV_VAR,
@@ -463,6 +467,8 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
             CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
             PLUGIN_METRICS_OUTPUT_ENV_VAR,
             CODEX_TOOL_CALL_ID_ENV_VAR,
+            SESSION_TMP_ENV_VAR,
+            MEKUGI_CHANGE_HISTORY_DIR_ENV_VAR,
             codex_shell_guard::SOCKET_ENV_VAR,
             codex_shell_guard::VCS_DIR_ENV_VAR,
             codex_shell_guard::SUDO_DIR_ENV_VAR,

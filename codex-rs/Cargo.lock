@@ -1912,6 +1912,7 @@ dependencies = [
  "codex-mcp-extension",
  "codex-memories-extension",
  "codex-memories-write",
+ "codex-message-history",
  "codex-model-provider",
  "codex-model-provider-info",
  "codex-models-manager",
@@ -2033,6 +2034,7 @@ dependencies = [
  "codex-utils-redacted-string",
  "inventory",
  "pretty_assertions",
+ "pulldown-cmark",
  "rmcp",
  "schemars 0.8.22",
  "serde",
@@ -3610,6 +3612,20 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "codex-message-history"
+version = "0.172.0"
+dependencies = [
+ "codex-config",
+ "memchr",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -42,6 +42,7 @@ pub use batch::HistoryBatch;
 pub use batch::HistoryBatchCursor;
 pub use batch::HistoryBatchEntry;
 pub use batch::lookup_batch;
+pub use batch::recent_entries;
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;

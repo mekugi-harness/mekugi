@@ -166,6 +166,13 @@
       },
       "type": "object"
     },
+    "AgentMailKind": {
+      "enum": [
+        "message",
+        "reply"
+      ],
+      "type": "string"
+    },
     "AgentMessageDelivery": {
       "enum": [
         "async"
@@ -1323,6 +1330,31 @@
           "type": "object"
         }
       ]
+    },
+    "CommandDisplay": {
+      "description": "Authored shell steps for display, not observations of individual processes.",
+      "properties": {
+        "effectiveCwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LegacyAppPathString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "segments": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "segments"
+      ],
+      "type": "object"
     },
     "CommandExecOutputDeltaNotification": {
       "description": "Base64-encoded output chunk emitted for a streaming `command/exec` request.\n\nThese notifications are connection-scoped. If the originating connection closes, the server terminates the process.",
@@ -5013,6 +5045,17 @@
           ],
           "description": "Optional analytics source classification for this thread."
         },
+        "tokenUsage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadTokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thread's persisted and live usage evidence, when available."
+        },
         "turns": {
           "description": "Only populated on `thread/resume`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
           "items": {
@@ -5097,6 +5140,18 @@
       ],
       "type": "object"
     },
+    "ThreadBackgroundTerminalsChangedNotification": {
+      "description": "The thread's native background terminal list may have changed.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadClosedNotification": {
       "properties": {
         "threadId": {
@@ -5144,6 +5199,16 @@
     },
     "ThreadExtra": {
       "description": "Extra app-server data for a thread.",
+      "properties": {
+        "skills": {
+          "default": [],
+          "description": "Skills confirmed by the native attachment or read paths for this thread.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "ThreadGoal": {
@@ -5506,6 +5571,17 @@
                 }
               ],
               "description": "The command's working directory."
+            },
+            "display": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CommandDisplay"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only present for a shell invocation with separate display steps."
             },
             "durationMs": {
               "description": "The duration of the command execution in milliseconds.",
@@ -5922,6 +5998,55 @@
         },
         {
           "properties": {
+            "details": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/AgentMailKind"
+            },
+            "recipient": {
+              "type": "string"
+            },
+            "sender": {
+              "type": "string"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "description": "The retained plaintext, excluding the envelope and attached model context.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "agentMail"
+              ],
+              "title": "AgentMailThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "recipient",
+            "sender",
+            "text",
+            "type"
+          ],
+          "title": "AgentMailThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "action": {
               "anyOf": [
                 {
@@ -6210,6 +6335,17 @@
                   "type": "null"
                 }
               ]
+            },
+            "summary": {
+              "description": "Elided unless a local compaction produced a plaintext summary.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summaryFree": {
+              "description": "Present and true for a Mekugi summary-free context reset.",
+              "type": "boolean"
             },
             "type": {
               "enum": [
@@ -7171,6 +7307,25 @@
       ],
       "type": "object"
     },
+    "ThreadSkillsUpdatedNotification": {
+      "properties": {
+        "names": {
+          "description": "Newly confirmed skill names for this thread.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "names",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadSource": {
       "type": "string"
     },
@@ -7291,6 +7446,23 @@
         "last": {
           "$ref": "#/definitions/TokenUsageBreakdown"
         },
+        "lastCompletedAt": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastResponseAt": {
+          "default": null,
+          "description": "Unix timestamps in seconds, from the producers rather than attachment time.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "modelContextWindow": {
           "format": "int64",
           "type": [
@@ -7314,10 +7486,38 @@
             "null"
           ]
         },
+        "roundtripsPartial": {
+          "type": "boolean"
+        },
         "total": {
           "$ref": "#/definitions/TokenUsageBreakdown"
         },
+        "turns": {
+          "default": null,
+          "description": "Number of native turns started by this thread, independent of transcript paging.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "usagePartial": {
+          "description": "The counted tokens are a lower bound, not a complete provider total.",
+          "type": "boolean"
+        },
+        "usageUnavailable": {
+          "description": "No provider token counts were available; context measurements can still be present.",
+          "type": "boolean"
+        },
         "workDurationMs": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workStartedAt": {
           "default": null,
           "format": "int64",
           "type": [
@@ -8508,6 +8708,26 @@
       "properties": {
         "method": {
           "enum": [
+            "thread/backgroundTerminals/changed"
+          ],
+          "title": "Thread/backgroundTerminals/changedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadBackgroundTerminalsChangedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/backgroundTerminals/changedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
             "project/changed"
           ],
           "title": "Project/changedNotificationMethod",
@@ -8842,6 +9062,26 @@
         "params"
       ],
       "title": "Item/completedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/skills/updated"
+          ],
+          "title": "Thread/skills/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadSkillsUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/skills/updatedNotification",
       "type": "object"
     },
     {

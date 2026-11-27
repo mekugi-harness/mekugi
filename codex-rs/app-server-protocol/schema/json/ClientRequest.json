@@ -236,6 +236,21 @@
         }
       ]
     },
+    "BackgroundTerminalInvocation": {
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "itemId",
+        "turnId"
+      ],
+      "type": "object"
+    },
     "BedrockProviderId": {
       "enum": [
         "amazon-bedrock",
@@ -540,6 +555,24 @@
       },
       "required": [
         "name"
+      ],
+      "type": "object"
+    },
+    "ComposerPreset": {
+      "additionalProperties": false,
+      "description": "The reusable draft stored in a numbered composer preset slot.",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "label": {
+          "description": "Empty to display the first line of the input.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "label"
       ],
       "type": "object"
     },
@@ -2702,6 +2735,13 @@
           "minimum": 0.0,
           "type": [
             "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "description": "Resolve profiles for this loaded thread's working directory instead of `cwd`.",
+          "type": [
+            "string",
             "null"
           ]
         }
@@ -4909,12 +4949,45 @@
     "ThreadChangesReadParams": {
       "description": "Request composed saved changes from the native change-history store for a thread.",
       "properties": {
+        "callerThreadId": {
+          "description": "Restrict review to edits made by one member of the selected family.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "includeEphemeral": {
           "description": "Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).",
           "type": [
             "boolean",
             "null"
           ]
+        },
+        "itemId": {
+          "description": "Read one execution's exact captured effects, not the composed session diff.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size for composed files. Omit to read a complete review.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "perCapture": {
+          "description": "Return individual captures, rather than composing them by file.",
+          "type": "boolean"
         },
         "threadId": {
           "type": "string"
@@ -4940,6 +5013,24 @@
         "threadId"
       ],
       "type": "object"
+    },
+    "ThreadCompactMode": {
+      "oneOf": [
+        {
+          "description": "Continue the replaced regular turn after a successful compact if no draft is waiting.",
+          "enum": [
+            "continueInterrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Defer to the native queue, then continue on success if no draft is waiting.",
+          "enum": [
+            "queue"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "ThreadCompactStartParams": {
       "additionalProperties": false,
@@ -5003,6 +5094,22 @@
       },
       "required": [
         "environment"
+      ],
+      "type": "object"
+    },
+    "ThreadFileSearchParams": {
+      "description": "Search for paths under a loaded thread's workspace.",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "threadId"
       ],
       "type": "object"
     },
@@ -5573,6 +5680,57 @@
       ],
       "type": "object"
     },
+    "ThreadPresetWriteParams": {
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComposerPreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The slot shown to the user, or null if empty."
+        },
+        "preset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComposerPreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new draft, or null to remove the slot."
+        },
+        "slot": {
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadPresetsListParams": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
     "ThreadReadParams": {
       "properties": {
         "includeTurns": {
@@ -5919,7 +6077,7 @@
       "type": "object"
     },
     "ThreadRevertParams": {
-      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes.",
+      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nWithout `expectedChangeIds`, only persisted conversation history changes.",
       "properties": {
         "beforeItemId": {
           "default": null,
@@ -7723,6 +7881,30 @@
         },
         "method": {
           "enum": [
+            "thread/files/search"
+          ],
+          "title": "Thread/files/searchRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadFileSearchParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/files/searchRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "agent/end"
           ],
           "title": "Agent/endRequestMethod",
@@ -9513,6 +9695,54 @@
         "params"
       ],
       "title": "Config/readRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/presets/list"
+          ],
+          "title": "Thread/presets/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadPresetsListParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/presets/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/presets/write"
+          ],
+          "title": "Thread/presets/writeRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadPresetWriteParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/presets/writeRequest",
       "type": "object"
     },
     {

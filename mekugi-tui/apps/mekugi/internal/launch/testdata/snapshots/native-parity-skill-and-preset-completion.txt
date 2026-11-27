@@ -1,0 +1,12 @@
+
+
+› $review-pr  [Skill] Review a pull request                                 
+  review-pr   [Preset] Preset 1: Review the touched files.
+
+  enter insert · esc close
+
+────────────────────────────────────────────────────────────────────────────
+❯ $rev 
+────────────────────────────────────────────────────────────────────────────
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /tmp/ws • ctrl+e view

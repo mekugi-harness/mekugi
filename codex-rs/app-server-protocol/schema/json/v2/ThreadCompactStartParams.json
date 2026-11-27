@@ -17,6 +17,24 @@
         "sources"
       ],
       "type": "object"
+    },
+    "ThreadCompactMode": {
+      "oneOf": [
+        {
+          "description": "Continue the replaced regular turn after a successful compact if no draft is waiting.",
+          "enum": [
+            "continueInterrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Defer to the native queue, then continue on success if no draft is waiting.",
+          "enum": [
+            "queue"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
   "properties": {

@@ -4,6 +4,7 @@ use super::*;
 use codex_app_server_protocol::Thread;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::AgentStatus;
+use futures::StreamExt;
 
 /// A live foreign target. Resolving it grants only messages, private questions
 /// and passive inspection, never enrollment, restore or lifecycle control.
@@ -36,9 +37,51 @@ impl ThreadManager {
 
     /// Native spawn discovery includes the root and never restores an unloaded thread.
     pub async fn read_thread_subtree(&self, root: ThreadId) -> CodexResult<Vec<Thread>> {
-        self.state
+        let threads = self
+            .state
             .read_thread_subtree(root, &self.agent_control().runtime)
+            .await?;
+        // Keeping the futures in this request cancels pending reads with it. Bound
+        // concurrency because a retained history can be large.
+        let reads = threads.into_iter().map(|mut thread| async move {
+            if let Ok(thread_id) = ThreadId::from_string(&thread.id) {
+                self.populate_retained_thread_usage(thread_id, &mut thread)
+                    .await;
+            }
+            thread
+        });
+        Ok(futures::stream::iter(reads).buffered(4).collect().await)
+    }
+
+    /// Populates usage for a detached thread without resuming it.
+    /// Unavailable accounting does not prevent reading the thread.
+    pub async fn populate_retained_thread_usage(&self, target: ThreadId, thread: &mut Thread) {
+        if thread.path.is_none()
+            || thread.token_usage.is_some()
+            || self.state.get_thread(target).await.is_ok()
+        {
+            return;
+        }
+        match self
+            .state
+            .thread_store
+            .load_history(LoadThreadHistoryParams {
+                thread_id: target,
+                include_archived: true,
+            })
             .await
+        {
+            Ok(history) => Self::apply_retained_thread_usage(thread, &history),
+            Err(error) => tracing::debug!("retained usage for {target} is unavailable: {error}"),
+        }
+    }
+
+    /// Reuse a history already admitted by a read rather than loading it again.
+    pub fn apply_retained_thread_usage(
+        thread: &mut Thread,
+        history: &codex_thread_store::StoredThreadHistory,
+    ) {
+        apply_retained_usage(thread, history.thread_id, &history.items);
     }
 
     pub async fn populate_thread_observations(
@@ -326,18 +369,11 @@ impl ThreadManagerState {
             None
         };
         if let Some(history) = history {
-            let (settings, metrics) = observe_history(target, &history.items);
-            view.context_tokens = metrics
-                .context_tokens
-                .and_then(|value| value.try_into().ok());
-            view.context_window = metrics
-                .context_window
-                .and_then(|value| value.try_into().ok());
-            if let Some(settings) = settings {
-                view.model = Some(settings.model);
-                view.reasoning_effort = settings.reasoning_effort;
-                view.service_tier = settings.service_tier;
-                view.cwd = settings.cwd.into();
+            if let Some(settings) = apply_retained_usage(view, target, &history.items) {
+                view.model = Some(settings.model.clone());
+                view.reasoning_effort.clone_from(&settings.reasoning_effort);
+                view.service_tier.clone_from(&settings.service_tier);
+                view.cwd = settings.cwd.clone().into();
             }
         }
         if let Some(thread) = loaded {
@@ -373,6 +409,8 @@ impl ThreadManagerState {
                     .or(context_window)
                     .and_then(|value| value.try_into().ok());
             }
+            view.token_usage = thread.observed_token_usage().await;
+            view.extra = thread.observed_thread_extra();
             view.completed_compactions = thread.session.completed_compactions().await;
             view.agent_status = Some(match thread.agent_status().await {
                 AgentStatus::Completed(_) => AgentStatus::Completed(None),
@@ -389,39 +427,23 @@ impl ThreadManagerState {
     }
 }
 
-fn observe_history(
-    thread_id: ThreadId,
-    history: &[codex_history::RolloutItem],
-) -> (
-    Option<codex_protocol::protocol::ThreadSettingsSnapshot>,
-    codex_protocol::agent_metrics::AgentMetrics,
-) {
-    use codex_history::RolloutItem;
-    use codex_protocol::protocol::EventMsg;
-    let mut settings = None;
-    let mut metrics = codex_protocol::agent_metrics::AgentMetrics::default();
-    let mut owner = None;
-    for item in history {
-        match item {
-            RolloutItem::SessionMeta(meta) => {
-                owner = Some(meta.meta.id);
-            }
-            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
-                if let Some(id) = event.thread_id {
-                    owner = Some(id);
-                }
-                if owner == Some(thread_id) {
-                    settings = Some(event.thread_settings.clone());
-                }
-            }
-            RolloutItem::EventMsg(EventMsg::TokenCount(event)) if owner == Some(thread_id) => {
-                if let Some(usage) = &event.info {
-                    metrics.context_tokens = Some(usage.last_token_usage.total_tokens);
-                    metrics.context_window = usage.model_context_window;
-                }
-            }
-            _ => {}
-        }
+fn apply_retained_usage<'a>(
+    view: &mut Thread,
+    target: ThreadId,
+    items: &'a [codex_history::RolloutItem],
+) -> Option<&'a codex_protocol::protocol::ThreadSettingsSnapshot> {
+    let observation = crate::session::usage_metrics::ThreadUsageMetrics::restore(target, items);
+    if let Some(info) = observation.token_info {
+        view.context_tokens = info.last_token_usage.total_tokens.try_into().ok();
+        view.context_window = info
+            .model_context_window
+            .and_then(|window| window.try_into().ok());
     }
-    (settings, metrics)
+    view.token_usage = observation.usage.snapshot(observation.token_info.cloned());
+    if !observation.skills.is_empty() {
+        view.extra = Some(codex_app_server_protocol::ThreadExtra {
+            skills: observation.skills.into_iter().collect(),
+        });
+    }
+    observation.settings
 }

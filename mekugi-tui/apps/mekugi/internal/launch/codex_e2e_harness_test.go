@@ -133,6 +133,7 @@ type observationFixture struct{}
 
 type appServerIntegration struct {
 	controlSocket chan<- string
+	launchArgs    []string
 }
 
 func newManagedMekugiProxy(*testing.T) *observationFixture { return &observationFixture{} }
@@ -150,9 +151,48 @@ type appServerPreview struct {
 	integration               *appServerIntegration
 	environment               []string
 	codexArgs                 []string
+	completedText             string
+	workspace                 string
 	approvals                 bool
+	saveBeforePrompt          bool
 	beforePrompt, afterPrompt appServerPreviewHook
 	duringTurn                appServerPreviewHook
+}
+
+const (
+	browserWarmupPrompt = "Prepare the browser fixture."
+	browserWarmupReply  = "Browser fixture saved."
+)
+
+type browserWarmupProvider struct{ fixtureResponsesProvider }
+
+func (p browserWarmupProvider) respond(ctx context.Context, body []byte, headers http.Header) (*http.Response, error) {
+	var request struct {
+		Input []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"input"`
+	}
+	reply := ""
+	if bytes.Contains(body, []byte("Generate a concise session title")) {
+		reply = "Browser fixture"
+	} else if json.Unmarshal(body, &request) == nil {
+		for _, item := range slices.Backward(request.Input) {
+			if item.Role != "user" {
+				continue
+			}
+			if len(item.Content) == 1 && item.Content[0].Text == browserWarmupPrompt {
+				reply = browserWarmupReply
+			}
+			break
+		}
+	}
+	if reply == "" {
+		return p.fixtureResponsesProvider.respond(ctx, body, headers)
+	}
+	return nativeCollabResponse("", reply)
 }
 
 func runAppServerPreview(t *testing.T, provider fixtureResponsesProvider) {
@@ -170,10 +210,16 @@ func runAppServerPreviewWith(t *testing.T, provider fixtureResponsesProvider, _ 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if options.saveBeforePrompt {
+		provider = browserWarmupProvider{provider}
+	}
 	server := httptest.NewServer(fixtureResponsesHandler(provider))
 	defer server.Close()
 	environment := append(routerFaultCodexEnvironment(t), options.environment...)
-	workspace := t.TempDir()
+	workspace := options.workspace
+	if workspace == "" {
+		workspace = t.TempDir()
+	}
 	args := []string{"app-server", "-c", `model_providers.preview={name="preview",base_url=` + strconv.Quote(server.URL+"/v1") + `,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false"}
 	if options.managedRuntime {
 		args = args[1:]
@@ -196,7 +242,11 @@ func runAppServerPreviewWith(t *testing.T, provider fixtureResponsesProvider, _ 
 		t.Helper()
 		termSess.awaitMatch("custom predicate", match)
 	}
-	termSess.await("Ready")
+	termSess.awaitReady()
+	if options.saveBeforePrompt {
+		termSess.send(browserWarmupPrompt + "\r")
+		termSess.await(browserWarmupReply)
+	}
 	if options.beforePrompt != nil {
 		options.beforePrompt(t, termSess.outer, await, awaitFrame, termSess.screen)
 	}
@@ -204,7 +254,11 @@ func runAppServerPreviewWith(t *testing.T, provider fixtureResponsesProvider, _ 
 	if options.duringTurn != nil {
 		options.duringTurn(t, termSess.outer, await, awaitFrame, termSess.screen)
 	}
-	termSess.await("Ready")
+	completedText := options.completedText
+	if completedText == "" {
+		completedText = "Recovered after a retry."
+	}
+	termSess.await(completedText)
 	if options.afterPrompt != nil {
 		options.afterPrompt(t, termSess.outer, await, awaitFrame, termSess.screen)
 	}
@@ -330,6 +384,7 @@ type toolFrontendCodexProvider struct {
 	program        string
 	expected       []string
 	finalText      string
+	prediction     string
 	turns          int
 	callSent       bool
 	resultSeen     bool
@@ -348,6 +403,13 @@ func (p *toolFrontendCodexProvider) respond(_ context.Context, body []byte, head
 	}
 	var item map[string]any
 	switch {
+	case p.prediction != "" && bytes.Contains(body, []byte("Predict the next message")):
+		item = map[string]any{
+			"type": "message", "id": "frontend-prediction", "role": "assistant", "status": "completed",
+			"content": []any{map[string]any{
+				"type": "output_text", "text": p.prediction, "annotations": []any{},
+			}},
+		}
 	case !p.callSent:
 		if !bytes.Contains(body, []byte("exec_command")) {
 			return nil, errors.New("Codex request does not advertise stock exec_command")
@@ -388,11 +450,11 @@ func (p *toolFrontendCodexProvider) respond(_ context.Context, body []byte, head
 	return mchangesNestedCodexResponse(p.turns, item), nil
 }
 
-func startDirectNativeAppServerUI(t *testing.T, ctx context.Context, cmd *exec.Cmd, stdin, stdout *os.File, integration appServerIntegration, resumeThread string) (func() error, error) {
+func startDirectNativeAppServerUI(t *testing.T, ctx context.Context, cmd *exec.Cmd, stdin, stdout *os.File, integration appServerIntegration, resumeThread string) (string, func() error, error) {
 	t.Helper()
 	socketDir, err := os.MkdirTemp("", "mkg-e2e-")
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "native.sock")
@@ -410,7 +472,7 @@ func startDirectNativeAppServerUI(t *testing.T, ctx context.Context, cmd *exec.C
 	var stderrBuf bytes.Buffer
 	proc.Stderr = &stderrBuf
 	if err := proc.Start(); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	t.Cleanup(func() {
 		if proc.Process != nil {
@@ -424,7 +486,7 @@ func startDirectNativeAppServerUI(t *testing.T, ctx context.Context, cmd *exec.C
 			break
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("native app-server socket %s not ready: %s", socketPath, stderrBuf.String())
+			return "", nil, fmt.Errorf("native app-server socket %s not ready: %s", socketPath, stderrBuf.String())
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -434,14 +496,14 @@ func startDirectNativeAppServerUI(t *testing.T, ctx context.Context, cmd *exec.C
 		default:
 		}
 	}
-	conn, err := openDirectNativeConnection(ctx, socketPath, cmd.Dir, nil, nil, resumeThread, "")
+	conn, err := openDirectNativeConnection(ctx, socketPath, cmd.Dir, nil, integration.launchArgs, resumeThread, "")
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	views, err := composition.NativeRenderer(false)
 	if err != nil {
 		_ = conn.Close()
-		return nil, err
+		return "", nil, err
 	}
 	terminal, _ := views.NewAttachment(diffrender.DarkTheme)
 	client := &nativeClient{
@@ -449,7 +511,7 @@ func startDirectNativeAppServerUI(t *testing.T, ctx context.Context, cmd *exec.C
 		renderer:   nativeClientRenderer{terminal: terminal, views: views},
 		editors:    make(map[string]*composer.Editor),
 	}
-	return func() error {
+	return socketPath, func() error {
 		defer conn.Close()
 		_, err := client.run(ctx, stdin, stdout)
 		return err
@@ -472,9 +534,11 @@ func startAppResumeTerminalWithDirectNative(t *testing.T, newCommand func(contex
 	if err != nil {
 		t.Fatal(err)
 	}
-	wait, err := startDirectNativeAppServerUI(t, ctx, newCommand(ctx), inner, inner, integration, resumeThread)
+	socket, wait, err := startDirectNativeAppServerUI(t, ctx, newCommand(ctx), inner, inner, integration, resumeThread)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return observeAppResumeTerminal(t, ctx, cancel, outer, inner, before, wait)
+	session := observeAppResumeTerminal(t, ctx, cancel, outer, inner, before, wait)
+	session.socket = socket
+	return session
 }

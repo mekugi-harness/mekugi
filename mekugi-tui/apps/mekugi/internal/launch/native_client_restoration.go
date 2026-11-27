@@ -58,7 +58,6 @@ func copyRestoredEffect(ctx context.Context, effect sessionapi.NativeEffect) (re
 		return &draft
 	}
 	result.effect.Restore = copyDraft(effect.Restore)
-	result.effect.ShellRestore = copyDraft(effect.ShellRestore)
 	if result.err == nil {
 		result.err = ctx.Err()
 	}
@@ -74,7 +73,7 @@ func copyRestoredEffect(ctx context.Context, effect sessionapi.NativeEffect) (re
 // retries acquisition, never the already admitted submission.
 func (c *nativeClient) restoreEffectImages(effect sessionapi.NativeEffect) (sessionapi.NativeEffect, bool) {
 	hasImages := func(draft *composer.Draft) bool { return draft != nil && len(draft.Images)+len(draft.AnswerImages) > 0 }
-	if !hasImages(effect.Restore) && !hasImages(effect.ShellRestore) {
+	if !hasImages(effect.Restore) {
 		return effect, true
 	}
 	if result := c.restoration; result != nil {
@@ -96,7 +95,7 @@ func (c *nativeClient) restoreEffectImages(effect sessionapi.NativeEffect) (sess
 		// A confirmed Main switch may have advanced the retained effect's
 		// destination while its image bytes were being acquired. Keep current
 		// semantic metadata and adopt only the copied draft payloads.
-		effect.Restore, effect.ShellRestore = result.effect.Restore, result.effect.ShellRestore
+		effect.Restore = result.effect.Restore
 		return effect, true
 	}
 	source := c.event.Attachment

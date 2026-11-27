@@ -339,6 +339,52 @@ pub struct ConfigLayer {
     pub disabled_reason: Option<String>,
 }
 
+/// The reusable draft stored in a numbered composer preset slot.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct ComposerPreset {
+    pub input: String,
+    /// Empty to display the first line of the input.
+    pub label: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadPresetsListParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadPresetsListResponse {
+    /// Occupied slots, keyed by their number (0–9).
+    pub presets: BTreeMap<String, ComposerPreset>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct ThreadPresetWriteParams {
+    pub thread_id: String,
+    pub slot: u8,
+    /// The slot shown to the user, or null if empty.
+    #[ts(optional = nullable)]
+    pub expected: Option<ComposerPreset>,
+    /// The new draft, or null to remove the slot.
+    #[ts(optional = nullable)]
+    pub preset: Option<ComposerPreset>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadPresetWriteResponse {
+    pub preset: Option<ComposerPreset>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]

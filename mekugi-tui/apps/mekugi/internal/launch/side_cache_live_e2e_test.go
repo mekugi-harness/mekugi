@@ -3,14 +3,14 @@
 package launch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
 // A side fork's first inference must reuse its already-cached Main prefix.
@@ -34,7 +34,7 @@ func TestSideCacheEligibilityLiveOpenAI(t *testing.T) {
 					cmd.Env, cmd.Dir = environment, workspace
 					return cmd
 				}, "")
-				terminal.await("Ready")
+				terminal.awaitReady()
 				terminal.send("Without using tools, join these parts with no spaces and reply with only the result: MAIN, _, READY.\r")
 				terminal.await("MAIN_READY")
 				terminal.awaitStatus("Completed")
@@ -129,7 +129,7 @@ func assertLiveCachePrefix(t *testing.T, before, after liveInference) {
 		t.Fatal("native inference changed providers")
 	}
 	for _, field := range []string{"instructions", "tools", "model", "reasoning", "prompt_cache_key"} {
-		if !responses.SameJSONValue(before.Fields[field], after.Fields[field]) {
+		if !sameLiveRequestValue(before.Fields[field], after.Fields[field]) {
 			t.Errorf("native inference changed shared %s", field)
 		}
 	}
@@ -137,8 +137,19 @@ func assertLiveCachePrefix(t *testing.T, before, after liveInference) {
 		t.Fatal("native inference lost retained context or its new input")
 	}
 	for i, item := range before.Input {
-		if !responses.SameJSONValue(item, after.Input[i]) {
+		if !sameLiveRequestValue(item, after.Input[i]) {
 			t.Errorf("native inference changed retained input item %d", i)
 		}
 	}
+}
+
+func sameLiveRequestValue(left, right jsontext.Value) bool {
+	if bytes.Equal(left, right) {
+		return true
+	}
+	// Normalize object order and string escapes, but preserve number spelling
+	// and leave the captured values intact.
+	left, right = left.Clone(), right.Clone()
+	order := jsontext.ReorderRawObjects(true)
+	return left.Format(order) == nil && right.Format(order) == nil && bytes.Equal(left, right)
 }

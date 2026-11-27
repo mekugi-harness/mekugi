@@ -39,7 +39,10 @@
   const labels = $derived(new Map(agents.map((agent) => [agent.name, agent.label])));
   const known = (c?: Counts | null): c is Counts => !!c && c.Added >= 0 && c.Removed >= 0;
   const changes = (agent: Agent) =>
-    edited?.[agent.name] ?? { Added: agent.added ?? 0, Removed: agent.removed ?? 0 };
+    (agent.thread ? edited?.[agent.thread] : undefined) ?? {
+      Added: agent.added ?? 0,
+      Removed: agent.removed ?? 0,
+    };
   const whole = $derived(
     known(net) ? net : { Added: roster.added ?? 0, Removed: roster.removed ?? 0 },
   );
@@ -67,7 +70,8 @@
       usd = 0,
       tokensKnown = false,
       costKnown = false,
-      partial = false;
+      usagePartial = false,
+      costPartial = false;
     for (const a of agents) {
       if (a.inputTokens != null) {
         input += a.inputTokens;
@@ -78,12 +82,13 @@
         usd += a.cost;
         costKnown = true;
       }
-      partial ||= !!a.usagePartial || !!a.costPartial;
+      usagePartial ||= !!a.usagePartial;
+      costPartial ||= !!a.costPartial || (a.roundtrips != null && a.cost == null);
     }
     return {
-      input: tokensKnown ? atLeast(tokens(input), partial) : undefined,
-      output: tokensKnown ? atLeast(tokens(output), partial) : undefined,
-      cost: costKnown ? atLeast(cost(usd), partial) : undefined,
+      input: tokensKnown ? atLeast(tokens(input), usagePartial) : undefined,
+      output: tokensKnown ? atLeast(tokens(output), usagePartial) : undefined,
+      cost: costKnown ? atLeast(cost(usd), costPartial) : undefined,
     };
   });
 
@@ -283,16 +288,16 @@
                   )}{/if}
                 {#if preferences.telemetry === "detailed"}
                   {#if agent.roundtrips}{@render metric(
-                      String(agent.roundtrips),
+                      atLeast(String(agent.roundtrips), agent.roundtripsPartial),
                       unit(agent.roundtrips, "round trip"),
-                    )}{/if}
-                  {#if agent.skills?.length}{@render metric(
-                      String(agent.skills.length),
-                      unit(agent.skills.length, "skill"),
-                      agent.skills.join(", "),
                     )}{/if}
                   {#each agent.items ?? [] as item, i (i)}<span class="text-muted">{item}</span
                     >{/each}
+                {/if}
+                {#if agent.skills?.length}
+                  <span class="min-w-0 truncate text-muted" title={agent.skills.join(", ")}
+                    ><span class="sr-only">Skills: </span>{agent.skills.join(", ")}</span
+                  >
                 {/if}
                 {#if agent.context != null}
                   {@const pct = contextPct(agent)}

@@ -1021,15 +1021,63 @@ pub struct ThreadGoalClearResponse {
     pub cleared: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInputHistoryReadParams {
+    /// Loaded thread whose Codex home and history settings select the input log.
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInputHistoryReadResponse {
+    /// Bounded tail of the shared terminal input log, oldest first.
+    pub data: Vec<ThreadInputHistoryEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInputHistoryEntry {
+    pub session_id: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInputHistoryAppendParams {
+    pub thread_id: String,
+    /// Ordinary terminal draft text. This does not submit a turn.
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadInputHistoryAppendResponse {}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct QueuedSubmission {
     pub id: String,
+    pub kind: QueuedSubmissionKind,
     pub input: Vec<UserInput>,
     pub client_user_message_id: String,
     /// Metadata retained with this input, including across reconnect and restoration.
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum QueuedSubmissionKind {
+    Message,
+    ShellCommand,
+    Compact,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1050,6 +1098,21 @@ pub struct ThreadQueueAddParams {
 pub struct ThreadQueueAddResponse {
     pub queued_submission: QueuedSubmission,
 }
+
+/// Queue a shell command in submission order. It runs as a standalone
+/// user-shell turn after earlier work, without sending a model prompt.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueueShellCommandParams {
+    pub thread_id: String,
+    pub command: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueueShellCommandResponse {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -1105,6 +1168,23 @@ pub struct ThreadQueueDeleteParams {
 #[ts(export_to = "v2/")]
 pub struct ThreadQueueDeleteResponse {
     pub deleted: bool,
+}
+
+/// Take the selected submissions that are still waiting so they can be edited.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueueTakeParams {
+    pub thread_id: String,
+    pub queued_submission_ids: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadQueueTakeResponse {
+    /// Removed submissions in their original queue order, omitting IDs no longer waiting.
+    pub data: Vec<QueuedSubmission>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1290,11 +1370,16 @@ pub struct ThreadUnarchiveResponse {
     pub thread: Thread,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(export_to = "v2/")]
 pub struct ThreadCompactStartParams {
     pub thread_id: String,
+    /// Composer intent; omit for the stock compact or correlated context reset.
+    #[experimental("thread/compact/start.mode")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub mode: Option<ThreadCompactMode>,
     /// Optional invocation-owned correlation for the token-budget reset lifecycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1304,6 +1389,16 @@ pub struct ThreadCompactStartParams {
     #[schemars(with = "codex_protocol::protocol::ReloadSelection")]
     #[ts(optional)]
     pub reload: Option<codex_protocol::protocol::ReloadSelection>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ThreadCompactMode {
+    /// Continue the replaced regular turn after a successful compact if no draft is waiting.
+    ContinueInterrupted,
+    /// Defer to the native queue, then continue on success if no draft is waiting.
+    Queue,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1346,6 +1441,23 @@ pub struct ThreadShellCommandParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadShellCommandResponse {}
+
+/// Search for paths under a loaded thread's workspace.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadFileSearchParams {
+    pub thread_id: String,
+    pub query: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadFileSearchResponse {
+    /// Paths relative to the workspace, most relevant first.
+    pub paths: Vec<String>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -1392,6 +1504,8 @@ pub struct ThreadBackgroundTerminalsListParams {
 pub struct ThreadBackgroundTerminal {
     pub item_id: String,
     pub process_id: String,
+    /// Turn in which the command was started.
+    pub turn_id: String,
     pub command: String,
     pub cwd: LegacyAppPathString,
     pub os_pid: Option<u32>,
@@ -1409,12 +1523,31 @@ pub struct ThreadBackgroundTerminalsListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// The thread's native background terminal list may have changed.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadBackgroundTerminalsChangedNotification {
+    pub thread_id: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadBackgroundTerminalsTerminateParams {
     pub thread_id: String,
     pub process_id: String,
+    /// Stop only the invocation that produced this command item.
+    #[ts(optional = nullable)]
+    pub invocation: Option<BackgroundTerminalInvocation>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct BackgroundTerminalInvocation {
+    pub turn_id: String,
+    pub item_id: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1426,8 +1559,8 @@ pub struct ThreadBackgroundTerminalsTerminateResponse {
 
 /// Replace a paginated thread's durable history with the prefix before one turn.
 ///
-/// This only changes persisted conversation history. It does not revert local file changes.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+/// Without `expectedChangeIds`, only persisted conversation history changes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, ExperimentalApi)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadRevertParams {
@@ -1439,6 +1572,29 @@ pub struct ThreadRevertParams {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub before_item_id: Option<String>,
+    /// Revert workspace edits only if these nonempty IDs still match the preview, in order.
+    #[experimental("thread/revert.expectedChangeIds")]
+    #[ts(optional = nullable)]
+    pub expected_change_ids: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRevertPreviewParams {
+    pub thread_id: String,
+    pub before_turn_id: String,
+    #[ts(optional = nullable)]
+    pub before_item_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadRevertPreviewResponse {
+    /// In capture order, or empty if edits cannot be reverted.
+    pub change_ids: Vec<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2318,6 +2474,28 @@ pub struct ThreadTokenUsage {
     #[serde(default)]
     #[ts(type = "number | null")]
     pub roundtrips: Option<i64>,
+    /// The counted tokens are a lower bound, not a complete provider total.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub usage_partial: bool,
+    /// No provider token counts were available; context measurements can still be present.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub usage_unavailable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub roundtrips_partial: bool,
+    /// Number of native turns started by this thread, independent of transcript paging.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub turns: Option<i64>,
+    /// Unix timestamps in seconds, from the producers rather than attachment time.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub last_response_at: Option<i64>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub last_completed_at: Option<i64>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub work_started_at: Option<i64>,
 }
 
 impl From<CoreTokenUsageInfo> for ThreadTokenUsage {
@@ -2331,6 +2509,13 @@ impl From<CoreTokenUsageInfo> for ThreadTokenUsage {
             output_tokens_per_second: None,
             work_duration_ms: None,
             roundtrips: None,
+            usage_partial: false,
+            usage_unavailable: false,
+            roundtrips_partial: false,
+            turns: None,
+            last_response_at: None,
+            last_completed_at: None,
+            work_started_at: None,
         }
     }
 }
@@ -2549,6 +2734,20 @@ pub struct ThreadChangesReadParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub include_ephemeral: Option<bool>,
+    /// Restrict review to edits made by one member of the selected family.
+    #[ts(optional = nullable)]
+    pub caller_thread_id: Option<String>,
+    /// Read one execution's exact captured effects, not the composed session diff.
+    #[ts(optional = nullable)]
+    pub item_id: Option<String>,
+    /// Return individual captures, rather than composing them by file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub per_capture: bool,
+    /// Page size for composed files. Omit to read a complete review.
+    #[ts(optional = nullable)]
+    pub limit: Option<u32>,
+    #[ts(optional = nullable)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -2559,6 +2758,11 @@ pub struct ThreadChangeOrigin {
     #[ts(type = "number")]
     pub sequence: u64,
     pub thread_id: String,
+    /// None for captures that were not authored by an agent, such as user shell.
+    pub author_thread_id: Option<String>,
+    pub turn_id: String,
+    pub item_id: String,
+    pub workspace: String,
     pub source_kind: String,
     #[ts(type = "number")]
     pub created_at: i64,
@@ -2571,6 +2775,8 @@ pub struct ThreadChangeOrigin {
 #[ts(export_to = "v2/")]
 pub struct ThreadChangeFileDiff {
     pub path: String,
+    pub absolute_path: String,
+    pub change_ids: Vec<String>,
     pub moved_from: Option<String>,
     pub status: String,
     pub unified_diff: String,
@@ -2590,8 +2796,24 @@ pub struct ThreadChangesReadResponse {
     pub workspace: Option<String>,
     pub changes: Vec<ThreadChangeOrigin>,
     pub files: Vec<ThreadChangeFileDiff>,
+    pub file_count: u32,
+    pub next_cursor: Option<String>,
+    pub incomplete: bool,
+    pub callers: Vec<ThreadChangeCallerCounts>,
     #[ts(type = "number")]
     pub total_additions: i64,
     #[ts(type = "number")]
     pub total_deletions: i64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadChangeCallerCounts {
+    pub thread_id: String,
+    pub file_count: u32,
+    #[ts(type = "number")]
+    pub additions: i64,
+    #[ts(type = "number")]
+    pub deletions: i64,
 }

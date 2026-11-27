@@ -5207,6 +5207,7 @@ async fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()
         cwd: cwd.clone().into(),
         status,
         source: Default::default(),
+        display: None,
         command_actions: Vec::new(),
         model_context: None,
         sandbox_type: None,
@@ -10484,6 +10485,13 @@ fn token_usage_notification(
             output_tokens_per_second: None,
             work_duration_ms: None,
             roundtrips: None,
+            usage_partial: false,
+            usage_unavailable: false,
+            roundtrips_partial: false,
+            turns: None,
+            last_response_at: None,
+            last_completed_at: None,
+            work_started_at: None,
         },
     })
 }

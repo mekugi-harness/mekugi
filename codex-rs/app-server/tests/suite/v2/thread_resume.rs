@@ -64,6 +64,8 @@ use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeInitialTurnsPageParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadSetNameParams;
+use codex_app_server_protocol::ThreadSetNameResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadSource;
@@ -589,6 +591,14 @@ async fn thread_resume_with_empty_path_uses_running_thread_id() -> Result<()> {
         .await?;
     let ThreadStartResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+    let name_id = mcp
+        .send_thread_set_name_request(ThreadSetNameParams {
+            thread_id: thread.id.clone(),
+            name: "Warm resume".to_string(),
+        })
+        .await?;
+    let _: ThreadSetNameResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(name_id)).await??;
 
     let turn_id = mcp
         .send_turn_start_request(TurnStartParams {
@@ -777,6 +787,10 @@ async fn cold_resume_config_service_tier_overrides_saved_choice_and_preserves_ot
     let start_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
             model: Some("gpt-5.5".to_string()),
+            config: Some(std::collections::HashMap::from([(
+                "model_reasoning_effort".to_string(),
+                json!("high"),
+            )])),
             ..Default::default()
         })
         .await?;
@@ -867,6 +881,31 @@ async fn cold_resume_config_service_tier_overrides_saved_choice_and_preserves_ot
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
     assert_eq!(resumed.service_tier.as_deref(), Some("priority"));
     mcp.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: thread_id.clone(),
+        ..Default::default()
+    })
+    .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+
+    // A model-only override keeps the saved effort and explicit tier when
+    // the new model has neither a retained choice nor an exact configured tier.
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.clone(),
+            model: Some("gpt-6-astra".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let resumed: ThreadResumeResponse =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
+    assert_eq!(resumed.model, "gpt-6-astra");
+    assert_eq!(resumed.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(resumed.service_tier.as_deref(), Some("priority"));
+    mcp.start_turn_and_wait_for_completion(TurnStartParams {
         thread_id,
         ..Default::default()
     })
@@ -881,6 +920,7 @@ async fn cold_resume_config_service_tier_overrides_saved_choice_and_preserves_ot
         [
             json!("priority"),
             json!("flex"),
+            json!("priority"),
             json!("priority"),
             json!("priority")
         ]
@@ -4559,6 +4599,9 @@ async fn thread_resume_emits_restored_token_usage_before_next_turn() -> Result<(
     assert_eq!(notification.token_usage.model_context_window, Some(200_000));
     assert_eq!(thread.context_tokens, Some(90));
     assert_eq!(thread.context_window, Some(200_000));
+    assert!(notification.token_usage.usage_partial);
+    assert_eq!(notification.token_usage.last_response_at, None);
+    assert_eq!(thread.token_usage, Some(notification.token_usage));
 
     Ok(())
 }
@@ -4580,6 +4623,16 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
     let canonical_turn_id = "persisted-token-usage-turn";
     append_rollout_item_to_path(
         &path,
+        &RolloutItem::EventMsg(EventMsg::SkillsUsed(
+            codex_protocol::protocol::SkillsUsedEvent {
+                thread_id: ThreadId::from_string(&conversation_id)?,
+                names: vec!["retained-skill".into()],
+            },
+        )),
+    )
+    .await?;
+    append_rollout_item_to_path(
+        &path,
         &RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
             turn_attribution: None,
             turn_id: canonical_turn_id.to_string(),
@@ -4589,6 +4642,31 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
             model_context_window: None,
             collaboration_mode_kind: Default::default(),
         })),
+    )
+    .await?;
+    append_rollout_item_to_path(
+        &path,
+        &RolloutItem::EventMsg(EventMsg::RawResponseCompleted(
+            codex_protocol::protocol::RawResponseCompletedEvent {
+                thread_id: Some(ThreadId::from_string(&conversation_id)?),
+                completed_at: Some(1_736_078_410),
+                response_id: "saved-response".to_string(),
+                token_usage: Some(TokenUsage {
+                    input_tokens: 120,
+                    output_tokens: 30,
+                    total_tokens: 150,
+                    ..Default::default()
+                }),
+                usage_metadata: Some(codex_protocol::ResponseUsageMetadata {
+                    amount: Some("0.125".to_string()),
+                    ..Default::default()
+                }),
+                model: None,
+                service_tier: None,
+                openai_endpoint: false,
+                request_duration_ms: Some(2_000),
+            },
+        )),
     )
     .await?;
     append_rollout_item_to_path(
@@ -4641,6 +4719,26 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
     assert_eq!(notification.thread_id, thread.id);
     assert_eq!(notification.turn_id, canonical_turn_id);
     assert_eq!(notification.token_usage.total.total_tokens, 150);
+    assert!(!notification.token_usage.usage_partial);
+    assert!(!notification.token_usage.cost_partial);
+    assert_eq!(notification.token_usage.estimated_cost_usd, Some(0.125));
+    assert_eq!(
+        notification.token_usage.output_tokens_per_second,
+        Some(15.0)
+    );
+    assert_eq!(
+        notification.token_usage.last_response_at,
+        Some(1_736_078_410)
+    );
+    assert_eq!(notification.token_usage.roundtrips, Some(1));
+    assert_eq!(notification.token_usage.turns, Some(1));
+    assert_eq!(thread.token_usage, Some(notification.token_usage.clone()));
+    assert_eq!(
+        thread.extra,
+        Some(codex_app_server_protocol::ThreadExtra {
+            skills: vec!["retained-skill".into()],
+        })
+    );
 
     let turns_id = app_server
         .send_thread_turns_list_request(ThreadTurnsListParams {

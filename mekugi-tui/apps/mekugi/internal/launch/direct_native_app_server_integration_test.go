@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 )
@@ -148,6 +150,11 @@ func TestDirectNativeRealAppServerIntegration(t *testing.T) {
 	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) == 0 {
 		t.Fatalf("expected non-empty /model menu from real mekugi-app-server, got %+v", ev.Frame.View.Menu)
 	}
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Menu: &sessionpresentation.MenuAction{Menu: ev.Frame.View.Menu.ID, Kind: sessionpresentation.MenuDismiss},
+	}); err != nil {
+		t.Fatalf("dismiss /model menu: %v", err)
+	}
 
 	// 2. skills/list via $ completion discovers the workspace skill.
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
@@ -170,6 +177,59 @@ func TestDirectNativeRealAppServerIntegration(t *testing.T) {
 	}
 	if !foundSkill {
 		t.Fatalf("expected $demo-skill from real skills/list, got %+v", ev.Frame.View.Menu)
+	}
+
+	// /skills reuses dollar completion for List and the native config writer
+	// for Manage. A disabled skill must disappear from the next dollar list.
+	skillOperation := func(op sessionapi.NativeOperation) sessionapi.NativeEvent {
+		t.Helper()
+		if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, op); err != nil {
+			t.Fatal(err)
+		}
+		return drain()
+	}
+	openSkills := func() *sessionpresentation.MenuView {
+		t.Helper()
+		menu := skillOperation(sessionapi.NativeOperation{Command: new("/skills")}).Frame.View.Menu
+		if menu == nil || menu.Kind != sessionpresentation.MenuSkills || len(menu.Choices) != 2 {
+			t.Fatalf("expected List and Manage, got %+v", menu)
+		}
+		return menu
+	}
+	skillChoice := func(menu *sessionpresentation.MenuView, index int) *sessionpresentation.MenuAction {
+		return &sessionpresentation.MenuAction{
+			Thread: mainID, Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[index].Identity(),
+		}
+	}
+	list := skillOperation(sessionapi.NativeOperation{
+		Menu: skillChoice(openSkills(), 0), Editor: &sessionapi.NativeEditorInput{Target: conversation.EditorTarget{Revision: 3}},
+	})
+	if !slices.ContainsFunc(list.Frame.Effects, func(effect sessionapi.NativeEffect) bool {
+		return effect.Thread == mainID && effect.Action != nil && effect.Action.Text == "$" &&
+			effect.Target != nil && effect.Target.Revision == 3
+	}) {
+		t.Fatalf("List skills did not insert $ into the selected editor: %+v", list.Frame.Effects)
+	}
+	manager := skillOperation(sessionapi.NativeOperation{Menu: skillChoice(openSkills(), 1)}).Frame.View.Menu
+	if manager == nil || manager.Kind != sessionpresentation.MenuManageSkills {
+		t.Fatalf("expected Manage skills, got %+v", manager)
+	}
+	manager = skillOperation(sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: manager.ID, Kind: sessionpresentation.MenuSearch, Query: "demo-skill",
+	}}).Frame.View.Menu
+	if manager == nil || len(manager.Choices) != 1 || !manager.Choices[0].Enabled {
+		t.Fatalf("expected enabled workspace skill, got %+v", manager)
+	}
+	disabled := skillOperation(sessionapi.NativeOperation{Menu: skillChoice(manager, 0)}).Frame.View.Menu
+	if disabled == nil || disabled.ID != manager.ID || len(disabled.Choices) != 1 || disabled.Choices[0].Enabled {
+		t.Fatalf("disabling should update the manager in place: %+v", disabled)
+	}
+	skillOperation(sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{Menu: manager.ID, Kind: sessionpresentation.MenuDismiss}})
+	ev = skillOperation(sessionapi.NativeOperation{
+		Completion: &sessionapi.NativeEditorInput{Target: conversation.EditorTarget{Revision: 4}, Draft: composer.Draft{Text: "$demo"}},
+	})
+	if ev.Frame.View.Menu != nil {
+		t.Fatalf("disabled skill still offered in dollar completion: %+v", ev.Frame.View.Menu)
 	}
 
 	// 3. fuzzyFileSearch via @ completion discovers hello_integration.go.
@@ -230,9 +290,19 @@ func TestDirectNativeRealAppServerIntegration(t *testing.T) {
 		t.Fatalf("expected /fork to switch to new thread ID, still %q", ev.Frame.View.Main.ID)
 	}
 
-	// 8. /archive calls real thread/archive cleanly.
+	// 8. /archive asks before calling real thread/archive.
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/archive")}); err != nil {
 		t.Fatalf("/archive: %v", err)
+	}
+	ev = drain()
+	menu := ev.Frame.View.Menu
+	if ev.Frame.Facts.Archived || menu == nil || menu.Kind != sessionpresentation.MenuArchive {
+		t.Fatalf("expected archive confirmation without archiving")
+	}
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[1].Identity(),
+	}}); err != nil {
+		t.Fatalf("confirm archive: %v", err)
 	}
 	ev = drain()
 	if !ev.Frame.Facts.Archived {

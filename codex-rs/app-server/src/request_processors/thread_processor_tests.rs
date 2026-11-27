@@ -128,6 +128,7 @@ mod background_terminal_pagination_tests {
         ThreadBackgroundTerminal {
             item_id: format!("item-{process_id}"),
             process_id: process_id.to_string(),
+            turn_id: "turn-1".to_string(),
             command: format!("command-{process_id}"),
             cwd: LegacyAppPathString::from_string(cwd),
             os_pid: None,
@@ -920,7 +921,8 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn merge_persisted_resume_metadata_preserves_provider_when_model_overridden() -> Result<()> {
+    fn merge_persisted_resume_metadata_preserves_provider_and_effort_when_model_overridden()
+    -> Result<()> {
         let mut request_overrides = Some(HashMap::from([(
             "model".to_string(),
             serde_json::Value::String("gpt-5.2-codex".to_string()),
@@ -942,16 +944,22 @@ mod thread_processor_behavior_tests {
         );
         assert_eq!(
             request_overrides,
-            Some(HashMap::from([(
-                "model".to_string(),
-                serde_json::Value::String("gpt-5.2-codex".to_string()),
-            )]))
+            Some(HashMap::from([
+                (
+                    "model".to_string(),
+                    serde_json::Value::String("gpt-5.2-codex".to_string()),
+                ),
+                (
+                    "model_reasoning_effort".to_string(),
+                    serde_json::Value::String("high".to_string()),
+                ),
+            ]))
         );
         Ok(())
     }
 
     #[test]
-    fn merge_persisted_resume_metadata_skips_persisted_values_when_provider_overridden()
+    fn merge_persisted_resume_metadata_preserves_model_and_effort_when_provider_overridden()
     -> Result<()> {
         let mut request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides {
@@ -967,14 +975,23 @@ mod thread_processor_behavior_tests {
             &persisted_metadata,
         );
 
-        assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(
+            typesafe_overrides.model,
+            Some("gpt-5.1-codex-max".to_string())
+        );
         assert_eq!(typesafe_overrides.model_provider, Some("oss".to_string()));
-        assert_eq!(request_overrides, None);
+        assert_eq!(
+            request_overrides,
+            Some(HashMap::from([(
+                "model_reasoning_effort".to_string(),
+                serde_json::Value::String("high".to_string()),
+            )]))
+        );
         Ok(())
     }
 
     #[test]
-    fn merge_persisted_resume_metadata_preserves_provider_when_reasoning_effort_overridden()
+    fn merge_persisted_resume_metadata_preserves_model_and_provider_when_effort_overridden()
     -> Result<()> {
         let mut request_overrides = Some(HashMap::from([(
             "model_reasoning_effort".to_string(),
@@ -990,7 +1007,10 @@ mod thread_processor_behavior_tests {
             &persisted_metadata,
         );
 
-        assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(
+            typesafe_overrides.model,
+            Some("gpt-5.1-codex-max".to_string())
+        );
         assert_eq!(
             typesafe_overrides.model_provider,
             Some("mock_provider".to_string())

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Alert from "./ui/Alert.svelte";
+  import Attachments from "./Attachments.svelte";
   import { onDestroy, tick, untrack } from "svelte";
   import type { Approval, QuestionCall } from "./protocol";
   import { stream } from "./stream.svelte";
@@ -41,6 +42,8 @@
     });
   });
   let card: HTMLElement;
+  let tray = $state<ReturnType<typeof Attachments>>();
+  let imageRead: AbortController | undefined;
   let submittedWithFocus = false;
   let hovered = $state<Record<string, number | undefined>>({});
   let focused = $state<Record<string, number | undefined>>({});
@@ -57,6 +60,7 @@
   );
 
   onDestroy(() => {
+    imageRead?.abort();
     const active = document.activeElement;
     if (!card?.contains(active) && !(submittedWithFocus && active === document.body)) return;
     tick().then(() =>
@@ -92,14 +96,20 @@
     }
     pending.error = undefined;
     pending.accepted = false;
+    const controller = new AbortController();
+    if (target.blocking) imageRead = controller;
     try {
-      const error = semantic.answerQuestions(target, answers);
+      const error = await semantic.answerQuestions(target, answers, controller.signal);
       pending.error = error;
       if (target.blocking) pending.accepted = !error;
       for (const draft of drafts) draft.accepted = !error;
     } catch (failure) {
-      pending.error = failure instanceof Error ? failure.message : "Could not send answers.";
+      if (!controller.signal.aborted) {
+        pending.error = failure instanceof Error ? failure.message : "Could not send answers.";
+        tick().then(() => card.querySelector<HTMLElement>("[role=alert]")?.focus());
+      }
     } finally {
+      if (imageRead === controller) imageRead = undefined;
       if (target.blocking) pending.sending = false;
       for (const draft of drafts) draft.sending = false;
     }
@@ -301,8 +311,25 @@
                   name={question.id + "-answer"}
                   autocomplete="off"
                   bind:value={promptState.drafts[question.id].text}
+                  onpaste={(event) => {
+                    if (questionDisabled || !tray) return;
+                    const files = Array.from(event.clipboardData?.files ?? []).filter(
+                      (file) => !file.type || file.type.startsWith("image/"),
+                    );
+                    if (!files.length) return;
+                    if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
+                    tray.add(files);
+                  }}
                   rows="2"></textarea>
               </label>
+              {#if call.blocking}
+                <Attachments
+                  bind:this={tray}
+                  bind:items={promptState.drafts[question.id].items}
+                  questionImages
+                  disabled={questionDisabled}
+                />
+              {/if}
             {/if}
             <label class={option}>
               <input

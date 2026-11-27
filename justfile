@@ -90,9 +90,15 @@ mekugi-pprof:
     go build -trimpath -tags pprof -o bin/mekugi-pprof ./mekugi-tui/apps/mekugi/cmd/mekugi
 
 # Real terminal preview with an isolated, scripted local Responses provider.
-[script('sh')]
+[script('bash')]
 preview-native-ui:
     set -eu
+    for native_file in {{ native_files }}; do
+        if [ ! -x "bin/native/$native_file" ]; then
+            printf 'Native runtime not staged; run just build-native first (%s missing).\n' "$native_file" >&2
+            exit 1
+        fi
+    done
     preview_bin=$(mktemp -d)
     trap 'rm -rf "$preview_bin"' EXIT
     preview_welcome=$(awk '
@@ -102,12 +108,17 @@ preview-native-ui:
         { sub(/^ +/, ""); line = line (line == "" ? "" : " ") $0 }
         END { if (line != "") print line }' docs/contributing/development.md)
     test -n "$preview_welcome"
-    go build -trimpath \
+    {{ just }} _test-env go build -trimpath \
         -ldflags="-X \"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession.previewWelcome=$preview_welcome\"" \
         -o "$preview_bin/" {{ go_commands }}
+    {{ just }} _test-env go test -trimpath -c -o "$preview_bin/walkthrough" {{ launch }}
+    preview_test=TestNativeUIWalkthrough
+    if [ "$("$preview_bin/walkthrough" -test.list "^$preview_test$")" != "$preview_test" ]; then
+        printf 'Missing native terminal preview: %s\n' "$preview_test" >&2
+        exit 1
+    fi
     PATH="$PWD/bin/native:$PATH" MEKUGI_PREVIEW_BINARY="$preview_bin/mekugi" \
-        {{ just }} _test-env go test -trimpath \
-        {{ launch }} -run '^TestNativeUIWalkthrough$' -count=1 -timeout 0
+        {{ just }} _test-env "$preview_bin/walkthrough" -test.run "^$preview_test$"
 
 # Run path-scoped verification for files changed since base (supports --dry-run).
 affected base='origin/main' *args:
@@ -117,12 +128,18 @@ affected base='origin/main' *args:
 test *args='@workspace': workspace-check
     MEKUGI_E2E_MODEL="${MEKUGI_E2E_MODEL-gpt-6-luna}" {{ just }} _test-env {{ go_test }} -parallel=32 "$@"
 
-# Managed runtime and stock Codex against isolated local mocks.
+# Managed runtime against isolated local mocks.
 [script('sh')]
 test-host:
     set -eu
-    {{ just }} _test-env codex --version
+    {{ just }} _test-env mekugi-app-server --version
     set -- TestAppServerSteerAndQueueNativeCodex \
+        TestAppServerNativeMRunAndPTY \
+        TestMChangesNestedNativeCodexE2E \
+        TestAppServerExecTrackNativeCodex \
+        TestAppServerExecTrackNativeCodexDash \
+        TestAppServerExecTrackNativeCodexMovedWorkspace \
+        TestAppServerExecTrackNativeCodexSandbox \
         TestAppServerResumeNativeCodex \
         TestComposerPickersNativeCodexE2E \
         TestNativeApprovalDenialSameTurnCodexE2E \
@@ -152,7 +169,7 @@ lint: workspace-check
 
 # Compare rendered output. Mismatches leave .txt.new candidates.
 test-ui-snapshots packages='@snapshots' pattern='^TestUISnapshot':
-    {{ just }} _test-env {{ go_test }} ./mekugi-tui/testsupport/uisnapshot/... "$1" -run "TestSnapshot|$2" -count=1
+    if [ "$1" = @snapshots ] && [ "$2" = '^TestUISnapshot' ] && [ -z "${MEKUGI_STAGED_SNAPSHOT_CHANGED_PATHS-}" ]; then export MEKUGI_VERIFY_SNAPSHOT_COVERAGE=1; fi; {{ just }} _test-env {{ go_test }} ./mekugi-tui/testsupport/uisnapshot/... "$1" -run "TestSnapshot|$2" -count=1
 
 # Replace baselines for the selected snapshot tests.
 update-ui-snapshots packages='@snapshots' pattern='^TestUISnapshot':

@@ -9,7 +9,9 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 
 - **Native (`codex-rs`)**: family admission (app-server), root/child execution,
   coordination (`core/src/{agent,thread_manager}`), direct provider requests and
-  usage (model client), retained edits (`change-history`, `exec-track`),
+  usage (model client, `core/src/session/usage_metrics.rs`, and
+  `app-server/src/request_processors/token_usage_replay.rs`), retained edits
+  (`change-history`, `exec-track`),
   model templates (`models-manager`), helper/child-reply guidance (`core/src/mekugi_guidance`),
   native helper tools (`mcat`, `mchanges`, `mfinspect`, `msymbol`, `mrun`), native shell guard
   (`codex-shell-guard`, `features.shell_guard`, `codex-arg0` guard shims, v2 `shellGuard/*`),
@@ -32,11 +34,10 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 | `launch` | CLI dispatch, profile selection, direct native `mekugi-app-server` startup/attachment, connector, web, and headless |
 | `headless` | Noninteractive automation client and JSONL host evidence |
 | `sessioncontrol` | Minimal headless request correlation and shared interrupt/thread types |
-| `sessionpresentation` | Detached presentation view/intent types and native replay projection |
+| `sessionpresentation` | Detached presentation view and intent types |
 | `sessionapi` | Wire protocol constants and peer-checked Unix control transport |
 | `connector` | Remote bearer-token/origin admission and WebSocket/HTTP forwarding to the local native `mekugi-app-server` socket |
 | `terminalsession` | Terminal attachment, input precedence, geometry, frozen selection, detached views, and frame delivery |
-| `inspectioncli` | Native `mekugi-app-server` CLI dispatch for `inspect-session`, `inspect-sessions`, and `inspect-storage` |
 
 ## Key non-obvious boundaries
 
@@ -44,6 +45,8 @@ Go owner paths below are relative to `mekugi-tui/`; shared contracts are at root
 
 - `backends/codex/{appserver,binding}`
   owns Codex app-server RPC transport and protocol decoding.
+- `apps/mekugi/internal/launch/direct_native_preferences.go` persists terminal
+  pane layout per workspace and thread; native Codex owns inference settings.
 - `apps/mekugi/cmd/workspace` owns workspace enumeration and import checks,
   plus `just docs-check`, the module index, and `just integrate`
   (`docs/contributing/development.md#integrate-reviewed-work`).

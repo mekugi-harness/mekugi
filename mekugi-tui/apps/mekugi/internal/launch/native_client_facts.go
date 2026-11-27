@@ -35,6 +35,9 @@ func (c *nativeClient) acceptFacts(previous string) {
 		if source.key == "side:" {
 			continue
 		}
+		if source.key == "main" && facts.HistoryRevision != 0 && facts.HistoryRevision == c.historyRevision {
+			continue
+		}
 		history := make([]composer.HistoryEntry, len(source.entries))
 		for i, entry := range source.entries {
 			history[i] = entry
@@ -43,18 +46,21 @@ func (c *nativeClient) acceptFacts(previous string) {
 		}
 		c.editor(source.key).PrependHistory(history)
 	}
+	c.historyRevision = facts.HistoryRevision
 	n := &c.notifications
 	n.ready, n.settings.Events, n.settings.Method, n.settings.Condition = facts.Notifications.Ready, facts.Notifications.Events, facts.Notifications.Method, facts.Notifications.Condition
-	if c.event.Frame.View.Main.ID != "" && (!c.preferenceReady || previous != c.event.Frame.View.Main.ID) && facts.Preferences != nil && facts.Preferences.Kind() != 'n' {
-		layout, err := terminalsession.ReadPreferences(facts.Preferences)
-		if err != nil {
-			c.notice = err.Error()
-			return
-		}
+	if c.event.Frame.View.Main.ID != "" && (!c.preferenceReady || previous != c.event.Frame.View.Main.ID) {
 		u := c.renderer.terminal
-		u.Shell.RestorePreferences(layout, u.Main)
+		if facts.Preferences != nil && facts.Preferences.Kind() != 'n' {
+			layout, err := terminalsession.ReadPreferences(facts.Preferences)
+			if err != nil {
+				c.notice = err.Error()
+				return
+			}
+			u.Shell.RestorePreferences(layout, u.Main)
+			c.dirty = true
+		}
 		c.preferenceState, c.preferenceReady = u.Shell.Preferences(u.Main), true
-		c.dirty = true
 	}
 }
 
@@ -139,8 +145,10 @@ func (c *nativeClient) stagePreferences(flush bool) {
 		return
 	}
 	c.preferenceState = state
+	target := c.event.Target()
 	for _, call := range c.calls {
-		if update := call.operation.Preferences; update != nil {
+		if update := call.operation.Preferences; update != nil &&
+			call.target.Attachment == target.Attachment && call.target.Thread == target.Thread && call.target.Workspace == target.Workspace {
 			update.Presentation = data
 			update.Flush = update.Flush || flush
 			return
@@ -166,6 +174,16 @@ func (c *nativeClient) flushNativeView() {
 func (c *nativeClient) flushPreferences(ctx context.Context) {
 	if !c.preferenceReady || c.event.Frame.View.Main.ID == "" {
 		return
+	}
+	// Do not allow an older queued write already submitted to the preference
+	// lane to overwrite the final snapshot during shutdown.
+	if call := c.request(nativePreferenceCall); call != nil {
+		select {
+		case <-call.preferenceWritten:
+		case <-ctx.Done():
+			c.notice = ctx.Err().Error()
+			return
+		}
 	}
 	u := c.renderer.terminal
 	data, err := c.preferences.Encode(u.Shell.Preferences(u.Main))

@@ -5,6 +5,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -149,7 +151,6 @@ impl ChangeHistoryStore {
         // Step 2: Allocate stream and monotonic ChangeId in memory.
         let author = metadata.effective_author();
         let (stream, next_num, id) = if author.is_unattributed() {
-            metadata.thread_id.clear();
             metadata.author = Some(ChangeAuthor::Unattributed);
             let next_num = *index.stream_next.get(UNATTRIBUTED_STREAM).unwrap_or(&1);
             let id = ChangeId::new_unattributed(next_num)?;
@@ -175,6 +176,10 @@ impl ChangeHistoryStore {
             schema_version: CURRENT_SCHEMA_VERSION,
             id: id.clone(),
             sequence,
+            recorded_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok()),
             metadata,
             files,
         };
@@ -251,9 +256,11 @@ impl ChangeHistoryStore {
         }
         let _lock = self.acquire_shared_lock()?;
         let index = self.read_index_locked()?;
+        let known_ids: std::collections::HashSet<_> =
+            index.entries.iter().map(|entry| &entry.id).collect();
         let mut records = Vec::with_capacity(ids.len());
         for id in ids {
-            if !index.entries.iter().any(|entry| &entry.id == id) {
+            if !known_ids.contains(id) {
                 return Err(ChangeHistoryError::UnknownChangeId(id.to_string()));
             }
             records.push(self.read_record_unlocked(id)?);

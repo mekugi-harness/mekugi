@@ -153,7 +153,7 @@ pub(crate) async fn run_remote_compact_task(
     sess: Arc<Session>,
     step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
-) -> CodexResult<()> {
+) -> CodexResult<bool> {
     let compaction_metadata = CompactionTurnMetadata::new(
         CompactionTrigger::Manual,
         CompactionReason::UserRequested,
@@ -171,7 +171,6 @@ pub(crate) async fn run_remote_compact_task(
         CompactionFallback::Foreground,
     )
     .await
-    .map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -3,6 +3,7 @@ package launch
 import (
 	"context"
 	"encoding/json/jsontext"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/composition"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
@@ -34,9 +36,19 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 	srv.mu.Lock()
 	srv.bgTerminals = []map[string]any{
 		{
+			"threadId":  "thr-main",
+			"turnId":    "turn-1",
 			"itemId":    "cmd-bg",
 			"processId": "proc-42",
 			"command":   "/bin/bash -lc 'tail -f app.log'",
+			"cwd":       ws,
+		},
+		{
+			"threadId":  "thr-worker",
+			"turnId":    "turn-worker",
+			"itemId":    "cmd-worker",
+			"processId": "proc-42",
+			"command":   "tail -f worker.log",
 			"cwd":       ws,
 		},
 	}
@@ -64,8 +76,8 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 		}
 	}
 
-	// Verify /effort is listed and /reasoning is not; /rewind is listed.
-	hasEffort, hasReasoning, hasRewind := false, false, false
+	// Both established names reach the reasoning picker; service tier has one name.
+	hasEffort, hasReasoning, hasRewind, hasTier := false, false, false, false
 	for _, ch := range directSlashCommands {
 		switch ch.Name {
 		case "/effort":
@@ -74,10 +86,12 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 			hasReasoning = true
 		case "/rewind":
 			hasRewind = true
+		case "/tier":
+			hasTier = true
 		}
 	}
-	if !hasEffort || hasReasoning || !hasRewind {
-		t.Fatalf("unexpected slash catalog flags: effort=%v reasoning=%v rewind=%v", hasEffort, hasReasoning, hasRewind)
+	if !hasEffort || !hasReasoning || !hasRewind || !hasTier {
+		t.Fatalf("unexpected slash catalog flags: effort=%v reasoning=%v rewind=%v tier=%v", hasEffort, hasReasoning, hasRewind, hasTier)
 	}
 
 	// Push real codex-rs wire shapes: commandExecution, fileChange, assistant reply, tokenUsage (main + worker).
@@ -310,20 +324,73 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 		t.Fatalf("/ps: %v", err)
 	}
 	ev = drain()
-	if len(ev.Frame.Processes) != 1 || ev.Frame.Processes[0].ID != "proc-42" || ev.Frame.Processes[0].Command != "tail -f app.log" {
-		t.Fatalf("expected running background process in Frame.Processes, got %+v", ev.Frame.Processes)
+	if len(ev.Frame.Processes) != 2 || ev.Frame.Processes[0].Command != "tail -f app.log" || ev.Frame.Processes[1].Agent != "/root/worker" {
+		t.Fatalf("expected both family processes in Frame.Processes, got %+v", ev.Frame.Processes)
 	}
 	if ev.Frame.Details == nil || !ev.Frame.Details.View.Processes {
 		t.Fatalf("expected /ps to open Processes detail dialog")
 	}
+	worker := ev.Frame.Processes[1]
+	staleWorker := worker
+	staleWorker.Turn = "old-turn"
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
-		StopProcess: &ev.Frame.Processes[0],
+		StopProcess: &staleWorker,
+	}); !errors.Is(err, sessionpresentation.ErrStaleIntent) {
+		t.Fatalf("stale StopProcess should not target a new invocation: %v", err)
+	}
+	procDialog := ev.Frame.Details.View.ID
+	conn.handleNotification(appserver.Message{Method: "item/commandExecution/outputDelta", Params: jsontext.Value(
+		`{"threadId":"thr-worker","turnId":"turn-worker","itemId":"cmd-worker","delta":"live worker output\n"}`,
+	)})
+	ev = drain()
+	page := ev.Frame.Details.View.Pages[1]
+	if page.Process == nil || !page.Running || !page.Retained || !slices.Contains(page.Tail, "live worker output") {
+		t.Fatalf("worker output should reach the open process dialog: %+v", page)
+	}
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		StopProcess: &worker,
 	}); err != nil {
 		t.Fatalf("StopProcess: %v", err)
 	}
 	ev = drain()
-	if len(ev.Frame.Processes) != 0 {
-		t.Fatalf("expected background process terminated, still have %+v", ev.Frame.Processes)
+	if len(ev.Frame.Processes) != 1 || ev.Frame.Processes[0].Thread != "thr-main" {
+		t.Fatalf("Stop should leave the other thread's process with the same ID, got %+v", ev.Frame.Processes)
+	}
+	details := ev.Frame.Details
+	if details.View.ID != procDialog || len(details.View.Pages) != 2 ||
+		details.View.Pages[1].Running || !slices.Contains(details.View.Pages[1].Tail, "live worker output") {
+		t.Fatalf("settled worker output should remain in the same process dialog: %+v", details)
+	}
+	conn.handleNotification(appserver.Message{Method: "item/completed", Params: jsontext.Value(
+		`{"threadId":"thr-worker","turnId":"turn-worker","item":{"type":"commandExecution","id":"cmd-worker","command":"tail -f worker.log","status":"failed","processId":"proc-42","exitCode":2,"aggregatedOutput":"live worker output\n"}}`,
+	)})
+	ev = drain()
+	page = ev.Frame.Details.View.Pages[1]
+	if !page.Exited || page.ExitCode != 2 {
+		t.Fatalf("late native process result should update the retained row: %+v", page)
+	}
+	srv.mu.Lock()
+	srv.bgTerminals = append(srv.bgTerminals, map[string]any{
+		"threadId": "thr-worker", "turnId": "turn-next", "itemId": "cmd-next",
+		"processId": "proc-53", "command": "sleep 32", "cwd": ws,
+	})
+	srv.mu.Unlock()
+	conn.handleNotification(appserver.Message{Method: "thread/backgroundTerminals/changed", Params: jsontext.Value(
+		`{"threadId":"thr-worker"}`,
+	)})
+awaitProcess:
+	for {
+		select {
+		case ev = <-conn.events:
+			if slices.ContainsFunc(ev.Frame.Processes, func(p sessionpresentation.Process) bool { return p.Item == "cmd-next" }) {
+				if ev.Frame.Details == nil || ev.Frame.Details.View.ID != procDialog {
+					t.Fatalf("a new process should update the open dialog, not replace it: %+v", ev.Frame.Details)
+				}
+				break awaitProcess
+			}
+		case <-ctx.Done():
+			t.Fatal("the open process dialog missed a native registration notification")
+		}
 	}
 
 	// /title, /copy, /lock, /unlock, /live, /predictions, /session, /skills, op.Reference, op.Notice, !shell restore, Frame.Live.
@@ -335,18 +402,79 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 		t.Fatalf("expected updated title, got %q", ev.Frame.View.Info.Title)
 	}
 
+	conn.handleNotification(appserver.Message{Method: "item/completed", Params: jsontext.Value(
+		`{"threadId":"thr-main","turnId":"turn-1","item":{"type":"agentMessage","id":"copy-source","text":"Answer.\n\n~~~sh\nprintf '界'  \n~~~\n"}}`,
+	)})
+	conn.handleNotification(appserver.Message{Method: "item/agentMessage/delta", Params: jsontext.Value(
+		`{"threadId":"thr-main","turnId":"turn-2","itemId":"copy-partial","delta":"Not finished"}`,
+	)})
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/copy")}); err != nil {
 		t.Fatalf("/copy: %v", err)
 	}
 	ev = drain()
+	menu := ev.Frame.View.Menu
+	if menu == nil || menu.Kind != sessionpresentation.MenuCopy || len(menu.Choices) != 2 ||
+		menu.Choices[0].Name != "Whole response" || menu.Choices[1].Name != "sh code" {
+		t.Fatalf("expected whole-response and code choices from the last completed item, got %+v", menu)
+	}
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[1].Identity(),
+	}}); err != nil {
+		t.Fatalf("copy code: %v", err)
+	}
+	ev = drain()
 	foundCopy := false
 	for _, eff := range ev.Frame.Effects {
-		if eff.Clipboard != nil && *eff.Clipboard == "Done fixing regressions." {
+		if eff.Clipboard != nil && *eff.Clipboard == "printf '界'  \n" {
 			foundCopy = true
 		}
 	}
 	if !foundCopy {
 		t.Fatalf("expected /copy clipboard effect, got %+v", ev.Frame.Effects)
+	}
+
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/btw First question?")}); err != nil {
+		t.Fatal(err)
+	}
+	ev = drain()
+	first := ev.Frame.View.BTW
+	if first == nil || first.Question != "First question?" || first.Key != "thr-side" {
+		t.Fatalf("side dock did not attach to the returned fork: %+v", first)
+	}
+	conn.handleNotification(appserver.Message{Method: "item/agentMessage/delta", Params: jsontext.Value(
+		`{"threadId":"thr-side","turnId":"btw-turn","itemId":"a1","delta":"The ans"}`,
+	)})
+	conn.handleNotification(appserver.Message{Method: "item/completed", Params: jsontext.Value(
+		`{"threadId":"thr-side","turnId":"btw-turn","item":{"type":"agentMessage","id":"a1","text":"The answer."}}`,
+	)})
+	conn.handleNotification(appserver.Message{Method: "turn/completed", Params: jsontext.Value(
+		`{"threadId":"thr-side","turn":{"id":"btw-turn","status":"completed"}}`,
+	)})
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/btw A follow-up?")}); err != nil {
+		t.Fatal(err)
+	}
+	ev = drain()
+	followUp := ev.Frame.View.BTW
+	if followUp == nil || followUp.Key != first.Key || followUp.Question != "A follow-up?" ||
+		len(followUp.History) != 1 || len(followUp.History[0].Answer) != 1 ||
+		followUp.History[0].Answer[0].Text != "The answer." {
+		t.Fatalf("side follow-up lost the accepted exchange: %+v", followUp)
+	}
+	closeBTW := func(id uint64) error {
+		_, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{BTW: &sessionpresentation.CloseSideIntent{
+			Version: ev.Frame.View.Version, Key: followUp.Key, Exchange: id,
+		}})
+		return err
+	}
+	if err := closeBTW(first.ID); !errors.Is(err, sessionpresentation.ErrStaleIntent) {
+		t.Fatalf("stale side close: %v", err)
+	}
+	if err := closeBTW(followUp.ID); err != nil {
+		t.Fatal(err)
+	}
+	ev = drain()
+	if ev.Frame.View.BTW != nil || ev.Frame.View.Main.ID != "thr-main" {
+		t.Fatalf("closing the side answer changed Main: %+v", ev.Frame.View.BTW)
 	}
 
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/lock")}); err != nil {
@@ -374,9 +502,33 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 		t.Fatalf("expected Reference Selection effect, got %+v", lastEff)
 	}
 
-	// Notice dismiss clears feedback.
+	// Dismiss only the notice that was visible for that editor revision.
+	notice := func(text string) sessionapi.NativeEvent {
+		conn.mu.Lock()
+		conn.setFeedbackLocked(text, true)
+		conn.publishLocked()
+		conn.mu.Unlock()
+		return drain()
+	}
+	old := notice("old error")
+	current := notice("new error")
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
-		Notice: &sessionapi.NativeNoticeAction{Dismiss: true},
+		Notice: &sessionapi.NativeNoticeAction{
+			Version: old.Frame.View.Version, Feedback: old.Frame.View.Status.FeedbackRevision, Dismiss: true,
+		},
+	}); err != nil {
+		t.Fatalf("stale Notice dismiss: %v", err)
+	}
+	conn.mu.Lock()
+	feedback := conn.feedbackText
+	conn.mu.Unlock()
+	if feedback != "new error" {
+		t.Fatalf("dismissing the previous notice cleared %q", feedback)
+	}
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Notice: &sessionapi.NativeNoticeAction{
+			Version: current.Frame.View.Version, Feedback: current.Frame.View.Status.FeedbackRevision, Dismiss: true,
+		},
 	}); err != nil {
 		t.Fatalf("Notice dismiss: %v", err)
 	}
@@ -385,45 +537,78 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 		t.Fatalf("expected Notice dismiss to clear feedback, got %q", ev.Frame.View.Status.Feedback.Text)
 	}
 
-	// Failed !shell emits ShellRestore effect so user draft is not lost.
+	// A rejected shell request restores the draft once at its editor, not also
+	// through a retained effect that could offer a duplicate on reconnect.
 	srv.mu.Lock()
 	srv.shellFailMsg = "shell busy"
 	srv.mu.Unlock()
-	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
-		Composer: &sessionapi.NativeComposerInput{
-			Draft: composer.Draft{Text: "!git status"},
-		},
-	}); err == nil {
-		t.Fatalf("expected !shell failure error")
+	client := &nativeClient{connection: conn, event: ev, renderer: renderer}
+	client.editor("main").Replace(composer.Draft{Text: "!git status"})
+	client.composer(terminalsession.ComposerInput{Command: sessionpresentation.ComposerIntent{
+		Operation: sessionpresentation.SubmitComposer, Thread: "thr-main",
+	}})
+	call := client.calls[len(client.calls)-1]
+	_, err = conn.Send(ctx, call.target, call.operation)
+	if !nativeAdmissionRefused(err) {
+		t.Fatalf("expected explicit !shell admission refusal, got %v", err)
 	}
-	ev = drain()
-	lastEff = ev.Frame.Effects[len(ev.Frame.Effects)-1]
-	if lastEff.ShellRestore == nil || lastEff.ShellRestore.Text != "!git status" {
-		t.Fatalf("expected ShellRestore effect for failed !shell, got %+v", lastEff)
+	call.after(err)
+	if text := client.editor("main").Text; text != "!git status" || len(client.unknown) != 0 {
+		t.Fatalf("rejected shell restored %q with %d unknown outcomes", text, len(client.unknown))
 	}
 
-	// turn/diff/updated populates Frame.Live and turn/completed clears it.
+	// The patch stream populates Frame.Live before the file-change item completes.
 	conn.handleNotification(appserver.Message{
-		Method: "turn/diff/updated",
-		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-2","diff":"diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"}`),
+		Method: "turn/started",
+		Params: jsontext.Value(`{"threadId":"thr-main","turn":{"id":"turn-2","status":"inProgress"}}`),
 	})
+	_ = drain()
+	patch := appserver.Message{
+		Method: "item/fileChange/patchUpdated",
+		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-2","itemId":"edit-1","changes":[{"path":"a.go","kind":{"type":"add"},"diff":"new\n"}]}`),
+	}
+	conn.handleNotification(patch)
 	ev = drain()
-	if len(ev.Frame.Live) != 1 || len(ev.Frame.Live[0].Files) != 1 || ev.Frame.Live[0].Files[0].AfterPath != "a.go" {
-		t.Fatalf("expected Frame.Live from turn/diff/updated, got %+v", ev.Frame.Live)
+	if len(ev.Frame.Live) != 1 || len(ev.Frame.Live[0].Files) != 1 || ev.Frame.Live[0].Files[0].Diff != "@@ -0 +1 @@\n+new" {
+		t.Fatalf("expected Frame.Live from patchUpdated, got %+v", ev.Frame.Live)
 	}
 	conn.handleNotification(appserver.Message{
-		Method: "turn/completed",
-		Params: jsontext.Value(`{"threadId":"thr-main","turn":{"id":"turn-2","status":"completed"}}`),
+		Method: "item/completed",
+		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-2","item":{"type":"fileChange","id":"edit-1","status":"completed","changes":[]}}`),
 	})
+	conn.handleNotification(patch)
 	ev = drain()
 	if len(ev.Frame.Live) != 0 {
-		t.Fatalf("expected Frame.Live cleared on turn/completed, got %+v", ev.Frame.Live)
+		t.Fatalf("expected completed patch to stay cleared, got %+v", ev.Frame.Live)
 	}
 }
 
 func TestUISnapshotDirectNativeProjection(t *testing.T) {
 	socket := filepath.Join(shortTempDir(t), "native.sock")
 	srv := startMockNativeAppServer(t, socket)
+	srv.mu.Lock()
+	srv.overrides["thread/start"] = func(jsontext.Value) any {
+		return map[string]any{
+			"thread": map[string]any{"id": "thr-main", "cwd": "/workspace/demo", "name": "Direct Session"},
+			"model":  "gpt-5", "modelProvider": "preview", "reasoningEffort": "medium", "serviceTier": "standard",
+			"approvalPolicy": "on-request", "sandbox": map[string]any{"type": "workspaceWrite"},
+			"instructionSources": []string{"/workspace/demo/AGENTS.md"},
+		}
+	}
+	srv.overrides["account/rateLimits/read"] = func(jsontext.Value) any {
+		return jsontext.Value(`{
+			"rateLimitsByLimitId": {
+				"codex": {"limitName":"Codex","primary":{"usedPercent":12,"windowDurationMins":300},
+					"secondary":{"usedPercent":21,"windowDurationMins":10080},"credits":{"balance":"12.50"}},
+				"fast": {"limitName":"Fast","primary":{"usedPercent":40,"windowDurationMins":60,
+					"resetsAt":1795694400},"credits":{"unlimited":true}}
+			},
+			"rateLimitResetCredits": {"availableCount":2,"credits":[
+				{"status":"available","resetType":"codexRateLimits"},{"status":"used","title":"Used reset"}
+			]}
+		}`)
+	}
+	srv.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -595,5 +780,19 @@ func TestUISnapshotDirectNativeProjection(t *testing.T) {
 		t.Fatalf("/status: %v", err)
 	}
 	ev = drain()
+	if p := ev.Frame.View.Panel; p == nil ||
+		!slices.ContainsFunc(p.Fields, func(row sessionpresentation.StatusField) bool {
+			return row.Label == "Fast 1h limit" && row.Value == "60% left" && strings.HasPrefix(row.Detail, "resets ")
+		}) || !slices.ContainsFunc(p.Fields, func(row sessionpresentation.StatusField) bool {
+		return row.Label == "Fast credits" && row.Value == "unlimited"
+	}) || !slices.ContainsFunc(p.Fields, func(row sessionpresentation.StatusField) bool {
+		return row.Group == "Usage limit resets" && row.Label == "Available" && row.Value == "2"
+	}) || !slices.ContainsFunc(p.Fields, func(row sessionpresentation.StatusField) bool {
+		return row.Label == "Full reset" && row.Value == "Does not expire"
+	}) || slices.ContainsFunc(p.Fields, func(row sessionpresentation.StatusField) bool {
+		return row.Label == "Used reset"
+	}) {
+		t.Fatalf("/status did not show the account buckets, credits and reset inventory: %#v", p)
+	}
 	uisnapshot.Assert(t, "testdata/snapshots/direct-native-status-140.txt", renderFrame(ev.Frame))
 }

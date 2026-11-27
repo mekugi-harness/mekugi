@@ -113,16 +113,52 @@ pub fn lookup_batch(
     cursor: HistoryBatchCursor,
     config: &HistoryConfig,
 ) -> std::io::Result<HistoryBatch> {
+    read_shared(config, |file| {
+        let current_log_id = log_identity(&file.metadata()?).unwrap_or(0);
+        if log_id != 0 && current_log_id != log_id {
+            return Ok(HistoryBatch::default());
+        }
+        scan_batch(file, cursor, config)
+    })
+}
+
+/// Read one bounded tail of the log for terminal recall, oldest first.
+pub fn recent_entries(config: &HistoryConfig) -> std::io::Result<Vec<HistoryEntry>> {
+    if config.persistence == codex_config::types::HistoryPersistence::None {
+        return Ok(Vec::new());
+    }
+    let result = read_shared(config, |file| {
+        let metadata = file.metadata()?;
+        let revision = HistoryFileRevision {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        };
+        // The caller only needs the newest text, not absolute row locations.
+        // A synthetic offset lets the same reverse scan skip the prefix.
+        scan_batch_backward(file, /*end_offset*/ usize::MAX, revision.len, revision).map(|batch| {
+            batch
+                .entries
+                .into_iter()
+                .rev()
+                .filter_map(|row| row.entry)
+                .collect()
+        })
+    });
+    match result {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        result => result,
+    }
+}
+
+fn read_shared<T>(
+    config: &HistoryConfig,
+    read: impl FnOnce(&mut File) -> std::io::Result<T>,
+) -> std::io::Result<T> {
     let path = history_filepath(config);
     let mut file = OpenOptions::new().read(true).open(path)?;
-    let current_log_id = log_identity(&file.metadata()?).unwrap_or(0);
-    if log_id != 0 && current_log_id != log_id {
-        return Ok(HistoryBatch::default());
-    }
-
     for _ in 0..MAX_RETRIES {
         match file.try_lock_shared() {
-            Ok(()) => return scan_batch(&mut file, cursor, config),
+            Ok(()) => return read(&mut file),
             Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(RETRY_SLEEP),
             Err(error) => return Err(error.into()),
         }

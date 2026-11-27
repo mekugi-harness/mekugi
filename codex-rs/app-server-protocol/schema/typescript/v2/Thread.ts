@@ -10,6 +10,7 @@ import type { ThreadHistoryMode } from "./ThreadHistoryMode";
 import type { ThreadSection } from "./ThreadSection";
 import type { ThreadSource } from "./ThreadSource";
 import type { ThreadStatus } from "./ThreadStatus";
+import type { ThreadTokenUsage } from "./ThreadTokenUsage";
 import type { Turn } from "./Turn";
 
 export type Thread = {/**
@@ -56,7 +57,10 @@ model: string | null, /**
 reasoningEffort: ReasoningEffort | null, /**
  * Effective native settings and measurements; unavailable observations are null.
  */
-serviceTier: string | null, contextTokens: number | null, contextWindow: number | null, completedCompactions: number | null, agentStatus: AgentStatus | null, /**
+serviceTier: string | null, contextTokens: number | null, contextWindow: number | null, /**
+ * The thread's persisted and live usage evidence, when available.
+ */
+tokenUsage: ThreadTokenUsage | null, completedCompactions: number | null, agentStatus: AgentStatus | null, /**
  * Unix timestamp (in seconds) when the thread was created.
  */
 createdAt: number, /**

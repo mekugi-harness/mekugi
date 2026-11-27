@@ -132,6 +132,7 @@ pub(super) fn cells(item: ThreadItemPayload, cwd: &Path) -> TranscriptCells {
         }
         ThreadItemPayload::UserMessage { .. }
         | ThreadItemPayload::AgentMessage { .. }
+        | ThreadItemPayload::AgentMail { .. }
         | ThreadItemPayload::FunctionCallOutput { .. }
         | ThreadItemPayload::Plan { .. }
         | ThreadItemPayload::Reasoning { .. }

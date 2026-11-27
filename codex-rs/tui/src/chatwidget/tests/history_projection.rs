@@ -24,6 +24,7 @@ async fn older_tool_projection_matches_initial_replay() {
         process_id: None,
         source: ExecCommandSource::Agent,
         status: AppServerCommandExecutionStatus::Completed,
+        display: None,
         command_actions: vec![AppServerCommandAction::Unknown {
             command: command.to_string(),
         }],
@@ -50,6 +51,7 @@ async fn older_tool_projection_matches_initial_replay() {
             process_id: None,
             source: ExecCommandSource::Agent,
             status: AppServerCommandExecutionStatus::Completed,
+            display: None,
             command_actions: vec![AppServerCommandAction::Read {
                 command,
                 name: name.to_string(),

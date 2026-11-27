@@ -154,6 +154,15 @@ pub enum CommandAction {
     },
 }
 
+/// Authored shell steps for display, not observations of individual processes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CommandDisplay {
+    pub segments: Vec<String>,
+    pub effective_cwd: Option<LegacyAppPathString>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -405,6 +414,10 @@ pub enum ThreadItemPayload {
         /// This returns a list of CommandAction objects because a single shell command may
         /// be composed of many commands piped together.
         command_actions: Vec<CommandAction>,
+        /// Only present for a shell invocation with separate display steps.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        display: Option<CommandDisplay>,
         /// The command's output, aggregated from stdout and stderr.
         aggregated_output: Option<String>,
         /// The command's exit code.
@@ -496,6 +509,18 @@ pub enum ThreadItemPayload {
         agent_thread_id: String,
         agent_path: String,
     },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    AgentMail {
+        id: String,
+        kind: super::AgentMailKind,
+        sender: String,
+        recipient: String,
+        /// The retained plaintext, excluding the envelope and attached model context.
+        text: String,
+        summary: Option<String>,
+        details: Option<String>,
+    },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -522,6 +547,14 @@ pub enum ThreadItemPayload {
     #[ts(rename_all = "camelCase")]
     ContextCompaction {
         id: String,
+        /// Present and true for a Mekugi summary-free context reset.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        summary_free: bool,
+        /// Elided unless a local compaction produced a plaintext summary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        summary: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         source_acquisition: Option<codex_protocol::protocol::SourceAcquisition>,
@@ -562,6 +595,7 @@ impl ThreadItemPayload {
             | Self::DynamicToolCall { id, .. }
             | Self::CollabAgentToolCall { id, .. }
             | Self::SubAgentActivity { id, .. }
+            | Self::AgentMail { id, .. }
             | Self::ImageView { id, .. }
             | Self::EnteredReviewMode { id, .. }
             | Self::ExitedReviewMode { id, .. }
@@ -1021,6 +1055,8 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     &command.command,
                     &command.parsed_cmd,
                     &command.cwd,
+                    command.exit_code,
+                    command.aggregated_output.as_deref().unwrap_or_default(),
                 );
                 Self::CommandExecution {
                     id: command.id,
@@ -1033,6 +1069,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     process_id: command.process_id,
                     source: command.source.into(),
                     status: command.status.into(),
+                    display: presentation.display,
                     command_actions: presentation.command_actions,
                     aggregated_output: command
                         .aggregated_output
@@ -1165,6 +1202,8 @@ impl From<CoreTurnItem> for ThreadItemPayload {
             }
             CoreTurnItem::ContextCompaction(compaction) => Self::ContextCompaction {
                 id: compaction.id,
+                summary_free: compaction.summary_free,
+                summary: compaction.summary,
                 source_acquisition: compaction.source_acquisition,
             },
         }

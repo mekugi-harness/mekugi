@@ -136,7 +136,7 @@ func TestUserInputQuestionsNativeCodexE2E(t *testing.T) {
 					return nil
 				}
 			}
-			terminal.await("Ready")
+			terminal.awaitReady()
 			terminal.send("Ask the release question\r")
 			_ = next()
 			if mode == "async" {

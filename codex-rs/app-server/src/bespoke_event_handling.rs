@@ -15,6 +15,7 @@ use codex_app_server_protocol::AdditionalPermissionProfile as V2AdditionalPermis
 use codex_app_server_protocol::AuthRecoveryNotification;
 use codex_app_server_protocol::CodexErrorInfo as V2CodexErrorInfo;
 use codex_app_server_protocol::CommandAction as V2ParsedCommand;
+use codex_app_server_protocol::CommandDisplay;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
 use codex_app_server_protocol::CommandExecutionPresentation;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
@@ -60,6 +61,7 @@ use codex_app_server_protocol::ShellGuardRequestSecretParams;
 use codex_app_server_protocol::ShellGuardRequestSecretResponse;
 use codex_app_server_protocol::ShellGuardSecretKind as V2ShellGuardSecretKind;
 use codex_app_server_protocol::StrictReviewRequiredNotification;
+use codex_app_server_protocol::ThreadBackgroundTerminalsChangedNotification;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadItemPayload;
@@ -113,10 +115,10 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecApprovalRequestEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::PrivateSessionEventPayload;
+use codex_protocol::protocol::RateLimitSnapshot;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SubAgentActivityKind;
-use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::protocol::TurnDiffEvent;
@@ -150,6 +152,7 @@ pub(crate) struct CommandExecutionCompletionItem {
     command: String,
     cwd: LegacyAppPathString,
     command_actions: Vec<V2ParsedCommand>,
+    display: Option<CommandDisplay>,
 }
 
 pub(crate) async fn apply_bespoke_event_handling(
@@ -208,6 +211,16 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
         EventMsg::TurnComplete(turn_complete_event) => {
             respond_to_pending_interrupts(&event_turn_id, &thread_state, &outgoing).await;
+            if finishes_latest_turn {
+                handle_token_count_event(
+                    conversation_id,
+                    event_turn_id.clone(),
+                    conversation.observed_token_usage().await,
+                    /*rate_limits*/ None,
+                    &outgoing,
+                )
+                .await;
+            }
             if finishes_latest_turn {
                 let turn_failed = thread_state
                     .lock()
@@ -332,6 +345,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     command,
                     cwd,
                     command_actions,
+                    display,
                     ..
                 }) => Some((
                     id,
@@ -342,6 +356,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                         command,
                         cwd,
                         command_actions,
+                        display,
                     },
                 )),
                 Some(_) | None => None,
@@ -745,7 +760,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                 }
             };
             let command_presentation =
-                CommandExecutionPresentation::from_raw(&command, &parsed_cmd, &cwd_uri);
+                CommandExecutionPresentation::from_raw(&command, &parsed_cmd, &cwd_uri, None, "");
             // Approval requests retain the exact command; only history is redacted.
             let command_actions = match cwd_uri.to_abs_path() {
                 Ok(native_cwd) => parsed_cmd
@@ -769,6 +784,7 @@ pub(crate) async fn apply_bespoke_event_handling(
                     command: command_presentation.command,
                     cwd: cwd.clone(),
                     command_actions: command_presentation.command_actions,
+                    display: command_presentation.display,
                 };
                 CommandExecutionApprovalPresentation::Command(completion_item)
             };
@@ -1171,8 +1187,8 @@ pub(crate) async fn apply_bespoke_event_handling(
             handle_token_count_event(
                 conversation_id,
                 event_turn_id,
-                token_count_event,
-                &thread_state,
+                conversation.observed_token_usage().await,
+                token_count_event.rate_limits,
                 &outgoing,
             )
             .await;
@@ -1215,6 +1231,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 .await;
         }
         EventMsg::ViewImageToolCall(_) => {}
+        EventMsg::BackgroundTerminalRegistered => {
+            notify_background_terminals_changed(&outgoing, conversation_id).await;
+        }
         EventMsg::ItemStarted(event) => {
             let should_emit = match &event.item {
                 // Approval and guardian flows can emit the command start notification before core
@@ -1258,6 +1277,10 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
         }
         EventMsg::ItemCompleted(mut event) => {
+            let process_changed = matches!(
+                &event.item,
+                CoreTurnItem::CommandExecution(item) if item.process_id.is_some()
+            );
             apply_canonical_item_completed_side_effects(
                 &thread_manager,
                 &thread_watch_manager,
@@ -1275,6 +1298,9 @@ pub(crate) async fn apply_bespoke_event_handling(
                 notification = without_notification_media(notification);
             }
             outgoing.send_server_notification(notification).await;
+            if process_changed {
+                notify_background_terminals_changed(&outgoing, conversation_id).await;
+            }
         }
         msg @ (EventMsg::PatchApplyUpdated(_)
         | EventMsg::CodeModeInputDelta(_)
@@ -1341,6 +1367,22 @@ pub(crate) async fn apply_bespoke_event_handling(
             }
         },
         EventMsg::RawResponseItem(mut raw_response_item_event) => {
+            if let Some((turn_id, item)) =
+                codex_app_server_protocol::ThreadItem::from_delivered_agent_mail(
+                    &raw_response_item_event.item,
+                )
+            {
+                let notification = ItemCompletedNotification {
+                    thread_id: conversation_id.to_string(),
+                    turn_id: turn_id.to_owned(),
+                    completed_at_ms: item.completed_at_ms.unwrap_or_else(now_unix_timestamp_ms),
+                    content_token_count: None,
+                    item,
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::ItemCompleted(notification))
+                    .await;
+            }
             // Keep warehouse metadata out of app-server notifications.
             raw_response_item_event.item.clear_executed_tool_calls();
             let mut notification = ServerNotification::RawResponseItemCompleted(
@@ -1354,6 +1396,16 @@ pub(crate) async fn apply_bespoke_event_handling(
                 notification = without_notification_media(notification);
             }
             outgoing.send_server_notification(notification).await;
+        }
+        EventMsg::SkillsUsed(skills) => {
+            outgoing
+                .send_server_notification(ServerNotification::ThreadSkillsUpdated(
+                    codex_app_server_protocol::ThreadSkillsUpdatedNotification {
+                        thread_id: skills.thread_id.to_string(),
+                        names: skills.names,
+                    },
+                ))
+                .await;
         }
         EventMsg::RawResponseCompleted(raw_response_completed_event) => {
             let notification = RawResponseCompletedNotification {
@@ -1389,6 +1441,14 @@ pub(crate) async fn apply_bespoke_event_handling(
             respond_to_pending_interrupts(&event_turn_id, &thread_state, &outgoing).await;
 
             if finishes_latest_turn {
+                handle_token_count_event(
+                    conversation_id,
+                    event_turn_id.clone(),
+                    conversation.observed_token_usage().await,
+                    /*rate_limits*/ None,
+                    &outgoing,
+                )
+                .await;
                 thread_watch_manager
                     .note_turn_interrupted(&conversation_id.to_string())
                     .await;
@@ -1546,6 +1606,20 @@ async fn emit_turn_completed_with_status(
         .await;
 }
 
+async fn notify_background_terminals_changed(
+    outgoing: &ThreadScopedOutgoingMessageSender,
+    thread_id: ThreadId,
+) {
+    // Family views need to invalidate the list even for agents they don't have open.
+    outgoing
+        .send_global_server_notification(ServerNotification::ThreadBackgroundTerminalsChanged(
+            ThreadBackgroundTerminalsChangedNotification {
+                thread_id: thread_id.to_string(),
+            },
+        ))
+        .await;
+}
+
 async fn apply_canonical_item_completed_side_effects(
     thread_manager: &Arc<ThreadManager>,
     thread_watch_manager: &ThreadWatchManager,
@@ -1622,6 +1696,7 @@ async fn start_command_execution_item(
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::InProgress,
+                display: details.display.clone(),
                 command_actions: details.command_actions.clone(),
                 aggregated_output: None,
                 exit_code: None,
@@ -1666,6 +1741,7 @@ pub(crate) async fn complete_command_execution_item(
         process_id: None,
         source: CommandExecutionSource::Agent,
         status,
+        display: completion_item.display,
         command_actions: completion_item.command_actions,
         aggregated_output: None,
         exit_code: None,
@@ -1765,17 +1841,11 @@ async fn respond_to_pending_interrupts(
 async fn handle_token_count_event(
     conversation_id: ThreadId,
     turn_id: String,
-    token_count_event: TokenCountEvent,
-    thread_state: &Arc<Mutex<ThreadState>>,
+    token_usage: Option<ThreadTokenUsage>,
+    rate_limits: Option<RateLimitSnapshot>,
     outgoing: &ThreadScopedOutgoingMessageSender,
 ) {
-    let TokenCountEvent { info, rate_limits } = token_count_event;
-    if let Some(mut token_usage) = info.map(ThreadTokenUsage::from) {
-        thread_state
-            .lock()
-            .await
-            .usage_metrics
-            .apply_to(&mut token_usage);
+    if let Some(token_usage) = token_usage {
         let notification = ThreadTokenUsageUpdatedNotification {
             thread_id: conversation_id.to_string(),
             turn_id,
@@ -2530,7 +2600,6 @@ mod tests {
     use codex_protocol::protocol::GuardianAssessmentStatus;
     use codex_protocol::protocol::ItemCompletedEvent;
     use codex_protocol::protocol::ItemStartedEvent;
-    use codex_protocol::protocol::RateLimitSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
@@ -2606,6 +2675,7 @@ mod tests {
             script_path: Some("scripts/run.py".to_string()),
             command: command.to_string(),
             cwd: test_path_buf("/tmp").abs().into(),
+            display: None,
             command_actions: vec![V2ParsedCommand::Unknown {
                 command: command.to_string(),
             }],
@@ -2896,6 +2966,7 @@ mod tests {
                         process_id: None,
                         source: CommandExecutionSource::Agent,
                         status: CommandExecutionStatus::InProgress,
+                        display: completion_item.display.clone(),
                         command_actions: completion_item.command_actions.clone(),
                         aggregated_output: None,
                         exit_code: None,
@@ -4130,15 +4201,11 @@ mod tests {
             rate_limit_reached_type: None,
         };
 
-        let thread_state = Arc::new(Mutex::new(ThreadState::default()));
         handle_token_count_event(
             conversation_id,
             turn_id.clone(),
-            TokenCountEvent {
-                info: Some(info),
-                rate_limits: Some(rate_limits),
-            },
-            &thread_state,
+            Some(info.into()),
+            Some(rate_limits),
             &outgoing,
         )
         .await;
@@ -4185,15 +4252,11 @@ mod tests {
             ThreadId::new(),
         );
 
-        let thread_state = Arc::new(Mutex::new(ThreadState::default()));
         handle_token_count_event(
             conversation_id,
             turn_id.clone(),
-            TokenCountEvent {
-                info: None,
-                rate_limits: None,
-            },
-            &thread_state,
+            /*token_usage*/ None,
+            /*rate_limits*/ None,
             &outgoing,
         )
         .await;

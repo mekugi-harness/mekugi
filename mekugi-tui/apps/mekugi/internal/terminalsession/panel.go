@@ -7,8 +7,8 @@ type StatusPanel struct {
 	version         sessionpresentation.Version
 	body            *sessionpresentation.PanelView
 	Rect, Close     Rect // Body and close-control geometry, relative to Main.
-	Top, Rows, Tab  int
-	Sequence        uint64 // Zero follows the newest retained exchange.
+	Top, Rows       int
+	Features        bool
 	Title, Controls string
 	Groups          []string
 	Fields          []sessionpresentation.StatusField
@@ -24,7 +24,7 @@ func (p *StatusPanel) Update(view sessionpresentation.View) {
 	}
 	p.version, p.body = view.Version, view.Panel
 	p.Title, p.Controls, p.Groups, p.Fields = "", "", nil, view.Panel.Fields
-	if p.body.Metrics != nil {
+	if p.body.Session {
 		p.renderMetrics()
 	}
 }
@@ -38,39 +38,22 @@ func (p *StatusPanel) Key(key string) (action sessionpresentation.PanelAction, c
 		return action, false
 	}
 	action.Version, action.Panel = p.version, p.body.ID
-	if p.body.Metrics != nil {
-		switched := true
+	if p.body.Session {
 		switch key {
-		case "\x1b[C", "\x1bOC", "\t":
-			p.Tab = (p.Tab + 1) % len(sessionpresentation.MetricViews)
-		case "\x1b[Z":
-			p.Tab = (p.Tab + len(sessionpresentation.MetricViews) - 1) % len(sessionpresentation.MetricViews)
-		case "[", "]":
-			exchanges := p.body.Metrics.Exchanges
-			if p.Tab != 2 || len(exchanges) == 0 {
-				return action, false
-			}
-			index := p.exchangeIndex()
-			if key == "[" {
-				index = max(0, index-1)
-			} else {
-				index = min(len(exchanges)-1, index+1)
-			}
-			p.Sequence = exchanges[index].Sequence
-			if index == len(exchanges)-1 {
-				p.Sequence = 0
-			}
-		case "r":
-			action.Kind = sessionpresentation.PanelRefresh
-			return action, false
-		default:
-			switched = false
-		}
-		if switched {
+		case "\x1b[C", "\x1bOC", "\t", "\x1b[Z":
+			p.Features = !p.Features
 			p.Top = 0
 			p.renderMetrics()
-			action.Kind, action.Tab, action.Exchange = sessionpresentation.PanelMetrics, p.Tab, p.Sequence
+			if p.Features {
+				action.Kind = sessionpresentation.PanelFeatures
+			}
 			return action, true
+		case "r":
+			action.Kind = sessionpresentation.PanelRefresh
+			if p.Features {
+				action.Kind = sessionpresentation.PanelFeatures
+			}
+			return action, false
 		}
 	}
 	switch key {
@@ -89,15 +72,4 @@ func (p *StatusPanel) Key(key string) (action sessionpresentation.PanelAction, c
 		p.Top = 0
 	}
 	return action, clearSelection
-}
-func (p *StatusPanel) exchangeIndex() int {
-	if p.Sequence != 0 {
-		for i, e := range p.body.Metrics.Exchanges {
-			if e.Sequence == p.Sequence {
-				return i
-			}
-		}
-		p.Sequence = 0
-	}
-	return len(p.body.Metrics.Exchanges) - 1
 }

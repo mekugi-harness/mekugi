@@ -645,7 +645,7 @@ client_request_definitions! {
     #[experimental("thread/prediction/request")]
     ThreadPredictionRequest => "thread/prediction/request" {
         params: v2::ThreadPredictionRequestParams,
-        serialization: thread_id(params.thread_id),
+        serialization: None,
         response: v2::ThreadPredictionRequestResponse,
     },
     ThreadGoalSet => "thread/goal/set" {
@@ -669,6 +669,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadQueueAddResponse,
     },
+    #[experimental("thread/queue/shellCommand")]
+    ThreadQueueShellCommand => "thread/queue/shellCommand" {
+        params: v2::ThreadQueueShellCommandParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueShellCommandResponse,
+    },
     #[experimental("thread/queue/list")]
     ThreadQueueList => "thread/queue/list" {
         params: v2::ThreadQueueListParams,
@@ -686,6 +692,12 @@ client_request_definitions! {
         params: v2::ThreadQueueDeleteParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadQueueDeleteResponse,
+    },
+    #[experimental("thread/queue/take")]
+    ThreadQueueTake => "thread/queue/take" {
+        params: v2::ThreadQueueTakeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadQueueTakeResponse,
     },
     #[experimental("thread/queue/reorder")]
     ThreadQueueReorder => "thread/queue/reorder" {
@@ -785,6 +797,7 @@ client_request_definitions! {
     },
     ThreadCompactStart => "thread/compact/start" {
         params: v2::ThreadCompactStartParams,
+        inspect_params: true,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadCompactStartResponse,
     },
@@ -818,8 +831,15 @@ client_request_definitions! {
     },
     ThreadRevert => "thread/revert" {
         params: v2::ThreadRevertParams,
+        inspect_params: true,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadRevertResponse,
+    },
+    #[experimental("thread/revert/preview")]
+    ThreadRevertPreview => "thread/revert/preview" {
+        params: v2::ThreadRevertPreviewParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadRevertPreviewResponse,
     },
     ThreadList => "thread/list" {
         params: v2::ThreadListParams,
@@ -948,6 +968,11 @@ client_request_definitions! {
         manual_payload_conversion: manual,
         response: v2::ThreadChangesReadResponse,
     },
+    ThreadFileSearch => "thread/files/search" {
+        params: v2::ThreadFileSearchParams,
+        serialization: None,
+        response: v2::ThreadFileSearchResponse,
+    },
     AgentEnd => "agent/end" {
         params: v2::AgentEndParams,
         serialization: thread_id(params.root_thread_id),
@@ -957,6 +982,18 @@ client_request_definitions! {
         params: v2::ThreadReadParams,
         serialization: thread_id(params.thread_id),
         response: v2::ThreadReadResponse,
+    },
+    #[experimental("thread/inputHistory/read")]
+    ThreadInputHistoryRead => "thread/inputHistory/read" {
+        params: v2::ThreadInputHistoryReadParams,
+        serialization: None,
+        response: v2::ThreadInputHistoryReadResponse,
+    },
+    #[experimental("thread/inputHistory/append")]
+    ThreadInputHistoryAppend => "thread/inputHistory/append" {
+        params: v2::ThreadInputHistoryAppendParams,
+        serialization: None,
+        response: v2::ThreadInputHistoryAppendResponse,
     },
     #[experimental("thread/readState/update")]
     ThreadReadStateUpdate => "thread/readState/update" {
@@ -1603,6 +1640,16 @@ client_request_definitions! {
         serialization: global_shared_read("config"),
         response: v2::ConfigReadResponse,
     },
+    ThreadPresetsList => "thread/presets/list" {
+        params: v2::ThreadPresetsListParams,
+        serialization: global_shared_read("config"),
+        response: v2::ThreadPresetsListResponse,
+    },
+    ThreadPresetWrite => "thread/presets/write" {
+        params: v2::ThreadPresetWriteParams,
+        serialization: global("config"),
+        response: v2::ThreadPresetWriteResponse,
+    },
     ExternalAgentConfigDetect => "externalAgentConfig/detect" {
         params: v2::ExternalAgentConfigDetectParams,
         serialization: global("external-agent-detect"),
@@ -2143,6 +2190,8 @@ server_notification_definitions! {
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
     #[experimental("thread/queue/changed")]
     ThreadQueueChanged => "thread/queue/changed" (v2::ThreadQueueChangedNotification),
+    #[experimental("thread/backgroundTerminals/changed")]
+    ThreadBackgroundTerminalsChanged => "thread/backgroundTerminals/changed" (v2::ThreadBackgroundTerminalsChangedNotification),
     #[experimental("project/changed")]
     ProjectChanged => "project/changed" (v2::ProjectChangedNotification),
     #[experimental("thread/project/updated")]
@@ -2170,6 +2219,7 @@ server_notification_definitions! {
     RawResponseItemCompleted => "rawResponseItem/completed" (v2::RawResponseItemCompletedNotification),
     /// This event is internal-only. Used by clients that need exact upstream usage.
     RawResponseCompleted => "rawResponse/completed" (v2::RawResponseCompletedNotification),
+    ThreadSkillsUpdated => "thread/skills/updated" (v2::ThreadSkillsUpdatedNotification),
     AgentMessageDelta => "item/agentMessage/delta" (v2::AgentMessageDeltaNotification),
     #[experimental("item/codeMode/inputDelta")]
     CodeModeInputDelta => "item/codeMode/inputDelta" (v2::CodeModeInputDeltaNotification),
@@ -3426,6 +3476,7 @@ mod tests {
                     service_tier: None,
                     context_tokens: None,
                     context_window: None,
+                    token_usage: None,
                     completed_compactions: None,
                     agent_status: None,
                     created_at: 1,
@@ -3530,6 +3581,7 @@ mod tests {
             "serviceTier",
             "contextTokens",
             "contextWindow",
+            "tokenUsage",
             "completedCompactions",
             "agentStatus",
         ] {
@@ -4221,6 +4273,10 @@ mod tests {
             params: v2::ThreadBackgroundTerminalsTerminateParams {
                 thread_id: "thr_123".to_string(),
                 process_id: "42".to_string(),
+                invocation: Some(v2::BackgroundTerminalInvocation {
+                    turn_id: "turn_123".to_string(),
+                    item_id: "cmd_123".to_string(),
+                }),
             },
         };
         assert_eq!(
@@ -4229,7 +4285,8 @@ mod tests {
                 "id": 8,
                 "params": {
                     "threadId": "thr_123",
-                    "processId": "42"
+                    "processId": "42",
+                    "invocation": {"turnId": "turn_123", "itemId": "cmd_123"}
                 }
             }),
             serde_json::to_value(&request)?,

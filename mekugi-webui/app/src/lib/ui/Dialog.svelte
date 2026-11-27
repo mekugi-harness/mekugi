@@ -38,7 +38,9 @@
     onOpenAutoFocus={(event) => {
       event.preventDefault();
       (
-        content?.querySelector<HTMLElement>("input:not([type=hidden]), textarea, select") ?? content
+        content?.querySelector<HTMLElement>("[data-initial-focus]") ??
+        content?.querySelector<HTMLElement>("input:not([type=hidden]), textarea, select") ??
+        content
       )?.focus();
     }}
   >

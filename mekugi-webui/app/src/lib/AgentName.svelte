@@ -14,7 +14,11 @@
 
   const agent = $derived(stream.agent(name));
   const color = $derived(stream.roleColor(agent?.role));
-  const target = $derived(!plain && agent && agent.name !== current ? agent.name : undefined);
+  const target = $derived(
+    !plain && agent?.thread && !agent.nonAttachable && agent.name !== current
+      ? agent.name
+      : undefined,
+  );
 </script>
 
 <!-- The button's hit area is larger than its text without changing the line. -->

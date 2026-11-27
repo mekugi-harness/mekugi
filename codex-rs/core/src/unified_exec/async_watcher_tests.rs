@@ -17,6 +17,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
 use codex_protocol::protocol::ExecOutputStream;
+use codex_protocol::protocol::ItemCompletedEvent;
 use codex_sandboxing::SandboxType;
 
 use pretty_assertions::assert_eq;
@@ -25,6 +26,7 @@ use tokio::time::Instant;
 
 struct StreamingOutputHarness {
     process: Arc<UnifiedExecProcess>,
+    output_receiver: tokio::sync::broadcast::Receiver<Vec<u8>>,
     stdout_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
     exit_tx: tokio::sync::oneshot::Sender<i32>,
     output_buffer: Arc<tokio::sync::Mutex<OutputBuffers>>,
@@ -47,7 +49,9 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
         #[cfg(windows)]
         tty: false,
     });
-    let process = Arc::new(UnifiedExecProcess::from_spawned(spawned, SandboxType::None).await?);
+    let mut process = UnifiedExecProcess::from_spawned(spawned, SandboxType::None).await?;
+    let output_receiver = process.take_output_receiver();
+    let process = Arc::new(process);
     let (session, turn, rx_event) = make_session_and_context_with_rx().await;
     let context = UnifiedExecContext::new(
         session,
@@ -59,6 +63,7 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
 
     Ok(StreamingOutputHarness {
         process,
+        output_receiver,
         stdout_tx,
         exit_tx,
         output_buffer,
@@ -70,11 +75,12 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
 #[test_case::test_case(b""; "no_late_output")]
 #[test_case::test_case(b"late\n"; "with_late_output")]
 #[tokio::test]
-async fn completed_output_preserves_bytes_before_subscription(
+async fn output_streams_bytes_from_before_the_watcher_starts(
     late_output: &[u8],
 ) -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
+        output_receiver,
         stdout_tx,
         exit_tx,
         output_buffer,
@@ -96,7 +102,7 @@ async fn completed_output_preserves_bytes_before_subscription(
     .await;
     assert_eq!(model_output.to_bytes(), b"early\n");
 
-    start_streaming_output(&process, &context);
+    start_streaming_output(&process, &context, output_receiver);
     #[allow(deprecated)]
     let cwd = context.step_context.turn.cwd.clone().into();
     spawn_exit_watcher(
@@ -115,17 +121,26 @@ async fn completed_output_preserves_bytes_before_subscription(
     drop(stdout_tx);
     exit_tx.send(0).expect("send exit");
 
-    let item = tokio::time::timeout(Duration::from_secs(2), async {
+    let (item, streamed) = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut streamed = Vec::new();
         loop {
-            if let EventMsg::ItemCompleted(completed) = rx_event.recv().await?.msg
-                && let TurnItem::CommandExecution(item) = completed.item
-            {
-                return Ok::<_, async_channel::RecvError>(item);
+            match rx_event.recv().await?.msg {
+                EventMsg::ExecCommandOutputDelta(delta) if delta.call_id == context.call_id => {
+                    streamed.extend(delta.chunk);
+                }
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    item: TurnItem::CommandExecution(item),
+                    ..
+                }) => {
+                    return Ok::<_, async_channel::RecvError>((item, streamed));
+                }
+                _ => {}
             }
         }
     })
     .await??;
     let expected_output = String::from_utf8([b"early\n".as_slice(), late_output].concat())?;
+    assert_eq!(streamed, expected_output.as_bytes());
     assert_eq!(
         (item.status, item.exit_code, item.aggregated_output),
         (
@@ -141,13 +156,14 @@ async fn completed_output_preserves_bytes_before_subscription(
 async fn streaming_output_preserves_multibyte_characters_across_chunks() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
+        output_receiver,
         stdout_tx,
         exit_tx,
         output_buffer,
         rx_event,
         context,
     } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
+    start_streaming_output(&process, &context, output_receiver);
     let output_drained = process.output_drained_notify();
     let drained = output_drained.notified();
     tokio::pin!(drained);
@@ -189,13 +205,14 @@ async fn streaming_output_preserves_multibyte_characters_across_chunks() -> anyh
 async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
+        output_receiver,
         stdout_tx,
         exit_tx,
         output_buffer,
         context,
         ..
     } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
+    start_streaming_output(&process, &context, output_receiver);
     let output_drained = process.output_drained_notify();
     let drained = output_drained.notified();
     tokio::pin!(drained);
@@ -234,13 +251,14 @@ async fn streaming_output_finishes_on_close_without_waiting_for_grace() -> anyho
 async fn streaming_output_keeps_grace_as_fallback_without_close() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
+        output_receiver,
         stdout_tx,
         exit_tx,
         output_buffer,
         rx_event,
         context,
     } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
+    start_streaming_output(&process, &context, output_receiver);
     let output_drained = process.output_drained_notify();
     let drained = output_drained.notified();
     tokio::pin!(drained);
@@ -287,13 +305,14 @@ async fn streaming_output_keeps_grace_as_fallback_without_close() -> anyhow::Res
 async fn exit_watcher_waits_for_late_network_denial_before_classifying_end() -> anyhow::Result<()> {
     let StreamingOutputHarness {
         process,
+        output_receiver,
         stdout_tx,
         exit_tx,
         output_buffer,
         mut context,
         rx_event,
     } = streaming_output_harness().await?;
-    start_streaming_output(&process, &context);
+    start_streaming_output(&process, &context, output_receiver);
 
     tokio::time::pause();
     let process_for_late_denial = Arc::clone(&process);

@@ -1320,7 +1320,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     let session_id = conversation.startup_metadata().session_id.to_string();
     thread.session_id = session_id;
 
-    super::token_usage_replay::set_context_usage(&mut thread, conversation).await;
+    super::token_usage_replay::set_thread_usage(&mut thread, conversation).await;
     let response = ThreadResumeResponse {
         thread,
         disabled_plugin_ids,
@@ -1353,7 +1353,6 @@ pub(super) async fn handle_pending_thread_resume_request(
         // uses the live conversation state instead of reconstructing a new session.
         send_thread_token_usage_update_to_connection(
             outgoing,
-            thread_state_manager,
             connection_id,
             conversation_id,
             conversation.as_ref(),

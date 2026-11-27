@@ -422,6 +422,7 @@ impl ChatWidget {
             | ServerNotification::ThreadAttachmentUpdated(_)
             | ServerNotification::RawResponseItemCompleted(_)
             | ServerNotification::RawResponseCompleted(_)
+            | ServerNotification::ThreadSkillsUpdated(_)
             | ServerNotification::CodeModeInputDelta(_)
             | ServerNotification::CommandExecOutputDelta(_)
             | ServerNotification::ProcessOutputDelta(_)

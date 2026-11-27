@@ -240,6 +240,7 @@ mod tests {
             service_tier: None,
             context_tokens: None,
             context_window: None,
+            token_usage: None,
             completed_compactions: None,
             agent_status: None,
 

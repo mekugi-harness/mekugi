@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -93,4 +94,57 @@ func snapshotPackages(members []member) ([]string, error) {
 	}
 	slices.Sort(result)
 	return result, nil
+}
+
+func checkSnapshotCoverage(command *exec.Cmd, packages []string) error {
+	visits, err := os.MkdirTemp("", "mekugi-snapshot-visits-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(visits)
+	command.Env = append(os.Environ(), "MEKUGI_SNAPSHOT_VISITS="+visits)
+	if err := compactTests(command); err != nil {
+		return err
+	}
+	return validateSnapshotVisits(visits, packages)
+}
+
+func validateSnapshotVisits(visits string, packages []string) error {
+	used := map[string]bool{}
+	entries, err := os.ReadDir(visits)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path, err := os.ReadFile(filepath.Join(visits, entry.Name()))
+		if err != nil {
+			return err
+		}
+		used[string(path)] = true
+	}
+	var orphans []string
+	for _, pkg := range packages {
+		directory, ok := strings.CutSuffix(pkg, "/...")
+		if !ok || !strings.HasPrefix(directory, "./") {
+			continue
+		}
+		paths, err := filepath.Glob(filepath.Join(directory, "testdata", "snapshots", "*.txt"))
+		if err != nil {
+			return err
+		}
+		for _, path := range paths {
+			absolute, err := filepath.Abs(path)
+			if err != nil {
+				return err
+			}
+			if !used[absolute] {
+				orphans = append(orphans, filepath.ToSlash(path))
+			}
+		}
+	}
+	if len(orphans) == 0 {
+		return nil
+	}
+	slices.Sort(orphans)
+	return fmt.Errorf("orphaned UI snapshot baselines not asserted by any test: %s", strings.Join(orphans, ", "))
 }

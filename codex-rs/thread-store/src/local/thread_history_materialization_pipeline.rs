@@ -9,6 +9,7 @@ use super::ProjectionRollout;
 use super::read_projection_batches;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
+use crate::local::retained_exec_failure::ExecFailureReplay;
 
 const QUEUED_BATCHES: usize = 2;
 
@@ -29,6 +30,7 @@ pub(super) async fn read_and_apply(
     expected_ordinal: u64,
     initial_ordinal: u64,
     subagent_history_start_ordinal: Option<u64>,
+    exec_failures: ExecFailureReplay,
 ) -> ThreadStoreResult<()> {
     // Two queued batches, one being produced and one being consumed. Each is limited by
     // source bytes and step count; an oversized individual record remains indivisible.
@@ -43,6 +45,7 @@ pub(super) async fn read_and_apply(
             expected_ordinal,
             thread_id,
             subagent_history_start_ordinal,
+            exec_failures,
             || stop.is_closed(),
             |projections, next_offset| {
                 sender

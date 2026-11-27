@@ -650,7 +650,14 @@ impl OutgoingMessageSender {
         match entry {
             Some((id, entry)) => {
                 let completed_at_ms = now_unix_timestamp_ms();
+                // Do not clone image bytes into the response trace or analytics queue.
+                let has_question_images =
+                    matches!(entry.request, ServerRequest::ToolRequestUserInput { .. })
+                        && result["answers"].as_array().is_some_and(|answers| {
+                            answers.iter().any(|answer| answer.get("images").is_some())
+                        });
                 if entry.verification_owner.is_none()
+                    && !has_question_images
                     && !matches!(entry.request, ServerRequest::ShellGuardRequestSecret { .. })
                     && let Ok(response) = entry.request.response_from_result(result.clone())
                 {

@@ -3,6 +3,7 @@
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::DynamicToolFunctionSpec;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::HooksListParams;
@@ -13,6 +14,10 @@ use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadPredictionRequestParams;
+use codex_app_server_protocol::ThreadPredictionRequestResponse;
+use codex_app_server_protocol::ThreadPredictionResult;
+use codex_app_server_protocol::ThreadPredictionUpdatedNotification;
 use codex_app_server_protocol::ThreadSampleCancelResponse;
 use codex_app_server_protocol::ThreadSampleParams;
 use codex_app_server_protocol::ThreadSampleResponse;
@@ -175,6 +180,71 @@ async fn prediction_fork(client: &mut TestAppServer, parent: &str) -> Result<Str
         .await?;
     let fork: ThreadForkResponse = timeout(WAIT, client.read_response(id)).await??;
     Ok(fork.thread.id)
+}
+
+#[tokio::test]
+async fn prediction_samples_the_current_turn_without_extending_history() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let requests = responses::mount_sse_sequence(
+        &server,
+        [
+            ("parent", "The first answer."),
+            ("suggestion", "Could you show an example?"),
+            ("follow-up", "The follow-up answer."),
+        ]
+        .map(|(id, text)| {
+            responses::sse(vec![
+                responses::ev_assistant_message(id, text),
+                responses::ev_completed(id),
+            ])
+        })
+        .to_vec(),
+    )
+    .await;
+    let home = TempDir::new()?;
+    let mut client = client(&home, &server, /*overrides*/ false).await?;
+    let (thread_id, turn_id) = ready_parent(&mut client, ThreadStartParams::default()).await?;
+
+    let _: ThreadPredictionRequestResponse = timeout(
+        WAIT,
+        client.request(|request_id| ClientRequest::ThreadPredictionRequest {
+            request_id,
+            params: ThreadPredictionRequestParams {
+                thread_id: thread_id.clone(),
+                source_turn_id: turn_id.clone(),
+            },
+        }),
+    )
+    .await??;
+    let prediction: ThreadPredictionUpdatedNotification =
+        timeout(WAIT, client.read_notification("thread/prediction/updated")).await??;
+    assert_eq!(
+        prediction,
+        ThreadPredictionUpdatedNotification {
+            thread_id: thread_id.clone(),
+            source_turn_id: turn_id,
+            result: ThreadPredictionResult::Completed {
+                text: Some("Could you show an example?".into()),
+            },
+        },
+    );
+    client
+        .start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id,
+            input: input("A different follow-up"),
+            ..Default::default()
+        })
+        .await?;
+
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 3);
+    let sample = requests[1].body_json().to_string();
+    let follow_up = requests[2].body_json().to_string();
+    assert!(sample.contains("Predict the next message"));
+    assert!(sample.contains("The first answer."));
+    assert!(!follow_up.contains("Predict the next message"));
+    assert!(!follow_up.contains("Could you show an example?"));
+    Ok(())
 }
 
 #[tokio::test]

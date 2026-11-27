@@ -1,16 +1,21 @@
+import { commandValues, unwrapShellCommand } from "./command";
 import { roleColor } from "./agents";
+import { selectionAppendix, textUploadFrames, type InitialInput } from "./attachments";
 import { threadStatusToStatus, type Machine } from "./hub.svelte";
 import { errorText, TransportError, type Connection } from "./transport";
 import type {
   Agent,
   AgentIdentity,
   AgentState,
+  BackgroundTerminal,
+  BackgroundTerminalsPage,
   ContentReference,
   ContentResourceResponse,
   Entry,
   HookRunSummary,
   Input,
   Preview,
+  ReviewFile,
   ReviewedFile,
   Roster,
   SavedReview,
@@ -18,12 +23,15 @@ import type {
   Session,
   Status,
   Thread,
+  ThreadChangeFileDiff,
   ThreadChangesReadResponse,
   ThreadItem,
   ThreadListResponse,
   ThreadReadResponse,
   ThreadResumeResponse,
   ThreadStatus,
+  ThreadTokenUsage,
+  TextSpan,
   Turn,
   TurnsPage,
   Value,
@@ -46,6 +54,8 @@ function linesOf(text: string | undefined): string[] | undefined {
   return trimmed ? trimmed.split("\n") : undefined;
 }
 
+const recentTurns = { sortDirection: "desc", limit: 20, itemsView: "full" } as const;
+
 function extractMcpTail(
   result: { content?: unknown[]; structuredContent?: unknown } | null | undefined,
   error: { message: string } | null | undefined,
@@ -65,39 +75,21 @@ function extractMcpTail(
   return undefined;
 }
 
-function extractDynamicToolTail(
-  items:
-    | Array<{ type: string; text?: string; imageUrl?: string; audioUrl?: string }>
-    | null
-    | undefined,
-): string[] | undefined {
-  if (!items?.length) return undefined;
-  const parts: string[] = [];
-  for (const item of items) {
-    if (item.type === "inputText" && item.text) parts.push(item.text);
-    else if (item.type === "inputImage" && item.imageUrl) parts.push(`[image] ${item.imageUrl}`);
-    else if (item.type === "inputAudio" && item.audioUrl) parts.push(`[audio] ${item.audioUrl}`);
-  }
-  return parts.length ? linesOf(parts.join("\n")) : undefined;
+export function mcpToolEnvelope(item: Extract<ThreadItem, { type: "mcpToolCall" }>): string {
+  return JSON.stringify(
+    {
+      arguments: item.arguments,
+      ...(item.result == null ? {} : { result: item.result }),
+      ...(item.error == null ? {} : { error: item.error }),
+    },
+    null,
+    2,
+  );
 }
 
-export function unwrapShellCommand(raw: string): string {
-  const trimmed = raw.trim();
-  const match = /^(?:\/\S+\/)?(?:bash|sh|zsh|dash)\s+-(?:lc|c)\s+([\s\S]+)$/.exec(trimmed);
-  if (!match) return raw;
-  const arg = match[1].trim();
-  if (arg.length >= 2 && arg.startsWith("'") && arg.endsWith("'")) {
-    return arg.slice(1, -1).replace(/'\\''/g, "'");
-  }
-  if (arg.length >= 2 && arg.startsWith('"') && arg.endsWith('"')) {
-    return arg
-      .slice(1, -1)
-      .replace(/\\(["\\$`])/g, "$1")
-      .replace(/\\n/g, "\n");
-  }
-  if (!/\s/.test(arg)) return arg;
-  return raw;
-}
+const inlineAudio = /^data:audio\/(?:aac|flac|mp4|mpeg|ogg|wav|wave|webm|x-wav);base64,/i;
+
+export { unwrapShellCommand } from "./command";
 
 function countDiffLines(
   diff: string | undefined,
@@ -169,6 +161,7 @@ export function itemToEntry(
   turnId: string,
   agent = "/root",
   live = false,
+  threadId?: string,
 ): Entry {
   const base: Entry = {
     seq,
@@ -183,18 +176,55 @@ export function itemToEntry(
     case "userMessage": {
       const parts: string[] = [];
       const images: string[] = [];
+      const spans: TextSpan[] = [];
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      let offset = 0;
       for (const input of item.content) {
-        if (input.type === "text") parts.push(input.text);
-        else if (input.type === "localImage") images.push(input.path);
+        if (input.type === "text") {
+          const bytes = encoder.encode(input.text);
+          let lastSelection = -1;
+          for (const element of input.text_elements ?? []) {
+            const { start, end } = element.byteRange;
+            const label = element.placeholder;
+            if (!label || decoder.decode(bytes.subarray(start, end)) !== label) continue;
+            const reference = label.startsWith("[Selected ");
+            const kind = reference ? 2 : label.startsWith("[Image ") ? 0 : 1;
+            spans.push({ Start: offset + start, End: offset + end, Kind: kind });
+            if (reference) lastSelection = Math.max(lastSelection, end);
+          }
+          if (input.text.startsWith(selectionAppendix) && spans.some((span) => span.Kind === 2))
+            continue;
+          if (textUploadFrames(input.text).length) continue;
+          const tail = lastSelection < 0 ? "" : decoder.decode(bytes.subarray(lastSelection));
+          const appendix = tail.indexOf(selectionAppendix);
+          const display =
+            appendix < 0
+              ? input.text
+              : decoder.decode(bytes.subarray(0, lastSelection)) +
+                tail.slice(0, appendix).trimEnd();
+          parts.push(display);
+          offset += encoder.encode(display).length + 1;
+        } else if (input.type === "localImage") images.push(input.path);
         else if (input.type === "image" && "url" in input) images.push(input.url);
-        else if (input.type === "skill") parts.push(`$${input.name}`);
-        else if (input.type === "mention") parts.push(`@${input.name}`);
+        else if (input.type === "skill" || input.type === "mention") {
+          const display = `${input.type === "skill" ? "$" : "@"}${input.name}`;
+          parts.push(display);
+          offset += encoder.encode(display).length + 1;
+        }
+      }
+      for (let i = spans.filter((span) => span.Kind === 0).length; i < images.length; i++) {
+        const label = `[Image ${i + 1}]`;
+        parts.push(label);
+        spans.push({ Start: offset, End: offset + label.length, Kind: 0 });
+        offset += label.length + 1;
       }
       return {
         ...base,
         kind: "user",
         turn: turnIndex,
         text: parts.join("\n"),
+        ...(spans.length ? { spans } : {}),
         images: images.length ? images : undefined,
       };
     }
@@ -211,9 +241,7 @@ export function itemToEntry(
         text: item.text,
       };
     case "reasoning": {
-      const sections = [...(item.summary ?? []), ...(item.content ?? [])]
-        .map((part) => part.trim())
-        .filter(Boolean);
+      const sections = (item.summary ?? []).map((part) => part.trim()).filter(Boolean);
       const values: Value[] = sections.length
         ? sections.map((body, index) => {
             const heading = body.match(/^\*\*([^\n*]+)\*\*/)?.[1]?.trim();
@@ -237,25 +265,12 @@ export function itemToEntry(
     case "commandExecution": {
       const running = item.status === "inProgress";
       const failed = item.status === "failed" || item.status === "declined";
-      const tail = item.aggregatedOutput ? item.aggregatedOutput.split("\n") : undefined;
-      const value: Value = {
-        kind: "op",
-        verb: "Run",
-        code: unwrapShellCommand(item.command),
-        lang: "bash",
-        workdir: item.cwd || undefined,
-        exitCode: item.exitCode ?? undefined,
-        duration: item.durationMs ?? undefined,
-        running,
-        failed,
-        tail,
-      };
       return {
         ...base,
         kind: "tool",
         running,
         outcome: failed ? "error" : undefined,
-        values: [value],
+        values: commandValues(item),
       };
     }
     case "fileChange": {
@@ -301,14 +316,14 @@ export function itemToEntry(
     case "mcpToolCall": {
       const running = item.status === "inProgress";
       const failed = item.status === "failed";
-      const argsCode = formatJsonCode(item.arguments);
       const tail = extractMcpTail(item.result, item.error);
       const value: Value = {
         kind: "op",
         verb: "Call",
         label: `${item.server}:${item.tool}`,
-        code: argsCode,
-        lang: argsCode ? "json" : undefined,
+        code: mcpToolEnvelope(item),
+        lang: "json",
+        opaqueJSON: true,
         running,
         failed,
         duration: item.durationMs ?? undefined,
@@ -326,7 +341,15 @@ export function itemToEntry(
       const running = item.status === "inProgress";
       const failed = item.status === "failed" || item.success === false;
       const argsCode = formatJsonCode(item.arguments);
-      const tail = extractDynamicToolTail(item.contentItems);
+      const parts: string[] = [];
+      const images: string[] = [];
+      const audio: string[] = [];
+      for (const content of item.contentItems ?? []) {
+        if (content.type === "inputText") parts.push(content.text);
+        else if (content.type === "inputImage") images.push(content.imageUrl);
+        else if (inlineAudio.test(content.audioUrl)) audio.push(content.audioUrl);
+        else parts.push("[Audio unavailable]");
+      }
       const label = item.namespace ? `${item.namespace}:${item.tool}` : item.tool;
       const value: Value = {
         kind: "op",
@@ -337,7 +360,7 @@ export function itemToEntry(
         running,
         failed,
         duration: item.durationMs ?? undefined,
-        tail,
+        tail: linesOf(parts.join("\n")),
       };
       return {
         ...base,
@@ -345,6 +368,8 @@ export function itemToEntry(
         running,
         outcome: failed ? "error" : undefined,
         values: [value],
+        images: images.length ? images : undefined,
+        audio: audio.length ? audio : undefined,
       };
     }
     case "webSearch":
@@ -360,67 +385,154 @@ export function itemToEntry(
         images: [item.path],
         values: [{ kind: "read", verb: "View", path: item.path }],
       };
-    case "subAgentActivity": {
-      const target = item.agentPath;
-      const body = item.assignment ?? "";
+    case "imageGeneration": {
+      const source = item.savedPath || ("result" in item && item.result ? item.id : undefined);
+      const running = item.status === "in_progress" || item.status === "generating";
+      const failed = item.status === "failed" || !!item.failure;
       return {
         ...base,
-        kind: item.assignment ? "start" : "agent",
-        assignment: !!item.assignment,
-        assignmentTo: target,
-        assignmentText: item.assignment ?? undefined,
-        text: body || target,
+        kind: "tool",
+        running,
+        outcome: failed ? "error" : undefined,
+        images: source ? [source] : undefined,
+        values: [
+          {
+            kind: "read",
+            verb: source ? "Generated" : "Generate",
+            label: "image",
+            path: item.savedPath,
+            running,
+            failed,
+          },
+        ],
+      };
+    }
+    case "subAgentActivity": {
+      const target = item.agentPath;
+      const owner = threadId ?? agent;
+      const traffic = {
+        started: { kind: "start", from: owner, to: target, detail: "Started" },
+        interacted: { kind: "message", from: owner, to: target, detail: "Messaged" },
+        interrupted: { kind: "interrupted", from: owner, to: target, detail: "Interrupted" },
+        completed: { kind: "final", from: target, to: owner, detail: "Finished" },
+      }[item.kind];
+      const assignment = item.assignment ?? undefined;
+      return {
+        ...base,
+        kind: traffic.kind === "start" ? "start" : "agent",
+        assignment: !!assignment,
+        assignmentTo: assignment ? target : undefined,
+        assignmentText: assignment,
+        identities: [
+          {
+            name: target,
+            label: target.split("/").at(-1) || target,
+            aliases: [target, item.agentThreadId],
+          },
+        ],
+        traffic,
+      };
+    }
+    case "agentMail": {
+      const reply = item.kind === "reply";
+      return {
+        ...base,
+        kind: reply ? "reply" : "agent",
         traffic: {
-          kind: item.assignment ? "start" : "message",
-          to: target,
-          detail: item.assignment ? "assigned" : undefined,
+          kind: reply ? "final" : "message",
+          from: item.sender,
+          to: item.recipient,
+          detail: reply ? "Reply delivered" : "Message received",
+          incoming: true,
         },
         values: [
           {
-            kind: item.assignment ? "start" : "message",
-            to: target,
-            body,
+            kind: "message",
+            body: item.text,
+            summary: item.summary ?? undefined,
+            details: item.details ?? undefined,
           },
         ],
       };
     }
     case "collabAgentToolCall": {
-      const target = item.receiverThreadIds?.[0];
-      const failed = item.status === "failed";
-      const body = item.prompt ?? "";
+      const from = item.senderThreadId;
+      const [to, ...otherRecipients] = item.receiverThreadIds;
+      const status = item.status;
+      if (item.tool === "wait") {
+        return {
+          ...base,
+          kind: "agent",
+          values: [
+            {
+              kind: "progress",
+              from,
+              label: status === "inProgress" ? "Waiting for" : "Waited for",
+              live: status === "inProgress",
+              waitReason: status === "interrupted" || status === "failed" ? status : undefined,
+              waits: item.receiverThreadIds.map((name) => ({
+                name,
+                status: item.agentsStates[name]?.status,
+              })),
+            },
+            ...Object.entries(item.agentsStates).flatMap(([name, state]) =>
+              state?.message
+                ? [{ kind: "message", from: name, to: from, body: state.message }]
+                : [],
+            ),
+          ],
+        };
+      }
+      const failed = status === "failed";
       const kind = failed
         ? "error"
-        : item.tool === "spawnAgent" || item.tool === "resumeAgent"
-          ? "start"
-          : "message";
+        : status === "interrupted" || item.tool === "interruptAgent"
+          ? "interrupted"
+          : item.tool === "spawnAgent" || item.tool === "resumeAgent"
+            ? "start"
+            : "message";
+      const detail = {
+        spawnAgent: "Start",
+        resumeAgent: "Resume",
+        sendInput: "Send input",
+        sendMessage: "Message",
+        followupTask: "Follow up",
+        closeAgent: "Close",
+        interruptAgent: "Interrupt",
+        listAgents: "List agents",
+      }[item.tool];
+      const body = item.prompt ?? undefined;
       return {
         ...base,
-        kind: "agent",
+        kind: kind === "start" ? "start" : "agent",
         outcome: failed ? "error" : undefined,
-        text: body || item.tool,
-        traffic: {
-          kind,
-          from: agent,
-          to: target,
-          detail: item.tool,
-        },
+        text: body,
+        traffic: { kind, from, to, otherRecipients, detail },
+      };
+    }
+    case "contextCompaction": {
+      const reset = item.summaryFree || item.sourceAcquisition?.purpose === "reload";
+      const label = live
+        ? reset
+          ? "Resetting context"
+          : "Compacting context"
+        : reset
+          ? "Context reset"
+          : "Context compacted";
+      return {
+        ...base,
+        kind: "compaction",
+        text: label,
         values: [
           {
-            kind: "message",
-            from: agent,
-            to: target,
-            body,
+            kind: "compaction",
+            label,
+            body: item.summary ?? undefined,
+            detailsAvailable: live ? undefined : {},
           },
         ],
       };
     }
-    case "contextCompaction":
-      return {
-        ...base,
-        kind: "compaction",
-        text: "Context compacted",
-        values: [{ kind: "compaction", label: "Context compacted" }],
-      };
     case "enteredReviewMode":
     case "exitedReviewMode":
       return {
@@ -546,7 +658,15 @@ export function buildFeed(
       }
       const item = turn.items[i];
       seq++;
-      entries[seq] = itemToEntry(item, seq, t + 1, turn.id, "/root", !!liveItemIds?.has(item.id));
+      entries[seq] = itemToEntry(
+        item,
+        seq,
+        t + 1,
+        turn.id,
+        "/root",
+        !!liveItemIds?.has(item.id),
+        attachment,
+      );
       order.push(seq);
     }
     while (hookIdx < turnHooks.length) emitHook(turnHooks[hookIdx++]);
@@ -555,55 +675,126 @@ export function buildFeed(
   return { attachment, order, entries, revision: seq };
 }
 
-function changesToReview(response: ThreadChangesReadResponse, revision: number): SavedReview {
-  const files: ReviewedFile[] = (response.files ?? []).map((file, index) => ({
-    key: `${index}:${file.path}`,
-    path: file.path,
-    status: file.status,
-    chunks: [
-      {
-        Key: `${index}:${file.path}`,
-        Status: file.status,
-        Stream: "saved",
-        Workspace: response.workspace ?? "",
-        CaptureOrder: index,
-        Change: response.changes[0]?.changeId ?? "saved",
-        Caller: "/root",
-        Source: response.changes[0]?.sourceKind ?? "turn",
-        Highlighted: false,
-        Review: {
-          Path: file.path,
-          Action: file.status,
-          Diff: file.unifiedDiff,
-          Binary: file.isBinary,
-          Added: file.additions,
-          Removed: file.deletions,
-        },
-      },
-    ],
-    origins: response.changes
-      .filter((c) => c.paths.includes(file.path))
-      .map((c) => ({ Change: c.changeId, Caller: "/root", Source: c.sourceKind })),
-    counts: { Added: file.additions, Removed: file.deletions },
-  }));
-  const net = { Added: response.totalAdditions, Removed: response.totalDeletions };
+function nativePatchDiff(kind: "add" | "delete" | "update", diff: string): string {
+  if (kind === "update" || !diff) return diff;
+  const header = kind === "add" ? "@@ -0 +1 @@" : "@@ -1 +0 @@";
+  const sign = kind === "add" ? "+" : "-";
+  const lines = diff
+    .replace(/\n$/, "")
+    .split("\n")
+    .map((line) => sign + line);
+  return [header, ...lines].join("\n");
+}
+
+const changesPageSize = 20;
+
+function changeFileReview(file: ThreadChangeFileDiff): ReviewFile {
+  const path = file.absolutePath ?? file.path;
   return {
-    fileCount: files.length,
+    Path: path,
+    BeforePath: file.status === "A" ? undefined : (file.movedFrom ?? path),
+    AfterPath: file.status === "D" ? undefined : path,
+    Action: file.status,
+    Diff: file.unifiedDiff,
+    Binary: file.isBinary,
+    Incomplete: file.coverageNotes?.join("; "),
+    Added: file.additions,
+    Removed: file.deletions,
+  };
+}
+
+function changesToReview(
+  response: ThreadChangesReadResponse,
+  revision: number,
+  caller: string,
+  callerName: (id: string) => string,
+): SavedReview {
+  const origins = new Map(
+    response.changes.map((change) => [
+      change.changeId,
+      {
+        Change: change.changeId,
+        Caller: change.authorThreadId ? callerName(change.authorThreadId) : "",
+        Source: change.sourceKind,
+      },
+    ]),
+  );
+  const files: ReviewedFile[] = response.files.map((file) => {
+    const fileOrigins = (file.changeIds ?? [])
+      .map((id) => origins.get(id))
+      .filter((origin) => origin !== undefined);
+    const path = file.absolutePath ?? file.path;
+    const key = caller ? JSON.stringify([path, file.changeIds]) : path;
+    return {
+      key,
+      path,
+      status: file.status,
+      chunks: [
+        {
+          Key: key,
+          Status: file.status,
+          Stream: "saved",
+          Workspace: response.workspace ?? "",
+          CaptureOrder: 0,
+          Change: "",
+          Caller: "",
+          Source: "",
+          Highlighted: false,
+          Review: changeFileReview(file),
+        },
+      ],
+      origins: fileOrigins,
+      counts: { Added: file.additions, Removed: file.deletions },
+    };
+  });
+  const net = { Added: response.totalAdditions, Removed: response.totalDeletions };
+  const callers = (response.callers ?? []).map((entry) => ({
+    caller: entry.threadId,
+    count: entry.fileCount,
+    counts: { Added: entry.additions, Removed: entry.deletions },
+  }));
+  return {
+    caller,
+    fileCount: response.fileCount ?? files.length,
     revision,
     workspace: response.workspace ?? "",
-    coverage: "full",
-    callers: files.length ? [{ caller: "/root", count: files.length }] : [],
+    coverage: response.incomplete ? "Partial capture" : "",
+    callers,
     counts: {
-      Callers: files.length ? { "/root": net } : {},
+      Callers: Object.fromEntries(callers.map((entry) => [entry.caller, entry.counts])),
       Net: files.length ? net : null,
     },
     files,
   };
 }
 
+function usageFields(usage: ThreadTokenUsage) {
+  const measured = !usage.usageUnavailable;
+  return {
+    inputTokens: measured ? usage.total.inputTokens : undefined,
+    cachedInputTokens: measured ? usage.total.cachedInputTokens : undefined,
+    outputTokens: measured ? usage.total.outputTokens : undefined,
+    reasoningOutputTokens: measured ? usage.total.reasoningOutputTokens : undefined,
+    usagePartial: usage.usagePartial,
+    cost: usage.estimatedCostUsd,
+    costPartial: usage.costPartial,
+    tps: usage.outputTokensPerSecond,
+    work: usage.workDurationMs,
+    workSince: usage.workStartedAt == null ? undefined : usage.workStartedAt * 1000,
+    lastResponse: usage.lastResponseAt == null ? undefined : usage.lastResponseAt * 1000,
+    lastCompleted: usage.lastCompletedAt == null ? undefined : usage.lastCompletedAt * 1000,
+    turns: usage.turns ?? undefined,
+    roundtrips: usage.roundtrips ?? undefined,
+    roundtripsPartial: usage.roundtripsPartial,
+    context: usage.last.totalTokens || (usage.modelContextWindow ? 0 : undefined),
+    window: usage.modelContextWindow ?? undefined,
+  };
+}
+
 function threadToAgent(thread: Thread, depth: number): Agent {
   const name = depth === 0 ? "/root" : thread.agentNickname || thread.id;
   const label = depth === 0 ? "main" : thread.agentNickname || thread.name || thread.id;
+  const usage = thread.tokenUsage ? usageFields(thread.tokenUsage) : undefined;
   return {
     name,
     label,
@@ -612,9 +803,10 @@ function threadToAgent(thread: Thread, depth: number): Agent {
     role: thread.agentRole ?? undefined,
     depth,
     state: threadStatusToAgentState(thread.status),
-    turns: thread.turns?.length || undefined,
-    context: thread.contextTokens,
-    window: thread.contextWindow ?? undefined,
+    skills: thread.extra?.skills,
+    ...usage,
+    context: thread.contextTokens ?? usage?.context,
+    window: thread.contextWindow ?? usage?.window,
   };
 }
 
@@ -661,8 +853,26 @@ export class Stream {
   roster = $state.raw<Roster>({ total: 0, agents: [] });
   family = $state.raw<{ root: string; threads: string[] } | undefined>();
   review = $state.raw<SavedReview | null>(null);
+  reviewCaller = $state("");
+  reviewCursor = $state<string>();
+  reviewError = $state<string>();
+  reviewLoading = $state(false);
+  reviewOverview = $state.raw<{
+    callers: SavedReview["callers"];
+    counts: SavedReview["counts"];
+  }>({
+    callers: [],
+    counts: { Callers: {}, Net: null },
+  });
   live = $state.raw<Preview[]>([]);
+  processes = $state.raw<BackgroundTerminal[]>([]);
   activeTurnId = $state<string | undefined>();
+
+  get latestCompletedTurnId(): string | undefined {
+    const turn = this.#turns.at(-1);
+    return turn?.status === "completed" ? turn.id : undefined;
+  }
+
   hasEarlier = $state(false);
   loadingEarlier = $state(false);
   byName = $derived(new Map(this.roster.agents.map((agent) => [agent.name, agent])));
@@ -671,11 +881,15 @@ export class Stream {
     const remember = (identity: AgentIdentity) => {
       for (const alias of identity.aliases) identities.set(alias, identity);
     };
-    for (const seq of this.main.order)
-      for (const identity of this.main.entries[seq]?.identities ?? []) remember(identity);
     for (const agent of this.roster.agents) {
       for (const identity of agent.identities ?? []) remember(identity);
       remember({ name: agent.name, label: agent.label, aliases: agent.aliases ?? [agent.name] });
+    }
+    for (const seq of this.main.order) {
+      for (const identity of this.main.entries[seq]?.identities ?? []) {
+        const known = identity.aliases.map((alias) => identities.get(alias)).find(Boolean);
+        for (const alias of identity.aliases) identities.set(alias, known ?? identity);
+      }
     }
     return identities;
   });
@@ -688,16 +902,18 @@ export class Stream {
   #id?: string;
   #machine = $state<Machine | undefined>();
   #turns: Turn[] = [];
+  #firstOwnTurn?: string;
   #turnsBackwardsCursor?: string;
   #liveItemIds = new Set<string>();
   #hooks: HookRecord[] = [];
   #hooksByThread = new Map<string, HookRecord[]>();
   #hookSeq = 0;
   #reviewRevision = 0;
+  #workspaces = new Map<string, string>();
+  #processReads = new Map<string, symbol>();
   #stopNotifications?: () => void;
   #stopOpen?: () => void;
   #requests = new AbortController();
-  #turnStartedAtByThread = new Map<string, number>();
 
   get connection(): Connection {
     return this.#machine?.connection ?? "connecting";
@@ -711,18 +927,24 @@ export class Stream {
     return this.#id;
   }
 
-  connect(id: string, machine: Machine, preserveRoster = false): void {
+  connect(
+    id: string,
+    machine: Machine,
+    preserveRoster = false,
+    started?: InitialInput["started"],
+    firstOwnTurn?: string,
+  ): void {
     if (id === this.#id && machine === this.#machine && this.#stopNotifications) return;
     preserveRoster &&= machine === this.#machine;
     this.close();
     this.#id = id;
     this.#machine = machine;
     this.#turns = [];
+    this.#firstOwnTurn = firstOwnTurn;
     this.#turnsBackwardsCursor = undefined;
     this.hasEarlier = false;
     this.loadingEarlier = false;
     this.#liveItemIds.clear();
-    this.#turnStartedAtByThread.clear();
     const cachedHooks = this.#hooksByThread.get(`${machine.id}:${id}`);
     // Only restore settled hooks across a subscription gap; running hooks may have
     // finished while the thread was unobserved.
@@ -736,8 +958,13 @@ export class Stream {
     if (!preserveRoster) {
       this.roster = { total: 0, agents: [] };
       this.family = undefined;
+      this.#workspaces.clear();
     }
     this.review = null;
+    this.reviewCaller = "";
+    this.reviewCursor = this.reviewError = undefined;
+    this.reviewLoading = false;
+    this.reviewOverview = { callers: [], counts: { Callers: {}, Net: null } };
     this.live = [];
     this.error = this.notice = undefined;
     this.#stopNotifications = machine.onNotification((n) => this.#onNotification(n));
@@ -745,7 +972,16 @@ export class Stream {
       this.error = undefined;
       void this.#hydrate(id, machine);
     });
-    if (machine.connection === "open") {
+    if (started && machine.connection === "open") {
+      // thread/start already subscribed this connector. Resume requires a saved
+      // turn, so start observing live events before submitting the first input.
+      this.#applyThread(started.thread, {
+        model: started.model,
+        effort: started.reasoningEffort ?? undefined,
+        serviceTier: started.serviceTier ?? undefined,
+        permissionProfile: started.activePermissionProfile?.id ?? null,
+      });
+    } else if (machine.connection === "open") {
       void this.#hydrate(id, machine);
     }
   }
@@ -765,7 +1001,7 @@ export class Stream {
     try {
       const page = await machine.request<TurnsPage>(
         "thread/turns/list",
-        { threadId: id, cursor, sortDirection: "desc", limit: 20, itemsView: "full" },
+        { threadId: id, cursor, ...recentTurns },
         { signal },
       );
       if (signal.aborted || this.#id !== id || this.#machine !== machine) return false;
@@ -796,18 +1032,22 @@ export class Stream {
       let model: string | undefined;
       let effort: string | undefined;
       let serviceTier: string | undefined;
+      let permissionProfile: string | null | undefined;
       let turnsBackwardsCursor: string | undefined;
+      let initialPage: TurnsPage | null | undefined;
       try {
         const resumed = await machine.request<ThreadResumeResponse>(
           "thread/resume",
-          { threadId: id },
+          { threadId: id, excludeTurns: true, initialTurnsPage: recentTurns },
           { signal },
         );
         thread = resumed.thread;
         model = resumed.model || thread.model || undefined;
         effort = resumed.reasoningEffort ?? thread.reasoningEffort ?? undefined;
         serviceTier = resumed.serviceTier ?? thread.serviceTier ?? undefined;
+        permissionProfile = resumed.activePermissionProfile?.id ?? null;
         turnsBackwardsCursor = resumed.turnsBackwardsCursor ?? undefined;
+        initialPage = resumed.initialTurnsPage;
       } catch (err) {
         if (signal.aborted) return;
         if (err instanceof TransportError && (err.status === 404 || err.status === 410)) {
@@ -816,10 +1056,15 @@ export class Stream {
         }
         const read = await machine.request<ThreadReadResponse>(
           "thread/read",
-          { threadId: id, includeTurns: true },
+          { threadId: id, includeTurns: false },
           { signal },
         );
         thread = read.thread;
+        initialPage = await machine.request<TurnsPage>(
+          "thread/turns/list",
+          { threadId: id, ...recentTurns },
+          { signal },
+        );
         model = thread.model ?? undefined;
         effort = thread.reasoningEffort ?? undefined;
         serviceTier = thread.serviceTier ?? undefined;
@@ -827,12 +1072,21 @@ export class Stream {
       if (signal.aborted) return;
       this.gone = undefined;
       this.error = undefined;
+      if (initialPage) {
+        // ES2022 has no toReversed; the copy keeps the response in wire order.
+        // oxlint-disable-next-line unicorn/no-array-reverse
+        thread = { ...thread, turns: [...initialPage.data].reverse() };
+        turnsBackwardsCursor = initialPage.backwardsCursor ?? initialPage.nextCursor ?? undefined;
+      }
       this.#turnsBackwardsCursor = turnsBackwardsCursor;
       this.hasEarlier = !!turnsBackwardsCursor;
-      this.#applyThread(thread, model, effort, serviceTier);
+      this.#applyThread(thread, { model, effort, serviceTier, permissionProfile });
       const subtreeRoot = this.family?.threads.includes(id)
         ? this.family.root
         : (thread.parentThreadId ?? id);
+      for (const member of this.family?.threads ?? [id]) {
+        void this.#loadProcesses(member, machine);
+      }
       void this.#loadSubtree(subtreeRoot, machine, signal);
       void this.#loadChanges(id, machine, signal);
     } catch (err) {
@@ -844,7 +1098,11 @@ export class Stream {
     }
   }
 
-  #applyThread(thread: Thread, model?: string, effort?: string, serviceTier?: string): void {
+  #applyThread(
+    thread: Thread,
+    settings: Pick<Session, "model" | "effort" | "serviceTier" | "permissionProfile">,
+  ): void {
+    this.#workspaces.set(thread.id, thread.cwd);
     this.#turns = (thread.turns ?? []).map((t) => ({ ...t, items: [...t.items] }));
     this.#liveItemIds.clear();
     if (this.#hooks.some((h) => h.run.status === "running")) {
@@ -870,14 +1128,28 @@ export class Stream {
       title: thread.name || thread.preview || undefined,
       workspace: thread.cwd || undefined,
       started: thread.createdAt ? thread.createdAt * 1000 : undefined,
-      model: model ?? thread.model ?? this.session?.model,
-      effort: effort ?? thread.reasoningEffort ?? this.session?.effort,
-      serviceTier: serviceTier ?? thread.serviceTier ?? this.session?.serviceTier,
+      model: settings.model ?? thread.model ?? this.session?.model,
+      effort: settings.effort ?? thread.reasoningEffort ?? this.session?.effort,
+      serviceTier: settings.serviceTier ?? thread.serviceTier ?? this.session?.serviceTier,
+      permissionProfile:
+        settings.permissionProfile === undefined
+          ? this.session?.permissionProfile
+          : settings.permissionProfile,
     };
     this.#rebuildMain();
     if (!this.roster.agents.length) {
       this.roster = { total: 1, agents: [threadToAgent(thread, 0)] };
       this.#observeRoles();
+    } else if (thread.tokenUsage || thread.extra?.skills) {
+      const usage = thread.tokenUsage ? usageFields(thread.tokenUsage) : undefined;
+      this.roster = {
+        ...this.roster,
+        agents: this.roster.agents.map((agent) =>
+          agent.thread === thread.id
+            ? { ...agent, ...usage, skills: thread.extra?.skills ?? agent.skills }
+            : agent,
+        ),
+      };
     }
     this.jumps++;
   }
@@ -893,7 +1165,13 @@ export class Stream {
       const threads = response.data ?? [];
       if (!threads.length) return;
       const root = threads.find((t) => !t.parentThreadId) ?? threads[0];
+      const previous = new Set(this.family?.threads ?? [this.#id]);
       this.family = { root: root.id, threads: threads.map((t) => t.id) };
+      this.#workspaces = new Map(threads.map((thread) => [thread.id, thread.cwd]));
+      this.processes = this.processes.filter((process) => this.#inFamily(process.threadId));
+      for (const thread of threads) {
+        if (!previous.has(thread.id)) void this.#loadProcesses(thread.id, machine);
+      }
       const prevByThread = new Map(
         this.roster.agents.filter((a) => a.thread).map((a) => [a.thread!, a]),
       );
@@ -903,14 +1181,25 @@ export class Stream {
         if (!prev) return next;
         return {
           ...next,
+          skills:
+            prev.skills && next.skills
+              ? [...new Set([...prev.skills, ...next.skills])]
+              : (prev.skills ?? next.skills),
           inputTokens: prev.inputTokens ?? next.inputTokens,
+          cachedInputTokens: prev.cachedInputTokens ?? next.cachedInputTokens,
           outputTokens: prev.outputTokens ?? next.outputTokens,
+          reasoningOutputTokens: prev.reasoningOutputTokens ?? next.reasoningOutputTokens,
+          usagePartial: prev.usagePartial ?? next.usagePartial,
           cost: prev.cost ?? next.cost,
           costPartial: prev.costPartial ?? next.costPartial,
           tps: prev.tps ?? next.tps,
           work: prev.work ?? next.work,
           workSince: prev.workSince ?? next.workSince,
+          lastResponse: prev.lastResponse ?? next.lastResponse,
+          lastCompleted: prev.lastCompleted ?? next.lastCompleted,
+          turns: prev.turns ?? next.turns,
           roundtrips: prev.roundtrips ?? next.roundtrips,
+          roundtripsPartial: prev.roundtripsPartial ?? next.roundtripsPartial,
           activity: prev.activity ?? next.activity,
           context: next.context ?? prev.context,
           window: next.window ?? prev.window,
@@ -923,17 +1212,193 @@ export class Stream {
     }
   }
 
+  #callerName(id: string): string {
+    return this.roster.agents.find((agent) => agent.thread === id)?.name ?? id;
+  }
+
+  selectChangeCaller(caller: string): void {
+    if (this.reviewCaller === caller || !this.#id || !this.#machine) return;
+    this.reviewCaller = caller;
+    void this.#loadChanges(this.#id, this.#machine, this.#requests.signal);
+  }
+
+  async moreChanges(demand?: AbortSignal): Promise<void> {
+    const id = this.#id;
+    const machine = this.#machine;
+    const cursor = this.reviewCursor;
+    const current = this.review;
+    if (!id || !machine || !cursor || !current || this.reviewLoading) return;
+    const revision = this.#reviewRevision;
+    this.reviewLoading = true;
+    this.reviewError = undefined;
+    try {
+      const signal = demand
+        ? AbortSignal.any([demand, this.#requests.signal])
+        : this.#requests.signal;
+      const response = await machine.request<ThreadChangesReadResponse>(
+        "thread/changes/read",
+        { threadId: id, callerThreadId: this.reviewCaller || null, limit: changesPageSize, cursor },
+        { signal },
+      );
+      if (signal.aborted || revision !== this.#reviewRevision) return;
+      const page = changesToReview(response, revision, current.caller, (thread) =>
+        this.#callerName(thread),
+      );
+      this.review = { ...current, files: [...current.files, ...page.files] };
+      this.reviewCursor = response.nextCursor ?? undefined;
+    } catch (error) {
+      if (!demand?.aborted && revision === this.#reviewRevision)
+        this.reviewError = errorText(error);
+    } finally {
+      if (revision === this.#reviewRevision) this.reviewLoading = false;
+    }
+  }
+
+  retryChanges(): void {
+    if (!this.#id || !this.#machine) return;
+    if (this.reviewCursor) void this.moreChanges();
+    else void this.#loadChanges(this.#id, this.#machine, this.#requests.signal);
+  }
+
   async #loadChanges(id: string, machine: Machine, signal: AbortSignal): Promise<void> {
+    const revision = ++this.#reviewRevision;
+    const caller = this.reviewCaller;
+    this.reviewLoading = true;
+    this.reviewCursor = undefined;
+    this.reviewError = undefined;
     try {
       const response = await machine.request<ThreadChangesReadResponse>(
         "thread/changes/read",
-        { threadId: id },
+        { threadId: id, callerThreadId: caller || null, limit: changesPageSize },
         { signal },
       );
-      if (signal.aborted) return;
-      this.review = changesToReview(response, ++this.#reviewRevision);
+      if (signal.aborted || revision !== this.#reviewRevision) return;
+      const review = changesToReview(response, revision, caller, (thread) =>
+        this.#callerName(thread),
+      );
+      if (!caller) this.reviewOverview = { callers: review.callers, counts: review.counts };
+      this.review = review;
+      this.reviewCursor = response.nextCursor ?? undefined;
+    } catch (error) {
+      if (!signal.aborted && revision === this.#reviewRevision) this.reviewError = errorText(error);
+    } finally {
+      if (!signal.aborted && revision === this.#reviewRevision) this.reviewLoading = false;
+    }
+  }
+
+  #inFamily(id: string): boolean {
+    return id === this.#id || !!this.family?.threads.includes(id);
+  }
+
+  #showsEdit(thread: string): boolean {
+    return thread === this.#id || (this.#id === this.family?.root && this.#inFamily(thread));
+  }
+
+  #updatePreview(
+    thread: string,
+    turn: string,
+    item: string,
+    fields: Pick<Preview, "Files" | "Input" | "Tool" | "Truncated">,
+    caller?: string,
+  ): void {
+    const key = JSON.stringify([thread, turn, item]);
+    const preview: Preview = {
+      ID: key,
+      Thread: thread,
+      Turn: turn,
+      Caller: caller ?? this.#callerName(thread),
+      Workspace: this.#workspaces.get(thread) ?? "",
+      Status: "",
+      ...fields,
+    };
+    const previous = this.live.find((edit) => edit.ID === key);
+    if (previous?.Complete || previous?.Settling) return;
+    this.live = [...this.live.filter((edit) => edit.ID !== key), preview].slice(-16);
+  }
+
+  async #settlePreview(
+    thread: string,
+    turn: string,
+    item: string,
+    id: string,
+    machine: Machine,
+  ): Promise<void> {
+    const key = JSON.stringify([thread, turn, item]);
+    if (!this.live.some((edit) => edit.ID === key && !edit.Complete && !edit.Settling)) return;
+    this.live = this.live.map((edit) => (edit.ID === key ? { ...edit, Settling: true } : edit));
+    const signal = this.#requests.signal;
+    let savedPath: string | undefined;
+    let savedFiles: ReviewFile[] | undefined;
+    try {
+      const response = await machine.request<ThreadChangesReadResponse>(
+        "thread/changes/read",
+        { threadId: thread, itemId: item, limit: 4 },
+        { signal },
+      );
+      const file = response.files[0];
+      if (response.changes.some((origin) => origin.itemId === item && origin.turnId === turn)) {
+        savedPath = file?.absolutePath ?? file?.path;
+        savedFiles = response.files.map(changeFileReview);
+      }
     } catch {
-      // Change history may be unavailable for threads with no edits.
+      // A provisional preview is not evidence of persisted edits.
+    }
+    if (signal.aborted) return;
+    this.live = this.live.map((edit) =>
+      edit.ID === key
+        ? {
+            ...edit,
+            Complete: true,
+            Settling: false,
+            Files: savedFiles ?? edit.Files,
+            SavedPath: savedPath,
+          }
+        : edit,
+    );
+    if (savedPath) void this.#loadChanges(id, machine, signal);
+  }
+
+  async #loadProcesses(threadId: string, machine: Machine): Promise<void> {
+    const signal = this.#requests.signal;
+    const revision = Symbol();
+    this.#processReads.set(threadId, revision);
+    const current = () =>
+      !signal.aborted && this.#processReads.get(threadId) === revision && this.#inFamily(threadId);
+    let processes: BackgroundTerminal[] = [];
+    try {
+      const page = await machine.request<BackgroundTerminalsPage>(
+        "thread/backgroundTerminals/list",
+        { threadId },
+        { signal },
+      );
+      processes = page.data.map((process) => ({ ...process, threadId }));
+    } catch (error) {
+      if (!(error instanceof TransportError && error.message === `thread not found: ${threadId}`))
+        return;
+    }
+    if (current()) {
+      this.processes = [
+        ...this.processes.filter((process) => process.threadId !== threadId),
+        ...processes,
+      ];
+    }
+  }
+
+  async stopProcess(process: BackgroundTerminal): Promise<string | undefined> {
+    const machine = this.#machine;
+    if (!machine || !this.#inFamily(process.threadId)) return;
+    const { threadId, processId, turnId, itemId } = process;
+    try {
+      const response = await machine.request<{ terminated: boolean }>(
+        "thread/backgroundTerminals/terminate",
+        { threadId, processId, invocation: { turnId, itemId } },
+        { signal: this.#requests.signal },
+      );
+      if (machine === this.#machine && this.#inFamily(threadId))
+        void this.#loadProcesses(threadId, machine);
+      if (!response.terminated) return "The selected process is no longer running.";
+    } catch (error) {
+      return errorText(error, true);
     }
   }
 
@@ -953,6 +1418,7 @@ export class Stream {
           const threads = this.family?.threads ?? [rootId];
           if (!threads.includes(started.id)) {
             this.family = { root: rootId, threads: [...threads, started.id] };
+            void this.#loadProcesses(started.id, machine);
           }
           const nextAgent = threadToAgent(started, 1);
           const existingIdx = this.roster.agents.findIndex((a) => a.thread === started.id);
@@ -963,6 +1429,17 @@ export class Stream {
           this.roster = { total: agents.length, agents };
           this.#observeRoles();
         }
+        break;
+      }
+      case "thread/backgroundTerminals/changed": {
+        if (this.#inFamily(notification.params.threadId))
+          void this.#loadProcesses(notification.params.threadId, machine);
+        break;
+      }
+      case "thread/closed": {
+        const { threadId } = notification.params;
+        this.#processReads.delete(threadId);
+        this.processes = this.processes.filter((process) => process.threadId !== threadId);
         break;
       }
       case "thread/status/changed": {
@@ -1000,6 +1477,7 @@ export class Stream {
           model: settings.model || this.session.model,
           effort: settings.effort ?? undefined,
           serviceTier: settings.serviceTier ?? undefined,
+          permissionProfile: settings.activePermissionProfile?.id ?? null,
         };
         break;
       }
@@ -1008,24 +1486,31 @@ export class Stream {
         const matchesMain = targetId === id;
         const matchesRoster = this.roster.agents.some((a) => a.thread === targetId);
         if (!matchesMain && !matchesRoster) return;
-        const usage = notification.params.tokenUsage;
+        const usage = usageFields(notification.params.tokenUsage);
         this.roster = {
           ...this.roster,
           agents: this.roster.agents.map((a) =>
             a.thread === targetId || (matchesMain && !a.thread && a.name === "/root")
               ? {
                   ...a,
-                  inputTokens: usage.total.inputTokens,
-                  outputTokens: usage.total.outputTokens,
-                  cost: usage.estimatedCostUsd ?? a.cost,
-                  costPartial: usage.costPartial ?? a.costPartial,
-                  tps: usage.outputTokensPerSecond ?? a.tps,
-                  work: usage.workDurationMs ?? a.work,
-                  roundtrips: usage.roundtrips ?? a.roundtrips,
-                  context: usage.last.totalTokens,
-                  window: usage.modelContextWindow ?? a.window,
+                  ...usage,
+                  turns: usage.turns ?? a.turns,
+                  context: usage.context ?? a.context,
+                  window: usage.window ?? a.window,
                 }
               : a,
+          ),
+        };
+        break;
+      }
+      case "thread/skills/updated": {
+        const { threadId, names } = notification.params;
+        this.roster = {
+          ...this.roster,
+          agents: this.roster.agents.map((agent) =>
+            agent.thread === threadId
+              ? { ...agent, skills: [...new Set([...(agent.skills ?? []), ...names])] }
+              : agent,
           ),
         };
         break;
@@ -1036,8 +1521,8 @@ export class Stream {
         const matchesRoster = this.roster.agents.some((a) => a.thread === targetId);
         if (!matchesMain && !matchesRoster) return;
         const turn = notification.params.turn;
-        const startedAt = Date.now();
-        this.#turnStartedAtByThread.set(targetId, startedAt);
+        this.live = this.live.filter((edit) => edit.Thread !== targetId || !edit.Complete);
+        const startedAt = turn.startedAt == null ? undefined : turn.startedAt * 1000;
         if (matchesMain) {
           this.activeTurnId = turn.id;
           this.status = {
@@ -1059,7 +1544,6 @@ export class Stream {
                   ...a,
                   state: "working",
                   workSince: startedAt,
-                  turns: matchesMain ? this.#turns.length : (a.turns ?? 0) + 1,
                 }
               : a,
           ),
@@ -1072,13 +1556,16 @@ export class Stream {
         const matchesRoster = this.roster.agents.some((a) => a.thread === targetId);
         if (!matchesMain && !matchesRoster) return;
         const turn = notification.params.turn;
-        const startedAt = this.#turnStartedAtByThread.get(targetId);
-        this.#turnStartedAtByThread.delete(targetId);
+        this.live = this.live.map((edit) =>
+          edit.Thread === targetId && edit.Turn === turn.id && !edit.Settling
+            ? { ...edit, Complete: true }
+            : edit,
+        );
         const elapsed =
           turn.durationMs != null
             ? Math.max(0, Number(turn.durationMs))
-            : startedAt != null
-              ? Math.max(0, Date.now() - startedAt)
+            : turn.startedAt != null && turn.completedAt != null
+              ? Math.max(0, (turn.completedAt - turn.startedAt) * 1000)
               : undefined;
         const failed = turn.status === "failed";
         if (matchesMain) {
@@ -1104,24 +1591,20 @@ export class Stream {
             this.#rememberHooks(`${machine.id}:${id}`, this.#hooks);
           }
           this.#rebuildMain();
-          void this.#loadChanges(id, machine, this.#requests.signal);
         }
+        if (this.#showsEdit(targetId)) void this.#loadChanges(id, machine, this.#requests.signal);
         this.roster = {
           ...this.roster,
-          agents: this.roster.agents.map((a) => {
-            if (a.thread !== targetId && !(matchesMain && !a.thread && a.name === "/root"))
-              return a;
-            const work = a.work != null ? a.work : elapsed != null ? elapsed : undefined;
-            return {
-              ...a,
-              state: failed ? "error" : "idle",
-              work,
-              workSince: undefined,
-              lastResponse: Date.now(),
-              activity: undefined,
-              turns: matchesMain ? this.#turns.length : a.turns,
-            };
-          }),
+          agents: this.roster.agents.map((a) =>
+            a.thread === targetId || (matchesMain && !a.thread && a.name === "/root")
+              ? {
+                  ...a,
+                  state: failed ? "error" : "idle",
+                  workSince: undefined,
+                  activity: undefined,
+                }
+              : a,
+          ),
         };
         break;
       }
@@ -1140,6 +1623,34 @@ export class Stream {
       case "item/completed": {
         const targetId = notification.params.threadId;
         const started = notification.method === "item/started";
+        const { item, turnId } = notification.params;
+        if (this.#showsEdit(targetId)) {
+          if (item.type === "commandExecution" && item.status === "inProgress" && started) {
+            const userShell = item.source === "userShell";
+            if (userShell || item.commandActions?.some((action) => action.type === "unknown")) {
+              const command = unwrapShellCommand(item.command);
+              const maxSource = 16 * 1024;
+              this.#updatePreview(
+                targetId,
+                turnId,
+                item.id,
+                {
+                  Files: [],
+                  Input: command.slice(0, maxSource),
+                  Tool: "Shell",
+                  Truncated: command.length > maxSource,
+                },
+                userShell ? "User shell" : undefined,
+              );
+            }
+          } else if (
+            !started &&
+            ((item.type === "commandExecution" && item.status !== "inProgress") ||
+              item.type === "fileChange")
+          ) {
+            void this.#settlePreview(targetId, turnId, item.id, id, machine);
+          }
+        }
         if (targetId !== id) {
           const agent = this.roster.agents.find((a) => a.thread === targetId);
           if (agent) {
@@ -1240,26 +1751,41 @@ export class Stream {
         this.#rebuildMain();
         break;
       }
-      case "item/reasoning/textDelta": {
-        if (notification.params.threadId !== id) return;
-        this.#appendItemDelta(notification.params.turnId, notification.params.itemId, (item) => {
-          if (item.type !== "reasoning") return item;
-          const content = [...item.content];
-          const idx = notification.params.contentIndex;
-          while (content.length <= idx) content.push("");
-          content[idx] += notification.params.delta;
-          return { ...item, content };
+      case "item/fileChange/patchUpdated": {
+        const { threadId, turnId, itemId, changes } = notification.params;
+        if (!this.#showsEdit(threadId) || !changes.length) return;
+        if (threadId === id && turnId !== this.activeTurnId && !this.#liveItemIds.has(itemId))
+          return;
+        const item = this.#turns
+          .find((turn) => turn.id === turnId)
+          ?.items.find((entry) => entry.id === itemId);
+        if (item?.type === "fileChange" && item.status !== "inProgress") return;
+        this.#updatePreview(threadId, turnId, itemId, {
+          Tool: "Edit",
+          Input: "",
+          Truncated: false,
+          Files: changes.map(({ path, kind, diff }) => ({
+            Path: path,
+            BeforePath: kind.type === "add" ? undefined : path,
+            AfterPath:
+              kind.type === "delete"
+                ? undefined
+                : kind.type === "update"
+                  ? (kind.move_path ?? path)
+                  : path,
+            Diff: nativePatchDiff(kind.type, diff),
+          })),
         });
-        this.#rebuildMain();
         break;
       }
       case "turn/diff/updated": {
-        if (notification.params.threadId !== id) return;
+        if (!this.#showsEdit(notification.params.threadId)) return;
         void this.#loadChanges(id, machine, this.#requests.signal);
         break;
       }
       case "thread/reverted": {
         if (notification.params.threadId !== id) return;
+        this.live = [];
         void this.#hydrate(id, machine);
         break;
       }
@@ -1269,7 +1795,21 @@ export class Stream {
   }
 
   #rebuildMain(): void {
+    const first = this.#firstOwnTurn
+      ? this.#turns.findIndex((turn) => turn.id === this.#firstOwnTurn)
+      : -1;
+    if (first >= 0) {
+      this.#turns = this.#turns.slice(first);
+      this.#turnsBackwardsCursor = undefined;
+      this.hasEarlier = false;
+    }
     this.main = buildFeed(this.#turns, this.#id, this.#liveItemIds, this.#hooks);
+  }
+
+  showFrom(threadId: string, turnId: string): void {
+    if (threadId !== this.#id) return;
+    this.#firstOwnTurn = turnId;
+    this.#rebuildMain();
   }
 
   #upsertHook(started: boolean, turnId: string | null, run: HookRunSummary): void {
@@ -1385,6 +1925,8 @@ export class Stream {
     this.#stopOpen?.();
     this.#stopOpen = undefined;
     this.#requests.abort();
+    this.#processReads.clear();
+    this.processes = [];
     if (prevId && prevMachine && prevMachine.connection === "open") {
       void prevMachine.request("thread/unsubscribe", { threadId: prevId }).catch(() => {});
     }

@@ -5,6 +5,7 @@ package launch
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,12 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	json "encoding/json/v2"
 )
 
 // Hold only the fork's final provider round so Main can finish independently
-// after the real stock tool has executed and returned its result to Codex.
+// after the native tool has executed and returned its result to the model.
 type oneoffCodexProvider struct {
 	tools    toolFrontendCodexProvider
 	requests chan btwCodexRequest
@@ -66,9 +68,9 @@ func (p *oneoffCodexProvider) respond(ctx context.Context, body []byte, headers 
 
 func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	codex, err := exec.LookPath("codex")
+	codex, err := exec.LookPath("mekugi-app-server")
 	if err != nil {
-		t.Fatal("installed Codex is required for one-off acceptance")
+		t.Fatal(err)
 	}
 	workspace := t.TempDir()
 	marker := filepath.Join(workspace, "oneoff-written.txt")
@@ -91,7 +93,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	}()
 	environment := append(routerFaultCodexEnvironment(t), "MEKUGI_ONEOFF_TEST=ONEOFF_ENV_INHERITED")
 	command := func(ctx context.Context) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, codex, "app-server",
+		cmd := exec.CommandContext(ctx, codex,
 			"-c", `model_providers.preview={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`,
 			"-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`,
 			"-c", "features.plugins=false",
@@ -110,19 +112,20 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		}
 		return btwCodexRequest{}
 	}
-	terminal.await("Ready")
+	terminal.awaitReady()
 	terminal.send("Main seed\r")
 	main := next()
-	terminal.await("completed")
+	mainMetadata, _ := fixtureTurnMetadata(main.headers)
+	terminal.await("MAIN_SEED_ANSWER")
+	terminal.awaitThreadIdle(mainMetadata.ThreadID)
 	terminal.send("/oneoff ONEOFF_TASK_ONLY\r")
 	fork := next()
-	mainMetadata, _ := fixtureTurnMetadata(main.headers)
 	forkMetadata, _ := fixtureTurnMetadata(fork.headers)
 	if mainMetadata.ThreadID == "" || forkMetadata.ThreadID == "" || mainMetadata.ThreadID == forkMetadata.ThreadID {
 		t.Fatalf("fork identities: Main=%q oneoff=%q", mainMetadata.ThreadID, forkMetadata.ThreadID)
 	}
-	if !bytes.Contains(fork.body, []byte("Main seed")) || !bytes.Contains(fork.body, []byte("Perform only requests submitted in this one-off conversation")) {
-		t.Fatal("one-off omitted inherited history or task-scoping input")
+	if !bytes.Contains(fork.body, []byte("Main seed")) || btwLastUserPrompt(fork.body) != "ONEOFF_TASK_ONLY" {
+		t.Fatal("one-off omitted inherited history or altered the task")
 	}
 	var mainFields, forkFields map[string]any
 	if err := json.Unmarshal(main.body, &mainFields); err != nil {
@@ -135,34 +138,35 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		t.Fatal("one-off did not inherit Main's tools")
 	}
 	terminal.awaitMatch("one-off automatically selected", func(frame string) bool {
-		return statLineNames(frame, "One-off")
+		return statLineNames(frame, "One-off") && strings.Contains(frame, "❯ ONEOFF_TASK_ONLY")
 	})
 	result := next()
 	resultMetadata, _ := fixtureTurnMetadata(result.headers)
 	if resultMetadata.ThreadID != forkMetadata.ThreadID || !bytes.Contains(result.body, []byte("custom_tool_call_output")) || !bytes.Contains(result.body, []byte("ONEOFF_ENV_INHERITED")) {
-		t.Fatalf("stock tool result did not return within the fork: %s", result.body)
+		t.Fatalf("native tool result did not return within the fork: %s", result.body)
 	}
 	contents, err := os.ReadFile(marker)
 	if err != nil || string(contents) != "ONEOFF_ENV_INHERITED" {
 		t.Fatalf("one-off write/environment inheritance: contents=%q err=%v", contents, err)
 	}
-	terminal.send("\x021")
-	terminal.awaitMatch("Main selected before BTW", func(frame string) bool {
-		return statLineNames(frame, "Main")
-	})
 	terminal.send("/btw BTW_WHILE_ONEOFF\r")
 	question := next()
 	questionMetadata, _ := fixtureTurnMetadata(question.headers)
-	if questionMetadata.ThreadID == "" || questionMetadata.ThreadID == forkMetadata.ThreadID || questionMetadata.ThreadID == mainMetadata.ThreadID || bytes.Contains(question.body, []byte("ONEOFF_TASK_ONLY")) {
-		t.Fatal("BTW reused One-off's thread or history")
+	if questionMetadata.ThreadID == "" || questionMetadata.ThreadID == forkMetadata.ThreadID || questionMetadata.ThreadID == mainMetadata.ThreadID ||
+		btwLastUserPrompt(question.body) != "BTW_WHILE_ONEOFF" || bytes.Contains(question.body, []byte("ONEOFF_TASK_ONLY")) {
+		t.Fatalf("BTW identities: Main=%q One-off=%q BTW=%q; user input=%q, contains one-off task=%t",
+			mainMetadata.ThreadID, forkMetadata.ThreadID, questionMetadata.ThreadID, btwLastUserPrompt(question.body),
+			bytes.Contains(question.body, []byte("ONEOFF_TASK_ONLY")))
 	}
 	terminal.await("BTW_INDEPENDENT_ANSWER")
 	terminal.await("/btw · completed")
 	terminal.send("\x1b")
 	terminal.awaitMatch("BTW closed while One-off remains", func(frame string) bool {
-		return !strings.Contains(frame, "/btw ·") && statLineNames(frame, "Main") && strings.Contains(frame, "One-off")
+		return !strings.Contains(frame, "/btw ·") && statLineNames(frame, "One-off")
 	})
-	terminal.send("\x021Main continuation\r")
+	terminal.send("\x1b[<0;4;30M\x1b[<0;4;30m")
+	terminal.await("MAIN_SEED_ANSWER")
+	terminal.send("Main continuation\r")
 	after := next()
 	afterMetadata, _ := fixtureTurnMetadata(after.headers)
 	if afterMetadata.ThreadID != mainMetadata.ThreadID || after.key != main.key {
@@ -174,16 +178,32 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		}
 	}
 	terminal.await("MAIN_CONTINUATION_FINISHED")
-	terminal.await("completed")
+	terminal.awaitThreadIdle(mainMetadata.ThreadID)
 	close(p.finish)
 	terminal.send("\x1b[<0;12;30M\x1b[<0;12;30m")
 	terminal.await("ONEOFF_FINISHED")
+	terminal.awaitThreadIdle(forkMetadata.ThreadID)
+	expandHostActivity(t, terminal.outer)
 	terminal.awaitMatch("completed one-off retained", func(frame string) bool {
-		return statLineNames(frame, "One-off") && composerStatusShows(frame, "completed") &&
-			strings.Contains(frame, "Ran  printf") && strings.Contains(frame, "Read oneoff-written.txt") &&
-			strings.Contains(frame, "┆ ONEOFF_ENV_INHERITED")
+		return statLineNames(frame, "One-off") &&
+			strings.Contains(frame, "printf") && strings.Contains(frame, "cat oneoff-written.txt") &&
+			strings.Contains(frame, "combined output") && strings.Contains(frame, "Create oneoff-written.txt")
 	})
-	terminal.send("\x021")
+	// The transcript shows captured changes instead of the tail for this
+	// command. The combined Output view still opens its retained stdout.
+	for y, row := range strings.Split(terminal.screen.String(), "\n") {
+		if before, _, found := strings.Cut(row, "combined output"); found {
+			x := utf8.RuneCountInString(before) + 1
+			terminal.send(fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", x, y+1, x, y+1))
+			break
+		}
+	}
+	terminal.await("ONEOFF_ENV_INHERITED")
+	terminal.send("\x1b")
+	terminal.awaitMatch("combined Output closed", func(frame string) bool {
+		return !strings.Contains(frame, "ONEOFF_ENV_INHERITED")
+	})
+	terminal.send("\x1b[<0;4;30M\x1b[<0;4;30m")
 	terminal.await("MAIN_CONTINUATION_FINISHED")
 	terminal.quit()
 }

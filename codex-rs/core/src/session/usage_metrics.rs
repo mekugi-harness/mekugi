@@ -6,11 +6,18 @@
 //! response output tokens by measured response request durations so resumed threads never
 //! inflate throughput with historical tokens.
 
+use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::time::Instant;
 
 use codex_app_server_protocol::ThreadTokenUsage;
+use codex_history::RolloutItem;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::RawResponseCompletedEvent;
+use codex_protocol::protocol::ThreadSettingsSnapshot;
 use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TokenUsageInfo;
 
 const LONG_CONTEXT_THRESHOLD: i64 = 272_000;
 
@@ -117,7 +124,7 @@ fn normalize_model(model: &str) -> String {
 
 /// Estimates USD cost for one completed provider response using its own model, tier,
 /// and per-response input bracket.
-pub(crate) fn estimate_response_cost_usd(
+fn estimate_response_cost_usd(
     model: &str,
     service_tier: Option<&str>,
     usage: &TokenUsage,
@@ -172,6 +179,8 @@ pub(crate) fn estimate_response_cost_usd(
 
 #[derive(Debug, Default)]
 pub(crate) struct ThreadUsageMetrics {
+    tokens: Option<TokenUsage>,
+    missing_usage: bool,
     estimated_cost_usd: f64,
     priced_responses: u64,
     unpriced_responses: u64,
@@ -180,23 +189,128 @@ pub(crate) struct ThreadUsageMetrics {
     measured_output_tokens: u64,
     measured_duration_ms: u64,
     completed_work_ms: u64,
+    turns: u64,
+    last_response_at: Option<i64>,
+    last_completed_at: Option<i64>,
     active_turn_started: Option<Instant>,
+    work_started_at: Option<i64>,
+}
+
+pub(crate) struct RetainedThreadObservation<'a> {
+    pub(crate) usage: ThreadUsageMetrics,
+    pub(crate) token_info: Option<&'a TokenUsageInfo>,
+    pub(crate) settings: Option<&'a ThreadSettingsSnapshot>,
+    pub(crate) skills: BTreeSet<String>,
 }
 
 impl ThreadUsageMetrics {
-    pub(crate) fn mark_prior_unknown(&mut self) {
+    pub(super) fn mark_prior_unknown(&mut self) {
         self.prior_unknown = true;
     }
 
-    pub(crate) fn has_observed_responses(&self) -> bool {
-        self.roundtrips > 0
+    pub(crate) fn restore(
+        thread_id: ThreadId,
+        items: &[RolloutItem],
+    ) -> RetainedThreadObservation<'_> {
+        let mut usage = Self::default();
+        let mut last_info = None;
+        let mut settings = None;
+        let mut raw_responses = HashSet::new();
+        let mut skills = BTreeSet::new();
+        let mut owner = Some(thread_id);
+        let mut scope = None;
+        let mut owned_turn = false;
+        for item in items {
+            match item {
+                RolloutItem::SessionMeta(meta) => {
+                    owner = Some(meta.meta.id);
+                    scope = meta.meta.forked_from_id.or(meta.meta.parent_thread_id);
+                }
+                RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => {
+                    owner = event.thread_id.or(owner);
+                    if owner == Some(thread_id) {
+                        settings = Some(&event.thread_settings);
+                    }
+                }
+                RolloutItem::EventMsg(EventMsg::TurnStarted(_)) => {
+                    owned_turn = owner == Some(thread_id);
+                    if owned_turn {
+                        usage.turns = usage.turns.saturating_add(1);
+                    }
+                }
+                RolloutItem::EventMsg(EventMsg::TurnComplete(event)) if owned_turn => {
+                    usage.observe_turn_finished(event.completed_at, event.duration_ms);
+                    owned_turn = false;
+                }
+                RolloutItem::EventMsg(EventMsg::TurnAborted(event)) if owned_turn => {
+                    usage.observe_turn_finished(event.completed_at, event.duration_ms);
+                    owned_turn = false;
+                }
+                RolloutItem::EventMsg(EventMsg::RawResponseCompleted(event))
+                    if event.thread_id == Some(thread_id)
+                        && raw_responses.insert(event.response_id.as_str()) =>
+                {
+                    usage.observe_raw_response(event);
+                }
+                RolloutItem::TokenUsageRecord(record)
+                    if record.thread_id == thread_id
+                        && !raw_responses.contains(record.response_id.as_str()) =>
+                {
+                    usage.prior_unknown = true;
+                    usage.roundtrips = usage.roundtrips.saturating_add(1);
+                    usage.add_tokens(&record.usage);
+                }
+                RolloutItem::EventMsg(EventMsg::TokenCount(event)) if owner == Some(thread_id) => {
+                    if let Some(info) = event.info.as_ref() {
+                        last_info = Some(info);
+                    }
+                }
+                RolloutItem::EventMsg(EventMsg::SkillsUsed(event))
+                    if event.thread_id == thread_id =>
+                {
+                    skills.extend(event.names.iter().cloned());
+                }
+                _ => {}
+            }
+        }
+        if scope.is_none()
+            && let Some(info) = last_info
+            && info.total_token_usage.total_tokens
+                > usage.tokens.as_ref().map_or(0, |t| t.total_tokens)
+        {
+            // Older rollouts can retain cumulative usage without the response-level facts.
+            usage.tokens = Some(info.total_token_usage.clone());
+            usage.prior_unknown = true;
+        }
+        RetainedThreadObservation {
+            usage,
+            token_info: last_info,
+            settings,
+            skills,
+        }
     }
 
-    pub(crate) fn observe_turn_started(&mut self) {
+    pub(super) fn observe_event(&mut self, event: &EventMsg) {
+        match event {
+            EventMsg::RawResponseCompleted(response) => self.observe_raw_response(response),
+            EventMsg::TurnStarted(event) => self.observe_turn_started(event.started_at),
+            EventMsg::TurnComplete(event) => {
+                self.observe_turn_finished(event.completed_at, event.duration_ms);
+            }
+            EventMsg::TurnAborted(event) => {
+                self.observe_turn_finished(event.completed_at, event.duration_ms);
+            }
+            _ => {}
+        }
+    }
+
+    fn observe_turn_started(&mut self, started_at: Option<i64>) {
+        self.turns = self.turns.saturating_add(1);
         self.active_turn_started = Some(Instant::now());
+        self.work_started_at = started_at;
     }
 
-    pub(crate) fn observe_turn_finished(&mut self, duration_ms: Option<i64>) {
+    fn observe_turn_finished(&mut self, completed_at: Option<i64>, duration_ms: Option<i64>) {
         let elapsed_ms = duration_ms
             .and_then(|ms| u64::try_from(ms).ok())
             .or_else(|| {
@@ -205,15 +319,32 @@ impl ThreadUsageMetrics {
             })
             .unwrap_or(0);
         self.active_turn_started = None;
+        self.work_started_at = None;
+        self.last_completed_at = self.last_completed_at.max(completed_at);
         self.completed_work_ms = self.completed_work_ms.saturating_add(elapsed_ms);
     }
 
-    pub(crate) fn observe_raw_response(&mut self, event: &RawResponseCompletedEvent) {
+    fn add_tokens(&mut self, usage: &TokenUsage) {
+        self.tokens
+            .get_or_insert_with(TokenUsage::default)
+            .add_assign(usage);
+    }
+
+    fn observe_raw_response(&mut self, event: &RawResponseCompletedEvent) {
         self.roundtrips = self.roundtrips.saturating_add(1);
+        self.last_response_at = self.last_response_at.max(event.completed_at);
+        let reported_usd = event
+            .usage_metadata
+            .as_ref()
+            .and_then(|meta| meta.amount.as_deref())
+            .and_then(|amount| amount.trim().parse::<f64>().ok())
+            .filter(|amount| amount.is_finite() && *amount >= 0.0);
         let Some(usage) = event.token_usage.as_ref() else {
-            self.unpriced_responses = self.unpriced_responses.saturating_add(1);
+            self.missing_usage = true;
+            self.observe_price(reported_usd);
             return;
         };
+        self.add_tokens(usage);
 
         if let Some(duration_ms) = event.request_duration_ms
             && duration_ms > 0
@@ -226,13 +357,6 @@ impl ThreadUsageMetrics {
                 self.measured_duration_ms.saturating_add(duration_ms as u64);
         }
 
-        let reported_usd = event
-            .usage_metadata
-            .as_ref()
-            .and_then(|meta| meta.amount.as_deref())
-            .and_then(|amount| amount.trim().parse::<f64>().ok())
-            .filter(|amount| amount.is_finite() && *amount >= 0.0);
-
         let response_cost = reported_usd.or_else(|| {
             if !event.openai_endpoint {
                 return None;
@@ -241,7 +365,11 @@ impl ThreadUsageMetrics {
             estimate_response_cost_usd(model, event.service_tier.as_deref(), usage)
         });
 
-        if let Some(cost) = response_cost {
+        self.observe_price(response_cost);
+    }
+
+    fn observe_price(&mut self, cost: Option<f64>) {
+        if let Some(cost) = cost.filter(|cost| (self.estimated_cost_usd + cost).is_finite()) {
             self.estimated_cost_usd += cost;
             self.priced_responses = self.priced_responses.saturating_add(1);
         } else {
@@ -249,7 +377,29 @@ impl ThreadUsageMetrics {
         }
     }
 
-    pub(crate) fn apply_to(&self, usage: &mut ThreadTokenUsage) {
+    pub(crate) fn snapshot(&self, info: Option<TokenUsageInfo>) -> Option<ThreadTokenUsage> {
+        if info.is_none() && self.roundtrips == 0 && self.turns == 0 {
+            return None;
+        }
+        let mut usage = ThreadTokenUsage::from(info.unwrap_or(TokenUsageInfo {
+            total_token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            last_usage_includes_reasoning: None,
+            model_context_window: None,
+        }));
+        self.apply_to(&mut usage);
+        Some(usage)
+    }
+
+    fn apply_to(&self, usage: &mut ThreadTokenUsage) {
+        usage.total = self.tokens.clone().unwrap_or_default().into();
+        usage.usage_unavailable = self.tokens.is_none();
+        usage.usage_partial = self.prior_unknown || self.missing_usage;
+        usage.roundtrips_partial = self.prior_unknown;
+        usage.last_response_at = self.last_response_at;
+        usage.last_completed_at = self.last_completed_at;
+        usage.work_started_at = self.work_started_at;
+        usage.turns = i64::try_from(self.turns).ok();
         if self.priced_responses > 0 {
             usage.estimated_cost_usd = Some(self.estimated_cost_usd);
             usage.cost_partial = self.prior_unknown || self.unpriced_responses > 0;
@@ -259,13 +409,8 @@ impl ThreadUsageMetrics {
                 (self.measured_output_tokens as f64) * 1000.0 / (self.measured_duration_ms as f64),
             );
         }
-        let live_work_ms = self
-            .active_turn_started
-            .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(0))
-            .unwrap_or(0);
-        let work_ms = self.completed_work_ms.saturating_add(live_work_ms);
-        if work_ms > 0 {
-            usage.work_duration_ms = i64::try_from(work_ms).ok();
+        if self.completed_work_ms > 0 || self.work_started_at.is_some() {
+            usage.work_duration_ms = i64::try_from(self.completed_work_ms).ok();
         }
         if self.roundtrips > 0 {
             usage.roundtrips = i64::try_from(self.roundtrips).ok();
@@ -309,6 +454,13 @@ mod tests {
             output_tokens_per_second: None,
             work_duration_ms: None,
             roundtrips: None,
+            usage_partial: false,
+            usage_unavailable: false,
+            roundtrips_partial: false,
+            turns: None,
+            last_response_at: None,
+            last_completed_at: None,
+            work_started_at: None,
         }
     }
 
@@ -317,6 +469,8 @@ mod tests {
         let mut metrics = ThreadUsageMetrics::default();
         // Response 1: gpt-6.2-sol standard, 1M uncached input ($2) + 1M output ($10) = $12
         metrics.observe_raw_response(&RawResponseCompletedEvent {
+            thread_id: None,
+            completed_at: None,
             response_id: "r1".to_string(),
             token_usage: Some(sample_usage(100_000, 0, 100_000)),
             usage_metadata: None,
@@ -327,6 +481,8 @@ mod tests {
         });
         // Response 2: switched to gpt-6.2-astra priority, 100k uncached input ($1.60) + 100k output ($8.00) = $9.60
         metrics.observe_raw_response(&RawResponseCompletedEvent {
+            thread_id: None,
+            completed_at: None,
             response_id: "r2".to_string(),
             token_usage: Some(sample_usage(100_000, 0, 100_000)),
             usage_metadata: None,
@@ -353,6 +509,8 @@ mod tests {
         // Three 150k-input responses (cumulative 450k > 272k, but each <= 272k -> standard rate)
         for idx in 0..3 {
             metrics.observe_raw_response(&RawResponseCompletedEvent {
+                thread_id: None,
+                completed_at: None,
                 response_id: format!("r{idx}"),
                 token_usage: Some(sample_usage(150_000, 0, 0)),
                 usage_metadata: None,
@@ -371,10 +529,12 @@ mod tests {
     #[test]
     fn resumed_thread_marks_cost_partial_and_does_not_inflate_throughput() {
         let mut metrics = ThreadUsageMetrics::default();
-        metrics.mark_prior_unknown();
+        metrics.prior_unknown = true;
 
         // Resumed thread had 50k prior output tokens; new response produces 200 tokens in 2000ms.
         metrics.observe_raw_response(&RawResponseCompletedEvent {
+            thread_id: None,
+            completed_at: None,
             response_id: "r-new".to_string(),
             token_usage: Some(sample_usage(1_000, 0, 200)),
             usage_metadata: None,

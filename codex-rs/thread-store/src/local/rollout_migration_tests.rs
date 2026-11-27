@@ -24,6 +24,9 @@ use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::models::AudioReference;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::InternalChatMessageMetadataPassthrough;
@@ -545,6 +548,98 @@ async fn migration_projects_explicit_and_implicit_legacy_completed_items() {
             })
         );
     }
+}
+
+#[tokio::test]
+async fn migration_projects_original_exec_error_without_failing_the_turn() {
+    let home = TempDir::new().expect("create Codex home");
+    let thread_id = ThreadId::new();
+    let diagnostic = "CreateProcess failure\nrejected: forced cleanup\n    at cell:17";
+    let call = |call_id: &str, name: &str| {
+        RolloutItem::ResponseItem(
+            ResponseItem::CustomToolCall {
+                encrypted_content: None,
+                id: None,
+                status: None,
+                call_id: call_id.to_string(),
+                name: name.to_string(),
+                namespace: Some("functions".to_string()),
+                input: String::new(),
+                internal_chat_message_metadata_passthrough: None,
+            }
+            .into(),
+        )
+    };
+    let failed_output = |call_id: &str| {
+        RolloutItem::ResponseItem(
+            ResponseItem::CustomToolCallOutput {
+                id: None,
+                call_id: call_id.to_string(),
+                name: None,
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::ContentItems(vec![
+                        FunctionCallOutputContentItem::InputText {
+                            text: "[call c1]\nScript failed\nWall time 0.1 seconds\nOutput:\n"
+                                .to_string(),
+                        },
+                        FunctionCallOutputContentItem::InputText {
+                            text: format!("Script error:\n{diagnostic}"),
+                        },
+                    ]),
+                    success: None,
+                },
+                internal_chat_message_metadata_passthrough: None,
+            }
+            .into(),
+        )
+    };
+    write_rollout(
+        home.path(),
+        thread_id,
+        SessionSource::Cli,
+        vec![
+            started("turn"),
+            call("exec", "exec"),
+            failed_output("exec"),
+            call("other", "wait"),
+            failed_output("other"),
+            agent_message("Continued after the script failure."),
+            completed("turn"),
+        ],
+    );
+    let store = indexed_store(home.path()).await;
+    let report = store
+        .migrate_rollouts(apply_options())
+        .await
+        .expect("migrate saved exec failure");
+    assert_eq!(report.outcomes[0].status, RolloutMigrationStatus::Migrated);
+    let turns = list_active_summary_turns(&store, thread_id).await;
+    assert_eq!(turns.turns[0].status, crate::StoredTurnStatus::Completed);
+    let items = store
+        .list_items(ListItemsParams {
+            item_ids: None,
+            thread_id,
+            turn_id: None,
+            include_archived: false,
+            position: None,
+            page_size: 10,
+            sort_direction: SortDirection::Asc,
+            sort_key: ItemSortKey::CreatedAtOrdinal,
+            after_updated_at_ordinal: None,
+            before_updated_at_ordinal: None,
+        })
+        .await
+        .expect("read retained transcript");
+    let bodies: Vec<serde_json::Value> = items
+        .items
+        .iter()
+        .map(|item| serde_json::from_slice(&item.item_json).expect("parse projected item"))
+        .collect();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["type"], "functionCallOutput");
+    assert_eq!(bodies[0]["id"], "code-mode-error:exec");
+    assert_eq!(bodies[0]["output"], diagnostic);
+    assert_eq!(bodies[1]["text"], "Continued after the script failure.");
 }
 
 #[tokio::test]

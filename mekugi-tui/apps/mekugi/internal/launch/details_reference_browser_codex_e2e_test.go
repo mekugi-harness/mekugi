@@ -1,0 +1,404 @@
+//go:build codex_e2e
+
+package launch
+
+import (
+	"context"
+	"fmt"
+	"image"
+	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/x/vt"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/connector"
+	"github.com/mekugi-harness/mekugi/mekugi-webui"
+)
+
+func TestDetailLinksAndReferenceThroughNativeBrowser(t *testing.T) {
+	if os.Getenv("MEKUGI_TEST_WEBUI_BROWSER") != "1" {
+		t.Skip("set MEKUGI_TEST_WEBUI_BROWSER=1 after just webui")
+	}
+	t.Setenv("AGENT_BROWSER_ENGINE", "chrome")
+	bin := browserFixtureCommand(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	id, err := exec.CommandContext(ctx, bin, "session", "id", "--scope", "worktree", "--prefix", "details-reference").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := strings.TrimSpace(string(id))
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		_ = exec.CommandContext(cleanup, bin, "--session", session, "close").Run()
+	}()
+	run := func(args ...string) string {
+		t.Helper()
+		output, err := exec.CommandContext(ctx, bin, append([]string{"--session", session}, args...)...).CombinedOutput()
+		if err != nil {
+			snap, _ := exec.CommandContext(ctx, bin, "--session", session, "snapshot").CombinedOutput()
+			t.Fatalf("browser %v: %v: %s\n%s", args, err, output, snap)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	page := httptest.NewServer(webui.Handler())
+	defer page.Close()
+	const token = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	tokenFile := filepath.Join(shortTempDir(t), "token")
+	if err := os.WriteFile(tokenFile, []byte(token+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "notes.md"), []byte("first\nfile range line\nthird\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "not-an-image.png"), []byte("still text\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".ignore"), []byte("not-an-image.png\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	skill := filepath.Join(workspace, ".agents", "skills", "fixture-helper")
+	if err := os.MkdirAll(filepath.Join(skill, "agents"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: fixture-helper\ndescription: A browser fixture skill\n---\n\nFixture instructions sentinel.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skill, "agents", "openai.yaml"), []byte("interface:\n  display_name: Fixture helper\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(filepath.Join(workspace, "image-without-extension"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = png.Encode(file, image.NewRGBA(image.Rect(0, 0, 2, 2)))
+	closeErr := file.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("write fixture image: %v; close: %v", err, closeErr)
+	}
+	imageUpload := filepath.Join(t.TempDir(), "browser-image.png")
+	pixels, err := os.ReadFile(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imageUpload, pixels, 0600); err != nil {
+		t.Fatal(err)
+	}
+	connect := make(chan string, 1)
+	integration := appServerIntegration{controlSocket: connect}
+	const uploadContent = "UTF-8 upload Ω sentinel."
+	upload := filepath.Join(t.TempDir(), "browser-upload.txt")
+	if err := os.WriteFile(upload, []byte(uploadContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	quoted := make(chan struct{}, 1)
+	created := make(chan struct{}, 1)
+	provider := &toolFrontendCodexProvider{
+		program: `const r = await tools.exec_command({cmd:"for i in $(seq 1 160); do printf 'native run line %s\\n' \"$i\"; done",shell:"/bin/bash",login:false,yield_time_ms:10000});
+text(r.event_call_id); text(r.output);
+await tools.exec_command({cmd:"sleep 81",shell:"/bin/bash",login:false,yield_time_ms:100});
+await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_time_ms:100});`,
+		expected:   []string{"native run line 160"},
+		prediction: "Could you explain the workspace notes?",
+	}
+	runID := regexp.MustCompile(`exec-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}`)
+	provider.observeRequest = func(body []byte, _ http.Header) error {
+		if id := runID.Find(body); len(id) > 0 && !strings.Contains(provider.finalText, "Workspace notes") {
+			provider.finalText = fmt.Sprintf("Reference me. [Workspace notes](notes.md#L2) [Run output](mekugi:run/%s#L130-L132) [Unavailable output](mekugi:run/%s#L900)", id, id)
+		}
+		if wire := string(body); strings.Contains(wire, "Check references") &&
+			strings.Contains(wire, "User selections:") && strings.Contains(wire, "file range line") &&
+			strings.Contains(wire, "Reference me.") && strings.Contains(wire, "Fixture instructions sentinel.") &&
+			strings.Contains(wire, "browser-upload.txt") && strings.Contains(wire, uploadContent) {
+			select {
+			case quoted <- struct{}{}:
+			default:
+			}
+		}
+		if strings.Contains(string(body), "First browser message.") {
+			select {
+			case created <- struct{}{}:
+			default:
+			}
+		}
+		return nil
+	}
+	run("open", page.URL)
+	run("set", "viewport", "1280", "900")
+	run("find", "label", "Machine name", "fill", "Details fixture")
+	run("find", "label", "Access token", "fill", token)
+	runAppServerPreviewWith(t, provider, nil, appServerPreview{
+		managedRuntime: true, integration: &integration, workspace: workspace,
+		completedText: "Reference me.", saveBeforePrompt: true,
+		environment: []string{"SHELL=/bin/bash", "CODEX_HOME=" + t.TempDir()},
+		beforePrompt: func(t *testing.T, _ io.Writer, _ func(string), _ func(func(string) bool), _ *vt.Emulator) {
+			bridge, err := connector.New(connector.Options{SocketPath: <-connect, TokenFile: tokenFile, Origins: []string{page.URL}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = bridge.Close() })
+			remote := httptest.NewServer(bridge)
+			t.Cleanup(remote.Close)
+			run("find", "label", "Connector URL", "fill", remote.URL)
+			run("find", "role", "button", "click", "--name", "Connect", "--exact")
+			run("wait", "nav[aria-label=Threads] li a")
+			run("click", "nav[aria-label=Threads] li a")
+			run("wait", "#composer-text")
+		},
+		afterPrompt: func(t *testing.T, _ io.Writer, _ func(string), _ func(func(string) bool), _ *vt.Emulator) {
+			run("wait", "--text", "Workspace notes")
+			run("set", "viewport", "360", "800")
+			run("find", "role", "button", "click", "--name", "Session details", "--exact")
+			run("wait", "--fn", fmt.Sprintf(`(() => {
+				const panel = document.querySelector('[aria-label="Session details"]:not(button)');
+				const path = [...(panel?.querySelectorAll('span[title]') ?? [])].find(node => node.title === %q);
+				if (!path || path.textContent !== path.title) return false;
+				const box = panel.getBoundingClientRect();
+				const value = path.getBoundingClientRect();
+				return box.left >= 0 && box.right <= innerWidth && value.width > 0 &&
+					value.left >= box.left && value.right <= box.right &&
+					panel.scrollWidth <= panel.clientWidth + 1;
+			})()`, workspace))
+			run("press", "Escape")
+			run("set", "viewport", "1280", "900")
+			checkComposerPresets(t, run)
+			run("wait", `[aria-label="Active processes"] button[aria-label="Stop sleep 81"]`)
+			run("wait", `[aria-label="Active processes"] button[aria-label="Stop sleep 82"]`)
+			run("fill", "#composer-text", "/ps")
+			run("press", "Enter")
+			run("wait", "--text", "Active processes appear above the composer.")
+			run("find", "role", "button", "click", "--name", "Stop sleep 81", "--exact")
+			run("wait", "--fn", `!document.querySelector('[aria-label="Stop sleep 81"]') && !!document.querySelector('[aria-label="Stop sleep 82"]')`)
+			run("find", "role", "button", "click", "--name", "Stop sleep 82", "--exact")
+			run("wait", "--fn", `!document.querySelector('[aria-label="Active processes"]')`)
+			run("fill", "#composer-text", "@!not-an-image")
+			run("wait", "[aria-label=Files] [role=option]")
+			run("find", "role", "option", "click", "--name", "not-an-image.png", "--exact")
+			run("wait", "--fn", `document.querySelector('#composer-text').value === '@not-an-image.png ' && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('not-an-image.png') && !document.querySelector('[aria-label="Attachments"] img')`)
+			run("find", "role", "button", "click", "--name", "Remove not-an-image.png", "--exact")
+			run("find", "role", "button", "click", "--name", "Attach", "--exact")
+			run("find", "role", "menuitem", "click", "--name", "Attach path on Details fixture", "--exact")
+			run("fill", "#attach-path", "image-without-extension")
+			run("find", "role", "button", "click", "--name", "Attach path", "--exact")
+			run("wait", "--fn", `document.querySelector('#composer-text').value === '[Image image-without-extension] ' && document.querySelector('[aria-label="Attachments"] img')?.naturalWidth === 2`)
+			run("find", "role", "button", "click", "--name", "Remove image-without-extension", "--exact")
+			run("find", "role", "link", "click", "--name", "Workspace notes", "--exact")
+			run("wait", "--fn", `document.querySelector('#activity-details mark')?.textContent?.trim() === 'file range line'`)
+			run("eval", `(() => { const r = new Range(); r.selectNodeContents(document.querySelector('#activity-details mark')); document.getSelection().removeAllRanges(); document.getSelection().addRange(r); })()`)
+			run("wait", "--fn", `[...document.querySelectorAll('#activity-details button')].some(button => button.textContent.trim() === 'Reference')`)
+			run("find", "role", "button", "click", "--name", "Reference", "--exact")
+			run("wait", "--fn", `document.querySelector('#composer-text').value === '[Selected dialog] ' && !document.querySelector('[aria-label="Attachments"]')`)
+			run("find", "role", "button", "click", "--name", "Close details", "--exact")
+			run("wait", "#activity-details", "--state", "hidden")
+			run("eval", `(() => { const text = [...document.querySelectorAll('[data-entry] .prose p')].find(p => p.textContent.startsWith('Reference me.')).firstChild; const r = new Range(); r.setStart(text, 0); r.setEnd(text, 'Reference me.'.length); document.getSelection().removeAllRanges(); document.getSelection().addRange(r); })()`)
+			run("wait", "--fn", `[...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Reference')`)
+			run("find", "role", "button", "click", "--name", "Reference", "--exact")
+			run("wait", "--fn", `document.querySelector('#composer-text').value === '[Selected dialog] [Selected message] ' && !document.querySelector('[aria-label="Attachments"]')`)
+			run("find", "role", "link", "click", "--name", "Run output", "--exact")
+			run("wait", "--fn", `(() => { const mark = document.querySelector('#activity-details mark'); if (mark?.textContent !== 'native run line 130\nnative run line 131\nnative run line 132') return false; const r = mark.getBoundingClientRect(); const pane = document.querySelector('#activity-details > .overflow-y-auto'); return pane.scrollTop > 0 && r.top >= pane.getBoundingClientRect().top && r.bottom <= pane.getBoundingClientRect().bottom; })()`)
+			run("find", "role", "button", "click", "--name", "Close details", "--exact")
+			run("find", "role", "link", "click", "--name", "Unavailable output", "--exact")
+			run("wait", "--text", "The referenced output lines are unavailable.")
+			run("find", "role", "button", "click", "--name", "Close details", "--exact")
+			run("fill", "#composer-text", "[Selected dialog] [Selected message] Check references $fixture")
+			run("wait", `[aria-label="Skills and presets"] [role=option]`)
+			run("find", "role", "option", "click", "--name", "Fixture helper")
+			run("wait", "--fn", `document.querySelector('#composer-text').value.endsWith('$fixture-helper ')`)
+			run("upload", `input[aria-label="Upload files"]`, upload)
+			run("wait", "--fn", `document.querySelector('#composer-text').value.endsWith('[File browser-upload.txt] ') && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('browser-upload.txt')`)
+			run("press", "Enter")
+			run("wait", "--fn", `Array.from(document.querySelectorAll('[data-entry]')).some(row => row.textContent.includes('Check references') && row.textContent.includes('[File browser-upload.txt]') && !row.textContent.includes('User selections:') && !row.textContent.includes('UTF-8 upload Ω sentinel.'))`)
+			select {
+			case <-quoted:
+			case <-ctx.Done():
+				t.Fatal("provider did not receive both references, the selected skill, and the text upload")
+			}
+			shellOutput := filepath.Join(workspace, "queued-shell.txt")
+			run("fill", "#composer-text", "!printf queued > '"+strings.ReplaceAll(shellOutput, "'", "'\\''")+"'")
+			run("press", "Tab")
+			timer := time.NewTicker(25 * time.Millisecond)
+			defer timer.Stop()
+			for {
+				if contents, _ := os.ReadFile(shellOutput); string(contents) == "queued" {
+					break
+				}
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					t.Fatal("Tab did not run the native queued shell draft")
+				}
+			}
+			run("find", "role", "button", "click", "--name", "New thread", "--exact")
+			run("wait", "--fn", fmt.Sprintf(`document.querySelector('button[title=%s]') !== null`, fmt.Sprintf("%q", workspace)))
+			run("click", fmt.Sprintf("button[title=%q]", workspace))
+			run("wait", "--fn", fmt.Sprintf(`document.querySelector('input[aria-label="Workspace path"]')?.value === %q`, workspace))
+			manualWorkspace := t.TempDir()
+			run("find", "label", "Workspace path", "fill", manualWorkspace)
+			run("press", "Enter")
+			run("wait", fmt.Sprintf("button[title=%q]", manualWorkspace))
+			run("fill", "#new-text", "First browser message.")
+			run("upload", `input[type="file"]`, imageUpload)
+			run("wait", "--text", "browser-image.png")
+			run("find", "role", "button", "click", "--name", "Start thread", "--exact")
+			select {
+			case <-created:
+			case <-time.After(8 * time.Second):
+				t.Fatal("the browser's new thread did not submit its first message")
+			}
+			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(row => row.textContent.includes('First browser message.'))`)
+			run("wait", "--fn", `[...document.querySelectorAll('[data-kind=user]')].some(row => row.textContent.includes('[Image browser-image.png]') && row.querySelector('img')?.naturalWidth === 2)`)
+			for _, test := range []struct {
+				message, path, action string
+			}{
+				{"Keep this browser edit", "keep.txt", "Keep edits"},
+				{"Undo this browser edit", "undo.txt", "Revert edits"},
+			} {
+				idle := `!!document.querySelector('#composer-text:enabled') && !document.querySelector('button[aria-label="Interrupt turn"]')`
+				run("wait", "--fn", idle)
+				run("fill", "#composer-text", test.message)
+				run("press", "Enter")
+				run("wait", "--text", test.message)
+				run("wait", "--fn", idle)
+				path := filepath.Join(manualWorkspace, test.path)
+				run("fill", "#composer-text", "!printf captured > '"+strings.ReplaceAll(path, "'", "'\\''")+"'")
+				run("press", "Enter")
+				for {
+					if contents, _ := os.ReadFile(path); string(contents) == "captured" {
+						break
+					}
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+						t.Fatal("browser shell did not write its rewind fixture file")
+					}
+				}
+				run("wait", "--fn", idle)
+				run("fill", "#composer-text", "/rewind")
+				run("press", "Enter")
+				waitForChoice := func(label string) {
+					run("wait", "--fn", fmt.Sprintf(
+						`[...document.querySelectorAll('[role=dialog] button:enabled')].some(b => b.textContent.trim() === %q)`,
+						label))
+				}
+				waitForChoice(test.message)
+				run("find", "role", "button", "click", "--name", test.message, "--exact")
+				// The captured-edit preview adds Revert edits and moves Keep edits.
+				// Wait for both choices before targeting either button.
+				waitForChoice("Revert edits")
+				run("find", "role", "button", "click", "--name", test.action, "--exact")
+				run("wait", "--fn", fmt.Sprintf(`!document.querySelector('[role=dialog]') && ![...document.querySelectorAll('[data-kind=user]')].some(row => row.textContent.includes(%q))`, test.message))
+				if test.action == "Keep edits" {
+					if contents, err := os.ReadFile(path); err != nil || string(contents) != "captured" {
+						t.Fatalf("Keep edits changed the workspace file: %q, %v", contents, err)
+					}
+				} else if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("Revert edits did not remove the captured file: %v", err)
+				}
+			}
+			run("wait", "--text", "Reference me.")
+			run("find", "role", "button", "click", "--name", "Display settings")
+			run("click", `[aria-label="Predictions"] button[data-value="on"]`)
+			run("press", "Escape")
+			run("wait", "--text", provider.prediction)
+			run("find", "role", "button", "click", "--name", provider.prediction, "--exact")
+			run("wait", "--fn", fmt.Sprintf(`document.querySelector('#composer-text')?.value === %q`, provider.prediction))
+			run("fill", "#composer-text", "")
+			run("find", "role", "button", "click", "--name", "Display settings")
+			run("click", `[aria-label="Predictions"] button[data-value="off"]`)
+			run("press", "Escape")
+			run("wait", "--fn", fmt.Sprintf(`![...document.querySelectorAll('form button')].some(button => button.textContent.trim() === %q)`, provider.prediction))
+		},
+	})
+}
+
+func checkComposerPresets(t *testing.T, run func(...string) string) {
+	t.Helper()
+	button := func(name string) {
+		run("find", "role", "button", "click", "--name", name, "--exact")
+	}
+	open := func() {
+		button("Presets")
+		run("wait", `[role=dialog] li:first-child button:enabled`)
+	}
+	for _, width := range []string{"1280", "768", "390"} {
+		run("set", "viewport", width, "844")
+		if width == "390" {
+			run("set", "media", "dark")
+		}
+		open()
+		run("wait", "--fn", `(() => {
+			const dialog = document.querySelector('[role=dialog]');
+			const row = dialog.querySelector('li button');
+			const box = dialog.getBoundingClientRect();
+			return dialog.querySelectorAll('ul kbd').length === 10 &&
+				box.left >= 0 && box.right <= innerWidth && dialog.scrollWidth <= dialog.clientWidth &&
+				(innerWidth > 640 || row.getBoundingClientRect().height >= 44);
+		})()`)
+		run("press", "Escape")
+		run("wait", "--fn", `!document.querySelector('[role=dialog]')`)
+	}
+
+	run("fill", "#composer-text", "Review carefully.\nKeep this line.")
+	open()
+	run("press", "1")
+	run("wait", "--fn", `document.querySelector('[role=dialog] textarea')?.value === 'Review carefully.\nKeep this line.'`)
+	button("Continue")
+	run("find", "label", "Label", "fill", "你好")
+	button("Save")
+	run("wait", "--text", "你好")
+	run("press", "Escape")
+	run("wait", "--fn", `!document.querySelector('[role=dialog]')`)
+	if draft := run("get", "value", "#composer-text"); draft != "Review carefully.\nKeep this line." {
+		t.Fatalf("saving a preset changed the draft to %q", draft)
+	}
+	open()
+	run("press", "r")
+	run("press", "1")
+	run("find", "label", "Label", "fill", "你好 renamed")
+	button("Save")
+	run("wait", "--text", "你好 renamed")
+	run("press", "e")
+	run("press", "1")
+	run("find", "label", "Prompt or slash command", "fill", "Review carefully.")
+	button("Continue")
+	button("Continue")
+	button("Replace preset 1")
+	run("wait", "--text", "你好 renamed")
+	run("press", "1")
+	run("wait", "--fn", `!document.querySelector('[role=dialog]') && document.querySelector('#composer-text').value === 'Review carefully.'`)
+
+	run("fill", "#composer-text", "日本語 $你好 afterwards")
+	run("eval", `(() => { const f = document.querySelector('#composer-text'); f.setSelectionRange(7, 7); f.dispatchEvent(new Event('select', { bubbles: true })); })()`)
+	run("wait", "--text", "你好 renamed")
+	run("press", "Enter")
+	run("wait", "--fn", `(() => {
+		const f = document.querySelector('#composer-text');
+		return f.value === '日本語 Review carefully. afterwards' && f.selectionStart === 21 &&
+			!document.querySelector('[aria-label="Attachments"]');
+	})()`)
+	open()
+	run("press", "d")
+	run("press", "1")
+	button("Delete preset 1")
+	run("wait", "--fn", `document.querySelector('[role=dialog] li button:enabled')?.textContent.includes('Empty')`)
+	run("press", "Escape")
+	run("wait", "--fn", `!document.querySelector('[role=dialog]')`)
+	run("fill", "#composer-text", "/")
+	run("wait", "--fn", `(() => {
+		const menu = document.querySelector('[aria-label="Slash commands"]');
+		return menu?.textContent.includes('/compact') && !menu.textContent.includes('/presets');
+	})()`)
+	run("fill", "#composer-text", "")
+	run("set", "media", "light")
+	run("set", "viewport", "1280", "900")
+}

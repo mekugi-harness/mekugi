@@ -18,10 +18,18 @@ use crate::outgoing_message::OutgoingMessageSender;
 const MATCH_LIMIT: usize = 50;
 const MAX_THREADS: usize = 12;
 
+#[derive(Clone, Copy)]
+pub(crate) enum FuzzyFileSearchMode {
+    ExplicitRoots,
+    Workspace,
+    WorkspaceIncludingIgnored,
+}
+
 pub(crate) async fn run_fuzzy_file_search(
     query: String,
     roots: Vec<String>,
     cancellation_flag: Arc<AtomicBool>,
+    mode: FuzzyFileSearchMode,
 ) -> Vec<FuzzyFileSearchResult> {
     if roots.is_empty() {
         return Vec::new();
@@ -37,19 +45,25 @@ pub(crate) async fn run_fuzzy_file_search(
     #[expect(clippy::expect_used)]
     let threads = NonZero::new(threads.max(1)).expect("threads should be non-zero");
     let search_dirs: Vec<PathBuf> = roots.iter().map(PathBuf::from).collect();
+    let explicit_roots = matches!(mode, FuzzyFileSearchMode::ExplicitRoots);
+    let options = file_search::FileSearchOptions {
+        limit,
+        threads,
+        compute_indices: true,
+        follow_links: explicit_roots,
+        respect_gitignore: !matches!(mode, FuzzyFileSearchMode::WorkspaceIncludingIgnored),
+        exclude: if explicit_roots {
+            Vec::new()
+        } else {
+            [".git", ".svn", ".hg", ".bzr", "_darcs", "CVS"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        },
+    };
 
     let mut files = match tokio::task::spawn_blocking(move || {
-        file_search::run(
-            query.as_str(),
-            search_dirs,
-            file_search::FileSearchOptions {
-                limit,
-                threads,
-                compute_indices: true,
-                ..Default::default()
-            },
-            Some(cancellation_flag),
-        )
+        file_search::run(&query, search_dirs, options, Some(cancellation_flag))
     })
     .await
     {

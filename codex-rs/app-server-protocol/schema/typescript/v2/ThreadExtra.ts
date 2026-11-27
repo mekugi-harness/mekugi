@@ -5,4 +5,8 @@
 /**
  * Extra app-server data for a thread.
  */
-export type ThreadExtra = Record<string, never>;
+export type ThreadExtra = {
+/**
+ * Skills confirmed by the native attachment or read paths for this thread.
+ */
+skills: Array<string>, };

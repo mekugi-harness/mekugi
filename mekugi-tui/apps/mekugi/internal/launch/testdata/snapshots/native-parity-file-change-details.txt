@@ -1,0 +1,17 @@
+└   Created added.go
+            parser.go
+    Deleted old.go
+
+
+
+
+
+  ── Create · added.go ──────────────────────────────────────────────────────── 1 / 3 [×] ──  
+   1 Create added.go             2 Edit parser.go              3 Delete old.go                
+                                                                                              
+  1 │ +new                                                                                    
+                                                                                              
+                                                                                              
+  ↑↓ PgUp/PgDn g/G scroll · tab/⇧tab command · / find · y copy · ← back · esc close           
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /tmp/ws • ↓ roster • → diff • ctrl+e view

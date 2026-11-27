@@ -1,6 +1,7 @@
 //! Shared skill lifecycle state, including session resources and thread-owned caches.
 //! Keeps discovery caches and live authorization checks separate from step preparation.
 
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -57,6 +58,13 @@ pub struct SkillsThreadState {
     pub(crate) executor_read_snapshot: Mutex<Option<ExecutorReadSnapshot>>,
     pub(crate) recent_skill_invocations: Arc<RecentSkillInvocations>,
     pub(crate) shadow_task_context: Arc<ShadowTaskContext>,
+    skill_usage: Mutex<SkillUsage>,
+}
+
+#[derive(Default)]
+struct SkillUsage {
+    names: BTreeSet<String>,
+    pending: Vec<String>,
 }
 
 struct CloudSkillRefreshError {
@@ -82,7 +90,46 @@ impl SkillsThreadState {
             executor_read_snapshot: Mutex::new(None),
             recent_skill_invocations: Arc::new(RecentSkillInvocations::default()),
             shadow_task_context: Arc::new(ShadowTaskContext::default()),
+            skill_usage: Mutex::new(SkillUsage::default()),
         }
+    }
+
+    pub fn record_skill_use(&self, name: &str) {
+        let mut usage = self
+            .skill_usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if usage.names.insert(name.to_owned()) {
+            usage.pending.push(name.to_owned());
+        }
+    }
+
+    pub fn used_skill_names(&self) -> Vec<String> {
+        self.skill_usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .names
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    pub fn restore_skill_uses(&self, names: BTreeSet<String>) {
+        self.skill_usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .names
+            .extend(names);
+    }
+
+    pub fn take_pending_skill_uses(&self) -> Vec<String> {
+        std::mem::take(
+            &mut self
+                .skill_usage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pending,
+        )
     }
 
     pub(crate) fn config(&self) -> SkillsExtensionConfig {

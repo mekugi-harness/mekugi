@@ -30,6 +30,7 @@ fn query_update_does_not_relabel_pending_matches() {
         work_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     }
     let inner = SessionInner {
+        follow_links: true,
         search_directories: vec![root.path().to_path_buf()],
         limit: 50,
         threads: 1,

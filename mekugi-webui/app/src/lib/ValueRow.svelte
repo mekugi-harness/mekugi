@@ -157,6 +157,7 @@
   // they read as one indented document.
   const json = $derived.by(() => {
     if (value.lang !== "json" || !code) return undefined;
+    if (value.opaqueJSON) return code;
     const decode = (v: unknown): unknown => {
       if (typeof v === "string" && /^\s*[[{]/.test(v)) {
         try {

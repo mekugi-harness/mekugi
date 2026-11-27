@@ -806,7 +806,7 @@ func tokenParts(agent activitypresentation.Agent) (string, string) {
 // Cost omits unknown cost rather than claiming zero; a response
 // that ended without usage makes the observed cost a lower bound.
 func Cost(agent activitypresentation.Agent) string {
-	if agent.Turns == 0 || !agent.CostKnown {
+	if !agent.CostKnown {
 		return ""
 	}
 	if agent.CostPartial {
@@ -1080,7 +1080,7 @@ func (v *View) MetricTable(rows []activitypresentation.AgentRow, now time.Time) 
 			timerCell = strings.Repeat(" ", max(0, 3-len(elapsed))) + metricValues(elapsed) + terminalui.Dim + " · " + terminalui.Undim + metricValues(age)
 		}
 		cost, turns := "", ""
-		if row.Agent.Turns > 0 && row.Agent.CostKnown {
+		if row.Agent.CostKnown {
 			prefix := " "
 			if row.Agent.CostPartial {
 				prefix = "≥"

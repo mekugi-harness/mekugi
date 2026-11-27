@@ -321,6 +321,9 @@
                 {#if traffic.from}<AgentName name={traffic.from} current={owner} />{/if}
                 {#if traffic.to}{#if traffic.from}<span class="text-muted">→</span>{/if}
                   <AgentName name={traffic.to} current={owner} />{/if}
+                {#each traffic.otherRecipients ?? [] as recipient (recipient)}
+                  <span aria-hidden="true">,</span><AgentName name={recipient} current={owner} />
+                {/each}
                 {#if traffic.detail && (!entry.assignment || traffic.kind !== "message")}<Trace.Description
                     class="text-muted">{traffic.detail}</Trace.Description
                   >{/if}
@@ -533,6 +536,25 @@
             {/if}
           {/each}
         </Trace.Root>
+        {#if entry.images?.length || entry.audio?.length}
+          <div class="flex flex-wrap items-start gap-2 pt-1 pb-2">
+            {#each entry.images ?? [] as image, index (`${image}:${index}`)}
+              <UserImage {entry} {image} {index} label={`Tool image ${index + 1}`} small />
+            {/each}
+            {#each entry.audio ?? [] as audio, index (`${audio}:${index}`)}
+              <!-- Native tool output may include audio without a supplied transcript. -->
+              <!-- svelte-ignore a11y_media_has_caption -->
+              <audio
+                aria-label={`Tool audio ${index + 1}`}
+                src={audio}
+                controls
+                preload="none"
+                {...{ loading: "lazy" }}
+                class="max-w-full"
+              ></audio>
+            {/each}
+          </div>
+        {/if}
       {:else if entry.text}
         <Markdown text={entry.text} />
       {/if}

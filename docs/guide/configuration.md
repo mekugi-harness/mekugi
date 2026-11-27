@@ -142,8 +142,9 @@ Its Features tab compares the displayed thread's use of model-facing features wi
 sum over all of its descendant agents. Each family lists its total beside the uses and
 failed attempts within it: compactions, spawns and their preloads, delegate final-answer
 edit ranges, `send_message` and `btw`, `wait_agent` all mode and output deduplication.
-Left/Right or Tab switches tabs; Up/Down/PgUp/PgDn scrolls, `[`/`]` selects exchanges,
-`r` refreshes, Esc closes. Launch totals do not restore; the roster retains thread
+Left/Right or Tab switches tabs; Up/Down/PgUp/PgDn scrolls, `r` refreshes,
+and Esc closes. In the browser, open Features in **Session details**.
+Launch totals do not restore; the roster retains thread
 usage. Throughput divides reported output tokens by measured provider request
 time, excluding tools and idle time. Missing measurements stay unavailable.
 Costs are reference API estimates, not subscription charges or billing figures.
@@ -164,7 +165,7 @@ Captures exclude prompts, patches, and credentials.
   the old `skills.include_instructions = false` workaround. Set it to `false`
   only if you want to hide the automatic catalog.
   See [guidance](../reference/agent-guidance.md).
-- **Recovery:** see [compaction](sessions.md#compaction-and-recovery) and [storage](sessions.md#replay-storage).
+- **Recovery:** see [compaction](sessions.md#compaction-and-recovery).
 - **Frontend commands:** native `mekugi-app-server` (`codex-arg0`) helpers run through stock
   execution. JavaScript plugin loading has been removed; existing plugin files
   are left untouched.

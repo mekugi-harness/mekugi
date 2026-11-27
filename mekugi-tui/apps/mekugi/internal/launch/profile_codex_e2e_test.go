@@ -572,7 +572,7 @@ func TestNativeProviderInterruptionAndFailure(t *testing.T) {
 				cmd.Env = append(environment, "CODEX_ROLLOUT_TRACE_ROOT="+traces)
 				return cmd
 			}, "")
-			terminal.await("Ready")
+			terminal.awaitReady()
 			terminal.send("CANCEL_FIXTURE_TURN\r")
 			select {
 			case <-started:

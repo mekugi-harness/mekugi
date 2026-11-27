@@ -138,6 +138,7 @@ type nativeClientCall struct {
 	discard    bool
 
 	acceptingCompletion bool
+	preferenceWritten   chan struct{}
 }
 
 type nativeClient struct {
@@ -170,12 +171,11 @@ type nativeClient struct {
 	preferences            terminalsession.PreferenceEncoder
 	preferenceState        terminalsession.Preferences
 	preferenceReady        bool
+	historyRevision        uint64
 	completionTarget       conversation.EditorTarget
 	completionInput        string
 	completionReady        bool
 	completionCatalog      uint64
-	prediction             [3]string
-	predictionRevision     uint64
 	detailHydrating        bool
 	detailNav              transcriptDetailNav
 	resumePaging           bool
@@ -273,11 +273,8 @@ func (c *nativeClient) refreshView(now time.Time) {
 	if details, ok := c.localDetails.DetailView(c.localDetailID); ok {
 		frame.Details = &sessionapi.NativeDetails{View: details}
 	}
-	prediction := [3]string{frame.Facts.PredictionThread, frame.Facts.PredictionTurn, frame.View.Draft.Prediction}
-	if prediction[2] != "" && prediction != c.prediction {
-		c.prediction, c.predictionRevision = prediction, ordinary.Revision()
-	}
-	if ordinary.Text != "" || ordinary.Revision() != c.predictionRevision || c.renderer.terminal.Main.PredictionsDisabled {
+	if view.Input.ID != view.Main.ID || view.Displayed.ID != view.Main.ID || ordinary.Text != "" ||
+		ordinary.Revision() != frame.Facts.PredictionRevision || c.renderer.terminal.Main.PredictionsDisabled {
 		frame.View.Draft.Prediction = ""
 	}
 	frame.View.Status.ShellMode = conversation.ShellDraftMode(ordinary.Text, view.Questions.Call != nil || view.Approvals.Open)

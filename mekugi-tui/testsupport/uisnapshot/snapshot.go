@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,6 +23,24 @@ func Assert(t testing.TB, path, rendered string) {
 	if err := check(path, rendered, os.Getenv("MEKUGI_UPDATE_UI_SNAPSHOTS") == "1"); err != nil {
 		t.Fatal(err)
 	}
+	if visits := os.Getenv("MEKUGI_SNAPSHOT_VISITS"); visits != "" {
+		if err := recordVisit(visits, path); err != nil {
+			t.Fatalf("record UI snapshot %s: %v", path, err)
+		}
+	}
+}
+
+func recordVisit(dir, path string) error {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	visit, err := os.CreateTemp(dir, "visit-")
+	if err != nil {
+		return err
+	}
+	_, err = visit.WriteString(path)
+	return errors.Join(err, visit.Close())
 }
 
 // AssertTerminal compares terminal cells, including styles and links, with a

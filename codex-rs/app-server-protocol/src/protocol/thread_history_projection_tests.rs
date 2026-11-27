@@ -1,11 +1,17 @@
+use codex_protocol::AgentPath;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::AgentMessageItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
+use codex_protocol::models::AgentMessageInputContent;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::ItemCompletedEvent;
+use codex_protocol::protocol::RawResponseItemEvent;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -19,8 +25,116 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::protocol::thread_history::ThreadHistoryBuilder;
+use crate::protocol::v2::AgentMailKind;
 use crate::protocol::v2::ThreadItemPayload;
 use crate::protocol::v2::TurnError;
+
+#[test]
+fn projects_one_authored_reply_from_live_and_persisted_mail() {
+    let body = "## Summary\nFound the cause.\n\n~~~markdown\n## Not a boundary\n~~~\n\n\
+                ## Details\nThe worker verified the release gate.";
+    let mut reply = InterAgentCommunication::new(
+        AgentPath::root().join("worker").unwrap(),
+        AgentPath::root(),
+        Vec::new(),
+        format!(
+            "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\n{body}"
+        ),
+        /*trigger_turn*/ false,
+    );
+    reply.id = Some(ResponseItemId::with_suffix("amsg", "reply"));
+    let mut item = reply.to_model_input_item();
+    item.set_turn_id_if_missing("receiving-turn");
+    item.set_create_time_if_missing(serde_json::Number::from_f64(1.25).unwrap());
+    let ResponseItem::AgentMessage { content, .. } = &mut item else {
+        panic!("expected a retained mail item");
+    };
+    content.push(AgentMessageInputContent::InputText {
+        text: "Attached model context, not the authored reply.".to_owned(),
+    });
+
+    let expected = ThreadItem {
+        started_at_ms: Some(1250),
+        completed_at_ms: Some(1250),
+        payload: ThreadItemPayload::AgentMail {
+            id: "amsg_reply".to_owned(),
+            kind: AgentMailKind::Reply,
+            sender: "/root/worker".to_owned(),
+            recipient: "/root".to_owned(),
+            text: body.to_owned(),
+            summary: Some("Found the cause.\n\n~~~markdown\n## Not a boundary\n~~~".to_owned()),
+            details: Some("The worker verified the release gate.".to_owned()),
+        },
+    };
+    let record = RolloutItem::ResponseItem(item.clone().into());
+    let notification = EventMsg::RawResponseItem(RawResponseItemEvent { item });
+    assert_eq!(
+        project(record.clone()).changed_items,
+        vec![ThreadHistoryItemChange {
+            turn_id: "receiving-turn".to_owned(),
+            item: expected.clone(),
+        }]
+    );
+    let mut history = ThreadHistoryBuilder::new();
+    history.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+        turn_id: "receiving-turn".to_owned(),
+        turn_attribution: None,
+        root_turn_id: None,
+        trace_id: None,
+        started_at: Some(1),
+        model_context_window: None,
+        collaboration_mode_kind: Default::default(),
+    }));
+    assert_eq!(
+        history
+            .handle_event_with_changes(&notification)
+            .changed_items[0]
+            .item,
+        expected
+    );
+    history.handle_rollout_item(&record);
+    assert_eq!(history.finish()[0].items, vec![expected]);
+}
+
+#[test]
+fn projects_consumed_message_without_treating_accepted_or_encrypted_mail_as_delivery() {
+    let mut message = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::root().join("worker").unwrap(),
+        Vec::new(),
+        "Message Type: MESSAGE\nTask name: /root/worker\nSender: /root\nPayload:\nFirst line.\nSecond line."
+            .to_owned(),
+        /*trigger_turn*/ false,
+    );
+    message.id = Some(ResponseItemId::with_suffix("amsg", "message"));
+    let mut item = message.to_model_input_item();
+    assert!(ThreadItem::from_delivered_agent_mail(&item).is_none());
+
+    item.set_turn_id_if_missing("receiving-turn");
+    assert_eq!(
+        ThreadItem::from_delivered_agent_mail(&item),
+        Some((
+            "receiving-turn",
+            ThreadItem::untimed(ThreadItemPayload::AgentMail {
+                id: "amsg_message".to_owned(),
+                kind: AgentMailKind::Message,
+                sender: "/root".to_owned(),
+                recipient: "/root/worker".to_owned(),
+                text: "First line.\nSecond line.".to_owned(),
+                summary: None,
+                details: None,
+            }),
+        ))
+    );
+    let ResponseItem::AgentMessage { content, .. } = &mut item else {
+        panic!("expected a retained mail item");
+    };
+    content.push(AgentMessageInputContent::EncryptedContent {
+        encrypted_content: "private".to_owned(),
+    });
+    assert!(ThreadItem::from_delivered_agent_mail(&item).is_none());
+}
 
 #[test]
 fn projects_turn_lifecycle_without_prior_builder_state() {

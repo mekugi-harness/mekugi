@@ -1,13 +1,14 @@
 package launch
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"math"
 	"os"
 	"slices"
 	"strings"
@@ -19,12 +20,14 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/inference"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/presentation"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presets"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 	usagepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/usage/presentation"
@@ -35,6 +38,7 @@ import (
 type nativeSessionConnection interface {
 	Next() (sessionapi.NativeEvent, error)
 	Send(ctx context.Context, target sessionapi.NativeTarget, operation sessionapi.NativeOperation) (sessionapi.NativeResult, error)
+	requestPrediction(thread, turn string, revision uint64)
 	Attach(ctx context.Context, thread string) (nativeSessionConnection, error)
 	Close() error
 }
@@ -63,36 +67,99 @@ type directItemRecord struct {
 }
 
 type directThreadUsage struct {
-	TotalTokens           uint64
-	InputTokens           uint64
-	OutputTokens          uint64
-	CachedInputTokens     uint64
-	CacheWriteInputTokens uint64
-	ReasoningOutputTokens uint64
+	sessionapi.NativeUsage
 	ContextTokens         uint64
 	ContextWindow         uint64
 	EstimatedCostUSD      float64
 	CostKnown             bool
 	CostPartial           bool
-	OutputTokensPerSecond float64
-	HasThroughput         bool
+	OutputTokensPerSecond *float64
 	WorkDurationMs        int64
+	WorkKnown             bool
+	WorkSince             time.Time
+	LastResponse          time.Time
+	LastCompleted         time.Time
 	Roundtrips            uint64
+	RoundtripsPartial     bool
+	Turns                 uint64
+	TokensKnown           bool
+	UsagePartial          bool
 }
 
-func (u directThreadUsage) outputThroughput() inference.OutputThroughput {
-	if !u.HasThroughput {
-		return inference.OutputThroughput{}
+type directWireUsage struct {
+	Total struct {
+		TotalTokens           uint64 `json:"totalTokens"`
+		InputTokens           uint64 `json:"inputTokens"`
+		OutputTokens          uint64 `json:"outputTokens"`
+		CachedInputTokens     uint64 `json:"cachedInputTokens"`
+		ReasoningOutputTokens uint64 `json:"reasoningOutputTokens"`
+	} `json:"total"`
+	Last struct {
+		TotalTokens uint64 `json:"totalTokens"`
+	} `json:"last"`
+	ModelContextWindow    uint64   `json:"modelContextWindow"`
+	EstimatedCostUSD      *float64 `json:"estimatedCostUsd"`
+	CostPartial           bool     `json:"costPartial"`
+	OutputTokensPerSecond *float64 `json:"outputTokensPerSecond"`
+	WorkDurationMs        *int64   `json:"workDurationMs"`
+	WorkStartedAt         *int64   `json:"workStartedAt"`
+	LastResponseAt        *int64   `json:"lastResponseAt"`
+	LastCompletedAt       *int64   `json:"lastCompletedAt"`
+	Turns                 uint64   `json:"turns"`
+	Roundtrips            uint64   `json:"roundtrips"`
+	RoundtripsPartial     bool     `json:"roundtripsPartial"`
+	UsageUnavailable      bool     `json:"usageUnavailable"`
+	UsagePartial          bool     `json:"usagePartial"`
+}
+
+func (c *directNativeConnection) applyThreadUsageLocked(thread string, wire *directWireUsage) {
+	if wire == nil {
+		return
 	}
-	measured := u.Roundtrips
-	if measured == 0 {
-		measured = 1
+	timestamp := func(seconds *int64) time.Time {
+		if seconds == nil {
+			return time.Time{}
+		}
+		return time.Unix(*seconds, 0)
 	}
-	return inference.OutputThroughput{
-		OutputTokens:     uint64(math.Round(u.OutputTokensPerSecond * 1000)),
-		DurationNanos:    uint64(1000 * time.Second),
-		MeasuredRequests: measured,
+	u := directThreadUsage{
+		NativeUsage: sessionapi.NativeUsage{
+			TotalTokens:           wire.Total.TotalTokens,
+			InputTokens:           wire.Total.InputTokens,
+			OutputTokens:          wire.Total.OutputTokens,
+			CachedInputTokens:     wire.Total.CachedInputTokens,
+			ReasoningOutputTokens: wire.Total.ReasoningOutputTokens,
+		},
+		OutputTokensPerSecond: wire.OutputTokensPerSecond,
+		ContextTokens:         wire.Last.TotalTokens,
+		ContextWindow:         wire.ModelContextWindow,
+		CostPartial:           wire.CostPartial,
+		LastResponse:          timestamp(wire.LastResponseAt),
+		LastCompleted:         timestamp(wire.LastCompletedAt),
+		WorkSince:             timestamp(wire.WorkStartedAt),
+		Roundtrips:            wire.Roundtrips,
+		RoundtripsPartial:     wire.RoundtripsPartial,
+		Turns:                 wire.Turns,
+		TokensKnown:           !wire.UsageUnavailable,
+		UsagePartial:          wire.UsagePartial,
 	}
+	if wire.EstimatedCostUSD != nil {
+		u.EstimatedCostUSD, u.CostKnown = *wire.EstimatedCostUSD, true
+	}
+	if wire.WorkDurationMs != nil {
+		u.WorkDurationMs, u.WorkKnown = *wire.WorkDurationMs, true
+	}
+	if c.threadUsage == nil {
+		c.threadUsage = make(map[string]directThreadUsage)
+	}
+	c.threadUsage[thread] = u
+}
+
+func (u directThreadUsage) throughputLabel() string {
+	if u.OutputTokensPerSecond == nil {
+		return ""
+	}
+	return fmt.Sprintf("%.1f tok/s", *u.OutputTokensPerSecond)
 }
 
 type directNativeOptions struct {
@@ -126,39 +193,44 @@ type directNativeConnection struct {
 	events chan sessionapi.NativeEvent
 	errCh  chan error
 
-	mu              sync.Mutex
-	closed          bool
-	revision        uint64
-	seq             uint64
-	mainThread      string
-	displayedThread string
-	inputThread     string
-	sideThread      string
-	btwThread       string
-	btwMainThread   string
-	btwExchangeID   uint64
-	btwQuestion     string
-	btwAnswer       strings.Builder
-	btwRunning      bool
-	workspace       string
-	title           string
-	model           string
-	effort          string
-	tier            string
-	busy            bool
-	activeTurn      string
-	sideActiveTurn  string
-	archived        bool
-	usage           sessionapi.NativeUsage
-	contextTokens   uint64
-	contextWindow   uint64
-	threadUsage     map[string]directThreadUsage
-	rateLimits      [2]*sessionpresentation.CaptionLimit
-	prediction      string
-	predictionTurn  string
-	feedbackText    string
-	feedbackAlert   bool
-	feedbackRev     uint64
+	mu                 sync.Mutex
+	closed             bool
+	revision           uint64
+	seq                uint64
+	mainThread         string
+	displayedThread    string
+	inputThread        string
+	sideThread         string
+	sideReplaceTask    string
+	sideModel          string
+	sideEffort         string
+	btwThread          string
+	btwMainThread      string
+	btw                conversation.SideAnswer
+	btwCompletedAnswer string
+	btwRunning         bool
+	workspace          string
+	title              string
+	model              string
+	modelProvider      string
+	effort             string
+	tier               string
+	permissionProfile  string
+	approvalPolicy     string
+	sandboxPolicy      string
+	instructionSources []string
+	busy               bool
+	activeTurn         string
+	sideActiveTurn     string
+	inputTurnStarts    []*directInputTurnStart
+	archived           bool
+	threadUsage        map[string]directThreadUsage
+	rateLimits         [2]*sessionpresentation.CaptionLimit
+	prediction         directPrediction
+	predictionChatGPT  *bool
+	feedbackText       string
+	feedbackAlert      bool
+	feedbackRev        uint64
 
 	items       map[string][]*directItemRecord
 	itemsByID   map[string]*directItemRecord
@@ -169,13 +241,19 @@ type directNativeConnection struct {
 	threadCallers       map[string]string
 	review              *changes.ReviewView
 	reviewRev           uint64
-	queue               []conversation.PendingText
+	reviewThread        string
+	editReceipts        map[nativeEditItem][]nativeCapturedFile
+	mainQueue           directQueueState
+	sideQueue           directQueueState
+	queueRead           uint64
+	steerTurns          map[directSteerTurnID]*directSteerTurn
 	resumeView          *sessionpresentation.ResumeView
-	resumeCursor        string
 	requests            map[string]*directPendingServerRequest
 	requestOrder        []string
 	details             *sessionapi.NativeDetails
 	detailSeq           uint64
+	processRefresh      uint64
+	processLists        map[string]bool
 	panel               *sessionpresentation.PanelView
 	panelKind           string
 	panelSeq            uint64
@@ -186,15 +264,24 @@ type directNativeConnection struct {
 	interruptLocked     bool
 	predictionsDisabled bool
 	preferences         jsontext.Value
+	inputHistory        []composer.HistoryEntry
+	inputHistoryRev     uint64
 	focused             bool
 	menu                *sessionpresentation.MenuView
 	menuSeq             uint64
+	quitOffer           directQuitWork
+	settingsMenuThread  string
 	completionTarget    conversation.EditorTarget
 	dismissedComp       completion.Target
+	presetCatalog       *[10]presets.Slot
+	presetFlow          *presets.Flow
 	skillsCwd           string
 	skillsLoaded        bool
 	skills              []completion.Choice
 	skillsGen           uint64
+	skillManager        *directSkillManager
+	copyChoices         []copyChoice
+	rewind              *directRewindMenu
 	effectSeq           uint64
 	effects             []sessionapi.NativeEffect
 }
@@ -265,9 +352,12 @@ func (c *directNativeConnection) bootstrap(ctx context.Context, attachThread str
 	}
 	switch targetResume {
 	case "--pick":
-		return c.loadResumeList(ctx, "", false)
+		return c.openResumePicker(ctx)
 	case "--last":
-		listParams := map[string]any{"limit": 1}
+		listParams := map[string]any{
+			"limit": 1, "modelProviders": []string{}, "archived": false,
+			"currentAccountOnly": true, "sortKey": "updated_at",
+		}
 		if c.opts.workspace != "" {
 			listParams["cwd"] = c.opts.workspace
 		}
@@ -288,7 +378,7 @@ func (c *directNativeConnection) bootstrap(ctx context.Context, attachThread str
 	if targetResume != "" {
 		return c.resumeThread(ctx, targetResume)
 	}
-	return c.startFreshThread(ctx)
+	return c.startFreshThread(ctx, c.newThreadParams())
 }
 
 func (c *directNativeConnection) familyParams() map[string]any {
@@ -313,7 +403,7 @@ func (c *directNativeConnection) familyParams() map[string]any {
 	return family
 }
 
-func (c *directNativeConnection) startFreshThread(ctx context.Context) error {
+func (c *directNativeConnection) newThreadParams() map[string]any {
 	params := map[string]any{
 		"cwd": c.opts.workspace,
 	}
@@ -327,13 +417,19 @@ func (c *directNativeConnection) startFreshThread(ctx context.Context) error {
 	if family := c.familyParams(); family != nil {
 		params["family"] = family
 	}
+	return params
+}
+
+func (c *directNativeConnection) startFreshThread(ctx context.Context, params map[string]any) error {
 	var resp directThreadStartResponse
 	if err := c.wire.Call(ctx, "thread/start", params, &resp); err != nil {
 		return fmt.Errorf("start native thread: %w", err)
 	}
 	c.mu.Lock()
-	c.applyThreadBootstrapLocked(resp.Thread.ID, resp.Thread.Cwd, resp.Thread.Name, resp.Model, resp.ReasoningEffort, resp.ServiceTier)
+	c.applyThreadBootstrapLocked(resp)
+	c.publishLocked()
 	c.mu.Unlock()
+	c.refreshInputHistory(ctx, resp.Thread.ID)
 	c.refreshAuxiliary(ctx, resp.Thread.ID)
 	return nil
 }
@@ -341,6 +437,20 @@ func (c *directNativeConnection) startFreshThread(ctx context.Context) error {
 func (c *directNativeConnection) resumeThread(ctx context.Context, threadID string) error {
 	params := map[string]any{
 		"threadId": threadID,
+	}
+	// Forward only invocation overrides, not the launch workspace or resolved
+	// server defaults. Missing fields remain eligible for native restoration.
+	overrides := appServerResumeConfig(c.opts.configArgs, nil)
+	for configKey, wireKey := range map[string]string{
+		"model": "model", "model_provider": "modelProvider", "service_tier": "serviceTier",
+	} {
+		if value, explicit := overrides[configKey]; explicit {
+			params[wireKey] = value
+			delete(overrides, configKey)
+		}
+	}
+	if len(overrides) != 0 {
+		params["config"] = overrides
 	}
 	if c.opts.yolo {
 		params["approvalPolicy"] = "never"
@@ -354,28 +464,64 @@ func (c *directNativeConnection) resumeThread(ctx context.Context, threadID stri
 		return fmt.Errorf("resume native thread %s: %w", threadID, err)
 	}
 	c.mu.Lock()
-	c.applyThreadBootstrapLocked(resp.Thread.ID, resp.Thread.Cwd, resp.Thread.Name, resp.Model, resp.ReasoningEffort, resp.ServiceTier)
+	c.applyThreadBootstrapLocked(resp)
 	c.hydrateThreadTurnsLocked(resp.Thread.ID, resp.Thread.Turns)
 	c.mu.Unlock()
+	c.refreshInputHistory(ctx, resp.Thread.ID)
 	c.refreshAuxiliary(ctx, resp.Thread.ID)
 	return nil
 }
 
-func (c *directNativeConnection) applyThreadBootstrapLocked(threadID, cwd, name, model, effort, tier string) {
+func (c *directNativeConnection) applyThreadBootstrapLocked(response directThreadStartResponse) {
+	threadID, cwd, name := response.Thread.ID, cmp.Or(response.Cwd, response.Thread.Cwd), response.Thread.Name
+	model, effort, tier := response.Model, response.ReasoningEffort, response.ServiceTier
+	previousThread, previousWorkspace := c.mainThread, c.workspace
 	if c.mainThread != threadID {
+		c.resetPredictionLocked("")
 		c.activeTurn = ""
+		c.busy = c.sideActiveTurn != ""
+		c.archived = false
+		c.title = name
+		c.modelProvider = ""
+		c.effort = ""
+		c.tier = ""
+		c.family, c.review = nil, nil
+		c.reviewThread, c.editReceipts = "", nil
+		c.mainQueue = directQueueState{}
+		c.processes = nil
+		c.processLists = nil
+		if c.details != nil && c.details.View.Processes {
+			c.details = nil
+		}
+		c.presetCatalog = nil
+		c.clearMenuLocked()
+		c.dismissedComp = completion.Target{}
 	}
 	c.mainThread = threadID
 	c.displayedThread = threadID
 	c.inputThread = threadID
+	c.applyThreadUsageLocked(threadID, response.Thread.TokenUsage)
 	if cwd != "" {
 		c.workspace = cwd
+	}
+	if threadID != previousThread || c.workspace != previousWorkspace {
+		c.loadTerminalPreferencesLocked()
+	}
+	c.permissionProfile = ""
+	c.approvalPolicy = directApprovalLabel(response.ApprovalPolicy)
+	c.sandboxPolicy = response.Sandbox.Type
+	c.instructionSources = response.InstructionSources
+	if response.ActivePermissionProfile != nil {
+		c.permissionProfile = response.ActivePermissionProfile.ID
 	}
 	if name != "" {
 		c.title = name
 	}
 	if model != "" {
 		c.model = model
+	}
+	if response.ModelProvider != "" {
+		c.modelProvider = response.ModelProvider
 	}
 	if effort != "" {
 		c.effort = effort
@@ -385,6 +531,9 @@ func (c *directNativeConnection) applyThreadBootstrapLocked(threadID, cwd, name,
 	}
 	c.threadCallers[threadID] = "/root"
 	c.resumeView = nil
+	if turns := response.Thread.Turns; len(turns) != 0 && turns[len(turns)-1].Status == "completed" {
+		c.resetPredictionLocked(turns[len(turns)-1].ID)
+	}
 }
 
 func (c *directNativeConnection) refreshAuxiliary(ctx context.Context, threadID string) {
@@ -392,9 +541,11 @@ func (c *directNativeConnection) refreshAuxiliary(ctx context.Context, threadID 
 		return
 	}
 	c.refreshSubtree(ctx, threadID)
-	c.refreshChanges(ctx, threadID)
+	c.mu.Lock()
+	displayed := cmp.Or(c.displayedThread, threadID)
+	c.mu.Unlock()
+	c.refreshChanges(ctx, displayed)
 	c.refreshQueue(ctx, threadID)
-	c.refreshProcesses(ctx, threadID)
 	c.refreshRateLimits(ctx)
 }
 
@@ -489,6 +640,10 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	if input == "" {
 		input = c.mainThread
 	}
+	queue := c.mainQueue
+	if input == c.sideThread && input != "" {
+		queue = c.sideQueue
+	}
 	mainCaller := c.threadCallers[c.mainThread]
 	if mainCaller == "" {
 		mainCaller = "/root"
@@ -503,21 +658,26 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	}
 	var sideThread sessionpresentation.Thread
 	if c.sideThread != "" {
-		sideThread = sessionpresentation.Thread{ID: c.sideThread, Caller: "side"}
+		sideThread = sessionpresentation.Thread{ID: c.sideThread, Caller: sessionpresentation.SideCaller}
 	}
 
+	mainUsage := c.threadUsage[c.mainThread]
 	displayedUsage, hasDisplayedUsage := c.threadUsage[displayed]
 	if !hasDisplayedUsage {
-		displayedUsage = c.threadUsage[c.mainThread]
+		displayedUsage = mainUsage
 	}
-	captionCtxTokens := c.contextTokens
-	captionCtxWindow := c.contextWindow
+	captionCtxTokens := mainUsage.ContextTokens
+	captionCtxWindow := mainUsage.ContextWindow
 	if displayedUsage.ContextWindow > 0 || displayedUsage.ContextTokens > 0 {
 		captionCtxTokens = displayedUsage.ContextTokens
 		captionCtxWindow = displayedUsage.ContextWindow
 	}
 	var captionItems []presentation.Item
-	if label := usagepresentation.OutputThroughputLabel(displayedUsage.outputThroughput()); label != "" {
+	captionModel, captionEffort := c.model, c.effort
+	if displayed == c.sideThread && c.sideThread != "" {
+		captionModel, captionEffort = c.sideModel, c.sideEffort
+	}
+	if label := displayedUsage.throughputLabel(); label != "" {
 		captionItems = append(captionItems, presentation.Item{
 			ID:   usagepresentation.Throughput.ID,
 			Text: label,
@@ -548,8 +708,8 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Animating: c.busy,
 		},
 		Caption: sessionpresentation.Caption{
-			Model:         c.model,
-			Effort:        c.effort,
+			Model:         captionModel,
+			Effort:        captionEffort,
 			Tier:          c.tier,
 			ContextTokens: captionCtxTokens,
 			ContextWindow: captionCtxWindow,
@@ -558,12 +718,13 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Limits:        directCaptionLimits(c.rateLimits),
 		},
 		Pending: conversation.PendingView{
-			CanSteer: c.busy,
-			Queued:   slices.Clone(c.queue),
+			CanSteer: c.activeTurnForLocked(input) != "" && len(queue.waiting) > 0,
+			Waiting:  c.pendingSteersLocked(input),
+			Queued:   slices.Clone(queue.pending),
 		},
 		Draft: conversation.DraftView{
 			Available:  c.mainThread != "" && c.resumeView == nil,
-			Prediction: c.prediction,
+			Prediction: c.prediction.text,
 		},
 		Interrupt:          sessioncontrol.InterruptTarget{Thread: input, Turn: c.activeTurnForLocked(input)},
 		InterruptAvailable: c.busy || c.btwRunning,
@@ -577,23 +738,18 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		view.Status.SetFeedback(sessionpresentation.Label{Text: c.feedbackText, Alert: c.feedbackAlert}, c.feedbackRev)
 	}
 	if c.sideThread != "" {
-		view.Side = &sessionpresentation.SideToken{ID: 1, Key: c.sideThread, Label: "Side"}
+		view.Side = &sessionpresentation.SideToken{ID: 1, Key: c.sideThread, Label: "One-off"}
 	}
-	if c.btwThread != "" || c.btwQuestion != "" {
-		var answers []conversation.Answer
-		if text := c.btwAnswer.String(); text != "" {
-			answers = []conversation.Answer{{Text: text}}
-		}
-		status := "Done"
-		if c.btwRunning {
-			status = "Running"
-		}
+	if c.btwThread != "" {
 		view.BTW = &conversation.SideView{
-			Key:      c.btwThread,
-			ID:       c.btwExchangeID,
-			Question: c.btwQuestion,
-			Status:   status,
-			Answer:   answers,
+			Key:       c.btwThread,
+			ID:        c.btw.ID,
+			Question:  c.btw.Question,
+			History:   slices.Clone(c.btw.History),
+			Status:    c.btw.Status,
+			Answer:    slices.Clone(c.btw.Answer),
+			Alert:     c.btw.Alert,
+			Truncated: c.btw.Truncated,
 		}
 	}
 
@@ -634,30 +790,41 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		}
 	}
 
+	var review *changes.ReviewView
+	if c.reviewThread == displayed {
+		review = c.review
+	}
+	predictionTurn := ""
+	if c.prediction.pending == nil && !c.prediction.attempted && c.predictionAllowedLocked(c.mainThread, c.prediction.turn) {
+		predictionTurn = c.prediction.turn
+	}
 	frame := sessionapi.NativeFrame{
-		Processes:        slices.Clone(c.processes),
-		Questions:        questions,
-		Approvals:        approvals,
-		View:             view,
-		Main:             mainPub,
-		Agents:           agentsPub,
-		Family:           family,
-		Review:           c.review,
-		Live:             slices.Clone(c.live),
-		LiveScope:        liveScope,
-		Details:          c.details,
-		MainOutput:       slices.Clone(c.mainOutput),
-		AgentOutput:      slices.Clone(c.agentOutput),
-		Effects:          slices.Clone(c.effects),
-		CompletionTarget: c.completionTarget,
+		Processes:         slices.Clone(c.processes),
+		Questions:         questions,
+		Approvals:         approvals,
+		View:              view,
+		Main:              mainPub,
+		Agents:            agentsPub,
+		Family:            family,
+		Review:            review,
+		Live:              slices.Clone(c.live),
+		LiveScope:         liveScope,
+		Details:           c.details,
+		MainOutput:        slices.Clone(c.mainOutput),
+		AgentOutput:       slices.Clone(c.agentOutput),
+		Effects:           slices.Clone(c.effects),
+		CompletionTarget:  c.completionTarget,
+		CompletionCatalog: c.skillsGen,
 		Facts: sessionapi.NativeSessionFacts{
-			Preferences:      c.preferences,
-			Usage:            c.usage,
-			Archived:         c.archived,
-			PredictionThread: c.mainThread,
-			PredictionTurn:   c.predictionTurn,
-			ActionRequired:   len(approvals) > 0 || len(questions) > 0,
-			Busy:             c.busy,
+			History:            c.inputHistory,
+			HistoryRevision:    c.inputHistoryRev,
+			Preferences:        c.preferences,
+			Usage:              mainUsage.NativeUsage,
+			Archived:           c.archived,
+			PredictionTurn:     predictionTurn,
+			PredictionRevision: c.prediction.revision,
+			ActionRequired:     len(approvals) > 0 || len(questions) > 0,
+			Busy:               c.busy,
 		},
 	}
 	return sessionapi.NativeEvent{
@@ -732,7 +899,8 @@ func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
 		if u, ok := c.threadUsage[agent.Thread]; ok {
 			agent.InputTokens = u.InputTokens
 			agent.OutputTokens = u.OutputTokens
-			agent.TokensKnown = u.TotalTokens > 0 || u.InputTokens > 0 || u.OutputTokens > 0
+			agent.TokensKnown = u.TokensKnown
+			agent.UsagePartial = u.UsagePartial
 			agent.ContextTokens = u.ContextTokens
 			agent.ContextWindow = u.ContextWindow
 			agent.ContextKnown = u.ContextWindow > 0
@@ -740,15 +908,17 @@ func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
 			agent.CostKnown = u.CostKnown
 			agent.CostPartial = u.CostPartial
 			agent.Roundtrips = u.Roundtrips
-			if u.CostKnown || u.TotalTokens > 0 {
-				agent.Turns = max(1, u.Roundtrips)
-			}
-			if u.WorkDurationMs > 0 {
+			agent.RoundtripsPartial = u.RoundtripsPartial
+			agent.Turns = u.Turns
+			agent.LastResponse = u.LastResponse
+			if u.WorkKnown {
 				agent.WorkElapsed = time.Duration(u.WorkDurationMs) * time.Millisecond
 				agent.WorkKnown = true
 			}
-			agent.OutputThroughput = u.outputThroughput()
-			if label := usagepresentation.OutputThroughputLabel(agent.OutputThroughput); label != "" {
+			if agent.Responding {
+				agent.WorkSince = u.WorkSince
+			}
+			if label := u.throughputLabel(); label != "" {
 				agent.StatusItems = []presentation.Item{{
 					ID:   usagepresentation.Throughput.ID,
 					Text: label,
@@ -785,52 +955,50 @@ func parseDirectConfigOverrides(args []string) map[string]any {
 }
 
 type directThreadStartResponse struct {
-	Thread          directWireThread `json:"thread"`
-	Model           string           `json:"model"`
-	ReasoningEffort string           `json:"reasoningEffort"`
-	ServiceTier     string           `json:"serviceTier"`
+	Thread                  directWireThread         `json:"thread"`
+	Model                   string                   `json:"model"`
+	ModelProvider           string                   `json:"modelProvider"`
+	ReasoningEffort         string                   `json:"reasoningEffort"`
+	ServiceTier             string                   `json:"serviceTier"`
+	ActivePermissionProfile *directPermissionProfile `json:"activePermissionProfile"`
+	ApprovalPolicy          jsontext.Value           `json:"approvalPolicy"`
+	Sandbox                 directSandboxPolicy      `json:"sandbox"`
+	InstructionSources      []string                 `json:"instructionSources"`
+	Cwd                     string                   `json:"cwd"`
+}
+
+type directSandboxPolicy struct {
+	Type string `json:"type"`
+}
+
+func directApprovalLabel(policy jsontext.Value) string {
+	var name string
+	if json.Unmarshal(policy, &name) == nil {
+		return name
+	}
+	return string(policy)
 }
 
 type directWireThread struct {
-	ID        string           `json:"id"`
-	Name      string           `json:"name"`
-	Preview   string           `json:"preview"`
-	Cwd       string           `json:"cwd"`
-	UpdatedAt int64            `json:"updatedAt"`
-	AgentPath string           `json:"agentPath"`
-	AgentRole string           `json:"agentRole"`
-	Status    jsontext.Value   `json:"status"`
-	Turns     []directWireTurn `json:"turns"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Preview   string `json:"preview"`
+	Cwd       string `json:"cwd"`
+	UpdatedAt int64  `json:"updatedAt"`
+	GitInfo   struct {
+		Branch string `json:"branch"`
+	} `json:"gitInfo"`
+	AgentPath    string           `json:"agentPath"`
+	AgentRole    string           `json:"agentRole"`
+	ThreadSource string           `json:"threadSource"`
+	Status       jsontext.Value   `json:"status"`
+	Turns        []directWireTurn `json:"turns"`
+	TokenUsage   *directWireUsage `json:"tokenUsage"`
 }
 
 type directWireTurn struct {
-	ID     string           `json:"id"`
-	Status string           `json:"status"`
-	Items  []jsontext.Value `json:"items"`
-}
-
-type directThreadChangesResponse struct {
-	ThreadID       string `json:"threadId"`
-	Workspace      string `json:"workspace"`
-	TotalAdditions int    `json:"totalAdditions"`
-	TotalDeletions int    `json:"totalDeletions"`
-	Changes        []struct {
-		ChangeID   string   `json:"changeId"`
-		Sequence   uint64   `json:"sequence"`
-		ThreadID   string   `json:"threadId"`
-		SourceKind string   `json:"sourceKind"`
-		CreatedAt  int64    `json:"createdAt"`
-		Paths      []string `json:"paths"`
-		Incomplete bool     `json:"incomplete"`
-	} `json:"changes"`
-	Files []struct {
-		Path          string   `json:"path"`
-		MovedFrom     string   `json:"movedFrom"`
-		Status        string   `json:"status"`
-		UnifiedDiff   string   `json:"unifiedDiff"`
-		Additions     int      `json:"additions"`
-		Deletions     int      `json:"deletions"`
-		IsBinary      bool     `json:"isBinary"`
-		CoverageNotes []string `json:"coverageNotes"`
-	} `json:"files"`
+	ID     string             `json:"id"`
+	Status string             `json:"status"`
+	Items  []jsontext.Value   `json:"items"`
+	Error  *binding.TurnError `json:"error"`
 }

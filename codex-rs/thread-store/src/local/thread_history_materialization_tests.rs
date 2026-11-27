@@ -21,6 +21,9 @@ use codex_protocol::items::UserMessageItem;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::parse_command::ParsedCommand;
@@ -2344,6 +2347,124 @@ async fn catch_up_preserves_trailing_partial_line_boundaries() {
 }
 
 #[tokio::test]
+async fn old_paginated_exec_failure_crosses_a_durable_projection_checkpoint() {
+    let home = TempDir::new().expect("temp dir");
+    let store = projection_store(home.path()).await;
+    let thread_id = ThreadId::new();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id, PersistContext::Standard)
+        .await
+        .expect("persist session header");
+    let path = store.live_rollout_path(thread_id).await.expect("rollout");
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open thread history db");
+    let raw_call =
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(ResponseItem::CustomToolCall {
+            encrypted_content: None,
+            id: None,
+            status: None,
+            call_id: "original".to_string(),
+            name: "exec".to_string(),
+            namespace: Some("functions".to_string()),
+            input: String::new(),
+            internal_chat_message_metadata_passthrough: None,
+        }));
+    append_suffix(
+        &path,
+        &format!(
+            "{}\n{}\n",
+            rollout_line(Some(1), turn_started("same-turn")),
+            rollout_line(Some(2), raw_call),
+        ),
+    );
+    super::materialize_to_sqlite(&store, thread_id, &path)
+        .await
+        .expect("index the first batch, without its eventual output");
+    assert_eq!(projection_state(&pool, thread_id).await.1, 3);
+    let diagnostic = "old failure\n  exact retained stack";
+    let raw_output = RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+        ResponseItem::CustomToolCallOutput {
+            id: None,
+            call_id: "original".to_string(),
+            name: None,
+            output: FunctionCallOutputPayload {
+                body: FunctionCallOutputBody::ContentItems(vec![
+                    FunctionCallOutputContentItem::InputText {
+                        text: "Script failed\nWall time 0.1 seconds\nOutput:\n".to_string(),
+                    },
+                    FunctionCallOutputContentItem::InputText {
+                        text: format!("Script error:\n{diagnostic}"),
+                    },
+                ]),
+                success: None,
+            },
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ));
+    append_suffix(
+        &path,
+        &format!(
+            "{}\n{}\n",
+            rollout_line(Some(3), raw_output),
+            rollout_line(Some(4), turn_completed("same-turn")),
+        ),
+    );
+    let original_bytes = fs::read(&path).expect("original rollout bytes");
+    for attempt in 0..2 {
+        super::materialize_to_sqlite(&store, thread_id, &path)
+            .await
+            .expect("index the retained diagnostic");
+        let items: Vec<(i64, String, String)> = sqlx::query_as(
+            r#"SELECT rollout_ordinal, turn_id, item_json FROM thread_items
+               WHERE thread_id = ? ORDER BY rollout_ordinal"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("read indexed transcript");
+        assert_eq!(items.len(), 1);
+        let (position, turn, item) = &items[0];
+        let item: ThreadItemPayload = serde_json::from_str(item).expect("version-two item");
+        assert_eq!((*position, turn.as_str()), (3, "same-turn"));
+        assert!(matches!(
+            item,
+            ThreadItemPayload::FunctionCallOutput {
+                id, output: FunctionCallOutputBody::Text(text), ..
+            } if id == "code-mode-error:original" && text == diagnostic
+        ));
+        let pending: Option<String> = sqlx::query_scalar(
+            "SELECT pending_exec_calls FROM thread_history_projection_state WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("read checkpoint");
+        assert_eq!(pending, None);
+        if attempt == 0 {
+            // Simulate the older index after the SQL migration resets its cursor.
+            sqlx::query("DELETE FROM thread_items WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .execute(&pool)
+                .await
+                .expect("remove the item an old projector would not publish");
+            sqlx::query("DELETE FROM thread_history_projection_state WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .execute(&pool)
+                .await
+                .expect("reset derived projection");
+        }
+    }
+    assert_eq!(
+        fs::read(&path).expect("read retained rollout"),
+        original_bytes
+    );
+}
+
+#[tokio::test]
 async fn catch_up_skips_invalid_complete_suffixes_and_projects_later_history() {
     let cases = [
         (
@@ -2607,6 +2728,7 @@ async fn paused_projection_releases_writer_and_retains_progress_when_stopped() {
             before.1 as u64,
             thread_id,
             /*subagent_history_start_ordinal*/ None,
+            Default::default(),
             || false,
             |projections, next_offset| {
                 assert!(
@@ -2804,6 +2926,7 @@ async fn blank_and_rejected_rollout_lines_advance_projection() {
             /*expected_ordinal*/ 0,
             thread_id,
             /*subagent_history_start_ordinal*/ None,
+            Default::default(),
             || checks.replace(checks.get() + 1) >= 6,
             |_batch, _next_offset| Ok(()),
         )

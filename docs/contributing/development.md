@@ -50,7 +50,7 @@ MEKUGI_TEST_WEBUI_BROWSER=1 just test \
 
 They require Chrome and `agent-browser`; `MEKUGI_TEST_AGENT_BROWSER` may select an
 absolute executable. They cover machine isolation, reconnection, semantic controls,
-attached-input recovery, native continuation and replay. Live-provider behavior and
+attached-input recovery and native continuation. Live-provider behavior and
 deployed TLS require separate checks.
 
 Run the session metrics and responsive Features checks independently of the
@@ -132,10 +132,12 @@ Build the native runtime with `just build-native`, then run
 scripted local provider. It needs no credentials and calls no live model. Its
 workspace and session data are discarded when it exits.
 
-- Submit `demo` to watch a streamed edit and an agent review. Use **Ctrl+B, 2**
-  to open Saved Diff and **Ctrl+B, 3** to inspect the agent.
-- Submit `questions` to try the synchronous and asynchronous question flows.
-  Use **Ctrl+B, Q** to open pending questions.
+- Submit `demo` to watch an edit to `pane.txt` and an agent review. Use
+  **Ctrl+B, 2** to open Diff. Use **Ctrl+B, 3** to open Agents, then `a`
+  to read the reviewer's transcript.
+- Submit `questions` and choose **Customers** or **Internal team** in the
+  audience picker. Then answer the scope question in its picker. Use
+  **Ctrl+B, Q** to reopen either picker if you dismissed it.
 - Use `/quit` to exit.
 
 ## Native app-server
@@ -301,7 +303,7 @@ additional browser/live-provider QA remain unchanged.
 `--debug` records future requests under `$XDG_STATE_HOME/mekugi/debug` (default
 `~/.local/state/mekugi/debug`). **Bundles contain private content and are not
 sanitized.** Inactive bundles expire after 14 days; copy elsewhere to keep one. Exit
-prints a diagnosis command. Codex tracing uses uncapped private temporary storage;
+prints the debug bundle path. Codex tracing uses uncapped private temporary storage;
 shutdown removes it, forced kills may leave it.
 
 Automatically started local servers also retain private stderr and start/exit
@@ -310,44 +312,6 @@ records under `$XDG_STATE_HOME/mekugi/server` (default
 Inspect `process.jsonl` for timestamps, PID, build and exit evidence; read
 `stderr.previous.log` before `stderr.log` for the retained tail. Stderr is bounded
 to 1 MiB per server. These files are unsanitized and expire after 14 inactive days.
-
-### Inspect a session
-
-For historical behavior, start with recorded calls/results; current code explains intended behavior.
-`--thread ID` finds the thread's rollout under `$CODEX_HOME/sessions` or `archived_sessions`
-(default `~/.codex`) by its exact metadata identity; `--session PATH` reads a rollout file directly.
-Child sessions and inherited fork history are not independent user sessions.
-
-Session reports include the thread's retained `instructions`: what Mekugi forwarded to the model,
-including environment facts, Mekugi guidance, developer messages and tool descriptions, as
-content revisions with the time, model and turn each began. They are recorded without `--debug`;
-older or expired threads report them as `unavailable`. Revisions reference `content` by digest.
-
-Add `--ax` to inspect the thread's recent retained request phases without a debug
-bundle. `ax.request_timing` distinguishes local preparation, request send, first
-provider output and completion. Missing phases, including unpairable tool-result
-readiness, are unknown rather than zero. First output is observed transport data,
-not a first-token measurement. This bounded window does not establish lifetime
-coverage or attribute every gap to Mekugi; see
-the [responses transport contract](../contracts/responses-transport.md).
-
-Inspection runs no recorded operations. Rollout and debug-bundle reports omit private
-text unless `--field` selects it; `--field instructions` selects only retained instruction text.
-`--request-id ID --field all` drills into one debug request.
-Failure lookup with `--failures [REF]` always includes complete private error text,
-which may contain request content or credentials.
-
-```sh
-mekugi inspect-session --thread THREAD_ID
-mekugi inspect-session --thread THREAD_ID --ax
-mekugi inspect-session --thread THREAD_ID --field instructions --text-bytes 65536
-mekugi inspect-session --debug-dir /path/to/debug --field diagnostic --limit 5 --text-bytes 512
-```
-
-Narrow debug reports by `--request-id` and paginate with `--offset`. Select JSON fields rather
-than line-limiting minified output.
-
-See native retained inspection (`mekugi inspect-session`).
 
 ## Profile live sessions
 
@@ -376,7 +340,7 @@ Standard routes expose CPU, heap, allocs, goroutine, block, mutex and execution
 trace data. CPU and trace collection start only on request. Block sampling uses
 a 1 ms blocked-time rate; mutex sampling records one in ten contention events.
 Instrumentation may perturb performance. Profiles cover the Mekugi process,
-including UI, routing and replay, not separate Codex, executor or worker processes.
+including UI and routing, not separate Codex, executor or worker processes.
 
 The routes have no additional authentication: local callers can read command-line
 arguments and other private process data. Keep captures private. Profiling is

@@ -355,6 +355,89 @@ test("model listing and inspection render as agent progress rows without raw MCP
   }
 });
 
+test("native collaboration uses published lifecycle, all recipients, and reported wait evidence", () => {
+  const item = {
+    type: "collabAgentToolCall",
+    id: "operation",
+    senderThreadId: "caller",
+    receiverThreadIds: ["first", "second", "third"],
+    status: "completed",
+    agentsStates: { first: { status: "completed", message: "Reviewed the example." } },
+  };
+  const waited = itemToEntry({ ...item, tool: "wait" }, 1, 1, "turn");
+  assert.deepEqual(waited.values[0].waits, [
+    { name: "first", status: "completed" },
+    { name: "second", status: undefined },
+    { name: "third", status: undefined },
+  ]);
+  const html = view(waited.values, waited.kind);
+  assert.match(html, /Waited for/);
+  assert.match(html, /Reviewed the example/);
+  const message = itemToEntry(
+    { ...item, tool: "sendMessage", prompt: "Check the example." },
+    2,
+    1,
+    "turn",
+  );
+  assert.deepEqual(message.traffic, {
+    kind: "message",
+    from: "caller",
+    to: "first",
+    otherRecipients: ["second", "third"],
+    detail: "Message",
+  });
+  const completion = itemToEntry(
+    {
+      type: "subAgentActivity",
+      id: "finished",
+      kind: "completed",
+      agentPath: "/root/worker",
+      agentThreadId: "worker",
+    },
+    3,
+    1,
+    "turn",
+    "/root",
+    false,
+    "caller",
+  );
+  assert.deepEqual(completion.traffic, {
+    kind: "final",
+    from: "/root/worker",
+    to: "caller",
+    detail: "Finished",
+  });
+  assert.equal(completion.text, undefined);
+});
+
+test("actual mailbox delivery shows the named participants and the authored reply", () => {
+  const body = "## Summary\nFound the cause.\n\n## Details\nVerified the release gate.";
+  const entry = itemToEntry(
+    {
+      type: "agentMail",
+      kind: "reply",
+      id: "amsg_reply",
+      sender: "/root/worker",
+      recipient: "/root",
+      text: body,
+      summary: "Found the cause.",
+      details: "Verified the release gate.",
+    },
+    2,
+    1,
+    "turn",
+  );
+  const html = render(EntryView, {
+    props: { entry, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(text(html), /worker\s*→\s*main\s*Reply delivered\s*Found the cause/);
+  assert.match(
+    html,
+    /<details[^>]*>\s*<summary[^>]*>Details<\/summary>.*Verified the release gate/s,
+  );
+  assert.equal(responseText(entry.kind, entry.text, entry.values[0].body), body);
+});
+
 test("complete one-line output stays visible without a disclosure", () => {
   const value = { kind: "op", verb: "Run", code: "printf ok", tail: ["ok"] };
   const html = render(ValueRow, { props: { value } }).body;
@@ -492,6 +575,33 @@ test("native stream projections map reasoning, hooks, edits, imageView, and assi
     "t1",
   );
   assert.equal(isView(img), true);
+  const generated = itemToEntry(
+    { id: "gen", type: "imageGeneration", status: "completed", result: "cGl4ZWxz" },
+    5,
+    1,
+    "t1",
+  );
+  assert.equal(isView(generated), true);
+  assert.deepEqual(generated.images, ["gen"]);
+
+  const userImage = itemToEntry(
+    {
+      id: "user-image",
+      type: "userMessage",
+      content: [
+        { type: "text", text: "Look at this.", text_elements: [] },
+        { type: "image", url: "data:image/png;base64,AA==" },
+      ],
+    },
+    6,
+    1,
+    "t1",
+  );
+  const userImageHtml = render(EntryView, {
+    props: { entry: userImage, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(userImageHtml, /\[Image 1\]/);
+  assert.match(userImageHtml, /Loading image 1/);
 
   const reply = itemToEntry(
     { id: "msg1", type: "agentMessage", text: "Hello **world**", phase: null },
@@ -713,6 +823,40 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   assert.doesNotMatch(runningHtml, /text-negative/);
   assert.doesNotMatch(runningHtml, /exit /);
 
+  const batch = itemToEntry(
+    {
+      id: "batch",
+      type: "commandExecution",
+      command: "/bin/bash -lc 'cd sub && cat a && cat b'",
+      display: { effectiveCwd: "/repo/sub", segments: ["cat a", "cat b"] },
+      cwd: "/repo",
+      status: "failed",
+      exitCode: -1,
+      durationMs: 250,
+      commandActions: [
+        { type: "read", command: "cat a", name: "a", path: "/repo/a" },
+        { type: "read", command: "cat b", name: "b", path: "/repo/b" },
+      ],
+      aggregatedOutput: "one\ntwo\nthree\nfour\nfive\n" + "é".repeat(300) + "\n",
+    },
+    2,
+    1,
+    "t1",
+  );
+  assert.deepEqual(
+    batch.values.map((v) => v.code),
+    ["cat a", "cat b", undefined],
+  );
+  assert.ok(batch.values.every((v) => v.workdir === "/repo/sub"));
+  const result = batch.values.at(-1);
+  assert.equal(result.tail.at(-1), "é".repeat(256) + "…");
+  assert.equal(result.tailClipped, true);
+  const batchHtml = render(EntryView, {
+    props: { entry: batch, at: "", stamp: "", owner: "/root", workspace: "/repo" },
+  }).body;
+  assert.match(batchHtml, /last 5 of 6 lines/);
+  assert.equal([...batchHtml.matchAll(/>exit -1</g)].length, 1);
+
   // Completed fileChange renders per-file op rows and Source disclosure through EntryView.
   const fileEdit = itemToEntry(
     {
@@ -758,6 +902,34 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   assert.match(mcpHtml, /docs:lookup/);
   assert.match(mcpHtml, /Arguments/);
   assert.match(mcpHtml, /connection refused/);
+  const mcpEnvelope = {
+    arguments: { query: '{ "nested": true }' },
+    result: {
+      content: [
+        { type: "text", text: "a short result" },
+        { type: "resource", resource: { uri: "file:///doc", text: "evidence" } },
+      ],
+      structuredContent: { count: 2 },
+      _meta: { continuation: "next" },
+    },
+    error: { message: "partial result" },
+  };
+  const mcpPartial = itemToEntry(
+    {
+      id: "mcp-2",
+      type: "mcpToolCall",
+      server: "docs",
+      tool: "lookup",
+      status: "failed",
+      ...mcpEnvelope,
+      durationMs: 12,
+    },
+    4,
+    1,
+    "t1",
+  );
+  assert.deepEqual(JSON.parse(mcpPartial.values[0].code), mcpEnvelope);
+  assert.equal(mcpPartial.values[0].opaqueJSON, true);
 
   const dynTool = itemToEntry(
     {
@@ -767,7 +939,12 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
       tool: "ping",
       arguments: { target: "box" },
       status: "completed",
-      contentItems: [{ type: "inputText", text: "pong" }],
+      contentItems: [
+        { type: "inputText", text: "pong" },
+        { type: "inputImage", imageUrl: "data:image/png;base64,AA==" },
+        { type: "inputAudio", audioUrl: "data:audio/wav;base64,AA==" },
+        { type: "inputAudio", audioUrl: "https://example.test/not-a-native-attachment" },
+      ],
       success: true,
       durationMs: 15,
     },
@@ -779,7 +956,10 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
     props: { entry: dynTool, at: "", stamp: "", owner: "/root" },
   }).body;
   assert.match(dynHtml, /custom:ping/);
-  assert.match(dynHtml, /pong/);
+  assert.deepEqual(dynTool.values[0].tail, ["pong", "[Audio unavailable]"]);
+  assert.match(dynHtml, /<audio aria-label="Tool audio 1"[^>]*controls/);
+  assert.doesNotMatch(dynHtml, /not-a-native-attachment/);
+  assert.deepEqual(dynTool.images, ["data:image/png;base64,AA=="]);
 
   // contextCompaction renders compaction divider, plan renders prose + copyable responseText,
   // and subAgentActivity renders the structured subagent traffic card.
@@ -788,6 +968,14 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
     props: { entry: compact, at: "", stamp: "", owner: "/root" },
   }).body;
   assert.match(compactHtml, /◉.*Context compacted/);
+  const reset = itemToEntry(
+    { id: "reset-1", type: "contextCompaction", summaryFree: true },
+    5,
+    1,
+    "t1",
+  );
+  assert.equal(reset.values[0].label, "Context reset");
+  assert.equal(reset.values[0].body, undefined);
 
   const plan = itemToEntry({ id: "pl-1", type: "plan", text: "1. Ship fix" }, 6, 1, "t1");
   assert.equal(responseText(plan.kind, plan.text), "1. Ship fix");
@@ -798,7 +986,14 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   assert.match(planHtml, /Ship fix/);
 
   const sub = itemToEntry(
-    { id: "sub-1", type: "subAgentActivity", agentPath: "/root/worker", assignment: "Run tests" },
+    {
+      id: "sub-1",
+      type: "subAgentActivity",
+      kind: "started",
+      agentPath: "/root/worker",
+      agentThreadId: "worker-id",
+      assignment: "Run tests",
+    },
     7,
     1,
     "t1",

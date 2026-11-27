@@ -2,15 +2,11 @@ package sessionpresentation
 
 // PanelView contains source values, never layout or a request handle.
 type PanelView struct {
-	// MetricViews names the metric tabs in order for renderers; empty outside /session.
-	MetricViews               []string
-	MetricTab, MetricIndex    int
-	MetricExchange            uint64
-	ID                        uint64
-	Fields                    []StatusField
-	Metrics                   *MetricsSnapshot
-	Features                  *FeatureMetrics
-	Workspace, DebugDirectory string
+	ID            uint64
+	Session       bool
+	Fields        []StatusField
+	FeatureFields []StatusField
+	Workspace     string
 }
 
 // StatusField preserves numeric observations independently of formatted labels.
@@ -30,15 +26,13 @@ const (
 	PanelNoAction PanelActionKind = iota
 	PanelClose
 	PanelRefresh
-	PanelMetrics
+	PanelFeatures
 )
 
 type PanelAction struct {
-	Version  Version
-	Panel    uint64
-	Kind     PanelActionKind
-	Tab      int    `json:",omitzero"`
-	Exchange uint64 `json:",omitzero"`
+	Version Version
+	Panel   uint64
+	Kind    PanelActionKind
 }
 
 // PanelState retains structured presentation, independently of account requests

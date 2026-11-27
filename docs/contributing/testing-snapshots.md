@@ -18,6 +18,10 @@ selector followed by an optional test name pattern. The default selector,
 An explicit package path bypasses discovery; `@workspace` compiles every member
 package. Omit the pattern to select all UI snapshot cases in those packages.
 
+An unfiltered `just test-ui-snapshots` also fails if a checked-in baseline
+was not asserted by any test. A package or test-name selection does not run
+the repository-wide orphan check.
+
 - `testsupport/uisnapshot.Assert` strips ANSI only: spacing, blank lines, wrapping and borders
   remain exact. Text comparisons do not prove color/style correctness.
 - `AssertTerminal` paints into a fixed-width VT emulator and retains canonical ANSI as quoted rows,

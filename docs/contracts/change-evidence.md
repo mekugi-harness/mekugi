@@ -37,10 +37,12 @@
   include tracked `mktemp` files and direct redirects through `SESSION_TMP`.
   Evidence is written to the native store before an ID is exposed.
 - Native `mchanges`, preload, context reset and agent handoffs consume that
-  store. Saved Diff opens both native captures and retained client records.
-  The transcript shows edit counts when captured evidence joins an exact
-  command item.
-- The client still captures explicit user shell actions for saved review.
-  It does not reconstruct model tool execution from inference traffic.
+  store. Both clients read saved changes, including user shell edits, through
+  `thread/changes/read`. A capture can be attributed to an agent or to an
+  unattributed execution such as user shell.
+- The root's saved review covers its family. A child reads its own captured
+  changes. Caller pages keep an independent edit separate from writes by
+  other callers. Command Details join evidence by thread, turn, and item,
+  not by file name or exit status.
 - See [Change history](../../mekugi-tui/modules/changehistory/SPEC.md) for
   `mchanges` and saved review.

@@ -91,8 +91,9 @@ func (in FrameInput) mouse(state *Interaction, pointer Mouse, yield func(InputEf
 		if button&^28 == 0 {
 			shell.Focus = 0
 		}
-		action := main.Resume.Mouse(button&^28, y-shell.Layout.Main.Y)
-		yield(InputEffect{Resume: &action})
+		if action := main.Resume.Mouse(button&^28, y-shell.Layout.Main.Y); action.Kind != sessionpresentation.ResumeNoAction {
+			yield(InputEffect{Resume: &action})
+		}
 		return
 	}
 	if main != nil && in.Prompts.Rect.Contains(x-shell.Layout.Main.X, y-shell.Layout.Main.Y) {

@@ -18,19 +18,17 @@ const defaultLinkOpen =
 md.renderer.rules.link_open = (tokens, i, options, env, self) => {
   const href = String(tokens[i].attrGet("href") ?? "");
   if (href.startsWith(runPrefix)) {
-    tokens[i].attrs = [];
-    tokens[i].tag = "span";
+    tokens[i].attrSet("href", "#activity-details");
     tokens[i].attrSet("class", "file-link");
     tokens[i].attrSet("data-run-link", href);
     tokens[i].attrSet("title", href);
-    const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
-    if (close) close.tag = "span";
-    return self.renderToken(tokens, i, options);
+    return defaultLinkOpen(tokens, i, options, env, self);
   }
   if (!web.test(href)) {
     tokens[i].attrs = [];
-    tokens[i].tag = "span";
+    tokens[i].tag = local(href) ? "a" : "span";
     if (local(href)) {
+      tokens[i].attrSet("href", "#activity-details");
       let path = href;
       if (!href.startsWith("file:")) {
         try {
@@ -44,7 +42,7 @@ md.renderer.rules.link_open = (tokens, i, options, env, self) => {
     tokens[i].attrSet("class", "file-link");
     tokens[i].attrSet("title", href);
     const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
-    if (close) close.tag = "span";
+    if (close) close.tag = tokens[i].tag;
     return self.renderToken(tokens, i, options);
   }
   tokens[i].attrSet("target", "_blank");

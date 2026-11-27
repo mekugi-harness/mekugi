@@ -34,7 +34,9 @@ func TestResumePathsKeepSuffixAndIdentity(t *testing.T) {
 }
 
 func TestResumePickerDetachedNavigationAndPageDemand(t *testing.T) {
-	v := sessionpresentation.View{Version: sessionpresentation.Version{Attachment: 1, Revision: 1}, Resume: &sessionpresentation.ResumeView{ID: 1, CanPage: true, PageAfter: "second", Rows: []sessionpresentation.ResumeRow{{ID: "first"}, {ID: "second"}}}}
+	v := sessionpresentation.View{Version: sessionpresentation.Version{Attachment: 1, Revision: 1}, Resume: &sessionpresentation.ResumeView{
+		ID: 1, PageAfter: "next-page", Rows: []sessionpresentation.ResumeRow{{ID: "first"}, {ID: "second"}},
+	}}
 	var p ResumePicker
 	p.Update(v)
 	p.Render(new(terminalui.Painter), 80, 30, "")
@@ -44,28 +46,60 @@ func TestResumePickerDetachedNavigationAndPageDemand(t *testing.T) {
 		t.Fatalf("selection: %+v", action)
 	}
 	page := p.PageDemand()
-	if page.Kind != sessionpresentation.ResumePage || page.After != "second" {
+	if page.Kind != sessionpresentation.ResumePage || page.After != "next-page" {
 		t.Fatalf("page demand: %+v", page)
 	}
-	old := *v.Resume
-	v.Resume = &old
-	v.Resume.Query = "search"
+	next := *v.Resume
+	next.PageAfter = ""
+	next.Rows = append(next.Rows, sessionpresentation.ResumeRow{ID: "third"})
+	v.Resume = &next
 	v.Version.Revision++
 	p.Update(v)
-	if p.Selected != 0 || p.Viewport == 0 {
-		t.Fatal("query reset lost terminal capacity or retained cursor")
+	if p.Selected != 1 || p.Viewport == 0 {
+		t.Fatal("page append lost selection or terminal capacity")
 	}
-	clear := p.Key("\x1b")
-	if clear.Kind != sessionpresentation.ResumeSearch || clear.Query != "" {
-		t.Fatal("Escape did not clear search first")
-	}
-	v.Resume.Loading, v.Resume.CanPage = true, false
-	p.Update(v)
 	if p.PageDemand().Kind != sessionpresentation.ResumeNoAction {
-		t.Fatal("loading generated another demand")
+		t.Fatal("the last page generated another demand")
 	}
 	p.Update(sessionpresentation.View{})
 	if p.Open() {
 		t.Fatal("closed publication retained chooser")
+	}
+}
+
+func TestResumePickerSearchesLoadedAndPagedMetadata(t *testing.T) {
+	v := sessionpresentation.View{Resume: &sessionpresentation.ResumeView{
+		ID: 1, PageAfter: "next-page", Rows: []sessionpresentation.ResumeRow{{ID: "first", Title: "Unrelated"}},
+	}}
+	var p ResumePicker
+	p.Update(v)
+	if effect := p.Key("PARSER"); effect.Kind != sessionpresentation.ResumePage || effect.After != "next-page" {
+		t.Fatalf("a search without a loaded match should page: %+v", effect)
+	}
+	next := *v.Resume
+	next.PageAfter = ""
+	next.Rows = append(next.Rows,
+		sessionpresentation.ResumeRow{ID: "branch-match", Title: "Fix", Branch: "fix/parser"},
+		sessionpresentation.ResumeRow{ID: "preview-match", Title: "Issue", Preview: "debug parser"},
+		sessionpresentation.ResumeRow{ID: "directory-match", Title: "Test", Workspace: "/tmp/parser"},
+		sessionpresentation.ResumeRow{ID: "parser-id", Title: "Cleanup"},
+	)
+	v.Resume = &next
+	p.Update(v)
+	for _, id := range []string{"branch-match", "preview-match", "directory-match", "parser-id"} {
+		if choice := p.Key("\r"); choice.Kind != sessionpresentation.ResumeChoose || choice.Thread != id {
+			t.Fatalf("search selected %+v, want %s", choice, id)
+		}
+		p.Key("\x1b[B")
+	}
+	if clear := p.Key("\x1b"); clear.Kind != sessionpresentation.ResumeNoAction ||
+		p.query != "" || p.Key("\r").Thread != "parser-id" {
+		t.Fatal("Escape did not clear search and keep its selected result")
+	}
+	if toggle := p.Key("\x1b[C"); toggle.Kind != sessionpresentation.ResumeToggleArchived {
+		t.Fatalf("right arrow did not switch Active/Archived: %+v", toggle)
+	}
+	if close := p.Key("\x1b"); close.Kind != sessionpresentation.ResumeDismiss {
+		t.Fatalf("Escape on the unfiltered list did not close the picker: %+v", close)
 	}
 }

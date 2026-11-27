@@ -21,11 +21,14 @@ use serde_json::json;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const RED_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+const BLUE_PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC";
 
-fn create_request_user_input_sse_response(call_id: &str) -> anyhow::Result<String> {
-    let tool_call_arguments = serde_json::to_string(&json!({
-        "questions": [{
-
+fn create_request_user_input_sse_response(
+    call_id: &str,
+    with_images: bool,
+) -> anyhow::Result<String> {
+    let mut questions = vec![json!({
             "header": "Confirm",
             "question": "Proceed with the plan?",
             "options": [{
@@ -35,8 +38,11 @@ fn create_request_user_input_sse_response(call_id: &str) -> anyhow::Result<Strin
                 "label": "No",
                 "description": "Stop and revisit the approach."
             }]
-        }]
-    }))?;
+    })];
+    if with_images {
+        questions.push(json!({"header":"Example", "question":"Show a second example."}));
+    }
+    let tool_call_arguments = serde_json::to_string(&json!({ "questions": questions }))?;
 
     Ok(responses::sse(vec![
         responses::ev_response_created("resp-1"),
@@ -51,6 +57,7 @@ async fn request_user_input_round_trip() -> Result<()> {
         ModeKind::Plan,
         /*enable_default_mode_feature*/ false,
         /*expected_is_blocking*/ true,
+        /*image_answers*/ None,
     )
     .await
 }
@@ -61,6 +68,18 @@ async fn request_user_input_default_mode_forwards_non_blocking() -> Result<()> {
         ModeKind::Default,
         /*enable_default_mode_feature*/ true,
         /*expected_is_blocking*/ false,
+        /*image_answers*/ None,
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn request_user_input_delivers_typed_images_for_their_questions() -> Result<()> {
+    request_user_input_round_trip_for_mode(
+        ModeKind::Plan,
+        /*enable_default_mode_feature*/ false,
+        /*expected_is_blocking*/ true,
+        Some([RED_PNG, BLUE_PNG]),
     )
     .await
 }
@@ -69,10 +88,11 @@ async fn request_user_input_round_trip_for_mode(
     mode: ModeKind,
     enable_default_mode_feature: bool,
     expected_is_blocking: bool,
+    image_answers: Option<[&str; 2]>,
 ) -> Result<()> {
     let codex_home = tempfile::TempDir::new()?;
     let responses = vec![
-        create_request_user_input_sse_response("call1")?,
+        create_request_user_input_sse_response("call1", image_answers.is_some())?,
         create_final_assistant_message_sse_response("done")?,
     ];
     let server = create_mock_responses_server_sequence(responses).await;
@@ -135,16 +155,23 @@ async fn request_user_input_round_trip_for_mode(
     assert_eq!(params.thread_id, thread.id);
     assert_eq!(params.turn_id, turn.id);
     assert_eq!(params.item_id, "call1");
-    assert_eq!(params.questions.len(), 1);
+    assert_eq!(
+        params.questions.len(),
+        if image_answers.is_some() { 2 } else { 1 }
+    );
     assert_eq!(params.is_blocking, expected_is_blocking);
     assert_eq!(params.auto_resolution_ms, None);
     let resolved_request_id = request_id.clone();
 
-    mcp.send_response(
-        request_id,
-        serde_json::json!({"answers": [{"id":"q1","choice":1}]}),
-    )
-    .await?;
+    let response = if let Some([red, blue]) = image_answers {
+        json!({"answers": [
+            {"id": "q2", "images": [blue], "other": "second"},
+            {"id": "q1", "images": [red], "other": ""}
+        ]})
+    } else {
+        json!({"answers": [{"id":"q1","choice":1}]})
+    };
+    mcp.send_response(request_id, response).await?;
     let mut saw_resolved = false;
     loop {
         let message = timeout(DEFAULT_READ_TIMEOUT, mcp.read_next_message()).await??;
@@ -169,6 +196,36 @@ async fn request_user_input_round_trip_for_mode(
             }
             _ => {}
         }
+    }
+
+    if let Some([red, blue]) = image_answers {
+        let requests = server.received_requests().await.expect("recorded requests");
+        let provider_input = requests[1].body_json::<serde_json::Value>()?;
+        let output = provider_input["input"]
+            .as_array()
+            .expect("provider input")
+            .iter()
+            .find(|item| item["type"] == "function_call_output" && item["call_id"] == "call1")
+            .expect("question tool output");
+        let parts = output["output"].as_array().expect("typed tool output");
+        let text = parts[0]["text"].as_str().expect("compact answer text");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text)?,
+            json!([{"id":"q1","other":""}, {"id":"q2","other":"second"}])
+        );
+        assert_eq!(parts.len(), 5);
+        assert_eq!(
+            parts[1],
+            json!({"type":"input_text","text":"Images for answer q1:"})
+        );
+        assert_eq!(parts[2]["type"], "input_image");
+        assert_eq!(parts[2]["image_url"], red);
+        assert_eq!(
+            parts[3],
+            json!({"type":"input_text","text":"Images for answer q2:"})
+        );
+        assert_eq!(parts[4]["type"], "input_image");
+        assert_eq!(parts[4]["image_url"], blue);
     }
 
     Ok(())

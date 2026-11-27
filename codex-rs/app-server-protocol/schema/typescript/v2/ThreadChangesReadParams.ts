@@ -9,4 +9,20 @@ export type ThreadChangesReadParams = { threadId: string,
 /**
  * Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).
  */
-includeEphemeral?: boolean, };
+includeEphemeral?: boolean,
+/**
+ * Restrict review to edits made by one member of the selected family.
+ */
+callerThreadId?: string | null,
+/**
+ * Read one execution's exact captured effects, not the composed session diff.
+ */
+itemId?: string | null,
+/**
+ * Return individual captures, rather than composing them by file.
+ */
+perCapture?: boolean,
+/**
+ * Page size for composed files. Omit to read a complete review.
+ */
+limit?: number | null, cursor?: string | null, };

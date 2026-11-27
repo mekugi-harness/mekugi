@@ -92,7 +92,7 @@
         id: "action:new-thread",
         group: "Actions",
         title: "New thread",
-        subtitle: "Start a fresh conversation or resume by ID",
+        subtitle: "Start a fresh conversation",
         icon: "compose",
         run: () => startMachine(),
       },

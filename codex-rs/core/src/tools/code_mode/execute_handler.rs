@@ -6,9 +6,13 @@ use crate::tools::context::boxed_tool_output;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolExecutor;
+use crate::turn_timing::now_unix_timestamp_ms;
 use codex_prompts::ResolvedModelMessages;
+use codex_protocol::items::FunctionCallOutputItem;
+use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::CodeModeInputDeltaEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ItemCompletedEvent;
 use codex_tools::IndirectNamespacePrefixes;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -180,6 +184,29 @@ impl CodeModeExecuteHandler {
         let wall_time = response
             .code_mode_host_duration()
             .unwrap_or_else(|| started_at.elapsed());
+        if let codex_code_mode::RuntimeResponse::Result {
+            error_text: Some(diagnostic),
+            ..
+        } = &response
+        {
+            // Persist the diagnostic as a completed tool item, not a failed
+            // turn. The result to the model is independently budgeted.
+            exec.session
+                .send_event(
+                    &exec.turn,
+                    EventMsg::ItemCompleted(ItemCompletedEvent {
+                        thread_id: exec.session.thread_id,
+                        turn_id: exec.turn.sub_id.clone(),
+                        item: TurnItem::FunctionCallOutput(
+                            FunctionCallOutputItem::code_mode_failure(&call_id, diagnostic.clone()),
+                        ),
+                        content_token_count: None,
+                        started_at_ms: None,
+                        completed_at_ms: now_unix_timestamp_ms(),
+                    }),
+                )
+                .await;
+        }
         Ok(handle_runtime_response(
             &step_context.settings.model_info,
             response,

@@ -1,10 +1,15 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use app_test_support::TestAppServer;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::FuzzyFileSearchSessionCompletedNotification;
 use codex_app_server_protocol::FuzzyFileSearchSessionUpdatedNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadFileSearchParams;
+use codex_app_server_protocol::ThreadFileSearchResponse;
+use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::ThreadStartResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::path::Path;
@@ -51,6 +56,61 @@ async fn initialized_mcp(codex_home: &TempDir) -> Result<TestAppServer> {
         .without_auto_env()
         .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
         .await
+}
+
+#[tokio::test]
+async fn thread_file_search_uses_the_workspace_and_skips_symlinked_directories() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let outside = TempDir::new()?;
+    std::fs::write(workspace.path().join("scope-needle-inside.txt"), "inside")?;
+    std::fs::write(
+        workspace.path().join(".ignore"),
+        "scope-needle-ignored.txt\n",
+    )?;
+    std::fs::write(workspace.path().join("scope-needle-ignored.txt"), "ignored")?;
+    std::fs::create_dir(workspace.path().join(".hg"))?;
+    std::fs::write(workspace.path().join(".hg/scope-needle-vcs"), "metadata")?;
+    std::fs::write(outside.path().join("scope-needle-outside.txt"), "outside")?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), workspace.path().join("linked"))?;
+
+    let mut app = initialized_mcp(&codex_home).await?;
+    let ThreadStartResponse { thread, .. } = app
+        .request(|request_id| ClientRequest::ThreadStart {
+            request_id,
+            params: ThreadStartParams {
+                cwd: Some(workspace.path().display().to_string()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let response: ThreadFileSearchResponse = app
+        .request(|request_id| ClientRequest::ThreadFileSearch {
+            request_id,
+            params: ThreadFileSearchParams {
+                thread_id: thread.id.clone(),
+                query: "scope-needle".to_string(),
+            },
+        })
+        .await?;
+    assert_eq!(vec!["scope-needle-inside.txt".to_string()], response.paths);
+    let mut paths = app
+        .request::<ThreadFileSearchResponse>(|request_id| ClientRequest::ThreadFileSearch {
+            request_id,
+            params: ThreadFileSearchParams {
+                thread_id: thread.id,
+                query: "!scope-needle".to_string(),
+            },
+        })
+        .await?
+        .paths;
+    paths.sort();
+    assert_eq!(
+        vec!["scope-needle-ignored.txt", "scope-needle-inside.txt"],
+        paths,
+    );
+    Ok(())
 }
 
 async fn wait_for_session_updated(

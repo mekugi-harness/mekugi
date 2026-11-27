@@ -1,49 +1,59 @@
 <script lang="ts">
   import Alert from "./ui/Alert.svelte";
-  import { onDestroy, tick, untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import Attachments from "./Attachments.svelte";
-  import { prepareAttachments, type InitialInput, type PendingAttachment } from "./attachments";
+  import {
+    activeAttachments,
+    prepareAttachments,
+    submissionAttachments,
+    type InitialInput,
+    type PendingAttachment,
+  } from "./attachments";
   import { basename } from "./format";
   import { hub, type Machine } from "./hub.svelte";
   import type { Start, StartOptions } from "./protocol";
   import Button from "./ui/Button.svelte";
   import ComposerCard from "./ui/ComposerCard.svelte";
   import * as InputGroup from "./ui/input-group";
-  import Icon from "./ui/Icon.svelte";
   import Menu from "./ui/Menu.svelte";
   import MenuItem from "./ui/MenuItem.svelte";
   import Picker from "./ui/Picker.svelte";
-  import { chip, composerText, composerTools, input, menuRule } from "./ui/styles";
+  import { chip, composerText, composerTools } from "./ui/styles";
   import { open, select } from "./view.svelte";
 
   // A new thread starts from its first message. The toolbar picks where it
-  // runs and with which model; the + menu also resumes a saved
-  // thread by its ID.
+  // runs and with which model.
   let {
     machine,
     onopened,
   }: {
     machine: Machine;
-    onopened: (machine: string, session: string, initial?: InitialInput) => void;
+    onopened: (machine: string, initial: InitialInput) => void;
   } = $props();
-  let mode = $state<"new" | "resume">("new");
   // The latest acquisition of a machine's start options. A failure keeps its
   // machine identity, so only Retry reads again; a superseded read is dropped.
   let acquired = $state.raw<{ machine: string; options?: StartOptions; error?: string }>();
   const options = $derived(acquired?.machine === machine.id ? acquired.options : undefined);
   const loadError = $derived(acquired?.machine === machine.id ? acquired.error : undefined);
-  let workspace = $state("");
+  const workspaces = $derived.by(() => {
+    const paths = new Set<string>();
+    for (const session of machine.sessions ?? []) {
+      if (session.workspace) paths.add(session.workspace);
+      if (paths.size === 20) break;
+    }
+    return [...paths];
+  });
+  let selectedWorkspace = $state<string>();
+  const workspace = $derived(selectedWorkspace ?? workspaces[0] ?? "");
   let model = $state("");
   let effort = $state("");
   let text = $state("");
-  let saved = $state("");
   let items = $state<PendingAttachment[]>([]);
   let pathing = $state(false);
   let error = $state<string>();
   let progress = $state("");
   let controller = $state<AbortController>();
   let tray = $state<ReturnType<typeof Attachments>>();
-  let idField = $state<HTMLInputElement>();
   let disposed = false;
   const touch = matchMedia("(pointer: coarse)").matches;
   const chosen = $derived(
@@ -51,16 +61,19 @@
   );
   const connected = $derived(machine.connection === "open");
   const busy = $derived(!!controller);
+  const activeItems = $derived(activeAttachments(text, items));
   onDestroy(() => {
     disposed = true;
     controller?.abort();
   });
 
-  // Workspaces and models belong to the machine, so each machine loads its own
-  // once it answers.
+  // Models are loaded once per machine; workspace choices follow its thread list.
   $effect(() => {
     const target = machine;
-    if (acquired?.machine !== target.id) acquired = undefined;
+    if (acquired?.machine !== target.id) {
+      acquired = undefined;
+      selectedWorkspace = undefined;
+    }
     if (target.connection !== "open" || acquired) return;
     untrack(() => load(target));
   });
@@ -74,55 +87,45 @@
       return;
     }
     acquired = { ...acquisition, options: result.options };
-    workspace = result.options.workspaces[0] ?? "";
     model = result.options.defaultModel;
     effort = "";
   }
 
-  async function begin(next: "resume") {
-    mode = next;
-    error = undefined;
-    await tick();
-    idField?.focus();
-  }
   async function start() {
-    if (controller || !connected) return;
+    if (controller || !connected || tray?.checkingPath()) return;
     const pending = new AbortController();
     controller = pending;
     error = undefined;
     const target = machine;
     try {
-      let request: Start;
-      let initial: InitialInput | undefined;
       if (!options) throw new Error(`Wait for ${target.label}'s workspaces and models.`);
-      if (mode === "new" && !text.trim() && !items.length)
+      if (!text.trim() && !activeItems.length)
         throw new Error("Write a first message or attach something.");
       const attachments = await prepareAttachments(
-        items,
+        submissionAttachments(text, items),
         pending.signal,
         (read, total) =>
           (progress = total
             ? `Reading attachments: ${Math.round((read / total) * 100)}%`
             : "Preparing input…"),
       );
-      request = {
+      const request: Start = {
         workspace,
         model,
         effort: effort || undefined,
-        resume: mode === "resume" ? saved.trim() : undefined,
       };
-      if (text.trim() || attachments.length) initial = { text, items: [...items], attachments };
+      const draft = { text, items: [...items], attachments };
       pending.signal.throwIfAborted();
-      progress = mode === "resume" ? "Resuming the thread…" : "Starting the thread…";
+      progress = "Starting the thread…";
       const result = await hub.createSession(request, target, pending.signal);
       if (disposed) return;
       if ("error" in result) {
         error = result.error;
         return;
       }
+      onopened(target.id, { started: result.response, ...draft });
       select(target.id);
-      open(result.id);
-      onopened(target.id, result.id, initial);
+      open(result.response.thread.id);
     } catch (failure) {
       if (!disposed)
         error = pending.signal.aborted
@@ -144,9 +147,10 @@
   const ready = $derived(
     connected &&
       !busy &&
+      !tray?.checkingPath() &&
       !!options &&
       !!workspace.trim() &&
-      (mode === "resume" ? !!saved.trim() : !!text.trim() || !!items.length),
+      (!!text.trim() || !!activeItems.length),
   );
   // On phones the workspace picker takes its own row and the others share
   // the next one with the menu and Start.
@@ -163,7 +167,7 @@
         class="text-heading font-medium tracking-[-0.025em] text-ink focus:outline-none"
         tabindex="-1"
       >
-        {mode === "resume" ? "Resume a saved thread" : "What should main work on?"}
+        What should main work on?
       </h1>
     </div>
     <ComposerCard
@@ -171,33 +175,10 @@
       onfiles={(files) => tray?.add(files)}
       onsubmit={() => void start()}
     >
-      {#if mode !== "new"}
-        <div class="flex items-center gap-2 pt-2.5 pr-2 pl-3.5 text-muted">
-          <Icon name="history" />
-          <label class="min-w-0 flex-1"
-            ><span class="sr-only">Saved session ID</span><input
-              class="{input} font-mono"
-              bind:this={idField}
-              bind:value={saved}
-              placeholder="Saved session ID"
-              disabled={busy}
-              required
-              autocomplete="off"
-              spellcheck="false"
-            /></label
-          >
-          <Button
-            variant="quiet"
-            icon="close"
-            label="Cancel resume"
-            disabled={busy}
-            onclick={() => (mode = "new")}
-          />
-        </div>
-      {/if}
       <Attachments
         bind:this={tray}
         bind:items
+        bind:text
         bind:pathing
         machine={machine.label}
         previewTarget={{ machine, workspace }}
@@ -218,9 +199,7 @@
         }}
         rows="2"
         disabled={busy}
-        placeholder={mode === "resume"
-          ? "Message to continue with (optional)"
-          : `Message main on ${machine.label}`}></textarea>
+        placeholder={`Message main on ${machine.label}`}></textarea>
       <InputGroup.Addon
         align="block-end"
         class="{composerTools} cursor-default flex-wrap gap-1 text-body font-normal select-auto"
@@ -240,14 +219,6 @@
                 close();
                 pathing = true;
               }}>Attach path on {machine.label}</MenuItem
-            >
-            <div class={menuRule} role="separator"></div>
-            <MenuItem
-              icon="history"
-              onclick={() => {
-                close();
-                void begin("resume");
-              }}>Resume saved thread</MenuItem
             >
           {/snippet}
         </Menu>
@@ -279,10 +250,10 @@
             entry="Workspace path"
             path
             text={basename(workspace) || "Choose a workspace"}
-            bind:value={workspace}
+            bind:value={() => workspace, (path) => (selectedWorkspace = path)}
             groups={[
               {
-                choices: options.workspaces.map((path) => ({
+                choices: workspaces.map((path) => ({
                   value: path,
                   label: basename(path),
                   detail: path,
@@ -335,7 +306,7 @@
           variant="primary"
           shape="round"
           icon="send"
-          label={mode === "resume" ? "Resume thread" : "Start thread"}
+          label="Start thread"
           disabled={!ready}
         />
       </InputGroup.Addon>

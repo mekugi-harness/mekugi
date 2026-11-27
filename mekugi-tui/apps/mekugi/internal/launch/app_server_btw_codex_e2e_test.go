@@ -62,7 +62,7 @@ func TestAgentQuestionNativeCodex(t *testing.T) {
 			return btwCodexRequest{}
 		}
 	}
-	terminal.await("Ready")
+	terminal.awaitReady()
 	terminal.send("Main seed\r")
 	next()
 	terminal.await("completed")
@@ -274,7 +274,7 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 			}()
 			environment, workspace := routerFaultCodexEnvironment(t), t.TempDir()
 			command := func(ctx context.Context) *exec.Cmd {
-				cmd := exec.CommandContext(ctx, codex, "-c", `model_providers.preview={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false", "-c", "features.multi_agent_v2.enabled=true", "-c", "features.multi_agent_v2.disable_native_tools=false")
+				cmd := exec.CommandContext(ctx, codex, "-c", `model_providers.preview={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-sol"`, "-c", `model_reasoning_effort="high"`, "-c", "features.plugins=false", "-c", "features.multi_agent_v2.enabled=true", "-c", "features.multi_agent_v2.disable_native_tools=false")
 				cmd.Env, cmd.Dir = environment, workspace
 				return cmd
 			}
@@ -289,22 +289,20 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 				}
 				return btwCodexRequest{}
 			}
-			terminal.await("Ready")
-			terminal.send("/model gpt-6-sol\r")
-			terminal.await("gpt-6-sol")
-			terminal.send("/reasoning high\r")
+			terminal.awaitReady()
 			terminal.await("gpt-6-sol (high)")
 			terminal.send("Main seed\r")
 			main := next()
-			terminal.await("completed")
+			mainMetadata, _ := fixtureTurnMetadata(main.headers)
+			terminal.await("Main answer")
+			terminal.awaitThreadIdle(mainMetadata.ThreadID)
 			if scenario == "resumed" {
-				metadata, _ := fixtureTurnMetadata(main.headers)
 				terminal.stopCanceled()
-				terminal = startAppResumeTerminalWithIntegration(t, command, metadata.ThreadID, testAppServerIntegration(proxy))
-				terminal.await("Ready")
+				terminal = startAppResumeTerminalWithIntegration(t, command, mainMetadata.ThreadID, testAppServerIntegration(proxy))
+				terminal.awaitReady()
 				terminal.send("Main resumed\r")
 				main = next()
-				terminal.await("completed")
+				terminal.awaitThreadIdle(mainMetadata.ThreadID)
 			}
 			if active {
 				terminal.send("Main running\r")
@@ -312,11 +310,10 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 				if running.key != main.key {
 					t.Fatal("main cache identity changed before /btw")
 				}
-				terminal.await("Working")
+				terminal.awaitThreadStatus(mainMetadata.ThreadID, "active")
 			}
 			terminal.send("/btw Side question\r")
 			side := next()
-			mainMetadata, _ := fixtureTurnMetadata(main.headers)
 			sideMetadata, _ := fixtureTurnMetadata(side.headers)
 			if side.key == "" || main.key == "" || sideMetadata.ThreadID == "" || sideMetadata.ThreadID == mainMetadata.ThreadID {
 				t.Fatalf("fork identities: main=%q side=%q", mainMetadata.ThreadID, sideMetadata.ThreadID)
@@ -355,9 +352,6 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 				t.Fatal("branch omitted the current conversation")
 			}
 			terminal.await("Side streaming answer")
-			if active {
-				terminal.await("Working")
-			}
 			close(p.sideGate)
 			terminal.awaitMatch("side completed", func(frame string) bool { return strings.Contains(frame, "/btw · completed") })
 			terminal.send("/btw Side followup\r")
@@ -382,11 +376,10 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 				case <-terminal.ctx.Done():
 					t.Fatal("closing side did not cancel its request")
 				}
-				if !strings.Contains(terminal.screen.String(), "Working") {
-					t.Fatal("Escape interrupted Main")
-				}
+				terminal.awaitThreadStatus(mainMetadata.ThreadID, "active")
 				close(p.mainGate)
-				terminal.await("completed")
+				terminal.awaitThreadIdle(mainMetadata.ThreadID)
+				terminal.await("Main answer")
 			}
 			terminal.send("\x03Main after\r")
 			after := next()
@@ -406,7 +399,7 @@ func TestAppServerBTWNativeCodexE2E(t *testing.T) {
 				}
 			}
 			terminal.await("Main after")
-			terminal.await("completed")
+			terminal.awaitThreadIdle(mainMetadata.ThreadID)
 			terminal.quit()
 		})
 	}

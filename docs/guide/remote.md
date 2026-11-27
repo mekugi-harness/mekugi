@@ -71,8 +71,8 @@ a localhost/loopback address. The installed app still needs the UI host and its
 execution-machine connectors online.
 
 The sidebar lists each machine's threads. **New thread** starts one from its
-first message; the composer's **+** menu also resumes a saved thread or opens a
-replay. Workspaces, models and attachment paths refer to the chosen machine.
+first message. Workspaces, models and attachment paths refer to the chosen
+machine.
 Upload files from the browser or attach host paths in order, up to 32 MiB of
 decoded uploads per message. As in the terminal, `/`, `@` and `$` complete
 commands, files and skills, and a leading `!` runs shell input; Enter sends or
@@ -80,24 +80,28 @@ steers, and Tab queues while Main works. Presets saved on the execution machine
 are shared with the terminal [composer](terminal-ui.md#composer). Answer secret
 prompts in the native terminal.
 
-Active processes stay above the composer, with **Stop** for each command whose
-host exposes individual process control. Other commands remain visible with a
-disabled Stop and an explanation. `/session` opens the shared session metrics;
-`/status` shows grouped settings and usage. Web links open in a new tab, while
+Active processes stay above the composer, with **Stop** for each process.
+`/ps` points you to that dock. **Session details** shows thread usage and
+opens a **Features** breakdown for the selected thread and its descendants.
+Web links open in a new tab, while
 Markdown file and command output links open details from a connected live
 thread on the selected execution machine.
 
-Submissions rejected after admission offer **Retry intact** or **Discard**. Retry reuses the original
-attachment snapshots. Resolve unsent input before leaving the thread or reconnecting;
-its recovery belongs to that control view. A refused first message leaves the opened
-thread available with its draft.
+`/btw QUESTION` opens a separate answer dock. Repeat `/btw` for a follow-up.
+`/oneoff TASK` opens a work-capable fork with a separate draft. Switch
+between **Main** and **One-off** without submitting either draft. Closing
+One-off stops only that fork; starting another asks before replacing it.
 
-Closing the page or disconnecting a machine leaves its work running. **End thread**,
-in the thread's session details, explicitly stops that thread. On its execution machine, `mekugi resume THREAD_ID`
-continues it from a native terminal. Replay is read-only, shares playback controls
-between viewers, and requires the live thread to be ended first. Completed playback
-stays open until ended. If a request loses its acknowledgement, check that machine's
-state before resubmitting; the browser does not retry mutations automatically.
+Rejected submissions offer **Retry intact**, **Edit**, and **Discard**.
+Retry reuses the original attachment snapshots. Recovery belongs to the
+originating thread. A refused first message leaves the opened thread
+available with its draft.
+
+Closing the page or disconnecting a machine leaves its work running. Use
+**Archive** in Session details or type `/archive` to stop active work and
+archive the thread after confirmation. If a request loses its acknowledgement,
+check that machine's state before resubmitting. The browser does not retry
+mutations automatically.
 
 Source checkouts need `just webui` before embedding browser assets. See
 [development checks](../contributing/development.md#build-and-test) and the

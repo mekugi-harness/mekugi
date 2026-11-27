@@ -452,6 +452,13 @@
   [data-theme="dark"] [style*="--shiki-dark"] {
     color: var(--shiki-dark);
   }
+  /* The selected line's tint reduces the contrast of some syntax colors. */
+  .code-range [style*="--shiki-light"] {
+    color: color-mix(in srgb, var(--text) 70%, var(--shiki-light));
+  }
+  [data-theme="dark"] .code-range [style*="--shiki-dark"] {
+    color: color-mix(in srgb, var(--text) 70%, var(--shiki-dark));
+  }
 
   /* Rendered Markdown from recorded messages, whose elements no template
      declares. */

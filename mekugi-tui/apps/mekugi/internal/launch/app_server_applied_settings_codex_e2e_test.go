@@ -141,7 +141,7 @@ func TestAppServerAppliedSettingsProcessHelper(t *testing.T) {
 		cmd.Env, cmd.Dir = os.Environ(), os.Getenv("MEKUGI_SETTINGS_PROCESS_WORKSPACE")
 		return cmd
 	}, startupThread)
-	terminal.await("Ready")
+	terminal.awaitReady()
 	if thread == "" {
 		terminal.send("/model gpt-6-sol\r")
 		terminal.awaitMatch("model applied", func(screen string) bool {

@@ -55,7 +55,9 @@ use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::PermissionProfile;
@@ -69,6 +71,8 @@ use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
+use codex_rollout::RolloutItem;
+use codex_rollout::RolloutRecorder;
 use codex_tools::FreeformTool;
 use codex_tools::FreeformToolFormat;
 use codex_tools::FunctionCallError;
@@ -1502,7 +1506,7 @@ async fn code_mode_finished_discovery_has_empty_tool_inventory(
 async fn code_mode_empty_error_has_complete_tool_inventory() -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
-    let (_test, follow_up) = run_code_mode_turn_with_config(
+    let (test, follow_up) = run_code_mode_turn_with_config(
         &server,
         "Fail without calling a tool",
         r#"throw new Error("empty-cell-error");"#,
@@ -1517,6 +1521,28 @@ async fn code_mode_empty_error_has_complete_tool_inventory() -> Result<()> {
     assert_eq!(metadata["cell_id"], "call-1");
     assert_eq!(metadata["executed_tool_calls"], serde_json::json!([]));
     assert_eq!(metadata["tool_calls_complete"], true);
+
+    let path = test.codex.rollout_path().expect("saved turn");
+    let (items, _, _) = RolloutRecorder::load_rollout_items(&path).await?;
+    let diagnostic = items.iter().find_map(|item| match item {
+        RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => match &event.item {
+            TurnItem::FunctionCallOutput(output)
+                if output.code_mode_failure_call_id() == Some("call-1") =>
+            {
+                match &output.output {
+                    FunctionCallOutputBody::Text(text) => Some(text.as_str()),
+                    FunctionCallOutputBody::ContentItems(_) => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    });
+    assert!(diagnostic.is_some_and(|text| text.contains("Error: empty-cell-error")));
+    assert!(items.iter().any(|item| matches!(
+        item,
+        RolloutItem::EventMsg(EventMsg::TurnComplete(event)) if event.error.is_none()
+    )));
     Ok(())
 }
 

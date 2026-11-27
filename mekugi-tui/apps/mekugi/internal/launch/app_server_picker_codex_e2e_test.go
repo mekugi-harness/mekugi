@@ -13,10 +13,10 @@ import (
 	"testing"
 )
 
-// Installed Codex owns both searches. The UI only renders their app-server
+// The managed runtime owns both searches. The UI only renders its app-server
 // results and inserts selections; this fixture never submits a model turn.
 func TestComposerPickersNativeCodexE2E(t *testing.T) {
-	codex, err := exec.LookPath("codex")
+	codex, err := exec.LookPath("mekugi-app-server")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +63,12 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 	defer server.Close()
 	environment := routerFaultCodexEnvironment(t)
 	newCommand := func(ctx context.Context) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, codex, "app-server", "-c", `model_providers.preview={name="preview",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false")
+		cmd := exec.CommandContext(ctx, codex, "-c", `model_providers.preview={name="preview",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`, "-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`, "-c", "features.plugins=false")
 		cmd.Env, cmd.Dir = environment, workspace
 		return cmd
 	}
 	terminal := startAppResumeTerminal(t, newCommand, "")
-	terminal.await("Ready")
+	terminal.awaitReady()
 
 	terminal.send("@picker-unique-document")
 	terminal.awaitMatch("live file search", func(screen string) bool {
@@ -76,7 +76,7 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 	})
 	terminal.send("\t")
 	terminal.awaitMatch("inserted file, not submitted", func(screen string) bool {
-		return strings.Contains(screen, "@"+fileName+" ") && !strings.Contains(screen, "@! include excluded files")
+		return strings.Contains(screen, "❯ @"+fileName) && !strings.Contains(screen, "@! include excluded files")
 	})
 	terminal.send("\x7f\x7f")
 	terminal.awaitMatch("file token deleted as one unit", func(screen string) bool {
@@ -88,38 +88,33 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 	})
 	terminal.send("\t")
 	terminal.awaitMatch("inserted skill, not submitted", func(screen string) bool {
-		return strings.Contains(screen, "$"+skillName+" ") && !strings.Contains(screen, "enter insert · esc close")
+		return strings.Contains(screen, "❯ $"+skillName) && !strings.Contains(screen, "enter insert · esc close")
 	})
 	terminal.send("\x03")
-	for _, fixture := range []struct {
-		query, found string
-		included     bool
-	}{
-		{"picker-excluded-document", ignoredName, true},
-		{"picker-git-hidden", filepath.Join(".git", gitName), false},
-		{"picker-svn-hidden", filepath.Join("nested", ".svn", svnName), false},
-		{"picker-hg-hidden", filepath.Join("nested", ".hg", hgName), false},
-	} {
-		terminal.send("@" + fixture.query)
-		terminal.awaitMatch("excluded from ordinary @ search", func(screen string) bool {
-			return strings.Contains(screen, "@! include excluded files") && strings.Contains(screen, "no matches") && strings.Contains(screen, "@"+fixture.query) && !strings.Contains(screen, fixture.found)
-		})
-		terminal.send("\x03@!" + fixture.query)
-		if fixture.included {
-			terminal.awaitMatch("ignored ordinary file included in @! search", func(screen string) bool {
-				return strings.Contains(screen, "@! include excluded files") && strings.Contains(screen, fixture.found)
-			})
-			terminal.send("\t")
-			terminal.awaitMatch("included file inserted", func(screen string) bool {
-				return strings.Contains(screen, "@"+fixture.found+" ") && !strings.Contains(screen, "@! include excluded files")
-			})
-		} else {
-			terminal.awaitMatch("VCS metadata excluded even from @! search", func(screen string) bool {
-				return strings.Contains(screen, "@! include excluded files") && strings.Contains(screen, "no matches") && strings.Contains(screen, "@!"+fixture.query) && !strings.Contains(screen, fixture.found)
-			})
-		}
-		terminal.send("\x03")
-	}
+	// Both queries also match the ordinary file. Its visible result confirms
+	// the search ran, without depending on an empty-list placeholder.
+	terminal.send("@4827")
+	terminal.awaitMatch("excluded from ordinary @ search", func(screen string) bool {
+		return strings.Contains(screen, "@! include excluded files") && strings.Contains(screen, fileName) &&
+			!strings.Contains(screen, ignoredName) && !strings.Contains(screen, gitName) &&
+			!strings.Contains(screen, svnName) && !strings.Contains(screen, hgName)
+	})
+	terminal.send("\x03@!4827")
+	terminal.awaitMatch("ignored files included, VCS metadata still excluded", func(screen string) bool {
+		return strings.Contains(screen, "@! include excluded files") && strings.Contains(screen, fileName) &&
+			strings.Contains(screen, ignoredName) && !strings.Contains(screen, gitName) &&
+			!strings.Contains(screen, svnName) && !strings.Contains(screen, hgName)
+	})
+	terminal.send("\x03@!picker-excluded-document")
+	terminal.awaitMatch("ignored file is selectable", func(screen string) bool {
+		return strings.Contains(screen, "@! include excluded files") && strings.Contains(screen, ignoredName) &&
+			!strings.Contains(screen, fileName)
+	})
+	terminal.send("\t")
+	terminal.awaitMatch("included file inserted", func(screen string) bool {
+		return strings.Contains(screen, "❯ @"+ignoredName) && !strings.Contains(screen, "@! include excluded files")
+	})
+	terminal.send("\x03")
 	terminal.send("@picker-unique-document")
 	terminal.await("@! include excluded files")
 	terminal.send("\x1b")
@@ -140,7 +135,7 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 	terminal.await("Turn skills on or off")
 	terminal.send(skillName)
 	terminal.awaitMatch("enabled skill in manager", func(screen string) bool {
-		return strings.Contains(screen, "[x] "+skillName)
+		return strings.Contains(screen, "\n  "+skillName) && strings.Contains(screen, "[x] "+skillName)
 	})
 	terminal.send(" ")
 	terminal.awaitMatch("skill disabled through Codex", func(screen string) bool {
@@ -156,7 +151,7 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 	terminal.await("Turn skills on or off")
 	terminal.send(skillName)
 	terminal.awaitMatch("disabled state persists after reload", func(screen string) bool {
-		return strings.Contains(screen, "[ ] "+skillName)
+		return strings.Contains(screen, "\n  "+skillName) && strings.Contains(screen, "[ ] "+skillName)
 	})
 	terminal.send(" ")
 	terminal.awaitMatch("skill re-enabled through Codex", func(screen string) bool {
@@ -167,7 +162,7 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 		return !strings.Contains(screen, "Enable/Disable Skills")
 	})
 	terminal.send("\x022")
-	terminal.await("2 Diff")
+	terminal.await("← main")
 	terminal.send("\x021")
 	terminal.awaitMatch("Main focused beside Diff", func(screen string) bool {
 		return strings.Contains(screen, "Main • ") && strings.Contains(screen, "→ diff")
@@ -175,19 +170,23 @@ func TestComposerPickersNativeCodexE2E(t *testing.T) {
 	if got := provider.snapshot(); len(got) != 0 {
 		t.Fatalf("picker invoked provider without submission: %q", got)
 	}
-	terminal.send("$" + skillName + " ")
-	terminal.awaitMatch("automatically attached exact skill", func(screen string) bool {
+	terminal.send("$" + skillName)
+	terminal.awaitMatch("exact skill in completion picker", func(screen string) bool {
+		return strings.Contains(screen, "enter insert · esc close") && strings.Contains(screen, skillName)
+	})
+	terminal.send("\t")
+	terminal.awaitMatch("attached exact skill", func(screen string) bool {
 		return !strings.Contains(screen, "enter insert · esc close") && terminalSkillIsAmber(terminal, "$"+skillName)
 	})
 	terminal.send("\r")
 	terminal.await("Recovered after a retry.")
-	terminal.await("completed")
+	terminal.awaitThreadIdle(provider.snapshot()[0])
 	if !terminalSkillIsAmber(terminal, "$"+skillName) {
 		t.Fatal("host echo lost amber skill identity")
 	}
 	terminal.quit()
 	resumed := startAppResumeTerminal(t, newCommand, "--last")
-	resumed.await("Ready")
+	resumed.awaitReady()
 	resumed.awaitMatch("restored amber skill", func(screen string) bool {
 		return strings.Contains(screen, skillName) && terminalSkillIsAmber(resumed, "$"+skillName)
 	})

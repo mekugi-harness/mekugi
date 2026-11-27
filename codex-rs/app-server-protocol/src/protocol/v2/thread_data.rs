@@ -3,6 +3,7 @@ use super::ThreadEnvironment;
 use super::ThreadItem;
 use super::ThreadItemPayload;
 use super::ThreadStatus;
+use super::ThreadTokenUsage;
 use super::TurnStatus;
 use crate::JsonSchema;
 use crate::TS;
@@ -165,7 +166,20 @@ impl From<ThreadSource> for CoreThreadSource {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
-pub struct ThreadExtra {}
+pub struct ThreadExtra {
+    /// Skills confirmed by the native attachment or read paths for this thread.
+    #[serde(default)]
+    pub skills: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSkillsUpdatedNotification {
+    pub thread_id: String,
+    /// Newly confirmed skill names for this thread.
+    pub names: Vec<String>,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -257,6 +271,8 @@ pub struct Thread {
     pub context_tokens: Option<u64>,
     #[ts(type = "number | null")]
     pub context_window: Option<u64>,
+    /// The thread's persisted and live usage evidence, when available.
+    pub token_usage: Option<ThreadTokenUsage>,
     #[ts(type = "number | null")]
     pub completed_compactions: Option<u64>,
     pub agent_status: Option<codex_protocol::protocol::AgentStatus>,
@@ -343,6 +359,7 @@ struct ThreadCompatibility {
     service_tier: Option<String>,
     context_tokens: Option<u64>,
     context_window: Option<u64>,
+    token_usage: Option<ThreadTokenUsage>,
     completed_compactions: Option<u64>,
     agent_status: Option<codex_protocol::protocol::AgentStatus>,
 
@@ -392,6 +409,7 @@ impl<'de> Deserialize<'de> for Thread {
             service_tier: thread.service_tier,
             context_tokens: thread.context_tokens,
             context_window: thread.context_window,
+            token_usage: thread.token_usage,
             completed_compactions: thread.completed_compactions,
             agent_status: thread.agent_status,
 

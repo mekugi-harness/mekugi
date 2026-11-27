@@ -33,7 +33,7 @@ func TestAppServerSessionTitleManualNativeCodexE2E(t *testing.T) {
 		return strings.Contains(frame, "Main • "+title+" •")
 	}
 	first := startAppResumeTerminal(t, command, "")
-	first.await("Ready")
+	first.awaitReady()
 	first.send("/title " + title + "\r")
 	first.awaitMatch("manual Main title before first prompt", showsMainTitle)
 	if len(provider.snapshot()) != 0 {
@@ -41,18 +41,18 @@ func TestAppServerSessionTitleManualNativeCodexE2E(t *testing.T) {
 	}
 	first.send("Explain native session naming\r")
 	first.await("Recovered after a retry.")
-	first.await("completed")
-	first.quit()
 	threads := provider.snapshot()
 	if len(threads) != 1 || threads[0] == "" {
 		t.Fatalf("manual title should leave one ordinary native request, got threads %q", threads)
 	}
+	first.awaitThreadIdle(threads[0])
+	first.quit()
 	second := startAppResumeTerminal(t, command, threads[0])
-	second.await("Ready")
+	second.awaitReady()
 	second.awaitMatch("persisted title after fresh app-server resume", showsMainTitle)
 	second.send("Continue after manual rename\r")
 	second.await("Continue after manual rename")
-	second.await("completed")
+	second.awaitThreadIdle(threads[0])
 	second.quit()
 	if len(provider.snapshot()) != 2 {
 		t.Fatal("resuming a manually named thread should only send the ordinary turn")

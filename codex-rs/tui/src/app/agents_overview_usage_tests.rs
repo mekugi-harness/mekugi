@@ -99,6 +99,13 @@ async fn selected_usage_is_cached_and_account_changes_discard_old_results() -> R
                 output_tokens_per_second: None,
                 work_duration_ms: None,
                 roundtrips: None,
+                usage_partial: false,
+                usage_unavailable: false,
+                roundtrips_partial: false,
+                turns: None,
+                last_response_at: None,
+                last_completed_at: None,
+                work_started_at: None,
             },
         },
     ));

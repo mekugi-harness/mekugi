@@ -14,7 +14,7 @@
     label: string;
     icon: IconName;
     tooltip?: boolean;
-    children: Snippet<[() => void]>;
+    children: Snippet<[() => void, boolean]>;
   } = $props();
   let open = $state(false);
   let mounted = $state(false);
@@ -41,7 +41,7 @@
       style={open ? undefined : "display: none"}
       class="max-h-[min(calc(100dvh-var(--topbar)-24px),var(--bits-popover-content-available-height))] w-[min(360px,calc(100vw-24px))] overflow-y-auto p-0"
     >
-      {@render children(() => (open = false))}
+      {@render children(() => (open = false), open)}
     </PopoverPrimitive.Content>
   {/if}
 </PopoverPrimitive.Root>

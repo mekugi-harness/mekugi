@@ -14,6 +14,7 @@ export type { ServerRequest } from "@codex-protocol/ServerRequest";
 export type { CommandExecutionApprovalDecision } from "@codex-protocol/v2/CommandExecutionApprovalDecision";
 export type { CommandExecutionRequestApprovalParams } from "@codex-protocol/v2/CommandExecutionRequestApprovalParams";
 export type { CommandExecutionRequestApprovalResponse } from "@codex-protocol/v2/CommandExecutionRequestApprovalResponse";
+export type { ComposerPreset } from "@codex-protocol/v2/ComposerPreset";
 export type { FileChangeApprovalDecision } from "@codex-protocol/v2/FileChangeApprovalDecision";
 export type { FileChangeRequestApprovalParams } from "@codex-protocol/v2/FileChangeRequestApprovalParams";
 export type { FileChangeRequestApprovalResponse } from "@codex-protocol/v2/FileChangeRequestApprovalResponse";
@@ -21,33 +22,35 @@ export type { HookRunSummary } from "@codex-protocol/v2/HookRunSummary";
 export type { Model } from "@codex-protocol/v2/Model";
 export type { ModelListParams } from "@codex-protocol/v2/ModelListParams";
 export type { ModelListResponse } from "@codex-protocol/v2/ModelListResponse";
+export type { PermissionProfileListResponse } from "@codex-protocol/v2/PermissionProfileListResponse";
 export type { QueuedSubmission } from "@codex-protocol/v2/QueuedSubmission";
 export type { ShellGuardApprovalDecision } from "@codex-protocol/v2/ShellGuardApprovalDecision";
 export type { ShellGuardRequestApprovalParams } from "@codex-protocol/v2/ShellGuardRequestApprovalParams";
 export type { ShellGuardRequestApprovalResponse } from "@codex-protocol/v2/ShellGuardRequestApprovalResponse";
 export type { SkillsListParams } from "@codex-protocol/v2/SkillsListParams";
 export type { SkillsListResponse } from "@codex-protocol/v2/SkillsListResponse";
-export type { Thread } from "@codex-protocol/v2/Thread";
 export type { ThreadArchiveParams } from "@codex-protocol/v2/ThreadArchiveParams";
 export type { ThreadChangeFileDiff } from "@codex-protocol/v2/ThreadChangeFileDiff";
 export type { ThreadChangeOrigin } from "@codex-protocol/v2/ThreadChangeOrigin";
 export type { ThreadChangesReadParams } from "@codex-protocol/v2/ThreadChangesReadParams";
 export type { ThreadChangesReadResponse } from "@codex-protocol/v2/ThreadChangesReadResponse";
+export type { ThreadFileSearchResponse } from "@codex-protocol/v2/ThreadFileSearchResponse";
 export type { ThreadForkParams } from "@codex-protocol/v2/ThreadForkParams";
 export type { ThreadForkResponse } from "@codex-protocol/v2/ThreadForkResponse";
 export type { ThreadItem } from "@codex-protocol/v2/ThreadItem";
 export type { ThreadListParams } from "@codex-protocol/v2/ThreadListParams";
 export type { ThreadListResponse } from "@codex-protocol/v2/ThreadListResponse";
+export type { ThreadPresetsListResponse } from "@codex-protocol/v2/ThreadPresetsListResponse";
+export type { ThreadPresetWriteParams } from "@codex-protocol/v2/ThreadPresetWriteParams";
+export type { ThreadPresetWriteResponse } from "@codex-protocol/v2/ThreadPresetWriteResponse";
 export type { ThreadReadParams } from "@codex-protocol/v2/ThreadReadParams";
 export type { ThreadReadResponse } from "@codex-protocol/v2/ThreadReadResponse";
 export type { ThreadResumeParams } from "@codex-protocol/v2/ThreadResumeParams";
-export type { ThreadResumeResponse } from "@codex-protocol/v2/ThreadResumeResponse";
 export type { ThreadRevertParams } from "@codex-protocol/v2/ThreadRevertParams";
 export type { ThreadRevertResponse } from "@codex-protocol/v2/ThreadRevertResponse";
 export type { ThreadSetNameParams } from "@codex-protocol/v2/ThreadSetNameParams";
 export type { ThreadSettings } from "@codex-protocol/v2/ThreadSettings";
 export type { ThreadStartParams } from "@codex-protocol/v2/ThreadStartParams";
-export type { ThreadStartResponse } from "@codex-protocol/v2/ThreadStartResponse";
 export type { ThreadStatus } from "@codex-protocol/v2/ThreadStatus";
 export type { ThreadSubtreeListParams } from "@codex-protocol/v2/ThreadSubtreeListParams";
 export type { ThreadTokenUsage } from "@codex-protocol/v2/ThreadTokenUsage";
@@ -60,26 +63,59 @@ export type { Turn } from "@codex-protocol/v2/Turn";
 export type { TurnInterruptParams } from "@codex-protocol/v2/TurnInterruptParams";
 export type { TurnStartParams } from "@codex-protocol/v2/TurnStartParams";
 export type { TurnStartResponse } from "@codex-protocol/v2/TurnStartResponse";
-export type { TurnSteerParams } from "@codex-protocol/v2/TurnSteerParams";
 export type { TurnsPage } from "@codex-protocol/v2/TurnsPage";
 export type { UserInput } from "@codex-protocol/v2/UserInput";
 
 import type { ReasoningEffort } from "@codex-protocol/ReasoningEffort";
 import type { RequestId } from "@codex-protocol/RequestId";
+import type { ActivePermissionProfile } from "@codex-protocol/v2/ActivePermissionProfile";
 import type { QueuedSubmission } from "@codex-protocol/v2/QueuedSubmission";
-import type { Thread } from "@codex-protocol/v2/Thread";
+import type { Thread as StableThread } from "@codex-protocol/v2/Thread";
+import type { ThreadExtra } from "@codex-protocol/v2/ThreadExtra";
 import type { ThreadItem } from "@codex-protocol/v2/ThreadItem";
+import type { ThreadResumeResponse as StableThreadResumeResponse } from "@codex-protocol/v2/ThreadResumeResponse";
+import type { ThreadStartResponse as StableThreadStartResponse } from "@codex-protocol/v2/ThreadStartResponse";
 import type { Turn } from "@codex-protocol/v2/Turn";
+import type { TurnSteerParams as StableTurnSteerParams } from "@codex-protocol/v2/TurnSteerParams";
+import type { TurnsPage } from "@codex-protocol/v2/TurnsPage";
 import type { UserInput } from "@codex-protocol/v2/UserInput";
 
 export const protocolVersion = "9" as const;
 export const subprotocol = "mekugi.control.v9" as const;
 
+export type Thread = StableThread & { extra?: ThreadExtra | null };
+export type ThreadResumeResponse = StableThreadResumeResponse & {
+  activePermissionProfile?: ActivePermissionProfile | null;
+  initialTurnsPage?: TurnsPage | null;
+};
+export type ThreadStartResponse = StableThreadStartResponse & {
+  activePermissionProfile?: ActivePermissionProfile | null;
+};
+export type TurnSteerParams = StableTurnSteerParams & {
+  responsesapiClientMetadata?: QueuedSubmission["responsesapiClientMetadata"];
+};
+
+export type BackgroundTerminal = {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  processId: string;
+  command: string;
+};
+
+export type BackgroundTerminalsPage = {
+  data: Omit<BackgroundTerminal, "threadId">[];
+  nextCursor: string | null;
+};
+
 // Methods admitted by codex-rs/app-server/src/message_processor.rs (is_allowed_for_remote_human).
 export type RemoteHumanMethod =
   | "initialize"
   | "model/list"
+  | "permissionProfile/list"
   | "skills/list"
+  | "featureUse/read"
+  | "server/diagnostics"
   | "review/start"
   | "turn/start"
   | "turn/steer"
@@ -93,18 +129,27 @@ export type RemoteHumanMethod =
   | "thread/delete"
   | "thread/unsubscribe"
   | "thread/name/set"
+  | "thread/presets/list"
+  | "thread/presets/write"
   | "thread/queue/add"
+  | "thread/queue/shellCommand"
   | "thread/queue/list"
+  | "thread/queue/take"
   | "thread/queue/delete"
   | "thread/settings/update"
   | "thread/compact/start"
   | "thread/compact/cancel"
+  | "thread/shellCommand"
+  | "thread/backgroundTerminals/list"
+  | "thread/backgroundTerminals/terminate"
   | "thread/revert"
+  | "thread/revert/preview"
+  | "thread/prediction/request"
   | "thread/list"
-  | "thread/loaded/list"
   | "thread/inspect"
   | "thread/subtree/list"
   | "thread/changes/read"
+  | "thread/files/search"
   | "thread/read"
   | "thread/turns/list"
   | "thread/items/list"
@@ -116,6 +161,7 @@ export type ThreadSettingsUpdateParams = {
   model?: string | null;
   effort?: ReasoningEffort | null;
   serviceTier?: string | null;
+  permissions?: string;
 };
 
 export type ThreadQueueAddParams = {
@@ -166,13 +212,16 @@ export type AttachmentImageResourceRequest = {
   body: {
     path: string;
     workspace?: string;
+    probe?: boolean;
   };
 };
 
 export type ResourceRequest =
   | ContentResourceRequest
+  | { thread: string; body: { path: string } }
   | ImageResourceRequest
-  | AttachmentImageResourceRequest;
+  | AttachmentImageResourceRequest
+  | { thread?: never; body?: never };
 
 // --- UI projection types rendered by Svelte components ---
 
@@ -205,6 +254,7 @@ export type Session = {
   model?: string;
   effort?: string;
   serviceTier?: string;
+  permissionProfile?: string | null;
 };
 
 export type Input = {
@@ -229,6 +279,7 @@ export type Traffic = {
   kind: string;
   from?: string;
   to?: string;
+  otherRecipients?: string[];
   detail?: string;
   incoming?: boolean;
 };
@@ -300,6 +351,7 @@ export type Value = {
   autoReload?: boolean;
   approval?: string;
   code?: string;
+  opaqueJSON?: boolean;
   codePreview?: string;
   detailCode?: string;
   detailsAvailable?: Disclosure | null;
@@ -355,6 +407,7 @@ export type Entry = {
   autoContent?: boolean;
   spans?: Array<TextSpan>;
   images?: Array<string>;
+  audio?: Array<string>;
   seq: number;
   agent?: string;
   kind?: string;
@@ -384,14 +437,18 @@ export type Agent = {
   activity?: Entry | null;
   turns?: number;
   roundtrips?: number;
+  roundtripsPartial?: boolean;
   work?: number | null;
   workSince?: number;
   lastResponse?: number;
+  lastCompleted?: number;
   cost?: number | null;
   tps?: number | null;
   costPartial?: boolean;
   inputTokens?: number | null;
+  cachedInputTokens?: number | null;
   outputTokens?: number | null;
+  reasoningOutputTokens?: number | null;
   usagePartial?: boolean;
   context?: number | null;
   window?: number;
@@ -459,9 +516,11 @@ export type ReviewedFile = {
 export type CallerReview = {
   caller: string;
   count: number;
+  counts: Counts;
 };
 
 export type SavedReview = {
+  caller: string;
   fileCount: number;
   revision: number;
   workspace: string;
@@ -485,6 +544,8 @@ export type Preview = {
   Input: string;
   Truncated: boolean;
   Complete?: boolean;
+  Settling?: boolean;
+  SavedPath?: string;
   DiffText?: boolean;
   Status: string;
   Footer?: string;
@@ -541,15 +602,6 @@ export type QuestionCall = {
   questions: Array<Question>;
 };
 
-export type QuestionAnswer = {
-  question: string;
-  choice?: number;
-  text?: string;
-  note?: string;
-  skip?: boolean;
-  attachments?: Array<Attachment>;
-};
-
 export type Prompts = {
   questions: Array<QuestionCall>;
   approvals: Array<Approval>;
@@ -570,7 +622,6 @@ export type ModelGroup = {
 };
 
 export type StartOptions = {
-  workspaces: Array<string>;
   models: Array<ModelGroup>;
   defaultModel: string;
   note?: string;
@@ -580,10 +631,11 @@ export type Start = {
   workspace?: string;
   model?: string;
   effort?: string;
-  resume?: string;
 };
 
-export type Attachment =
-  | { source: "path"; path: string }
+export type Attachment = { placeholder?: string } & (
+  | { source: "path"; path: string; fileReference?: boolean }
   | { source: "upload"; name: string; data: string; mime?: string }
-  | { source: "selection"; name: string; data: string; path?: string; inline?: boolean };
+  | { source: "textUpload"; name: string; data: string }
+  | { source: "selection"; name: string; data: string; path?: string; inline?: boolean }
+);

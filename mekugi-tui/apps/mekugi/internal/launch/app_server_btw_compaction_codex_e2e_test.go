@@ -44,7 +44,7 @@ func TestSideForkDuringMainCompactionNativeCodex(t *testing.T) {
 		}
 		return ""
 	}
-	terminal.await("Ready")
+	terminal.awaitReady()
 	terminal.send("Main seed\r")
 	next("Main seed")
 	terminal.await("completed")
@@ -137,7 +137,7 @@ func TestAppServerBTWCompactionNativeCodexE2E(t *testing.T) {
 		return cmd
 	}, "", testAppServerIntegration(proxy))
 	defer terminal.cancel()
-	terminal.await("Ready")
+	terminal.awaitReady()
 	terminal.send("Seed Main context.\r")
 	terminal.await("Main remains available.")
 	terminal.await("completed")

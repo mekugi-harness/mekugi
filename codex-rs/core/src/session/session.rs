@@ -112,6 +112,7 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
+    pub(super) usage_metrics: Mutex<super::usage_metrics::ThreadUsageMetrics>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
     pub(crate) input_queue: InputQueue,
@@ -2064,6 +2065,7 @@ impl Session {
                     == ThreadHistoryMode::Paginated
                     && services.live_thread.is_some())
                 .then(|| Mutex::new(crate::realtime_history::RealtimeHistoryState::default())),
+                usage_metrics: Mutex::new(Default::default()),
                 active_turn: Mutex::new(None),
                 async_hook_results,
                 input_queue: InputQueue::with_controller(

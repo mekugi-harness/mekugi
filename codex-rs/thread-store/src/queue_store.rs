@@ -44,6 +44,13 @@ pub trait QueueStore: Send + Sync {
 
     fn delete(&self, thread_id: ThreadId, item_id: String) -> ThreadStoreFuture<'_, bool>;
 
+    /// Remove and return the specified items still waiting, in queue order.
+    fn take(
+        &self,
+        thread_id: ThreadId,
+        item_ids: Vec<String>,
+    ) -> ThreadStoreFuture<'_, Vec<QueuedUserSubmissionRecord>>;
+
     /// Atomically replace queue order with every current item ID exactly once.
     ///
     /// Returns [`ThreadStoreError::InvalidRequest`] when `item_ids` is not a
@@ -136,6 +143,14 @@ impl QueueStore for LocalQueueStore {
 
     fn delete(&self, thread_id: ThreadId, item_id: String) -> ThreadStoreFuture<'_, bool> {
         queue_future(async move { self.queue().delete(thread_id, &item_id).await })
+    }
+
+    fn take(
+        &self,
+        thread_id: ThreadId,
+        item_ids: Vec<String>,
+    ) -> ThreadStoreFuture<'_, Vec<QueuedUserSubmissionRecord>> {
+        queue_future(async move { self.queue().take(thread_id, &item_ids).await })
     }
 
     fn reorder(&self, thread_id: ThreadId, item_ids: Vec<String>) -> ThreadStoreFuture<'_, ()> {

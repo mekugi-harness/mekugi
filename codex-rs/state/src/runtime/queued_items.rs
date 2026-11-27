@@ -163,6 +163,35 @@ impl SqliteQueueStore {
         )
     }
 
+    pub async fn take(
+        &self,
+        thread_id: ThreadId,
+        item_ids: &[String],
+    ) -> anyhow::Result<Vec<QueuedUserSubmissionRecord>> {
+        let mut transaction = self.pool.begin_immediate().await?;
+        let rows = sqlx::query(
+            "DELETE FROM queued_items
+             WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?))
+             RETURNING id, thread_id, payload_json, queue_order",
+        )
+        .bind(thread_id.to_string())
+        .bind(serde_json::to_string(item_ids)?)
+        .fetch_all(transaction.as_mut())
+        .await?;
+        let mut items = rows
+            .iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<i64, _>("queue_order")?,
+                    QueuedUserSubmissionRecord::try_from_row(row)?,
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        items.sort_unstable_by_key(|(order, _)| *order);
+        transaction.commit().await?;
+        Ok(items.into_iter().map(|(_, item)| item).collect())
+    }
+
     pub async fn reorder(&self, thread_id: ThreadId, ordered_ids: &[String]) -> anyhow::Result<()> {
         let mut transaction = self.pool.begin_immediate().await?;
         let rows: Vec<(String, i64)> = sqlx::query_as(

@@ -1,0 +1,12 @@
+· main  · worker
+
+
+
+  ── Rewind this thread? ──────────────────────────────────── [×] ──
+
+  ❯ Keep edits
+    Revert edits  2 captured changes
+
+  ↑/↓ choose · enter select · esc cancel
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /tmp/ws • ctrl+e view

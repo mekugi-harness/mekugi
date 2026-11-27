@@ -38,7 +38,7 @@ func (p *StatusPanel) Render(painter *terminalui.Painter, width, height int) []s
 		contentWidth = max(1, panelWidth-2)
 	}
 	labelLimit, valueColumn := 14, 16
-	if p.body.Metrics != nil {
+	if p.body.Session {
 		labelLimit, valueColumn = 26, 28
 	}
 	type line struct {

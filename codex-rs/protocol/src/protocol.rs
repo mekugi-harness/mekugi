@@ -1748,6 +1748,9 @@ pub enum EventMsg {
     /// Notification that the server is about to execute a command.
     ExecCommandBegin(ExecCommandBeginEvent),
 
+    /// A unified exec process has been registered and is available to list.
+    BackgroundTerminalRegistered,
+
     /// Incremental chunk of output from a running command.
     ExecCommandOutputDelta(ExecCommandOutputDeltaEvent),
 
@@ -1849,6 +1852,7 @@ pub enum EventMsg {
 
     RawResponseItem(RawResponseItemEvent),
     RawResponseCompleted(RawResponseCompletedEvent),
+    SkillsUsed(SkillsUsedEvent),
 
     /// In-process delivery from a private reviewer through its parent's subscription.
     #[serde(skip)]
@@ -2343,9 +2347,17 @@ pub enum PrivateSessionEventPayload {
 
 /// Exact usage and metadata reported by one upstream Responses API completion.
 ///
-/// Unlike TokenCountEvent, this is not accumulated, estimated, or replayed.
+/// Unlike TokenCountEvent, this is a single measurement and is not rebroadcast on replay.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct RawResponseCompletedEvent {
+    /// The response belongs to this thread, not to a fork inheriting its transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_id: Option<ThreadId>,
+    /// Unix timestamp in seconds when the response completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub completed_at: Option<i64>,
     pub response_id: String,
     pub token_usage: Option<TokenUsage>,
     pub usage_metadata: Option<crate::ResponseUsageMetadata>,
@@ -2357,6 +2369,12 @@ pub struct RawResponseCompletedEvent {
     pub openai_endpoint: bool,
     #[serde(default)]
     pub request_duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+pub struct SkillsUsedEvent {
+    pub thread_id: ThreadId,
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]

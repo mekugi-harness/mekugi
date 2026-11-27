@@ -258,6 +258,8 @@ pub(super) fn completed_item(
             TurnItem::ContextCompaction(ContextCompactionItem {
                 source_acquisition: None,
                 id: next_item_id()?,
+                summary_free: false,
+                summary: None,
             }),
             None,
         )),

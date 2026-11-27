@@ -17,6 +17,23 @@
         "last": {
           "$ref": "#/definitions/TokenUsageBreakdown"
         },
+        "lastCompletedAt": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastResponseAt": {
+          "default": null,
+          "description": "Unix timestamps in seconds, from the producers rather than attachment time.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "modelContextWindow": {
           "format": "int64",
           "type": [
@@ -40,10 +57,38 @@
             "null"
           ]
         },
+        "roundtripsPartial": {
+          "type": "boolean"
+        },
         "total": {
           "$ref": "#/definitions/TokenUsageBreakdown"
         },
+        "turns": {
+          "default": null,
+          "description": "Number of native turns started by this thread, independent of transcript paging.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "usagePartial": {
+          "description": "The counted tokens are a lower bound, not a complete provider total.",
+          "type": "boolean"
+        },
+        "usageUnavailable": {
+          "description": "No provider token counts were available; context measurements can still be present.",
+          "type": "boolean"
+        },
         "workDurationMs": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workStartedAt": {
           "default": null,
           "format": "int64",
           "type": [

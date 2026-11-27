@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -19,25 +21,26 @@ import (
 var directSlashCommands = []completion.Choice{
 	{Name: "/model", Description: "Choose the model"},
 	{Name: "/effort", Description: "Choose the reasoning effort"},
+	{Name: "/reasoning", Description: "Choose the reasoning effort"},
+	{Name: "/permissions", Description: "Choose Main's permission profile"},
+	{Name: "/presets", Description: "Recall or edit a numbered prompt preset"},
 	{Name: "/live", Description: "Show or hide Live edits for this session"},
 	{Name: "/tier", Description: "Choose the service tier"},
-	{Name: "/fast", Description: "Toggle fast service tier"},
-	{Name: "/skills", Description: "List skills"},
-	{Name: "/side", Description: "Open or switch to an ephemeral side fork"},
+	{Name: "/skills", Description: "List or manage skills"},
 	{Name: "/oneoff", Description: "Run a task in an isolated work-capable fork"},
 	{Name: "/btw", Description: "Ask a side question without changing Main"},
 	{Name: "/ps", Description: "Show running processes"},
-	{Name: "/predictions", Description: "Enable or disable next-message suggestions: on|off"},
+	{Name: "/predictions", Description: "Toggle next-message suggestions"},
 	{Name: "/session", Description: "Show session usage and metrics"},
 	{Name: "/title", Description: "Rename this session"},
 	{Name: "/status", Description: "Show session settings and usage limits"},
 	{Name: "/copy", Description: "Copy the last response"},
 	{Name: "/rewind", Description: "Rewind before a user turn"},
-	{Name: "/fork", Description: "Fork this conversation and switch to the branch"},
+	{Name: "/fork", Description: "Fork this conversation, optionally with a prompt"},
 	{Name: "/resume", Description: "Resume a saved session"},
 	{Name: "/archive", Description: "Archive this session"},
 	{Name: "/compact", Description: "Compact context now; Tab queues while busy"},
-	{Name: "/clear", Description: "Clear the transcript and start a new session"},
+	{Name: "/clear", Description: "Clear the transcript and start a new thread"},
 	{Name: "/lock", Description: "Prevent accidental keyboard interruption"},
 	{Name: "/unlock", Description: "Allow keyboard interruption again"},
 	{Name: "/quit", Description: "Quit the session"},
@@ -56,18 +59,14 @@ func directCompletionTarget(draft composer.Draft) (completion.Target, bool) {
 	if at == 0 {
 		return completion.Target{}, false
 	}
-	// Slash command completion only at start of draft with no whitespace before cursor.
-	if strings.HasPrefix(text, "/") && !strings.ContainsAny(text[:at], " \t\r\n") {
-		end := at
-		for end < len(text) && !strings.ContainsAny(text[end:end+1], " \t\r\n") {
-			end++
+	if strings.HasPrefix(text, "/") {
+		end := strings.IndexFunc(text, unicode.IsSpace)
+		if end < 0 {
+			end = len(text)
 		}
-		return completion.Target{
-			Kind:  '/',
-			Start: 0,
-			End:   end,
-			Query: strings.TrimPrefix(text[:at], "/"),
-		}, true
+		if at <= end {
+			return completion.Target{Kind: '/', End: end, Query: text[1:end]}, true
+		}
 	}
 	// @file and $skill completions at token boundaries.
 	start := at
@@ -89,6 +88,11 @@ func directCompletionTarget(draft composer.Draft) (completion.Target, bool) {
 	for end < len(text) && !strings.ContainsAny(text[end:end+1], " \t\r\n") {
 		end++
 	}
+	if sigil == '$' && slices.ContainsFunc(draft.Skills, func(skill composer.Token) bool {
+		return skill.Start == start && skill.End <= end
+	}) {
+		return completion.Target{}, false
+	}
 	return completion.Target{
 		Kind:  sigil,
 		Start: start,
@@ -98,20 +102,41 @@ func directCompletionTarget(draft composer.Draft) (completion.Target, bool) {
 }
 
 func matchDirectSlashCommands(query string) []completion.Choice {
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" {
+	if query == "" {
 		return slices.Clone(directSlashCommands)
 	}
-	var prefix, substr []completion.Choice
+	needle := []rune(strings.ToLower(query))
+	type match struct {
+		choice completion.Choice
+		score  int
+	}
+	var matches []match
 	for _, cmd := range directSlashCommands {
-		name := strings.ToLower(strings.TrimPrefix(cmd.Name, "/"))
-		if strings.HasPrefix(name, q) {
-			prefix = append(prefix, cmd)
-		} else if strings.Contains(name, q) {
-			substr = append(substr, cmd)
+		first, matched := -1, 0
+		for i, letter := range cmd.Name[1:] {
+			if letter != needle[matched] {
+				continue
+			}
+			if first == -1 {
+				first = i
+			}
+			matched++
+			if matched == len(needle) {
+				score := i - first + 1 - len(needle)
+				if first == 0 {
+					score -= 100
+				}
+				matches = append(matches, match{cmd, score})
+				break
+			}
 		}
 	}
-	return append(prefix, substr...)
+	slices.SortStableFunc(matches, func(a, b match) int { return cmp.Compare(a.score, b.score) })
+	choices := make([]completion.Choice, 0, len(matches))
+	for _, match := range matches {
+		choices = append(choices, match.choice)
+	}
+	return choices
 }
 
 func matchSkillChoices(skills []completion.Choice, query string) []completion.Choice {
@@ -142,16 +167,31 @@ func cloneMenuView(menu *sessionpresentation.MenuView) *sessionpresentation.Menu
 }
 
 func (c *directNativeConnection) loadSkills(ctx context.Context, cwd string) []completion.Choice {
+	catalog, _ := c.loadSkillChoices(ctx, cwd)
+	seen := make(map[string]bool)
+	var choices []completion.Choice
+	for _, skill := range catalog {
+		if !skill.Enabled || seen[skill.Name] {
+			continue
+		}
+		seen[skill.Name] = true
+		skill.Display = skill.Name
+		choices = append(choices, skill)
+	}
+	return choices
+}
+
+func (c *directNativeConnection) loadSkillChoices(ctx context.Context, cwd string) ([]completion.Choice, error) {
 	c.mu.Lock()
 	if c.skillsLoaded && c.skillsCwd == cwd {
 		cached := slices.Clone(c.skills)
 		c.mu.Unlock()
-		return cached
+		return cached, nil
 	}
 	gen := c.skillsGen
 	c.mu.Unlock()
 	if c.wire == nil {
-		return nil
+		return nil, errors.New("not connected")
 	}
 	params := map[string]any{}
 	if cwd != "" {
@@ -159,19 +199,24 @@ func (c *directNativeConnection) loadSkills(ctx context.Context, cwd string) []c
 	}
 	var catalog binding.SkillCatalog
 	if err := c.wire.Call(ctx, "skills/list", params, &catalog); err != nil {
-		return nil
+		return nil, err
 	}
-	seen := make(map[string]bool)
 	var choices []completion.Choice
 	for _, bucket := range catalog.Data {
+		if cwd != "" && bucket.Cwd != cwd {
+			continue
+		}
 		for _, sk := range bucket.Skills {
-			if !sk.Enabled || sk.Name == "" || seen[sk.Name] {
+			if sk.Name == "" {
 				continue
 			}
-			seen[sk.Name] = true
 			desc := sk.ShortDescription
+			label := sk.Name
 			if desc == "" && sk.Interface != nil {
 				desc = sk.Interface.ShortDescription
+			}
+			if sk.Interface != nil && sk.Interface.DisplayName != "" {
+				label = sk.Interface.DisplayName
 			}
 			if desc == "" {
 				desc = sk.Description
@@ -179,9 +224,9 @@ func (c *directNativeConnection) loadSkills(ctx context.Context, cwd string) []c
 			choices = append(choices, completion.Choice{
 				Name:        "$" + sk.Name,
 				Path:        sk.Path,
-				Display:     "$" + sk.Name,
+				Display:     label,
 				Description: desc,
-				Enabled:     true,
+				Enabled:     sk.Enabled,
 			})
 		}
 	}
@@ -192,35 +237,31 @@ func (c *directNativeConnection) loadSkills(ctx context.Context, cwd string) []c
 		c.skills = slices.Clone(choices)
 	}
 	c.mu.Unlock()
-	return choices
+	return choices, nil
 }
 
-func (c *directNativeConnection) searchFiles(ctx context.Context, cwd, query string) []completion.Choice {
-	if c.wire == nil || cwd == "" {
+func (c *directNativeConnection) searchFiles(ctx context.Context, threadID, query string) []completion.Choice {
+	if c.wire == nil || threadID == "" {
 		return nil
 	}
 	var resp struct {
-		Files []struct {
-			Root     string `json:"root"`
-			Path     string `json:"path"`
-			FileName string `json:"file_name"`
-		} `json:"files"`
+		Paths []string `json:"paths"`
 	}
-	if err := c.wire.Call(ctx, "fuzzyFileSearch", map[string]any{
-		"query": query,
-		"roots": []string{cwd},
+	if err := c.wire.Call(ctx, "thread/files/search", map[string]any{
+		"threadId": threadID,
+		"query":    query,
 	}, &resp); err != nil {
 		return nil
 	}
-	choices := make([]completion.Choice, 0, len(resp.Files))
-	for _, f := range resp.Files {
-		if f.Path == "" {
+	choices := make([]completion.Choice, 0, len(resp.Paths))
+	for _, path := range resp.Paths {
+		if path == "" {
 			continue
 		}
 		choices = append(choices, completion.Choice{
-			Name:    "@" + f.Path,
-			Path:    f.Path,
-			Display: f.Path,
+			Name:    "@" + path,
+			Path:    path,
+			Display: path,
 		})
 	}
 	return choices
@@ -233,7 +274,7 @@ func (c *directNativeConnection) handleCompletion(ctx context.Context, in sessio
 		c.dismissedComp = completion.Target{}
 		c.completionTarget = conversation.EditorTarget{}
 		if c.menu != nil && c.menu.Kind == sessionpresentation.MenuCompletion {
-			c.menu = nil
+			c.clearMenuLocked()
 			c.publishLocked()
 		}
 		c.mu.Unlock()
@@ -243,8 +284,13 @@ func (c *directNativeConnection) handleCompletion(ctx context.Context, in sessio
 		c.mu.Unlock()
 		return
 	}
+	if c.menu != nil && c.menu.Kind != sessionpresentation.MenuCompletion {
+		c.mu.Unlock()
+		return
+	}
 	c.dismissedComp = completion.Target{}
 	cwd := c.workspace
+	threadID := cmp.Or(c.inputThread, c.mainThread)
 	c.mu.Unlock()
 
 	var choices []completion.Choice
@@ -253,16 +299,25 @@ func (c *directNativeConnection) handleCompletion(ctx context.Context, in sessio
 		choices = matchDirectSlashCommands(target.Query)
 	case '$':
 		choices = matchSkillChoices(c.loadSkills(ctx, cwd), target.Query)
+		if in.Target.Call == "" && in.Target.Request == "" {
+			choices = append(choices, c.namedPresets(ctx, target.Query)...)
+		}
 	case '@':
-		choices = c.searchFiles(ctx, cwd, target.Query)
+		choices = c.searchFiles(ctx, threadID, target.Query)
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.menu != nil && c.menu.Kind != sessionpresentation.MenuCompletion {
+		return
+	}
+	if target.Kind == '@' && threadID != cmp.Or(c.inputThread, c.mainThread) {
+		return
+	}
 	if len(choices) == 0 {
 		c.completionTarget = conversation.EditorTarget{}
 		if c.menu != nil && c.menu.Kind == sessionpresentation.MenuCompletion {
-			c.menu = nil
+			c.clearMenuLocked()
 			c.publishLocked()
 		}
 		return
@@ -305,13 +360,10 @@ type directWireModel struct {
 	} `json:"serviceTiers"`
 }
 
-func (c *directNativeConnection) listWireModels(ctx context.Context) ([]directWireModel, error) {
+func (c *directNativeConnection) listWireModels(ctx context.Context, threadID string) ([]directWireModel, error) {
 	if c.wire == nil {
 		return nil, errors.New("not connected")
 	}
-	c.mu.Lock()
-	threadID := c.mainThread
-	c.mu.Unlock()
 	params := map[string]any{}
 	if threadID != "" {
 		params["threadId"] = threadID
@@ -325,9 +377,10 @@ func (c *directNativeConnection) listWireModels(ctx context.Context) ([]directWi
 	return resp.Data, nil
 }
 
-func (c *directNativeConnection) openSettingsMenuLocked(setting string, choices []completion.Choice) {
+func (c *directNativeConnection) openSettingsMenuLocked(threadID, setting string, choices []completion.Choice) {
+	c.clearMenuLocked()
+	c.settingsMenuThread = threadID
 	c.menuSeq++
-	c.completionTarget = conversation.EditorTarget{}
 	c.dismissedComp = completion.Target{}
 	var preferred completion.ChoiceID
 	for _, ch := range choices {
@@ -340,6 +393,7 @@ func (c *directNativeConnection) openSettingsMenuLocked(setting string, choices 
 		ID:        c.menuSeq,
 		Kind:      sessionpresentation.MenuSettings,
 		Setting:   setting,
+		Dialog:    setting == "/permissions",
 		Preferred: preferred,
 		View: completion.View{
 			Choices: choices,
@@ -348,8 +402,17 @@ func (c *directNativeConnection) openSettingsMenuLocked(setting string, choices 
 	c.publishLocked()
 }
 
-func (c *directNativeConnection) openModelMenu(ctx context.Context) error {
-	models, err := c.listWireModels(ctx)
+func (c *directNativeConnection) selectedModelSettings() (threadID, model, effort string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sideThread != "" && c.inputThread == c.sideThread {
+		return c.sideThread, c.sideModel, c.sideEffort
+	}
+	return c.mainThread, c.model, c.effort
+}
+
+func (c *directNativeConnection) openModelMenu(ctx context.Context, threadID, current string) error {
+	models, err := c.listWireModels(ctx, threadID)
 	if err != nil {
 		return err
 	}
@@ -368,22 +431,25 @@ func (c *directNativeConnection) openModelMenu(ctx context.Context) error {
 			Name:        name,
 			Display:     cmp.Or(m.DisplayName, name),
 			Description: m.Description,
-			Current:     c.model != "" && (m.Model == c.model || m.ID == c.model),
+			Current:     current != "" && (m.Model == current || m.ID == current),
 		})
 	}
 	if len(choices) == 0 {
 		return errors.New("no models available")
 	}
-	c.openSettingsMenuLocked("/model", choices)
+	c.openSettingsMenuLocked(threadID, "/model", choices)
 	return nil
 }
 
-func (c *directNativeConnection) openEffortMenu(ctx context.Context) error {
-	models, _ := c.listWireModels(ctx)
+func (c *directNativeConnection) openEffortMenu(ctx context.Context, threadID, model, current string) error {
+	models, err := c.listWireModels(ctx, threadID)
+	if err != nil {
+		return err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var choices []completion.Choice
-	if m, ok := findWireModel(models, c.model); ok {
+	if m, ok := findWireModel(models, model); ok {
 		for _, opt := range m.SupportedReasoningEfforts {
 			if opt.ReasoningEffort == "" {
 				continue
@@ -391,67 +457,49 @@ func (c *directNativeConnection) openEffortMenu(ctx context.Context) error {
 			choices = append(choices, completion.Choice{
 				Name:        opt.ReasoningEffort,
 				Description: opt.Description,
-				Current:     c.effort == opt.ReasoningEffort,
+				Current:     current == opt.ReasoningEffort,
 			})
 		}
 	}
 	if len(choices) == 0 {
-		for _, level := range []string{"low", "medium", "high", "xhigh"} {
-			choices = append(choices, completion.Choice{
-				Name:    level,
-				Current: c.effort == level,
-			})
-		}
+		return errors.New("No advertised reasoning effort choices; use /effort VALUE")
 	}
-	c.openSettingsMenuLocked("/effort", choices)
+	c.openSettingsMenuLocked(threadID, "/effort", choices)
 	return nil
 }
 
-func (c *directNativeConnection) openTierMenu(ctx context.Context) error {
-	models, _ := c.listWireModels(ctx)
+func (c *directNativeConnection) openTierMenu(ctx context.Context, mainID string) error {
+	models, _ := c.listWireModels(ctx, mainID)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var choices []completion.Choice
-	hasDefault := false
+	current := c.tier
+	if directServiceTierValue(current) == nil {
+		current = "default"
+	}
+	choices := []completion.Choice{{
+		Name:        "default",
+		Display:     "Default",
+		Description: "Default service tier",
+		Current:     current == "default",
+	}}
 	m, foundModel := findWireModel(models, c.model)
 	if foundModel {
 		for _, tier := range m.ServiceTiers {
-			if tier.ID == "" {
+			if directServiceTierValue(tier.ID) == nil {
 				continue
-			}
-			lower := strings.ToLower(tier.ID)
-			isStandard := lower == "standard" || lower == "default"
-			if isStandard {
-				hasDefault = true
 			}
 			choices = append(choices, completion.Choice{
 				Name:        tier.ID,
 				Display:     cmp.Or(tier.Name, tier.DisplayName, tier.ID),
 				Description: tier.Description,
-				Current:     c.tier == tier.ID || (isStandard && (c.tier == "" || c.tier == "standard" || c.tier == "default")),
+				Current:     current == tier.ID,
 			})
 		}
 	}
-	if !hasDefault {
-		defaultChoice := completion.Choice{
-			Name:        "default",
-			Display:     "Standard",
-			Description: "Default service tier",
-			Current:     c.tier == "" || c.tier == "standard" || c.tier == "default",
-		}
-		choices = append([]completion.Choice{defaultChoice}, choices...)
+	if !slices.ContainsFunc(choices, func(choice completion.Choice) bool { return choice.Current }) {
+		choices = append(choices, completion.Choice{Name: current, Description: "Current", Current: true})
 	}
-	if !foundModel && len(choices) == 1 {
-		choices = []completion.Choice{
-			choices[0],
-			{
-				Name:        "fast",
-				Description: "Faster responses at priority pricing",
-				Current:     c.tier == "fast" || c.tier == "priority",
-			},
-		}
-	}
-	c.openSettingsMenuLocked("/tier", choices)
+	c.openSettingsMenuLocked(mainID, "/tier", choices)
 	return nil
 }
 
@@ -468,15 +516,42 @@ func findWireModel(models []directWireModel, current string) (directWireModel, b
 }
 
 func (c *directNativeConnection) applyServiceTier(ctx context.Context, threadID, tier string) error {
-	lower := strings.ToLower(strings.TrimSpace(tier))
-	var value any = strings.TrimSpace(tier)
-	if lower == "" || lower == "standard" || lower == "default" || lower == "none" {
-		value = nil
-	}
 	return c.wire.Call(ctx, "thread/settings/update", map[string]any{
 		"threadId":    threadID,
-		"serviceTier": value,
+		"serviceTier": directServiceTierValue(tier),
 	}, nil)
+}
+
+func directServiceTierValue(tier string) any {
+	tier = strings.TrimSpace(tier)
+	switch strings.ToLower(tier) {
+	case "", "standard", "default", "none":
+		return nil
+	default:
+		return tier
+	}
+}
+
+func (c *directNativeConnection) clearMenuLocked() {
+	c.menu = nil
+	c.presetFlow = nil
+	c.sideReplaceTask = ""
+	c.settingsMenuThread = ""
+	c.completionTarget = conversation.EditorTarget{}
+	c.copyChoices = nil
+	c.rewind = nil
+	c.skillManager = nil
+	c.quitOffer = directQuitWork{}
+}
+
+func (c *directNativeConnection) openCommandConfirmationLocked(kind sessionpresentation.MenuKind, title, explanation string, choices []completion.Choice) {
+	c.clearMenuLocked()
+	c.menuSeq++
+	c.menu = &sessionpresentation.MenuView{
+		ID: c.menuSeq, Kind: kind, Title: title, Explanation: explanation,
+		View: completion.View{Choices: choices},
+	}
+	c.publishLocked()
 }
 
 func (c *directNativeConnection) handleMenu(ctx context.Context, action sessionpresentation.MenuAction, editor *sessionapi.NativeEditorInput) error {
@@ -485,22 +560,78 @@ func (c *directNativeConnection) handleMenu(ctx context.Context, action sessionp
 		c.mu.Unlock()
 		return nil
 	}
+	if c.presetFlow != nil {
+		return c.handlePresetMenuLocked(ctx, action)
+	}
+	if c.isPermissionMenuLocked() {
+		return c.handlePermissionMenuLocked(ctx, action)
+	}
+	if c.menu.Kind == sessionpresentation.MenuSkills || c.menu.Kind == sessionpresentation.MenuManageSkills {
+		return c.handleSkillsMenuLocked(ctx, action, editor)
+	}
+	if action.Kind == sessionpresentation.MenuAccept && (c.menu.Kind == sessionpresentation.MenuRewind || c.menu.Kind == sessionpresentation.MenuRewindEdits) {
+		return c.acceptRewindLocked(ctx, action.Choice)
+	}
 	switch action.Kind {
 	case sessionpresentation.MenuDismiss:
 		if c.menu.Kind == sessionpresentation.MenuCompletion {
 			c.dismissedComp = c.menu.Target
 		}
-		c.menu = nil
-		c.completionTarget = conversation.EditorTarget{}
+		c.clearMenuLocked()
 		c.publishLocked()
 		c.mu.Unlock()
 		return nil
 	case sessionpresentation.MenuAccept:
 		menu := c.menu
+		completionEditor := c.completionTarget
 		mainID := c.mainThread
-		c.menu = nil
-		c.completionTarget = conversation.EditorTarget{}
+		quitOffer := c.quitOffer
+		settingsThread := c.settingsMenuThread
+		sideTask := c.sideReplaceTask
+		if menu.Kind == sessionpresentation.MenuCopy {
+			c.copyMenuChoiceLocked(action.Choice)
+		}
+		c.clearMenuLocked()
 		c.dismissedComp = completion.Target{}
+		if menu.Kind == sessionpresentation.MenuSideReplace {
+			c.publishLocked()
+			c.mu.Unlock()
+			if action.Choice != menu.Choices[1].Identity() {
+				return nil
+			}
+			if err := c.handleCloseSide(ctx); err != nil {
+				return err
+			}
+			return c.startSide(ctx, sideTask)
+		}
+		if menu.Kind == sessionpresentation.MenuArchive {
+			c.publishLocked()
+			c.mu.Unlock()
+			if action.Choice != menu.Choices[1].Identity() || mainID == "" {
+				return nil
+			}
+			if err := c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": mainID}, nil); err != nil {
+				return err
+			}
+			c.mu.Lock()
+			if c.mainThread == mainID {
+				c.archived = true
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+			return nil
+		}
+		if menu.Kind == sessionpresentation.MenuExit {
+			c.publishLocked()
+			c.mu.Unlock()
+			switch action.Choice {
+			case menu.Choices[0].Identity():
+				c.finish(&sessionapi.NativeExit{Code: 0})
+			case menu.Choices[1].Identity():
+				return c.stopAndQuit(ctx, quitOffer)
+			}
+			return nil
+		}
 		if menu.Kind == sessionpresentation.MenuSettings {
 			c.publishLocked()
 			c.mu.Unlock()
@@ -510,12 +641,12 @@ func (c *directNativeConnection) handleMenu(ctx context.Context, action sessionp
 			switch menu.Setting {
 			case "/model":
 				return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-					"threadId": mainID,
+					"threadId": settingsThread,
 					"model":    action.Choice.Name,
 				}, nil)
 			case "/effort":
 				return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-					"threadId": mainID,
+					"threadId": settingsThread,
 					"effort":   action.Choice.Name,
 				}, nil)
 			case "/tier":
@@ -525,6 +656,41 @@ func (c *directNativeConnection) handleMenu(ctx context.Context, action sessionp
 		}
 		if menu.Kind == sessionpresentation.MenuCompletion && editor != nil && action.Choice.Name != "" {
 			target := editor.Target
+			text := action.Choice.Name
+			if menu.Target.Kind == '/' {
+				text += " "
+			}
+			if menu.Target.Kind == '@' {
+				cwd := c.workspace
+				c.mu.Unlock()
+				return c.completePath(menu, action, *editor, cwd)
+			}
+			selected := slices.IndexFunc(menu.Choices, func(choice completion.Choice) bool { return choice.Identity() == action.Choice })
+			if menu.Target.Kind == '$' && (selected < 0 || editor.Target != completionEditor) {
+				c.publishLocked()
+				c.mu.Unlock()
+				return sessionpresentation.ErrStaleIntent
+			}
+			if selected >= 0 && menu.Choices[selected].Preset {
+				if !c.presetsAvailableLocked() || c.presetCatalog == nil {
+					c.publishLocked()
+					c.mu.Unlock()
+					return sessionpresentation.ErrStaleIntent
+				}
+				text = c.presetCatalog[action.Choice.ID-1].Input
+			} else if menu.Target.Kind == '$' {
+				c.effectSeq++
+				c.effects = append(c.effects, sessionapi.NativeEffect{
+					ID: c.effectSeq, Thread: action.Thread, Target: &target,
+					Action: &composer.Action{
+						Kind: composer.CompleteSkillAction, Start: menu.Target.Start, End: menu.Target.End,
+						Text: strings.TrimPrefix(text, "$"), Path: menu.Choices[selected].Path,
+					},
+				})
+				c.publishLocked()
+				c.mu.Unlock()
+				return nil
+			}
 			start, end := menu.Target.Start, menu.Target.End
 			if start < 0 {
 				start = 0
@@ -555,7 +721,7 @@ func (c *directNativeConnection) handleMenu(ctx context.Context, action sessionp
 				Target: &t,
 				Action: &composer.Action{
 					Kind: composer.InsertAction,
-					Text: action.Choice.Name,
+					Text: text,
 				},
 			})
 		}
@@ -563,6 +729,40 @@ func (c *directNativeConnection) handleMenu(ctx context.Context, action sessionp
 		c.mu.Unlock()
 		return nil
 	}
+	c.mu.Unlock()
+	return nil
+}
+
+// Source: mekugi-tui/apps/mekugi/internal/launch/app_server_picker.go:335:372@cc041cd0 acceptCompletion.
+func (c *directNativeConnection) completePath(menu *sessionpresentation.MenuView, action sessionpresentation.MenuAction, editor sessionapi.NativeEditorInput, cwd string) error {
+	choice := slices.IndexFunc(menu.Choices, func(choice completion.Choice) bool { return choice.Identity() == action.Choice })
+	target, ok := directCompletionTarget(editor.Draft)
+	if !ok || target != menu.Target || choice < 0 {
+		c.mu.Lock()
+		c.publishLocked()
+		c.mu.Unlock()
+		return sessionpresentation.ErrStaleIntent
+	}
+	path := menu.Choices[choice].Path
+	absolutePath := path
+	if !filepath.IsAbs(absolutePath) {
+		absolutePath = filepath.Join(cwd, absolutePath)
+	}
+	edit := composer.Action{Kind: composer.CompleteFileAction, Start: target.Start, End: target.End, Path: path}
+	if imageFile(absolutePath) {
+		edit.Kind, edit.Path = composer.CompleteImageAction, absolutePath
+	} else {
+		if strings.ContainsFunc(path, unicode.IsSpace) && !strings.Contains(path, `"`) {
+			path = `"` + path + `"`
+		}
+		edit.Text = "@" + path
+	}
+	c.mu.Lock()
+	c.effectSeq++
+	c.effects = append(c.effects, sessionapi.NativeEffect{
+		ID: c.effectSeq, Thread: action.Thread, Target: &editor.Target, Action: &edit,
+	})
+	c.publishLocked()
 	c.mu.Unlock()
 	return nil
 }

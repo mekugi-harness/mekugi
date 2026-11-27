@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::JsonSchema;
 use crate::TS;
 use serde::Deserialize;
@@ -14,6 +16,12 @@ pub struct ServerDiagnosticsParams {}
 pub struct ServerDiagnosticsResponse {
     pub process: ServerDiagnosticsProcess,
     pub gauges: Vec<ServerDiagnosticsGauge>,
+    /// The active native diagnostic log database, if open.
+    pub debug_path: Option<PathBuf>,
+    /// Model transport attempts across all threads since this process started.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub provider_requests: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

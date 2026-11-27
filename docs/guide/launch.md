@@ -24,7 +24,7 @@ mekugi -p work
 ```
 
 Interactive launches start the local server when absent and attach the [UI](terminal-ui.md).
-Closing the UI leaves its thread running; exit prints resume/replay commands.
+Closing the UI leaves its thread running.
 Ctrl-C cancels the startup wait. Use explicit headless execution below for automation;
 redirected ordinary launches and stock CLI subcommands are not supported through Mekugi.
 Mekugi needs JavaScript `exec`. Custom Responses endpoints require a [profile import](configuration.md#codex-profile-imports).

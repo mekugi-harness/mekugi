@@ -4,11 +4,11 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs;
 use std::fs::Metadata;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 pub(crate) fn same_file(a: &Metadata, b: &Metadata) -> bool {
     a.dev() == b.dev() && a.ino() == b.ino()
@@ -60,14 +60,7 @@ pub(crate) fn guard_paths(
     }
 
     let path_list: OsString = if default_path {
-        let output = Command::new("/usr/bin/getconf")
-            .arg("PATH")
-            .output()
-            .map_err(|err| format!("resolve standard utility path: {err}"))?;
-        if !output.status.success() {
-            return Err("resolve standard utility path failed".to_owned());
-        }
-        OsString::from(String::from_utf8_lossy(&output.stdout).trim())
+        standard_utility_path()?
     } else {
         std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/bin:/usr/bin"))
     };
@@ -105,6 +98,23 @@ pub(crate) fn guard_paths(
     }
 
     Err("command not found".to_owned())
+}
+
+fn standard_utility_path() -> Result<OsString, String> {
+    // Read the same POSIX value as getconf without relying on an inherited
+    // process environment to start the utility.
+    // SAFETY: A null buffer with zero length queries the required capacity.
+    let size = unsafe { libc::confstr(libc::_CS_PATH, std::ptr::null_mut(), 0) };
+    if !(2..=isize::MAX as usize).contains(&size) {
+        return Err("resolve standard utility path failed".to_owned());
+    }
+    let mut path = vec![0; size];
+    // SAFETY: The buffer is writable for exactly the requested size.
+    let written = unsafe { libc::confstr(libc::_CS_PATH, path.as_mut_ptr().cast(), path.len()) };
+    if written != size || path.pop() != Some(0) {
+        return Err("resolve standard utility path failed".to_owned());
+    }
+    Ok(OsString::from_vec(path))
 }
 
 /// Builds the child environment for a guarded command, applying `mise` shim loop

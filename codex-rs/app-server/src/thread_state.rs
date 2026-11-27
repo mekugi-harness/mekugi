@@ -134,7 +134,6 @@ pub(crate) struct ThreadState {
     current_turn_history: ThreadHistoryBuilder,
     history_mode: ThreadHistoryMode,
     pub(crate) evict_superseded_agent_text: bool,
-    pub(crate) usage_metrics: crate::usage_metrics::ThreadUsageMetrics,
     listener_thread: Option<Weak<CodexThread>>,
     watch_registration: WatchRegistration,
 }
@@ -280,11 +279,7 @@ impl ThreadState {
     }
 
     pub(crate) fn track_current_turn_event(&mut self, event_turn_id: &str, event: &EventMsg) {
-        if let EventMsg::RawResponseCompleted(completed) = event {
-            self.usage_metrics.observe_raw_response(completed);
-        }
         if let EventMsg::TurnStarted(payload) = event {
-            self.usage_metrics.observe_turn_started();
             self.note_turn_started(event_turn_id, payload.started_at);
             self.forwarded_turn_id =
                 (payload.turn_id != event_turn_id).then(|| payload.turn_id.clone());
@@ -313,17 +308,13 @@ impl ThreadState {
                 .handle_event_for_history_mode(event, self.history_mode);
         }
         match event {
-            EventMsg::TurnComplete(payload) => {
-                self.usage_metrics
-                    .observe_turn_finished(payload.duration_ms);
+            EventMsg::TurnComplete(_) => {
                 self.last_terminal_turn_id = Some(event_turn_id.to_string());
                 if !self.current_turn_history.has_active_turn() {
                     self.current_turn_history.reset();
                 }
             }
-            EventMsg::TurnAborted(payload) => {
-                self.usage_metrics
-                    .observe_turn_finished(payload.duration_ms);
+            EventMsg::TurnAborted(_) => {
                 self.last_terminal_turn_id = Some(event_turn_id.to_string());
                 if !self.current_turn_history.has_active_turn() {
                     self.current_turn_history.reset();

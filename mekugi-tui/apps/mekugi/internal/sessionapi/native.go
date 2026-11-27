@@ -85,12 +85,15 @@ type NativeEvent struct {
 // NativeTarget captures the publication that produced an input action. A later
 // stream update cannot retarget an already selected command or dialog action.
 type NativeTarget struct {
-	Attachment, Thread, Startup string
-	Version                     sessionpresentation.Version
+	Attachment, Thread, Workspace, Startup string
+	Version                                sessionpresentation.Version
 }
 
 func (e NativeEvent) Target() NativeTarget {
-	return NativeTarget{Attachment: e.Attachment, Thread: e.Frame.View.Main.ID, Startup: e.Startup, Version: e.Frame.View.Version}
+	return NativeTarget{
+		Attachment: e.Attachment, Thread: e.Frame.View.Main.ID, Workspace: e.Frame.View.Info.Workspace,
+		Startup: e.Startup, Version: e.Frame.View.Version,
+	}
 }
 
 // NativeOperation uses existing semantic intents, not terminal keys. Exactly
@@ -119,7 +122,6 @@ type NativeOperation struct {
 	CloseDetails *sessionpresentation.DetailID            `json:"closeDetails,omitzero"`
 	Notice       *NativeNoticeAction                      `json:"notice,omitzero"`
 	Receipt      *NativeReceipt                           `json:"receipt,omitzero"`
-	Recovery     *NativeRecoveryInput                     `json:"recovery,omitzero"`
 	Reference    *sessionpresentation.ReferenceIntent     `json:"reference,omitzero"`
 }
 
@@ -140,18 +142,20 @@ type NativePreferenceUpdate struct {
 // NativeSessionFacts are detached values from the invocation's existing history,
 // preference, notification and accounting owners. Clients retain no new ledger.
 type NativeSessionFacts struct {
-	History                          []composer.HistoryEntry
-	SideHistory                      []composer.HistoryEntry
-	SideHistoryThread                string
-	Preferences                      jsontext.Value `json:"preferences,omitzero"`
-	Usage                            NativeUsage
-	DebugDirectory                   string
-	Diagnostics                      string
-	Archived                         bool
-	Notifications                    NativeNotificationSettings
-	PredictionThread, PredictionTurn string
-	ActionRequired                   bool
-	Busy                             bool
+	History            []composer.HistoryEntry
+	HistoryRevision    uint64
+	SideHistory        []composer.HistoryEntry
+	SideHistoryThread  string
+	Preferences        jsontext.Value `json:"preferences,omitzero"`
+	Usage              NativeUsage
+	DebugDirectory     string
+	Diagnostics        string
+	Archived           bool
+	Notifications      NativeNotificationSettings
+	PredictionTurn     string
+	PredictionRevision uint64
+	ActionRequired     bool
+	Busy               bool
 }
 
 type NativeUsage struct {
@@ -233,8 +237,6 @@ type NativeEffect struct {
 	Skills       *[]composer.Token
 	Restore      *composer.Draft
 	Recall       *string
-	ShellRestore *composer.Draft
-	Recovery     *NativeRecoveryView
 	Action       *composer.Action
 	Clipboard    *string
 	Selection    *NativeSelection
@@ -245,40 +247,6 @@ type NativeEffect struct {
 }
 
 type NativeDesktopNotification struct{ Event, Message string }
-
-type NativeRecoveryInput struct {
-	Effect uint64         `json:"effect"`
-	Action RecoveryAction `json:"action"`
-	Text   *[]string      `json:"text,omitzero"`
-}
-
-type RecoveryAction string
-
-const (
-	RetryRecovery   RecoveryAction = "retry"
-	EditRecovery    RecoveryAction = "edit"
-	DiscardRecovery RecoveryAction = "discard"
-)
-
-type NativeRecoveryView struct {
-	Queued      bool     `json:"queued,omitzero"`
-	Editing     bool     `json:"editing,omitzero"`
-	Parts       []string `json:"parts,omitzero"`
-	Preview     string   `json:"preview"`
-	Attachments bool     `json:"attachments"`
-	Shell       bool     `json:"shell"`
-}
-
-// RecoveryDraft distinguishes unsent submissions from targeted editor changes.
-func (e NativeEffect) RecoveryDraft() *composer.Draft {
-	if e.Target != nil || e.Action != nil {
-		return nil
-	}
-	if e.ShellRestore != nil {
-		return e.ShellRestore
-	}
-	return e.Restore
-}
 
 type NativePresentationEffect struct {
 	LiveHidden, InterruptLocked, PredictionsDisabled bool

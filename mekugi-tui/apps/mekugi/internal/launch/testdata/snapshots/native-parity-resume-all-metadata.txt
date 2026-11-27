@@ -1,0 +1,12 @@
+  ── Resume a previous session ─────────────────────────────────────────────────────────────────
+  Filter: Cwd All
+  Type to search
+  Active Archived · ←/→
+  Updated    Branch        Directory         Conversation
+› 1m40s ago  fix/coverage  .                 Improve rendered snapshot coverage                   
+  2h ago     fix/parser    /projects/parser  Investigate a long parser failure
+
+
+  enter resume · esc close · tab cwd/all · ctrl+c close · ↑/↓ browse
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /tmp/ws • ctrl+e view

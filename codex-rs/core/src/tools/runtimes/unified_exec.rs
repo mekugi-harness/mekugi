@@ -100,6 +100,7 @@ pub struct UnifiedExecApprovalKey {
 /// unified-exec side while delegating process startup to the manager.
 pub struct UnifiedExecRuntime<'a> {
     manager: &'a UnifiedExecProcessManager,
+    pub(crate) reported_launch_failure: bool,
 }
 
 pub(crate) struct UnifiedExecAttempt {
@@ -124,7 +125,10 @@ fn unified_exec_options(
 impl<'a> UnifiedExecRuntime<'a> {
     /// Creates a runtime bound to the shared unified-exec process manager.
     pub fn new(manager: &'a UnifiedExecProcessManager) -> Self {
-        Self { manager }
+        Self {
+            manager,
+            reported_launch_failure: false,
+        }
     }
 }
 
@@ -804,6 +808,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest<'_>, UnifiedExecAttempt> for UnifiedExec
                 exec_track_handles,
             )
             .await;
+        self.reported_launch_failure = matches!(&process, Err(ToolError::Rejected(_)));
         let mut process = with_launch_failure_events(process, prepared, ctx).await?;
         process._shell_snapshot = shell_snapshot;
         Ok(UnifiedExecAttempt {

@@ -1,10 +1,17 @@
 package launch
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"errors"
+	"image"
+	"image/png"
+	"maps"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,9 +22,11 @@ import (
 	"github.com/coder/websocket"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
@@ -30,6 +39,7 @@ type mockNativeAppServer struct {
 	methods      []string
 	params       map[string][]jsontext.Value
 	responses    map[string]jsontext.Value
+	overrides    map[string]func(jsontext.Value) any
 	queueData    []map[string]any
 	bgTerminals  []map[string]any
 	shellFailMsg string
@@ -45,6 +55,7 @@ func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer 
 	m := &mockNativeAppServer{
 		params:    make(map[string][]jsontext.Value),
 		responses: make(map[string]jsontext.Value),
+		overrides: make(map[string]func(jsontext.Value) any),
 		ready:     make(chan struct{}, 4),
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +98,7 @@ func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer 
 				reply, _ := json.Marshal(map[string]any{
 					"jsonrpc": "2.0",
 					"id":      msg.ID,
-					"error":   map[string]any{"code": -32000, "message": string(errMsg)},
+					"error":   map[string]any{"code": -32600, "message": string(errMsg)},
 				})
 				_ = conn.Write(r.Context(), websocket.MessageText, reply)
 				continue
@@ -111,6 +122,12 @@ func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer 
 type mockRPCError string
 
 func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) any {
+	m.mu.Lock()
+	override := m.overrides[method]
+	m.mu.Unlock()
+	if override != nil {
+		return override(params)
+	}
 	switch method {
 	case "initialize":
 		return map[string]any{"userAgent": "mekugi-app-server/test"}
@@ -153,10 +170,13 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 			"totalAdditions": 2,
 			"totalDeletions": 1,
 			"changes": []map[string]any{
-				{"changeId": "amber1", "sequence": 1, "threadId": "thr-main", "sourceKind": "ApplyPatch", "createdAt": 1700000000, "paths": []string{"main.go"}, "incomplete": false},
+				{"changeId": "amber1", "sequence": 1, "threadId": "thr-main",
+					"authorThreadId": "thr-main", "turnId": "turn-1", "itemId": "captured-command",
+					"sourceKind": "ShellWrite", "workspace": "/tmp/ws"},
 			},
 			"files": []map[string]any{
-				{"path": "main.go", "status": "M", "unifiedDiff": "@@ -1 +1,2 @@\n-old\n+new\n+more\n", "additions": 2, "deletions": 1, "isBinary": false, "coverageNotes": []string{}},
+				{"path": "main.go", "absolutePath": "/tmp/ws/main.go", "changeIds": []string{"amber1"},
+					"status": "M", "unifiedDiff": "@@ -1 +1,2 @@\n-old\n+new\n+more\n", "additions": 2, "deletions": 1},
 			},
 		}
 	case "thread/queue/list":
@@ -184,24 +204,38 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 			},
 		}
 	case "thread/backgroundTerminals/list":
-		m.mu.Lock()
-		procs := slices.Clone(m.bgTerminals)
-		m.mu.Unlock()
-		if procs == nil {
-			procs = []map[string]any{}
-		}
-		return map[string]any{"data": procs, "nextCursor": nil}
-	case "thread/backgroundTerminals/terminate":
 		var req struct {
-			ProcessID string `json:"processId"`
+			ThreadID string `json:"threadId"`
 		}
 		_ = json.Unmarshal(params, &req)
 		m.mu.Lock()
-		m.bgTerminals = slices.DeleteFunc(m.bgTerminals, func(p map[string]any) bool {
-			return p["processId"] == req.ProcessID
-		})
+		procs := make([]map[string]any, 0, len(m.bgTerminals))
+		for _, process := range m.bgTerminals {
+			if process["threadId"] == req.ThreadID {
+				procs = append(procs, process)
+			}
+		}
 		m.mu.Unlock()
-		return map[string]any{"terminated": true}
+		return map[string]any{"data": procs, "nextCursor": nil}
+	case "thread/backgroundTerminals/terminate":
+		var req struct {
+			ThreadID   string `json:"threadId"`
+			ProcessID  string `json:"processId"`
+			Invocation struct {
+				TurnID string `json:"turnId"`
+				ItemID string `json:"itemId"`
+			} `json:"invocation"`
+		}
+		_ = json.Unmarshal(params, &req)
+		m.mu.Lock()
+		originalCount := len(m.bgTerminals)
+		m.bgTerminals = slices.DeleteFunc(m.bgTerminals, func(p map[string]any) bool {
+			return p["processId"] == req.ProcessID && p["threadId"] == req.ThreadID &&
+				p["turnId"] == req.Invocation.TurnID && p["itemId"] == req.Invocation.ItemID
+		})
+		terminated := len(m.bgTerminals) < originalCount
+		m.mu.Unlock()
+		return map[string]any{"terminated": terminated}
 	case "thread/shellCommand":
 		m.mu.Lock()
 		msg := m.shellFailMsg
@@ -210,6 +244,28 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 			return mockRPCError(msg)
 		}
 		return map[string]any{}
+	case "thread/turns/list":
+		var req struct {
+			Cursor string `json:"cursor"`
+		}
+		_ = json.Unmarshal(params, &req)
+		if req.Cursor == "older-rewind-turns" {
+			return map[string]any{"data": []map[string]any{{
+				"id": "turn-older", "status": "completed",
+				"items": []map[string]any{
+					{"id": "older", "type": "userMessage", "content": []map[string]string{{"type": "text", "text": "Older user message"}}},
+				},
+			}}}
+		}
+		return map[string]any{"data": []map[string]any{{
+			"id": "turn-1", "status": "completed",
+			"items": []map[string]any{
+				{"id": "first", "type": "userMessage", "content": []map[string]string{{"type": "text", "text": "First user message"}}},
+				{"id": "steered", "type": "userMessage", "content": []map[string]string{{"type": "text", "text": "Steered user message"}}},
+			},
+		}}, "nextCursor": "older-rewind-turns"}
+	case "thread/revert/preview":
+		return map[string]any{"changeIds": []string{"shell1"}}
 	case "thread/read":
 		return map[string]any{
 			"thread": map[string]any{
@@ -228,7 +284,7 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 	case "thread/list":
 		return map[string]any{
 			"data": []map[string]any{
-				{"id": "thr-saved", "name": "Saved session", "cwd": "/tmp/ws", "updatedAt": 1700000001},
+				{"id": "thr-saved", "name": "Saved session", "cwd": "/tmp/ws", "updatedAt": 1700000001, "gitInfo": map[string]any{"branch": "fix/saved"}},
 			},
 		}
 	case "skills/list":
@@ -243,12 +299,8 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 				},
 			},
 		}
-	case "fuzzyFileSearch":
-		return map[string]any{
-			"files": []map[string]any{
-				{"root": "/tmp/ws", "path": "cmd/main.go", "match_type": "file", "file_name": "main.go", "score": 100},
-			},
-		}
+	case "thread/files/search":
+		return map[string]any{"paths": []string{"cmd/main.go"}}
 	case "model/list":
 		return map[string]any{
 			"data": []map[string]any{
@@ -344,8 +396,16 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 			ev.Frame.Family != nil && len(ev.Frame.Family.Threads) == 2 &&
 			ev.Frame.Review != nil && len(ev.Frame.Review.Files) == 1
 	})
-	if initial.Frame.Review.Files[0].Path != "main.go" {
+	if initial.Frame.Review.Files[0].Path != "/tmp/ws/main.go" {
 		t.Fatalf("unexpected saved change file: %+v", initial.Frame.Review.Files)
+	}
+	file := initial.Frame.Review.Unfiltered[initial.Frame.Review.Files[0].Key()]
+	if len(file.Origins) != 1 || file.Origins[0].Caller != "/root" ||
+		file.Origins[0].Change != "amber1" || file.Origins[0].Source != "Shell" {
+		t.Fatalf("unexpected saved change provenance: %+v", file.Origins)
+	}
+	if counts := file.NetCounts(); counts.Added != 2 || counts.Removed != 1 {
+		t.Fatalf("unexpected saved change counts: %+v", counts)
 	}
 	if initial.Frame.Main != initial.Frame.Agents {
 		t.Fatalf("expected Main and Agents to share publication when Displayed == Main")
@@ -531,8 +591,87 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 5. Settings, rewind, Side, One-off (/btw), and Display selection (Herdr panel).
-	for _, cmd := range []string{"/model gpt-5.1", "/effort high", "/rewind", "/side check this", "/btw quick question"} {
+	// 5. Settings, rewind, one-off fork, side question, and Display selection.
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Command: new("/model gpt-5.1")}); err == nil {
+		t.Fatal("/model accepted an argument instead of requiring the picker")
+	}
+	mock.send(t, map[string]any{
+		"jsonrpc": "2.0", "method": "turn/completed",
+		"params": map[string]any{"threadId": "thr-main", "turn": map[string]any{"id": "turn-1", "status": "completed"}},
+	})
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Main != nil && !ev.Frame.Facts.Busy
+	})
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Command: new("/rewind")}); err != nil {
+		t.Fatal(err)
+	}
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Kind == sessionpresentation.MenuRewind
+	})
+	menu := ev.Frame.View.Menu
+	if len(menu.Choices) != 3 || menu.Choices[1].Name != "Steered user message" ||
+		menu.Choices[2].Name != "Older messages…" {
+		t.Fatalf("Rewind menu: %+v", menu)
+	}
+	mock.mu.Lock()
+	rewindPageRequests := len(mock.params["thread/turns/list"])
+	mock.mu.Unlock()
+	if rewindPageRequests != 1 {
+		t.Fatalf("Rewind fetched %d pages before opening", rewindPageRequests)
+	}
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[2].Identity(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		next := ev.Frame.View.Menu
+		return next != nil && next.Kind == sessionpresentation.MenuRewind && next.ID != menu.ID
+	})
+	menu = ev.Frame.View.Menu
+	if len(menu.Choices) != 3 || menu.Choices[1].Name != "Steered user message" ||
+		menu.Choices[2].Name != "Older user message" {
+		t.Fatalf("Rewind menu after loading older messages: %+v", menu)
+	}
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[1].Identity(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Kind == sessionpresentation.MenuRewindEdits
+	})
+	menu = ev.Frame.View.Menu
+	if len(menu.Choices) != 2 || menu.Choices[0].Name != "Keep edits" || !menu.Choices[1].Danger {
+		t.Fatalf("Rewind edits menu: %+v", menu)
+	}
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[0].Identity(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Command: new("/rewind")}); err != nil {
+		t.Fatal(err)
+	}
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Kind == sessionpresentation.MenuRewind
+	})
+	menu = ev.Frame.View.Menu
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[1].Identity(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Kind == sessionpresentation.MenuRewindEdits
+	})
+	menu = ev.Frame.View.Menu
+	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[1].Identity(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"/effort high", "/oneoff check this", "/btw quick question"} {
 		if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Command: new(cmd)}); err != nil {
 			t.Fatalf("command %q: %v", cmd, err)
 		}
@@ -559,6 +698,11 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 	if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Command: new("/resume")}); err != nil {
 		t.Fatal(err)
 	}
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool { return ev.Frame.View.Resume != nil })
+	wantResume := sessionpresentation.ResumeRow{ID: "thr-saved", Title: "Saved session", Workspace: "/tmp/ws", Updated: 1700000001, Branch: "fix/saved"}
+	if !slices.Equal(ev.Frame.View.Resume.Rows, []sessionpresentation.ResumeRow{wantResume}) {
+		t.Fatalf("resume row lost native directory, age or branch: %+v", ev.Frame.View.Resume.Rows)
+	}
 
 	// Verify all native RPC methods were invoked directly on mekugi-app-server.
 	mock.mu.Lock()
@@ -570,6 +714,8 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 	steerParams := slices.Clone(mock.params["turn/steer"])
 	queueParams := slices.Clone(mock.params["thread/queue/add"])
 	revertParams := slices.Clone(mock.params["thread/revert"])
+	revertPreviewCount := len(mock.params["thread/revert/preview"])
+	shellCount := len(mock.params["thread/shellCommand"])
 	forkParams := slices.Clone(mock.params["thread/fork"])
 	turnStartParams := slices.Clone(mock.params["turn/start"])
 	listParams := slices.Clone(mock.params["thread/list"])
@@ -598,8 +744,15 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 	if len(queueParams) == 0 || !strings.Contains(string(queueParams[0]), `"clientUserMessageId"`) || !strings.Contains(string(queueParams[0]), "selected snippet") {
 		t.Fatalf("thread/queue/add missing clientUserMessageId or selection: %s", queueParams)
 	}
-	if len(revertParams) == 0 || !strings.Contains(string(revertParams[0]), `"beforeTurnId":"turn-1"`) {
-		t.Fatalf("thread/revert missing beforeTurnId: %s", revertParams)
+	if len(revertParams) != 2 || !strings.Contains(string(revertParams[0]), `"beforeTurnId":"turn-1"`) ||
+		!strings.Contains(string(revertParams[0]), `"beforeItemId":"steered"`) || strings.Contains(string(revertParams[0]), "expectedChangeIds") {
+		t.Fatalf("thread/revert did not keep edits at the selected message: %s", revertParams)
+	}
+	if got, want := string(revertParams[1]), `{"threadId":"thr-main","beforeTurnId":"turn-1","beforeItemId":"steered","expectedChangeIds":["shell1"]}`; got != want {
+		t.Fatalf("thread/revert did not send the selected preview IDs: %s", got)
+	}
+	if shellCount != 0 || revertPreviewCount != 2 {
+		t.Fatalf("Rewind used %d shell commands and %d previews for two choices", shellCount, revertPreviewCount)
 	}
 	if len(forkParams) < 2 || !strings.Contains(string(forkParams[1]), `"sandbox":"read-only"`) || !strings.Contains(string(forkParams[1]), `"approvalPolicy":"never"`) {
 		t.Fatalf("/btw fork missing read-only sandbox or approvalPolicy: %s", forkParams)
@@ -621,12 +774,267 @@ func TestDirectNativeNewClearsActiveTurnBeforeRewind(t *testing.T) {
 		activeTurn:    "turn-a-1",
 		threadCallers: map[string]string{"thr-a": "main"},
 	}
-	conn.applyThreadBootstrapLocked("thr-b", "/tmp/ws", "Fresh Session", "gpt-5", "medium", "standard")
+	conn.applyThreadBootstrapLocked(directThreadStartResponse{
+		Thread: directWireThread{ID: "thr-b", Cwd: "/tmp/ws", Name: "Fresh Session"},
+		Model:  "gpt-5", ReasoningEffort: "medium", ServiceTier: "standard",
+	})
 	if conn.mainThread != "thr-b" {
 		t.Fatalf("expected mainThread=thr-b, got %q", conn.mainThread)
 	}
 	if conn.activeTurn != "" {
 		t.Fatalf("expected activeTurn cleared on main thread switch, got %q", conn.activeTurn)
+	}
+}
+
+func TestDirectNativeForkPromptAndArchiveConfirmation(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "app-server.sock")
+	mock := startMockNativeAppServer(t, socket)
+	ctx := t.Context()
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	send := func(op sessionapi.NativeOperation) {
+		t.Helper()
+		if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, op); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requests := func(method string) []jsontext.Value {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return slices.Clone(mock.params[method])
+	}
+	send(sessionapi.NativeOperation{Command: new("/fork Continue in the branch")})
+	prompts := requests("turn/start")
+	if len(prompts) != 1 || !strings.Contains(string(prompts[0]), `"threadId":"thr-side"`) ||
+		!strings.Contains(string(prompts[0]), `"text":"Continue in the branch"`) {
+		t.Fatalf("expected prompt in returned fork, got %s", prompts)
+	}
+	mock.send(t, map[string]any{
+		"jsonrpc": "2.0", "method": "turn/started",
+		"params": map[string]any{"threadId": "thr-side", "turn": map[string]any{"id": "fork-turn"}},
+	})
+	awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool { return ev.Frame.Facts.Busy })
+	open := func() *sessionpresentation.MenuView {
+		t.Helper()
+		send(sessionapi.NativeOperation{Command: new("/archive")})
+		ev := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+			return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Kind == sessionpresentation.MenuArchive
+		})
+		return ev.Frame.View.Menu
+	}
+	pick := func(menu *sessionpresentation.MenuView, choice int) {
+		send(sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+			Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[choice].Identity(),
+		}})
+	}
+	menu := open()
+	if !strings.Contains(menu.Explanation, "stop the current turn") {
+		t.Fatalf("archive warning did not mention active work: %q", menu.Explanation)
+	}
+	pick(menu, 0)
+	if archived := requests("thread/archive"); len(archived) != 0 {
+		t.Fatalf("cancel sent an archive request: %s", archived)
+	}
+	pick(open(), 1)
+	if archived := requests("thread/archive"); len(archived) != 1 || !strings.Contains(string(archived[0]), `"threadId":"thr-side"`) {
+		t.Fatalf("expected archive of returned fork after confirmation, got %s", archived)
+	}
+}
+
+func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "app-server.sock")
+	mock := startMockNativeAppServer(t, socket)
+	ctx := t.Context()
+	mock.mu.Lock()
+	mock.overrides["thread/start"] = func(params jsontext.Value) any {
+		id := "thr-main"
+		if strings.Contains(string(params), `"sessionStartSource":"clear"`) {
+			id = "thr-fresh"
+		}
+		return map[string]any{"thread": map[string]string{"id": id}}
+	}
+	mock.mu.Unlock()
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, []string{"--yolo"}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	command := func(line string) error {
+		_, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: &line})
+		return err
+	}
+	if err := command("/oneoff"); err == nil {
+		t.Fatal("/oneoff without a task succeeded")
+	}
+	if err := command("/oneoff First task"); err != nil {
+		t.Fatal(err)
+	}
+	conn.handleNotification(appserver.Message{Method: "thread/settings/updated", Params: jsontext.Value(`{
+		"threadId":"thr-side","threadSettings":{"model":"gpt-6.2-sol","effort":"low"}
+	}`)})
+	if err := command("/effort"); err != nil {
+		t.Fatal(err)
+	}
+	menu := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Setting == "/effort"
+	}).Frame.View.Menu
+	if menu.Preferred.Name != "low" {
+		t.Fatalf("One-off effort picker ignored confirmed effort: %+v", menu)
+	}
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+		Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: completion.ChoiceID{Name: "high"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	conn.handleNotification(appserver.Message{Method: "thread/settings/updated", Params: jsontext.Value(`{
+		"threadId":"thr-main","threadSettings":{"cwd":"/tmp/current","model":"chosen","modelProvider":"custom","effort":"high","serviceTier":"priority"}
+	}`)})
+	conn.handleNotification(appserver.Message{Method: "turn/started", Params: jsontext.Value(`{
+		"threadId":"thr-side","turn":{"id":"side-turn"}
+	}`)})
+	for _, operation := range []sessionpresentation.ComposerOperation{
+		sessionpresentation.SubmitComposer, sessionpresentation.QueueComposer,
+	} {
+		if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+			Composer: &sessionapi.NativeComposerInput{
+				Draft:  composer.Draft{Text: "/compact"},
+				Intent: sessionpresentation.ComposerIntent{Thread: "thr-side", Operation: operation},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := command("/clear"); err == nil {
+		t.Fatal("/clear succeeded while One-off was working")
+	}
+	for _, confirm := range []bool{false, true} {
+		if err := command("/oneoff Replacement task"); err != nil {
+			t.Fatal(err)
+		}
+		menu := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+			return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Kind == sessionpresentation.MenuSideReplace
+		}).Frame.View.Menu
+		index := 0
+		if confirm {
+			index = 1
+		}
+		if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+			Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[index].Identity(),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := command("/clear"); err != nil {
+		t.Fatal(err)
+	}
+	awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool { return ev.Frame.View.Main.ID == "thr-fresh" })
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if forks := mock.params["thread/fork"]; len(forks) != 2 || !strings.Contains(string(forks[1]), `"threadId":"thr-main"`) {
+		t.Fatalf("only confirmed replacement should fork Main again: %s", forks)
+	}
+	if archived := mock.params["thread/archive"]; len(archived) != 1 || !strings.Contains(string(archived[0]), `"threadId":"thr-side"`) {
+		t.Fatalf("replacement did not archive the old One-off: %s", archived)
+	}
+	if compacts := mock.params["thread/compact/start"]; len(compacts) != 2 ||
+		!strings.Contains(string(compacts[0]), `"mode":"continueInterrupted"`) ||
+		!strings.Contains(string(compacts[0]), `"threadId":"thr-side"`) ||
+		!strings.Contains(string(compacts[1]), `"mode":"queue"`) ||
+		!strings.Contains(string(compacts[1]), `"threadId":"thr-side"`) {
+		t.Fatalf("compaction did not distinguish Enter and Tab on One-off: %s", compacts)
+	}
+	if inputs := mock.params["turn/start"]; len(inputs) != 2 || !strings.Contains(string(inputs[1]), `"text":"Replacement task"`) {
+		t.Fatalf("expected one replacement submission: %s", inputs)
+	}
+	if updates := mock.params["thread/settings/update"]; len(updates) != 1 ||
+		!strings.Contains(string(updates[0]), `"threadId":"thr-side"`) || !strings.Contains(string(updates[0]), `"effort":"high"`) {
+		t.Fatalf("One-off picker did not target its own thread: %s", updates)
+	}
+	starts := mock.params["thread/start"]
+	if len(starts) != 2 {
+		t.Fatalf("only idle clear should start a thread: %s", starts)
+	}
+	for _, field := range []string{`"cwd":"/tmp/current"`, `"model":"chosen"`, `"modelProvider":"custom"`,
+		`"model_reasoning_effort":"high"`, `"serviceTier":"priority"`, `"sessionStartSource":"clear"`, `"approvalPolicy":"never"`} {
+		if !strings.Contains(string(starts[1]), field) {
+			t.Fatalf("clear lost %s: %s", field, starts[1])
+		}
+	}
+}
+
+func TestDirectNativeFileCompletionBindsAndUndoes(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "example")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(png.Encode(file, image.NewRGBA(image.Rect(0, 0, 1, 1))), file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(shortTempDir(t), "app-server.sock")
+	mock := startMockNativeAppServer(t, socket)
+	mock.mu.Lock()
+	mock.overrides["thread/files/search"] = func(jsontext.Value) any {
+		return map[string]any{"paths": []string{"example file.txt", "example"}}
+	}
+	mock.mu.Unlock()
+	ctx := t.Context()
+	conn, err := openDirectNativeConnection(ctx, socket, workspace, nil, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	for i, want := range []string{`see @"example file.txt" `, "see [Image 1] "} {
+		var editor composer.Editor
+		editor.Replace(composer.Draft{Text: "see @ex"})
+		input := &sessionapi.NativeEditorInput{Target: conversation.EditorTarget{Revision: editor.Revision()}, Draft: editor.Draft}
+		if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Completion: input}); err != nil {
+			t.Fatal(err)
+		}
+		menu := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool { return ev.Frame.View.Menu != nil }).Frame.View.Menu
+		if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+			Menu:   &sessionpresentation.MenuAction{Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[i].Identity()},
+			Editor: input,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		frame := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool { return len(ev.Frame.Effects) != 0 }).Frame
+		effect := frame.Effects[0]
+		if _, err := editor.Apply(*effect.Action); err != nil {
+			t.Fatal(err)
+		}
+		if editor.Text != want || len(editor.Spans()) != 1 ||
+			i == 0 && (len(editor.Files) != 1 || editor.Files[0].Path != "example file.txt") ||
+			i == 1 && (len(editor.Images) != 1 || editor.Images[0].Path != path) {
+			t.Fatalf("unexpected completed draft: %+v", editor.Draft)
+		}
+		editor.Undo(false)
+		if editor.Text != "see @ex" || len(editor.Spans()) != 0 {
+			t.Fatalf("one undo did not restore the original unbound draft: %+v", editor.Draft)
+		}
+		conn.handleReceipt(sessionapi.NativeReceipt{Effect: effect.ID})
+	}
+}
+
+func TestDirectNativeUserMessageKeepsOnlyTypedSkillRange(t *testing.T) {
+	text, spans := extractUserMessage(jsontext.Value(`[
+		{"type":"text","text":"é $demo"},
+		{"type":"text","text":"❯ $demo, $other","text_elements":[
+			{"byteRange":{"start":4,"end":9},"placeholder":"$demo"},
+			{"byteRange":{"start":4,"end":9},"placeholder":"$demo"},
+			{"byteRange":{"start":11,"end":17},"placeholder":"$other"},
+			{"byteRange":{"start":11,"end":99},"placeholder":"$demo"}
+		]},
+		{"type":"skill","name":"demo","path":"/workspace/.agents/skills/demo/SKILL.md"}
+	]`))
+	const prefix = "é $demo\n❯ "
+	want := []activity.TextSpan{{Start: len(prefix), End: len(prefix + "$demo"), Kind: activity.SkillToken}}
+	if text != prefix+"$demo, $other" || !slices.Equal(spans, want) {
+		t.Fatalf("skill span projection = %q, %+v; want exact bound range %+v", text, spans, want)
 	}
 }
 
@@ -705,7 +1113,7 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 	}
 	menuID := ev.Frame.View.Menu.ID
 
-	// Filtering "/res" narrows to /resume.
+	// Filtering "/res" ranks prefixes first, then by the matched span.
 	_, _ = conn.Send(context.Background(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
 		Completion: &sessionapi.NativeEditorInput{
 			Target: conversation.EditorTarget{Revision: 2},
@@ -713,11 +1121,25 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 		},
 	})
 	ev = <-conn.events
-	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "/resume" {
-		t.Fatalf("expected /resume match, got %+v", ev.Frame.View.Menu)
+	if menu := ev.Frame.View.Menu; menu == nil || !slices.EqualFunc(menu.Choices, []string{"/resume", "/reasoning", "/presets", "/predictions"}, func(choice completion.Choice, name string) bool {
+		return choice.Name == name
+	}) {
+		t.Fatalf("expected the Go-era ranking for /res, got %+v", menu)
 	}
 	if ev.Frame.CompletionTarget != (conversation.EditorTarget{Revision: 2}) {
 		t.Fatalf("expected CompletionTarget revision 2, got %+v", ev.Frame.CompletionTarget)
+	}
+
+	// Nonconsecutive fuzzy letters still find the command.
+	_, _ = conn.Send(context.Background(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Completion: &sessionapi.NativeEditorInput{
+			Target: conversation.EditorTarget{Revision: 3},
+			Draft:  composer.Draft{Text: "/rsm"},
+		},
+	})
+	ev = <-conn.events
+	if menu := ev.Frame.View.Menu; menu == nil || len(menu.Choices) == 0 || menu.Choices[0].Name != "/resume" {
+		t.Fatalf("expected fuzzy /rsm to select /resume, got %+v", menu)
 	}
 
 	// Accepting emits Delete + Insert effects targeting the editor revision sequence.
@@ -729,8 +1151,8 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 			Choice: completion.ChoiceID{Name: "/resume"},
 		},
 		Editor: &sessionapi.NativeEditorInput{
-			Target: conversation.EditorTarget{Revision: 2},
-			Draft:  composer.Draft{Text: "/res"},
+			Target: conversation.EditorTarget{Revision: 3},
+			Draft:  composer.Draft{Text: "/rsm"},
 		},
 	})
 	ev = <-conn.events
@@ -741,9 +1163,8 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 		t.Fatalf("expected 2 editor effects (delete+insert), got %+v", ev.Frame.Effects)
 	}
 	var ed composer.Editor
-	ed.Replace(composer.Draft{Text: "/res"})
-	// Align editor revision to 2
-	for ed.Revision() < 2 {
+	ed.Replace(composer.Draft{Text: "/rsm"})
+	for ed.Revision() < 3 {
 		ed.Changed()
 	}
 	for _, eff := range ev.Frame.Effects {
@@ -754,8 +1175,8 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 			t.Fatalf("apply effect %+v: %v", eff.Action, err)
 		}
 	}
-	if ed.Text != "/resume" {
-		t.Fatalf("expected editor text /resume, got %q", ed.Text)
+	if ed.Text != "/resume " {
+		t.Fatalf("expected editor text with trailing space, got %q", ed.Text)
 	}
 
 	// Receipt prunes acknowledged effects.
@@ -827,6 +1248,236 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 	}
 }
 
+func TestDirectNativeCommandDetailsFollowNativeExit(t *testing.T) {
+	conn := &directNativeConnection{
+		wire:          &nativeAppServerWire{userAgent: "mekugi/0.172.0"},
+		mainThread:    "thr-main",
+		workspace:     "/tmp/ws",
+		items:         make(map[string][]*directItemRecord),
+		itemsByID:     make(map[string]*directItemRecord),
+		threadCallers: map[string]string{"thr-main": "/root"},
+		events:        make(chan sessionapi.NativeEvent, 16),
+	}
+	upsert := func(body string) *directItemRecord {
+		conn.upsertWireItemLocked("thr-main", "turn-1", jsontext.Value(body), true)
+		return conn.itemsByID["cmd-1"]
+	}
+	rec := upsert(`{"type":"commandExecution","id":"cmd-1","command":"cd sub && example","cwd":"/tmp/ws","display":{"segments":["example"],"effectiveCwd":"/tmp/ws/sub"},"status":"inProgress","processId":"35","exitCode":null,"aggregatedOutput":"starting"}`)
+	if !rec.entry.ItemComplete || rec.entry.OutputComplete || rec.entry.Values[0].RowVerb() != "Running" {
+		t.Fatalf("item completion must not settle a running command: %+v", rec.entry)
+	}
+	if value := rec.entry.Values[0]; !value.ShowWorkdir || value.Workdir != "/tmp/ws/sub" || value.Code != "example" {
+		t.Fatalf("single command lost its effective directory: %+v", value)
+	}
+	if _, err := conn.Send(t.Context(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Details: &sessionapi.NativeDetailRequest{Kind: sessionapi.NativeRunDetails, Source: rec.seq},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := conn.details
+	if before.Output == nil || before.Output.View.Done || before.Output.View.Exited {
+		t.Fatalf("live output should have no exit: %+v", before)
+	}
+	upsert(`{"type":"commandExecution","id":"cmd-1","command":"example","status":"declined","exitCode":null}`)
+	if conn.details.Output.View.Exited || conn.details.View.Pages[0].RowVerb() == "Ran" {
+		t.Fatalf("approval row closure must not imply a process exit: %+v", conn.details)
+	}
+	upsert(`{"type":"commandExecution","id":"cmd-1","command":"example","status":"declined","exitCode":-1,"aggregatedOutput":"rejected by user"}`)
+	got := conn.details
+	if got.View.ID != before.View.ID || len(got.View.Pages) != 1 || !got.Output.View.Done ||
+		!got.Output.View.Exited || got.Output.View.Exit != -1 ||
+		!slices.Equal(got.Output.View.Lines, []string{"rejected by user"}) || before.Output.View.Done {
+		t.Fatalf("the same output view should settle with the native exit and output: %+v", got.Output)
+	}
+}
+
+func TestDirectNativeRetainedCommandEditReceipt(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "app-server.sock")
+	mock := startMockNativeAppServer(t, socket)
+	conn, err := openDirectNativeConnection(t.Context(), socket, "/tmp/ws", nil, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	mock.send(t, map[string]any{
+		"jsonrpc": "2.0", "method": "item/completed",
+		"params": map[string]any{
+			"threadId": "thr-main", "turnId": "turn-1",
+			"item": map[string]any{"type": "commandExecution", "id": "captured-command",
+				"command": "update main.go", "status": "failed", "exitCode": 1,
+				"aggregatedOutput": "updated\nthen failed\n"},
+		},
+	})
+	ev := awaitDirectEvent(t, conn, func(event sessionapi.NativeEvent) bool {
+		return event.Frame.Main != nil && len(event.Frame.Main.Entries) > 0
+	})
+	entry := ev.Frame.Main.Entries[0]
+	rows := entry.Values[0].Changes
+	if len(rows) != 1 || rows[0].Label != "main.go" || rows[0].Added != 2 ||
+		rows[0].Removed != 1 || rows[0].Note != "Shell · amber1" {
+		t.Fatalf("native execution did not retain its captured edit: %+v", rows)
+	}
+	if err := conn.handleOpenDetails(t.Context(), sessionapi.NativeDetailRequest{Source: entry.Seq}); err != nil {
+		t.Fatal(err)
+	}
+	details := conn.details
+	if len(details.View.Pages) != 2 || details.Output == nil ||
+		!slices.Equal(details.Output.View.Lines, []string{"updated", "then failed"}) ||
+		!strings.Contains(details.View.Pages[1].Code, "+more") ||
+		details.View.Pages[1].Path != "/tmp/ws/main.go" {
+		t.Fatalf("Details did not preserve one retained output and the actual edit: %+v", details)
+	}
+}
+
+func TestDirectNativeRetainedRunLink(t *testing.T) {
+	const run = "exec-12345678-1234-1234-1234-123456789abc"
+	conn := &directNativeConnection{
+		wire:       &nativeAppServerWire{userAgent: "mekugi/test"},
+		mainThread: "thr-main",
+		items:      make(map[string][]*directItemRecord),
+		itemsByID:  make(map[string]*directItemRecord),
+		events:     make(chan sessionapi.NativeEvent, 4),
+	}
+	conn.hydrateThreadTurnsLocked("thr-main", []directWireTurn{{
+		ID:    "turn-1",
+		Items: []jsontext.Value{jsontext.Value(`{"type":"commandExecution","id":"` + run + `","command":"/bin/bash -lc 'cd sub && cat a && cat b'","cwd":"/repo","commandActions":[{"type":"unknown","command":"cat"}],"display":{"effectiveCwd":"/repo/sub","segments":["cat a","cat b"]},"status":"failed","exitCode":-1,"aggregatedOutput":"one\ntwo\nthree\n"}`)},
+	}})
+	batch := conn.itemsByID[run].entry.Values
+	if len(batch) != 3 || batch[0].Code != "cat a" || batch[1].Code != "cat b" ||
+		batch[0].Workdir != "/repo/sub" || batch[1].Workdir != "/repo/sub" || batch[2].Workdir != "/repo/sub" ||
+		batch[0].Exited || batch[1].Exited || batch[0].Output != 0 || batch[1].Output != 0 ||
+		!batch[2].BatchExit || !batch[2].Exited || batch[2].ExitCode != -1 || batch[2].Output != 1 {
+		t.Fatalf("expected classified steps with one native batch result, got %+v", batch)
+	}
+	for _, tc := range []struct {
+		link      string
+		want      sessionpresentation.RunOutputRange
+		displayed string
+	}{
+		{link: "#L2-L3", want: sessionpresentation.RunOutputRange{First: 2, Last: 3, Available: true}},
+		{link: "#L2-L4", want: sessionpresentation.RunOutputRange{First: 2, Last: 4}},
+		{link: "#L2", displayed: "thr-other"},
+	} {
+		err := conn.handleOpenDetails(t.Context(), sessionapi.NativeDetailRequest{
+			Kind: sessionapi.NativeRunDetails, Path: "mekugi:run/" + run + tc.link,
+			Displayed: sessionpresentation.Thread{ID: tc.displayed},
+		})
+		if tc.displayed != "" {
+			if err == nil {
+				t.Fatal("run link resolved against a different thread")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if details := conn.details; details.RunRange == nil || *details.RunRange != tc.want ||
+			details.Output == nil || !slices.Equal(details.Output.View.Lines, []string{"one", "two", "three"}) {
+			t.Fatalf("%s opened wrong output or range: %+v", tc.link, details)
+		}
+	}
+}
+
+func TestDirectNativeQuitOffersToStopRunningWork(t *testing.T) {
+	for _, kind := range []string{"main", "delegate", "command"} {
+		t.Run(kind, func(t *testing.T) {
+			socket := filepath.Join(shortTempDir(t), "native.sock")
+			server := startMockNativeAppServer(t, socket)
+			state := func(id string) map[string]any {
+				status := "idle"
+				if id == "thr-"+kind {
+					status = "active"
+				}
+				return map[string]any{"id": id, "status": map[string]string{"type": status}}
+			}
+			server.mu.Lock()
+			server.overrides["thread/subtree/list"] = func(jsontext.Value) any {
+				return map[string]any{"data": []any{state("thr-main"), state("thr-delegate")}}
+			}
+			activeTurn := "turn-running"
+			server.overrides["thread/turns/list"] = func(jsontext.Value) any {
+				server.mu.Lock()
+				defer server.mu.Unlock()
+				return map[string]any{"data": []map[string]string{{"id": activeTurn, "status": "inProgress"}}}
+			}
+			if kind == "command" {
+				server.bgTerminals = []map[string]any{{
+					"threadId": "thr-delegate", "turnId": "turn-ended", "itemId": "cmd",
+					"processId": "42", "command": "sleep 60",
+				}}
+			}
+			server.mu.Unlock()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/quit")}); err != nil {
+				t.Fatal(err)
+			}
+			ev := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+				return ev.Frame.View.Menu != nil && ev.Frame.View.Menu.Kind == sessionpresentation.MenuExit
+			})
+			menu := ev.Frame.View.Menu
+			if len(menu.Choices) != 2 || menu.Choices[0].Name != "Continue in background" ||
+				menu.Choices[1].Name != "Stop" || !menu.Choices[1].Danger {
+				t.Fatalf("quit choices: %+v", menu.Choices)
+			}
+			choose := func(index int) {
+				t.Helper()
+				if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+					Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[index].Identity(),
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "delegate" {
+				server.mu.Lock()
+				activeTurn = "turn-replacement"
+				server.overrides["turn/interrupt"] = func(jsontext.Value) any {
+					return mockRPCError("expected active turn id turn-running but found turn-replacement")
+				}
+				server.mu.Unlock()
+			}
+			if kind == "main" {
+				choose(0)
+			} else {
+				choose(1)
+			}
+			select {
+			case err := <-conn.errCh:
+				var exit *sessionapi.NativeExit
+				if !errors.As(err, &exit) || exit.Code != 0 {
+					t.Fatalf("quit result: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("confirmed quit did not close the connection")
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			interrupts := server.params["turn/interrupt"]
+			switch kind {
+			case "main":
+				if len(interrupts) != 0 {
+					t.Fatalf("Continue interrupted work: %s", interrupts)
+				}
+			case "delegate":
+				want := map[string]string{"threadId": "thr-delegate", "turnId": "turn-running"}
+				var got map[string]string
+				if len(interrupts) != 1 || json.Unmarshal(interrupts[0], &got) != nil || !maps.Equal(got, want) {
+					t.Fatalf("Stop interrupt requests: %s, want only %v", interrupts, want)
+				}
+			case "command":
+				if len(server.bgTerminals) != 0 || len(interrupts) != 0 {
+					t.Fatalf("Stop left processes %v; turn interrupt requests %s", server.bgTerminals, interrupts)
+				}
+			}
+		})
+	}
+}
+
 func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	socket := filepath.Join(shortTempDir(t), "native.sock")
 	srv := startMockNativeAppServer(t, socket)
@@ -854,11 +1505,11 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	_ = drain()
 
 	// $ skill completion queries skills/list and filters enabled skills.
+	var editor composer.Editor
+	editor.Replace(composer.Draft{Text: "use $rev today", CursorBack: len(" today")})
+	input := &sessionapi.NativeEditorInput{Target: conversation.EditorTarget{Revision: editor.Revision()}, Draft: editor.Draft}
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
-		Completion: &sessionapi.NativeEditorInput{
-			Target: conversation.EditorTarget{Revision: 1},
-			Draft:  composer.Draft{Text: "use $rev"},
-		},
+		Completion: input,
 	})
 	if err != nil {
 		t.Fatalf("$ completion: %v", err)
@@ -867,8 +1518,51 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "$review-pr" {
 		t.Fatalf("expected $review-pr skill choice, got %+v", ev.Frame.View.Menu)
 	}
+	menu := ev.Frame.View.Menu
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Editor: input,
+		Menu:   &sessionpresentation.MenuAction{Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[0].Identity()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	effects := drain().Frame.Effects
+	if len(effects) != 1 || effects[0].Action == nil || effects[0].Target == nil || *effects[0].Target != input.Target {
+		t.Fatalf("expected one revision-scoped completion action, got %+v", effects)
+	}
+	if _, err := editor.Apply(*effects[0].Action); err != nil {
+		t.Fatal(err)
+	}
+	if editor.Text != "use $review-pr today" || editor.Cursor() != len("use $review-pr ") {
+		t.Fatalf("completion should reuse the existing separator: %+v", editor.Draft)
+	}
+	editor.Undo(false)
+	if editor.Text != input.Draft.Text || editor.CursorBack != input.Draft.CursorBack || len(editor.Skills) != 0 {
+		t.Fatalf("Undo did not restore the original unbound draft: %+v", editor.Draft)
+	}
+	editor.Undo(true)
+	conn.handleReceipt(sessionapi.NativeReceipt{Effect: effects[0].ID})
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Composer: &sessionapi.NativeComposerInput{
+			Intent: sessionpresentation.ComposerIntent{Operation: sessionpresentation.SubmitComposer},
+			Draft:  editor.Draft,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	prompts := slices.Clone(srv.params["turn/start"])
+	srv.mu.Unlock()
+	var sent struct {
+		Input []codexbinding.UserContent `json:"input"`
+	}
+	if len(prompts) != 1 || json.Unmarshal(prompts[0], &sent) != nil || len(sent.Input) != 2 ||
+		sent.Input[0].Text != "use $review-pr today" ||
+		sent.Input[1].Type != "skill" || sent.Input[1].Name != "review-pr" ||
+		sent.Input[1].Path != "/tmp/ws/.agents/skills/review-pr/SKILL.md" {
+		t.Fatalf("expected completed text and an exact native skill binding, got %s", prompts)
+	}
 
-	// @ file completion queries fuzzyFileSearch.
+	// @ file completion queries the active thread's native workspace catalog.
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
 		Completion: &sessionapi.NativeEditorInput{
 			Target: conversation.EditorTarget{Revision: 2},
@@ -913,7 +1607,7 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	})
 	_ = drain()
 
-	// Bare /tier opens MenuSettings and includes Standard even when catalog only advertises priority.
+	// Bare /tier includes Default even when the catalog only advertises priority.
 	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
 		Command: new("/tier"),
 	})
@@ -921,7 +1615,7 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 		t.Fatalf("/tier menu: %v", err)
 	}
 	ev = drain()
-	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) != 2 || ev.Frame.View.Menu.Choices[0].Name != "default" || ev.Frame.View.Menu.Choices[1].Display != "Fast" {
+	if ev.Frame.View.Menu == nil || ev.Frame.View.Menu.Kind != sessionpresentation.MenuSettings || len(ev.Frame.View.Menu.Choices) != 2 || ev.Frame.View.Menu.Choices[0].Display != "Default" || ev.Frame.View.Menu.Choices[1].Display != "Fast" {
 		t.Fatalf("expected /tier settings menu with default + Fast choices, got %+v", ev.Frame.View.Menu)
 	}
 	tierMenuID := ev.Frame.View.Menu.ID
@@ -987,7 +1681,7 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 		t.Fatalf("expected model/list to include threadId, got %v", modelListParams)
 	}
 
-	// Listed model with empty serviceTiers offers only Standard (no synthetic fast fallback).
+	// Listed model with empty serviceTiers offers only Default.
 	conn.handleNotification(appserver.Message{
 		Method: "thread/settings/updated",
 		Params: jsontext.Value(`{"threadId":"thr-main","threadSettings":{"model":"gpt-5-standard","effort":"medium","serviceTier":null}}`),
@@ -998,10 +1692,10 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	}
 	ev = drain()
 	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "default" {
-		t.Fatalf("expected only Standard choice for listed model with empty serviceTiers, got %+v", ev.Frame.View.Menu)
+		t.Fatalf("expected only Default choice for listed model with empty serviceTiers, got %+v", ev.Frame.View.Menu)
 	}
 
-	// Unlisted model falls back to Standard + Fast choices.
+	// An unknown model must not invent advertised tiers.
 	conn.handleNotification(appserver.Message{
 		Method: "thread/settings/updated",
 		Params: jsontext.Value(`{"threadId":"thr-main","threadSettings":{"model":"custom-unlisted-model","effort":"medium","serviceTier":null}}`),
@@ -1011,8 +1705,8 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 		t.Fatalf("/tier for unlisted model: %v", err)
 	}
 	ev = drain()
-	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 2 || ev.Frame.View.Menu.Choices[0].Name != "default" || ev.Frame.View.Menu.Choices[1].Name != "fast" {
-		t.Fatalf("expected Standard + fast fallback choices for unlisted model, got %+v", ev.Frame.View.Menu)
+	if ev.Frame.View.Menu == nil || len(ev.Frame.View.Menu.Choices) != 1 || ev.Frame.View.Menu.Choices[0].Name != "default" {
+		t.Fatalf("expected only Default choice for an unlisted model, got %+v", ev.Frame.View.Menu)
 	}
 }
 
@@ -1139,6 +1833,166 @@ func TestDirectNativeUsageRateLimitsAndQueueRefresh(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for thread/queue/changed to refresh queued submissions from thread/queue/list")
+		}
+	}
+}
+
+func TestDirectNativeSteersWaitingMessagesBeforeDeleting(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "native.sock")
+	server := startMockNativeAppServer(t, socket)
+	input := []map[string]any{
+		{"type": "text", "text": "[Image map.png]"},
+		{"type": "image", "url": "data:image/png;base64,AA=="},
+	}
+	metadata := map[string]string{"client_type": "terminal"}
+	server.mu.Lock()
+	server.queueData = []map[string]any{
+		{"id": "first", "kind": "message", "input": input, "clientUserMessageId": "original-id", "responsesapiClientMetadata": metadata},
+		{"id": "shell", "kind": "shellCommand", "input": []map[string]any{{"type": "text", "text": "!pwd"}}},
+		{"id": "second", "kind": "message", "input": input, "clientUserMessageId": "second-id"},
+	}
+	server.overrides["turn/steer"] = func(raw jsontext.Value) any {
+		if strings.Contains(string(raw), `"clientUserMessageId":"second-id"`) {
+			return mockRPCError("expected active turn id changed")
+		}
+		return map[string]any{"turnId": "turn-active"}
+	}
+	server.mu.Unlock()
+	ctx := t.Context()
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	server.send(t, map[string]any{
+		"jsonrpc": "2.0", "method": "turn/started",
+		"params": map[string]any{"threadId": "thr-main", "turn": map[string]any{"id": "turn-active"}},
+	})
+	awaitDirectEvent(t, conn, func(event sessionapi.NativeEvent) bool {
+		return event.Frame.View.Pending.CanSteer && len(event.Frame.View.Pending.Queued) == 3
+	})
+	_, err = conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Composer: &sessionapi.NativeComposerInput{
+			Intent: sessionpresentation.ComposerIntent{Thread: "thr-main", Operation: sessionpresentation.SteerWaiting},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected active turn id changed") {
+		t.Fatalf("stale steer result: %v", err)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	var methods []string
+	for _, method := range server.methods {
+		if method == "turn/steer" || method == "thread/queue/delete" {
+			methods = append(methods, method)
+		}
+	}
+	if want := []string{"turn/steer", "thread/queue/delete", "turn/steer"}; !slices.Equal(methods, want) {
+		t.Fatalf("stock steer/delete order: %v", methods)
+	}
+	if got := server.params["thread/queue/delete"]; len(got) != 1 || !strings.Contains(string(got[0]), `"queuedSubmissionId":"first"`) {
+		t.Fatalf("deleted a submission that was not admitted: %s", got)
+	}
+	var got map[string]jsontext.Value
+	if err := json.Unmarshal(server.params["turn/steer"][0], &got); err != nil {
+		t.Fatal(err)
+	}
+	wantInput, _ := json.Marshal(input, json.Deterministic(true))
+	gotInput := got["input"]
+	if err := gotInput.Canonicalize(); err != nil {
+		t.Fatal(err)
+	}
+	wantMetadata, _ := json.Marshal(metadata)
+	if string(gotInput) != string(wantInput) ||
+		string(got["responsesapiClientMetadata"]) != string(wantMetadata) ||
+		string(got["expectedTurnId"]) != `"turn-active"` {
+		t.Fatalf("steer lost listed payload or active turn: %s", got)
+	}
+}
+
+func TestDirectNativeEditWaitingStackKeepsImagesAndSkipsShell(t *testing.T) {
+	var pngData bytes.Buffer
+	if err := png.Encode(&pngData, image.NewRGBA(image.Rect(0, 0, 2, 3))); err != nil {
+		t.Fatal(err)
+	}
+	encoded := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData.Bytes())
+	socket := filepath.Join(shortTempDir(t), "native.sock")
+	srv := startMockNativeAppServer(t, socket)
+	first := map[string]any{"id": "first", "kind": "message", "input": []map[string]any{
+		{"type": "text", "text": "one "}, {"type": "image", "url": encoded},
+	}}
+	second := map[string]any{"id": "second", "kind": "message", "input": []map[string]any{
+		{"type": "image", "url": encoded}, {"type": "text", "text": " two"},
+	}}
+	shell := map[string]any{"id": "shell", "kind": "shellCommand", "input": []map[string]any{
+		{"type": "text", "text": "!pwd"},
+	}}
+	srv.mu.Lock()
+	srv.queueData = []map[string]any{first, shell, second}
+	srv.overrides["thread/queue/take"] = func(jsontext.Value) any {
+		return map[string]any{"data": []any{first, second}}
+	}
+	srv.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var visible sessionapi.NativeEvent
+	for len(visible.Frame.View.Pending.Queued) < 3 {
+		select {
+		case visible = <-conn.events:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	var key terminalsession.Main
+	key.Update(visible.Frame.View)
+	intent := key.ComposerKey("\x1b[1;3A", nil, nil).Command
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Composer: &sessionapi.NativeComposerInput{Intent: intent},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		IDs []string `json:"queuedSubmissionIds"`
+	}
+	srv.mu.Lock()
+	calls := slices.Clone(srv.params["thread/queue/take"])
+	srv.mu.Unlock()
+	if len(calls) != 1 || json.Unmarshal(calls[0], &result) != nil || !slices.Equal(result.IDs, []string{"first", "second"}) {
+		t.Fatalf("waiting edit should request only ordinary messages: %s", calls)
+	}
+	for {
+		select {
+		case ev := <-conn.events:
+			for _, effect := range ev.Frame.Effects {
+				if effect.Restore == nil {
+					continue
+				}
+				copy := copyRestoredEffect(ctx, effect)
+				defer copy.cleanup()
+				if copy.err != nil {
+					t.Fatal(copy.err)
+				}
+				editor := &composer.Editor{}
+				editor.Replace(composer.Draft{Text: "draft"})
+				editor.Restore(*copy.effect.Restore)
+				if editor.Text != "one [Image 1]\n[Image 2] two\ndraft" || len(editor.Images) != 2 {
+					t.Fatalf("restored editor: %+v", editor.Draft)
+				}
+				for _, attachment := range editor.Images {
+					got, err := os.ReadFile(attachment.Path)
+					if err != nil || !bytes.Equal(got, pngData.Bytes()) {
+						t.Fatalf("restored image bytes differ: %v", err)
+					}
+				}
+				return
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
 		}
 	}
 }

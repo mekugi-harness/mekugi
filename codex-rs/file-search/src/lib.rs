@@ -120,6 +120,7 @@ pub struct FileSearchOptions {
     pub exclude: Vec<String>,
     pub threads: NonZero<usize>,
     pub compute_indices: bool,
+    pub follow_links: bool,
     /// Toggle ignore-file processing in the walker.
     ///
     /// When enabled, `.gitignore` files are scoped by
@@ -139,6 +140,7 @@ impl Default for FileSearchOptions {
             #[expect(clippy::unwrap_used)]
             threads: NonZero::new(2).unwrap(),
             compute_indices: false,
+            follow_links: true,
             respect_gitignore: true,
         }
     }
@@ -184,6 +186,7 @@ pub fn create_session(
         exclude,
         threads,
         compute_indices,
+        follow_links,
         respect_gitignore,
     } = options;
 
@@ -212,6 +215,7 @@ pub fn create_session(
         limit: limit.get(),
         threads: threads.get(),
         compute_indices,
+        follow_links,
         respect_gitignore,
         cancelled,
         shutdown: Arc::new(AtomicBool::new(false)),
@@ -287,6 +291,7 @@ pub async fn run_main<T: Reporter>(
             exclude,
             threads,
             compute_indices,
+            follow_links: true,
             respect_gitignore: true,
         },
         /*cancel_flag*/ None,
@@ -365,6 +370,7 @@ struct SessionInner {
     limit: usize,
     threads: usize,
     compute_indices: bool,
+    follow_links: bool,
     respect_gitignore: bool,
     cancelled: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
@@ -460,7 +466,7 @@ fn walker_worker(
         // Allow hidden entries.
         .hidden(false)
         // Follow symlinks to search their contents.
-        .follow_links(true)
+        .follow_links(inner.follow_links)
         // Keep ignore behavior aligned with git repositories: only apply
         // gitignore rules when a git context exists.
         .require_git(true);

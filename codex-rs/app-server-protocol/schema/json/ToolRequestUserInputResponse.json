@@ -15,6 +15,16 @@
         "id": {
           "type": "string"
         },
+        "images": {
+          "description": "Inline base64 image data URLs attached to this written answer.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "note": {
           "type": [
             "string",

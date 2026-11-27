@@ -147,6 +147,7 @@ fn thread_background_terminals_list_response_round_trips_foreign_paths() {
             data: vec![ThreadBackgroundTerminal {
                 item_id: "item_123".to_string(),
                 process_id: "42".to_string(),
+                turn_id: "turn_123".to_string(),
                 command: "run server".to_string(),
                 cwd: PathUri::parse(uri)
                     .expect("cross-platform path URI should parse")
@@ -161,6 +162,7 @@ fn thread_background_terminals_list_response_round_trips_foreign_paths() {
             "data": [{
                 "itemId": "item_123",
                 "processId": "42",
+                "turnId": "turn_123",
                 "command": "run server",
                 "cwd": expected_cwd,
                 "osPid": null,
@@ -322,6 +324,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             service_tier: None,
             context_tokens: None,
             context_window: None,
+            token_usage: None,
             completed_compactions: None,
             agent_status: None,
             created_at: 1,
@@ -473,6 +476,8 @@ fn thread_items_list_round_trips() {
                 output_deferred: false,
                 item: ThreadItem {
                     payload: ThreadItemPayload::ContextCompaction {
+                        summary_free: false,
+                        summary: None,
                         source_acquisition: None,
                         id: "item_1".to_string(),
                     },
@@ -3280,6 +3285,92 @@ fn answer_moderation_preserves_the_display_instruction() {
 }
 
 #[test]
+fn command_display_preserves_steps_and_only_attributes_a_resolved_cd() {
+    let cwd = absolute_path("repo");
+    for (script, exit, output, expected_dir, steps) in [
+        (
+            "cd 'my dir' && cat a | head && printf b",
+            Some(0),
+            "",
+            Some("my dir"),
+            vec!["cat a | head", "printf b"],
+        ),
+        ("cd sub\npwd", Some(0), "", Some("sub"), vec!["pwd"]),
+        (
+            "cd sub && ./build.sh",
+            Some(1),
+            "./build.sh: line 2: cd: nested: missing",
+            Some("sub"),
+            vec!["./build.sh"],
+        ),
+        (
+            "cd missing; pwd",
+            Some(0),
+            "bash: line 1: cd: missing: not found",
+            None,
+            vec!["cd missing", "pwd"],
+        ),
+        ("cd sub && pwd", None, "", None, vec!["cd sub", "pwd"]),
+        (
+            "cd sub && pwd",
+            Some(-1),
+            "rejected by user",
+            None,
+            vec!["cd sub", "pwd"],
+        ),
+        (
+            "cd \"$dir\" && pwd",
+            Some(0),
+            "",
+            None,
+            vec!["cd \"$dir\"", "pwd"],
+        ),
+        (
+            "cd sub && cd .. && pwd",
+            Some(0),
+            "",
+            None,
+            vec!["cd sub", "cd ..", "pwd"],
+        ),
+        ("cd sub || pwd", Some(0), "", None, vec!["cd sub", "pwd"]),
+    ] {
+        let command = TurnItem::CommandExecution(CommandExecutionItem {
+            id: "c".into(),
+            model_context: None,
+            sandbox_type: None,
+            plugin_id: None,
+            script_path: None,
+            process_id: None,
+            command: vec!["bash".into(), "-lc".into(), script.into()],
+            cwd: PathUri::from_abs_path(&cwd),
+            parsed_cmd: vec![],
+            source: CoreExecCommandSource::Agent,
+            interaction_input: None,
+            status: match exit {
+                None => CoreCommandExecutionStatus::InProgress,
+                Some(0) => CoreCommandExecutionStatus::Completed,
+                Some(-1) => CoreCommandExecutionStatus::Declined,
+                Some(_) => CoreCommandExecutionStatus::Failed,
+            },
+            aggregated_output: Some(output.into()),
+            exit_code: exit,
+            duration: None,
+        });
+        let wire = serde_json::to_value(ThreadItemPayload::from(command)).expect("command item");
+        assert_eq!(
+            wire["display"],
+            json!({
+                "effectiveCwd": expected_dir.map(|dir| cwd.as_path().join(dir)),
+                "segments": steps
+            }),
+            "{script}"
+        );
+        assert_eq!(wire["cwd"], json!(cwd), "{script}");
+        assert_eq!(wire["exitCode"], json!(exit), "{script}");
+    }
+}
+
+#[test]
 fn core_turn_item_into_thread_item_converts_supported_variants() {
     let user_item = TurnItem::UserMessage(UserMessageItem {
         id: "user-1".to_string(),
@@ -3546,6 +3637,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             process_id: Some("pid-1".to_string()),
             source: CommandExecutionSource::Agent,
             status: CommandExecutionStatus::Completed,
+            display: None,
             command_actions: vec![CommandAction::Unknown {
                 command: "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' -c http.extraHeader=X-Trace:example push"
                     .to_string(),

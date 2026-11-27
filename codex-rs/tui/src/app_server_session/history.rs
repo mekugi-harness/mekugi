@@ -181,6 +181,7 @@ impl AppServerSession {
                     thread_id: thread_id.to_string(),
                     before_turn_id,
                     before_item_id: None,
+                    expected_change_ids: None,
                 },
             })
             .await?;

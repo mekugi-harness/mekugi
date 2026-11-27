@@ -3,6 +3,7 @@ package terminalsession
 import (
 	"cmp"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -153,6 +154,11 @@ func (d *ContentDialog) updateProcesses(view sessionpresentation.DetailView) {
 			}
 		}
 	}
+	if d.process.stopArmed != nil && !slices.ContainsFunc(view.Pages, func(page sessionpresentation.DetailItem) bool {
+		return page.Running && page.Process != nil && *page.Process == *d.process.stopArmed
+	}) {
+		d.process.stopArmed = nil
+	}
 	if !d.ready && len(view.Pages) == 1 && view.Pages[0].Running {
 		d.ProcessDetail, d.follow = true, true
 	}
@@ -249,14 +255,14 @@ func (d *ContentDialog) layoutProcess(width int) {
 	// Stopping is destructive: its key comes last before Escape, takes the
 	// danger tone and asks for a second press.
 	stop := " · " + theme.Danger() + "x stop" + "\x1b[39m"
-	if page.Process == nil {
+	if page.Process == nil || !page.Running {
 		stop = ""
 	}
 	if d.process.stopArmed != nil {
 		d.Footer = theme.Danger() + "x again to stop" + "\x1b[39m" + " · esc keep running"
 	}
 	if !d.ProcessDetail {
-		empty := page.Source == 0
+		empty := page.Process == nil && page.Source == 0
 		if d.process.stopArmed == nil {
 			d.Footer = sheetExit
 			if !empty {
@@ -408,7 +414,7 @@ func (d *ContentDialog) processKey(key string) DialogIntent {
 		process, armed := d.Pages[d.Page].Process, d.process.stopArmed
 		d.process.stopArmed = nil
 		switch {
-		case process == nil:
+		case process == nil || !d.Pages[d.Page].Running:
 		case armed != nil && *armed == *process:
 			return DialogIntent{Action: DialogStopProcess, Process: new(*process)}
 		default:

@@ -1,0 +1,12 @@
+· main  · worker
+
+  ── Archive this session? ────────────────────────────────────── [×] ──
+
+    Are you sure? This will archive the current session.
+
+  ❯ No, don't archive  Return to the current session
+    Yes, archive       Archive this session now
+
+  ↑/↓ choose · enter select · esc cancel
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /tmp/ws • ctrl+e view

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { getContext } from "svelte";
+  import { detailLinks, parseDetailLink, type DetailLink } from "./detail-link";
   import { highlightWithin } from "./highlight";
   import { block, markedBlock } from "./markdown";
 
@@ -16,6 +18,8 @@
     context?: import("markdown-it").Env;
   } = $props();
   const html = $derived(spans?.length ? markedBlock(text, spans) : block(text, context));
+  const openDetails = getContext<((link: DetailLink) => void) | undefined>(detailLinks);
+  let linkError = $state<string>();
   // Fenced code names its language as a language-NAME class.
   const fences = (rendered: string) => (node: HTMLElement) => {
     if (rendered.includes("<pre>"))
@@ -30,14 +34,15 @@
     const value = target.dataset.fileLink || target.dataset.runLink;
     if (!value) return;
     event.preventDefault();
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(value).catch(() => {});
+    const link = parseDetailLink(value);
+    if (link && openDetails) {
+      linkError = undefined;
+      openDetails(link);
+    } else {
+      linkError = link
+        ? "Open a thread to view its linked details."
+        : "The detail link is invalid.";
     }
-    const prev = target.title;
-    target.title = `Copied ${value}`;
-    setTimeout(() => {
-      if (target.title === `Copied ${value}`) target.title = prev;
-    }, 1500);
   }
   const links = (node: HTMLElement) => {
     node.addEventListener("click", onLinkClick);
@@ -48,3 +53,4 @@
 <div class={["prose", quiet && "text-muted"]} {@attach fences(html)} {@attach links}>
   {@html html}
 </div>
+{#if linkError}<p class="mt-2 text-small text-negative" role="alert">{linkError}</p>{/if}

@@ -14,4 +14,8 @@ limit?: number | null,
 /**
  * Optional working directory to resolve project config layers.
  */
-cwd?: string | null, };
+cwd?: string | null,
+/**
+ * Resolve profiles for this loaded thread's working directory instead of `cwd`.
+ */
+threadId?: string | null, };

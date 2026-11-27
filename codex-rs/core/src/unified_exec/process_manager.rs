@@ -35,6 +35,7 @@ use crate::tools::ApprovalContext;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
+use crate::tools::events::ToolEventFailure;
 use crate::tools::events::ToolEventStage;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use crate::tools::network_approval::finish_deferred_network_approval;
@@ -571,10 +572,11 @@ impl UnifiedExecProcessManager {
             }
         };
         let UnifiedExecAttempt {
-            process,
+            mut process,
             metrics_sidecar,
             permissions,
         } = attempt;
+        let output_receiver = process.take_output_receiver();
         let process = Arc::new(process);
         if let Some(completion) = completion.as_ref() {
             let _ = completion.process.set(Arc::clone(&process));
@@ -620,7 +622,6 @@ impl UnifiedExecProcessManager {
             plugin_attribution.clone(),
         );
         emitter.emit(event_ctx, ToolEventStage::Begin).await;
-
         // Serialize remote collection with later polls and final transcript publication.
         let _interaction_guard =
             if process.output_handles().drain_policy == OutputDrainPolicy::WaitForOutputClosure {
@@ -628,7 +629,7 @@ impl UnifiedExecProcessManager {
             } else {
                 None
             };
-        start_streaming_output(&process, context);
+        start_streaming_output(&process, context, output_receiver);
         let start = Instant::now();
         // Persist live sessions and remote output that remains pollable after an early exit.
         let process_stored = (!process.has_exited() && process.exit_code().is_none())
@@ -665,7 +666,6 @@ impl UnifiedExecProcessManager {
             )
             .await;
         }
-
         let yield_time_ms = clamp_yield_time(prepared.yield_time_ms);
         // For the initial exec_command call, we both stream output to events
         // (via start_streaming_output above) and collect a snapshot here for
@@ -699,6 +699,10 @@ impl UnifiedExecProcessManager {
             }
         }
         let wall_time = Instant::now().saturating_duration_since(start);
+        if !process_stored {
+            // Without an exit watcher, this call owns terminal publication.
+            process.output_drained_notify().notified().await;
+        }
 
         let mut text = collected.text.clone();
         let chunk_id = generate_chunk_id();
@@ -1318,6 +1322,7 @@ impl UnifiedExecProcessManager {
             process: Arc::clone(&process),
             plugin_metrics_sidecar: plugin_metrics_sidecar.clone(),
             call_id: context.call_id.clone(),
+            turn_id: context.step_context.turn.sub_id.clone(),
             process_id,
             cwd: cwd.clone(),
             initial_exec_command_active,
@@ -1352,6 +1357,13 @@ impl UnifiedExecProcessManager {
             unregister_network_approval_for_entry(&pruned_entry).await;
             pruned_entry.process.terminate();
         }
+        context
+            .session
+            .send_event(
+                context.step_context.turn.as_ref(),
+                EventMsg::BackgroundTerminalRegistered,
+            )
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1615,9 +1627,38 @@ impl UnifiedExecProcessManager {
             call_id: context.call_id.clone(),
             tool_name: ToolName::plain("exec_command"),
         };
-        let result = orchestrator
-            .run(&mut runtime, &req, &tool_ctx)
-            .await
+        let result = orchestrator.run(&mut runtime, &req, &tool_ctx).await;
+        if let Err(ToolError::Rejected(reason)) = &result
+            && !runtime.reported_launch_failure
+        {
+            // Approval can reject the invocation before a process or its exit watcher
+            // exists. Publish the same native rejection result as other exec tools.
+            let mut event_ctx = ToolEventCtx::new(
+                context.session.as_ref(),
+                context.step_context.turn.as_ref(),
+                &context.step_context.settings.model_info,
+                &context.call_id,
+                /*turn_diff_tracker*/ None,
+            );
+            let model_context = context.step_context.model_context();
+            event_ctx.model_context = Some(&model_context);
+            ToolEmitter::unified_exec(
+                &prepared.resolved.command,
+                prepared.cwd.clone(),
+                ExecCommandSource::UnifiedExecStartup,
+                /*process_id*/ None,
+                /*plugin_attribution*/ None,
+            )
+            .emit(
+                event_ctx,
+                ToolEventStage::Failure(ToolEventFailure::Rejected {
+                    message: reason.clone(),
+                    applied_patch_delta: None,
+                }),
+            )
+            .await;
+        }
+        let result = result
             .map(|result| (result.output, result.deferred_network_approval))
             .map_err(|err| match err {
                 ToolError::Codex(err) => match err.details() {
@@ -1933,18 +1974,28 @@ impl UnifiedExecProcessManager {
             .map(|entry| BackgroundTerminalInfo {
                 item_id: entry.call_id.clone(),
                 process_id: entry.process_id.to_string(),
+                turn_id: entry.turn_id.clone(),
                 command: entry.hook_command.clone(),
                 cwd: entry.cwd.clone(),
             })
             .collect()
     }
 
-    pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {
+    pub(crate) async fn terminate_process(
+        &self,
+        process_id: i32,
+        expected_invocation: Option<(&str, &str)>,
+    ) -> bool {
         let (process, already_exited) = {
             let store = self.process_store.lock().await;
             let Some(entry) = store.processes.get(&process_id) else {
                 return false;
             };
+            if expected_invocation.is_some_and(|(turn_id, item_id)| {
+                entry.turn_id != turn_id || entry.call_id != item_id
+            }) {
+                return false;
+            }
             (Arc::clone(&entry.process), entry.process.has_exited())
         };
 

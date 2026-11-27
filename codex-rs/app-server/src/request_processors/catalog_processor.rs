@@ -485,10 +485,23 @@ impl CatalogRequestProcessor {
         &self,
         params: PermissionProfileListParams,
     ) -> Result<PermissionProfileListResponse, JSONRPCErrorError> {
-        let PermissionProfileListParams { cursor, limit, cwd } = params;
+        let PermissionProfileListParams {
+            cursor,
+            limit,
+            cwd,
+            thread_id,
+        } = params;
+        let cwd = match (thread_id, cwd) {
+            (Some(_), Some(_)) => return Err(invalid_request("provide threadId or cwd, not both")),
+            (Some(id), None) => {
+                let thread = lookup_loaded_thread(&self.thread_manager, &id).await?;
+                Some(thread.config_snapshot().await.cwd().to_path_buf())
+            }
+            (None, cwd) => cwd.map(PathBuf::from),
+        };
         let (cwd, config_layer_stack) = match cwd {
             Some(cwd) => self
-                .resolve_cwd_config(&PathBuf::from(cwd))
+                .resolve_cwd_config(&cwd)
                 .await
                 .map_err(|err| internal_error(format!("failed to reload config: {err}")))?,
             None => (

@@ -5,6 +5,8 @@ use app_test_support::TestAppServer;
 use codex_app_server_protocol::PermissionProfileListParams;
 use codex_app_server_protocol::PermissionProfileListResponse;
 use codex_app_server_protocol::PermissionProfileSummary;
+use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::ThreadStartResponse;
 use codex_core::config::set_project_trust_level;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
@@ -49,6 +51,7 @@ description = "Inspect without writes."
             cursor: None,
             limit: None,
             cwd: None,
+            thread_id: None,
         })
         .await?;
     let actual = read_response::<PermissionProfileListResponse>(&mut mcp, request_id).await?;
@@ -124,6 +127,7 @@ description = "Project-scoped profile."
             cursor: None,
             limit: Some(3),
             cwd: Some(workspace.path().to_string_lossy().into_owned()),
+            thread_id: None,
         })
         .await?;
     let first = read_response::<PermissionProfileListResponse>(&mut mcp, first_request_id).await?;
@@ -151,11 +155,22 @@ description = "Project-scoped profile."
         }
     );
 
+    let start = mcp
+        .send_thread_start_request(ThreadStartParams {
+            cwd: Some(workspace.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .await?;
+    let thread_id = read_response::<ThreadStartResponse>(&mut mcp, start)
+        .await?
+        .thread
+        .id;
     let second_request_id = mcp
         .send_permission_profile_list_request(PermissionProfileListParams {
             cursor: first.next_cursor,
             limit: Some(3),
-            cwd: Some(workspace.path().to_string_lossy().into_owned()),
+            cwd: None,
+            thread_id: Some(thread_id),
         })
         .await?;
     let second =
@@ -204,6 +219,7 @@ description = "Project-scoped profile."
             cursor: None,
             limit: None,
             cwd: Some(workspace.path().to_string_lossy().into_owned()),
+            thread_id: None,
         })
         .await?;
     let actual = read_response::<PermissionProfileListResponse>(&mut mcp, request_id).await?;
@@ -269,6 +285,7 @@ default_permissions = ":workspace"
                 cursor: None,
                 limit: None,
                 cwd: Some(cwd.to_string_lossy().into_owned()),
+                thread_id: None,
             })
             .await?;
         let response = read_response::<PermissionProfileListResponse>(&mut mcp, request_id).await?;

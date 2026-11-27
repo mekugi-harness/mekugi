@@ -1,20 +1,42 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
   import type { Attachment } from "svelte/attachments";
+  import AgentName from "./AgentName.svelte";
+  import AutoPage from "./AutoPage.svelte";
   import { matchReviewedFile, preferredScrollBehavior, workspacePath } from "./diff";
   import DiffView from "./DiffView.svelte";
   import Path from "./Path.svelte";
-  import type { ReviewedFile, SavedReview } from "./protocol";
+  import type { CallerReview, ReviewedFile, SavedReview } from "./protocol";
+  import Alert from "./ui/Alert.svelte";
   import Button from "./ui/Button.svelte";
+  import Picker from "./ui/Picker.svelte";
   import { Skeleton } from "./ui/skeleton";
   import { caret, emptyBox } from "./ui/styles";
 
   let {
     review,
+    caller,
+    callers,
+    callerLabel,
+    oncaller,
+    cursor,
+    loading,
+    error,
+    onpage,
+    onretry,
     focusPath,
     onfocused,
   }: {
     review: SavedReview | null;
+    caller: string;
+    callers: CallerReview[];
+    callerLabel: (caller: string) => string;
+    oncaller: (caller: string) => void;
+    cursor?: string;
+    loading: boolean;
+    error?: string;
+    onpage: (demand: AbortSignal) => void;
+    onretry: () => void;
     focusPath?: string;
     onfocused?: () => void;
   } = $props();
@@ -22,6 +44,29 @@
   const wrap = false;
   const files = $derived(review?.files ?? []);
   const net = $derived(review?.counts.Net);
+  const callerChoices = $derived([
+    { value: "all", label: "All callers" },
+    ...callers.map((choice) => ({
+      value: choice.caller,
+      label: callerLabel(choice.caller),
+    })),
+  ]);
+  function sourceLabel(source: string): string {
+    switch (source) {
+      case "ApplyPatch":
+        return "apply_patch";
+      case "ShellWrite":
+        return "Shell";
+      case "UserShell":
+        return "User shell";
+      case "MchangesApply":
+        return "mchanges apply";
+      case "MchangesRevert":
+        return "mchanges revert";
+      default:
+        return source;
+    }
+  }
 
   // Every file starts expanded by default; an IntersectionObserver preloads
   // diff views as the reader scrolls near them so large reviews stay snappy.
@@ -95,19 +140,28 @@
   });
 </script>
 
-<div class="flex h-full min-h-0 flex-col">
-  <div class="flex min-h-11 items-center gap-2 border-b border-rule px-4 py-2 text-small">
+<div class="flex h-full min-h-0 flex-col" aria-busy={loading}>
+  <div class="flex min-h-11 flex-wrap items-center gap-2 border-b border-rule px-4 py-2 text-small">
     <span class="font-semibold">
-      Changes {#if files.length}<span class="font-normal text-muted tabular-nums"
-          >({files.length})</span
+      Saved Diff {#if review?.fileCount}<span class="font-normal text-muted tabular-nums"
+          >({review.fileCount})</span
         >{/if}
     </span>
+    {#if callers.length > 0}
+      <Picker
+        label="Caller"
+        value={caller || "all"}
+        groups={[{ choices: callerChoices }]}
+        onchange={(choice) => oncaller(choice === "all" ? "" : choice)}
+      />
+    {/if}
     {#if net}
       <span class="font-mono tabular-nums">
         <span class="text-positive">+{net.Added}</span>
         <span class="text-negative">−{net.Removed}</span>
       </span>
     {/if}
+    {#if review?.coverage}<span class="text-muted">{review.coverage}</span>{/if}
     {#if files.length > 1}
       <Button
         variant="quiet"
@@ -153,6 +207,21 @@
               </summary>
               {#if isOpen}
                 <div class="pb-1">
+                  {#if file.origins.length}
+                    <ul class="flex flex-wrap gap-x-3 gap-y-1 px-2.5 pt-1.5 text-small text-muted">
+                      {#each file.origins as origin (origin.Change)}
+                        <li class="flex items-center gap-1.5">
+                          {#if origin.Caller}<AgentName
+                              name={origin.Caller}
+                              current=""
+                              quiet
+                            />{/if}
+                          <span>{sourceLabel(origin.Source)}</span>
+                          <span class="font-mono">{origin.Change}</span>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
                   {#if ready}
                     {#each file.chunks as chunk (chunk.Key)}
                       <DiffView file={chunk.Review} workspace={review?.workspace ?? ""} {wrap} />
@@ -173,8 +242,14 @@
           </li>
         {/each}
       </ul>
-    {:else}
+    {:else if loading && !review}
+      <Skeleton class="h-9 bg-active" />
+    {:else if !error}
       <p class={emptyBox}>No file changes recorded for this thread yet.</p>
     {/if}
+    {#if error}
+      <Alert>{error}<Button size="sm" variant="quiet" onclick={onretry}>Retry</Button></Alert>
+    {/if}
+    {#if cursor}<AutoPage {cursor} ready={!loading && !error} {onpage} />{/if}
   </div>
 </div>

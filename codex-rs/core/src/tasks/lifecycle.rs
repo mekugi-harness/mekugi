@@ -56,6 +56,14 @@ impl Session {
     }
 
     pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
+        self.emit_idle_with_compaction(cause, None).await;
+    }
+
+    pub(super) async fn emit_idle_with_compaction(
+        &self,
+        cause: ThreadIdleCause,
+        compact_to_continue: Option<&str>,
+    ) {
         let cause = {
             let active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
@@ -75,6 +83,7 @@ impl Session {
             contributor
                 .on_thread_idle(codex_extension_api::ThreadIdleInput {
                     cause,
+                    compact_to_continue,
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                 })

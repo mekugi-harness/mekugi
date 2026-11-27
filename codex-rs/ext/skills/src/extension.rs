@@ -489,6 +489,7 @@ where
                                     }),
                             }));
                         }
+                        thread_state.record_skill_use(&entry.name);
                         if entry.authority.kind == SkillSourceKind::Host {
                             injected_host_skill_prompts.insert_path(entry.main_prompt.as_str());
                         } else if let Some(analytics) = analytics.as_ref()

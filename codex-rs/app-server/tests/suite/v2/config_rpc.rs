@@ -1,5 +1,7 @@
 use anyhow::Result;
+use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::test_path_buf_with_windows;
 use app_test_support::test_tmp_path_buf;
 use codex_app_server_protocol::AllowDenyRequirement;
@@ -41,7 +43,12 @@ use codex_app_server_protocol::NetworkDomainPermission;
 use codex_app_server_protocol::NetworkRequirements;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::SandboxMode;
+use codex_app_server_protocol::ThreadForkResponse;
+use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ToolsV2;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::UserInput;
 use codex_app_server_protocol::WriteStatus;
 use codex_core::config::set_project_trust_level;
 use codex_protocol::config_types::ToolExposureSurface;
@@ -66,6 +73,131 @@ fn write_config(codex_home: &TempDir, contents: &str) -> Result<()> {
         codex_home.path().join("config.toml"),
         contents,
     )?)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composer_presets_write_only_current_slots_in_the_active_user_config() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let mock = create_mock_responses_server_repeating_assistant("Done").await;
+    MockResponsesConfig::new(&mock.uri())
+        .with_extra_config(
+            "[tui.presets.2]\ninput = 'existing user override'\n[tui.presets.4]\ninput = 'untouched'\n",
+        )
+        .write(codex_home.path())?;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_args(&["-c", "tui.presets.2={input='protected prompt'}"])
+        .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+        .await?;
+    let request = server
+        .send_raw_request("thread/start", Some(json!({ "cwd": workspace.path() })))
+        .await?;
+    let main: ThreadStartResponse =
+        timeout(DEFAULT_READ_TIMEOUT, server.read_response(request)).await??;
+    let thread_id = main.thread.id;
+
+    let read = json!({ "threadId": thread_id });
+    let request = server
+        .send_raw_request("thread/presets/list", Some(read.clone()))
+        .await?;
+    let before: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, server.read_response(request)).await??;
+    assert_eq!(
+        before,
+        json!({ "presets": {
+            "2": { "input": "protected prompt", "label": "" },
+            "4": { "input": "untouched", "label": "" }
+        }})
+    );
+
+    let draft = json!({ "input": "Follow up on Ω.\nKeep the second line.", "label": "  Review  " });
+    let saved = json!({ "input": draft["input"], "label": "Review" });
+    let create = json!({ "threadId": thread_id, "slot": 0, "expected": null, "preset": draft });
+    let request = server
+        .send_raw_request("thread/presets/write", Some(create.clone()))
+        .await?;
+    let response: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, server.read_response(request)).await??;
+    assert_eq!(response, json!({ "preset": saved }));
+    let user_config = codex_home.path().join("config.toml");
+    let written = std::fs::read(&user_config)?;
+
+    for invalid in [
+        create,
+        json!({ "threadId": thread_id, "slot": 10, "expected": null, "preset": null }),
+        json!({ "threadId": thread_id, "slot": 0, "expected": saved, "preset": { "input": "!pwd", "label": "" } }),
+        json!({ "threadId": thread_id, "slot": 0, "expected": saved, "preset": { "input": "Keep", "label": "First\nSecond" } }),
+        json!({ "threadId": thread_id, "slot": 2, "expected": before["presets"]["2"], "preset": null }),
+    ] {
+        let request = server
+            .send_raw_request("thread/presets/write", Some(invalid))
+            .await?;
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            server.read_stream_until_error_message(RequestId::Integer(request)),
+        )
+        .await??;
+        assert_eq!(std::fs::read(&user_config)?, written);
+    }
+
+    // The existing terminal config read observes the same saved draft.
+    let request = server
+        .send_raw_request("config/read", Some(read.clone()))
+        .await?;
+    let config: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, server.read_response(request)).await??;
+    assert_eq!(config["config"]["tui"]["presets"]["0"], saved);
+    let remove = json!({ "threadId": thread_id, "slot": 0, "expected": saved, "preset": null });
+    let request = server
+        .send_raw_request("thread/presets/write", Some(remove))
+        .await?;
+    let response: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, server.read_response(request)).await??;
+    assert_eq!(response, json!({ "preset": null }));
+    let request = server
+        .send_raw_request("thread/presets/list", Some(read))
+        .await?;
+    let after: serde_json::Value =
+        timeout(DEFAULT_READ_TIMEOUT, server.read_response(request)).await??;
+    assert_eq!(after, before);
+
+    let completed = timeout(
+        DEFAULT_READ_TIMEOUT,
+        server.start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread_id.clone(),
+            input: vec![UserInput::Text {
+                text: "Save the root thread before forking.".into(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        }),
+    )
+    .await??;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+
+    let request = server
+        .send_raw_request(
+            "thread/fork",
+            Some(json!({
+                "threadId": thread_id, "threadSource": "mekugi_side", "excludeTurns": true
+            })),
+        )
+        .await?;
+    let side: ThreadForkResponse =
+        timeout(DEFAULT_READ_TIMEOUT, server.read_response(request)).await??;
+    let request = server
+        .send_raw_request(
+            "thread/presets/list",
+            Some(json!({ "threadId": side.thread.id })),
+        )
+        .await?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        server.read_stream_until_error_message(RequestId::Integer(request)),
+    )
+    .await??;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

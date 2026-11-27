@@ -110,6 +110,29 @@ pub struct FunctionCallOutputItem {
     pub output: FunctionCallOutputBody,
 }
 
+impl FunctionCallOutputItem {
+    const CODE_MODE_FAILURE_PREFIX: &str = "code-mode-error:";
+
+    /// Completed exec diagnostic, separate from the model's budgeted tool result.
+    pub fn code_mode_failure(call_id: &str, diagnostic: String) -> Self {
+        Self {
+            id: format!("{}{call_id}", Self::CODE_MODE_FAILURE_PREFIX),
+            name: "exec".to_string(),
+            namespace: Some("functions".to_string()),
+            output: FunctionCallOutputBody::Text(diagnostic),
+        }
+    }
+
+    /// Returns the originating call for a canonical exec diagnostic.
+    pub fn code_mode_failure_call_id(&self) -> Option<&str> {
+        if self.name == "exec" && self.namespace.as_deref() == Some("functions") {
+            self.id.strip_prefix(Self::CODE_MODE_FAILURE_PREFIX)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 pub struct HookPromptItem {
     pub id: String,
@@ -549,6 +572,14 @@ pub struct McpToolCallError {
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct ContextCompactionItem {
     pub id: String,
+    /// This reset did not request or generate a summary.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub summary_free: bool,
+    /// Plaintext local summary, when one was generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub source_acquisition: Option<crate::protocol::SourceAcquisition>,
@@ -562,6 +593,8 @@ impl ContextCompactionItem {
     pub fn new() -> Self {
         Self {
             id: new_item_id(),
+            summary_free: false,
+            summary: None,
             source_acquisition: None,
         }
     }

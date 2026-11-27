@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+use crate::fuzzy_file_search::FuzzyFileSearchMode;
 use crate::fuzzy_file_search::FuzzyFileSearchSession;
 use crate::fuzzy_file_search::run_fuzzy_file_search;
 use crate::fuzzy_file_search::start_fuzzy_file_search_session;
@@ -39,6 +40,7 @@ impl SearchRequestProcessor {
     pub(crate) async fn fuzzy_file_search(
         &self,
         params: FuzzyFileSearchParams,
+        mode: FuzzyFileSearchMode,
     ) -> Result<FuzzyFileSearchResponse, JSONRPCErrorError> {
         let FuzzyFileSearchParams {
             query,
@@ -61,9 +63,12 @@ impl SearchRequestProcessor {
             None => Arc::new(AtomicBool::new(false)),
         };
 
-        let results = match query.as_str() {
-            "" => vec![],
-            _ => run_fuzzy_file_search(query, roots, cancel_flag.clone()).await,
+        let results = if query.is_empty()
+            && !matches!(mode, FuzzyFileSearchMode::WorkspaceIncludingIgnored)
+        {
+            Vec::new()
+        } else {
+            run_fuzzy_file_search(query, roots, cancel_flag.clone(), mode).await
         };
 
         if let Some(token) = cancellation_token {

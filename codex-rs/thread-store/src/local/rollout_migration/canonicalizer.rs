@@ -23,6 +23,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -31,12 +32,14 @@ use tokio::io::BufWriter;
 use super::legacy_event;
 use super::migration_error;
 use crate::ThreadStoreResult;
+use crate::local::retained_exec_failure::legacy_exec_failure;
 
 #[derive(Clone)]
 struct ActiveTurn {
     id: String,
     explicit: bool,
     saw_user: bool,
+    exec_calls: BTreeSet<String>,
 }
 
 enum ReasoningTextKind {
@@ -127,6 +130,10 @@ impl LegacyRolloutCanonicalizer {
                     } if role == "user" => parse_hook_prompt_message(id.as_deref(), content),
                     _ => None,
                 };
+                let failure = self
+                    .active_turn
+                    .as_mut()
+                    .and_then(|turn| legacy_exec_failure(&mut turn.exec_calls, &response.item));
                 self.write_item(writer, &timestamp, RolloutItem::ResponseItem(response))
                     .await?;
                 if let Some(hook) = hook {
@@ -134,6 +141,14 @@ impl LegacyRolloutCanonicalizer {
                     self.reasoning = None;
                     self.write_completed_item(writer, &timestamp, TurnItem::HookPrompt(hook))
                         .await?;
+                }
+                if let Some(failure) = failure {
+                    self.write_completed_item(
+                        writer,
+                        &timestamp,
+                        TurnItem::FunctionCallOutput(failure),
+                    )
+                    .await?;
                 }
             }
             RolloutItem::EventMsg(EventMsg::ThreadRolledBack(_)) => {
@@ -148,6 +163,7 @@ impl LegacyRolloutCanonicalizer {
                     id: event.turn_id.clone(),
                     explicit: true,
                     saw_user: false,
+                    exec_calls: BTreeSet::new(),
                 });
                 self.reasoning = None;
                 self.write_item(
@@ -231,6 +247,13 @@ impl LegacyRolloutCanonicalizer {
             RolloutItem::EventMsg(EventMsg::ItemCompleted(mut event)) => {
                 event.thread_id = self.thread_id;
                 self.reasoning = None;
+                if let TurnItem::FunctionCallOutput(output) = &event.item
+                    && let Some(call_id) = output.code_mode_failure_call_id()
+                    && let Some(turn) = self.active_turn.as_mut()
+                    && turn.id == event.turn_id
+                {
+                    turn.exec_calls.remove(call_id);
+                }
                 self.write_item(
                     writer,
                     &timestamp,
@@ -336,6 +359,7 @@ impl LegacyRolloutCanonicalizer {
             id: turn_id.clone(),
             explicit: false,
             saw_user: false,
+            exec_calls: BTreeSet::new(),
         });
         self.known_turn_ids.insert(turn_id.clone());
         self.reasoning = None;
