@@ -5,7 +5,6 @@ use std::fmt::Write as _;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use similar::DiffTag;
 use similar::TextDiff;
@@ -551,28 +550,6 @@ impl fmt::Write for DiffRange {
     }
 }
 
-/// Render a provisional single-file text diff without accessing the history store.
-/// A missing endpoint is distinct from an empty file. Returns no partial output
-/// when the complete diff does not fit the caller's byte budget.
-pub fn render_provisional_text_diff(
-    path: &str,
-    before: Option<&str>,
-    after: Option<&str>,
-    max_bytes: usize,
-    deadline: Instant,
-) -> Option<String> {
-    let mut out = BoundedDiff {
-        text: String::new(),
-        max_bytes,
-    };
-    writeln!(&mut out, "diff --git a/{path} b/{path}").ok()?;
-    let diff = TextDiff::configure()
-        .deadline(deadline)
-        .diff_lines(before.unwrap_or_default(), after.unwrap_or_default());
-    write_text_hunks(&mut out, &diff, before.map(|_| path), after.map(|_| path)).ok()?;
-    Some(out.text)
-}
-
 fn write_text_hunks<'a>(
     out: &mut impl fmt::Write,
     diff: &'a TextDiff<'a, 'a, 'a, str>,
@@ -588,19 +565,4 @@ fn write_text_hunks<'a>(
             .context_radius(3)
             .header(&old_header, &new_header)
     )
-}
-
-struct BoundedDiff {
-    text: String,
-    max_bytes: usize,
-}
-
-impl fmt::Write for BoundedDiff {
-    fn write_str(&mut self, value: &str) -> fmt::Result {
-        if value.len() > self.max_bytes - self.text.len() {
-            return Err(fmt::Error);
-        }
-        self.text.push_str(value);
-        Ok(())
-    }
 }

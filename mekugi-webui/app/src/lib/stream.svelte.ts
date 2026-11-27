@@ -27,7 +27,6 @@ import type {
   Status,
   Thread,
   ThreadChangeFileDiff,
-  ThreadChangesLiveResponse,
   ThreadChangesReadResponse,
   ThreadItem,
   ThreadListResponse,
@@ -949,7 +948,6 @@ export class Stream {
   #turnsBackwardsCursor = $state<string>();
   #hiddenEntries = $state(0);
   #liveItemIds = new Set<string>();
-  #shellReads = new Map<string, Set<string>>();
   #hooks: HookRecord[] = [];
   #hooksByThread: HookCache;
   #hookSeq = 0;
@@ -1236,8 +1234,6 @@ export class Stream {
       for (const member of this.family?.threads ?? [id]) {
         void this.#loadProcesses(member, machine);
       }
-      const shellThreads = id === this.family?.root ? this.family.threads : [id];
-      void this.#loadLiveShells(shellThreads, machine, signal);
       void this.#loadSubtree(subtreeRoot, machine, signal);
       void this.#loadChanges(id, machine, signal);
     } catch (err) {
@@ -1365,10 +1361,6 @@ export class Stream {
       });
       this.roster = { total: agents.length, agents };
       this.#observeRoles();
-      if (this.#id === root.id) {
-        const added = this.family.threads.filter((thread) => !previous.has(thread));
-        void this.#loadLiveShells(added, machine, signal);
-      }
     } catch {
       // Subtree listing is optional for single-agent threads.
     }
@@ -1506,48 +1498,6 @@ export class Stream {
       { Files: changes.map(previewFile), Tool: "Shell" },
       source === "userShell" ? "User shell" : undefined,
     );
-  }
-
-  async #loadLiveShells(threads: string[], machine: Machine, signal: AbortSignal): Promise<void> {
-    for (const thread of threads) {
-      if (signal.aborted) return;
-      if (this.#showsEdit(thread)) await this.#loadLiveShell(thread, machine, signal);
-    }
-  }
-
-  async #loadLiveShell(thread: string, machine: Machine, signal: AbortSignal): Promise<void> {
-    // Pushes and exact completions observed during the read win over its snapshot.
-    const touched = new Set<string>();
-    this.#shellReads.set(thread, touched);
-    const missing = new Set(
-      this.live
-        .filter(
-          (edit) =>
-            edit.Thread === thread && edit.Tool === "Shell" && !edit.Complete && !edit.Settling,
-        )
-        .map((edit) => edit.ID),
-    );
-    try {
-      const { data } = await machine.request<ThreadChangesLiveResponse>(
-        "thread/changes/live",
-        { threadId: thread },
-        { signal },
-      );
-      if (signal.aborted || this.#shellReads.get(thread) !== touched || !this.#showsEdit(thread))
-        return;
-      for (const sample of data) {
-        if (sample.threadId !== thread) continue;
-        const key = previewId(thread, sample.turnId, sample.itemId);
-        missing.delete(key);
-        if (!touched.has(key)) this.#updateShellSample(sample);
-      }
-      if (missing.size)
-        this.live = this.live.filter((edit) => !missing.has(edit.ID) || touched.has(edit.ID));
-    } catch {
-      // A failed refresh must not discard the last observed preview.
-    } finally {
-      if (this.#shellReads.get(thread) === touched) this.#shellReads.delete(thread);
-    }
   }
 
   async #settlePreview(
@@ -1739,16 +1689,12 @@ export class Stream {
               : [...this.roster.agents, nextAgent];
           this.roster = { total: agents.length, agents };
           this.#observeRoles();
-          if (added && this.#showsEdit(started.id)) {
-            void this.#loadLiveShell(started.id, machine, this.#requests.signal);
-          }
         }
         break;
       }
       case "thread/closed": {
         const { threadId } = notification.params;
         if (threadId === id) this.#subscribed = this.#maySubscribe = false;
-        this.#shellReads.delete(threadId);
         this.#processReads.delete(threadId);
         this.processes = this.processes.filter((process) => process.threadId !== threadId);
         break;
@@ -1951,8 +1897,6 @@ export class Stream {
               item.type === "fileChange")
           ) {
             if (item.type === "commandExecution") {
-              const reading = this.#shellReads.get(targetId);
-              reading?.add(key);
               const hasPreview = this.live.some((edit) => edit.ID === key);
               if (!hasPreview) {
                 if (
@@ -2054,9 +1998,8 @@ export class Stream {
         break;
       }
       case "item/commandExecution/changesUpdated": {
-        const { threadId, turnId, itemId } = notification.params;
+        const { threadId } = notification.params;
         if (!this.#showsEdit(threadId)) return;
-        this.#shellReads.get(threadId)?.add(previewId(threadId, turnId, itemId));
         this.#updateShellSample(notification.params);
         break;
       }
@@ -2110,7 +2053,6 @@ export class Stream {
       }
       case "thread/reverted": {
         if (notification.params.threadId !== id) return;
-        this.#shellReads.clear();
         this.live = [];
         // A revert can arrive while the previous snapshot is still in flight.
         const pending = this.#hydration;
@@ -2274,7 +2216,6 @@ export class Stream {
     this.#id = undefined;
     this.#machine = undefined;
     this.#liveItemIds.clear();
-    this.#shellReads.clear();
     this.#hooks = [];
     this.#stopNotifications?.();
     this.#stopNotifications = undefined;

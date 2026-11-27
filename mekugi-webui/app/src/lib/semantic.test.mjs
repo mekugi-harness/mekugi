@@ -1197,7 +1197,6 @@ test("Main recovers a late delegate's shell edits and follows exact command comp
   };
   const empty = { changes: [], files: [] };
   let savedDuringAttach = false;
-  const snapshot = Promise.withResolvers();
   const sample = {
     threadId: worker.id,
     turnId: "turn-1",
@@ -1209,8 +1208,6 @@ test("Main recovers a late delegate's shell edits and follows exact command comp
   const machine = fakeMachine({
     "thread/resume": () => ({ thread: main }),
     "thread/subtree/list": () => ({ data: [main] }),
-    "thread/changes/live": ({ threadId }) =>
-      threadId === worker.id ? snapshot.promise : { data: [] },
     "thread/changes/read": ({ threadId, itemId }) => {
       if (threadId === worker.id && itemId === sample.itemId)
         return {
@@ -1247,9 +1244,7 @@ test("Main recovers a late delegate's shell edits and follows exact command comp
   machine.emitNotification({ method: "thread/started", params: { thread: worker } });
   savedDuringAttach = true;
   notify("completed", sample.turnId, "already-finished");
-  snapshot.resolve({
-    data: [sample, { ...sample, itemId: "already-finished" }, { ...sample, threadId: "unrelated" }],
-  });
+  machine.emitNotification({ method: "item/commandExecution/changesUpdated", params: sample });
   await new Promise(setImmediate);
   assert.equal(stream.review.files[0].path, "/worker/finished.txt");
   assert.equal(stream.live.length, 1);
@@ -1281,7 +1276,7 @@ test("Main recovers a late delegate's shell edits and follows exact command comp
   stream.close();
 });
 
-test("reconnect shell snapshots yield to live pushes and settlement distinguishes missing from failed", async () => {
+test("shell preview settlement distinguishes missing from failed and empty patchUpdated withdraws", async () => {
   const main = { id: "t1", cwd: "/repo", status: { type: "idle" }, turns: [] };
   const empty = { changes: [], files: [] };
   const sample = {
@@ -1293,11 +1288,9 @@ test("reconnect shell snapshots yield to live pushes and settlement distinguishe
     changes: [{ path: "/repo/out.txt", kind: { type: "add" }, diff: "@@ -0 +1 @@\n+attach" }],
   };
   const failed = { ...sample, itemId: "shell-read-failed" };
-  let snapshot = Promise.resolve({ data: [sample, failed] });
   const machine = fakeMachine({
     "thread/resume": () => ({ thread: main }),
     "thread/subtree/list": () => ({ data: [main] }),
-    "thread/changes/live": () => snapshot,
     "thread/changes/read": ({ itemId }) => {
       if (itemId === failed.itemId) throw new Error("capture store unavailable");
       return empty;
@@ -1306,21 +1299,39 @@ test("reconnect shell snapshots yield to live pushes and settlement distinguishe
   const stream = new Stream();
   stream.connect(main.id, machine);
   await new Promise(setImmediate);
+  machine.emitNotification({ method: "item/commandExecution/changesUpdated", params: sample });
+  machine.emitNotification({ method: "item/commandExecution/changesUpdated", params: failed });
   assert.equal(stream.live.length, 2);
   assert.ok(stream.live.every((edit) => edit.Caller === "User shell"));
 
-  const reconnect = Promise.withResolvers();
-  snapshot = reconnect.promise;
-  machine.emitOpen();
-  await new Promise(setImmediate);
   machine.emitNotification({
     method: "item/commandExecution/changesUpdated",
     params: { ...sample, changes: [{ ...sample.changes[0], diff: "@@ -0 +1 @@\n+push" }] },
   });
-  reconnect.resolve({ data: [sample, failed] });
-  await new Promise(setImmediate);
   const find = ({ itemId }) => stream.live.find((edit) => edit.ID.includes(itemId));
   assert.match(find(sample).Files[0].Diff, /\+push/);
+
+  machine.emitNotification({
+    method: "item/fileChange/patchUpdated",
+    params: {
+      threadId: main.id,
+      turnId: "turn-1",
+      itemId: "retracted-call",
+      changes: [{ path: "/repo/tmp.txt", kind: { type: "add" }, diff: "hello\n" }],
+    },
+  });
+  assert.equal(find({ itemId: "retracted-call" })?.Files.length, 1);
+  machine.emitNotification({
+    method: "item/fileChange/patchUpdated",
+    params: {
+      threadId: main.id,
+      turnId: "turn-1",
+      itemId: "retracted-call",
+      changes: [],
+    },
+  });
+  assert.equal(find({ itemId: "retracted-call" })?.Withdrawn, true);
+  assert.deepEqual(find({ itemId: "retracted-call" })?.Files, []);
 
   for (const { threadId, turnId, itemId } of [sample, failed]) {
     machine.emitNotification({

@@ -31,17 +31,60 @@ const MAX_STREAM_FILES: usize = 32;
 const MAX_STREAM_FILE_BYTES: usize = 128 * 1024;
 
 #[derive(Default)]
-pub(crate) struct ExecCommandArgumentDiffConsumer {
-    json: JsonCmdExtractor,
-    projector: Option<ShellEditProjector>,
+struct ThrottledPatchEmitter {
     call_id: Option<String>,
     last_sent_at: Option<Instant>,
     dirty: bool,
 }
 
+impl ThrottledPatchEmitter {
+    fn set_call_id(&mut self, call_id: String) {
+        self.call_id = Some(call_id);
+    }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn emit(
+        &mut self,
+        force: bool,
+        snapshot: impl FnOnce() -> HashMap<PathBuf, FileChange>,
+    ) -> Option<EventMsg> {
+        if !self.dirty {
+            return None;
+        }
+        let now = Instant::now();
+        if !force
+            && let Some(last) = self.last_sent_at
+            && now.duration_since(last) < SHELL_EDIT_STREAM_BUFFER_INTERVAL
+        {
+            return None;
+        }
+        let call_id = self.call_id.clone()?;
+        self.dirty = false;
+        let changes = snapshot();
+        if changes.is_empty() && self.last_sent_at.is_none() {
+            return None;
+        }
+        self.last_sent_at = Some(now);
+        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
+            call_id,
+            changes,
+        }))
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ExecCommandArgumentDiffConsumer {
+    json: JsonCmdExtractor,
+    projector: Option<ShellEditProjector>,
+    emitter: ThrottledPatchEmitter,
+}
+
 impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
     fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg> {
-        self.call_id = Some(call_id.clone());
+        self.emitter.set_call_id(call_id);
         let projector = self.projector.get_or_insert_with(|| {
             #[allow(deprecated)]
             let cwd = turn.cwd.as_path();
@@ -55,62 +98,32 @@ impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
             projector.push(&cmd_chunk);
         }
         if projector.take_dirty() {
-            self.dirty = true;
+            self.emitter.mark_dirty();
         }
-        self.maybe_emit(call_id).into_iter().collect()
+        let Some(projector) = self.projector.as_ref() else {
+            return Vec::new();
+        };
+        self.emitter
+            .emit(false, || projector.snapshot())
+            .into_iter()
+            .collect()
     }
 
     fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
         if let Some(projector) = self.projector.as_mut() {
             projector.finish();
             if projector.take_dirty() {
-                self.dirty = true;
+                self.emitter.mark_dirty();
             }
         }
-        if !self.dirty {
-            return Ok(Vec::new());
-        }
-        let Some(call_id) = self.call_id.clone() else {
-            return Ok(Vec::new());
-        };
         let Some(projector) = self.projector.as_ref() else {
             return Ok(Vec::new());
         };
-        self.dirty = false;
-        let changes = projector.snapshot();
-        if changes.is_empty() && self.last_sent_at.is_none() {
-            return Ok(Vec::new());
-        }
-        self.last_sent_at = Some(Instant::now());
-        Ok(vec![EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
-            call_id,
-            changes,
-        })])
-    }
-}
-
-impl ExecCommandArgumentDiffConsumer {
-    fn maybe_emit(&mut self, call_id: String) -> Option<EventMsg> {
-        if !self.dirty {
-            return None;
-        }
-        let now = Instant::now();
-        if let Some(last) = self.last_sent_at
-            && now.duration_since(last) < SHELL_EDIT_STREAM_BUFFER_INTERVAL
-        {
-            return None;
-        }
-        let projector = self.projector.as_ref()?;
-        self.dirty = false;
-        let changes = projector.snapshot();
-        if changes.is_empty() && self.last_sent_at.is_none() {
-            return None;
-        }
-        self.last_sent_at = Some(now);
-        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
-            call_id,
-            changes,
-        }))
+        Ok(self
+            .emitter
+            .emit(true, || projector.snapshot())
+            .into_iter()
+            .collect())
     }
 }
 
@@ -133,75 +146,65 @@ enum ActiveCodeModeOp {
 #[derive(Default)]
 pub(crate) struct CodeModeEditProjector {
     base_cwd: Option<PathBuf>,
-    call_id: Option<String>,
-    last_sent_at: Option<Instant>,
+    emitter: ThrottledPatchEmitter,
     js: JsNestedEditScanner,
     committed: HashMap<PathBuf, FileChange>,
     active: Option<ActiveCodeModeOp>,
-    dirty: bool,
 }
 
 impl CodeModeEditProjector {
+    fn active_shell_mut(&mut self) -> Option<&mut ShellEditProjector> {
+        match self.active.as_mut() {
+            Some(ActiveCodeModeOp::Shell {
+                projector,
+                aborted: false,
+            }) => Some(projector),
+            _ => None,
+        }
+    }
+
     pub(crate) fn consume_diff(
         &mut self,
         cwd: &Path,
         call_id: String,
         diff: &str,
     ) -> Option<EventMsg> {
-        self.call_id = Some(call_id.clone());
-        if self.base_cwd.is_none() {
-            self.base_cwd = Some(cwd.to_path_buf());
-        }
-        let base = self.base_cwd.as_deref().unwrap_or(cwd).to_path_buf();
+        self.emitter.set_call_id(call_id);
+        self.base_cwd.get_or_insert_with(|| cwd.to_path_buf());
         for event in self.js.push(diff) {
             match event {
                 JsEditEvent::ExecCallStart => {
                     self.finalize_active();
+                    let base = self.base_cwd.as_deref().unwrap_or(cwd);
                     self.active = Some(ActiveCodeModeOp::Shell {
-                        projector: ShellEditProjector::new(&base),
+                        projector: ShellEditProjector::new(base),
                         aborted: false,
                     });
                 }
                 JsEditEvent::ExecCmdStart => {
-                    if let Some(ActiveCodeModeOp::Shell {
-                        projector,
-                        aborted: false,
-                    }) = self.active.as_mut()
-                    {
+                    if let Some(projector) = self.active_shell_mut() {
                         projector.reset_script_state();
                     }
                 }
                 JsEditEvent::ExecCmdChunk(chunk) => {
-                    if let Some(ActiveCodeModeOp::Shell {
-                        projector,
-                        aborted: false,
-                    }) = self.active.as_mut()
-                    {
+                    if let Some(projector) = self.active_shell_mut() {
                         projector.push(&chunk);
                     }
                 }
                 JsEditEvent::ExecWorkdir(dir) => {
-                    if let Some(ActiveCodeModeOp::Shell {
-                        projector,
-                        aborted: false,
-                    }) = self.active.as_mut()
-                    {
+                    if let Some(projector) = self.active_shell_mut() {
                         projector.set_workdir(Path::new(&dir));
                     }
                 }
                 JsEditEvent::ExecCmdEnd => {
-                    if let Some(ActiveCodeModeOp::Shell {
-                        projector,
-                        aborted: false,
-                    }) = self.active.as_mut()
-                    {
+                    if let Some(projector) = self.active_shell_mut() {
                         projector.finish();
                     }
                 }
                 JsEditEvent::ExecCallAbort => {
                     if let Some(ActiveCodeModeOp::Shell { aborted, .. }) = self.active.as_mut() {
                         *aborted = true;
-                        self.dirty = true;
+                        self.emitter.mark_dirty();
                     }
                 }
                 JsEditEvent::ExecCallEnd => {
@@ -216,6 +219,7 @@ impl CodeModeEditProjector {
                     });
                 }
                 JsEditEvent::ApplyPatchChunk(chunk) => {
+                    let base = self.base_cwd.as_deref().unwrap_or(cwd);
                     if let Some(ActiveCodeModeOp::Patch {
                         parser,
                         changes,
@@ -224,16 +228,16 @@ impl CodeModeEditProjector {
                         && let Ok(hunks) = parser.push_delta(&chunk)
                         && !hunks.is_empty()
                     {
-                        for (path, change) in hunks_to_file_changes(&hunks, &base) {
+                        for (path, change) in hunks_to_file_changes(&hunks, base) {
                             changes.insert(path, change);
                         }
-                        self.dirty = true;
+                        self.emitter.mark_dirty();
                     }
                 }
                 JsEditEvent::ApplyPatchAbort => {
                     if let Some(ActiveCodeModeOp::Patch { aborted, .. }) = self.active.as_mut() {
                         *aborted = true;
-                        self.dirty = true;
+                        self.emitter.mark_dirty();
                     }
                 }
                 JsEditEvent::ApplyPatchEnd => {
@@ -241,33 +245,23 @@ impl CodeModeEditProjector {
                 }
             }
         }
-        if let Some(ActiveCodeModeOp::Shell {
-            projector,
-            aborted: false,
-        }) = self.active.as_mut()
+        if let Some(projector) = self.active_shell_mut()
             && projector.take_dirty()
         {
-            self.dirty = true;
+            self.emitter.mark_dirty();
         }
-        self.maybe_emit(call_id)
+        let committed = &self.committed;
+        let active = &self.active;
+        self.emitter
+            .emit(false, || snapshot_code_mode(committed, active))
     }
 
     pub(crate) fn finish(&mut self) -> Option<EventMsg> {
         self.finalize_active();
-        if !self.dirty {
-            return None;
-        }
-        let call_id = self.call_id.clone()?;
-        self.dirty = false;
-        let changes = self.snapshot();
-        if changes.is_empty() && self.last_sent_at.is_none() {
-            return None;
-        }
-        self.last_sent_at = Some(Instant::now());
-        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
-            call_id,
-            changes,
-        }))
+        let committed = &self.committed;
+        let active = &self.active;
+        self.emitter
+            .emit(true, || snapshot_code_mode(committed, active))
     }
 
     fn finalize_active(&mut self) {
@@ -284,7 +278,7 @@ impl CodeModeEditProjector {
                 }
                 projector.finish();
                 if projector.take_dirty() {
-                    self.dirty = true;
+                    self.emitter.mark_dirty();
                 }
                 merge_shell_snapshot(&mut self.committed, &projector);
             }
@@ -303,7 +297,7 @@ impl CodeModeEditProjector {
                     for (path, change) in hunks_to_file_changes(&hunks, base) {
                         changes.insert(path, change);
                     }
-                    self.dirty = true;
+                    self.emitter.mark_dirty();
                 }
                 if !changes.is_empty() {
                     merge_capped_changes(&mut self.committed, changes);
@@ -311,53 +305,39 @@ impl CodeModeEditProjector {
             }
         }
     }
+}
 
-    fn snapshot(&self) -> HashMap<PathBuf, FileChange> {
-        let mut out = self.committed.clone();
-        match &self.active {
-            Some(ActiveCodeModeOp::Shell {
-                projector,
-                aborted: false,
-            }) => {
-                merge_shell_snapshot(&mut out, projector);
-            }
-            Some(ActiveCodeModeOp::Patch {
-                changes,
-                aborted: false,
-                ..
-            }) => {
-                merge_capped_changes(&mut out, changes.clone());
-            }
-            _ => {}
+fn snapshot_code_mode(
+    committed: &HashMap<PathBuf, FileChange>,
+    active: &Option<ActiveCodeModeOp>,
+) -> HashMap<PathBuf, FileChange> {
+    let mut out = committed.clone();
+    match active {
+        Some(ActiveCodeModeOp::Shell {
+            projector,
+            aborted: false,
+        }) => {
+            merge_shell_snapshot(&mut out, projector);
         }
-        out
-    }
-
-    fn maybe_emit(&mut self, call_id: String) -> Option<EventMsg> {
-        if !self.dirty {
-            return None;
-        }
-        let now = Instant::now();
-        if let Some(last) = self.last_sent_at
-            && now.duration_since(last) < SHELL_EDIT_STREAM_BUFFER_INTERVAL
-        {
-            return None;
-        }
-        self.dirty = false;
-        let changes = self.snapshot();
-        if changes.is_empty() && self.last_sent_at.is_none() {
-            return None;
-        }
-        self.last_sent_at = Some(now);
-        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
-            call_id,
+        Some(ActiveCodeModeOp::Patch {
             changes,
-        }))
+            aborted: false,
+            ..
+        }) => {
+            merge_capped_changes(&mut out, changes.clone());
+        }
+        _ => {}
     }
+    out
 }
 
 fn merge_shell_snapshot(target: &mut HashMap<PathBuf, FileChange>, shell: &ShellEditProjector) {
-    for (path, (change, append_only)) in shell.snapshot_entries() {
+    let entries = shell.snapshot_entries();
+    let mut ordered: Vec<_> = entries.into_iter().collect();
+    if target.len() + ordered.len() > MAX_STREAM_FILES {
+        ordered.sort_by(|(a, _), (b, _)| a.cmp(b));
+    }
+    for (path, (change, append_only)) in ordered {
         if append_only
             && let FileChange::Add { content: added } = &change
             && let Some(FileChange::Add { content: existing }) = target.get_mut(&path)
@@ -384,10 +364,46 @@ fn merge_capped_changes(
     target: &mut HashMap<PathBuf, FileChange>,
     incoming: HashMap<PathBuf, FileChange>,
 ) {
-    for (path, change) in incoming {
+    let mut ordered: Vec<_> = incoming.into_iter().collect();
+    if target.len() + ordered.len() > MAX_STREAM_FILES {
+        ordered.sort_by(|(a, _), (b, _)| a.cmp(b));
+    }
+    for (path, change) in ordered {
         if target.contains_key(&path) || target.len() < MAX_STREAM_FILES {
             target.insert(path, change);
         }
+    }
+}
+
+fn join_path(base: &Path, target: &Path) -> PathBuf {
+    if target.is_absolute() || base.as_os_str().is_empty() {
+        target.to_path_buf()
+    } else {
+        base.join(target)
+    }
+}
+
+fn write_unified_hunk<S: AsRef<str>>(
+    out: &mut String,
+    old_lines: &[S],
+    new_lines: &[S],
+    context: Option<&str>,
+) {
+    let old_count = old_lines.len();
+    let new_count = new_lines.len();
+    match context {
+        Some(ctx) => out.push_str(&format!("@@ -1,{old_count} +1,{new_count} @@ {ctx}\n")),
+        None => out.push_str(&format!("@@ -1,{old_count} +1,{new_count} @@\n")),
+    }
+    for line in old_lines {
+        out.push('-');
+        out.push_str(line.as_ref());
+        out.push('\n');
+    }
+    for line in new_lines {
+        out.push('+');
+        out.push_str(line.as_ref());
+        out.push('\n');
     }
 }
 
@@ -400,11 +416,7 @@ fn hunks_to_file_changes(hunks: &[Hunk], base_cwd: &Path) -> HashMap<PathBuf, Fi
                 | Hunk::DeleteFile { path }
                 | Hunk::UpdateFile { path, .. } => path.as_path(),
             };
-            let path = if raw.is_absolute() {
-                raw.to_path_buf()
-            } else {
-                base_cwd.join(raw)
-            };
+            let path = join_path(base_cwd, raw);
             let change = match hunk {
                 Hunk::AddFile { contents, .. } => FileChange::Add {
                     content: contents.clone(),
@@ -417,28 +429,12 @@ fn hunks_to_file_changes(hunks: &[Hunk], base_cwd: &Path) -> HashMap<PathBuf, Fi
                 } => {
                     let mut diff = String::new();
                     for chunk in chunks {
-                        let old_count = chunk.old_lines.len();
-                        let new_count = chunk.new_lines.len();
-                        match &chunk.change_context {
-                            Some(ctx) => {
-                                diff.push_str(&format!(
-                                    "@@ -1,{old_count} +1,{new_count} @@ {ctx}\n"
-                                ));
-                            }
-                            None => {
-                                diff.push_str(&format!("@@ -1,{old_count} +1,{new_count} @@\n"));
-                            }
-                        }
-                        for line in &chunk.old_lines {
-                            diff.push('-');
-                            diff.push_str(line);
-                            diff.push('\n');
-                        }
-                        for line in &chunk.new_lines {
-                            diff.push('+');
-                            diff.push_str(line);
-                            diff.push('\n');
-                        }
+                        write_unified_hunk(
+                            &mut diff,
+                            &chunk.old_lines,
+                            &chunk.new_lines,
+                            chunk.change_context.as_deref(),
+                        );
                     }
                     FileChange::Update {
                         unified_diff: diff,
@@ -486,8 +482,7 @@ struct JsNestedEditScanner {
     regex_allowed: bool,
     state: JsScanState,
     comment: JsCommentState,
-    escape: JsEscape,
-    high_surrogate: Option<u16>,
+    escape: EscapeDecoder,
 }
 
 impl Default for JsNestedEditScanner {
@@ -499,10 +494,18 @@ impl Default for JsNestedEditScanner {
             regex_allowed: true,
             state: JsScanState::Normal,
             comment: JsCommentState::None,
-            escape: JsEscape::None,
-            high_surrogate: None,
+            escape: EscapeDecoder::default(),
         }
     }
+}
+
+enum JsStringTarget {
+    Patch,
+    ExecField {
+        brace_depth: usize,
+        field: TargetField,
+        workdir_buf: String,
+    },
 }
 
 #[derive(Default)]
@@ -513,30 +516,29 @@ enum JsScanState {
         quote: char,
     },
     AwaitPatchArg,
-    InPatchString {
-        quote: char,
-        pending_dollar: bool,
-        interpolated: bool,
-        interp_brace_depth: usize,
-    },
     InExecArgs {
         brace_depth: usize,
         expect_value_for: Option<TargetField>,
         pending_key: String,
     },
-    InExecFieldString {
+    InString {
         quote: char,
-        brace_depth: usize,
-        field: TargetField,
-        workdir_buf: String,
+        target: JsStringTarget,
         pending_dollar: bool,
         interpolated: bool,
         interp_brace_depth: usize,
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EscapeDialect {
+    Json,
+    Js,
+    Python,
+}
+
 #[derive(Default, Clone, Copy)]
-enum JsEscape {
+enum EscapeState {
     #[default]
     None,
     Backslash,
@@ -545,6 +547,180 @@ enum JsEscape {
         acc: u32,
         is_u16: bool,
     },
+}
+
+#[derive(Default, Clone, Copy)]
+struct EscapeDecoder {
+    state: EscapeState,
+    high_surrogate: Option<u16>,
+}
+
+enum DecodedEscape {
+    None,
+    CloseQuote,
+    Char(char),
+    TwoChars(char, char),
+}
+
+impl EscapeDecoder {
+    fn is_idle(&self) -> bool {
+        matches!(self.state, EscapeState::None)
+    }
+
+    fn begin_backslash(&mut self) {
+        self.state = EscapeState::Backslash;
+    }
+
+    fn feed(&mut self, dialect: EscapeDialect, ch: char, quote: char) -> DecodedEscape {
+        match self.state {
+            EscapeState::None => {
+                if ch == '\\' {
+                    self.state = EscapeState::Backslash;
+                    DecodedEscape::None
+                } else if ch == quote {
+                    self.high_surrogate = None;
+                    DecodedEscape::CloseQuote
+                } else {
+                    self.high_surrogate = None;
+                    DecodedEscape::Char(ch)
+                }
+            }
+            EscapeState::Backslash => {
+                self.state = EscapeState::None;
+                match (dialect, ch) {
+                    (_, 'n') => DecodedEscape::Char('\n'),
+                    (_, 'r') => DecodedEscape::Char('\r'),
+                    (_, 't') => DecodedEscape::Char('\t'),
+                    (_, '\\') => DecodedEscape::Char('\\'),
+                    (_, '"') => DecodedEscape::Char('"'),
+                    (EscapeDialect::Json, '/') => DecodedEscape::Char('/'),
+                    (EscapeDialect::Json | EscapeDialect::Python, 'b') => {
+                        DecodedEscape::Char('\u{0008}')
+                    }
+                    (EscapeDialect::Json | EscapeDialect::Python, 'f') => {
+                        DecodedEscape::Char('\u{000C}')
+                    }
+                    (EscapeDialect::Js | EscapeDialect::Python, '\'') => DecodedEscape::Char('\''),
+                    (EscapeDialect::Js, '`') => DecodedEscape::Char('`'),
+                    (EscapeDialect::Js, '$') => DecodedEscape::Char('$'),
+                    (EscapeDialect::Python, 'a') => DecodedEscape::Char('\u{0007}'),
+                    (EscapeDialect::Python, 'v') => DecodedEscape::Char('\u{000B}'),
+                    (EscapeDialect::Python, '0') => DecodedEscape::Char('\0'),
+                    (EscapeDialect::Js | EscapeDialect::Python, '\n') => DecodedEscape::None,
+                    (EscapeDialect::Js | EscapeDialect::Python, 'x') => {
+                        self.state = EscapeState::Hex {
+                            remaining: 2,
+                            acc: 0,
+                            is_u16: false,
+                        };
+                        DecodedEscape::None
+                    }
+                    (_, 'u') => {
+                        self.state = EscapeState::Hex {
+                            remaining: 4,
+                            acc: 0,
+                            is_u16: dialect != EscapeDialect::Python,
+                        };
+                        DecodedEscape::None
+                    }
+                    (EscapeDialect::Python, 'U') => {
+                        self.state = EscapeState::Hex {
+                            remaining: 8,
+                            acc: 0,
+                            is_u16: false,
+                        };
+                        DecodedEscape::None
+                    }
+                    (EscapeDialect::Python, other) => DecodedEscape::TwoChars('\\', other),
+                    (_, other) => DecodedEscape::Char(other),
+                }
+            }
+            EscapeState::Hex {
+                remaining,
+                acc,
+                is_u16,
+            } => {
+                let digit = match (dialect, ch.to_digit(16)) {
+                    (_, Some(d)) => d,
+                    (EscapeDialect::Json, None) => 0,
+                    (_, None) => {
+                        self.state = EscapeState::None;
+                        return DecodedEscape::Char(ch);
+                    }
+                };
+                let next = (acc << 4) | digit;
+                if remaining > 1 {
+                    self.state = EscapeState::Hex {
+                        remaining: remaining - 1,
+                        acc: next,
+                        is_u16,
+                    };
+                    DecodedEscape::None
+                } else {
+                    self.state = EscapeState::None;
+                    if is_u16 && (0xD800..=0xDBFF).contains(&next) {
+                        self.high_surrogate = Some(next as u16);
+                        DecodedEscape::None
+                    } else if is_u16 && (0xDC00..=0xDFFF).contains(&next) {
+                        if let Some(hi) = self.high_surrogate.take() {
+                            let cp = 0x10000 + (((hi as u32 - 0xD800) << 10) | (next - 0xDC00));
+                            char::from_u32(cp).map_or(DecodedEscape::None, DecodedEscape::Char)
+                        } else {
+                            DecodedEscape::Char('\u{FFFD}')
+                        }
+                    } else {
+                        self.high_surrogate = None;
+                        char::from_u32(next).map_or(DecodedEscape::None, DecodedEscape::Char)
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn push_js_string_char(
+    target: &mut JsStringTarget,
+    cmd_buf: &mut String,
+    patch_buf: &mut String,
+    ch: char,
+) {
+    match target {
+        JsStringTarget::Patch => patch_buf.push(ch),
+        JsStringTarget::ExecField {
+            field, workdir_buf, ..
+        } => match field {
+            TargetField::Cmd => cmd_buf.push(ch),
+            TargetField::Workdir => workdir_buf.push(ch),
+            TargetField::Other => {}
+        },
+    }
+}
+
+fn abort_js_string_target(
+    target: &mut JsStringTarget,
+    cmd_buf: &mut String,
+    patch_buf: &mut String,
+    events: &mut Vec<JsEditEvent>,
+) {
+    match target {
+        JsStringTarget::Patch => {
+            patch_buf.clear();
+            events.push(JsEditEvent::ApplyPatchAbort);
+        }
+        JsStringTarget::ExecField {
+            field, workdir_buf, ..
+        } => match field {
+            TargetField::Cmd => {
+                cmd_buf.clear();
+                events.push(JsEditEvent::ExecCallAbort);
+            }
+            TargetField::Workdir => {
+                workdir_buf.clear();
+                events.push(JsEditEvent::ExecCallAbort);
+            }
+            TargetField::Other => {}
+        },
+    }
 }
 
 impl JsNestedEditScanner {
@@ -556,9 +732,7 @@ impl JsNestedEditScanner {
         for ch in delta.chars() {
             let in_string = matches!(
                 self.state,
-                JsScanState::SkipString { .. }
-                    | JsScanState::InPatchString { .. }
-                    | JsScanState::InExecFieldString { .. }
+                JsScanState::SkipString { .. } | JsScanState::InString { .. }
             );
             if !in_string {
                 match self.comment {
@@ -649,18 +823,18 @@ impl JsNestedEditScanner {
             match &mut self.state {
                 JsScanState::SkipString { quote } => {
                     let q = *quote;
-                    if let Some(_decoded) =
-                        feed_js_string_char(&mut self.escape, &mut self.high_surrogate, ch, q)
-                    {
-                        // skip
-                    } else if matches!(self.escape, JsEscape::None) && ch == q {
+                    if matches!(
+                        self.escape.feed(EscapeDialect::Js, ch, q),
+                        DecodedEscape::CloseQuote
+                    ) {
                         self.state = JsScanState::Normal;
                         self.regex_allowed = false;
                     }
                     continue;
                 }
-                JsScanState::InPatchString {
+                JsScanState::InString {
                     quote,
+                    target,
                     pending_dollar,
                     interpolated,
                     interp_brace_depth,
@@ -674,167 +848,104 @@ impl JsNestedEditScanner {
                         }
                         continue;
                     }
-                    let was_escaped = !matches!(self.escape, JsEscape::None);
-                    if let Some(decoded) =
-                        feed_js_string_char(&mut self.escape, &mut self.high_surrogate, ch, q)
-                    {
-                        if *interpolated {
-                            if q == '`' && !was_escaped {
-                                if *pending_dollar && ch == '{' {
-                                    *pending_dollar = false;
-                                    *interp_brace_depth = 1;
-                                } else {
-                                    *pending_dollar = ch == '$';
-                                }
-                            } else {
-                                *pending_dollar = false;
-                            }
-                            continue;
-                        }
-                        if q == '`' && !was_escaped {
-                            if *pending_dollar {
-                                if ch == '{' {
-                                    *pending_dollar = false;
-                                    *interpolated = true;
-                                    *interp_brace_depth = 1;
-                                    patch_buf.clear();
-                                    events.push(JsEditEvent::ApplyPatchAbort);
-                                    continue;
-                                }
-                                patch_buf.push('$');
-                                *pending_dollar = false;
-                            }
-                            if ch == '$' {
-                                *pending_dollar = true;
-                                continue;
-                            }
-                        } else if *pending_dollar {
-                            patch_buf.push('$');
-                            *pending_dollar = false;
-                        }
-                        patch_buf.push(decoded);
-                    } else if matches!(self.escape, JsEscape::None) && ch == q {
-                        if !*interpolated {
-                            if *pending_dollar {
-                                patch_buf.push('$');
-                            }
-                            if !patch_buf.is_empty() {
-                                events.push(JsEditEvent::ApplyPatchChunk(std::mem::take(
-                                    &mut patch_buf,
-                                )));
-                            }
-                        }
-                        events.push(JsEditEvent::ApplyPatchEnd);
-                        self.state = JsScanState::Normal;
-                    }
-                    continue;
-                }
-                JsScanState::InExecFieldString {
-                    quote,
-                    brace_depth,
-                    field,
-                    workdir_buf,
-                    pending_dollar,
-                    interpolated,
-                    interp_brace_depth,
-                } => {
-                    let q = *quote;
-                    let depth = *brace_depth;
-                    let f = *field;
-                    if *interpolated && *interp_brace_depth > 0 {
-                        match ch {
-                            '{' => *interp_brace_depth += 1,
-                            '}' => *interp_brace_depth -= 1,
-                            _ => {}
-                        }
-                        continue;
-                    }
-                    let was_escaped = !matches!(self.escape, JsEscape::None);
-                    if let Some(decoded) =
-                        feed_js_string_char(&mut self.escape, &mut self.high_surrogate, ch, q)
-                    {
-                        if *interpolated {
-                            if q == '`' && !was_escaped {
-                                if *pending_dollar && ch == '{' {
-                                    *pending_dollar = false;
-                                    *interp_brace_depth = 1;
-                                } else {
-                                    *pending_dollar = ch == '$';
-                                }
-                            } else {
-                                *pending_dollar = false;
-                            }
-                            continue;
-                        }
-                        if q == '`' && !was_escaped {
-                            if *pending_dollar {
-                                if ch == '{' {
-                                    *pending_dollar = false;
-                                    *interpolated = true;
-                                    *interp_brace_depth = 1;
-                                    match f {
-                                        TargetField::Cmd => {
-                                            cmd_buf.clear();
-                                            events.push(JsEditEvent::ExecCallAbort);
-                                        }
-                                        TargetField::Workdir => {
-                                            workdir_buf.clear();
-                                            events.push(JsEditEvent::ExecCallAbort);
-                                        }
-                                        TargetField::Other => {}
+                    let was_escaped = !self.escape.is_idle();
+                    match self.escape.feed(EscapeDialect::Js, ch, q) {
+                        DecodedEscape::Char(decoded) => {
+                            if *interpolated {
+                                if q == '`' && !was_escaped {
+                                    if *pending_dollar && ch == '{' {
+                                        *pending_dollar = false;
+                                        *interp_brace_depth = 1;
+                                    } else {
+                                        *pending_dollar = ch == '$';
                                     }
-                                    continue;
+                                } else {
+                                    *pending_dollar = false;
                                 }
-                                match f {
-                                    TargetField::Cmd => cmd_buf.push('$'),
-                                    TargetField::Workdir => workdir_buf.push('$'),
-                                    TargetField::Other => {}
-                                }
-                                *pending_dollar = false;
-                            }
-                            if ch == '$' {
-                                *pending_dollar = true;
                                 continue;
                             }
-                        } else if *pending_dollar {
-                            match f {
-                                TargetField::Cmd => cmd_buf.push('$'),
-                                TargetField::Workdir => workdir_buf.push('$'),
-                                TargetField::Other => {}
+                            if q == '`' && !was_escaped {
+                                if *pending_dollar {
+                                    if ch == '{' {
+                                        *pending_dollar = false;
+                                        *interpolated = true;
+                                        *interp_brace_depth = 1;
+                                        abort_js_string_target(
+                                            target,
+                                            &mut cmd_buf,
+                                            &mut patch_buf,
+                                            &mut events,
+                                        );
+                                        continue;
+                                    }
+                                    push_js_string_char(target, &mut cmd_buf, &mut patch_buf, '$');
+                                    *pending_dollar = false;
+                                }
+                                if ch == '$' {
+                                    *pending_dollar = true;
+                                    continue;
+                                }
+                            } else if *pending_dollar {
+                                push_js_string_char(target, &mut cmd_buf, &mut patch_buf, '$');
+                                *pending_dollar = false;
                             }
-                            *pending_dollar = false;
+                            push_js_string_char(target, &mut cmd_buf, &mut patch_buf, decoded);
                         }
-                        match f {
-                            TargetField::Cmd => cmd_buf.push(decoded),
-                            TargetField::Workdir => workdir_buf.push(decoded),
-                            TargetField::Other => {}
-                        }
-                    } else if matches!(self.escape, JsEscape::None) && ch == q {
-                        if !*interpolated {
-                            if *pending_dollar {
-                                match f {
-                                    TargetField::Cmd => cmd_buf.push('$'),
-                                    TargetField::Workdir => workdir_buf.push('$'),
-                                    TargetField::Other => {}
+                        DecodedEscape::CloseQuote => {
+                            let was_interpolated = *interpolated;
+                            let had_dollar = *pending_dollar;
+                            match target {
+                                JsStringTarget::Patch => {
+                                    if !was_interpolated {
+                                        if had_dollar {
+                                            patch_buf.push('$');
+                                        }
+                                        if !patch_buf.is_empty() {
+                                            events.push(JsEditEvent::ApplyPatchChunk(
+                                                std::mem::take(&mut patch_buf),
+                                            ));
+                                        }
+                                    }
+                                    events.push(JsEditEvent::ApplyPatchEnd);
+                                    self.state = JsScanState::Normal;
+                                }
+                                JsStringTarget::ExecField {
+                                    brace_depth,
+                                    field,
+                                    workdir_buf,
+                                } => {
+                                    let depth = *brace_depth;
+                                    if !was_interpolated {
+                                        if had_dollar {
+                                            match field {
+                                                TargetField::Cmd => cmd_buf.push('$'),
+                                                TargetField::Workdir => workdir_buf.push('$'),
+                                                TargetField::Other => {}
+                                            }
+                                        }
+                                        if *field == TargetField::Cmd {
+                                            if !cmd_buf.is_empty() {
+                                                events.push(JsEditEvent::ExecCmdChunk(
+                                                    std::mem::take(&mut cmd_buf),
+                                                ));
+                                            }
+                                            events.push(JsEditEvent::ExecCmdEnd);
+                                        } else if *field == TargetField::Workdir
+                                            && !workdir_buf.is_empty()
+                                        {
+                                            let dir = std::mem::take(workdir_buf);
+                                            events.push(JsEditEvent::ExecWorkdir(dir));
+                                        }
+                                    }
+                                    self.state = JsScanState::InExecArgs {
+                                        brace_depth: depth,
+                                        expect_value_for: None,
+                                        pending_key: String::new(),
+                                    };
                                 }
                             }
-                            if f == TargetField::Cmd {
-                                if !cmd_buf.is_empty() {
-                                    events.push(JsEditEvent::ExecCmdChunk(std::mem::take(
-                                        &mut cmd_buf,
-                                    )));
-                                }
-                                events.push(JsEditEvent::ExecCmdEnd);
-                            } else if f == TargetField::Workdir && !workdir_buf.is_empty() {
-                                let dir = std::mem::take(workdir_buf);
-                                events.push(JsEditEvent::ExecWorkdir(dir));
-                            }
                         }
-                        self.state = JsScanState::InExecArgs {
-                            brace_depth: depth,
-                            expect_value_for: None,
-                            pending_key: String::new(),
-                        };
+                        DecodedEscape::None | DecodedEscape::TwoChars(_, _) => {}
                     }
                     continue;
                 }
@@ -844,8 +955,9 @@ impl JsNestedEditScanner {
                     }
                     if matches!(ch, '"' | '\'' | '`') {
                         events.push(JsEditEvent::ApplyPatchStart);
-                        self.state = JsScanState::InPatchString {
+                        self.state = JsScanState::InString {
                             quote: ch,
+                            target: JsStringTarget::Patch,
                             pending_dollar: false,
                             interpolated: false,
                             interp_brace_depth: 0,
@@ -900,11 +1012,13 @@ impl JsNestedEditScanner {
                                 if field == TargetField::Cmd {
                                     events.push(JsEditEvent::ExecCmdStart);
                                 }
-                                self.state = JsScanState::InExecFieldString {
+                                self.state = JsScanState::InString {
                                     quote: ch,
-                                    brace_depth: depth,
-                                    field,
-                                    workdir_buf: String::new(),
+                                    target: JsStringTarget::ExecField {
+                                        brace_depth: depth,
+                                        field,
+                                        workdir_buf: String::new(),
+                                    },
                                     pending_dollar: false,
                                     interpolated: false,
                                     interp_brace_depth: 0,
@@ -912,11 +1026,13 @@ impl JsNestedEditScanner {
                             } else if depth == 1 && expect_value_for.is_none() {
                                 // Quoted key like "cmd": ... — allow chars into pending_key
                             } else {
-                                self.state = JsScanState::InExecFieldString {
+                                self.state = JsScanState::InString {
                                     quote: ch,
-                                    brace_depth: depth,
-                                    field: TargetField::Other,
-                                    workdir_buf: String::new(),
+                                    target: JsStringTarget::ExecField {
+                                        brace_depth: depth,
+                                        field: TargetField::Other,
+                                        workdir_buf: String::new(),
+                                    },
                                     pending_dollar: false,
                                     interpolated: false,
                                     interp_brace_depth: 0,
@@ -978,9 +1094,6 @@ impl JsNestedEditScanner {
                     self.prev_ident.clear();
                     self.state = JsScanState::SkipString { quote: ch };
                 }
-                '/' => {
-                    self.after_dot = false;
-                }
                 ')' | ']' => {
                     self.after_dot = false;
                     self.prev_ident.clear();
@@ -1024,95 +1137,6 @@ fn js_keyword_allows_regex(ident: &str) -> bool {
     )
 }
 
-fn feed_js_string_char(
-    escape: &mut JsEscape,
-    high_surrogate: &mut Option<u16>,
-    ch: char,
-    quote: char,
-) -> Option<char> {
-    match *escape {
-        JsEscape::None => {
-            if ch == '\\' {
-                *escape = JsEscape::Backslash;
-                None
-            } else if ch == quote {
-                *high_surrogate = None;
-                None
-            } else {
-                *high_surrogate = None;
-                Some(ch)
-            }
-        }
-        JsEscape::Backslash => {
-            *escape = JsEscape::None;
-            match ch {
-                'n' => Some('\n'),
-                'r' => Some('\r'),
-                't' => Some('\t'),
-                '\\' => Some('\\'),
-                '\'' => Some('\''),
-                '"' => Some('"'),
-                '`' => Some('`'),
-                '$' => Some('$'),
-                'x' => {
-                    *escape = JsEscape::Hex {
-                        remaining: 2,
-                        acc: 0,
-                        is_u16: false,
-                    };
-                    None
-                }
-                'u' => {
-                    *escape = JsEscape::Hex {
-                        remaining: 4,
-                        acc: 0,
-                        is_u16: true,
-                    };
-                    None
-                }
-                '\n' => None,
-                other => Some(other),
-            }
-        }
-        JsEscape::Hex {
-            remaining,
-            acc,
-            is_u16,
-        } => {
-            if let Some(digit) = ch.to_digit(16) {
-                let next = (acc << 4) | digit;
-                if remaining > 1 {
-                    *escape = JsEscape::Hex {
-                        remaining: remaining - 1,
-                        acc: next,
-                        is_u16,
-                    };
-                    None
-                } else {
-                    *escape = JsEscape::None;
-                    if is_u16 && (0xD800..=0xDBFF).contains(&next) {
-                        *high_surrogate = Some(next as u16);
-                        None
-                    } else if is_u16 && (0xDC00..=0xDFFF).contains(&next) {
-                        if let Some(hi) = high_surrogate.take() {
-                            let cp = 0x10000 + (((hi as u32 - 0xD800) << 10) | (next - 0xDC00));
-                            char::from_u32(cp)
-                        } else {
-                            Some('\u{FFFD}')
-                        }
-                    } else {
-                        *high_surrogate = None;
-                        char::from_u32(next)
-                    }
-                }
-            } else {
-                *escape = JsEscape::None;
-                Some(ch)
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Incremental JSON string field extractor for {"cmd": "...", "workdir": "..."}
 // ---------------------------------------------------------------------------
@@ -1123,8 +1147,7 @@ struct JsonCmdExtractor {
     state: JsonState,
     key_buf: String,
     workdir_buf: String,
-    escape: JsonEscape,
-    high_surrogate: Option<u16>,
+    escape: EscapeDecoder,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -1145,14 +1168,6 @@ enum TargetField {
     Cmd,
     Workdir,
     Other,
-}
-
-#[derive(Default, Clone, Copy)]
-enum JsonEscape {
-    #[default]
-    None,
-    Backslash,
-    Unicode(u8, u16),
 }
 
 impl JsonCmdExtractor {
@@ -1178,13 +1193,11 @@ impl JsonCmdExtractor {
                     }
                     _ => {}
                 },
-                JsonState::InKey => {
-                    if let Some(decoded) = self.feed_string_char(ch) {
-                        self.key_buf.push(decoded);
-                    } else if matches!(self.escape, JsonEscape::None) && ch == '"' {
-                        self.state = JsonState::AfterKey;
-                    }
-                }
+                JsonState::InKey => match self.escape.feed(EscapeDialect::Json, ch, '"') {
+                    DecodedEscape::Char(decoded) => self.key_buf.push(decoded),
+                    DecodedEscape::CloseQuote => self.state = JsonState::AfterKey,
+                    DecodedEscape::None | DecodedEscape::TwoChars(_, _) => {}
+                },
                 JsonState::AfterKey => {
                     if ch == ':' {
                         let field = match self.key_buf.as_str() {
@@ -1219,22 +1232,26 @@ impl JsonCmdExtractor {
                     }
                 }
                 JsonState::InTargetString(field) => {
-                    if let Some(decoded) = self.feed_string_char(ch) {
-                        match field {
+                    match self.escape.feed(EscapeDialect::Json, ch, '"') {
+                        DecodedEscape::Char(decoded) => match field {
                             TargetField::Cmd => cmd_out.push(decoded),
                             TargetField::Workdir => self.workdir_buf.push(decoded),
                             TargetField::Other => {}
+                        },
+                        DecodedEscape::CloseQuote => {
+                            if field == TargetField::Workdir && !self.workdir_buf.is_empty() {
+                                completed_workdir = Some(std::mem::take(&mut self.workdir_buf));
+                            }
+                            self.state = JsonState::SkipValue;
                         }
-                    } else if matches!(self.escape, JsonEscape::None) && ch == '"' {
-                        if field == TargetField::Workdir && !self.workdir_buf.is_empty() {
-                            completed_workdir = Some(std::mem::take(&mut self.workdir_buf));
-                        }
-                        self.state = JsonState::SkipValue;
+                        DecodedEscape::None | DecodedEscape::TwoChars(_, _) => {}
                     }
                 }
                 JsonState::InSkipString => {
-                    let _ = self.feed_string_char(ch);
-                    if matches!(self.escape, JsonEscape::None) && ch == '"' {
+                    if matches!(
+                        self.escape.feed(EscapeDialect::Json, ch, '"'),
+                        DecodedEscape::CloseQuote
+                    ) {
                         self.state = JsonState::SkipValue;
                     }
                 }
@@ -1255,68 +1272,6 @@ impl JsonCmdExtractor {
             }
         }
         (cmd_out, completed_workdir)
-    }
-
-    fn feed_string_char(&mut self, ch: char) -> Option<char> {
-        match self.escape {
-            JsonEscape::None => match ch {
-                '\\' => {
-                    self.escape = JsonEscape::Backslash;
-                    None
-                }
-                '"' => {
-                    self.high_surrogate = None;
-                    None
-                }
-                other => {
-                    self.high_surrogate = None;
-                    Some(other)
-                }
-            },
-            JsonEscape::Backslash => {
-                self.escape = JsonEscape::None;
-                match ch {
-                    '"' => Some('"'),
-                    '\\' => Some('\\'),
-                    '/' => Some('/'),
-                    'b' => Some('\u{0008}'),
-                    'f' => Some('\u{000C}'),
-                    'n' => Some('\n'),
-                    'r' => Some('\r'),
-                    't' => Some('\t'),
-                    'u' => {
-                        self.escape = JsonEscape::Unicode(0, 0);
-                        None
-                    }
-                    other => Some(other),
-                }
-            }
-            JsonEscape::Unicode(count, acc) => {
-                let digit = ch.to_digit(16).unwrap_or(0) as u16;
-                let next = (acc << 4) | digit;
-                if count + 1 < 4 {
-                    self.escape = JsonEscape::Unicode(count + 1, next);
-                    None
-                } else {
-                    self.escape = JsonEscape::None;
-                    if (0xD800..=0xDBFF).contains(&next) {
-                        self.high_surrogate = Some(next);
-                        None
-                    } else if (0xDC00..=0xDFFF).contains(&next) {
-                        if let Some(hi) = self.high_surrogate.take() {
-                            let cp =
-                                0x10000 + (((hi as u32 - 0xD800) << 10) | (next as u32 - 0xDC00));
-                            char::from_u32(cp)
-                        } else {
-                            Some('\u{FFFD}')
-                        }
-                    } else {
-                        self.high_surrogate = None;
-                        char::from_u32(next as u32)
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -1427,11 +1382,7 @@ impl ShellEditProjector {
     }
 
     pub(crate) fn set_workdir(&mut self, dir: &Path) {
-        let next = if dir.is_absolute() {
-            dir.to_path_buf()
-        } else {
-            self.base_cwd.join(dir)
-        };
+        let next = join_path(&self.base_cwd, dir);
         if next != self.base_cwd {
             self.base_cwd = next;
             if !self.files.is_empty() || matches!(self.mode, ShellMode::Heredoc { .. }) {
@@ -1463,24 +1414,11 @@ impl ShellEditProjector {
                 line_buf,
             } => {
                 let tail = std::mem::take(line_buf);
-                let trimmed = if *strip_tabs {
-                    tail.trim_start_matches('\t')
-                } else {
-                    tail.as_str()
-                };
+                let trimmed = trim_heredoc_line(&tail, *strip_tabs);
                 if trimmed == delimiter.as_str() {
                     if *overwrite && !*wrote_any {
                         let path = path.clone();
-                        self.files.insert(
-                            path,
-                            StreamedFile::Add {
-                                committed: String::new(),
-                                partial: String::new(),
-                                allow_empty: true,
-                                append_only: false,
-                            },
-                        );
-                        self.dirty = true;
+                        self.record_empty_overwrite(path);
                     }
                 } else if !tail.is_empty() {
                     let path = path.clone();
@@ -1497,11 +1435,7 @@ impl ShellEditProjector {
                 py,
             } => {
                 let tail = std::mem::take(line_buf);
-                let trimmed = if *strip_tabs {
-                    tail.trim_start_matches('\t')
-                } else {
-                    tail.as_str()
-                };
+                let trimmed = trim_heredoc_line(&tail, *strip_tabs);
                 if !tail.is_empty() && trimmed != delimiter.as_str() {
                     py.push(trimmed, &mut self.files, &mut self.dirty);
                 }
@@ -1534,11 +1468,7 @@ impl ShellEditProjector {
                 line_buf,
                 ..
             } => {
-                let candidate = if *strip_tabs {
-                    line_buf.trim_start_matches('\t')
-                } else {
-                    line_buf.as_str()
-                };
+                let candidate = trim_heredoc_line(line_buf, *strip_tabs);
                 if !candidate.is_empty() && !delimiter.starts_with(candidate) {
                     Some((path.as_path(), candidate, !*overwrite))
                 } else {
@@ -1580,20 +1510,24 @@ impl ShellEditProjector {
     }
 
     fn resolve_abs(&self, raw_path: &Path) -> PathBuf {
-        if raw_path.is_absolute() {
-            raw_path.to_path_buf()
-        } else {
-            self.base_cwd.join(raw_path)
-        }
+        join_path(&self.base_cwd, raw_path)
     }
 
     fn resolve_script_target(&self, target: &str) -> PathBuf {
-        let p = Path::new(target);
-        if p.is_absolute() || self.script_cwd.as_os_str().is_empty() {
-            p.to_path_buf()
-        } else {
-            self.script_cwd.join(p)
-        }
+        join_path(&self.script_cwd, Path::new(target))
+    }
+
+    fn record_empty_overwrite(&mut self, path: PathBuf) {
+        self.files.insert(
+            path,
+            StreamedFile::Add {
+                committed: String::new(),
+                partial: String::new(),
+                allow_empty: true,
+                append_only: false,
+            },
+        );
+        self.dirty = true;
     }
 
     fn push_char(&mut self, ch: char) {
@@ -1640,25 +1574,12 @@ impl ShellEditProjector {
             } => {
                 if ch == '\n' {
                     let raw_line = std::mem::take(line_buf);
-                    let line = if *strip_tabs {
-                        raw_line.trim_start_matches('\t')
-                    } else {
-                        raw_line.as_str()
-                    };
+                    let line = trim_heredoc_line(&raw_line, *strip_tabs);
                     let line = line.strip_suffix('\r').unwrap_or(line);
                     if line == delimiter.as_str() {
                         if *overwrite && !*wrote_any {
                             let path = path.clone();
-                            self.files.insert(
-                                path,
-                                StreamedFile::Add {
-                                    committed: String::new(),
-                                    partial: String::new(),
-                                    allow_empty: true,
-                                    append_only: false,
-                                },
-                            );
-                            self.dirty = true;
+                            self.record_empty_overwrite(path);
                         }
                         transition = Transition::ToScan;
                     } else {
@@ -1670,11 +1591,7 @@ impl ShellEditProjector {
                     }
                 } else if line_buf.len() < MAX_STREAM_FILE_BYTES {
                     line_buf.push(ch);
-                    let candidate = if *strip_tabs {
-                        line_buf.trim_start_matches('\t')
-                    } else {
-                        line_buf.as_str()
-                    };
+                    let candidate = trim_heredoc_line(line_buf, *strip_tabs);
                     if !delimiter.starts_with(candidate) {
                         self.dirty = true;
                     }
@@ -1688,11 +1605,7 @@ impl ShellEditProjector {
             } => {
                 if ch == '\n' {
                     let raw_line = std::mem::take(line_buf);
-                    let line = if *strip_tabs {
-                        raw_line.trim_start_matches('\t')
-                    } else {
-                        raw_line.as_str()
-                    };
+                    let line = trim_heredoc_line(&raw_line, *strip_tabs);
                     let line = line.strip_suffix('\r').unwrap_or(line);
                     if line == delimiter.as_str() {
                         py.finish(&mut self.files, &mut self.dirty);
@@ -1715,31 +1628,24 @@ impl ShellEditProjector {
                             '$' => '$',
                             '`' => '`',
                             other => {
-                                py.push("\\", &mut self.files, &mut self.dirty);
+                                py.push_char('\\', &mut self.files, &mut self.dirty);
                                 other
                             }
                         };
-                        let mut buf = [0u8; 4];
-                        py.push(
-                            decoded.encode_utf8(&mut buf),
-                            &mut self.files,
-                            &mut self.dirty,
-                        );
+                        py.push_char(decoded, &mut self.files, &mut self.dirty);
                     } else if ch == '\\' {
                         *escaped = true;
                     } else if ch == '"' {
                         py.finish(&mut self.files, &mut self.dirty);
                         transition = Transition::ToScan;
                     } else {
-                        let mut buf = [0u8; 4];
-                        py.push(ch.encode_utf8(&mut buf), &mut self.files, &mut self.dirty);
+                        py.push_char(ch, &mut self.files, &mut self.dirty);
                     }
                 } else if ch == '\'' {
                     py.finish(&mut self.files, &mut self.dirty);
                     transition = Transition::ToScan;
                 } else {
-                    let mut buf = [0u8; 4];
-                    py.push(ch.encode_utf8(&mut buf), &mut self.files, &mut self.dirty);
+                    py.push_char(ch, &mut self.files, &mut self.dirty);
                 }
             }
         }
@@ -1764,12 +1670,7 @@ impl ShellEditProjector {
     }
 
     fn apply_cd(&mut self, dir: &str) {
-        let p = Path::new(dir);
-        if p.is_absolute() || self.script_cwd.as_os_str().is_empty() {
-            self.script_cwd = p.to_path_buf();
-        } else {
-            self.script_cwd = self.script_cwd.join(p);
-        }
+        self.script_cwd = join_path(&self.script_cwd, Path::new(dir));
     }
 
     fn handle_scan_line(&mut self, line: &str) {
@@ -1868,6 +1769,14 @@ impl ShellEditProjector {
 // ---------------------------------------------------------------------------
 // Shell header helpers (heredoc + python -c detection)
 // ---------------------------------------------------------------------------
+
+fn trim_heredoc_line(s: &str, strip_tabs: bool) -> &str {
+    if strip_tabs {
+        s.trim_start_matches('\t')
+    } else {
+        s
+    }
+}
 
 enum HeredocHeader {
     FileWrite {
@@ -2170,15 +2079,6 @@ fn is_literal_path(raw: &str) -> bool {
     true
 }
 
-fn join_rel(script_cwd: &Path, target: &str) -> PathBuf {
-    let path = Path::new(target);
-    if path.is_absolute() || script_cwd.as_os_str().is_empty() {
-        path.to_path_buf()
-    } else {
-        script_cwd.join(path)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Incremental Python edit projector (open/read_text -> replace -> write_text)
 // ---------------------------------------------------------------------------
@@ -2217,13 +2117,6 @@ enum PyTok {
     Other,
 }
 
-#[derive(Clone, Copy)]
-enum PyEscape {
-    None,
-    Backslash,
-    Hex { remaining: u8, acc: u32 },
-}
-
 enum PyLexState {
     Normal {
         ident: String,
@@ -2235,7 +2128,7 @@ enum PyLexState {
         raw: bool,
         pending_quotes: u8,
         checking_open: bool,
-        escape: PyEscape,
+        escape: EscapeDecoder,
         buf: String,
         streaming: bool,
     },
@@ -2298,10 +2191,10 @@ impl PythonEditProjector {
                 }
                 PyStreamOp::ReplaceOld { path, old }
                 | PyStreamOp::ReplaceAwaitNew { path, old } => {
-                    commit_replace_hunk(files, &path, &old, "", dirty);
+                    write_replace_hunk(files, &path, &old, "", true, dirty);
                 }
                 PyStreamOp::ReplaceNew { path, old, new } => {
-                    commit_replace_hunk(files, &path, &old, &new, dirty);
+                    write_replace_hunk(files, &path, &old, &new, true, dirty);
                 }
                 PyStreamOp::ReplaceAwaitOld { .. } => {}
             }
@@ -2335,6 +2228,7 @@ impl PythonEditProjector {
         dirty: &mut bool,
     ) {
         let mut replay_char: Option<char> = None;
+        let mut finished_string: Option<(String, bool)> = None;
         match &mut self.lex {
             PyLexState::Comment => {
                 if ch == '\n' {
@@ -2350,10 +2244,10 @@ impl PythonEditProjector {
             PyLexState::String {
                 quote,
                 triple,
-                raw: _,
+                raw,
                 pending_quotes,
                 checking_open,
-                escape: _,
+                escape,
                 buf,
                 streaming,
             } => {
@@ -2369,41 +2263,42 @@ impl PythonEditProjector {
                         }
                         return;
                     } else if *pending_quotes == 2 {
-                        let finished = std::mem::take(buf);
-                        self.lex = PyLexState::Normal {
-                            ident: String::new(),
-                        };
-                        self.on_string_end(finished, is_streaming, files, dirty);
+                        finished_string = Some((std::mem::take(buf), is_streaming));
                         replay_char = Some(ch);
                     } else {
                         *checking_open = false;
                         *pending_quotes = 0;
                     }
                 }
-                if replay_char.is_none()
-                    && let PyLexState::String {
-                        quote,
-                        triple,
-                        raw,
-                        pending_quotes,
-                        escape,
-                        buf,
-                        streaming,
-                        ..
-                    } = &mut self.lex
-                {
-                    let q = *quote;
-                    let is_streaming = *streaming;
-                    if !matches!(escape, PyEscape::None) {
-                        if let Some(decoded) = advance_py_escape(escape, ch) {
-                            push_py_str_slice(
-                                buf,
-                                &decoded,
-                                is_streaming,
-                                &mut self.active_op,
-                                files,
-                                dirty,
-                            );
+                if replay_char.is_none() {
+                    if !escape.is_idle() {
+                        match escape.feed(EscapeDialect::Python, ch, q) {
+                            DecodedEscape::Char(c) => {
+                                let mut tmp = [0u8; 4];
+                                push_py_str_slice(
+                                    buf,
+                                    c.encode_utf8(&mut tmp),
+                                    is_streaming,
+                                    &mut self.active_op,
+                                    files,
+                                    dirty,
+                                );
+                            }
+                            DecodedEscape::TwoChars(c1, c2) => {
+                                let mut tmp = [0u8; 8];
+                                let n1 = c1.encode_utf8(&mut tmp).len();
+                                let n2 = c2.encode_utf8(&mut tmp[n1..]).len();
+                                let slice = std::str::from_utf8(&tmp[..n1 + n2]).unwrap_or("");
+                                push_py_str_slice(
+                                    buf,
+                                    slice,
+                                    is_streaming,
+                                    &mut self.active_op,
+                                    files,
+                                    dirty,
+                                );
+                            }
+                            DecodedEscape::None | DecodedEscape::CloseQuote => {}
                         }
                         return;
                     }
@@ -2411,52 +2306,34 @@ impl PythonEditProjector {
                         if ch == q {
                             *pending_quotes += 1;
                             if *pending_quotes == 3 {
-                                let finished = std::mem::take(buf);
-                                self.lex = PyLexState::Normal {
-                                    ident: String::new(),
-                                };
-                                self.on_string_end(finished, is_streaming, files, dirty);
+                                finished_string = Some((std::mem::take(buf), is_streaming));
+                            } else {
+                                return;
                             }
-                            return;
                         }
-                        if *pending_quotes > 0 {
-                            let qs: String =
-                                std::iter::repeat_n(q, *pending_quotes as usize).collect();
+                        if finished_string.is_none() && *pending_quotes > 0 {
+                            let mut tmp = [0u8; 8];
+                            let mut len = 0;
+                            for _ in 0..*pending_quotes {
+                                len += q.encode_utf8(&mut tmp[len..]).len();
+                            }
+                            let slice = std::str::from_utf8(&tmp[..len]).unwrap_or("");
                             *pending_quotes = 0;
                             push_py_str_slice(
                                 buf,
-                                &qs,
+                                slice,
                                 is_streaming,
                                 &mut self.active_op,
                                 files,
                                 dirty,
                             );
                         }
+                    } else if ch == q {
+                        finished_string = Some((std::mem::take(buf), is_streaming));
+                    }
+                    if finished_string.is_none() {
                         if ch == '\\' && !*raw {
-                            *escape = PyEscape::Backslash;
-                            return;
-                        }
-                        let mut tmp = [0u8; 4];
-                        push_py_str_slice(
-                            buf,
-                            ch.encode_utf8(&mut tmp),
-                            is_streaming,
-                            &mut self.active_op,
-                            files,
-                            dirty,
-                        );
-                        return;
-                    } else {
-                        if ch == '\\' && !*raw {
-                            *escape = PyEscape::Backslash;
-                            return;
-                        }
-                        if ch == q {
-                            let finished = std::mem::take(buf);
-                            self.lex = PyLexState::Normal {
-                                ident: String::new(),
-                            };
-                            self.on_string_end(finished, is_streaming, files, dirty);
+                            escape.begin_backslash();
                             return;
                         }
                         let mut tmp = [0u8; 4];
@@ -2473,6 +2350,15 @@ impl PythonEditProjector {
                 }
             }
             PyLexState::Normal { .. } => {}
+        }
+        if let Some((finished, is_streaming)) = finished_string {
+            self.lex = PyLexState::Normal {
+                ident: String::new(),
+            };
+            self.on_string_end(finished, is_streaming, files, dirty);
+            if replay_char.is_none() {
+                return;
+            }
         }
 
         let ch = replay_char.unwrap_or(ch);
@@ -2504,7 +2390,7 @@ impl PythonEditProjector {
                 raw,
                 pending_quotes: 1,
                 checking_open: true,
-                escape: PyEscape::None,
+                escape: EscapeDecoder::default(),
                 buf: String::new(),
                 streaming,
             };
@@ -2668,7 +2554,7 @@ impl PythonEditProjector {
                     self.active_op = Some(PyStreamOp::ReplaceAwaitNew { path, old });
                 }
                 Some(PyStreamOp::ReplaceNew { path, old, new }) => {
-                    commit_replace_hunk(files, &path, &old, &new, dirty);
+                    write_replace_hunk(files, &path, &old, &new, true, dirty);
                 }
                 other => {
                     self.active_op = other;
@@ -2728,7 +2614,7 @@ impl PythonEditProjector {
         if let [PyTok::Ident(var), PyTok::Eq, rhs @ ..] = stmt.as_slice() {
             if let [PyTok::Str(lit)] = rhs {
                 self.path_vars
-                    .insert(var.clone(), join_rel(&self.script_cwd, lit));
+                    .insert(var.clone(), join_path(&self.script_cwd, Path::new(lit)));
             } else if let Some(path) = extract_path_call(rhs, &self.script_cwd) {
                 self.path_vars.insert(var.clone(), path);
             } else if let Some(path) = extract_open_call(rhs, &self.script_cwd, &self.path_vars) {
@@ -2746,69 +2632,6 @@ impl PythonEditProjector {
     }
 }
 
-fn advance_py_escape(state: &mut PyEscape, ch: char) -> Option<String> {
-    match *state {
-        PyEscape::None => None,
-        PyEscape::Backslash => {
-            *state = PyEscape::None;
-            match ch {
-                'n' => Some("\n".to_string()),
-                'r' => Some("\r".to_string()),
-                't' => Some("\t".to_string()),
-                '\\' => Some("\\".to_string()),
-                '\'' => Some("'".to_string()),
-                '"' => Some("\"".to_string()),
-                'a' => Some("\u{0007}".to_string()),
-                'b' => Some("\u{0008}".to_string()),
-                'f' => Some("\u{000C}".to_string()),
-                'v' => Some("\u{000B}".to_string()),
-                '0' => Some("\0".to_string()),
-                '\n' => None,
-                'x' => {
-                    *state = PyEscape::Hex {
-                        remaining: 2,
-                        acc: 0,
-                    };
-                    None
-                }
-                'u' => {
-                    *state = PyEscape::Hex {
-                        remaining: 4,
-                        acc: 0,
-                    };
-                    None
-                }
-                'U' => {
-                    *state = PyEscape::Hex {
-                        remaining: 8,
-                        acc: 0,
-                    };
-                    None
-                }
-                other => Some(format!("\\{other}")),
-            }
-        }
-        PyEscape::Hex { remaining, acc } => {
-            if let Some(digit) = ch.to_digit(16) {
-                let next = (acc << 4) | digit;
-                if remaining > 1 {
-                    *state = PyEscape::Hex {
-                        remaining: remaining - 1,
-                        acc: next,
-                    };
-                    None
-                } else {
-                    *state = PyEscape::None;
-                    char::from_u32(next).map(|c| c.to_string())
-                }
-            } else {
-                *state = PyEscape::None;
-                Some(ch.to_string())
-            }
-        }
-    }
-}
-
 fn extract_path_call(tokens: &[PyTok], script_cwd: &Path) -> Option<PathBuf> {
     let n = tokens.len();
     if n >= 4
@@ -2817,7 +2640,7 @@ fn extract_path_call(tokens: &[PyTok], script_cwd: &Path) -> Option<PathBuf> {
         && let PyTok::Str(path) = &tokens[n - 2]
         && tokens[n - 1] == PyTok::RParen
     {
-        return Some(join_rel(script_cwd, path));
+        return Some(join_path(script_cwd, Path::new(path)));
     }
     None
 }
@@ -2834,7 +2657,7 @@ fn extract_open_call(
         return None;
     }
     match tokens.get(open_pos + 2)? {
-        PyTok::Str(path) => Some(join_rel(script_cwd, path)),
+        PyTok::Str(path) => Some(join_path(script_cwd, Path::new(path))),
         PyTok::Ident(var) => path_vars.get(var).cloned(),
         _ => None,
     }
@@ -2927,53 +2750,44 @@ fn push_py_str_slice(
         Some(PyStreamOp::ReplaceOld { path, old }) => {
             if old.len() + slice.len() <= MAX_STREAM_FILE_BYTES {
                 old.push_str(slice);
-                update_replace_partial(files, path, old, "", dirty);
+                write_replace_hunk(files, path, old, "", false, dirty);
             }
         }
         Some(PyStreamOp::ReplaceNew { path, old, new }) => {
             if new.len() + slice.len() <= MAX_STREAM_FILE_BYTES {
                 new.push_str(slice);
-                update_replace_partial(files, path, old, new, dirty);
+                write_replace_hunk(files, path, old, new, false, dirty);
             }
         }
         _ => {}
     }
 }
 
-fn count_lines(text: &str) -> usize {
+fn split_hunk_lines(text: &str) -> Vec<&str> {
     if text.is_empty() {
-        0
+        Vec::new()
     } else {
-        text.strip_suffix('\n').unwrap_or(text).split('\n').count()
+        text.strip_suffix('\n')
+            .unwrap_or(text)
+            .split('\n')
+            .collect()
     }
 }
 
 fn format_replace_hunk(old: &str, new: &str) -> String {
-    let old_count = count_lines(old);
-    let new_count = count_lines(new);
-    let mut out = format!("@@ -1,{old_count} +1,{new_count} @@\n");
-    if !old.is_empty() {
-        for line in old.strip_suffix('\n').unwrap_or(old).split('\n') {
-            out.push('-');
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if !new.is_empty() {
-        for line in new.strip_suffix('\n').unwrap_or(new).split('\n') {
-            out.push('+');
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
+    let old_lines = split_hunk_lines(old);
+    let new_lines = split_hunk_lines(new);
+    let mut out = String::new();
+    write_unified_hunk(&mut out, &old_lines, &new_lines, None);
     out
 }
 
-fn update_replace_partial(
+fn write_replace_hunk(
     files: &mut HashMap<PathBuf, StreamedFile>,
     path: &Path,
     old: &str,
     new: &str,
+    commit: bool,
     dirty: &mut bool,
 ) {
     if !files.contains_key(path) && files.len() >= MAX_STREAM_FILES {
@@ -2987,34 +2801,14 @@ fn update_replace_partial(
         });
     if let StreamedFile::Update { committed, partial } = entry {
         let hunk = format_replace_hunk(old, new);
-        if committed.len() + hunk.len() <= MAX_STREAM_FILE_BYTES && *partial != hunk {
+        if commit {
+            partial.clear();
+            if committed.len() + hunk.len() <= MAX_STREAM_FILE_BYTES {
+                committed.push_str(&hunk);
+                *dirty = true;
+            }
+        } else if committed.len() + hunk.len() <= MAX_STREAM_FILE_BYTES && *partial != hunk {
             *partial = hunk;
-            *dirty = true;
-        }
-    }
-}
-
-fn commit_replace_hunk(
-    files: &mut HashMap<PathBuf, StreamedFile>,
-    path: &Path,
-    old: &str,
-    new: &str,
-    dirty: &mut bool,
-) {
-    if !files.contains_key(path) && files.len() >= MAX_STREAM_FILES {
-        return;
-    }
-    let entry = files
-        .entry(path.to_path_buf())
-        .or_insert_with(|| StreamedFile::Update {
-            committed: String::new(),
-            partial: String::new(),
-        });
-    if let StreamedFile::Update { committed, partial } = entry {
-        partial.clear();
-        let hunk = format_replace_hunk(old, new);
-        if committed.len() + hunk.len() <= MAX_STREAM_FILE_BYTES {
-            committed.push_str(&hunk);
             *dirty = true;
         }
     }

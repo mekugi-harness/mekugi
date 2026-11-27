@@ -14,7 +14,6 @@ use codex_change_history::FileSnapshot;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
-use crate::LiveFileChangeKind;
 use crate::WriteObserverSession;
 use crate::ipc::handle_framed_message;
 use crate::ipc::serve_unix_message;
@@ -286,7 +285,6 @@ fn linux_seccomp_unotify_captures_dynamic_shell_and_rename_writes_without_git() 
     fs::write(&unchanged, b"same\n").unwrap();
 
     let obs = WriteObserverSession::start("seccomp-e2e".to_string(), |_| true).expect("obs");
-    assert!(!obs.has_live_candidates());
     let sock_path = obs.dir_path().join("observe.sock");
     let (mut signal, child_signal) = UnixStream::pair().unwrap();
     signal
@@ -320,31 +318,12 @@ fn linux_seccomp_unotify_captures_dynamic_shell_and_rename_writes_without_git() 
     drop(child_signal);
     let mut ready = [0; 1];
     signal.read_exact(&mut ready).unwrap();
-    let has_candidates = obs.has_live_candidates();
-    let live = obs.live_changes(workspace.path(), None);
     signal.write_all(b"release\n").unwrap();
     let mut status: libc::c_int = 0;
     unsafe { libc::waitpid(pid, &mut status, 0) };
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
 
     assert_eq!(ready, *b"r");
-    assert!(has_candidates);
-    assert_eq!(
-        live.iter()
-            .map(|change| (
-                change.path.file_name().unwrap().to_str().unwrap(),
-                change.kind
-            ))
-            .collect::<Vec<_>>(),
-        vec![
-            ("created.txt", LiveFileChangeKind::Add),
-            ("deleted.txt", LiveFileChangeKind::Delete),
-            ("target.txt", LiveFileChangeKind::Update),
-        ]
-    );
-    assert!(live[0].diff.contains("+new\n"));
-    assert!(live[1].diff.contains("-removed\n"));
-    assert!(live[2].diff.contains("-before\n+after\n"));
     assert!(fs::read_dir(store_dir.path()).unwrap().next().is_none());
 
     let rec = obs
@@ -388,76 +367,6 @@ fn linux_seccomp_unotify_captures_dynamic_shell_and_rename_writes_without_git() 
         store.read_file_state(&rec.id, &created_ev.after).unwrap(),
         FileSnapshot::Present(b"new\n".to_vec())
     );
-}
-
-#[test]
-fn live_changes_only_render_authored_readable_regular_text_outside_scratch() {
-    use std::os::unix::fs::symlink;
-
-    let workspace = TempDir::new().unwrap();
-    let root = workspace.path();
-    let good = root.join("good.txt");
-    let failed = root.join("failed.txt");
-    let diagnostic = root.join("diagnostic.txt");
-    let mixed = root.join("mixed.txt");
-    let binary = root.join("binary.data");
-    let former_directory = root.join("former-directory");
-    let moved_parent = root.join("writable");
-    let redirected = moved_parent.join("text.txt");
-    let excluded_parent = root.join("excluded");
-    let excluded_canonical = fs::canonicalize(root).unwrap().join("excluded");
-    let scratch = root.join("scratch");
-    let temporary = scratch.join("scratch.txt");
-    fs::create_dir(&former_directory).unwrap();
-    fs::create_dir(&moved_parent).unwrap();
-    fs::create_dir(&excluded_parent).unwrap();
-    fs::create_dir(&scratch).unwrap();
-    fs::write(&redirected, b"before\n").unwrap();
-    fs::write(excluded_parent.join("text.txt"), b"secret\n").unwrap();
-
-    let obs = WriteObserverSession::start("filtered-live".to_string(), move |path| {
-        !path.starts_with(&excluded_canonical)
-    })
-    .unwrap();
-    {
-        let mut state = obs.state.lock().unwrap();
-        for path in [
-            &good,
-            &mixed,
-            &failed,
-            &binary,
-            &former_directory,
-            &redirected,
-            &temporary,
-        ] {
-            state.record_pre_write(path);
-        }
-        state.record_pre_write_with_provenance(&diagnostic, true);
-    }
-    fs::write(&good, b"new\n").unwrap();
-    fs::write(&mixed, b"first edit\n").unwrap();
-    fs::write(&binary, b"not\0text").unwrap();
-    fs::write(&diagnostic, b"checkout\n").unwrap();
-    fs::write(&temporary, b"scratch\n").unwrap();
-    fs::remove_dir(&former_directory).unwrap();
-    fs::write(&former_directory, b"not a regular-file baseline\n").unwrap();
-    fs::rename(&moved_parent, root.join("old")).unwrap();
-    symlink(&excluded_parent, &moved_parent).unwrap();
-
-    let live = obs.live_changes(root, Some(&scratch));
-    assert!(live.iter().any(|change| change.path.ends_with("mixed.txt")));
-    obs.state
-        .lock()
-        .unwrap()
-        .record_pre_write_with_provenance(&mixed, true);
-    fs::write(&mixed, b"diagnostic edit\n").unwrap();
-
-    let live = obs.live_changes(root, Some(&scratch));
-    assert_eq!(live.len(), 1);
-    assert_eq!(live[0].path, fs::canonicalize(&good).unwrap());
-    assert_eq!(live[0].kind, LiveFileChangeKind::Add);
-    assert!(live[0].diff.contains("+new\n"));
-    assert!(obs.has_live_candidates());
 }
 
 #[test]
