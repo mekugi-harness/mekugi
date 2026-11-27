@@ -37,6 +37,7 @@ const commandVerbs: Readonly<Record<string, string>> = {
   listFiles: "List",
   inspect: "Inspect",
   stage: "Stage",
+  commit: "Commit",
   skill: "Skill",
 };
 

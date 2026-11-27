@@ -3374,7 +3374,7 @@ fn command_display_preserves_steps_and_only_attributes_a_resolved_cd() {
 fn command_display_classifies_authored_steps_without_assigning_execution_results() {
     use crate::protocol::item_builders::command_display;
 
-    let script = "mcat src.rs && rg keyword .; mfinspect src.rs; git -C sub add src.rs; skills-mgr get demo; printf done";
+    let script = "mcat src.rs && rg keyword .; mfinspect src.rs; git -C sub add src.rs; git -C sub commit -m save; skills-mgr get demo; printf done";
     let argv = ["bash", "-lc", script].map(str::to_owned);
     let display = command_display(&argv, None, Some(1), "").expect("command display");
     assert_eq!(
@@ -3384,6 +3384,7 @@ fn command_display_classifies_authored_steps_without_assigning_execution_results
             CommandStepKind::Search,
             CommandStepKind::Inspect,
             CommandStepKind::Stage,
+            CommandStepKind::Commit,
             CommandStepKind::Skill,
             CommandStepKind::Run,
         ]
@@ -3400,8 +3401,10 @@ fn command_display_classifies_authored_steps_without_assigning_execution_results
         ("command -v git", CommandStepKind::Inspect),
         ("mcat .agents/skills/demo/SKILL.md", CommandStepKind::Skill),
         ("rg --files", CommandStepKind::List),
+        ("git commit -m 'save changes'", CommandStepKind::Commit),
         ("printf '%s' 'git add src.rs'", CommandStepKind::Run),
         ("git add src.rs | tee log", CommandStepKind::Run),
+        ("git commit -m save | tee log", CommandStepKind::Run),
     ] {
         let argv = ["bash", "-lc", script].map(str::to_owned);
         let display = command_display(&argv, None, None, "").expect("command display");

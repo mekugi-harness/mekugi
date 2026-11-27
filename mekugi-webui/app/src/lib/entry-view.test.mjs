@@ -834,7 +834,7 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
         script: "cd sub && cat a && cat b",
         effectiveCwd: "/repo/sub",
         segments: ["cat a", "cat b"],
-        stepKinds: ["read", "read"],
+        stepKinds: ["stage", "commit"],
       },
       cwd: "/repo",
       status: "failed",
@@ -855,13 +855,15 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
     ["cat a", "cat b"],
   );
   assert.ok(batch.values.every((v) => v.workdir === "/repo/sub"));
-  assert.ok(
-    batch.values.every((value) => value.verb === "Read" && !value.tail && value.exitCode == null),
+  assert.ok(batch.values.every((value) => !value.tail && value.exitCode == null));
+  assert.deepEqual(
+    batch.values.map((value) => value.verb),
+    ["Stage", "Commit"],
   );
   const batchHtml = render(EntryView, {
     props: { entry: batch, at: "", stamp: "", owner: "/root", workspace: "/repo" },
   }).body;
-  assert.equal([...batchHtml.matchAll(/>Read</g)].length, 2);
+  assert.match(batchHtml, />Stage<[\s\S]*>Commit</);
   assert.doesNotMatch(batchHtml, /last 5 of 6 lines|exit -1/);
 
   // Completed fileChange renders per-file op rows and Source disclosure through EntryView.

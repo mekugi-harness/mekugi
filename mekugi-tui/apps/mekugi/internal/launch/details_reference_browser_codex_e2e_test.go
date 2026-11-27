@@ -233,7 +233,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("fill", "#composer-text", "@!not-an-image")
 			run("wait", "[aria-label=Files] [role=option]")
 			run("find", "role", "option", "click", "--name", "not-an-image.png", "--exact")
-			run("wait", "--fn", `document.querySelector('#composer-text').value === '@not-an-image.png ' && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('not-an-image.png') && !document.querySelector('[aria-label="Attachments"] img')`)
+			run("wait", "--fn", `document.querySelector('#composer-text').value === "@'not-an-image.png' " && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('not-an-image.png') && !document.querySelector('[aria-label="Attachments"] img')`)
 			run("find", "role", "button", "click", "--name", "Remove not-an-image.png", "--exact")
 			run("find", "role", "button", "click", "--name", "Attach", "--exact")
 			run("find", "role", "menuitem", "click", "--name", "Attach path on Details fixture", "--exact")

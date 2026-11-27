@@ -181,6 +181,7 @@ pub enum CommandStepKind {
     List,
     Inspect,
     Stage,
+    Commit,
     Skill,
     Run,
 }

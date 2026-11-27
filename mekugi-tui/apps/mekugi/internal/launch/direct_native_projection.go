@@ -1354,6 +1354,8 @@ func directCommandVerb(kind string) string {
 		return "Inspect"
 	case "stage":
 		return "Stage"
+	case "commit":
+		return "Commit"
 	case "skill":
 		return "Skill"
 	default:

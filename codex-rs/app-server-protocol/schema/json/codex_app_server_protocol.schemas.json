@@ -10675,6 +10675,7 @@
           "list",
           "inspect",
           "stage",
+          "commit",
           "skill",
           "run"
         ],

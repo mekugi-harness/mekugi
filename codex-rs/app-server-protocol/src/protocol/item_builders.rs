@@ -209,7 +209,9 @@ fn authored_command_kind(argv: &[String]) -> Option<CommandStepKind> {
                         args.next()?;
                     }
                     "--no-pager" | "--paginate" | "--literal-pathspecs" => {}
+                    arg if arg.starts_with("--git-dir=") || arg.starts_with("--work-tree=") => {}
                     "add" => return Some(CommandStepKind::Stage),
+                    "commit" => return Some(CommandStepKind::Commit),
                     _ => return None,
                 }
             }

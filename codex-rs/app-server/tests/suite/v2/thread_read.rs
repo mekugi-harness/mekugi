@@ -1936,6 +1936,7 @@ async fn thread_items_list_and_read_restore_saved_command_labels() -> Result<()>
         "rg needle .",
         "mfinspect src.rs",
         "git add src.rs",
+        "git commit -m save",
         "skills-mgr get demo",
     ];
     let script = format!("cd sub && {}", steps.join("; "));
@@ -2018,7 +2019,7 @@ async fn thread_items_list_and_read_restore_saved_command_labels() -> Result<()>
         json!({
             "script": script,
             "segments": steps,
-            "stepKinds": ["read", "search", "inspect", "stage", "skill"],
+            "stepKinds": ["read", "search", "inspect", "stage", "commit", "skill"],
             "effectiveCwd": codex_home.path().join("sub"),
         })
     );
