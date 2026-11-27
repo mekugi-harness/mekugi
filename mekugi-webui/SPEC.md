@@ -13,6 +13,7 @@
 - Keep pickers, commands, live diffs, saved changes, images, and shell highlighting responsive on
   desktop and phone layouts (light and dark), showing worktree directory names and omitting
   expansion controls on empty items.
+- Offer a browser display setting for disabling Live Diff without disabling Saved Diff.
 - Show Main/delegate public reasoning summaries, spawn assignments, and per-agent usage/cost
   without raw reasoning or duplicate completion entries.
 - Keep work server-owned: closing the browser or connector leaves threads running; ending a thread

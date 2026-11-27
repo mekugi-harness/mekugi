@@ -526,16 +526,18 @@
             onselect={openDetails}
             onreference={stream.connection === "open" ? addReference : undefined}
           />
-          {#key stream}
-            <LiveSource
-              previews={stream.live}
-              owner={view.agent ?? "/root"}
-              onsaved={(path) => {
-                stream.selectChangeCaller("");
-                openChanges([path]);
-              }}
-            />
-          {/key}
+          {#if preferences.liveDiff}
+            {#key stream}
+              <LiveSource
+                previews={stream.live}
+                owner={view.agent ?? "/root"}
+                onsaved={(path) => {
+                  stream.selectChangeCaller("");
+                  openChanges([path]);
+                }}
+              />
+            {/key}
+          {/if}
         </div>
         {#key machine.id + ":" + displayed}
           <ThreadDocks />
