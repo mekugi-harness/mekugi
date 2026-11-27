@@ -88,9 +88,10 @@ Markdown file and command output links open details from a connected live
 thread on the selected execution machine.
 
 `/btw QUESTION` opens a separate answer dock. Repeat `/btw` for a follow-up.
-`/oneoff TASK` opens a work-capable fork with a separate draft. Switch
-between **Main** and **One-off** without submitting either draft. Closing
-One-off stops only that fork; starting another asks before replacing it.
+`/oneoff TASK` opens a work-capable fork with Main's current model and
+reasoning effort and a separate draft. Switch between **Main** and **One-off**
+without submitting either draft. Closing One-off stops only that fork;
+starting another asks before replacing it.
 
 Rejected submissions offer **Retry intact**, **Edit**, and **Discard**.
 Retry reuses the original attachment snapshots. Recovery belongs to the

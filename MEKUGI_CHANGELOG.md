@@ -258,8 +258,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   record. Captures distinguish earlier kept edits even within the same second.
   The browser reads the same launch counters for the selected thread and its
   descendants. BTW and One-off use native side forks rather than a separate host
-  session. The terminal's One-off starts with Main's current reasoning effort,
-  hides inherited transcript entries, and shows its own usage and cost.
+  session. One-off defaults to Main's current model and reasoning effort. The
+  terminal hides its inherited transcript and shows only One-off's own usage
+  and cost.
   `ThreadTokenUsage` carries per-thread reference cost (`estimatedCostUsd`,
   `costPartial`), measured output throughput (`outputTokensPerSecond`),
   cumulative work duration (`workDurationMs`), and response roundtrip count

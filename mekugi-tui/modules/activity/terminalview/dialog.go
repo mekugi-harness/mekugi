@@ -200,8 +200,21 @@ func (p *Painter) DialogPage(block Block, width int) terminalui.DialogPage {
 	for i, line := range colored {
 		line = strings.ReplaceAll(line, "\t", "    ")
 		row := terminalui.DialogLine{Number: first + i, Gutter: gutter, Text: line, Output: true}
-		if p.CopySource && !p.LayoutOnly && ansi.Strip(line) != view.Lines[i] {
-			row.CopySource = &terminalui.CopyFragment{ID: terminalui.CopyID(strconv.Itoa(i), identity), Prefix: view.Lines[i]}
+		if p.CopySource && !p.LayoutOnly {
+			raw, shown := view.Lines[i], ansi.Strip(line)
+			if raw != shown {
+				id := terminalui.CopyID(strconv.Itoa(i), identity)
+				if strings.Contains(raw, "\t") {
+					fragment := terminalui.CopyCode(raw, id)
+					if fragment.Text == shown {
+						row.CopySource = &fragment
+					}
+				}
+				if row.CopySource == nil {
+					// Generated headings have no cell-to-source correspondence.
+					row.CopySource = &terminalui.CopyFragment{ID: id, Prefix: raw}
+				}
+			}
 		}
 		add(row)
 	}

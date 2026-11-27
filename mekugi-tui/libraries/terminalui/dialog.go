@@ -2,8 +2,10 @@ package terminalui
 
 import (
 	"math"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	pathterminal "github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay/terminal"
 
@@ -34,7 +36,7 @@ type DialogLine struct {
 	Gutter      string        // "│" before source, "┆" before output, empty for other rows.
 	GutterStyle string        // Optional number style, including wrapped rows and their left padding.
 	Text        string        // Styled.
-	CopySource  *CopyFragment // Original output behind a generated file heading.
+	CopySource  *CopyFragment // Literal output with expanded tabs, or original output behind a generated heading.
 }
 
 // Add retains a logical line and updates its shared number-column width.
@@ -106,19 +108,34 @@ func (d DialogPage) RowsRange(i, width, first, count int) []string {
 	line := d.Lines[i]
 	if line.Gutter == "" {
 		if line.Wrap {
-			return hardWrapWindow(line.Text, max(1, width), first, count)
+			rows, _ := hardWrapWindow(line.Text, max(1, width), first, count)
+			return rows
 		}
 		if first > 0 {
 			return nil
 		}
 		return []string{line.Text}
 	}
-	parts := hardWrapWindow(line.Text, d.textWidth(width), first, count)
+	parts, offset := hardWrapWindow(line.Text, d.textWidth(width), first, count)
 	rows := make([]string, len(parts))
 	for k, part := range parts {
 		if line.CopySource != nil {
 			fragment := *line.CopySource
 			fragment.Width = ansi.StringWidth(part)
+			if fragment.Code {
+				end := offset + len(ansi.Strip(part))
+				fragment.Offset, fragment.Text = offset, fragment.Text[offset:end]
+				fragment.Tabs = nil
+				tabs := line.CopySource.Tabs
+				at, _ := slices.BinarySearch(tabs, offset-3)
+				for _, tab := range tabs[at:] {
+					if tab >= end {
+						break
+					}
+					fragment.Tabs = append(fragment.Tabs, tab-offset)
+				}
+				offset = end
+			}
 			part = AttachCopy(part, []CopySpan{{CopyFragment: fragment}})
 		}
 		number := ""
@@ -138,7 +155,8 @@ func (d DialogPage) RowsRange(i, width, first, count int) []string {
 
 // hardWrapWindow locates source boundaries before using the shared wrapper, so
 // style restoration and hyperlink handling remain identical to complete rows.
-func hardWrapWindow(text string, width, first, count int) []string {
+// The plain byte offset locates the first row in the logical copy source.
+func hardWrapWindow(text string, width, first, count int) ([]string, int) {
 	var style uv.Style
 	var link uv.Link
 	parser := ansi.GetParser()
@@ -152,7 +170,7 @@ func hardWrapWindow(text string, width, first, count int) []string {
 			uv.ReadLink(data, &link)
 		}
 	}})
-	row, column, start := 0, 0, 0
+	row, column, start, offset := 0, 0, 0, 0
 	carry := ""
 	leadingWide := false
 	wrap := func(end int) []string {
@@ -177,7 +195,7 @@ func hardWrapWindow(text string, width, first, count int) []string {
 		if newline || boundWidth > 0 && column+boundWidth > width {
 			row++
 			if row >= first && row-first >= count {
-				return wrap(at)
+				return wrap(at), offset
 			}
 			column = 0
 			if row == first {
@@ -185,6 +203,7 @@ func hardWrapWindow(text string, width, first, count int) []string {
 				start = at
 				if newline {
 					start += n
+					offset += n
 				}
 				carry = style.String()
 				if style.IsZero() {
@@ -195,16 +214,20 @@ func hardWrapWindow(text string, width, first, count int) []string {
 				}
 			}
 		}
-		if row < first && strings.HasPrefix(seq, "\x1b") {
-			parser.Parse([]byte(seq))
+		if row < first {
+			if boundWidth > 0 || seq[0] >= utf8.RuneSelf && utf8.RuneStart(seq[0]) {
+				offset += n
+			} else if strings.HasPrefix(seq, "\x1b") {
+				parser.Parse([]byte(seq))
+			}
 		}
 		column += cells
 		at, state = at+n, next
 	}
 	if row < first {
-		return nil
+		return nil, 0
 	}
-	return wrap(len(text))
+	return wrap(len(text)), offset
 }
 
 // MatchRow finds a case-insensitive substring in a logical line and locates

@@ -384,7 +384,8 @@ func TestUISnapshotNativeFirstInputWhileTurnStarts(t *testing.T) {
 				close(readStarted)
 				select {
 				case <-releaseRead:
-					return jsontext.Value(`{"thread":{"id":"thr-main","turns":[]}}`)
+					return jsontext.Value(`{"thread":{"id":"thr-main","turns":[],
+						"tokenUsage":{"estimatedCostUsd":0.12},"extra":{"skills":["review"]}}}`)
 				case <-f.ctx.Done():
 					return mockRPCError("fixture canceled")
 				}
@@ -412,10 +413,10 @@ func TestUISnapshotNativeFirstInputWhileTurnStarts(t *testing.T) {
 			}
 			close(releaseRead)
 			<-readDone
-			f.conn.mu.Lock()
-			entries := f.conn.publicationForThreadLocked("thr-main").Entries
-			f.conn.mu.Unlock()
-			if len(entries) != 2 || entries[0].Text != prompt {
+			refreshed := f.await(func(ev sessionapi.NativeEvent) bool {
+				return ev.Frame.View.Caption.CostKnown && len(ev.Frame.View.Info.Skills) == 1
+			})
+			if entries := refreshed.Frame.Main.Entries; len(entries) != 2 || entries[0].Text != prompt {
 				t.Fatalf("an older read displaced live first input: %+v", entries)
 			}
 		})

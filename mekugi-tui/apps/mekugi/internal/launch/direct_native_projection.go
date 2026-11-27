@@ -1641,14 +1641,19 @@ func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, thr
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if records := c.items[threadID]; waitingForFirstInput && len(records) > 0 &&
-		(threadID == c.mainThread || threadID == c.sideThread) && records[0].entry.Kind == "user" {
+	records := c.items[threadID]
+	preserveFirstInput := waitingForFirstInput && len(records) > 0 &&
+		(threadID == c.mainThread || threadID == c.sideThread) && records[0].entry.Kind == "user"
+	if _, hasUsage := c.threadUsage[threadID]; !preserveFirstInput || !hasUsage {
+		c.applyThreadUsageLocked(threadID, resp.Thread.TokenUsage)
+	}
+	c.observeThreadSkillsLocked(threadID, resp.Thread.Extra.Skills)
+	if preserveFirstInput {
 		// The first canonical user item arrived during this read. Do not replace
 		// the live initial transcript with a snapshot that may predate it.
+		c.publishLocked()
 		return
 	}
-	c.applyThreadUsageLocked(threadID, resp.Thread.TokenUsage)
-	c.observeThreadSkillsLocked(threadID, resp.Thread.Extra.Skills)
 	turns := resp.Thread.Turns
 	if threadID == c.sideThread {
 		first := slices.IndexFunc(turns, func(turn directWireTurn) bool { return turn.ID == c.sideFirstTurn })

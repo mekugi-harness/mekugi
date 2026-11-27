@@ -6126,28 +6126,40 @@ impl ThreadRequestProcessor {
             && (restore_approval_policy
                 || restore_approvals_reviewer
                 || restore_permission_profile);
-        let inherit_one_off_effort = !experimental_prediction_mode
-            && matches!(&thread_source, Some(ApiThreadSource::Feature(kind)) if kind == "mekugi_side")
+        let is_one_off = !experimental_prediction_mode
+            && matches!(&thread_source, Some(ApiThreadSource::Feature(kind)) if kind == "mekugi_side");
+        let request_config_model = request_overrides
+            .as_ref()
+            .and_then(|overrides| overrides.get("model"));
+        let inherit_one_off_model =
+            is_one_off && typesafe_overrides.model.is_none() && request_config_model.is_none();
+        let inherit_one_off_effort = is_one_off
             && request_overrides
                 .as_ref()
                 .is_none_or(|overrides| !overrides.contains_key("model_reasoning_effort"));
         let loaded_parent_snapshot = match &loaded_parent {
-            Some(parent) if restore_live_permissions || inherit_one_off_effort => {
+            Some(parent)
+                if restore_live_permissions || inherit_one_off_model || inherit_one_off_effort =>
+            {
                 Some(parent.thread_settings_snapshot().await)
             }
             _ => None,
         };
-        if inherit_one_off_effort && let Some(settings) = loaded_parent_snapshot.as_ref() {
+        if let Some(settings) = loaded_parent_snapshot.as_ref() {
             let requested_model = typesafe_overrides
                 .model
                 .as_deref()
-                .or_else(|| request_overrides.as_ref()?.get("model")?.as_str());
-            if requested_model.is_none_or(|model| model == settings.model)
+                .or_else(|| request_config_model?.as_str());
+            if inherit_one_off_effort
+                && (inherit_one_off_model || requested_model == Some(settings.model.as_str()))
                 && let Some(effort) = &settings.reasoning_effort
             {
                 request_overrides
                     .get_or_insert_with(HashMap::new)
                     .insert("model_reasoning_effort".into(), serde_json::json!(effort));
+            }
+            if inherit_one_off_model {
+                typesafe_overrides.model = Some(settings.model.clone());
             }
         }
         let loaded_parent_settings = loaded_parent_snapshot
