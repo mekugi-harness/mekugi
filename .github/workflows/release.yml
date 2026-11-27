@@ -107,7 +107,10 @@ jobs:
           key: bun-v1-${{ runner.os }}-${{ hashFiles('mekugi-webui/app/bun.lock') }}
           restore-keys: |
             bun-v1-${{ runner.os }}-
-      - run: just webui-check webui
+      - name: Check and build browser assets
+        run: |
+          just webui-check webui
+          test -s mekugi-webui/dist/app/index.html
 
   build:
     name: Build ${{ matrix.platform }}
