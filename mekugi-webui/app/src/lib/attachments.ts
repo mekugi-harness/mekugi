@@ -112,6 +112,134 @@ export function attachmentPlaceholder(item: PendingAttachment): string | undefin
   return item.placeholder ?? referenceLabel(item);
 }
 
+export function attachmentRanges(text: string, items: PendingAttachment[]) {
+  const ranges: { start: number; end: number }[] = [];
+  for (const item of items) {
+    const label = attachmentPlaceholder(item);
+    if (!label) continue;
+    for (
+      let start = text.indexOf(label);
+      start >= 0;
+      start = text.indexOf(label, start + label.length)
+    )
+      ranges.push({ start, end: start + label.length });
+  }
+  return ranges;
+}
+
+// Widen native edits before the textarea applies them so undo/redo still
+// belongs to the browser. Refuse input that bypasses beforeinput and splits a token.
+export function atomicAttachmentInput(
+  field: HTMLTextAreaElement,
+  draft: () => { text: string; items: PendingAttachment[] },
+) {
+  const listeners = new AbortController();
+  const options = { capture: true, signal: listeners.signal };
+  let before: { text: string; start: number; end: number } | undefined;
+
+  function widenSelection(inputType: string) {
+    let { selectionStart: start, selectionEnd: end } = field;
+    const { selectionDirection: direction, value } = field;
+    const deleting = inputType.startsWith("delete");
+    for (const range of attachmentRanges(value, draft().items)) {
+      if (start === end && !deleting && range.start < start && start < range.end) {
+        start = end = range.end;
+        continue;
+      }
+      if (
+        (range.start < end && start < range.end) ||
+        (start === end &&
+          ((start === range.end && inputType.endsWith("Backward")) ||
+            (start === range.start && inputType.endsWith("Forward"))))
+      ) {
+        start = Math.min(start, range.start);
+        end = Math.max(end, range.end);
+      }
+    }
+    if (start !== field.selectionStart || end !== field.selectionEnd)
+      field.setSelectionRange(start, end, direction);
+  }
+
+  field.addEventListener(
+    "beforeinput",
+    (event) => {
+      if (!event.isComposing && !event.inputType.startsWith("history"))
+        widenSelection(event.inputType);
+      before = { text: field.value, start: field.selectionStart, end: field.selectionEnd };
+    },
+    options,
+  );
+  field.addEventListener("compositionstart", () => widenSelection("insertText"), options);
+  field.addEventListener(
+    "cut",
+    () => {
+      if (field.selectionStart !== field.selectionEnd) widenSelection("deleteByCut");
+    },
+    options,
+  );
+  field.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+      const backwards = event.key === "ArrowLeft";
+      if ((!backwards && event.key !== "ArrowRight") || field.selectionStart !== field.selectionEnd)
+        return;
+      const caret = field.selectionStart;
+      const range = attachmentRanges(field.value, draft().items).find(({ start, end }) =>
+        backwards ? start < caret && caret <= end : start <= caret && caret < end,
+      );
+      if (!range) return;
+      event.preventDefault();
+      const next = backwards ? range.start : range.end;
+      field.setSelectionRange(
+        event.shiftKey ? Math.min(caret, next) : next,
+        event.shiftKey ? Math.max(caret, next) : next,
+        backwards ? "backward" : "forward",
+      );
+    },
+    options,
+  );
+  field.addEventListener(
+    "input",
+    (event) => {
+      const prior = before;
+      before = undefined;
+      const { text, items } = draft();
+      const next = field.value;
+      if (!items.length || text === next || event.inputType.startsWith("history")) return;
+      // Keep the selected range in the edit even when its replacement repeats
+      // a common prefix/suffix. For browser-generated edits, recover the changed
+      // interval from the nearest unchanged text.
+      let start = 0;
+      let end = text.length;
+      let nextEnd = next.length;
+      const selection = prior?.text === text ? prior : undefined;
+      while (start < (selection?.start ?? end) && start < nextEnd && text[start] === next[start])
+        start++;
+      while (
+        end > (selection?.end ?? start) &&
+        nextEnd > start &&
+        text[end - 1] === next[nextEnd - 1]
+      ) {
+        end--;
+        nextEnd--;
+      }
+      if (
+        attachmentRanges(text, items).some(
+          (range) =>
+            range.start < end && start < range.end && (start > range.start || end < range.end),
+        )
+      ) {
+        field.value = text;
+        field.setSelectionRange(selection?.start ?? start, selection?.end ?? end);
+      }
+    },
+    options,
+  );
+
+  return { destroy: () => listeners.abort() };
+}
+
 export function labelAttachment(item: PendingAttachment, text: string): string {
   if ("path" in item && item.fileReference) {
     const mention = formatPathMention(item.path);
