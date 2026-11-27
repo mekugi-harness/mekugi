@@ -64,7 +64,7 @@ RUN set -eux; \
       curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
         -o /tmp/google-chrome.deb; \
       apt-get install -y --no-install-recommends /tmp/google-chrome.deb; \
-      rm -f /tmp/google-chrome.deb /var/lib/apt/lists/*; \
+      rm -rf /tmp/google-chrome.deb /var/lib/apt/lists/*; \
       printf '#!/bin/sh\nexec /usr/bin/google-chrome --no-sandbox "$@"\n' > /usr/local/bin/google-chrome-ci; \
       chmod 0755 /usr/local/bin/google-chrome-ci; \
     fi
