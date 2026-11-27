@@ -375,3 +375,164 @@ fn json_cmd_extractor_streams_across_chunk_boundaries() {
     assert_eq!(workdir.as_deref(), Some("/repo/sub"));
     assert_eq!(cmd, "cat <<'EOF' > f.txt\nhi \"there\" A\nEOF");
 }
+
+#[test]
+fn code_mode_isolates_workdir_per_invocation() {
+    let mut cm = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let mut last = None;
+    for chunk in [
+        "await tools.exec_command({ cmd: \"cat > one.txt <<'EOF'\\nfirst\\nEOF\", workdir: 'docs' });\n",
+        "await tools.exec_command({ cmd: \"cat > two.txt <<'EOF'\\nsecond\\nEOF\" });\n",
+    ] {
+        if let Some(EventMsg::PatchApplyUpdated(ev)) =
+            cm.consume_diff(cwd, "call_wd".to_string(), chunk)
+        {
+            last = Some(ev.changes);
+        }
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm.finish() {
+        last = Some(ev.changes);
+    }
+    let changes = last.expect("expected snapshot");
+    assert_eq!(
+        changes.get(Path::new("/repo/docs/one.txt")),
+        Some(&FileChange::Add {
+            content: "first\n".to_string(),
+        })
+    );
+    assert_eq!(
+        changes.get(Path::new("/repo/two.txt")),
+        Some(&FileChange::Add {
+            content: "second\n".to_string(),
+        })
+    );
+    assert!(!changes.contains_key(Path::new("/repo/docs/two.txt")));
+}
+
+#[test]
+fn code_mode_merges_shell_and_patch_in_source_order() {
+    let mut cm = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let mut last = None;
+    for chunk in [
+        "await tools.exec_command({ cmd: \"cat > notes.txt <<'EOF'\\nhello\\nEOF\" });\n",
+        "await tools.apply_patch(`*** Begin Patch\n*** Delete File: notes.txt\n*** End Patch`);\n",
+    ] {
+        if let Some(EventMsg::PatchApplyUpdated(ev)) =
+            cm.consume_diff(cwd, "call_order".to_string(), chunk)
+        {
+            last = Some(ev.changes);
+        }
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm.finish() {
+        last = Some(ev.changes);
+    }
+    let changes = last.expect("expected snapshot");
+    assert!(
+        matches!(
+            changes.get(Path::new("/repo/notes.txt")),
+            Some(FileChange::Delete { .. })
+        ),
+        "later apply_patch should overwrite earlier shell preview, got {changes:?}"
+    );
+}
+
+#[test]
+fn code_mode_ignores_quotes_inside_js_comments() {
+    let mut cm = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let mut last = None;
+    for chunk in [
+        "// Don't edit other files\n",
+        "/* block comment with 'quote' *",
+        "/ await tools.exec_command({ cmd: \"cat > notes.txt <<'EOF'\\nhi\\nEOF\" });\n",
+    ] {
+        if let Some(EventMsg::PatchApplyUpdated(ev)) =
+            cm.consume_diff(cwd, "call_comment".to_string(), chunk)
+        {
+            last = Some(ev.changes);
+        }
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm.finish() {
+        last = Some(ev.changes);
+    }
+    let changes = last.expect("expected snapshot");
+    assert_eq!(
+        changes.get(Path::new("/repo/notes.txt")),
+        Some(&FileChange::Add {
+            content: "hi\n".to_string(),
+        })
+    );
+}
+
+#[test]
+fn empty_overwrite_heredoc_replaces_earlier_preview_with_zero_bytes() {
+    let mut proj = ShellEditProjector::new(Path::new("/repo"));
+    proj.push("cat > notes.txt <<'EOF'\ndraft\nEOF\n");
+    assert!(proj.take_dirty());
+    assert_eq!(
+        proj.snapshot().get(Path::new("/repo/notes.txt")),
+        Some(&FileChange::Add {
+            content: "draft\n".to_string(),
+        })
+    );
+    proj.push("cat > notes.txt <<'EOF'\nEOF\n");
+    assert!(
+        proj.take_dirty(),
+        "empty overwrite must mark projector dirty"
+    );
+    assert_eq!(
+        proj.snapshot().get(Path::new("/repo/notes.txt")),
+        Some(&FileChange::Add {
+            content: String::new(),
+        })
+    );
+}
+
+#[test]
+fn code_mode_suppresses_interpolated_template_and_preserves_escaped_dollar() {
+    let mut cm = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let mut emitted = Vec::new();
+    for chunk in [
+        "const title = 'Notes';\n",
+        "await tools.exec_command({ cmd: `cat > interp.txt <<'EOF'\n",
+        "header\n",
+        "${title}\nEOF` });\n",
+    ] {
+        if let Some(EventMsg::PatchApplyUpdated(ev)) =
+            cm.consume_diff(cwd, "call_interp".to_string(), chunk)
+        {
+            emitted.push(ev.changes);
+        }
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm.finish() {
+        emitted.push(ev.changes);
+    }
+    let final_changes = emitted.last().cloned().unwrap_or_default();
+    assert!(
+        final_changes.is_empty(),
+        "interpolated template should withdraw preview, got {final_changes:?}"
+    );
+
+    let mut cm_escaped = CodeModeEditProjector::default();
+    let mut escaped_last = None;
+    let script = "await tools.exec_command({ cmd: `cat > lit.txt <<'EOF'\n\\${title}\nEOF` });\n";
+    if let Some(EventMsg::PatchApplyUpdated(ev)) =
+        cm_escaped.consume_diff(cwd, "call_esc".to_string(), script)
+    {
+        escaped_last = Some(ev.changes);
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm_escaped.finish() {
+        escaped_last = Some(ev.changes);
+    }
+    assert_eq!(
+        escaped_last
+            .expect("expected escaped snapshot")
+            .get(Path::new("/repo/lit.txt")),
+        Some(&FileChange::Add {
+            content: "${title}\n".to_string(),
+        })
+    );
+}

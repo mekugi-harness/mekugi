@@ -36,7 +36,7 @@ pub(crate) struct ExecCommandArgumentDiffConsumer {
     projector: Option<ShellEditProjector>,
     call_id: Option<String>,
     last_sent_at: Option<Instant>,
-    pending: Option<PatchApplyUpdatedEvent>,
+    dirty: bool,
 }
 
 impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
@@ -54,52 +54,63 @@ impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
         if !cmd_chunk.is_empty() {
             projector.push(&cmd_chunk);
         }
+        if projector.take_dirty() {
+            self.dirty = true;
+        }
         self.maybe_emit(call_id).into_iter().collect()
     }
 
     fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
         if let Some(projector) = self.projector.as_mut() {
             projector.finish();
-            if projector.take_dirty()
-                && let Some(call_id) = self.call_id.clone()
-            {
-                let changes = projector.snapshot();
-                if !changes.is_empty() || self.last_sent_at.is_some() {
-                    self.pending = Some(PatchApplyUpdatedEvent { call_id, changes });
-                }
+            if projector.take_dirty() {
+                self.dirty = true;
             }
         }
-        let event = self.pending.take();
-        if event.is_some() {
-            self.last_sent_at = Some(Instant::now());
+        if !self.dirty {
+            return Ok(Vec::new());
         }
-        Ok(event.map(EventMsg::PatchApplyUpdated).into_iter().collect())
+        let Some(call_id) = self.call_id.clone() else {
+            return Ok(Vec::new());
+        };
+        let Some(projector) = self.projector.as_ref() else {
+            return Ok(Vec::new());
+        };
+        self.dirty = false;
+        let changes = projector.snapshot();
+        if changes.is_empty() && self.last_sent_at.is_none() {
+            return Ok(Vec::new());
+        }
+        self.last_sent_at = Some(Instant::now());
+        Ok(vec![EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
+            call_id,
+            changes,
+        })])
     }
 }
 
 impl ExecCommandArgumentDiffConsumer {
     fn maybe_emit(&mut self, call_id: String) -> Option<EventMsg> {
-        let projector = self.projector.as_mut()?;
-        if !projector.take_dirty() {
+        if !self.dirty {
             return None;
         }
+        let now = Instant::now();
+        if let Some(last) = self.last_sent_at
+            && now.duration_since(last) < SHELL_EDIT_STREAM_BUFFER_INTERVAL
+        {
+            return None;
+        }
+        let projector = self.projector.as_ref()?;
+        self.dirty = false;
         let changes = projector.snapshot();
         if changes.is_empty() && self.last_sent_at.is_none() {
             return None;
         }
-        let event = PatchApplyUpdatedEvent { call_id, changes };
-        let now = Instant::now();
-        match self.last_sent_at {
-            Some(last) if now.duration_since(last) < SHELL_EDIT_STREAM_BUFFER_INTERVAL => {
-                self.pending = Some(event);
-                None
-            }
-            _ => {
-                self.pending = None;
-                self.last_sent_at = Some(now);
-                Some(EventMsg::PatchApplyUpdated(event))
-            }
-        }
+        self.last_sent_at = Some(now);
+        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
+            call_id,
+            changes,
+        }))
     }
 }
 
@@ -107,16 +118,26 @@ impl ExecCommandArgumentDiffConsumer {
 // Code Mode (`exec`) nested edit stream projector
 // ---------------------------------------------------------------------------
 
+enum ActiveCodeModeOp {
+    Shell {
+        projector: ShellEditProjector,
+        aborted: bool,
+    },
+    Patch {
+        parser: StreamingPatchParser,
+        changes: HashMap<PathBuf, FileChange>,
+        aborted: bool,
+    },
+}
+
 #[derive(Default)]
 pub(crate) struct CodeModeEditProjector {
     base_cwd: Option<PathBuf>,
     call_id: Option<String>,
     last_sent_at: Option<Instant>,
-    pending: Option<PatchApplyUpdatedEvent>,
     js: JsNestedEditScanner,
-    shell: Option<ShellEditProjector>,
-    patch_parser: StreamingPatchParser,
-    patch_changes: HashMap<PathBuf, FileChange>,
+    committed: HashMap<PathBuf, FileChange>,
+    active: Option<ActiveCodeModeOp>,
     dirty: bool,
 }
 
@@ -132,74 +153,185 @@ impl CodeModeEditProjector {
             self.base_cwd = Some(cwd.to_path_buf());
         }
         let base = self.base_cwd.as_deref().unwrap_or(cwd).to_path_buf();
-        let shell = self
-            .shell
-            .get_or_insert_with(|| ShellEditProjector::new(&base));
         for event in self.js.push(diff) {
             match event {
+                JsEditEvent::ExecCallStart => {
+                    self.finalize_active();
+                    self.active = Some(ActiveCodeModeOp::Shell {
+                        projector: ShellEditProjector::new(&base),
+                        aborted: false,
+                    });
+                }
                 JsEditEvent::ExecCmdStart => {
-                    shell.reset_script_state();
+                    if let Some(ActiveCodeModeOp::Shell {
+                        projector,
+                        aborted: false,
+                    }) = self.active.as_mut()
+                    {
+                        projector.reset_script_state();
+                    }
                 }
                 JsEditEvent::ExecCmdChunk(chunk) => {
-                    shell.push(&chunk);
+                    if let Some(ActiveCodeModeOp::Shell {
+                        projector,
+                        aborted: false,
+                    }) = self.active.as_mut()
+                    {
+                        projector.push(&chunk);
+                    }
                 }
                 JsEditEvent::ExecWorkdir(dir) => {
-                    shell.set_workdir(Path::new(&dir));
+                    if let Some(ActiveCodeModeOp::Shell {
+                        projector,
+                        aborted: false,
+                    }) = self.active.as_mut()
+                    {
+                        projector.set_workdir(Path::new(&dir));
+                    }
                 }
                 JsEditEvent::ExecCmdEnd => {
-                    shell.finish();
+                    if let Some(ActiveCodeModeOp::Shell {
+                        projector,
+                        aborted: false,
+                    }) = self.active.as_mut()
+                    {
+                        projector.finish();
+                    }
+                }
+                JsEditEvent::ExecCallAbort => {
+                    if let Some(ActiveCodeModeOp::Shell { aborted, .. }) = self.active.as_mut() {
+                        *aborted = true;
+                        self.dirty = true;
+                    }
+                }
+                JsEditEvent::ExecCallEnd => {
+                    self.finalize_active();
                 }
                 JsEditEvent::ApplyPatchStart => {
-                    self.patch_parser = StreamingPatchParser::default();
+                    self.finalize_active();
+                    self.active = Some(ActiveCodeModeOp::Patch {
+                        parser: StreamingPatchParser::default(),
+                        changes: HashMap::new(),
+                        aborted: false,
+                    });
                 }
                 JsEditEvent::ApplyPatchChunk(chunk) => {
-                    if let Ok(hunks) = self.patch_parser.push_delta(&chunk)
+                    if let Some(ActiveCodeModeOp::Patch {
+                        parser,
+                        changes,
+                        aborted: false,
+                    }) = self.active.as_mut()
+                        && let Ok(hunks) = parser.push_delta(&chunk)
                         && !hunks.is_empty()
                     {
                         for (path, change) in hunks_to_file_changes(&hunks, &base) {
-                            self.patch_changes.insert(path, change);
+                            changes.insert(path, change);
                         }
                         self.dirty = true;
                     }
                 }
+                JsEditEvent::ApplyPatchAbort => {
+                    if let Some(ActiveCodeModeOp::Patch { aborted, .. }) = self.active.as_mut() {
+                        *aborted = true;
+                        self.dirty = true;
+                    }
+                }
                 JsEditEvent::ApplyPatchEnd => {
-                    let _ = self.patch_parser.finish();
+                    self.finalize_active();
                 }
             }
         }
-        if shell.take_dirty() {
+        if let Some(ActiveCodeModeOp::Shell {
+            projector,
+            aborted: false,
+        }) = self.active.as_mut()
+            && projector.take_dirty()
+        {
             self.dirty = true;
         }
         self.maybe_emit(call_id)
     }
 
     pub(crate) fn finish(&mut self) -> Option<EventMsg> {
-        if let Some(shell) = self.shell.as_mut() {
-            shell.finish();
-            if shell.take_dirty() {
-                self.dirty = true;
+        self.finalize_active();
+        if !self.dirty {
+            return None;
+        }
+        let call_id = self.call_id.clone()?;
+        self.dirty = false;
+        let changes = self.snapshot();
+        if changes.is_empty() && self.last_sent_at.is_none() {
+            return None;
+        }
+        self.last_sent_at = Some(Instant::now());
+        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
+            call_id,
+            changes,
+        }))
+    }
+
+    fn finalize_active(&mut self) {
+        let Some(active) = self.active.take() else {
+            return;
+        };
+        match active {
+            ActiveCodeModeOp::Shell {
+                mut projector,
+                aborted,
+            } => {
+                if aborted {
+                    return;
+                }
+                projector.finish();
+                if projector.take_dirty() {
+                    self.dirty = true;
+                }
+                let snap = projector.snapshot();
+                if !snap.is_empty() {
+                    self.committed.extend(snap);
+                }
+            }
+            ActiveCodeModeOp::Patch {
+                mut parser,
+                mut changes,
+                aborted,
+            } => {
+                if aborted {
+                    return;
+                }
+                if let Ok(hunks) = parser.finish()
+                    && !hunks.is_empty()
+                {
+                    let base = self.base_cwd.as_deref().unwrap_or_else(|| Path::new(""));
+                    for (path, change) in hunks_to_file_changes(&hunks, base) {
+                        changes.insert(path, change);
+                    }
+                    self.dirty = true;
+                }
+                if !changes.is_empty() {
+                    self.committed.extend(changes);
+                }
             }
         }
-        if self.dirty
-            && let Some(call_id) = self.call_id.clone()
-        {
-            self.dirty = false;
-            let changes = self.snapshot();
-            if !changes.is_empty() || self.last_sent_at.is_some() {
-                self.pending = Some(PatchApplyUpdatedEvent { call_id, changes });
-            }
-        }
-        let event = self.pending.take();
-        if event.is_some() {
-            self.last_sent_at = Some(Instant::now());
-        }
-        event.map(EventMsg::PatchApplyUpdated)
     }
 
     fn snapshot(&self) -> HashMap<PathBuf, FileChange> {
-        let mut out = self.patch_changes.clone();
-        if let Some(shell) = &self.shell {
-            out.extend(shell.snapshot());
+        let mut out = self.committed.clone();
+        match &self.active {
+            Some(ActiveCodeModeOp::Shell {
+                projector,
+                aborted: false,
+            }) => {
+                out.extend(projector.snapshot());
+            }
+            Some(ActiveCodeModeOp::Patch {
+                changes,
+                aborted: false,
+                ..
+            }) => {
+                out.extend(changes.clone());
+            }
+            _ => {}
         }
         out
     }
@@ -208,24 +340,22 @@ impl CodeModeEditProjector {
         if !self.dirty {
             return None;
         }
+        let now = Instant::now();
+        if let Some(last) = self.last_sent_at
+            && now.duration_since(last) < SHELL_EDIT_STREAM_BUFFER_INTERVAL
+        {
+            return None;
+        }
         self.dirty = false;
         let changes = self.snapshot();
         if changes.is_empty() && self.last_sent_at.is_none() {
             return None;
         }
-        let event = PatchApplyUpdatedEvent { call_id, changes };
-        let now = Instant::now();
-        match self.last_sent_at {
-            Some(last) if now.duration_since(last) < SHELL_EDIT_STREAM_BUFFER_INTERVAL => {
-                self.pending = Some(event);
-                None
-            }
-            _ => {
-                self.pending = None;
-                self.last_sent_at = Some(now);
-                Some(EventMsg::PatchApplyUpdated(event))
-            }
-        }
+        self.last_sent_at = Some(now);
+        Some(EventMsg::PatchApplyUpdated(PatchApplyUpdatedEvent {
+            call_id,
+            changes,
+        }))
     }
 }
 
@@ -290,13 +420,27 @@ fn hunks_to_file_changes(hunks: &[Hunk], base_cwd: &Path) -> HashMap<PathBuf, Fi
 }
 
 enum JsEditEvent {
+    ExecCallStart,
     ExecCmdStart,
     ExecCmdChunk(String),
     ExecWorkdir(String),
     ExecCmdEnd,
+    ExecCallAbort,
+    ExecCallEnd,
     ApplyPatchStart,
     ApplyPatchChunk(String),
+    ApplyPatchAbort,
     ApplyPatchEnd,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum JsCommentState {
+    #[default]
+    None,
+    SlashPending,
+    Line,
+    Block,
+    BlockStar,
 }
 
 #[derive(Default)]
@@ -305,6 +449,7 @@ struct JsNestedEditScanner {
     prev_ident: String,
     after_dot: bool,
     state: JsScanState,
+    comment: JsCommentState,
     escape: JsEscape,
     high_surrogate: Option<u16>,
 }
@@ -319,6 +464,9 @@ enum JsScanState {
     AwaitPatchArg,
     InPatchString {
         quote: char,
+        pending_dollar: bool,
+        interpolated: bool,
+        interp_brace_depth: usize,
     },
     InExecArgs {
         brace_depth: usize,
@@ -330,6 +478,9 @@ enum JsScanState {
         brace_depth: usize,
         field: TargetField,
         workdir_buf: String,
+        pending_dollar: bool,
+        interpolated: bool,
+        interp_brace_depth: usize,
     },
 }
 
@@ -352,6 +503,61 @@ impl JsNestedEditScanner {
         let mut patch_buf = String::new();
 
         for ch in delta.chars() {
+            let in_string = matches!(
+                self.state,
+                JsScanState::SkipString { .. }
+                    | JsScanState::InPatchString { .. }
+                    | JsScanState::InExecFieldString { .. }
+            );
+            if !in_string {
+                match self.comment {
+                    JsCommentState::Line => {
+                        if ch == '\n' {
+                            self.comment = JsCommentState::None;
+                        }
+                        continue;
+                    }
+                    JsCommentState::Block => {
+                        if ch == '*' {
+                            self.comment = JsCommentState::BlockStar;
+                        }
+                        continue;
+                    }
+                    JsCommentState::BlockStar => {
+                        if ch == '/' {
+                            self.comment = JsCommentState::None;
+                        } else if ch != '*' {
+                            self.comment = JsCommentState::Block;
+                        }
+                        continue;
+                    }
+                    JsCommentState::SlashPending => {
+                        if ch == '/' {
+                            self.comment = JsCommentState::Line;
+                            continue;
+                        } else if ch == '*' {
+                            self.comment = JsCommentState::Block;
+                            continue;
+                        } else {
+                            self.comment = JsCommentState::None;
+                            if matches!(self.state, JsScanState::Normal) {
+                                self.after_dot = false;
+                                self.prev_ident.clear();
+                            }
+                        }
+                    }
+                    JsCommentState::None => {
+                        if ch == '/' {
+                            if matches!(self.state, JsScanState::Normal) && !self.ident.is_empty() {
+                                self.prev_ident = std::mem::take(&mut self.ident);
+                            }
+                            self.comment = JsCommentState::SlashPending;
+                            continue;
+                        }
+                    }
+                }
+            }
+
             match &mut self.state {
                 JsScanState::SkipString { quote } => {
                     let q = *quote;
@@ -364,16 +570,70 @@ impl JsNestedEditScanner {
                     }
                     continue;
                 }
-                JsScanState::InPatchString { quote } => {
+                JsScanState::InPatchString {
+                    quote,
+                    pending_dollar,
+                    interpolated,
+                    interp_brace_depth,
+                } => {
                     let q = *quote;
+                    if *interpolated && *interp_brace_depth > 0 {
+                        match ch {
+                            '{' => *interp_brace_depth += 1,
+                            '}' => *interp_brace_depth -= 1,
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    let was_escaped = !matches!(self.escape, JsEscape::None);
                     if let Some(decoded) =
                         feed_js_string_char(&mut self.escape, &mut self.high_surrogate, ch, q)
                     {
+                        if *interpolated {
+                            if q == '`' && !was_escaped {
+                                if *pending_dollar && ch == '{' {
+                                    *pending_dollar = false;
+                                    *interp_brace_depth = 1;
+                                } else {
+                                    *pending_dollar = ch == '$';
+                                }
+                            } else {
+                                *pending_dollar = false;
+                            }
+                            continue;
+                        }
+                        if q == '`' && !was_escaped {
+                            if *pending_dollar {
+                                if ch == '{' {
+                                    *pending_dollar = false;
+                                    *interpolated = true;
+                                    *interp_brace_depth = 1;
+                                    patch_buf.clear();
+                                    events.push(JsEditEvent::ApplyPatchAbort);
+                                    continue;
+                                }
+                                patch_buf.push('$');
+                                *pending_dollar = false;
+                            }
+                            if ch == '$' {
+                                *pending_dollar = true;
+                                continue;
+                            }
+                        } else if *pending_dollar {
+                            patch_buf.push('$');
+                            *pending_dollar = false;
+                        }
                         patch_buf.push(decoded);
                     } else if matches!(self.escape, JsEscape::None) && ch == q {
-                        if !patch_buf.is_empty() {
-                            events
-                                .push(JsEditEvent::ApplyPatchChunk(std::mem::take(&mut patch_buf)));
+                        if !*interpolated {
+                            if *pending_dollar {
+                                patch_buf.push('$');
+                            }
+                            if !patch_buf.is_empty() {
+                                events.push(JsEditEvent::ApplyPatchChunk(std::mem::take(
+                                    &mut patch_buf,
+                                )));
+                            }
                         }
                         events.push(JsEditEvent::ApplyPatchEnd);
                         self.state = JsScanState::Normal;
@@ -385,28 +645,101 @@ impl JsNestedEditScanner {
                     brace_depth,
                     field,
                     workdir_buf,
+                    pending_dollar,
+                    interpolated,
+                    interp_brace_depth,
                 } => {
                     let q = *quote;
                     let depth = *brace_depth;
                     let f = *field;
+                    if *interpolated && *interp_brace_depth > 0 {
+                        match ch {
+                            '{' => *interp_brace_depth += 1,
+                            '}' => *interp_brace_depth -= 1,
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    let was_escaped = !matches!(self.escape, JsEscape::None);
                     if let Some(decoded) =
                         feed_js_string_char(&mut self.escape, &mut self.high_surrogate, ch, q)
                     {
+                        if *interpolated {
+                            if q == '`' && !was_escaped {
+                                if *pending_dollar && ch == '{' {
+                                    *pending_dollar = false;
+                                    *interp_brace_depth = 1;
+                                } else {
+                                    *pending_dollar = ch == '$';
+                                }
+                            } else {
+                                *pending_dollar = false;
+                            }
+                            continue;
+                        }
+                        if q == '`' && !was_escaped {
+                            if *pending_dollar {
+                                if ch == '{' {
+                                    *pending_dollar = false;
+                                    *interpolated = true;
+                                    *interp_brace_depth = 1;
+                                    match f {
+                                        TargetField::Cmd => {
+                                            cmd_buf.clear();
+                                            events.push(JsEditEvent::ExecCallAbort);
+                                        }
+                                        TargetField::Workdir => {
+                                            workdir_buf.clear();
+                                            events.push(JsEditEvent::ExecCallAbort);
+                                        }
+                                        TargetField::Other => {}
+                                    }
+                                    continue;
+                                }
+                                match f {
+                                    TargetField::Cmd => cmd_buf.push('$'),
+                                    TargetField::Workdir => workdir_buf.push('$'),
+                                    TargetField::Other => {}
+                                }
+                                *pending_dollar = false;
+                            }
+                            if ch == '$' {
+                                *pending_dollar = true;
+                                continue;
+                            }
+                        } else if *pending_dollar {
+                            match f {
+                                TargetField::Cmd => cmd_buf.push('$'),
+                                TargetField::Workdir => workdir_buf.push('$'),
+                                TargetField::Other => {}
+                            }
+                            *pending_dollar = false;
+                        }
                         match f {
                             TargetField::Cmd => cmd_buf.push(decoded),
                             TargetField::Workdir => workdir_buf.push(decoded),
                             TargetField::Other => {}
                         }
                     } else if matches!(self.escape, JsEscape::None) && ch == q {
-                        if f == TargetField::Cmd {
-                            if !cmd_buf.is_empty() {
-                                events
-                                    .push(JsEditEvent::ExecCmdChunk(std::mem::take(&mut cmd_buf)));
+                        if !*interpolated {
+                            if *pending_dollar {
+                                match f {
+                                    TargetField::Cmd => cmd_buf.push('$'),
+                                    TargetField::Workdir => workdir_buf.push('$'),
+                                    TargetField::Other => {}
+                                }
                             }
-                            events.push(JsEditEvent::ExecCmdEnd);
-                        } else if f == TargetField::Workdir && !workdir_buf.is_empty() {
-                            let dir = std::mem::take(workdir_buf);
-                            events.push(JsEditEvent::ExecWorkdir(dir));
+                            if f == TargetField::Cmd {
+                                if !cmd_buf.is_empty() {
+                                    events.push(JsEditEvent::ExecCmdChunk(std::mem::take(
+                                        &mut cmd_buf,
+                                    )));
+                                }
+                                events.push(JsEditEvent::ExecCmdEnd);
+                            } else if f == TargetField::Workdir && !workdir_buf.is_empty() {
+                                let dir = std::mem::take(workdir_buf);
+                                events.push(JsEditEvent::ExecWorkdir(dir));
+                            }
                         }
                         self.state = JsScanState::InExecArgs {
                             brace_depth: depth,
@@ -422,7 +755,12 @@ impl JsNestedEditScanner {
                     }
                     if matches!(ch, '"' | '\'' | '`') {
                         events.push(JsEditEvent::ApplyPatchStart);
-                        self.state = JsScanState::InPatchString { quote: ch };
+                        self.state = JsScanState::InPatchString {
+                            quote: ch,
+                            pending_dollar: false,
+                            interpolated: false,
+                            interp_brace_depth: 0,
+                        };
                     } else {
                         self.state = JsScanState::Normal;
                     }
@@ -449,6 +787,7 @@ impl JsNestedEditScanner {
                             pending_key.clear();
                             *expect_value_for = None;
                             if *brace_depth == 0 {
+                                events.push(JsEditEvent::ExecCallEnd);
                                 self.state = JsScanState::Normal;
                             }
                         }
@@ -477,6 +816,9 @@ impl JsNestedEditScanner {
                                     brace_depth: depth,
                                     field,
                                     workdir_buf: String::new(),
+                                    pending_dollar: false,
+                                    interpolated: false,
+                                    interp_brace_depth: 0,
                                 };
                             } else if depth == 1 && expect_value_for.is_none() {
                                 // Quoted key like "cmd": ... — allow chars into pending_key
@@ -486,6 +828,9 @@ impl JsNestedEditScanner {
                                     brace_depth: depth,
                                     field: TargetField::Other,
                                     workdir_buf: String::new(),
+                                    pending_dollar: false,
+                                    interpolated: false,
+                                    interp_brace_depth: 0,
                                 };
                             }
                         }
@@ -512,6 +857,7 @@ impl JsNestedEditScanner {
                     if ch == '(' {
                         if self.prev_ident == "tools" && name == "exec_command" {
                             self.prev_ident.clear();
+                            events.push(JsEditEvent::ExecCallStart);
                             self.state = JsScanState::InExecArgs {
                                 brace_depth: 0,
                                 expect_value_for: None,
@@ -869,16 +1215,27 @@ pub(crate) struct ShellEditProjector {
 }
 
 enum StreamedFile {
-    Add { committed: String, partial: String },
-    Update { committed: String, partial: String },
+    Add {
+        committed: String,
+        partial: String,
+        allow_empty: bool,
+    },
+    Update {
+        committed: String,
+        partial: String,
+    },
 }
 
 impl StreamedFile {
     fn to_file_change(&self, extra_tail: Option<&str>) -> Option<FileChange> {
         match self {
-            Self::Add { committed, partial } => {
+            Self::Add {
+                committed,
+                partial,
+                allow_empty,
+            } => {
                 let tail = extra_tail.unwrap_or("");
-                if committed.is_empty() && partial.is_empty() && tail.is_empty() {
+                if !*allow_empty && committed.is_empty() && partial.is_empty() && tail.is_empty() {
                     return None;
                 }
                 let mut content =
@@ -912,6 +1269,8 @@ enum ShellMode {
         path: PathBuf,
         delimiter: String,
         strip_tabs: bool,
+        overwrite: bool,
+        wrote_any: bool,
         line_buf: String,
     },
     PythonHeredoc {
@@ -979,6 +1338,8 @@ impl ShellEditProjector {
                 path,
                 delimiter,
                 strip_tabs,
+                overwrite,
+                wrote_any,
                 line_buf,
             } => {
                 let tail = std::mem::take(line_buf);
@@ -987,9 +1348,23 @@ impl ShellEditProjector {
                 } else {
                     tail.as_str()
                 };
-                if !tail.is_empty() && trimmed != delimiter.as_str() {
+                if trimmed == delimiter.as_str() {
+                    if *overwrite && !*wrote_any {
+                        let path = path.clone();
+                        self.files.insert(
+                            path,
+                            StreamedFile::Add {
+                                committed: String::new(),
+                                partial: String::new(),
+                                allow_empty: true,
+                            },
+                        );
+                        self.dirty = true;
+                    }
+                } else if !tail.is_empty() {
                     let path = path.clone();
                     let content = trimmed.to_owned();
+                    *wrote_any = true;
                     self.commit_add_line(&path, &content, false);
                 }
             }
@@ -1027,6 +1402,7 @@ impl ShellEditProjector {
                 delimiter,
                 strip_tabs,
                 line_buf,
+                ..
             } => {
                 let candidate = if *strip_tabs {
                     line_buf.trim_start_matches('\t')
@@ -1118,6 +1494,8 @@ impl ShellEditProjector {
                 path,
                 delimiter,
                 strip_tabs,
+                overwrite,
+                wrote_any,
                 line_buf,
             } => {
                 if ch == '\n' {
@@ -1129,10 +1507,23 @@ impl ShellEditProjector {
                     };
                     let line = line.strip_suffix('\r').unwrap_or(line);
                     if line == delimiter.as_str() {
+                        if *overwrite && !*wrote_any {
+                            let path = path.clone();
+                            self.files.insert(
+                                path,
+                                StreamedFile::Add {
+                                    committed: String::new(),
+                                    partial: String::new(),
+                                    allow_empty: true,
+                                },
+                            );
+                            self.dirty = true;
+                        }
                         transition = Transition::ToScan;
                     } else {
                         let path = path.clone();
                         let owned = line.to_owned();
+                        *wrote_any = true;
                         self.commit_add_line(&path, &owned, true);
                     }
                 } else if line_buf.len() < MAX_STREAM_FILE_BYTES {
@@ -1260,13 +1651,15 @@ impl ShellEditProjector {
                         overwrite,
                     } => {
                         let path = self.resolve_script_target(&target);
-                        if overwrite {
-                            self.files.remove(&path);
+                        if overwrite && self.files.remove(&path).is_some() {
+                            self.dirty = true;
                         }
                         self.mode = ShellMode::Heredoc {
                             path,
                             delimiter,
                             strip_tabs,
+                            overwrite,
+                            wrote_any: false,
                             line_buf: String::new(),
                         };
                         return;
@@ -1298,8 +1691,12 @@ impl ShellEditProjector {
             .or_insert_with(|| StreamedFile::Add {
                 committed: String::new(),
                 partial: String::new(),
+                allow_empty: false,
             });
-        if let StreamedFile::Add { committed, partial } = entry {
+        if let StreamedFile::Add {
+            committed, partial, ..
+        } = entry
+        {
             partial.clear();
             if committed.len() + line.len() + usize::from(trailing_newline) <= MAX_STREAM_FILE_BYTES
             {
@@ -2360,8 +2757,11 @@ fn push_py_str_slice(
                 .or_insert_with(|| StreamedFile::Add {
                     committed: String::new(),
                     partial: String::new(),
+                    allow_empty: false,
                 });
-            if let StreamedFile::Add { committed, partial } = entry
+            if let StreamedFile::Add {
+                committed, partial, ..
+            } = entry
                 && committed.len() + partial.len() + slice.len() <= MAX_STREAM_FILE_BYTES
             {
                 partial.push_str(slice);
@@ -2465,7 +2865,9 @@ fn commit_replace_hunk(
 }
 
 fn commit_partial(files: &mut HashMap<PathBuf, StreamedFile>, path: &Path, dirty: &mut bool) {
-    if let Some(StreamedFile::Add { committed, partial }) = files.get_mut(path)
+    if let Some(StreamedFile::Add {
+        committed, partial, ..
+    }) = files.get_mut(path)
         && !partial.is_empty()
     {
         committed.push_str(&std::mem::take(partial));

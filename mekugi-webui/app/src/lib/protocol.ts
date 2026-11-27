@@ -556,6 +556,7 @@ export type Preview = {
   Status: string;
   Footer?: string;
   Tool?: string;
+  Withdrawn?: boolean;
 };
 
 export type ApprovalChoice = {

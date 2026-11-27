@@ -2074,7 +2074,7 @@ export class Stream {
       }
       case "item/fileChange/patchUpdated": {
         const { threadId, turnId, itemId, changes } = notification.params;
-        if (!this.#showsEdit(threadId) || !changes.length) return;
+        if (!this.#showsEdit(threadId)) return;
         if (threadId === id && turnId !== this.activeTurnId && !this.#liveItemIds.has(itemId))
           return;
         const item = this.#turns
@@ -2085,6 +2085,15 @@ export class Stream {
           item.status !== "inProgress"
         )
           return;
+        if (!changes.length) {
+          const key = previewId(threadId, turnId, itemId);
+          const previous = this.live.find((edit) => edit.ID === key);
+          if (!previous || previous.Complete || previous.Settling) return;
+          this.live = this.live.map((edit) =>
+            edit.ID === key ? { ...edit, Files: [], Withdrawn: true } : edit,
+          );
+          return;
+        }
         this.#updatePreview(threadId, turnId, itemId, {
           Tool: "Edit",
           Files: changes.map((change) => ({

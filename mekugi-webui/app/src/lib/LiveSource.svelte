@@ -32,12 +32,14 @@
   const seen = new Set<string>();
   let primed = false;
   $effect(() => {
-    const mine = previews.filter((p) => p.Files.length > 0);
+    const withdrawn = new Set(previews.filter((p) => p.Withdrawn).map((p) => p.ID));
+    const mine = previews.filter((p) => !p.Withdrawn && p.Files.length > 0);
     untrack(() => {
       const now = Date.now();
       const current = new Map(mine.map((p) => [p.ID, p]));
       const next: Card[] = [];
       for (const card of cards) {
+        if (withdrawn.has(card.preview.ID)) continue;
         const preview = current.get(card.preview.ID);
         current.delete(card.preview.ID);
         // A withdrawn call settles from its last content; a repeated
