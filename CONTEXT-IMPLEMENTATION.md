@@ -32,6 +32,21 @@ Displayed facts arrive via multiple paths (live/restored/paged/replayed, Main/ch
 terminal/browser). Converge display fixes where sibling paths meet, treat examples as samples of
 their input class, and check one representative per affected sibling path.
 
+## Parity and protocol changes
+
+An internal command handler or shared operation does not establish how a user reached it.
+
+- **Evidence for regressions.** Identify the Mekugi revision, client, user action, and visible
+  result. Distinguish menu discovery, typed input, and a button or dropdown that invokes a shared
+  operation.
+- **Trace references before extending app-server.** When stock Codex or ChatGPT already provides
+  the requested behavior, trace that client's app-server requests and client-held state before
+  extending the native protocol. Identify the first step the affected Mekugi client cannot
+  perform (for example, queue steering can compose an existing steer request with deletion on
+  success).
+- **Separate history from product intent.** Keep historical behavior separate from what should
+  ship; an explicit product decision can intentionally differ from either reference.
+
 ## Performance
 
 Size recurring work and growing-data paths for retained history size, request size, and concurrent
