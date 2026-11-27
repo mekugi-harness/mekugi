@@ -301,6 +301,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   Older process-ID-only stop requests still work.
   A unified-exec rejection before launch publishes its native result in the
   command item, separately from closure of the approval prompt.
+  Loaded thread observations report `extra.backgroundTerminalCount` so clients
+  can skip eager per-member `thread/backgroundTerminals/list` lookups for
+  family members with zero active terminals.
 - A named turn interrupt can stop only that turn, even if it finishes and its
   replacement starts before the interrupt reaches the runtime. JSON-RPC error
   data identifies a stale interrupt target or an unloaded process-list thread.

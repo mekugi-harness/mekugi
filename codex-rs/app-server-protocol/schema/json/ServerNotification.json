@@ -5263,6 +5263,16 @@
     "ThreadExtra": {
       "description": "Extra app-server data for a thread.",
       "properties": {
+        "backgroundTerminalCount": {
+          "default": null,
+          "description": "Number of active background terminals on this loaded thread, when known.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "skills": {
           "default": [],
           "description": "Skills confirmed by the native attachment or read paths for this thread.",

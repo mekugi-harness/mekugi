@@ -211,6 +211,289 @@ test("re-enabling predictions ignores the previous reply for the same turn", asy
   control.release();
 });
 
+function countChangedEntries(before, after) {
+  return before.reduce((acc, entry, idx) => acc + (entry === after[idx] ? 0 : 1), 0);
+}
+
+async function measureSingleDeltaRegenerations(historyCount) {
+  const historyTurns = Array.from({ length: historyCount }, (_, idx) => ({
+    id: `hist-${idx}`,
+    rootTurnId: null,
+    items: [
+      {
+        type: "agentMessage",
+        id: `hist-msg-${idx}`,
+        text: `History ${idx}`,
+        moderation: null,
+        phase: null,
+        memoryCitation: null,
+        delivery: null,
+        questions: null,
+      },
+    ],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  }));
+  const liveTurn = {
+    id: "turn-live",
+    rootTurnId: null,
+    items: [
+      {
+        type: "agentMessage",
+        id: "live-msg",
+        text: "Hel",
+        moderation: null,
+        phase: null,
+        memoryCitation: null,
+        delivery: null,
+        questions: null,
+      },
+      { type: "plan", id: "live-plan", text: "Step 1" },
+      {
+        type: "commandExecution",
+        id: "live-cmd",
+        command: "echo hi",
+        cwd: "/repo",
+        processId: null,
+        status: "inProgress",
+        commandActions: [],
+        aggregatedOutput: "out1\n",
+        exitCode: null,
+        durationMs: null,
+      },
+    ],
+    itemsView: "full",
+    status: "inProgress",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  const olderTurn = {
+    id: "hist-older",
+    rootTurnId: null,
+    items: [
+      {
+        type: "agentMessage",
+        id: "hist-older-msg",
+        text: "Earlier history",
+        moderation: null,
+        phase: null,
+        memoryCitation: null,
+        delivery: null,
+        questions: null,
+      },
+    ],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  const machine = fakeMachine({
+    "thread/resume": () => ({
+      thread: {
+        id: "t-delta",
+        cwd: "/repo",
+        status: { type: "active", activeFlags: [] },
+        turns: [],
+      },
+      initialTurnsPage: {
+        data: [liveTurn, ...historyTurns.toReversed()],
+        nextCursor: "older-cursor",
+      },
+    }),
+    "thread/turns/list": () => ({ data: [olderTurn], nextCursor: null }),
+    "thread/subtree/list": () => ({ data: [] }),
+  });
+  const s = new Stream();
+  s.connect("t-delta", machine);
+  await new Promise(setImmediate);
+
+  const snapshotEntries = () => s.main.order.map((seq) => s.entry(seq));
+
+  const feedBefore = s.main;
+  const beforeText = snapshotEntries();
+  machine.emitNotification({
+    method: "item/agentMessage/delta",
+    params: { threadId: "t-delta", turnId: "turn-live", itemId: "live-msg", delta: "lo" },
+  });
+  const afterText = snapshotEntries();
+  assert.equal(s.main, feedBefore);
+  const textRegenerated = countChangedEntries(beforeText, afterText);
+  assert.equal(textRegenerated, 1);
+
+  const beforePlan = snapshotEntries();
+  machine.emitNotification({
+    method: "item/plan/delta",
+    params: { threadId: "t-delta", turnId: "turn-live", itemId: "live-plan", delta: "\nStep 2" },
+  });
+  const afterPlan = snapshotEntries();
+  assert.equal(s.main, feedBefore);
+  assert.equal(countChangedEntries(beforePlan, afterPlan), 1);
+
+  const beforeCmd = snapshotEntries();
+  machine.emitNotification({
+    method: "item/commandExecution/outputDelta",
+    params: { threadId: "t-delta", turnId: "turn-live", itemId: "live-cmd", delta: "out2\n" },
+  });
+  const afterCmd = snapshotEntries();
+  assert.equal(s.main, feedBefore);
+  assert.equal(countChangedEntries(beforeCmd, afterCmd), 1);
+
+  // Load older turns and verify subsequent deltas still update only the affected entry in place.
+  assert.equal(await s.earlier(), true);
+  const feedAfterEarlier = s.main;
+  const beforeAfterEarlier = snapshotEntries();
+  machine.emitNotification({
+    method: "item/agentMessage/delta",
+    params: { threadId: "t-delta", turnId: "turn-live", itemId: "live-msg", delta: "!" },
+  });
+  const afterAfterEarlier = snapshotEntries();
+  assert.equal(s.main, feedAfterEarlier);
+  assert.equal(countChangedEntries(beforeAfterEarlier, afterAfterEarlier), 1);
+
+  const liveMsgSeq = s.main.order.at(-3);
+  const livePlanSeq = s.main.order.at(-2);
+  assert.equal(s.entry(liveMsgSeq).text, "Hello!");
+  assert.equal(s.entry(livePlanSeq).text, "Step 1\nStep 2");
+  assert.equal(s.commandExecution("turn-live", "live-cmd").aggregatedOutput, "out1\nout2\n");
+  s.close();
+  return textRegenerated;
+}
+
+test("streamed text, plan, and command deltas update only the affected entry across loaded history", async () => {
+  const small = await measureSingleDeltaRegenerations(2);
+  const large = await measureSingleDeltaRegenerations(40);
+  assert.equal(small, 1);
+  assert.equal(large, small);
+});
+
+test("thread open skips background-terminal lookups for members without processes", async () => {
+  const root = {
+    id: "root",
+    cwd: "/repo",
+    status: { type: "idle" },
+    extra: { skills: [], backgroundTerminalCount: 0 },
+    turns: [],
+  };
+  const activeWithProc = {
+    id: "child-proc",
+    parentThreadId: "root",
+    cwd: "/repo",
+    status: { type: "active", activeFlags: [] },
+    extra: { skills: [], backgroundTerminalCount: 1 },
+    turns: [],
+  };
+  const idleEmpty1 = {
+    id: "child-idle-1",
+    parentThreadId: "root",
+    cwd: "/repo",
+    status: { type: "idle" },
+    extra: { skills: [], backgroundTerminalCount: 0 },
+    turns: [],
+  };
+  const idleEmpty2 = {
+    id: "child-idle-2",
+    parentThreadId: "root",
+    cwd: "/repo",
+    status: { type: "idle" },
+    extra: { skills: [], backgroundTerminalCount: 0 },
+    turns: [],
+  };
+  const unloaded1 = {
+    id: "child-unloaded-1",
+    parentThreadId: "root",
+    cwd: "/repo",
+    status: { type: "notLoaded" },
+    turns: [],
+  };
+  const unloaded2 = {
+    id: "child-unloaded-2",
+    parentThreadId: "root",
+    cwd: "/repo",
+    status: { type: "notLoaded" },
+    turns: [],
+  };
+  const processLists = new Map([
+    ["child-proc", [{ processId: "proc-1", turnId: "t1", itemId: "i1", command: "sleep 60" }]],
+  ]);
+  const machine = fakeMachine({
+    "thread/resume": () => ({ thread: root }),
+    "thread/subtree/list": () => ({
+      data: [root, activeWithProc, idleEmpty1, idleEmpty2, unloaded1, unloaded2],
+    }),
+    "thread/backgroundTerminals/list": ({ threadId }) => ({
+      data: processLists.get(threadId) ?? [],
+    }),
+  });
+  const bgRequests = () =>
+    machine.requests
+      .filter((req) => req.method === "thread/backgroundTerminals/list")
+      .map((req) => req.params.threadId);
+
+  const stream = new Stream();
+  stream.connect(root.id, machine);
+  await new Promise(setImmediate);
+  assert.deepEqual(bgRequests(), ["child-proc"]);
+  assert.deepEqual(
+    stream.processes.map(({ threadId, processId }) => [threadId, processId]),
+    [["child-proc", "proc-1"]],
+  );
+
+  // A newly joined member with no background terminals incurs 0 list RPCs.
+  machine.emitNotification({
+    method: "thread/started",
+    params: {
+      thread: {
+        id: "child-joined",
+        parentThreadId: "root",
+        cwd: "/repo",
+        status: { type: "active", activeFlags: [] },
+        extra: { skills: [], backgroundTerminalCount: 0 },
+        turns: [],
+      },
+    },
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(bgRequests(), ["child-proc"]);
+
+  // When the joined member spawns a background terminal, the change notification loads it.
+  processLists.set("child-joined", [
+    { processId: "proc-2", turnId: "t2", itemId: "i2", command: "npm run dev" },
+  ]);
+  machine.emitNotification({
+    method: "thread/backgroundTerminals/changed",
+    params: { threadId: "child-joined" },
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(bgRequests(), ["child-proc", "child-joined"]);
+  assert.deepEqual(
+    stream.processes.map(({ threadId, processId }) => [threadId, processId]),
+    [
+      ["child-proc", "proc-1"],
+      ["child-joined", "proc-2"],
+    ],
+  );
+
+  // Unloading a member clears its processes without another RPC.
+  machine.emitNotification({
+    method: "thread/status/changed",
+    params: { threadId: "child-proc", status: { type: "notLoaded" } },
+  });
+  assert.deepEqual(bgRequests(), ["child-proc", "child-joined"]);
+  assert.deepEqual(
+    stream.processes.map(({ threadId, processId }) => [threadId, processId]),
+    [["child-joined", "proc-2"]],
+  );
+  stream.close();
+});
+
 test("queued sendInput supplies clientUserMessageId and refreshQueue reads response.data", async () => {
   const queuedItem = {
     id: "q1",

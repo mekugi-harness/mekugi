@@ -828,7 +828,7 @@ function threadToAgent(thread: Thread, depth: number): Agent {
     role: thread.agentRole ?? undefined,
     depth,
     state: threadStatusToAgentState(thread.status),
-    skills: thread.extra?.skills,
+    skills: thread.extra?.skills?.length ? thread.extra.skills : undefined,
     ...usage,
     context: thread.contextTokens ?? usage?.context,
     window: thread.contextWindow ?? usage?.window,
@@ -840,6 +840,12 @@ const maxRoutineHooksPerThread = 200;
 const maxFailedHooksPerThread = 200;
 type HookCache = Map<string, { records: HookRecord[]; sequence: number }>;
 type ProcessChange = Extract<ServerNotification, { method: "thread/backgroundTerminals/changed" }>;
+
+function threadMayHaveProcesses(thread: Thread): boolean {
+  if (thread.status.type === "notLoaded") return false;
+  const count = thread.extra?.backgroundTerminalCount;
+  return typeof count === "number" ? count > 0 : true;
+}
 const processChangeReads = new WeakMap<ProcessChange, Promise<BackgroundTerminalsPage>>();
 
 function isHookFailed(run: HookRunSummary): boolean {
@@ -1240,10 +1246,13 @@ export class Stream {
       const subtreeRoot = this.family?.threads.includes(id)
         ? this.family.root
         : (thread.parentThreadId ?? id);
-      for (const member of this.family?.threads ?? [id]) {
-        void this.#loadProcesses(member, machine);
-      }
-      void this.#loadSubtree(subtreeRoot, machine, signal);
+      const loadedMainProcesses = threadMayHaveProcesses(thread);
+      if (loadedMainProcesses) void this.#loadProcesses(id, machine);
+      else this.#clearProcesses(id);
+      void this.#loadSubtree(subtreeRoot, machine, signal, {
+        refreshLoaded: keepEarlier,
+        skipThreadId: loadedMainProcesses ? id : undefined,
+      });
       void this.#loadChanges(id, machine, signal);
     } catch (err) {
       if (signal.aborted) return;
@@ -1303,13 +1312,17 @@ export class Stream {
     if (!this.roster.agents.length) {
       this.roster = { total: 1, agents: [threadToAgent(thread, 0)] };
       this.#observeRoles();
-    } else if (thread.tokenUsage || thread.extra?.skills) {
+    } else if (thread.tokenUsage || thread.extra?.skills?.length) {
       const usage = thread.tokenUsage ? usageFields(thread.tokenUsage) : undefined;
       this.roster = {
         ...this.roster,
         agents: this.roster.agents.map((agent) =>
           agent.thread === thread.id
-            ? { ...agent, ...usage, skills: thread.extra?.skills ?? agent.skills }
+            ? {
+                ...agent,
+                ...usage,
+                skills: thread.extra?.skills?.length ? thread.extra.skills : agent.skills,
+              }
             : agent,
         ),
       };
@@ -1317,7 +1330,12 @@ export class Stream {
     this.jumps++;
   }
 
-  async #loadSubtree(id: string, machine: Machine, signal: AbortSignal): Promise<void> {
+  async #loadSubtree(
+    id: string,
+    machine: Machine,
+    signal: AbortSignal,
+    options: { refreshLoaded?: boolean; skipThreadId?: string } = {},
+  ): Promise<void> {
     try {
       const response = await machine.request<ThreadListResponse>(
         "thread/subtree/list",
@@ -1333,7 +1351,16 @@ export class Stream {
       this.#workspaces = new Map(threads.map((thread) => [thread.id, thread.cwd]));
       this.processes = this.processes.filter((process) => this.#inFamily(process.threadId));
       for (const thread of threads) {
-        if (!previous.has(thread.id)) void this.#loadProcesses(thread.id, machine);
+        if (!threadMayHaveProcesses(thread)) {
+          this.#clearProcesses(thread.id);
+          continue;
+        }
+        if (
+          thread.id !== options.skipThreadId &&
+          (!previous.has(thread.id) || options.refreshLoaded)
+        ) {
+          void this.#loadProcesses(thread.id, machine);
+        }
       }
       const prevByThread = new Map(
         this.roster.agents.filter((a) => a.thread).map((a) => [a.thread!, a]),
@@ -1599,6 +1626,13 @@ export class Stream {
     if (savedPath) void this.#loadChanges(id, machine, signal);
   }
 
+  #clearProcesses(threadId: string): void {
+    this.#processReads.delete(threadId);
+    if (this.processes.some((process) => process.threadId === threadId)) {
+      this.processes = this.processes.filter((process) => process.threadId !== threadId);
+    }
+  }
+
   async #loadProcesses(threadId: string, machine: Machine, change?: ProcessChange): Promise<void> {
     const signal = this.#requests.signal;
     const revision = Symbol();
@@ -1676,7 +1710,7 @@ export class Stream {
     }
     switch (notification.method) {
       case "thread/started": {
-        const started = notification.params.thread;
+        const started: Thread = notification.params.thread;
         const parent = started.parentThreadId;
         if (
           parent &&
@@ -1688,7 +1722,12 @@ export class Stream {
           if (added) {
             this.family = { root: rootId, threads: [...threads, started.id] };
             this.#workspaces.set(started.id, started.cwd);
-            void this.#loadProcesses(started.id, machine);
+            if (
+              typeof started.extra?.backgroundTerminalCount === "number" &&
+              started.extra.backgroundTerminalCount > 0
+            ) {
+              void this.#loadProcesses(started.id, machine);
+            }
           }
           const nextAgent = threadToAgent(started, 1);
           const existingIdx = this.roster.agents.findIndex((a) => a.thread === started.id);
@@ -1715,6 +1754,7 @@ export class Stream {
       }
       case "thread/status/changed": {
         const targetId = notification.params.threadId;
+        if (notification.params.status.type === "notLoaded") this.#clearProcesses(targetId);
         if (targetId === id) {
           const status = threadStatusToStatus(notification.params.status);
           this.status = status;

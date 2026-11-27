@@ -357,3 +357,161 @@ test("stale pages cannot overwrite unrelated removals or token replacements", as
     ["Beta", "Gamma"],
   );
 });
+
+test("unarchive reconciles one thread in order without rescanning unrelated pages", async (t) => {
+  const machine = new Machine("Alpha", "https://alpha.example", "fixture");
+  t.mock.method(Connector.prototype, "connect", () => () => {});
+  let notify;
+  t.mock.method(machine, "onNotification", (listener) => {
+    notify = (method, params) => listener({ method, params });
+    return () => {};
+  });
+  const all = Array.from({ length: 10 }, (_, idx) => {
+    const n = 10 - idx;
+    return {
+      id: `t-${n}`,
+      name: `Thread ${n}`,
+      createdAt: n * 10,
+      updatedAt: n * 10,
+      status: { type: "idle" },
+    };
+  });
+  const requests = [];
+  let pendingUnarchive;
+  machine.request = async (method, params) => {
+    assert.equal(method, "thread/list");
+    requests.push(params);
+    if (params.includedThreadIds?.length) {
+      const id = params.includedThreadIds[0];
+      if (pendingUnarchive) {
+        const deferred = pendingUnarchive;
+        pendingUnarchive = undefined;
+        return deferred.promise;
+      }
+      return { data: all.filter((item) => item.id === id), nextCursor: null };
+    }
+    const page = Number(params.cursor ?? 0);
+    const start = page * 2;
+    return {
+      data: all.slice(start, start + 2),
+      nextCursor: start + 2 < all.length ? String(page + 1) : null,
+    };
+  };
+  try {
+    startMachine.call(machine);
+    await machine.refreshThreads();
+    assert.equal(requests.length, 5);
+    assert.deepEqual(
+      machine.sessions.map(({ id }) => id),
+      all.map(({ id }) => id),
+    );
+
+    notify("thread/archived", { threadId: "t-6" });
+    assert.equal(
+      machine.sessions.some(({ id }) => id === "t-6"),
+      false,
+    );
+
+    const beforeUnarchive = requests.length;
+    notify("thread/unarchived", { threadId: "t-6" });
+    await new Promise(setImmediate);
+    assert.equal(requests.length - beforeUnarchive, 1);
+    assert.deepEqual(requests.at(-1).includedThreadIds, ["t-6"]);
+    assert.equal(requests.at(-1).limit, 1);
+    assert.deepEqual(
+      machine.sessions.map(({ id }) => id),
+      all.map(({ id }) => id),
+    );
+
+    // A re-archive while the unarchive lookup is in flight must win.
+    notify("thread/archived", { threadId: "t-6" });
+    const deferred = Promise.withResolvers();
+    pendingUnarchive = deferred;
+    notify("thread/unarchived", { threadId: "t-6" });
+    notify("thread/archived", { threadId: "t-6" });
+    deferred.resolve({ data: [all.find((item) => item.id === "t-6")], nextCursor: null });
+    await new Promise(setImmediate);
+    assert.equal(
+      machine.sessions.some(({ id }) => id === "t-6"),
+      false,
+    );
+  } finally {
+    machine.close();
+  }
+});
+
+test("reconnect syncs changed and archived threads without rescanning unchanged pages", async (t) => {
+  const machine = new Machine("Alpha", "https://alpha.example", "fixture");
+  let onOpen;
+  t.mock.method(Connector.prototype, "connect", (_onState, open) => {
+    onOpen = open;
+    return () => {};
+  });
+  let activeThreads = Array.from({ length: 10 }, (_, idx) => {
+    const n = 10 - idx;
+    return {
+      id: `t-${n}`,
+      name: `Thread ${n}`,
+      createdAt: n * 10,
+      updatedAt: n * 10,
+      status: { type: "idle" },
+    };
+  });
+  let archivedThreads = [];
+  const requests = [];
+  machine.request = async (method, params) => {
+    assert.equal(method, "thread/list");
+    requests.push(params);
+    const source = params.archived ? archivedThreads : activeThreads;
+    const sorted =
+      params.sortKey === "updated_at"
+        ? source.toSorted((a, b) => b.updatedAt - a.updatedAt)
+        : source.toSorted((a, b) => b.createdAt - a.createdAt);
+    const page = Number(params.cursor ?? 0);
+    const start = page * 2;
+    return {
+      data: sorted.slice(start, start + 2),
+      nextCursor: start + 2 < sorted.length ? String(page + 1) : null,
+    };
+  };
+  try {
+    startMachine.call(machine);
+    onOpen({});
+    await new Promise((r) => setTimeout(r, 15));
+    const initialRpcs = requests.length;
+    assert.equal(initialRpcs, 5);
+    assert.equal(machine.sessions.length, 10);
+
+    // Changes missed while disconnected: one new thread, one renamed old thread, one archived thread.
+    archivedThreads = [{ ...activeThreads.find((item) => item.id === "t-2"), updatedAt: 111 }];
+    activeThreads = [
+      { id: "t-11", name: "Thread 11", createdAt: 110, updatedAt: 115, status: { type: "idle" } },
+      ...activeThreads
+        .filter((item) => item.id !== "t-2")
+        .map((item) => (item.id === "t-3" ? { ...item, name: "Renamed 3", updatedAt: 112 } : item)),
+    ];
+
+    const beforeReconnect = requests.length;
+    onOpen({});
+    await new Promise((r) => setTimeout(r, 15));
+    const reconnectRpcs = requests.length - beforeReconnect;
+    assert.ok(
+      reconnectRpcs < initialRpcs,
+      `expected reconnect RPCs (${reconnectRpcs}) < initial full-scan RPCs (${initialRpcs})`,
+    );
+    assert.equal(reconnectRpcs, 3); // 2 updated_at non-archived pages (3 changed + watermark hit) + 1 archived page
+    assert.deepEqual(
+      machine.sessions.map(({ id }) => id),
+      ["t-11", "t-10", "t-9", "t-8", "t-7", "t-6", "t-5", "t-4", "t-3", "t-1"],
+    );
+    assert.equal(machine.sessions.find(({ id }) => id === "t-3").title, "Renamed 3");
+
+    // Second reconnect with no changes stops on the first page (1 non-archived + 1 archived = 2 RPCs).
+    const beforeQuietReconnect = requests.length;
+    onOpen({});
+    await new Promise((r) => setTimeout(r, 15));
+    assert.equal(requests.length - beforeQuietReconnect, 2);
+  } finally {
+    machine.close();
+  }
+});

@@ -34,6 +34,45 @@ type SavedMachine = { id: string; label: string; endpoint: string; token: string
 type ThreadListing = Listed & { id: string };
 type ListingChange = ThreadListing | Partial<Pick<Listed, "title" | "status" | "waiting">> | null;
 const storagePrefix = "mekugi.machine.v1:";
+const threadListBaseParams: ThreadListParams = {
+  limit: 100,
+  archived: false,
+  useStateDbOnly: true,
+  modelProviders: [],
+  sourceKinds: [
+    "cli",
+    "vscode",
+    "exec",
+    "appServer",
+    "subAgent",
+    "subAgentReview",
+    "subAgentCompact",
+    "subAgentThreadSpawn",
+    "subAgentOther",
+    "unknown",
+  ],
+};
+
+function insertListingInOrder(current: ThreadListing[], listed: ThreadListing): ThreadListing[] {
+  const next = current.slice();
+  if (listed.started === undefined) {
+    next.unshift(listed);
+    return next;
+  }
+  let sawStarted = false;
+  for (let i = 0; i < next.length; i++) {
+    const started = next[i].started;
+    if (started === undefined) continue;
+    sawStarted = true;
+    if (started < listed.started) {
+      next.splice(i, 0, listed);
+      return next;
+    }
+  }
+  if (sawStarted) next.push(listed);
+  else next.unshift(listed);
+  return next;
+}
 
 export function threadStatusToStatus(status: ThreadStatus): Status {
   switch (status.type) {
@@ -117,6 +156,9 @@ export class Machine {
   #stop?: () => void;
   #stopNotifications?: () => void;
   #threadRefresh?: { controller: AbortController; changes: Map<string, ListingChange> };
+  #unarchiveReads = new Map<string, AbortController>();
+  #hasFullList = false;
+  #lastUpdatedAt?: number;
   #openListeners = new Set<(info: InitializeResponse) => void>();
 
   constructor(label: string, endpoint: string, token: string, id = newIdentity()) {
@@ -172,35 +214,24 @@ export class Machine {
     this.#threadRefresh = { controller, changes };
     try {
       const all = new Map<string, ThreadListing>();
-      const params: ThreadListParams = {
-        limit: 100,
-        archived: false,
-        useStateDbOnly: true,
-        modelProviders: [],
-        sourceKinds: [
-          "cli",
-          "vscode",
-          "exec",
-          "appServer",
-          "subAgent",
-          "subAgentReview",
-          "subAgentCompact",
-          "subAgentThreadSpawn",
-          "subAgentOther",
-          "unknown",
-        ],
-      };
       let cursor: string | undefined;
+      let maxUpdatedAt: number | undefined;
       do {
         const response = await this.request<ThreadListResponse>(
           "thread/list",
-          { ...params, ...(cursor ? { cursor } : {}) } satisfies ThreadListParams,
+          { ...threadListBaseParams, ...(cursor ? { cursor } : {}) } satisfies ThreadListParams,
           { signal: controller.signal },
         );
         if (controller.signal.aborted) return;
         cursor = response.nextCursor ?? undefined;
         const previousSize = all.size;
         for (const thread of response.data ?? []) {
+          if (typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt)) {
+            maxUpdatedAt =
+              maxUpdatedAt === undefined
+                ? thread.updatedAt
+                : Math.max(maxUpdatedAt, thread.updatedAt);
+          }
           if (standaloneThread(thread) && !all.has(thread.id)) {
             all.set(thread.id, threadToListed(thread));
           }
@@ -224,10 +255,191 @@ export class Machine {
           this.sessions = stale.length ? next.concat(stale) : next;
         }
       } while (cursor);
+      this.#hasFullList = true;
+      if (maxUpdatedAt !== undefined) {
+        this.#lastUpdatedAt =
+          this.#lastUpdatedAt === undefined
+            ? maxUpdatedAt
+            : Math.max(this.#lastUpdatedAt, maxUpdatedAt);
+      }
     } catch {
       // Transient refresh failures are surfaced through the connection state.
     } finally {
       if (this.#threadRefresh?.controller === controller) this.#threadRefresh = undefined;
+    }
+  }
+
+  #recordUpdatedAt(thread: Pick<Thread, "updatedAt">): void {
+    if (typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt)) {
+      this.#lastUpdatedAt =
+        this.#lastUpdatedAt === undefined
+          ? thread.updatedAt
+          : Math.max(this.#lastUpdatedAt, thread.updatedAt);
+    }
+  }
+
+  #syncThreadsOnOpen(): Promise<void> {
+    if (!this.#hasFullList || this.#lastUpdatedAt === undefined || !this.sessions?.length) {
+      return this.refreshThreads();
+    }
+    return this.#syncThreadsIncremental();
+  }
+
+  async #syncThreadsIncremental(): Promise<void> {
+    this.#threadRefresh?.controller.abort();
+    const controller = new AbortController();
+    const changes = new Map<string, ListingChange>();
+    this.#threadRefresh = { controller, changes };
+    const watermark = this.#lastUpdatedAt!;
+    const activeIds = (this.sessions ?? [])
+      .filter((session) => session.status.running || session.waiting)
+      .map((session) => session.id);
+    try {
+      const seen = new Set<string>();
+      const upserts = new Map<string, ThreadListing>();
+      const removed = new Set<string>();
+      let nextUpdatedAt = watermark;
+      const trackUpdatedAt = (thread: Pick<Thread, "updatedAt">) => {
+        if (typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt)) {
+          nextUpdatedAt = Math.max(nextUpdatedAt, thread.updatedAt);
+        }
+      };
+
+      let cursor: string | undefined;
+      do {
+        const response: ThreadListResponse = await this.request<ThreadListResponse>(
+          "thread/list",
+          {
+            ...threadListBaseParams,
+            sortKey: "updated_at",
+            ...(cursor ? { cursor } : {}),
+          } satisfies ThreadListParams,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        cursor = response.nextCursor ?? undefined;
+        const page = response.data ?? [];
+        let reachedWatermark = false;
+        for (const thread of page) {
+          trackUpdatedAt(thread);
+          if (standaloneThread(thread)) {
+            seen.add(thread.id);
+            if (!upserts.has(thread.id)) upserts.set(thread.id, threadToListed(thread));
+          }
+          if (typeof thread.updatedAt === "number" && thread.updatedAt < watermark) {
+            reachedWatermark = true;
+          }
+        }
+        if (!page.length || reachedWatermark) break;
+      } while (cursor);
+
+      cursor = undefined;
+      do {
+        const response: ThreadListResponse = await this.request<ThreadListResponse>(
+          "thread/list",
+          {
+            ...threadListBaseParams,
+            archived: true,
+            sortKey: "updated_at",
+            ...(cursor ? { cursor } : {}),
+          } satisfies ThreadListParams,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        cursor = response.nextCursor ?? undefined;
+        const page = response.data ?? [];
+        let reachedWatermark = false;
+        for (const thread of page) {
+          seen.add(thread.id);
+          if (!upserts.has(thread.id)) removed.add(thread.id);
+          if (typeof thread.updatedAt === "number" && thread.updatedAt < watermark) {
+            reachedWatermark = true;
+          }
+        }
+        if (!page.length || reachedWatermark) break;
+      } while (cursor);
+
+      const uncheckedActive = activeIds.filter((id) => !seen.has(id));
+      for (let i = 0; i < uncheckedActive.length; i += 100) {
+        const batch = uncheckedActive.slice(i, i + 100);
+        const response = await this.request<ThreadListResponse>(
+          "thread/list",
+          {
+            ...threadListBaseParams,
+            includedThreadIds: batch,
+            limit: batch.length,
+          } satisfies ThreadListParams,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        const found = new Set<string>();
+        for (const thread of response.data ?? []) {
+          trackUpdatedAt(thread);
+          if (standaloneThread(thread)) {
+            found.add(thread.id);
+            upserts.set(thread.id, threadToListed(thread));
+          }
+        }
+        for (const id of batch) {
+          if (!found.has(id)) removed.add(id);
+        }
+      }
+
+      if (controller.signal.aborted) return;
+      const existingIds = new Set<string>();
+      let next: ThreadListing[] = [];
+      for (const session of this.sessions ?? []) {
+        const change = changes.get(session.id);
+        if (change === null) continue;
+        if (removed.has(session.id) && change === undefined) continue;
+        existingIds.add(session.id);
+        const updated = upserts.get(session.id) ?? session;
+        next.push(change ? ("id" in change ? change : { ...updated, ...change }) : updated);
+      }
+      for (const [id, listed] of upserts) {
+        if (existingIds.has(id)) continue;
+        const change = changes.get(id);
+        if (change === null) continue;
+        const entry = change ? ("id" in change ? change : { ...listed, ...change }) : listed;
+        next = insertListingInOrder(next, entry);
+      }
+      this.sessions = next;
+      this.#lastUpdatedAt =
+        this.#lastUpdatedAt === undefined
+          ? nextUpdatedAt
+          : Math.max(this.#lastUpdatedAt, nextUpdatedAt);
+    } catch {
+      // Transient refresh failures are surfaced through the connection state.
+    } finally {
+      if (this.#threadRefresh?.controller === controller) this.#threadRefresh = undefined;
+    }
+  }
+
+  async #reconcileUnarchived(threadId: string): Promise<void> {
+    this.#unarchiveReads.get(threadId)?.abort();
+    const controller = new AbortController();
+    this.#unarchiveReads.set(threadId, controller);
+    try {
+      const response = await this.request<ThreadListResponse>(
+        "thread/list",
+        {
+          ...threadListBaseParams,
+          includedThreadIds: [threadId],
+          limit: 1,
+        } satisfies ThreadListParams,
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      const thread = (response.data ?? []).find(
+        (entry) => entry.id === threadId && standaloneThread(entry),
+      );
+      if (!thread) return;
+      this.#recordUpdatedAt(thread);
+      this.#changeListing(thread.id, threadToListed(thread), true);
+    } catch {
+      // Transient lookup failures are surfaced through the connection state.
+    } finally {
+      if (this.#unarchiveReads.get(threadId) === controller) this.#unarchiveReads.delete(threadId);
     }
   }
 
@@ -257,13 +469,13 @@ export class Machine {
       },
       (info) => {
         this.info = info;
-        void this.refreshThreads();
+        void this.#syncThreadsOnOpen();
         for (const listener of this.#openListeners) listener(info);
       },
     );
   }
 
-  #changeListing(threadId: string, change: ListingChange): void {
+  #changeListing(threadId: string, change: ListingChange, ordered = false): void {
     const changes = this.#threadRefresh?.changes;
     if (changes) {
       const previous = changes.get(threadId);
@@ -274,7 +486,9 @@ export class Machine {
     const current = this.sessions ?? [];
     const index = current.findIndex((s) => s.id === threadId);
     if (index < 0) {
-      if (change && "id" in change) this.sessions = [change, ...current];
+      if (change && "id" in change) {
+        this.sessions = ordered ? insertListingInOrder(current, change) : [change, ...current];
+      }
       return;
     }
     const next = current.slice();
@@ -287,7 +501,9 @@ export class Machine {
     switch (notification.method) {
       case "thread/started": {
         if (!standaloneThread(notification.params.thread)) break;
+        this.#recordUpdatedAt(notification.params.thread);
         const listed = threadToListed(notification.params.thread);
+        this.#unarchiveReads.get(listed.id)?.abort();
         this.#changeListing(listed.id, listed);
         break;
       }
@@ -303,11 +519,12 @@ export class Machine {
       }
       case "thread/archived":
       case "thread/deleted": {
+        this.#unarchiveReads.get(notification.params.threadId)?.abort();
         this.#changeListing(notification.params.threadId, null);
         break;
       }
       case "thread/unarchived": {
-        void this.refreshThreads();
+        void this.#reconcileUnarchived(notification.params.threadId);
         break;
       }
       default:
@@ -334,6 +551,10 @@ export class Machine {
   authorize(token: string): void {
     this.#connector.authorize(token);
     this.#threadRefresh?.controller.abort();
+    for (const controller of this.#unarchiveReads.values()) controller.abort();
+    this.#unarchiveReads.clear();
+    this.#hasFullList = false;
+    this.#lastUpdatedAt = undefined;
     this.#token = token.trim();
     this.connection = "connecting";
     this.error = undefined;
@@ -341,6 +562,10 @@ export class Machine {
 
   close(): void {
     this.#threadRefresh?.controller.abort();
+    for (const controller of this.#unarchiveReads.values()) controller.abort();
+    this.#unarchiveReads.clear();
+    this.#hasFullList = false;
+    this.#lastUpdatedAt = undefined;
     this.#stop?.();
     this.#stopNotifications?.();
     this.#openListeners.clear();

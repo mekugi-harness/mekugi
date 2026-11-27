@@ -1205,6 +1205,10 @@ impl Session {
             .await;
     }
 
+    pub(crate) async fn background_terminal_count(&self) -> usize {
+        self.services.unified_exec_manager.process_count().await
+    }
+
     pub(crate) async fn list_background_terminals(&self) -> Vec<BackgroundTerminalInfo> {
         self.services.unified_exec_manager.list_processes().await
     }

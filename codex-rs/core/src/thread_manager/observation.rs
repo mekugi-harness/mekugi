@@ -410,7 +410,7 @@ impl ThreadManagerState {
                     .and_then(|value| value.try_into().ok());
             }
             view.token_usage = thread.observed_token_usage().await;
-            view.extra = thread.observed_thread_extra();
+            view.extra = thread.observed_thread_extra().await;
             view.completed_compactions = thread.session.completed_compactions().await;
             view.agent_status = Some(match thread.agent_status().await {
                 AgentStatus::Completed(_) => AgentStatus::Completed(None),
@@ -443,6 +443,7 @@ fn apply_retained_usage<'a>(
     if !observation.skills.is_empty() {
         view.extra = Some(codex_app_server_protocol::ThreadExtra {
             skills: observation.skills.into_iter().collect(),
+            background_terminal_count: None,
         });
     }
     observation.settings
