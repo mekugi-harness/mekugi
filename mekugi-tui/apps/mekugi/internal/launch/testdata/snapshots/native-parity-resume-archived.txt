@@ -9,4 +9,4 @@
 
   enter restore · esc close · tab cwd/all · ctrl+c close · ↑/↓ browse
   gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
-  Main • Direct Session • /tmp/ws • ctrl+e view
+  Main • ◐ 1 • Direct Session • /tmp/ws • ctrl+e view

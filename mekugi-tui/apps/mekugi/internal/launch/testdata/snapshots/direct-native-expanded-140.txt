@@ -21,4 +21,4 @@
 ❯  
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   gpt-5 (medium) · standard | ━━╸─────── 25% 100K/400K | $0.12 · total $0.48 | ↑ 12K ↓ 3K | 96.0 tok/s | 5h 88% left · Weekly 79% left
-  Main • Direct Session • /workspace/demo • ↓ roster • → diff • ctrl+e view
+  Main • ◐ 1 • Direct Session • /workspace/demo • ↓ roster • → diff • ctrl+e view

@@ -10,9 +10,9 @@ mekugi-app-server/test
     !go test ./parser
     Keep existing input intact.
 
-
+◐ Working
 ──────────────────────────────────────────────────────
 ❯  
 ──────────────────────────────────────────────────────
   gpt-5 (medium) · standard
-  Main • Direct Session • /tmp/ws • ↓ roster • → diff
+  Main • ◐ 1 • Direct… • /tmp/ws • ↓ roster • → diff

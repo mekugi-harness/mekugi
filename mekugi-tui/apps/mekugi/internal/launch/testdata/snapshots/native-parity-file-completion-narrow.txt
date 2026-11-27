@@ -9,4 +9,4 @@
 ❯ @snapshot 
 ──────────────────────────────────────────
   gpt-5 (medium) · standard
-  Main • Direct… • /tmp/ws • ctrl+e view
+  Main • ◐ 1 • Direct Session • /tmp/ws

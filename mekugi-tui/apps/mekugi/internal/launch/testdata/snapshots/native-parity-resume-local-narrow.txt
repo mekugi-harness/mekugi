@@ -9,4 +9,4 @@
 
   enter resume · esc close · tab …
   gpt-5 (medium) · standard
-  Main • Direct Session • /tmp/ws
+  Main • ◐ 1 • Direct… • /tmp/ws

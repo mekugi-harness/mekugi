@@ -21,5 +21,5 @@
 "\x1b[36m❯ \x1b[39;7m \x1b[m                                                                       "
 "\x1b[2m──────────────────────────────────────────────────────────────────────────\x1b[m"
 "  \x1b[38;5;73mgpt-5 (medium) · standard\x1b[39;2m | \x1b[38;5;75;22m5h 88% left\x1b[39;2m · \x1b[38;5;75;22mWeekly 79% left\x1b[m               "
-"  \x1b[38;2;86;212;221;1mMain\x1b[39;22;2m • \x1b[mDirect Session\x1b[2m • \x1b[38;5;114;22m/tmp/ws\x1b[39;2m • \x1b[mctrl+e\x1b[2m view\x1b[m                           "
+"  \x1b[38;2;86;212;221;1mMain\x1b[39;22;2m • \x1b[33;22m◐ 1\x1b[39;2m • \x1b[mDirect Session\x1b[2m • \x1b[38;5;114;22m/tmp/ws\x1b[39;2m • \x1b[mctrl+e\x1b[2m view\x1b[m                     "
 "plain after dock                                                          "
