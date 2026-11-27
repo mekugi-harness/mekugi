@@ -158,6 +158,7 @@ fn read_changes(
     if patch_offset != 0 && capture_page.is_none() {
         return Err(invalid_request("invalid captured edit cursor"));
     }
+    let include_external = params.include_external.unwrap_or(true);
     let include_ephemeral = params.include_ephemeral.unwrap_or(false);
     let ids: Vec<_> = entries
         .into_iter()
@@ -179,11 +180,14 @@ fn read_changes(
         return Ok(response);
     }
     let mut records = store.load_records(&ids).map_err(read_error)?;
-    if !include_ephemeral {
-        for record in &mut records {
-            record.files.retain(|file| !file.scope.is_ephemeral());
-        }
-    }
+    records.retain_mut(|record| {
+        record.files.retain(|file| match file.scope {
+            codex_change_history::ChangeScope::Workspace => true,
+            codex_change_history::ChangeScope::External => include_external,
+            codex_change_history::ChangeScope::Ephemeral => include_ephemeral,
+        });
+        !record.files.is_empty()
+    });
     if let Some(caller) = params.caller_thread_id.as_ref() {
         records.retain(|record| author_thread(record).as_ref() == Some(caller));
     }
@@ -373,6 +377,7 @@ fn wire_file(diff: ComposedFileDiff) -> ThreadChangeFileDiff {
         deletions: stats.deletions as i64,
         is_binary: stats.is_binary,
         coverage_notes: stats.coverage_notes,
+        scope: stats.scope.as_str().to_string(),
     }
 }
 

@@ -7,6 +7,10 @@
  */
 export type ThreadChangesReadParams = { threadId: string,
 /**
+ * Include non-ephemeral changes outside the workspace root (default false for Saved Diff).
+ */
+includeExternal?: boolean,
+/**
  * Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).
  */
 includeEphemeral?: boolean,

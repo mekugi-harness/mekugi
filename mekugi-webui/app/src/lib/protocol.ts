@@ -499,6 +499,7 @@ export type ReviewFile = {
   Removed?: number;
   Origin?: string;
   OriginNote?: string;
+  Scope?: string;
 };
 
 export type Chunk = Origin & {
@@ -553,6 +554,7 @@ export type Preview = {
   Complete?: boolean;
   Settling?: boolean;
   SavedPath?: string;
+  ExternalSummary?: string;
   DiffText?: boolean;
   Status: string;
   Footer?: string;

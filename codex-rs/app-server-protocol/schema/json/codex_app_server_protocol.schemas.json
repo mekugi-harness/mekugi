@@ -24792,6 +24792,11 @@
           "path": {
             "type": "string"
           },
+          "scope": {
+            "default": "",
+            "description": "Filesystem scope of the change: \"workspace\", \"external\", or \"ephemeral\".",
+            "type": "string"
+          },
           "status": {
             "type": "string"
           },
@@ -24928,6 +24933,13 @@
           },
           "includeEphemeral": {
             "description": "Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "includeExternal": {
+            "description": "Include non-ephemeral changes outside the workspace root (default false for Saved Diff).",
             "type": [
               "boolean",
               "null"

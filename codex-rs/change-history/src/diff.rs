@@ -13,6 +13,7 @@ use similar::TextDiff;
 use crate::error::ChangeHistoryError;
 use crate::identity::ChangeId;
 use crate::model::ChangeRecord;
+use crate::model::ChangeScope;
 use crate::model::CoverageStatus;
 use crate::model::FileEvidence;
 use crate::model::FileSnapshot;
@@ -30,6 +31,7 @@ pub struct FileDiffStats {
     pub deletions: usize,
     pub is_binary: bool,
     pub coverage_notes: Vec<String>,
+    pub scope: ChangeScope,
 }
 
 /// Composed summary across one or more [`ChangeRecord`]s.
@@ -55,6 +57,7 @@ pub(crate) struct ComposedFileTransition {
     pub(crate) before: FileSnapshot,
     pub(crate) after: FileSnapshot,
     pub(crate) coverage_notes: Vec<String>,
+    pub(crate) scope: ChangeScope,
     change_ids: Vec<ChangeId>,
 }
 
@@ -235,6 +238,7 @@ pub(crate) fn compose_transitions_with_continuity(
                             before,
                             after,
                             coverage_notes,
+                            scope: file.scope,
                             change_ids: vec![record.id.clone()],
                         },
                     ),
@@ -460,6 +464,7 @@ impl ComposedFileTransition {
             deletions,
             is_binary: text_counts.is_none(),
             coverage_notes: self.coverage_notes,
+            scope: self.scope,
         }
     }
 }

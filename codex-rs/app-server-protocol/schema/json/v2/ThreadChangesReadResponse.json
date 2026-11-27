@@ -65,6 +65,11 @@
         "path": {
           "type": "string"
         },
+        "scope": {
+          "default": "",
+          "description": "Filesystem scope of the change: \"workspace\", \"external\", or \"ephemeral\".",
+          "type": "string"
+        },
         "status": {
           "type": "string"
         },

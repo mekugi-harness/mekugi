@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -19,9 +20,14 @@ import (
 
 type nativeEditItem struct{ thread, turn, item string }
 
+func isWorkspaceScope(scope string) bool {
+	return scope == "" || scope == "workspace"
+}
+
 type nativeCapturedFile struct {
 	chunk          changes.Chunk
 	path           string
+	scope          string
 	added, removed int
 }
 
@@ -55,6 +61,7 @@ type directChangeFile struct {
 	Deletions     int      `json:"deletions"`
 	IsBinary      bool     `json:"isBinary"`
 	CoverageNotes []string `json:"coverageNotes"`
+	Scope         string   `json:"scope"`
 }
 
 func (c *directNativeConnection) requestChanges(threadID string) {
@@ -92,7 +99,13 @@ func (c *directNativeConnection) readChanges(ctx context.Context, threadID strin
 	var patchBytes int
 	seen := make(map[string]bool)
 	for {
-		params := map[string]any{"threadId": threadID, "perCapture": true, "limit": 100}
+		params := map[string]any{
+			"threadId":         threadID,
+			"perCapture":       true,
+			"includeExternal":  true,
+			"includeEphemeral": true,
+			"limit":            100,
+		}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
@@ -202,11 +215,15 @@ func (c *directNativeConnection) refreshChanges(threadID string, rev uint64) {
 				Change: origin.ChangeID, Caller: caller, Source: origin.SourceLabel,
 			},
 		}
-		captures = append(captures, chunk)
+		// Saved Diff defaults to Workspace edits; External/Ephemeral remain in
+		// ChangeHistoryStore for mchanges and compact transcript summaries.
+		if isWorkspaceScope(f.Scope) {
+			captures = append(captures, chunk)
+		}
 		if origin.ItemID != "" {
 			key := nativeEditItem{origin.ThreadID, origin.TurnID, origin.ItemID}
 			receipts[key] = append(receipts[key], nativeCapturedFile{
-				chunk: chunk, path: path, added: f.Additions, removed: f.Deletions,
+				chunk: chunk, path: path, scope: f.Scope, added: f.Additions, removed: f.Deletions,
 			})
 		}
 	}
@@ -253,13 +270,37 @@ func (c *directNativeConnection) setEditReceiptLocked(rec *directItemRecord, fil
 		return
 	}
 	var rows []activity.ChangeRow
+	var externalCount int
+	var externalIDs []string
 	for _, file := range files {
 		chunk := file.chunk
+		if !isWorkspaceScope(file.scope) {
+			externalCount++
+			if chunk.Change != "" && !slices.Contains(externalIDs, chunk.Change) {
+				externalIDs = append(externalIDs, chunk.Change)
+			}
+			continue
+		}
 		rows = append(rows, activity.ChangeRow{
 			Verb:  chunk.Review.Action().Title(),
 			Label: pathdisplay.ForWorkspace(chunk.Workspace, file.path),
 			Added: file.added, Removed: file.removed,
 			Note: capturedFileNote(chunk),
+		})
+	}
+	if externalCount > 0 {
+		noun := "external files"
+		if externalCount == 1 {
+			noun = "external file"
+		}
+		note := ""
+		if len(externalIDs) > 0 {
+			note = "mchanges " + strings.Join(externalIDs, " ") + " --summary"
+		}
+		rows = append(rows, activity.ChangeRow{
+			Verb:  "Captured",
+			Label: fmt.Sprintf("%d %s", externalCount, noun),
+			Note:  note,
 		})
 	}
 	index := len(rec.entry.Values) - 1

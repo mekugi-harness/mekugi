@@ -69,6 +69,7 @@ fn capture_pages_bound_encoded_payload_and_resume_inside_a_patch() {
     );
     let mut params = ThreadChangesReadParams {
         thread_id: "thread".into(),
+        include_external: None,
         include_ephemeral: None,
         caller_thread_id: None,
         item_id: None,
@@ -142,6 +143,7 @@ fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() 
     for caller in [None, Some("thread".to_string())] {
         let params = ThreadChangesReadParams {
             thread_id: "thread".into(),
+            include_external: None,
             include_ephemeral: None,
             caller_thread_id: caller,
             item_id: None,

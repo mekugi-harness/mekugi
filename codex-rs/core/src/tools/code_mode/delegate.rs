@@ -31,6 +31,7 @@ use crate::session::step_context::StepContext;
 use crate::tools::ExecutedToolCalls;
 use crate::tools::call_trace;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::context::ToolChangeNotice;
 use crate::tools::parallel::ToolCallRuntime;
 
 pub(super) struct CodeModeDispatchBroker {
@@ -38,6 +39,7 @@ pub(super) struct CodeModeDispatchBroker {
     dispatch_tx: async_channel::Sender<DispatchMessage>,
     dispatch_rx: async_channel::Receiver<DispatchMessage>,
     dispatch_gates: Arc<Mutex<HashMap<CellId, CellDispatchGate>>>,
+    cell_change_notices: Arc<Mutex<HashMap<CellId, Vec<ToolChangeNotice>>>>,
     executed_tool_calls: ExecutedToolCalls,
 }
 
@@ -63,6 +65,7 @@ impl CodeModeDispatchBroker {
             dispatch_tx,
             dispatch_rx,
             dispatch_gates: Arc::new(Mutex::new(HashMap::new())),
+            cell_change_notices: Arc::new(Mutex::new(HashMap::new())),
             executed_tool_calls,
         }
     }
@@ -106,6 +109,14 @@ impl CodeModeDispatchBroker {
         self.executed_tool_calls.finish_cell_recording(cell_id);
     }
 
+    pub(super) fn take_cell_change_notices(&self, cell_id: &CellId) -> Vec<ToolChangeNotice> {
+        self.cell_change_notices
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(cell_id)
+            .unwrap_or_default()
+    }
+
     pub(super) fn active_cell_ids(&self) -> Vec<CellId> {
         self.dispatch_gates
             .lock()
@@ -125,6 +136,7 @@ impl CodeModeDispatchBroker {
         let host = Arc::new(CoreTurnHost {
             session,
             tool_runtime,
+            cell_change_notices: Arc::clone(&self.cell_change_notices),
         });
         let dispatch_rx = self.dispatch_rx.clone();
         let dispatch_gates = Arc::clone(&self.dispatch_gates);
@@ -439,6 +451,7 @@ impl Drop for CodeModeDispatchWorker {
 struct CoreTurnHost {
     session: Arc<Session>,
     tool_runtime: ToolCallRuntime,
+    cell_change_notices: Arc<Mutex<HashMap<CellId, Vec<ToolChangeNotice>>>>,
 }
 
 impl CoreTurnHost {
@@ -449,6 +462,8 @@ impl CoreTurnHost {
         call_id: String,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<JsonValue, String>> + Send + 'static {
+        let cell_id = invocation.cell_id.clone();
+        let cell_change_notices = Arc::clone(&self.cell_change_notices);
         let invocation = submit_nested_tool(
             Arc::clone(&self.session),
             step_context,
@@ -458,7 +473,18 @@ impl CoreTurnHost {
             cancellation_token,
         )
         .map_err(|error| error.to_string());
-        async move { invocation?.await.map_err(|error| error.to_string()) }
+        async move {
+            let (change_notice, result) = invocation?.await.map_err(|error| error.to_string())?;
+            if let Some(notice) = change_notice {
+                cell_change_notices
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(cell_id)
+                    .or_default()
+                    .push(notice);
+            }
+            Ok(result)
+        }
     }
 
     async fn notify(

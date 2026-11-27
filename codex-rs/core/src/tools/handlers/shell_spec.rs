@@ -206,6 +206,15 @@ fn unified_exec_output_schema() -> Value {
             "output": {
                 "type": "string",
                 "description": "Command output text, possibly truncated."
+            },
+            "change_id": {
+                "type": "string",
+                "description": "Durable change-history ID allocated when the command persisted file edits."
+            },
+            "capture_incomplete": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Per-file incomplete capture coverage warnings, when any."
             }
         },
         "required": ["wall_time_seconds", "output"],

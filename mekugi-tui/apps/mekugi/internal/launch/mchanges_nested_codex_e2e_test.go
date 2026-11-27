@@ -60,7 +60,7 @@ text("HOST_RESULT_VERIFIED");`, e2eMustMarshalJSON(patch), e2eMustMarshalJSON(ba
 	if !t.Run("managed runtime", func(t *testing.T) {
 		runAppServerPreviewWith(t, provider, nil, appServerPreview{
 			managedRuntime: true, workspace: workspace,
-			environment:   []string{"SHELL=" + bash, "TMPDIR=" + sessionRoot, "MEKUGI_NATIVE_MCHANGES=1"},
+			environment:   []string{"SHELL=" + bash, "TMPDIR=" + sessionRoot},
 			codexArgs:     []string{"-c", `sandbox_mode="danger-full-access"`},
 			completedText: provider.finalText,
 		})

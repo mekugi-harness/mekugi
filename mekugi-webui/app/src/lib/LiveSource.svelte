@@ -144,6 +144,9 @@
                 >
               {/if}
             </div>
+            {#if preview.ExternalSummary}
+              <p class="mt-1.5 text-small text-muted font-mono">{preview.ExternalSummary}</p>
+            {/if}
             {#each preview.Files as file, i (i)}
               {@const path = workspacePath(
                 file.AfterPath || file.BeforePath || file.Path || "",

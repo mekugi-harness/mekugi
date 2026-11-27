@@ -10,6 +10,46 @@ use serde_json::Value as JsonValue;
 
 use crate::ToolPayload;
 
+/// Durable change-history receipt produced by an authored edit tool call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolChangeNotice {
+    pub change_id: String,
+    pub incomplete_notes: Vec<String>,
+}
+
+impl ToolChangeNotice {
+    /// Format a single durable change notice for model-facing tool output.
+    pub fn format_notice(&self) -> String {
+        Self::format_many(std::slice::from_ref(self))
+    }
+
+    /// Format one or more durable change notices (for example, collected across
+    /// nested tool calls inside a code-mode cell) as a compact receipt.
+    pub fn format_many(notices: &[Self]) -> String {
+        let mut ids: Vec<&str> = Vec::new();
+        let mut incomplete: Vec<&str> = Vec::new();
+        for notice in notices {
+            if !notice.change_id.is_empty() && !ids.contains(&notice.change_id.as_str()) {
+                ids.push(notice.change_id.as_str());
+            }
+            for note in &notice.incomplete_notes {
+                if !note.is_empty() && !incomplete.contains(&note.as_str()) {
+                    incomplete.push(note.as_str());
+                }
+            }
+        }
+        let mut out = ids.join(" ");
+        if !incomplete.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("Capture incomplete: ");
+            out.push_str(&incomplete.join("; "));
+        }
+        out
+    }
+}
+
 /// Model-facing output contract returned by executable tool runtimes.
 pub trait ToolOutput: Send {
     /// Returns a deliberately lossy diagnostic representation, before telemetry size limits.
@@ -84,6 +124,12 @@ pub trait ToolOutput: Send {
     fn tool_result_metadata(&self) -> ToolResultMetadata {
         ToolResultMetadata::default()
     }
+
+    /// Returns the durable change-history receipt allocated for this tool call,
+    /// if any.
+    fn change_notice(&self) -> Option<ToolChangeNotice> {
+        None
+    }
 }
 
 impl<T> ToolOutput for Box<T>
@@ -144,6 +190,10 @@ where
 
     fn tool_result_metadata(&self) -> ToolResultMetadata {
         (**self).tool_result_metadata()
+    }
+
+    fn change_notice(&self) -> Option<ToolChangeNotice> {
+        (**self).change_notice()
     }
 }
 
