@@ -12,7 +12,7 @@
   import { observeOverflow } from "./overflow";
   import type { TimestampMode } from "./preferences.svelte";
   import type { Entry, Value } from "./protocol";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import Icon from "./ui/Icon.svelte";
   import Reasoning from "./ui/ai/Reasoning.svelte";
   import * as Bubble from "./ui/bubble";
@@ -493,7 +493,7 @@
               {@render agentProgress(value)}
             {:else if value.kind === "progress"}
               <p class="col-span-full py-[5px] text-muted">
-                {progressText(value, (name) => stream.label(name))}
+                {progressText(value, (name) => streams.current.label(name))}
               </p>
             {:else if hidden}
               <details

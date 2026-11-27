@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { untrack } from "svelte";
   import type { Attachment } from "svelte/attachments";
   import AgentName from "./AgentName.svelte";
   import AutoPage from "./AutoPage.svelte";
@@ -43,6 +43,11 @@
 
   const wrap = false;
   const files = $derived(review?.files ?? []);
+  const focusIndex = $derived.by(() => {
+    if (!focusPath) return -1;
+    const match = matchReviewedFile(files, focusPath, review?.workspace ?? "");
+    return match ? files.indexOf(match) : -1;
+  });
   const net = $derived(review?.counts.Net);
   const callerChoices = $derived([
     { value: "all", label: "All callers" },
@@ -122,21 +127,42 @@
     };
 
   $effect(() => {
-    const target = focusPath;
-    if (!target || !files.length || !scroller) return;
-    const match = matchReviewedFile(files, target, review?.workspace ?? "");
-    if (!match) return;
+    const viewport = scroller;
+    if (focusIndex < 0 || !viewport) return;
+    const preceding = files.slice(0, focusIndex + 1);
+    const match = preceding[focusIndex];
     untrack(() => {
       toggled[match.key] = true;
-      nearViewport = { ...nearViewport, [match.key]: true };
-      void tick().then(() => {
-        const el = [...scroller!.querySelectorAll<HTMLElement>("[data-file]")].find(
-          (node) => node.dataset.file === match.key,
-        );
-        el?.scrollIntoView({ block: "start", behavior: preferredScrollBehavior() });
-        onfocused?.();
+      const ready = { ...nearViewport };
+      for (const file of preceding) ready[file.key] = true;
+      nearViewport = ready;
+    });
+    // Measure the rows up to the target before scrolling. Their remembered
+    // sizes keep the target in place when offscreen deferral resumes.
+    let scrollFrame = 0;
+    let doneFrame = 0;
+    const measureFrame = requestAnimationFrame(() => {
+      scrollFrame = requestAnimationFrame(() => {
+        const summary = [...viewport.querySelectorAll<HTMLElement>("[data-file]")]
+          .find((node) => node.dataset.file === match.key)
+          ?.querySelector("summary");
+        if (summary) {
+          const behavior = preferredScrollBehavior();
+          if (viewport.scrollHeight > viewport.clientHeight) {
+            const top = summary.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+            viewport.scrollBy({ top, behavior });
+          } else {
+            summary.scrollIntoView({ block: "start", behavior });
+          }
+        }
+        doneFrame = requestAnimationFrame(() => onfocused?.());
       });
     });
+    return () => {
+      cancelAnimationFrame(measureFrame);
+      cancelAnimationFrame(scrollFrame);
+      cancelAnimationFrame(doneFrame);
+    };
   });
 </script>
 
@@ -177,9 +203,15 @@
     {#if files.length}
       <ul class="grid gap-2">
         {#each files as file, index (file.key)}
+          {@const eager = index < 2}
           {@const isOpen = open(file)}
-          {@const ready = nearViewport[file.key] || index < 2}
-          <li data-file={file.key} {@attach observeFile(file.key)}>
+          {@const ready = eager || nearViewport[file.key]}
+          <li
+            data-file={file.key}
+            class:deferred-file={isOpen && !eager}
+            class:measuring-file={index <= focusIndex}
+            {@attach observeFile(file.key)}
+          >
             <details
               class="group/disclosure"
               open={isOpen}
@@ -253,3 +285,16 @@
     {#if cursor}<AutoPage {cursor} ready={!loading && !error} {onpage} />{/if}
   </div>
 </div>
+
+<style>
+  .deferred-file {
+    content-visibility: auto;
+    /* Reserve the summary height before the browser has measured the file. */
+    contain-intrinsic-block-size: auto 2.25rem;
+  }
+
+  .deferred-file:focus-within,
+  .deferred-file.measuring-file {
+    content-visibility: visible;
+  }
+</style>

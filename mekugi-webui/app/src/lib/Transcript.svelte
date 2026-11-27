@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { preferredScrollBehavior } from "./diff";
   import EntryView from "./EntryView.svelte";
   import { date } from "./format";
@@ -17,7 +17,7 @@
   import ReferenceSelection from "./ReferenceSelection.svelte";
   import ResponseCopy from "./ResponseCopy.svelte";
   import type { Entry } from "./protocol";
-  import { stream } from "./stream.svelte";
+  import type { Stream } from "./stream.svelte";
   import Icon from "./ui/Icon.svelte";
   import { Skeleton } from "./ui/skeleton";
   import { emptyBox, revealed, rowAction } from "./ui/styles";
@@ -25,6 +25,7 @@
 
   let {
     entries,
+    transcript,
     owner = "/root",
     workspace,
     jumps = 0,
@@ -35,11 +36,10 @@
     hasSavedChange,
     onhiddenhooks,
   }: {
-    entries: Entry[];
+    entries: readonly Entry[];
+    transcript?: Stream;
     owner?: string;
     workspace?: string;
-    start?: number;
-    span?: number;
     jumps?: number;
     empty?: string;
     onselect?: (entry: Entry) => void;
@@ -52,6 +52,12 @@
   let scroller = $state<HTMLElement>();
   let contentEl = $state<HTMLElement>();
   let pinned = $state(true);
+  let mountedSource: Stream | undefined;
+  let mountedScroller: HTMLElement | undefined;
+
+  type ReadingPosition = NonNullable<Stream["scroll"]>;
+  const rowIdentity = (entry: Entry) =>
+    entry.rowKey ?? JSON.stringify([entry.turnId, entry.itemId ?? entry.seq]);
 
   const isHiddenHook = (entry: Entry): boolean => {
     if (entry.kind !== "hook") return false;
@@ -96,6 +102,7 @@
     let previous = "";
     const out: {
       entry: Entry;
+      id: string;
       at: string;
       turn?: number;
       views?: Entry[];
@@ -106,22 +113,18 @@
         hiddenHooks++;
         continue;
       }
-      let entry = row.entry;
       let rawAt = row.rawAt;
       let thoughts = row.thoughts;
       if (thoughts && preferences.thoughts === "hidden") {
-        const liveThoughts: Entry[] = thoughts.flatMap((e) => {
-          const liveValues = e.values?.filter((v) => v.live);
-          return liveValues?.length ? [{ ...e, values: liveValues }] : [];
-        });
-        if (!liveThoughts.length) continue;
-        thoughts = liveThoughts;
-        entry = liveThoughts[0];
-        rawAt = entry.observed ? date(entry.observed).slice(11) : "";
+        thoughts = thoughts.filter((entry) => entry.values?.some((value) => value.live));
+        const live = thoughts[0];
+        if (!live) continue;
+        rawAt = live.observed ? date(live.observed).slice(11) : "";
       }
-      const user = isUser(entry);
+      const user = isUser(row.entry);
       out.push({
-        entry,
+        entry: row.entry,
+        id: rowIdentity(row.entry),
         at: user || rawAt !== previous ? rawAt : "",
         turn: row.turn,
         views: row.views,
@@ -132,47 +135,158 @@
     return { rows: out, hiddenHooks };
   });
   const rows = $derived(filtered.rows);
+  // Latest rows are already visible at the bottom on initial open.
+  const eager = $derived(new Set(rows.slice(-12)));
   $effect(() => {
     onhiddenhooks?.(filtered.hiddenHooks);
   });
 
-  const segments = $derived.by(() => {
-    const groups = workdirGroups(rows, workspace);
-    return segmentWorkdirRows(rows, groups);
-  });
+  const segments = $derived(segmentWorkdirRows(rows, workdirGroups(rows, workspace)));
+  const segmentKey = (segment: (typeof segments)[number]) =>
+    segment.kind === "row"
+      ? segment.row.id
+      : `workdir:${JSON.stringify([segment.workdir, segment.rows[0].id])}`;
 
-  function onscroll() {
-    if (!scroller) return;
-    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    pinned = distance < 48;
-    if (scroller.scrollTop < 120 && stream.hasEarlier && !stream.loadingEarlier) {
-      const prevHeight = scroller.scrollHeight;
-      const prevTop = scroller.scrollTop;
-      void stream.earlier().then((loaded) => {
-        if (!loaded || !scroller) return;
-        void tick().then(() => {
-          if (!scroller) return;
-          scroller.scrollTop = prevTop + (scroller.scrollHeight - prevHeight);
-        });
-      });
+  function currentEntry(entry: Entry): Entry {
+    return transcript?.entry(entry.seq) ?? entry;
+  }
+
+  function renderedThoughts(thoughts: Entry[] | undefined): Entry[] | undefined {
+    if (!thoughts) return undefined;
+    const current = thoughts.map(currentEntry);
+    if (preferences.thoughts !== "hidden") return current;
+    return current.map((entry) => ({
+      ...entry,
+      values: entry.values?.filter((value) => value.live),
+    }));
+  }
+
+  function readingPosition(viewport: HTMLElement): ReadingPosition {
+    const position: ReadingPosition = { top: viewport.scrollTop, pinned };
+    if (pinned) return position;
+    const { left, top, width, height } = viewport.getBoundingClientRect();
+    const row = viewport.ownerDocument
+      .elementFromPoint(left + width / 2, top + Math.min(48, height / 2))
+      ?.closest<HTMLElement>("[data-entry-id]");
+    if (row?.dataset.entryId && viewport.contains(row)) {
+      position.anchor = { id: row.dataset.entryId, offset: row.getBoundingClientRect().top - top };
+    }
+    return position;
+  }
+
+  function findRow(viewport: HTMLElement, id: string) {
+    return viewport.querySelector<HTMLElement>(`[data-entry-id="${CSS.escape(id)}"]`);
+  }
+
+  function restorePosition(viewport: HTMLElement, position: ReadingPosition) {
+    if (position.pinned) {
+      viewport.scrollTop = viewport.scrollHeight;
+      return;
+    }
+    const anchor = position.anchor;
+    const row = anchor && findRow(viewport, anchor.id);
+    // Align an existing row instead of measuring the list height: retained
+    // rows can grow at the other end, and skipped rows have estimated heights.
+    const top = row
+      ? viewport.scrollTop +
+        row.getBoundingClientRect().top -
+        viewport.getBoundingClientRect().top -
+        anchor.offset
+      : position.top;
+    if (Math.abs(viewport.scrollTop - top) >= 1) viewport.scrollTop = top;
+  }
+
+  function maybeEarlier(viewport: HTMLElement) {
+    if (
+      transcript?.hasEarlier &&
+      !transcript.loadingEarlier &&
+      !transcript.hydrating &&
+      viewport.scrollTop < 120
+    ) {
+      void transcript.earlier();
     }
   }
 
+  function onscroll(event: Event & { currentTarget: HTMLElement }) {
+    const viewport = event.currentTarget;
+    if (!transcript || mountedScroller !== viewport || mountedSource !== transcript) return;
+    // Opening the phone/tablet drawer can reflow rows, but its inert canvas
+    // is excluded from hit testing. Keep the last reading anchor while covered.
+    if (viewport.closest("[inert]")) return;
+    const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    pinned = distance < 48;
+    transcript.scroll = readingPosition(viewport);
+    maybeEarlier(viewport);
+  }
+
   $effect(() => {
-    void entries;
-    void jumps;
-    if (!pinned || !scroller) return;
-    void tick().then(() => {
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    const source = transcript;
+    const viewport = scroller;
+    if (!viewport) return;
+    mountedSource = source;
+    mountedScroller = viewport;
+    const position = source?.scroll ?? { top: 0, pinned: true };
+    pinned = position.pinned;
+    restorePosition(viewport, position);
+  });
+
+  const focusables = "a[href], button, input, select, summary, textarea, [tabindex]";
+  $effect.pre(() => {
+    // Bulk rows change on structural events, not when text is appended.
+    void segments;
+    const source = transcript;
+    const viewport = scroller;
+    if (!viewport || mountedSource !== source || mountedScroller !== viewport) return;
+
+    untrack(() => {
+      const position = pinned ? undefined : readingPosition(viewport);
+      const doc = viewport.ownerDocument;
+      const control = doc.activeElement;
+      const row = control?.closest<HTMLElement>("[data-entry-id]");
+      const id = row?.dataset.entryId;
+      const index =
+        control && row && viewport.contains(row)
+          ? [...row.querySelectorAll(focusables)].indexOf(control)
+          : -1;
+      if (!position && index < 0) return;
+
+      void tick().then(() => {
+        if (transcript !== source || scroller !== viewport) return;
+        if (position && !pinned) restorePosition(viewport, position);
+        if (!id || index < 0 || doc.activeElement !== doc.body) return;
+        const replacement = findRow(viewport, id)?.querySelectorAll<HTMLElement>(focusables)[index];
+        if (
+          replacement &&
+          replacement.tagName === control?.tagName &&
+          replacement.getAttribute("aria-label") === control.getAttribute("aria-label")
+        ) {
+          replacement.focus({ preventScroll: true });
+        }
+      });
     });
   });
 
   $effect(() => {
-    if (!scroller || !contentEl || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      if (pinned && scroller) scroller.scrollTop = scroller.scrollHeight;
+    void segments;
+    void jumps;
+    const viewport = scroller;
+    if (!pinned || !viewport) return;
+    void tick().then(() => {
+      if (pinned && scroller === viewport) viewport.scrollTop = viewport.scrollHeight;
     });
-    observer.observe(contentEl);
+  });
+
+  $effect(() => {
+    const viewport = scroller;
+    const content = contentEl;
+    if (!viewport || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (scroller !== viewport) return;
+      if (pinned) viewport.scrollTop = viewport.scrollHeight;
+      // A short initial page may not be scrollable at all.
+      if (viewport.scrollHeight <= viewport.clientHeight) maybeEarlier(viewport);
+    });
+    observer.observe(content);
     return () => observer.disconnect();
   });
 
@@ -183,7 +297,9 @@
 </script>
 
 {#snippet transcriptRow(row: (typeof rows)[number], groupWorkdir?: string)}
-  {@const entry = row.entry}
+  {@const views = row.views?.map(currentEntry)}
+  {@const thoughts = renderedThoughts(row.thoughts)}
+  {@const entry = thoughts?.[0] ?? currentEntry(row.entry)}
   {@const editPaths = isEditEntry(entry) ? editEntryPaths(entry) : []}
   {@const openChanges =
     !!onchanges &&
@@ -195,7 +311,12 @@
     !isUser(entry) && !entry.assignment
       ? responseText(entry.kind, entry.text, entry.values?.[0]?.body)
       : ""}
-  <div class="group/row relative" data-entry={entry.seq}>
+  <div
+    class="group/row relative"
+    class:deferred={!eager.has(row)}
+    data-entry={entry.seq}
+    data-entry-id={row.id}
+  >
     <EntryView
       {entry}
       at={row.at}
@@ -203,8 +324,8 @@
       timestampMode={preferences.timestamps}
       expandThoughts={preferences.thoughts === "expanded"}
       turn={row.turn}
-      views={row.views}
-      thoughts={row.thoughts}
+      {views}
+      {thoughts}
       {owner}
       {groupWorkdir}
       {workspace}
@@ -242,56 +363,55 @@
 {/snippet}
 
 <div class="relative min-h-0 flex-1">
-  <div bind:this={scroller} {onscroll} class="@container h-full overflow-y-auto overscroll-contain">
+  {#key transcript}
     <div
-      bind:this={contentEl}
-      class="mx-auto max-w-[calc(var(--container-column)+184px)] pt-3 pr-23 pb-10 pl-4 @max-[980px]:pr-11 max-sm:pt-2 max-sm:pb-6"
+      bind:this={scroller}
+      {onscroll}
+      class="@container h-full overflow-y-auto overscroll-contain"
     >
-      {#if stream.loadingEarlier}
-        <div
-          class="mb-4 ml-19 grid gap-2 max-sm:ml-0"
-          role="status"
-          aria-label="Loading earlier turns"
-        >
-          <Skeleton class="h-4 w-2/3 bg-active" />
-          <Skeleton class="h-4 w-1/2 bg-active" />
-        </div>
-      {/if}
-      {#if segments.length}
-        {#each segments as seg (seg.key)}
-          {#if seg.kind === "group"}
-            <section data-workdir-group={seg.workdir} class="my-2 first:mt-0">
-              <div
-                data-workdir-heading={seg.workdir}
-                class="sticky top-0 z-10 grid max-w-[920px] grid-cols-[60px_minmax(0,1fr)] gap-x-4 bg-surface/95 py-1.5 backdrop-blur-sm max-sm:grid-cols-1"
-              >
-                <span class="max-sm:hidden" aria-hidden="true"></span>
+      <div
+        bind:this={contentEl}
+        class="mx-auto max-w-[calc(var(--container-column)+184px)] pt-3 pr-23 pb-10 pl-4 @max-[980px]:pr-11 max-sm:pt-2 max-sm:pb-6"
+      >
+        {#if transcript?.loadingEarlier}
+          <span role="status" class="sr-only">Loading earlier turns</span>
+        {/if}
+        {#if segments.length}
+          {#each segments as seg (segmentKey(seg))}
+            {#if seg.kind === "group"}
+              <section data-workdir-group={seg.workdir} class="my-2 first:mt-0">
                 <div
-                  class="flex min-w-0 items-baseline gap-1.5 border-b border-rule/80 pb-1 text-small"
+                  data-workdir-heading={seg.workdir}
+                  class="sticky top-0 z-10 grid max-w-[920px] grid-cols-[60px_minmax(0,1fr)] gap-x-4 bg-surface/95 py-1.5 backdrop-blur-sm max-sm:grid-cols-1"
                 >
-                  <span class="shrink-0 text-muted">In</span>
-                  <span class="min-w-0 font-mono text-ink"><Path path={seg.workdir} /></span>
+                  <span class="max-sm:hidden" aria-hidden="true"></span>
+                  <div
+                    class="flex min-w-0 items-baseline gap-1.5 border-b border-rule/80 pb-1 text-small"
+                  >
+                    <span class="shrink-0 text-muted">In</span>
+                    <span class="min-w-0 font-mono text-ink"><Path path={seg.workdir} /></span>
+                  </div>
                 </div>
-              </div>
-              {#each seg.rows as row (row.entry.seq)}
-                {@render transcriptRow(row, seg.workdir)}
-              {/each}
-            </section>
-          {:else}
-            {@render transcriptRow(seg.row)}
-          {/if}
-        {/each}
-      {:else if stream.connection === "connecting"}
-        <div class="mt-6 ml-19 grid gap-3 max-sm:ml-0" role="status" aria-label="Loading thread">
-          <Skeleton class="h-5 w-3/4 bg-active" />
-          <Skeleton class="h-5 w-1/2 bg-active" />
-          <Skeleton class="h-5 w-5/6 bg-active" />
-        </div>
-      {:else}
-        <p class="{emptyBox} mt-6 ml-17 max-sm:ml-0">{empty}</p>
-      {/if}
+                {#each seg.rows as row (row.id)}
+                  {@render transcriptRow(row, seg.workdir)}
+                {/each}
+              </section>
+            {:else}
+              {@render transcriptRow(seg.row)}
+            {/if}
+          {/each}
+        {:else if transcript?.hydrating || transcript?.connection === "connecting"}
+          <div class="mt-6 ml-19 grid gap-3 max-sm:ml-0" role="status" aria-label="Loading thread">
+            <Skeleton class="h-5 w-3/4 bg-active" />
+            <Skeleton class="h-5 w-1/2 bg-active" />
+            <Skeleton class="h-5 w-5/6 bg-active" />
+          </div>
+        {:else}
+          <p class="{emptyBox} mt-6 ml-17 max-sm:ml-0">{empty}</p>
+        {/if}
+      </div>
     </div>
-  </div>
+  {/key}
   {#if onreference}
     <ReferenceSelection root={scroller} {onreference} />
   {/if}
@@ -305,3 +425,15 @@
     </button>
   {/if}
 </div>
+
+<style>
+  /* Keep the sticky heading and out-of-flow gutter controls outside containment. */
+  .deferred > :global(article) {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 4rem;
+  }
+
+  .deferred:focus-within > :global(article) {
+    content-visibility: visible;
+  }
+</style>

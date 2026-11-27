@@ -26,7 +26,7 @@
   } from "./protocol";
   import Rewind from "./Rewind.svelte";
   import { semantic, skillsAfterEdit, SLASH_COMMANDS } from "./semantic.svelte";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import { errorText, newIdentity } from "./transport";
   import ThreadSettings from "./ThreadSettings.svelte";
   import Button from "./ui/Button.svelte";
@@ -68,6 +68,7 @@
     unavailable?: string;
   } = $props();
 
+  const stream = $derived(streams.current);
   let editor = $derived(semantic.editor(thread));
   let text = $state("");
   let items = $state<PendingAttachment[]>([]);
@@ -119,14 +120,17 @@
     editor.items = items;
   });
 
-  // Deliver the first message entered on the New Thread screen once connected.
+  // Deliver the first message once the new stream and input target are ready.
   $effect(() => {
     const first = initial;
+    const target = first?.started.thread.id;
     if (
       !first ||
       sending ||
       fileRequest ||
-      stream.session?.thread !== thread ||
+      target !== thread ||
+      stream.session?.thread !== target ||
+      semantic.threadId !== target ||
       semantic.connection !== "open" ||
       unavailable
     )
@@ -192,17 +196,47 @@
   let caret = $state<number>();
   let fileChoices = $state.raw<{ thread: string; query: string; paths: string[] }>();
 
+  const completionTarget = $derived.by(() => {
+    if (shell) return;
+    if (text.startsWith("/") && !/\s/.test(text) && text.indexOf("/", 1) < 0) {
+      return { kind: "/" as const, query: text.slice(1).toLowerCase(), start: 0, end: text.length };
+    }
+    const at = Math.min(caret ?? text.length, text.length);
+    const match = /(?:^|\s)([@$][^\s]*)$/.exec(text.slice(0, at));
+    if (match) {
+      const token = match[1];
+      const kind = token.startsWith("@") ? "@" : "$";
+      const query = token.slice(1);
+      return {
+        kind,
+        query: kind === "@" ? query : query.toLowerCase(),
+        start: at - token.length,
+        end: at + (text.slice(at).match(/^\S*/)?.[0].length ?? 0),
+      };
+    }
+    return undefined;
+  });
+
   $effect(() =>
     machine.onNotification(({ method }) => {
       if (method === "skills/changed") skillRevision++;
     }),
   );
 
+  const skillThread = $derived(stream.session?.thread);
+  const skillWorkspace = $derived(stream.session?.workspace);
+  const wantsSkills = $derived(completionTarget?.kind === "$");
   $effect(() => {
     void skillRevision;
-    const cwd = stream.session?.workspace;
     skillCatalog = [];
-    if (machine.connection !== "open") return;
+    if (
+      !wantsSkills ||
+      machine.connection !== "open" ||
+      stream.machine !== machine ||
+      skillThread !== thread
+    )
+      return;
+    const cwd = skillWorkspace;
     const params = cwd ? { cwds: [cwd] } : {};
     const catalogRequest = new AbortController();
     void machine
@@ -231,27 +265,6 @@
       })
       .catch(() => {});
     return () => catalogRequest.abort();
-  });
-
-  const completionTarget = $derived.by(() => {
-    if (shell) return;
-    if (text.startsWith("/") && !/\s/.test(text) && text.indexOf("/", 1) < 0) {
-      return { kind: "/" as const, query: text.slice(1).toLowerCase(), start: 0, end: text.length };
-    }
-    const at = Math.min(caret ?? text.length, text.length);
-    const match = /(?:^|\s)([@$][^\s]*)$/.exec(text.slice(0, at));
-    if (match) {
-      const token = match[1];
-      const kind = token.startsWith("@") ? "@" : "$";
-      const query = token.slice(1);
-      return {
-        kind,
-        query: kind === "@" ? query : query.toLowerCase(),
-        start: at - token.length,
-        end: at + (text.slice(at).match(/^\S*/)?.[0].length ?? 0),
-      };
-    }
-    return undefined;
   });
 
   const wantsPresets = $derived(presetOpen || completionTarget?.kind === "$");

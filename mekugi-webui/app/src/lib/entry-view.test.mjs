@@ -43,7 +43,7 @@ const { default: EntryView } = await import("./EntryView.svelte");
 const { default: Transcript } = await import("./Transcript.svelte");
 const { editEntryPaths, isEditEntry, isView, responseText } = await import("./kinds.ts");
 const { preferences } = await import("./preferences.svelte.ts");
-const { buildFeed, hookRunToEntry, itemToEntry, stream } = await import("./stream.svelte.ts");
+const { buildFeed, hookRunToEntry, itemToEntry, streams } = await import("./stream.svelte.ts");
 const { default: ValueRow } = await import("./ValueRow.svelte");
 
 const view = (values, kind = "tool") =>
@@ -230,7 +230,7 @@ test("edits without a shared program keep their own", () => {
 });
 
 test("a wait reads as a collaboration line naming its targets", () => {
-  stream.roster = {
+  streams.current.roster = {
     agents: [
       {
         name: "/root/detail-tests",
@@ -263,7 +263,7 @@ test("a wait reads as a collaboration line naming its targets", () => {
 });
 
 test("traffic paints the published local recipient and start target", () => {
-  stream.main = {
+  streams.current.main = {
     order: [9],
     entries: {
       9: {
@@ -306,11 +306,11 @@ test("traffic paints the published local recipient and start target", () => {
   assert.match(start, />worker</);
   assert.match(start, /started/);
   assert.doesNotMatch(start, />main<|>Main<|→/);
-  stream.main = { order: [], entries: {} };
+  streams.current.main = { order: [], entries: {} };
 });
 
 test("delivered final answers retain both published endpoints", () => {
-  stream.main = {
+  streams.current.main = {
     order: [10],
     entries: {
       10: {
@@ -343,7 +343,7 @@ test("delivered final answers retain both published endpoints", () => {
     },
   }).body;
   assert.match(html, />reviewer<.*→.*>worker</s);
-  stream.main = { order: [], entries: {} };
+  streams.current.main = { order: [], entries: {} };
 });
 
 test("model listing and inspection render as agent progress rows without raw MCP", () => {
@@ -704,6 +704,7 @@ test("native stream projections map reasoning, hooks, edits, imageView, and assi
   assert.equal(feed.entries[1]?.outcome, "error");
   assert.equal(feed.entries[2]?.kind, "hook");
   assert.equal(feed.entries[2]?.outcome, undefined);
+  assert.notEqual(feed.entries[1]?.rowKey, feed.entries[2]?.rowKey);
 });
 
 test("Transcript respects Thoughts modes and filters hidden completed thought sections and timestamps", () => {

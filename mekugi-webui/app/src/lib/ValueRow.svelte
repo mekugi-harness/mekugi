@@ -14,7 +14,7 @@
   import { toolLabel } from "./markdown";
   import Path from "./Path.svelte";
   import type { Value } from "./protocol";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import Dot from "./ui/Dot.svelte";
   import Icon from "./ui/Icon.svelte";
   import { Spinner } from "./ui/spinner";
@@ -440,7 +440,8 @@
         <div class="flex flex-wrap items-center gap-2 text-muted">
           <span>Waiting on</span>
           {#each value.waits as wait}<Tag
-              >{stream.label(wait.name)}{#if wait.status}<span class="ml-1">({wait.status})</span
+              >{streams.current.label(wait.name)}{#if wait.status}<span class="ml-1"
+                  >({wait.status})</span
                 >{/if}</Tag
             >{/each}
         </div>

@@ -59,9 +59,11 @@ globalThis.history = { pushState: (_state, _title, url) => (location.hash = url)
 globalThis.addEventListener = () => {};
 const { hub, Machine } = await import("./hub.svelte.ts");
 const { view } = await import("./view.svelte.ts");
+const { Connector } = await import("./transport.ts");
 const Hub = hub.constructor;
 const owners = [];
 const started = [];
+const startMachine = Machine.prototype.start;
 // Network authentication and reconnection are covered through the actual browser fixture.
 Machine.prototype.start = function () {
   started.push(this.id);
@@ -107,6 +109,132 @@ test("the sidebar follows every page of non-archived threads across providers an
           modelProviders.length === 0 &&
           sourceKinds.length === 10,
       ),
+    );
+  } finally {
+    machine.close();
+  }
+});
+
+function thread(id, name = id) {
+  return { id, name, status: { type: "idle" } };
+}
+
+test("sidebar pages publish in order without clearing the old tail before completion", async () => {
+  const machine = new Machine("Alpha", "https://alpha.example", "fixture");
+  const replies = [Promise.withResolvers(), Promise.withResolvers(), Promise.withResolvers()];
+  const requests = replies.map(() => Promise.withResolvers());
+  let page = 0;
+  const ids = () => machine.sessions?.map(({ id }) => id);
+  machine.request = async () => ({ data: [thread("old-first"), thread("old-tail")] });
+  try {
+    await machine.refreshThreads();
+    machine.request = (_method, params) => {
+      const index = page++;
+      requests[index].resolve(params.cursor);
+      return replies[index].promise;
+    };
+    const refresh = machine.refreshThreads();
+    assert.equal(await requests[0].promise, undefined);
+    assert.deepEqual(ids(), ["old-first", "old-tail"]);
+
+    replies[0].resolve({ data: [thread("first")], nextCursor: "middle" });
+    assert.equal(await requests[1].promise, "middle");
+    assert.deepEqual(ids(), ["first", "old-first", "old-tail"]);
+
+    replies[1].resolve({ data: [thread("first"), thread("old-tail")], nextCursor: "last" });
+    assert.equal(await requests[2].promise, "last");
+    assert.deepEqual(ids(), ["first", "old-tail", "old-first"]);
+
+    replies[2].resolve({ data: [thread("last")] });
+    await refresh;
+    assert.deepEqual(ids(), ["first", "old-tail", "last"]);
+  } finally {
+    machine.close();
+  }
+});
+
+test("live sidebar changes take precedence over an in-flight thread list", async (t) => {
+  const machine = new Machine("Alpha", "https://alpha.example", "fixture");
+  const first = Promise.withResolvers();
+  const tail = Promise.withResolvers();
+  const tailRequested = Promise.withResolvers();
+  t.mock.method(Connector.prototype, "connect", () => () => {});
+  let notify;
+  t.mock.method(machine, "onNotification", (listener) => {
+    notify = (method, params) => listener({ method, params });
+    return () => {};
+  });
+  machine.request = (_method, { cursor }) => {
+    if (!cursor) return first.promise;
+    tailRequested.resolve();
+    return tail.promise;
+  };
+  try {
+    startMachine.call(machine);
+    const refresh = machine.refreshThreads();
+    notify("thread/name/updated", { threadId: "first", threadName: "New name" });
+    notify("thread/status/changed", {
+      threadId: "first",
+      status: { type: "active", activeFlags: ["waitingOnUserInput"] },
+    });
+    notify("thread/started", { thread: thread("started", "Live title") });
+    notify("thread/deleted", { threadId: "deleted" });
+    first.resolve({ data: [thread("first"), thread("archived")], nextCursor: "tail" });
+    await tailRequested.promise;
+    assert.deepEqual(
+      machine.sessions.map(({ id, title, waiting }) => [id, title, waiting]),
+      [
+        ["started", "Live title", undefined],
+        ["first", "New name", 1],
+        ["archived", "archived", undefined],
+      ],
+    );
+
+    notify("thread/archived", { threadId: "archived" });
+    notify("thread/status/changed", { threadId: "archived", status: { type: "idle" } });
+    notify("thread/status/changed", { threadId: "first", status: { type: "idle" } });
+    notify("thread/started", { thread: thread("absent") });
+    tail.resolve({ data: [thread("deleted"), thread("started", "Old title")] });
+    await refresh;
+    assert.deepEqual(
+      machine.sessions.map(({ id, title, status, waiting }) => [id, title, status.text, waiting]),
+      [
+        ["absent", "absent", "Idle", undefined],
+        ["first", "New name", "Idle", undefined],
+        ["started", "Live title", "Idle", undefined],
+      ],
+    );
+  } finally {
+    machine.close();
+  }
+});
+
+test("a replaced or closed sidebar refresh cannot publish or request its next page", async () => {
+  const machine = new Machine("Alpha", "https://alpha.example", "fixture");
+  const requests = [];
+  machine.request = (_method, _params, { signal } = {}) => {
+    const reply = Promise.withResolvers();
+    requests.push({ signal, reply });
+    if (requests.length > 3) reply.resolve({ data: [] });
+    return reply.promise;
+  };
+  try {
+    const stale = machine.refreshThreads();
+    const newest = machine.refreshThreads();
+    assert.equal(requests[0].signal.aborted, true);
+    requests[1].reply.resolve({ data: [thread("newest")] });
+    await newest;
+
+    const closed = machine.refreshThreads();
+    machine.close();
+    assert.equal(requests[2].signal.aborted, true);
+    requests[0].reply.resolve({ data: [thread("superseded")], nextCursor: "stale" });
+    requests[2].reply.resolve({ data: [thread("closed")], nextCursor: "stale" });
+    await Promise.all([stale, closed]);
+    assert.equal(requests.length, 3);
+    assert.deepEqual(
+      machine.sessions.map(({ id }) => id),
+      ["newest"],
     );
   } finally {
     machine.close();
