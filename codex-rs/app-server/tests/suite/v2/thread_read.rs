@@ -1925,6 +1925,110 @@ async fn thread_turns_list_rejects_unmaterialized_loaded_thread() -> Result<()> 
 }
 
 #[tokio::test]
+async fn thread_items_list_and_read_restore_saved_command_labels() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let thread_id = codex_protocol::ThreadId::default();
+    let store = create_paginated_thread(codex_home.path(), thread_id).await?;
+    let steps = [
+        "mcat src.rs",
+        "rg needle .",
+        "mfinspect src.rs",
+        "git add src.rs",
+        "skills-mgr get demo",
+    ];
+    let script = format!("cd sub && {}", steps.join("; "));
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![
+                paginated_turn_started("turn"),
+                paginated_completed_item(
+                    thread_id,
+                    "turn",
+                    CoreTurnItem::CommandExecution(CommandExecutionItem {
+                        id: "batch".to_string(),
+                        command: vec!["/bin/bash".to_string(), "-lc".to_string(), script.clone()],
+                        cwd: codex_home.path().abs().into(),
+                        parsed_cmd: Vec::new(),
+                        source: ExecCommandSource::Agent,
+                        status: codex_protocol::items::CommandExecutionStatus::Completed,
+                        aggregated_output: Some("saved output".to_string()),
+                        exit_code: Some(0),
+                        sandbox_type: None,
+                        model_context: None,
+                        plugin_id: None,
+                        script_path: None,
+                        process_id: None,
+                        interaction_input: None,
+                        duration: None,
+                    }),
+                ),
+                paginated_turn_completed("turn"),
+            ],
+        })
+        .await?;
+    store.shutdown_thread(thread_id).await?;
+
+    // Earlier writers persisted the display but did not include stepKinds.
+    let history_db = codex_state::open_thread_history_db(
+        &codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
+    )
+    .await?;
+    let written = sqlx::query(
+        "UPDATE thread_items SET item_json = json_remove(item_json, '$.display.stepKinds')
+         WHERE item_id = 'batch'",
+    )
+    .execute(&history_db)
+    .await?;
+    assert_eq!(written.rows_affected(), 1);
+
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let page = read_items_page(
+        &mut app,
+        thread_id,
+        Some("turn"),
+        /*cursor*/ None,
+        /*limit*/ None,
+        SortDirection::Asc,
+    )
+    .await?;
+    let exact: ThreadItemsReadResponse = app
+        .request(|request_id| ClientRequest::ThreadItemsRead {
+            request_id,
+            params: ThreadItemsReadParams {
+                thread_id: thread_id.to_string(),
+                turn_id: "turn".to_string(),
+                item_ids: vec!["batch".to_string()],
+            },
+        })
+        .await?;
+    assert_eq!(page.data, exact.data);
+    let [entry] = page.data.as_slice() else {
+        panic!("expected one retained command");
+    };
+    let wire = serde_json::to_value(&entry.item)?;
+    assert_eq!(
+        wire["display"],
+        json!({
+            "script": script,
+            "segments": steps,
+            "stepKinds": ["read", "search", "inspect", "stage", "skill"],
+            "effectiveCwd": codex_home.path().join("sub"),
+        })
+    );
+    assert_eq!(wire["status"], "completed");
+    assert_eq!(wire["exitCode"], 0);
+    assert_eq!(wire["aggregatedOutput"], "saved output");
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_items_list_defers_requested_outputs() -> Result<()> {
     use codex_protocol::items::CommandExecutionStatus::Completed;
     use codex_protocol::items::CommandExecutionStatus::Declined;

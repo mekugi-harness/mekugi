@@ -7,7 +7,6 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
-	"fmt"
 	"image"
 	"image/png"
 	"maps"
@@ -157,20 +156,10 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 		if count > 1 {
 			id = "thr-btw"
 		}
-		var forkParams struct {
-			Config struct {
-				Effort string `json:"model_reasoning_effort"`
-			} `json:"config"`
-		}
-		_ = json.Unmarshal(params, &forkParams)
-		effort := forkParams.Config.Effort
-		if effort == "" {
-			effort = "medium"
-		}
 		return map[string]any{
 			"thread":          map[string]any{"id": id, "cwd": "/tmp/ws"},
 			"model":           "gpt-5",
-			"reasoningEffort": effort,
+			"reasoningEffort": "medium",
 		}
 	case "thread/subtree/list":
 		return map[string]any{
@@ -966,7 +955,16 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 		if strings.Contains(string(params), `"sessionStartSource":"clear"`) {
 			id = "thr-fresh"
 		}
-		return map[string]any{"thread": map[string]string{"id": id}}
+		return map[string]any{"thread": map[string]string{"id": id}, "reasoningEffort": "medium"}
+	}
+	mock.overrides["thread/fork"] = func(jsontext.Value) any {
+		mock.mu.Lock()
+		count := len(mock.params["thread/fork"])
+		mock.mu.Unlock()
+		if count == 1 {
+			return jsontext.Value(`{"thread":{"id":"thr-side"},"model":"gpt-5","reasoningEffort":"xhigh"}`)
+		}
+		return jsontext.Value(`{"thread":{"id":"thr-btw"},"model":"chosen","reasoningEffort":"high"}`)
 	}
 	mock.overrides["thread/read"] = func(params jsontext.Value) any {
 		return jsontext.Value(`{"thread":{"id":"thr-side","turns":[
@@ -987,9 +985,9 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	if err := command("/oneoff"); err == nil {
 		t.Fatal("/oneoff without a task succeeded")
 	}
-	conn.handleNotification(appserver.Message{Method: "thread/settings/updated", Params: jsontext.Value(`{
-		"threadId":"thr-main","threadSettings":{"model":"gpt-5","effort":"xhigh"}
-	}`)})
+	if err := command("/effort xhigh"); err != nil {
+		t.Fatal(err)
+	}
 	if err := command("/oneoff First task"); err != nil {
 		t.Fatal(err)
 	}
@@ -1073,6 +1071,8 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	defer mock.mu.Unlock()
 	if forks := mock.params["thread/fork"]; len(forks) != 2 || !strings.Contains(string(forks[1]), `"threadId":"thr-main"`) {
 		t.Fatalf("only confirmed replacement should fork Main again: %s", forks)
+	} else if strings.Contains(string(forks[0]), `"model_reasoning_effort"`) {
+		t.Fatalf("One-off should inherit native settings, not the stale client cache: %s", forks[0])
 	}
 	if archived := mock.params["thread/archive"]; len(archived) != 1 || !strings.Contains(string(archived[0]), `"threadId":"thr-side"`) {
 		t.Fatalf("replacement did not archive the old One-off: %s", archived)
@@ -1087,9 +1087,10 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	if inputs := mock.params["turn/start"]; len(inputs) != 2 || !strings.Contains(string(inputs[1]), `"text":"Replacement task"`) {
 		t.Fatalf("expected one replacement submission: %s", inputs)
 	}
-	if updates := mock.params["thread/settings/update"]; len(updates) != 1 ||
-		!strings.Contains(string(updates[0]), `"threadId":"thr-side"`) || !strings.Contains(string(updates[0]), `"effort":"high"`) {
-		t.Fatalf("One-off picker did not target its own thread: %s", updates)
+	if updates := mock.params["thread/settings/update"]; len(updates) != 2 ||
+		!strings.Contains(string(updates[0]), `"threadId":"thr-main"`) || !strings.Contains(string(updates[0]), `"effort":"xhigh"`) ||
+		!strings.Contains(string(updates[1]), `"threadId":"thr-side"`) || !strings.Contains(string(updates[1]), `"effort":"high"`) {
+		t.Fatalf("Main and One-off effort settings did not target their own threads: %s", updates)
 	}
 	starts := mock.params["thread/start"]
 	if len(starts) != 2 {
@@ -1180,16 +1181,17 @@ func TestDirectNativeUserMessageProjectsImageParts(t *testing.T) {
 	text, spans := extractUserMessage(jsontext.Value(`[
 		{"type":"text","text":"before "},
 		{"type":"image","url":"opaque"},
-		{"type":"text","text":" after; browser [Image 2]","text_elements":[
-			{"byteRange":{"start":16,"end":25},"placeholder":"[Image 2]"}
+		{"type":"text","text":" after; browser [Image photo.png]","text_elements":[
+			{"byteRange":{"start":16,"end":33},"placeholder":"[Image photo.png]"}
 		]},
 		{"type":"localImage","path":"/workspace/photo.png"}
 	]`))
-	if text != "before [Image 1] after; browser [Image 2]" || len(spans) != 2 {
+	if text != "before [Image 1] after; browser [Image photo.png]" || len(spans) != 2 {
 		t.Fatalf("image parts projected as %q with spans %+v", text, spans)
 	}
-	for i, span := range spans {
-		if span.Kind != activity.ImageToken || text[span.Start:span.End] != fmt.Sprintf("[Image %d]", i+1) {
+	for i, want := range []string{"[Image 1]", "[Image photo.png]"} {
+		span := spans[i]
+		if span.Kind != activity.ImageToken || text[span.Start:span.End] != want {
 			t.Fatalf("image span %d: %+v in %q", i, span, text)
 		}
 	}
@@ -1438,6 +1440,9 @@ func TestDirectNativeCommandDetailsFollowNativeExit(t *testing.T) {
 	if before.Output == nil || before.Output.View.Done || before.Output.View.Exited {
 		t.Fatalf("live output should have no exit: %+v", before)
 	}
+	if lines := before.Output.View.Lines; !slices.Equal(lines, []string{"working\t25%"}) {
+		t.Fatalf("Details output should normalize progress without changing tabs: %q", lines)
+	}
 	upsert(`{"type":"commandExecution","id":"cmd-1","command":"example","status":"declined","exitCode":null}`)
 	if conn.details.Output.View.Exited || conn.details.View.Pages[0].RowVerb() == "Ran" {
 		t.Fatalf("approval row closure must not imply a process exit: %+v", conn.details)
@@ -1487,7 +1492,7 @@ func TestDirectNativeRetainedCommandEditReceipt(t *testing.T) {
 	}
 	details := conn.details
 	if len(details.View.Pages) != 4 || details.Output == nil ||
-		!slices.Equal(details.Output.View.Lines, []string{"updated    100%", "then failed"}) {
+		!slices.Equal(details.Output.View.Lines, []string{"updated\t100%", "then failed"}) {
 		t.Fatalf("Details did not preserve one retained output and the actual edit: %+v", details)
 	}
 	edit := details.View.Pages[3]

@@ -984,6 +984,15 @@ export class Stream {
     return this.#entries.get(seq);
   }
 
+  commandExecution(turnId: string, itemId: string) {
+    const entries = this.#entries;
+    const target = this.#deltaTargets.get(turnId)?.get(itemId);
+    // Subscribe to the row's updates without storing the full output in the row.
+    if (!target || !entries.get(target.seq)) return;
+    const item = target.items[target.index];
+    return item.type === "commandExecution" ? item : undefined;
+  }
+
   connect(
     id: string,
     machine: Machine,

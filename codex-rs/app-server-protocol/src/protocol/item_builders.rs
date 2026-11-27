@@ -147,6 +147,24 @@ pub fn command_display(
     })
 }
 
+impl CommandDisplay {
+    /// Classifies authored steps in retained displays that predate step kinds.
+    pub fn restore_step_kinds(&mut self) {
+        if !self.step_kinds.is_empty() {
+            return;
+        }
+        if !self.segments.is_empty() {
+            self.step_kinds = self
+                .segments
+                .iter()
+                .map(|step| shell_step_kind(step))
+                .collect();
+        } else if !self.script.is_empty() {
+            self.step_kinds.push(shell_step_kind(&self.script));
+        }
+    }
+}
+
 // Keep Mekugi-only presentation labels out of stock command parsing and approvals.
 fn authored_command_kind(argv: &[String]) -> Option<CommandStepKind> {
     let (program, args) = argv.split_first()?;

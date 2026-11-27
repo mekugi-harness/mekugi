@@ -33,7 +33,7 @@ func directCommandTail(output string) ([]string, int) {
 	omitted := max(0, len(lines)-directCommandTailLimit)
 	lines = lines[omitted:]
 	for i, line := range lines {
-		lines[i] = directOutputLine(line)
+		lines[i] = textsanitize.Safe(directOutputLine(line), false)
 	}
 	return lines, omitted
 }
@@ -44,7 +44,7 @@ func directOutputLines(output string) []string {
 	}
 	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 	for i, line := range lines {
-		lines[i] = directOutputLine(line)
+		lines[i] = textsanitize.MarkdownSource(directOutputLine(line))
 	}
 	return lines
 }
@@ -55,7 +55,7 @@ func directOutputLine(line string) string {
 	if at := strings.LastIndexByte(line, '\r'); at >= 0 {
 		line = line[at+1:]
 	}
-	return textsanitize.Safe(line, false)
+	return line
 }
 
 func (c *directNativeConnection) handleServerMessage(msg appserver.Message) {
@@ -945,6 +945,11 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		if first, ok := c.firstInputs[threadID]; ok && first.clientID == decodeJSONString(fields["clientId"]) {
 			rec.seq, rec.entry.Seq = first.entry.Seq, first.entry.Seq
 			rec.entry.Observed = first.entry.Observed
+			// Replace the first displayed row, even if pre-turn work arrived first.
+			records := c.items[threadID]
+			index := slices.Index(records, rec)
+			copy(records[1:index+1], records[:index])
+			records[0] = rec
 			delete(c.firstInputs, threadID)
 		}
 		message, spans := extractUserMessage(fields["content"])
@@ -1264,10 +1269,10 @@ func extractUserMessage(raw jsontext.Value) (string, []activity.TextSpan) {
 		return "", nil
 	}
 	var skillLabels map[string]bool
-	var imageCount int
+	var imagesRemaining int
 	for _, part := range parts {
 		if part.Type == "image" || part.Type == "localImage" {
-			imageCount++
+			imagesRemaining++
 		}
 		if part.Type == "skill" && part.Name != "" {
 			if skillLabels == nil {
@@ -1276,40 +1281,28 @@ func extractUserMessage(raw jsontext.Value) (string, []activity.TextSpan) {
 			skillLabels["$"+part.Name] = true
 		}
 	}
-	// A typed skill names a binding, but only a text element identifies which
-	// occurrence of its label was selected instead of typed as ordinary text.
-	// Web input can carry a marker in text and the image as a separate part.
-	// Terminal input splits the text at the image and sends only the typed part.
-	imageLabels := make(map[string]bool, imageCount)
-	for i := 1; i <= imageCount; i++ {
-		imageLabels[fmt.Sprintf("[Image %d]", i)] = false
-	}
-	for _, part := range parts {
-		for _, element := range part.Elements {
-			start, end := element.ByteRange.Start, element.ByteRange.End
-			if _, image := imageLabels[element.Placeholder]; image && start >= 0 &&
-				end > start && end <= len(part.Text) && part.Text[start:end] == element.Placeholder {
-				imageLabels[element.Placeholder] = true
-			}
-		}
-	}
 	var message strings.Builder
 	var spans []activity.TextSpan
-	var imageIndex int
+	var imageIndex, markedImages int
+	imageSpans := make(map[int]bool)
 	var previousText bool
 	for _, part := range parts {
 		if part.Type == "image" || part.Type == "localImage" {
 			imageIndex++
-			label := fmt.Sprintf("[Image %d]", imageIndex)
-			if !imageLabels[label] {
-				if !previousText && message.Len() != 0 {
-					message.WriteByte(' ')
-				}
-				start := message.Len()
-				message.WriteString(label)
-				spans = append(spans, activity.TextSpan{Start: start, End: message.Len(), Kind: activity.ImageToken})
-				previousText = false
+			imagesRemaining--
+			// The browser sends its typed markers in text before the image parts.
+			// The terminal sends only the image parts at their positions in text.
+			if markedImages > 0 {
+				markedImages--
+				continue
 			}
+			if !previousText && message.Len() != 0 {
+				message.WriteByte(' ')
+			}
+			start := message.Len()
+			message.WriteString(fmt.Sprintf("[Image %d]", imageIndex))
+			spans = append(spans, activity.TextSpan{Start: start, End: message.Len(), Kind: activity.ImageToken})
+			previousText = false
 			continue
 		}
 		if part.Text == "" {
@@ -1327,7 +1320,10 @@ func extractUserMessage(raw jsontext.Value) (string, []activity.TextSpan) {
 				continue
 			}
 			switch {
-			case imageLabels[element.Placeholder]:
+			case markedImages < imagesRemaining && !imageSpans[offset+start] &&
+				strings.HasPrefix(element.Placeholder, "[Image ") && strings.HasSuffix(element.Placeholder, "]"):
+				imageSpans[offset+start] = true
+				markedImages++
 				spans = append(spans, activity.TextSpan{Start: offset + start, End: offset + end, Kind: activity.ImageToken})
 			case skillLabels[element.Placeholder]:
 				spans = append(spans, activity.TextSpan{Start: offset + start, End: offset + end, Kind: activity.SkillToken})
@@ -1634,6 +1630,9 @@ func (c *directNativeConnection) refreshRateLimits(ctx context.Context) (*direct
 }
 
 func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, threadID string) {
+	c.mu.Lock()
+	waitingForFirstInput := len(c.items[threadID]) == 0 || c.firstInputs[threadID].clientID != ""
+	c.mu.Unlock()
 	var resp struct {
 		Thread directWireThread `json:"thread"`
 	}
@@ -1642,6 +1641,12 @@ func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, thr
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if records := c.items[threadID]; waitingForFirstInput && len(records) > 0 &&
+		(threadID == c.mainThread || threadID == c.sideThread) && records[0].entry.Kind == "user" {
+		// The first canonical user item arrived during this read. Do not replace
+		// the live initial transcript with a snapshot that may predate it.
+		return
+	}
 	c.applyThreadUsageLocked(threadID, resp.Thread.TokenUsage)
 	c.observeThreadSkillsLocked(threadID, resp.Thread.Extra.Skills)
 	turns := resp.Thread.Turns

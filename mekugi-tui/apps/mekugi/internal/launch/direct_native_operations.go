@@ -538,7 +538,6 @@ func (c *directNativeConnection) startSide(ctx context.Context, promptText strin
 	}
 	c.mu.Lock()
 	mainID := c.mainThread
-	effort := c.effort
 	if c.sideThread != "" {
 		c.openCommandConfirmationLocked(sessionpresentation.MenuSideReplace, "Replace One-off?",
 			"Replace closes only One-off, interrupts its running work and creates a fresh snapshot of Main.", []completion.Choice{
@@ -558,9 +557,6 @@ func (c *directNativeConnection) startSide(ctx context.Context, promptText strin
 		"threadId":     mainID,
 		"threadSource": "mekugi_side",
 		"excludeTurns": true,
-	}
-	if effort != "" {
-		params["config"] = map[string]string{"model_reasoning_effort": effort}
 	}
 	if err := c.wire.Call(ctx, "thread/fork", params, &resp); err != nil {
 		return fmt.Errorf("fork side thread: %w", err)

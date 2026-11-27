@@ -7,12 +7,21 @@ fn stored_command_display_recovers_authored_shell_text() {
     use codex_thread_store::StoredThreadItem;
     use serde_json::json;
 
-    for (script, old_display, steps) in [
-        (r#"printf "%s" 'a b'"#, None, json!([])),
+    for (script, old_display, steps, kinds) in [
+        (r#"printf "%s" 'a b'"#, None, json!([]), json!(["run"])),
         (
-            "cd sub && pwd",
-            Some(json!({"effectiveCwd": "/repo/sub", "segments": ["pwd"]})),
-            json!(["pwd"]),
+            "cd sub && mcat src.rs",
+            Some(json!({"effectiveCwd": "/repo/sub", "segments": ["mcat src.rs"]})),
+            json!(["mcat src.rs"]),
+            json!(["read"]),
+        ),
+        (
+            "command -v git",
+            Some(json!({
+                "script": "command -v git", "segments": [], "stepKinds": [], "effectiveCwd": null,
+            })),
+            json!([]),
+            json!(["inspect"]),
         ),
     ] {
         let command = shlex::try_join(["/bin/dash", "-c", script]).unwrap();
@@ -36,6 +45,7 @@ fn stored_command_display_recovers_authored_shell_text() {
         let wire = serde_json::to_value(item).unwrap();
         assert_eq!(wire["display"]["script"], script);
         assert_eq!(wire["display"]["segments"], steps);
+        assert_eq!(wire["display"]["stepKinds"], kinds);
         assert_eq!(
             wire["display"]["effectiveCwd"],
             old["display"]["effectiveCwd"]

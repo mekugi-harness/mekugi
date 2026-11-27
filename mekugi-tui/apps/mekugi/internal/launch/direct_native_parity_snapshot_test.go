@@ -378,14 +378,45 @@ func TestUISnapshotNativeFirstInputWhileTurnStarts(t *testing.T) {
 			f.await(func(ev sessionapi.NativeEvent) bool {
 				return ev.Frame.View.Interrupt.Turn == "first-turn" && len(ev.Frame.Main.Entries) == 1
 			})
+			readStarted, releaseRead, readDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			f.server.mu.Lock()
+			f.server.overrides["thread/read"] = func(jsontext.Value) any {
+				close(readStarted)
+				select {
+				case <-releaseRead:
+					return jsontext.Value(`{"thread":{"id":"thr-main","turns":[]}}`)
+				case <-f.ctx.Done():
+					return mockRPCError("fixture canceled")
+				}
+			}
+			f.server.mu.Unlock()
+			go func() {
+				f.conn.reloadThreadTranscript(f.ctx, "thr-main")
+				close(readDone)
+			}()
+			select {
+			case <-readStarted:
+			case <-f.ctx.Done():
+				t.Fatal("stale thread read did not reach the mock server")
+			}
+			f.notify("item/completed", `{"threadId":"thr-main","turnId":"first-turn",
+				"item":{"id":"pre-turn-compaction","type":"contextCompaction"}}`)
 			f.notify("item/completed", `{"threadId":"thr-main","turnId":"first-turn",
 				"item":{"id":"native-user","type":"userMessage","clientId":"`+clientID+`",
 				"content":[{"type":"text","text":"`+prompt+`"}]}}`)
 			accepted := f.await(func(ev sessionapi.NativeEvent) bool {
-				return len(ev.Frame.Main.Entries) > 0 && !ev.Frame.Main.Entries[0].Unconfirmed
+				return len(ev.Frame.Main.Entries) == 2 && !ev.Frame.Main.Entries[0].Unconfirmed
 			})
-			if entries := accepted.Frame.Main.Entries; len(entries) != 1 || entries[0].Seq != seq || entries[0].Text != prompt {
+			if entries := accepted.Frame.Main.Entries; entries[0].Seq != seq || entries[0].Text != prompt || entries[1].Kind != "compaction" {
 				t.Fatalf("native user item did not replace the pending row in place: %+v", entries)
+			}
+			close(releaseRead)
+			<-readDone
+			f.conn.mu.Lock()
+			entries := f.conn.publicationForThreadLocked("thr-main").Entries
+			f.conn.mu.Unlock()
+			if len(entries) != 2 || entries[0].Text != prompt {
+				t.Fatalf("an older read displaced live first input: %+v", entries)
 			}
 		})
 	}

@@ -130,7 +130,6 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	terminal.await("MAIN_SEED_ANSWER")
 	terminal.awaitThreadIdle(mainMetadata.ThreadID)
 	terminal.send("/effort xhigh\r")
-	terminal.await("gpt-6-astra (xhigh)")
 	terminal.send("/oneoff ONEOFF_TASK_ONLY\r")
 	fork := next()
 	forkMetadata, _ := fixtureTurnMetadata(fork.headers)
