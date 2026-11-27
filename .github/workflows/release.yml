@@ -389,9 +389,25 @@ jobs:
           AGENT_BROWSER_EXECUTABLE_PATH: /usr/local/bin/google-chrome-ci
         run: |
           export PATH="$RUNNER_TEMP/install-smoke/home/.local/bin:$PATH"
-          pattern='^(TestDetailLinksAndReferenceThroughNativeBrowser|TestWaitingEditsAndPermissionsThroughNativeBrowser|TestShellGuardBrowserAndTerminalNativeCodex)$'
-          just test ./mekugi-tui/apps/mekugi/internal/launch -tags=codex_e2e \
-            -run "$pattern" -count=1 -v
+          required_tests=(
+            TestDetailLinksAndReferenceThroughNativeBrowser
+            TestWaitingEditsAndPermissionsThroughNativeBrowser
+            TestShellGuardBrowserAndTerminalNativeCodex
+          )
+          pattern="^($(IFS='|'; printf '%s' "${required_tests[*]}"))\$"
+          log="$RUNNER_TEMP/packaged-browser-tests.log"
+          status=0
+          RTK='' just test ./mekugi-tui/apps/mekugi/internal/launch -tags=codex_e2e \
+            -run "$pattern" -count=1 -v 2>&1 | tee "$log" || status=$?
+          if (( status != 0 )); then
+            exit "$status"
+          fi
+          for test in "${required_tests[@]}"; do
+            if ! grep -Eq "^--- PASS: ${test} \(" "$log"; then
+              printf 'error: required packaged-runtime browser acceptance test did not pass: %s\n' "$test" >&2
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.native_key.outputs.name || format('mekugi_{0}', matrix.platform) }}
