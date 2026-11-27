@@ -73,18 +73,6 @@ pub(crate) fn register_write(call_id: &str, keys: &[WriterKey]) -> bool {
     any_overlap
 }
 
-/// Check overlap without consuming the information needed for settlement.
-pub(crate) fn has_overlap(call_id: &str, keys: &[WriterKey]) -> bool {
-    let state = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    keys.iter().any(|key| {
-        state
-            .overlapped
-            .contains(&(call_id.to_string(), key.clone()))
-    })
-}
-
 /// Check whether `call_id` experienced an overlapping writer on any of `keys` and
 /// unregister all keys held by `call_id`.
 pub(crate) fn finish_call(call_id: &str, keys: &[WriterKey]) -> HashSet<WriterKey> {

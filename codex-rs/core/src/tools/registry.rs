@@ -319,12 +319,11 @@ fn preserve_hook_selector(
 /// derived from partial tool input.
 pub(crate) trait ToolArgumentDiffConsumer: Send {
     /// Consume the next argument diff for a tool call.
-    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str)
-    -> Option<EventMsg>;
+    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg>;
 
     /// Finish consuming argument diffs before the tool call completes.
-    fn finish(&mut self) -> Result<Option<EventMsg>, FunctionCallError> {
-        Ok(None)
+    fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
+        Ok(Vec::new())
     }
 }
 

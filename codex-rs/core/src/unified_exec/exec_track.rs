@@ -1,40 +1,26 @@
 //! Process-scoped OS shell-write capture bridge for unified exec and user shell.
 
-use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
-use async_channel::Sender;
 use codex_change_history::ChangeAuthor;
 use codex_change_history::ChangeMetadata;
 use codex_change_history::ChangeSourceKind;
-use codex_exec_track::LiveFileChangeKind;
 use codex_exec_track::WrappedCommand;
 use codex_exec_track::WriteObserverSession;
 use codex_exec_track::shell_write_claim_key;
-use codex_protocol::items::FileUpdateChange;
-use codex_protocol::items::PatchChangeKind;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_protocol::models::FileSystemPermissions;
 use codex_protocol::permissions::FileSystemSandboxPolicy;
-use codex_protocol::protocol::Event;
-use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::ExecCommandSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use tokio_util::task::AbortOnDropHandle;
 
 use crate::tools::context::ToolChangeNotice;
 use crate::tools::context::tool_change_notice_from_record;
-
-// Preview updates are replaceable. If the event consumer is lagging, skip a
-// sample rather than queueing large diffs behind other shell/turn events.
-const LIVE_PREVIEW_QUEUE_WATERMARK: usize = 8;
 
 /// Active per-command OS write-observer attachment bound to a single local shell process.
 pub(crate) struct ExecTrackAttachment {
@@ -175,85 +161,6 @@ impl ExecTrackAttachment {
             )),
             ..Default::default()
         })
-    }
-
-    /// Sample only while the existing command owner is waiting for execution.
-    /// Dropping the wait also drops the publisher; an in-flight bounded disk
-    /// read may finish, but cannot emit a late preview or delay command exit.
-    #[tracing::instrument(level = "trace", skip_all)]
-    pub(crate) async fn observe_while<F: Future>(
-        track: Option<&Arc<Self>>,
-        tx_event: Sender<Event>,
-        source: ExecCommandSource,
-        running: F,
-    ) -> F::Output {
-        let Some(track) = track else {
-            return running.await;
-        };
-        let Some(observer) = &track.observer else {
-            return running.await;
-        };
-        let sample = async {
-            let mut previous = Vec::new();
-            loop {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                if tx_event.is_closed() {
-                    break;
-                }
-                if tx_event.len() >= LIVE_PREVIEW_QUEUE_WATERMARK || !observer.has_live_candidates()
-                {
-                    continue;
-                }
-                let capture = Arc::clone(track);
-                let snapshot = AbortOnDropHandle::new(tokio::task::spawn_blocking(move || {
-                    capture.observer.as_ref().map(|observer| {
-                        observer
-                            .live_changes(&capture.workspace_root, capture.session_tmp.as_deref())
-                    })
-                }))
-                .await;
-                let Ok(Some(changes)) = snapshot else {
-                    break;
-                };
-                if changes == previous || tx_event.len() >= LIVE_PREVIEW_QUEUE_WATERMARK {
-                    continue;
-                }
-                let files = changes
-                    .iter()
-                    .map(|change| FileUpdateChange {
-                        path: change.path.to_string_lossy().into_owned(),
-                        kind: match change.kind {
-                            LiveFileChangeKind::Add => PatchChangeKind::Add,
-                            LiveFileChangeKind::Delete => PatchChangeKind::Delete,
-                            LiveFileChangeKind::Update => {
-                                PatchChangeKind::Update { move_path: None }
-                            }
-                        },
-                        diff: change.diff.clone(),
-                    })
-                    .collect();
-                if tx_event
-                    .try_send(Event {
-                        id: track.turn_id.clone(),
-                        msg: EventMsg::ExecCommandChangesUpdated {
-                            call_id: track.call_id.clone(),
-                            source,
-                            command: track.summary.clone(),
-                            changes: files,
-                        },
-                    })
-                    .is_ok()
-                {
-                    previous = changes;
-                }
-            }
-        };
-        tokio::pin!(running);
-        tokio::select! {
-            biased;
-            result = &mut running => result,
-            () = sample => running.await,
-        }
     }
 
     /// Stop the observer background thread on early abort or drop.

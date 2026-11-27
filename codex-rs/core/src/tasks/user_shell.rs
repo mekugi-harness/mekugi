@@ -252,13 +252,9 @@ pub(crate) async fn execute_user_shell_command(
         tx_event: session.get_tx_event(),
     });
 
-    let exec_result = ExecTrackAttachment::observe_while(
-        (!skip_for_setuid).then_some(&user_shell_track),
-        session.get_tx_event(),
-        ExecCommandSource::UserShell,
-        execute_env(exec_env, stdout_stream).or_cancel(&cancellation_token),
-    )
-    .await;
+    let exec_result = execute_env(exec_env, stdout_stream)
+        .or_cancel(&cancellation_token)
+        .await;
 
     match exec_result {
         Err(CancelErr::Cancelled) => {

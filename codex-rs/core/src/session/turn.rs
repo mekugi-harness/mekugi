@@ -3293,6 +3293,7 @@ async fn try_run_sampling_request(
     let mut last_agent_message = AssistantMessages::default();
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
+        Option<codex_protocol::ResponseItemId>,
         String,
         Box<dyn ToolArgumentDiffConsumer>,
     )> = None;
@@ -3537,10 +3538,12 @@ async fn try_run_sampling_request(
                         analytics_tool_call_ids.push(call_id.to_string());
                     }
                 }
-                if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()
-                    && let Ok(Some(event)) = consumer.finish()
+                if let Some((_, _, mut consumer)) = active_tool_argument_diff_consumer.take()
+                    && let Ok(events) = consumer.finish()
                 {
-                    sess.send_event(&turn_context, event).await;
+                    for event in events {
+                        sess.send_event(&turn_context, event).await;
+                    }
                 }
                 let previously_active_item = active_item.take();
                 let previously_streamed_item = if active_item_is_streaming_to_client {
@@ -3716,19 +3719,31 @@ async fn try_run_sampling_request(
                 sess.reserve_assistant_message_order(&turn_context, &item)
                     .await;
                 let draining = *draining_for_mailbox || draining_for_steer;
-                if !draining
-                    && let ResponseItem::CustomToolCall {
+                if !draining {
+                    if let ResponseItem::CustomToolCall {
+                        id,
+                        call_id,
+                        name,
+                        namespace,
+                        ..
+                    }
+                    | ResponseItem::FunctionCall {
+                        id,
                         call_id,
                         name,
                         namespace,
                         ..
                     } = &item
-                {
-                    let tool_name = ToolName::new(namespace.clone(), name.as_str());
-                    active_tool_argument_diff_consumer = tool_runtime
-                        .create_diff_consumer(&tool_name)
-                        .map(|consumer| (call_id.clone(), consumer));
-                } else if matches!(&item, ResponseItem::FunctionCall { .. }) {
+                    {
+                        let tool_name = ToolName::new(namespace.clone(), name.as_str());
+                        active_tool_argument_diff_consumer = tool_runtime
+                            .create_diff_consumer(&tool_name)
+                            .map(|consumer| (id.clone(), call_id.clone(), consumer));
+                    }
+                } else if matches!(
+                    &item,
+                    ResponseItem::CustomToolCall { .. } | ResponseItem::FunctionCall { .. }
+                ) {
                     active_tool_argument_diff_consumer = None;
                 }
                 if let Some(turn_item) = handle_non_tool_response_item(
@@ -3984,20 +3999,28 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::ToolCallInputDelta {
-                item_id: _,
+                item_id,
                 call_id,
                 delta,
             } => {
-                let Some((active_call_id, consumer)) = active_tool_argument_diff_consumer.as_mut()
+                let Some((active_item_id, active_call_id, consumer)) =
+                    active_tool_argument_diff_consumer.as_mut()
                 else {
                     continue;
                 };
                 let call_id = match call_id {
                     Some(call_id) if call_id.as_str() != active_call_id.as_str() => continue,
                     Some(call_id) => call_id,
-                    None => active_call_id.clone(),
+                    None => {
+                        if let Some(active_item_id) = active_item_id.as_ref()
+                            && item_id != active_item_id.as_str()
+                        {
+                            continue;
+                        }
+                        active_call_id.clone()
+                    }
                 };
-                if let Some(event) = consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
+                for event in consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
                     sess.send_event(&turn_context, event).await;
                 }
             }

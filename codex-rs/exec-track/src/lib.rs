@@ -33,8 +33,6 @@ pub use linux::run_observe_wrapper_main;
 #[cfg(target_os = "macos")]
 pub use macos::run_observe_wrapper_main;
 use persist::ObservationState;
-pub use persist::live::LiveFileChange;
-pub use persist::live::LiveFileChangeKind;
 
 /// Internal arg1 used by `codex-arg0` to dispatch the Linux `seccomp-unotify` child wrapper.
 pub const CODEX_EXEC_OBSERVE_ARG1: &str = "--codex-exec-observe";
@@ -123,29 +121,6 @@ impl WriteObserverSession {
             let _ = (argv, self_exe);
             None
         }
-    }
-
-    /// Check for observed paths without waiting for the write supervisor or reading files.
-    pub fn has_live_candidates(&self) -> bool {
-        self.state
-            .try_lock()
-            .is_ok_and(|state| state.has_live_candidates())
-    }
-
-    /// Sample current authored edits without settling or persisting the command.
-    /// Call from blocking work: the snapshot reads the filesystem, but not while
-    /// holding the write supervisor's lock.
-    pub fn live_changes(
-        &self,
-        workspace_root: &Path,
-        session_tmp: Option<&Path>,
-    ) -> Vec<LiveFileChange> {
-        let baselines = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .live_baselines();
-        baselines.render(workspace_root, session_tmp)
     }
 
     /// Stop observing new writes without discarding already-captured baselines,

@@ -1,9 +1,6 @@
 //! Shared pre-write baseline state, path normalization, scope classification,
 //! and `ChangeHistoryStore` persistence across Linux and macOS observers.
 
-#[path = "live.rs"]
-pub(crate) mod live;
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;

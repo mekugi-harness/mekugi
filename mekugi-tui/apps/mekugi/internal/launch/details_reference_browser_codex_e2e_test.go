@@ -288,11 +288,6 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					t.Fatal("Tab did not run the native queued shell draft")
 				}
 			}
-			threadLink := func() string {
-				href := run("get", "attr", "nav[aria-label=Threads] li a[aria-current=page]", "href")
-				return fmt.Sprintf("nav[aria-label=Threads] li a[href=%q]", href)
-			}
-			originalThread := threadLink()
 			run("find", "role", "button", "click", "--name", "New thread", "--exact")
 			run("wait", "--fn", fmt.Sprintf(`document.querySelector('button[title=%s]') !== null`, fmt.Sprintf("%q", workspace)))
 			run("click", fmt.Sprintf("button[title=%q]", workspace))
@@ -358,23 +353,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					}
 				}
 				if test.action == "Keep edits" {
-					liveHunk := `(() => {
-						const live = document.querySelector('[aria-label="Live edits"]');
-						const card = [...(live?.querySelectorAll('article') ?? [])].find(
-							entry => (entry.querySelector('h3 bdi')?.textContent ?? entry.querySelector('h3')?.textContent ?? '').trim().split('/').at(-1) === 'keep.txt');
-						const hunk = card?.querySelector('.bg-add');
-						return live?.textContent.includes('Writing') &&
-							card?.textContent.includes('User shell') &&
-							hunk?.textContent.includes('captured') &&
-							hunk.getBoundingClientRect().height > 0;
-					})()`
-					run("wait", "--fn", liveHunk)
-					heldThread := threadLink()
-					run("click", originalThread)
-					run("wait", "--text", "Workspace notes")
 					run("wait", `[aria-label="Live edits"]`, "--state", "hidden")
-					run("click", heldThread)
-					run("wait", "--fn", liveHunk)
 					if err := os.WriteFile(release, nil, 0600); err != nil {
 						t.Fatal(err)
 					}

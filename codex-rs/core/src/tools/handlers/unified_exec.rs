@@ -21,10 +21,12 @@ use std::sync::Arc;
 
 mod exec_command;
 pub(crate) mod preparation;
+mod shell_edit_stream;
 mod write_stdin;
 
 pub use exec_command::ExecCommandHandler;
 pub(crate) use exec_command::ExecCommandHandlerOptions;
+pub(crate) use shell_edit_stream::CodeModeEditProjector;
 pub use write_stdin::WriteStdinHandler;
 
 /// Terminal tools expose the unified-exec process ID as `session_id`.

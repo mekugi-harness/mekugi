@@ -20,7 +20,6 @@ pub use diff::compose_diff;
 pub use diff::compose_file_stats;
 pub use diff::compose_summary;
 pub use diff::render_history;
-pub use diff::render_provisional_text_diff;
 pub use error::ChangeHistoryError;
 pub use identity::ChangeId;
 pub use identity::UNATTRIBUTED_STREAM;
