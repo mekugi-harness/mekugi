@@ -161,3 +161,55 @@ func TestSelectionTargetRetainsPressedIdentity(t *testing.T) {
 		t.Fatalf("press retargeted: %+v", released)
 	}
 }
+
+func TestSelectionTargetRetainsPaintedCommandOutput(t *testing.T) {
+	var main Main
+	var prompts Prompts
+	thread := sessionpresentation.Thread{ID: "main", Caller: "/root"}
+	main.Update(sessionpresentation.View{Main: thread, Displayed: thread, Version: sessionpresentation.Version{Attachment: 1}})
+	view := activityui.NewView()
+	view.Expansion = 2
+	publication := activitypresentation.Publication{Entries: []activitypresentation.Entry{{
+		Seq: 7, Agent: "Main", Kind: "command",
+		Values: []activitypresentation.Value{
+			{Kind: "op", Verb: "Run", Code: "echo first", Operation: 1},
+			{Kind: "op", Verb: "Run", Code: "echo second", Operation: 2},
+			{Kind: "op", Verb: "Run", Label: "combined output", Operation: 3, Output: 1},
+		},
+	}}}
+	view.Update(new(publication), activityui.Display{Caller: "/root"})
+	painted := main.Render(view, &view.Painter, &prompts, MainOptions{Now: time.Unix(100, 0)}, 60, 12, 0)
+	y := slices.IndexFunc(painted.Rows, func(row string) bool { return strings.Contains(ansi.Strip(row), "combined output") })
+	if y < 0 {
+		t.Fatalf("combined output row not painted:\n%s", strings.Join(painted.Rows, "\n"))
+	}
+	snippet := view.FeedSnippets[y-view.FeedTop+1]
+	if _, ok := view.SnippetBlock(snippet); !ok {
+		t.Fatal("combined output row had no cached block")
+	}
+	var frame Frame
+	if err := frame.Write(io.Discard, RenderedFrame{Rows: painted.Rows}, 60, false); err != nil {
+		t.Fatal(err)
+	}
+	publication.Entries = slices.Clone(publication.Entries)
+	publication.Entries[0].Revision++
+	view.Update(new(publication), activityui.Display{Caller: "/root"})
+	if _, ok := view.SnippetBlock(snippet); ok {
+		t.Fatal("publication did not invalidate the live run")
+	}
+	view.PointSnippet('\r', y+1, view.FeedLeft)
+	if view.Opening.Snippet != snippet || view.Opening.Detail.Output != 1 {
+		t.Fatalf("direct click lost combined output target: %+v", view.Opening)
+	}
+	in := FrameInput{Main: &main, Transcript: view, Shell: &Shell{Layout: Layout{Main: Rect{0, 0, 60, 12}}}, Width: 60, Height: 12}
+	mouse := Mouse{X: view.FeedLeft - 1, Y: y}
+	pressed := frame.SelectionMouse(in, nil, mouse)
+	if pressed.Selection == nil {
+		t.Fatal("click did not retain the painted row")
+	}
+	mouse.Release = true
+	released := frame.SelectionMouse(in, pressed.Selection, mouse)
+	if detail := released.Target.Detail; released.Target.Snippet != snippet || detail.Source != 7 || detail.Operation != 3 || detail.Output != 1 || len(detail.Sources) != 0 {
+		t.Fatalf("click lost combined output target: %+v", released.Target)
+	}
+}

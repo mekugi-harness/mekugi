@@ -341,7 +341,7 @@ func (c *nativeClient) dispatch(event terminalsession.Input) {
 						c.details(target.Version, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeFileDetails, Path: target.Link, Displayed: sessionpresentation.Thread{ID: target.Thread}})
 					}
 				} else {
-					c.openTranscriptDetail(target.Version, target.View, target.Thread, activityui.DetailTarget{Entry: target.Entry, Snippet: target.Snippet}, false)
+					c.openTranscriptDetail(target.Version, target.View, target.Thread, activityui.DetailTarget{Entry: target.Entry, Snippet: target.Snippet, Detail: target.Detail}, false)
 				}
 			}
 		case effect.Reference != nil:

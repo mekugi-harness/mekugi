@@ -12,14 +12,23 @@ import (
 // with its row span in the laid-out feed.
 type DetailTarget struct {
 	Entry       uint64
-	Source      uint64  // Resolved source entry sequence for single-source multi-segment events.
-	Edit        bool    // True when this target opens an edit sheet rather than a command/entry sheet.
-	Merged      bool    // True when this target is a merged multi-source block.
+	Source      uint64 // Resolved source entry sequence for single-source multi-segment events.
+	Edit        bool   // True when this target opens an edit sheet rather than a command/entry sheet.
+	Merged      bool   // True when this target is a merged multi-source block.
 	Snippet     Snippet
 	LastSnippet Snippet // Last distinct row snippet in this event (e.g. final file in a multi-file edit).
-	DisplayPath string  // Optional alternate path for matching an active edit tab back to its transcript row.
-	Start       int     // First feed row of this target.
-	End         int     // Exclusive last feed row of this target.
+	Detail      DetailSelection
+	LastDetail  DetailSelection
+	DisplayPath string // Optional alternate path for matching an active edit tab back to its transcript row.
+	Start       int    // First feed row of this target.
+	End         int    // Exclusive last feed row of this target.
+}
+
+// DetailSelection is the request identity of a painted row, without its body.
+type DetailSelection struct {
+	Source            uint64
+	Operation, Output int
+	Sources           []uint64
 }
 
 type detailEventKey struct {
@@ -75,6 +84,14 @@ func resolveDetailTargetWithBlock(target DetailTarget, lookup func(Snippet) (Blo
 		target.Source = target.Snippet.Run
 		return target
 	}
+	if len(target.Detail.Sources) > 0 {
+		target.Merged = true
+		return target
+	}
+	if target.Detail.Source != 0 {
+		target.Source = target.Detail.Source
+		return target
+	}
 	if block, ok := lookup(target.Snippet); ok {
 		if len(block.Members) > 0 {
 			target.Merged = true
@@ -87,24 +104,45 @@ func resolveDetailTargetWithBlock(target DetailTarget, lookup func(Snippet) (Blo
 
 type detailRunIndex map[uint64][]Block
 
-func (v *View) detailRunIndex() detailRunIndex {
-	index := make(detailRunIndex, len(v.Runs))
-	for key, run := range v.Runs {
-		if key.Expansion == v.Expansion {
-			index[key.First] = run.Blocks
-		}
-	}
-	return index
+func (idx detailRunIndex) resolve(target DetailTarget) DetailTarget {
+	return resolveDetailTargetWithBlock(target, idx.block)
 }
 
-func (idx detailRunIndex) resolve(target DetailTarget) DetailTarget {
-	return resolveDetailTargetWithBlock(target, func(s Snippet) (Block, bool) {
-		blocks, ok := idx[s.Run]
-		if !ok || s.Block < 0 || s.Block >= len(blocks) {
-			return Block{}, false
+func (idx detailRunIndex) block(s Snippet) (Block, bool) {
+	blocks := idx[s.Run]
+	if s.Block < 0 || s.Block >= len(blocks) {
+		return Block{}, false
+	}
+	return blocks[s.Block], true
+}
+
+// DetailSelections resolves targets from this layout, not the live run cache.
+func (f Feed) DetailSelections(snippets []Snippet) []DetailSelection {
+	details := make([]DetailSelection, len(snippets))
+	for row, snippet := range snippets {
+		if row > 0 && snippets[row-1] == snippet {
+			details[row] = details[row-1]
+		} else {
+			details[row] = f.detailRuns.selection(snippet)
 		}
-		return blocks[s.Block], true
-	})
+	}
+	return details
+}
+
+func (idx detailRunIndex) selection(snippet Snippet) DetailSelection {
+	block, ok := idx.block(snippet)
+	if !ok {
+		return DetailSelection{Source: snippet.Run}
+	}
+	detail := DetailSelection{Source: block.Source, Operation: block.Operation, Output: block.Output}
+	seen := make(map[uint64]bool, len(block.Members))
+	for _, member := range block.Members {
+		if !seen[member.Source] {
+			seen[member.Source] = true
+			detail.Sources = append(detail.Sources, member.Source)
+		}
+	}
+	return detail
 }
 
 // SetActiveDetail highlights the active transcript event (and optionally scrolls
@@ -140,10 +178,15 @@ func (v *View) collectDetailTargets(feed Feed, runs detailRunIndex) []DetailTarg
 			if idx == len(targets)-1 {
 				targets[idx].End = row + 1
 			}
-			if cand.Snippet != (Snippet{}) {
+			if cand.Snippet != (Snippet{}) && cand.Snippet != targets[idx].LastSnippet {
 				targets[idx].LastSnippet = cand.Snippet
+				targets[idx].LastDetail = runs.selection(cand.Snippet)
 			}
 			continue
+		}
+		if cand.Snippet != (Snippet{}) {
+			cand.Detail = runs.selection(cand.Snippet)
+			cand.LastDetail = cand.Detail
 		}
 		seen[key] = len(targets)
 		targets = append(targets, cand)
