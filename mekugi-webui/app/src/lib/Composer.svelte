@@ -4,6 +4,8 @@
   import Attachments from "./Attachments.svelte";
   import {
     activeAttachments,
+    atomicAttachmentInput,
+    attachmentRanges,
     hostPathAttachment,
     labelAttachment,
     prepareAttachments,
@@ -207,11 +209,15 @@
       const token = match[1];
       const kind = token.startsWith("@") ? "@" : "$";
       const query = token.slice(1);
+      const start = at - token.length;
+      const end = at + (text.slice(at).match(/^\S*/)?.[0].length ?? 0);
+      if (attachmentRanges(text, items).some((range) => range.start < end && range.end > start))
+        return;
       return {
         kind,
         query: kind === "@" ? query : query.toLowerCase(),
-        start: at - token.length,
-        end: at + (text.slice(at).match(/^\S*/)?.[0].length ?? 0),
+        start,
+        end,
       };
     }
     return undefined;
@@ -464,7 +470,10 @@
     for (let number = 2; labels.has(placeholder) || text.includes(placeholder); number++) {
       placeholder = `[Selected ${description} ${number}]`;
     }
-    const at = field?.selectionStart ?? text.length;
+    let at = field?.selectionStart ?? text.length;
+    for (const { start, end } of attachmentRanges(text, items)) {
+      if (start < at && at < end) at = end;
+    }
     const before = text.slice(0, at);
     const after = text.slice(at);
     const insert = (before && !/\s$/.test(before) ? " " : "") + placeholder + " ";
@@ -803,6 +812,7 @@
             }
           }}
           bind:value={text}
+          use:atomicAttachmentInput={() => ({ text, items })}
           oninput={(event) => recordSelection(event.currentTarget)}
           onselect={(event) => recordSelection(event.currentTarget)}
           onselectionchange={(event) => recordSelection(event.currentTarget)}

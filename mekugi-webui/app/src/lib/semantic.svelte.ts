@@ -3,6 +3,7 @@ import { errorText, TransportError, type Connection } from "./transport";
 import { streams } from "./stream.svelte";
 import { SideAnswer } from "./side-answer.svelte";
 import {
+  attachmentOffsets,
   formatPathMention,
   prepareAttachments,
   selectionAppendix,
@@ -283,8 +284,8 @@ export function toNativeUserInput(
           ? `[Selected ${attachment.name}]`
           : undefined);
       if (!placeholder) return [];
-      const offset = text.indexOf(placeholder);
-      if (offset < 0) return [];
+      const [offset] = attachmentOffsets(text, placeholder);
+      if (offset === undefined) return [];
       const start = encoder.encode(text.slice(0, offset)).length;
       const end = start + encoder.encode(placeholder).length;
       return [{ byteRange: { start, end }, placeholder }];
@@ -298,7 +299,7 @@ export function toNativeUserInput(
     if (att.source === "path") {
       if (att.fileReference) {
         const mention = formatPathMention(att.path);
-        if (att.placeholder !== mention || !text.includes(mention)) {
+        if (att.placeholder !== mention || !attachmentOffsets(text, mention).length) {
           items.push({ type: "text", text: mention, text_elements: [] });
         }
       } else {
