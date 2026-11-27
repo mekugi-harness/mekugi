@@ -215,6 +215,7 @@ async fn exec_command_with_tty(
         hook_command: Some(cmd.to_string()),
         tool_cwd: None,
         truncated_output_dir: None,
+        change_notice: None,
     })
 }
 

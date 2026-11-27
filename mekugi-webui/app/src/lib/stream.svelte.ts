@@ -724,6 +724,7 @@ function changeFileReview(file: ThreadChangeFileDiff): ReviewFile {
     Incomplete: file.coverageNotes?.join("; "),
     Added: file.additions,
     Removed: file.deletions,
+    Scope: file.scope,
   };
 }
 
@@ -882,6 +883,7 @@ export class Stream {
   family = $state.raw<{ root: string; threads: string[] } | undefined>();
   review = $state.raw<SavedReview | null>(null);
   reviewCaller = $state("");
+  reviewIncludeExternal = $state(false);
   reviewCursor = $state<string>();
   reviewError = $state<string>();
   reviewLoading = $state(false);
@@ -1381,6 +1383,12 @@ export class Stream {
     void this.#loadChanges(this.#id, this.#machine, this.#requests.signal);
   }
 
+  setIncludeExternalChanges(include: boolean): void {
+    if (this.reviewIncludeExternal === include || !this.#id || !this.#machine) return;
+    this.reviewIncludeExternal = include;
+    void this.#loadChanges(this.#id, this.#machine, this.#requests.signal);
+  }
+
   async moreChanges(demand?: AbortSignal): Promise<void> {
     const id = this.#id;
     const machine = this.#machine;
@@ -1396,7 +1404,13 @@ export class Stream {
         : this.#requests.signal;
       const response = await machine.request<ThreadChangesReadResponse>(
         "thread/changes/read",
-        { threadId: id, callerThreadId: this.reviewCaller || null, limit: changesPageSize, cursor },
+        {
+          threadId: id,
+          callerThreadId: this.reviewCaller || null,
+          includeExternal: this.reviewIncludeExternal,
+          limit: changesPageSize,
+          cursor,
+        },
         { signal },
       );
       if (signal.aborted || revision !== this.#reviewRevision) return;
@@ -1428,7 +1442,12 @@ export class Stream {
     try {
       const response = await machine.request<ThreadChangesReadResponse>(
         "thread/changes/read",
-        { threadId: id, callerThreadId: caller || null, limit: changesPageSize },
+        {
+          threadId: id,
+          callerThreadId: caller || null,
+          includeExternal: this.reviewIncludeExternal,
+          limit: changesPageSize,
+        },
         { signal },
       );
       if (signal.aborted || revision !== this.#reviewRevision) return;
@@ -1568,22 +1587,38 @@ export class Stream {
     const signal = this.#requests.signal;
     let savedPath: string | undefined;
     let savedFiles: ReviewFile[] | undefined;
+    let externalSummary: string | undefined;
     let status = preview.Status;
     try {
       const response = await machine.request<ThreadChangesReadResponse>(
         "thread/changes/read",
-        { threadId: thread, itemId: item, limit: 4 },
+        { threadId: thread, itemId: item, includeExternal: true, includeEphemeral: true, limit: 20 },
         { signal },
       );
-      const file = response.files[0];
       if (
         response.changes.some(
           (origin) =>
             origin.threadId === thread && origin.turnId === turn && origin.itemId === item,
         )
       ) {
+        const workspaceFiles = response.files.filter(
+          (f) => !f.scope || f.scope === "workspace",
+        );
+        const externalFiles = response.files.filter(
+          (f) => f.scope === "external" || f.scope === "ephemeral",
+        );
+        const file = workspaceFiles[0];
         savedPath = file?.absolutePath ?? file?.path;
-        savedFiles = response.files.map(changeFileReview);
+        savedFiles = workspaceFiles.slice(0, 4).map(changeFileReview);
+        if (externalFiles.length > 0) {
+          const ids = [
+            ...new Set(externalFiles.flatMap((f) => f.changeIds ?? [])),
+          ];
+          const noun = externalFiles.length === 1 ? "external file" : "external files";
+          externalSummary = ids.length
+            ? `Captured ${externalFiles.length} ${noun} · mchanges ${ids.join(" ")} --summary`
+            : `Captured ${externalFiles.length} ${noun}`;
+        }
       } else if (preview.Tool === "Shell") {
         savedFiles = [];
       }
@@ -1599,6 +1634,7 @@ export class Stream {
             Settling: false,
             Files: savedFiles ?? edit.Files,
             SavedPath: savedPath,
+            ExternalSummary: externalSummary,
             Status: status,
           }
         : edit,

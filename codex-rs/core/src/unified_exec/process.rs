@@ -258,6 +258,12 @@ impl UnifiedExecProcess {
         }
     }
 
+    pub(super) fn take_exec_track_change_notice(
+        &self,
+    ) -> Option<crate::tools::context::ToolChangeNotice> {
+        self.exec_track.as_ref()?.take_change_notice()
+    }
+
     pub(super) fn terminate(&self) {
         match &self.process_handle {
             ProcessHandle::Local(process_handle) => process_handle.terminate(),

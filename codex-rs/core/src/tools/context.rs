@@ -18,6 +18,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ToolResultMetadata;
 use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_tools::LoadableToolSpec;
+pub use codex_tools::ToolChangeNotice;
 use codex_tools::ToolName;
 use codex_utils_audio::estimate_tool_audio_tokens;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -396,6 +397,7 @@ impl FunctionToolOutput {
         }
     }
 
+    #[allow(dead_code)]
     pub fn into_text(self) -> String {
         function_call_output_content_items_to_text(&self.body).unwrap_or_default()
     }
@@ -419,13 +421,45 @@ impl ToolOutput for FunctionToolOutput {
     }
 }
 
+pub(crate) fn tool_change_notice_from_record(
+    record: &codex_change_history::ChangeRecord,
+) -> Option<ToolChangeNotice> {
+    if !record.metadata.source_kind.is_authored() {
+        return None;
+    }
+    let incomplete_notes = record
+        .files
+        .iter()
+        .filter_map(|file| match &file.coverage {
+            codex_change_history::CoverageStatus::Complete => None,
+            codex_change_history::CoverageStatus::Partial { reason }
+            | codex_change_history::CoverageStatus::MissingBaseline { reason } => {
+                Some(format!("{:?}: {reason}", file.rel_path))
+            }
+        })
+        .collect();
+    Some(ToolChangeNotice {
+        change_id: record.id.to_string(),
+        incomplete_notes,
+    })
+}
+
 pub struct ApplyPatchToolOutput {
     pub text: String,
+    pub change_notice: Option<ToolChangeNotice>,
 }
 
 impl ApplyPatchToolOutput {
     pub fn from_text(text: String) -> Self {
-        Self { text }
+        Self {
+            text,
+            change_notice: None,
+        }
+    }
+
+    pub fn with_change_notice(mut self, change_notice: Option<ToolChangeNotice>) -> Self {
+        self.change_notice = change_notice;
+        self
     }
 }
 
@@ -439,12 +473,19 @@ impl ToolOutput for ApplyPatchToolOutput {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        let mut items = vec![FunctionCallOutputContentItem::InputText {
+            text: self.text.clone(),
+        }];
+        if let Some(notice) = &self.change_notice {
+            let formatted = notice.format_notice();
+            if !formatted.is_empty() {
+                items.push(FunctionCallOutputContentItem::InputText { text: formatted });
+            }
+        }
         function_tool_response(
             call_id,
             payload,
-            vec![FunctionCallOutputContentItem::InputText {
-                text: self.text.clone(),
-            }],
+            items,
             Some(true),
         )
     }
@@ -454,7 +495,34 @@ impl ToolOutput for ApplyPatchToolOutput {
     }
 
     fn code_mode_result(&self, _payload: &ToolPayload) -> JsonValue {
-        JsonValue::Object(serde_json::Map::new())
+        #[derive(Serialize)]
+        struct ApplyPatchCodeModeResult<'a> {
+            output: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            change_id: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            capture_incomplete: Option<&'a [String]>,
+        }
+
+        let result = ApplyPatchCodeModeResult {
+            output: &self.text,
+            change_id: self
+                .change_notice
+                .as_ref()
+                .map(|notice| notice.change_id.as_str()),
+            capture_incomplete: self
+                .change_notice
+                .as_ref()
+                .filter(|notice| !notice.incomplete_notes.is_empty())
+                .map(|notice| notice.incomplete_notes.as_slice()),
+        };
+        serde_json::to_value(result).unwrap_or_else(|err| {
+            JsonValue::String(format!("failed to serialize apply_patch result: {err}"))
+        })
+    }
+
+    fn change_notice(&self) -> Option<ToolChangeNotice> {
+        self.change_notice.clone()
     }
 }
 
@@ -513,6 +581,8 @@ pub struct ExecCommandToolOutput {
     pub tool_cwd: Option<PathUri>,
     /// Optional `$SESSION_TMP/truncated_output` directory for spilling truncated output.
     pub truncated_output_dir: Option<PathBuf>,
+    /// Durable change-history receipt allocated when the command finished.
+    pub change_notice: Option<ToolChangeNotice>,
 }
 
 impl ToolOutput for ExecCommandToolOutput {
@@ -529,12 +599,19 @@ impl ToolOutput for ExecCommandToolOutput {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+        let mut items = vec![FunctionCallOutputContentItem::InputText {
+            text: self.response_text(),
+        }];
+        if let Some(notice) = &self.change_notice {
+            let formatted = notice.format_notice();
+            if !formatted.is_empty() {
+                items.push(FunctionCallOutputContentItem::InputText { text: formatted });
+            }
+        }
         function_tool_response(
             call_id,
             payload,
-            vec![FunctionCallOutputContentItem::InputText {
-                text: self.response_text(),
-            }],
+            items,
             Some(true),
         )
     }
@@ -582,6 +659,10 @@ impl ToolOutput for ExecCommandToolOutput {
             #[serde(skip_serializing_if = "Option::is_none")]
             original_token_count: Option<usize>,
             output: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            change_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            capture_incomplete: Option<Vec<String>>,
         }
 
         let result = UnifiedExecCodeModeResult {
@@ -599,11 +680,24 @@ impl ToolOutput for ExecCommandToolOutput {
                 ),
                 None => self.raw_output.text.clone(),
             },
+            change_id: self
+                .change_notice
+                .as_ref()
+                .map(|notice| notice.change_id.clone()),
+            capture_incomplete: self
+                .change_notice
+                .as_ref()
+                .filter(|notice| !notice.incomplete_notes.is_empty())
+                .map(|notice| notice.incomplete_notes.clone()),
         };
 
         serde_json::to_value(result).unwrap_or_else(|err| {
             JsonValue::String(format!("failed to serialize exec result: {err}"))
         })
+    }
+
+    fn change_notice(&self) -> Option<ToolChangeNotice> {
+        self.change_notice.clone()
     }
 }
 

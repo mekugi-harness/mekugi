@@ -620,6 +620,8 @@
               callers={stream.reviewOverview.callers}
               callerLabel={(caller) => stream.label(caller)}
               oncaller={(caller) => stream.selectChangeCaller(caller)}
+              includeExternal={stream.reviewIncludeExternal}
+              onincludeexternal={(include) => stream.setIncludeExternalChanges(include)}
               cursor={stream.reviewCursor}
               loading={stream.reviewLoading}
               error={stream.reviewError}

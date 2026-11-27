@@ -366,6 +366,10 @@ impl AnyToolResult {
         } = self;
         result.code_mode_result(&payload)
     }
+
+    pub(crate) fn change_notice(&self) -> Option<codex_tools::ToolChangeNotice> {
+        self.result.change_notice()
+    }
 }
 
 struct PostToolUseFeedbackOutput {
@@ -400,6 +404,10 @@ impl ToolOutput for PostToolUseFeedbackOutput {
 
     fn tool_result_metadata(&self) -> ToolResultMetadata {
         self.original.tool_result_metadata()
+    }
+
+    fn change_notice(&self) -> Option<codex_tools::ToolChangeNotice> {
+        self.original.change_notice()
     }
 }
 

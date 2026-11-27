@@ -40,6 +40,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::ExecutedToolCalls;
 use crate::tools::call_trace;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolChangeNotice;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
 use crate::tools::parallel::ToolCallRuntime;
@@ -240,6 +241,10 @@ impl CodeModeService {
         self.dispatch_broker.close_cell(cell_id);
     }
 
+    pub(crate) fn take_cell_change_notices(&self, cell_id: &CellId) -> Vec<ToolChangeNotice> {
+        self.dispatch_broker.take_cell_change_notices(cell_id)
+    }
+
     pub(crate) fn has_active_cells(&self) -> bool {
         !self.dispatch_broker.active_cell_ids().is_empty()
     }
@@ -325,6 +330,7 @@ fn handle_runtime_response(
     wall_time: Duration,
     experimental_show_cell_overhead: bool,
     truncated_output_dir: Option<&Path>,
+    change_notices: &[ToolChangeNotice],
 ) -> CodeModeToolOutput {
     let script_status = format_script_status(&response);
     let supports_original = can_request_original_image_detail(model_info);
@@ -352,6 +358,10 @@ fn handle_runtime_response(
         }
         content_items =
             truncate_code_mode_result(content_items, max_output_tokens, truncated_output_dir);
+    }
+    let notice_text = ToolChangeNotice::format_many(change_notices);
+    if !notice_text.is_empty() {
+        content_items.push(FunctionCallOutputContentItem::InputText { text: notice_text });
     }
     CodeModeToolOutput::new(
         FunctionToolOutput::from_content(content_items, Some(success)),
@@ -401,7 +411,9 @@ fn submit_nested_tool(
     call_id: String,
     cancellation_token: CancellationToken,
 ) -> Result<
-    impl std::future::Future<Output = Result<JsonValue, FunctionCallError>> + Send + 'static,
+    impl std::future::Future<Output = Result<(Option<ToolChangeNotice>, JsonValue), FunctionCallError>>
+        + Send
+        + 'static,
     FunctionCallError,
 > {
     let dispatch_started = std::time::Instant::now();
@@ -476,7 +488,11 @@ fn submit_nested_tool(
         cancellation_token,
         Arc::default(),
     );
-    Ok(async move { Ok(result.await?.code_mode_result()) })
+    Ok(async move {
+        let output = result.await?;
+        let change_notice = output.change_notice();
+        Ok((change_notice, output.code_mode_result()))
+    })
 }
 
 fn build_nested_tool_payload(

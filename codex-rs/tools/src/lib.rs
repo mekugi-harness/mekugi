@@ -103,6 +103,7 @@ pub use tool_executor::ToolExecutorFuture;
 pub use tool_executor::ToolExposure;
 pub use tool_executor::ToolExposures;
 pub use tool_output::JsonToolOutput;
+pub use tool_output::ToolChangeNotice;
 pub use tool_output::ToolOutput;
 pub use tool_payload::ToolPayload;
 pub use tool_search::ToolSearchEntry;

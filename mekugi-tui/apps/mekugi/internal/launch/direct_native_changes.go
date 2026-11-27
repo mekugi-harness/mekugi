@@ -3,6 +3,7 @@ package launch
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ type nativeEditItem struct{ thread, turn, item string }
 type nativeCapturedFile struct {
 	chunk          changes.Chunk
 	path           string
+	scope          string
 	added, removed int
 }
 
@@ -48,6 +50,7 @@ type directThreadChangesResponse struct {
 		Deletions     int      `json:"deletions"`
 		IsBinary      bool     `json:"isBinary"`
 		CoverageNotes []string `json:"coverageNotes"`
+		Scope         string   `json:"scope"`
 	} `json:"files"`
 }
 
@@ -63,7 +66,10 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 
 	var resp directThreadChangesResponse
 	if err := c.wire.Call(ctx, "thread/changes/read", map[string]any{
-		"threadId": threadID, "perCapture": true,
+		"threadId":         threadID,
+		"perCapture":       true,
+		"includeExternal":  true,
+		"includeEphemeral": true,
 	}, &resp); err != nil {
 		return
 	}
@@ -121,11 +127,15 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 				Change: origin.ChangeID, Caller: caller, Source: origin.SourceLabel,
 			},
 		}
-		captures = append(captures, chunk)
+		// Saved Diff defaults to Workspace edits; External/Ephemeral remain in
+		// ChangeHistoryStore for mchanges and compact transcript summaries.
+		if f.Scope == "" || f.Scope == "workspace" {
+			captures = append(captures, chunk)
+		}
 		if origin.ItemID != "" {
 			key := nativeEditItem{origin.ThreadID, origin.TurnID, origin.ItemID}
 			receipts[key] = append(receipts[key], nativeCapturedFile{
-				chunk: chunk, path: path, added: f.Additions, removed: f.Deletions,
+				chunk: chunk, path: path, scope: f.Scope, added: f.Additions, removed: f.Deletions,
 			})
 		}
 	}
@@ -168,13 +178,37 @@ func (c *directNativeConnection) setEditReceiptLocked(rec *directItemRecord, fil
 		return
 	}
 	var rows []activity.ChangeRow
+	var externalCount int
+	var externalIDs []string
 	for _, file := range files {
 		chunk := file.chunk
+		if file.scope == "external" || file.scope == "ephemeral" {
+			externalCount++
+			if chunk.Change != "" && !slices.Contains(externalIDs, chunk.Change) {
+				externalIDs = append(externalIDs, chunk.Change)
+			}
+			continue
+		}
 		rows = append(rows, activity.ChangeRow{
 			Verb:  chunk.Review.Action().Title(),
 			Label: pathdisplay.ForWorkspace(chunk.Workspace, file.path),
 			Added: file.added, Removed: file.removed,
 			Note: capturedFileNote(chunk),
+		})
+	}
+	if externalCount > 0 {
+		noun := "external files"
+		if externalCount == 1 {
+			noun = "external file"
+		}
+		note := ""
+		if len(externalIDs) > 0 {
+			note = "mchanges " + strings.Join(externalIDs, " ") + " --summary"
+		}
+		rows = append(rows, activity.ChangeRow{
+			Verb:  "Captured",
+			Label: fmt.Sprintf("%d %s", externalCount, noun),
+			Note:  note,
 		})
 	}
 	index := len(rec.entry.Values) - 1

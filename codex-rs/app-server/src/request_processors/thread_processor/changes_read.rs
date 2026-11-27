@@ -137,6 +137,7 @@ fn read_changes(
     let entries = store.list_entries().map_err(read_error)?;
     let (sequence, offset) =
         cursor.unwrap_or_else(|| (entries.last().map_or(0, |entry| entry.sequence), 0));
+    let include_external = params.include_external.unwrap_or(true);
     let include_ephemeral = params.include_ephemeral.unwrap_or(false);
     let ids: Vec<_> = entries
         .into_iter()
@@ -158,11 +159,14 @@ fn read_changes(
         return Ok(response);
     }
     let mut records = store.load_records(&ids).map_err(read_error)?;
-    if !include_ephemeral {
-        for record in &mut records {
-            record.files.retain(|file| !file.scope.is_ephemeral());
-        }
+    for record in &mut records {
+        record.files.retain(|file| match file.scope {
+            codex_change_history::ChangeScope::Workspace => true,
+            codex_change_history::ChangeScope::External => include_external,
+            codex_change_history::ChangeScope::Ephemeral => include_ephemeral,
+        });
     }
+    records.retain(|record| !record.files.is_empty());
     if let Some(caller) = params.caller_thread_id.as_ref() {
         records.retain(|record| author_thread(record).as_ref() == Some(caller));
     }
@@ -228,6 +232,12 @@ fn read_changes(
             deletions: stats.deletions as i64,
             is_binary: stats.is_binary,
             coverage_notes: stats.coverage_notes,
+            scope: match stats.scope {
+                codex_change_history::ChangeScope::Workspace => "workspace",
+                codex_change_history::ChangeScope::External => "external",
+                codex_change_history::ChangeScope::Ephemeral => "ephemeral",
+            }
+            .to_string(),
         });
     }
     let all_origins = params.limit.is_none() && cursor.is_none();

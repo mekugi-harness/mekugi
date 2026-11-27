@@ -19,6 +19,8 @@
     callers,
     callerLabel,
     oncaller,
+    includeExternal = false,
+    onincludeexternal,
     cursor,
     loading,
     error,
@@ -32,6 +34,8 @@
     callers: CallerReview[];
     callerLabel: (caller: string) => string;
     oncaller: (caller: string) => void;
+    includeExternal?: boolean;
+    onincludeexternal?: (include: boolean) => void;
     cursor?: string;
     loading: boolean;
     error?: string;
@@ -180,6 +184,17 @@
         groups={[{ choices: callerChoices }]}
         onchange={(choice) => oncaller(choice === "all" ? "" : choice)}
       />
+    {/if}
+    {#if onincludeexternal}
+      <Button
+        variant={includeExternal ? "default" : "quiet"}
+        size="sm"
+        class="text-muted"
+        aria-pressed={includeExternal}
+        onclick={() => onincludeexternal(!includeExternal)}
+      >
+        {includeExternal ? "External: on" : "External: off"}
+      </Button>
     {/if}
     {#if net}
       <span class="font-mono tabular-nums">
