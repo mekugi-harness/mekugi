@@ -5,6 +5,7 @@
   import { followBottom } from "./follow-bottom";
   import DiffView from "./DiffView.svelte";
   import AgentName from "./AgentName.svelte";
+  import { highlightLines, type SyntaxToken } from "./highlight";
   import type { Preview } from "./protocol";
   import Button from "./ui/Button.svelte";
   import Dot from "./ui/Dot.svelte";
@@ -69,9 +70,22 @@
   const shown = $derived(cards.filter((card) => !hidden.includes(card.preview.ID)));
   const writing = $derived(shown.some((card) => !card.until && !card.preview.Settling));
   const hasSaved = $derived(shown.some(({ preview }) => preview.SavedPath));
-
-  const lines = (text: string) => text.replace(/\n$/, "").split("\n");
 </script>
+
+{#snippet shellSource(source: string, syntax?: SyntaxToken[][])}
+  <pre
+    class="shell-syntax mt-1.5 rounded-card border border-rule bg-raised py-1 font-mono text-code">{#each source.split("\n") as line, i (i)}{@const tokens =
+      syntax?.[i]}<span class="flex"
+      ><span class="w-[5ch] flex-none pr-2 text-right text-muted select-none">{i + 1}</span><span
+        class="min-w-0 pr-3 whitespace-pre-wrap wrap-anywhere"
+        >{#if tokens
+          ?.map((token) => token.text)
+          .join("") === line}{#each tokens as token, j (j)}<span style={token.style}
+          >{token.text}</span
+        >{/each}{:else}{line}{/if}</span
+      ></span
+    >{/each}</pre>
+{/snippet}
 
 {#if shown.length}
   <section
@@ -107,9 +121,7 @@
                 <AgentName name={preview.Caller} current={owner} />
               {/if}
               {#if preview.Tool}<Tag mono>{preview.Tool}</Tag>{/if}
-              {#if preview.Status.startsWith("unavailable: ")}<span class="text-muted"
-                  >{preview.Status.slice(13)}</span
-                >{/if}
+              {#if preview.Status}<span class="text-muted">{preview.Status}</span>{/if}
               <span
                 class={[
                   "ml-auto inline-flex items-center gap-1.5",
@@ -142,9 +154,10 @@
               )}
               <div class="flex min-h-0 flex-1 flex-col">
                 <h3
-                  class="mt-2 flex min-w-0 flex-none font-mono text-code whitespace-nowrap"
+                  class="mt-2 flex min-w-0 flex-none gap-2 font-mono text-code whitespace-nowrap"
                   title={path}
                 >
+                  {#if file.Action}<span class="flex-none text-muted">{file.Action}</span>{/if}
                   <Path {path} />
                 </h3>
                 <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:followBottom>
@@ -161,14 +174,12 @@
                       wrap
                     />
                   {:else}
-                    <pre
-                      class="mt-1.5 rounded-card border border-rule bg-raised py-1 font-mono text-code">{#each lines(preview.Input) as line, i (i)}<span
-                        class="flex"
-                        ><span class="w-[5ch] flex-none pr-2 text-right text-muted select-none"
-                          >{i + 1}</span
-                        ><span class="min-w-0 pr-3 whitespace-pre-wrap wrap-anywhere">{line}</span
-                        ></span
-                      >{/each}</pre>
+                    {@const source = preview.Input.replace(/\n$/, "")}
+                    {#await highlightLines(source, "bash")}
+                      {@render shellSource(source)}
+                    {:then syntax}
+                      {@render shellSource(source, syntax)}
+                    {/await}
                   {/if}
                 </div>
               </div>

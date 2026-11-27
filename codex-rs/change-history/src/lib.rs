@@ -14,6 +14,8 @@ mod store;
 pub use diff::ComposedFileDiff;
 pub use diff::ComposedSummary;
 pub use diff::FileDiffStats;
+pub use diff::captured_diff_files;
+pub use diff::captured_diff_range;
 pub use diff::compose_diff;
 pub use diff::compose_file_stats;
 pub use diff::compose_summary;

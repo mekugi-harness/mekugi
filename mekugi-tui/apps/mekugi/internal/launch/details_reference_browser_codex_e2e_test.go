@@ -357,7 +357,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					liveHunk := `(() => {
 						const live = document.querySelector('[aria-label="Live edits"]');
 						const card = [...(live?.querySelectorAll('article') ?? [])].find(
-							entry => entry.querySelector('h3')?.textContent.trim().split('/').at(-1) === 'keep.txt');
+							entry => (entry.querySelector('h3 bdi')?.textContent ?? entry.querySelector('h3')?.textContent ?? '').trim().split('/').at(-1) === 'keep.txt');
 						const hunk = card?.querySelector('.bg-add');
 						return live?.textContent.includes('Writing') &&
 							card?.textContent.includes('User shell') &&

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Alert from "./ui/Alert.svelte";
   import Attachments from "./Attachments.svelte";
+  import Code from "./Code.svelte";
   import { onDestroy, tick, untrack } from "svelte";
   import type { Approval, QuestionCall } from "./protocol";
   import { streams } from "./stream.svelte";
@@ -149,8 +150,11 @@
       {#if count > 1}<span class="ml-auto whitespace-nowrap text-muted">1 of {count}</span>{/if}
     </div>
     {#if approval.subject}<pre
-        class="my-3 rounded-control border border-rule bg-surface p-2.5 text-code whitespace-pre-wrap wrap-anywhere"><code
-          >{approval.subject}</code
+        class="shell-syntax my-3 rounded-control border border-rule bg-surface p-2.5 text-code whitespace-pre-wrap wrap-anywhere"><code
+          >{#if approval.method === "item/fileChange/requestApproval"}{approval.subject}{:else}<Code
+            code={approval.subject}
+            lang="bash"
+          />{/if}</code
         ></pre>{/if}
     {#each approval.details as detail}<p class={text}>{detail}</p>{/each}
     {#if promptState.deny !== undefined}

@@ -771,6 +771,84 @@ func TestDirectNativeConnectionEndToEnd(t *testing.T) {
 	}
 }
 
+func TestDirectNativeResumeDoesNotWaitForSavedDiff(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "app-server.sock")
+	mock := startMockNativeAppServer(t, socket)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	reviewStarted, releaseReview := make(chan struct{}), make(chan struct{})
+	var started sync.Once
+	mock.overrides["thread/resume"] = func(jsontext.Value) any {
+		return map[string]any{"thread": map[string]any{"id": "thr-main", "cwd": "/tmp/ws"}}
+	}
+	mock.overrides["thread/changes/read"] = func(raw jsontext.Value) any {
+		var params struct {
+			Limit      int    `json:"limit"`
+			Cursor     string `json:"cursor"`
+			PerCapture bool   `json:"perCapture"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil || !params.PerCapture || params.Limit <= 0 {
+			return mockRPCError("expected a bounded capture request")
+		}
+		switch params.Cursor {
+		case "":
+			started.Do(func() { close(reviewStarted) })
+			select {
+			case <-releaseReview:
+			case <-ctx.Done():
+				return mockRPCError("test canceled")
+			}
+			return map[string]any{
+				"nextCursor": "1:0:20",
+				"files": []map[string]any{{"path": "main.go", "absolutePath": "/tmp/ws/main.go",
+					"changeIds": []string{"amber1"}, "status": "M", "unifiedDiff": "@@ -1 +1 @@\n-old\n"}},
+			}
+		case "1:0:20":
+			return map[string]any{
+				"changes": []map[string]any{{"changeId": "amber1", "sequence": 1, "threadId": "thr-main"}},
+				"files": []map[string]any{{"path": "main.go", "absolutePath": "/tmp/ws/main.go",
+					"changeIds": []string{"amber1"}, "status": "M", "unifiedDiff": "+new\n"}},
+			}
+		default:
+			return mockRPCError("unexpected cursor")
+		}
+	}
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "thr-main", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	select {
+	case <-reviewStarted:
+	case <-ctx.Done():
+		t.Fatal("no saved diff request while attached")
+	}
+	awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Main.ID == "thr-main" && ev.Frame.Review == nil
+	})
+	close(releaseReview)
+	event := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Review != nil
+	})
+	if review := event.Frame.Review; len(review.Files) != 1 ||
+		len(review.Files[0].Chunks) != 1 || review.Files[0].Chunks[0].Review.Diff != "@@ -1 +1 @@\n-old\n+new\n" {
+		t.Fatalf("expected one reassembled capture: %+v", review)
+	}
+	mock.mu.Lock()
+	mock.overrides["thread/changes/read"] = func(jsontext.Value) any {
+		return mockRPCError("saved history unavailable")
+	}
+	mock.mu.Unlock()
+	conn.requestChanges("thr-main")
+	awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Review != nil && ev.Frame.Review.Failure == "saved history unavailable"
+	})
+	var alive directThreadStartResponse
+	if err := conn.wire.Call(ctx, "thread/read", map[string]string{"threadId": "thr-main"}, &alive); err != nil {
+		t.Fatalf("saved diff failure closed the attachment: %v", err)
+	}
+}
+
 func TestDirectNativeNewClearsActiveTurnBeforeRewind(t *testing.T) {
 	conn := &directNativeConnection{
 		mainThread:    "thr-a",
@@ -1408,7 +1486,8 @@ func TestDirectNativeRetainedCommandEditReceipt(t *testing.T) {
 		},
 	})
 	ev := awaitDirectEvent(t, conn, func(event sessionapi.NativeEvent) bool {
-		return event.Frame.Main != nil && len(event.Frame.Main.Entries) > 0
+		return event.Frame.Main != nil && len(event.Frame.Main.Entries) > 0 &&
+			len(event.Frame.Main.Entries[0].Values[0].Changes) > 0
 	})
 	entry := ev.Frame.Main.Entries[0]
 	rows := entry.Values[0].Changes

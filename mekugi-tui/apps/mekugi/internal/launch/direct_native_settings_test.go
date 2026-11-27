@@ -88,12 +88,15 @@ func TestDirectNativePermissionsKeepRejectedSettings(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	var lastMenu *sessionpresentation.MenuView
 	open := func() *sessionpresentation.MenuView {
 		t.Helper()
 		do(sessionapi.NativeOperation{Command: new("/permissions")})
-		return awaitDirectEvent(t, conn, func(event sessionapi.NativeEvent) bool {
-			return event.Frame.View.Menu != nil && event.Frame.View.Menu.Setting == "/permissions"
+		lastMenu = awaitDirectEvent(t, conn, func(event sessionapi.NativeEvent) bool {
+			menu := event.Frame.View.Menu
+			return menu != nil && menu.Setting == "/permissions" && (lastMenu == nil || menu.ID != lastMenu.ID)
 		}).Frame.View.Menu
+		return lastMenu
 	}
 	menu := open()
 	if !menu.Choices[0].Current || !menu.Choices[2].Unavailable {

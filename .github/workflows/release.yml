@@ -24,28 +24,49 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  NODE_VERSION: '26.13.1'
+  BUN_VERSION: '1.4.5'
+
 defaults:
   run:
     shell: bash
 
 jobs:
-  main_validation:
-    name: Check for duplicate main validation
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+  plan:
+    name: Plan validation
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-26.04
     permissions:
       actions: read
       contents: read
       pull-requests: read
     outputs:
+      webui_only: ${{ steps.scope.outputs.webui_only }}
       reused: ${{ steps.approve_archive.outcome == 'success' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
+      - name: Check whether only the browser app changed
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" =~ ^0+$ ]]; then
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git fetch --quiet --no-tags --depth=1 origin "$BASE_SHA"
+          fi
+          if git diff --quiet "$BASE_SHA" HEAD -- . ':(top,exclude)mekugi-webui/app' &&
+            [[ -n "$(git diff --name-only "$BASE_SHA" HEAD -- mekugi-webui/app/)" ]]; then
+            echo 'webui_only=true' >> "$GITHUB_OUTPUT"
+          fi
       - name: Look up validation of the merged tree
         id: pr
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.scope.outputs.webui_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
@@ -61,10 +82,40 @@ jobs:
           path: ${{ runner.temp }}/native-approved-run
           if-no-files-found: error
 
+  webui:
+    name: Check and build WebUI
+    needs: plan
+    if: needs.plan.outputs.webui_only == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: just@1.51.0
+      - name: Cache Bun dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-v1-${{ runner.os }}-${{ hashFiles('mekugi-webui/app/bun.lock') }}
+          restore-keys: |
+            bun-v1-${{ runner.os }}-
+      - name: Check and build browser assets
+        run: |
+          just webui-check webui
+          test -s mekugi-webui/dist/app/index.html
+
   build:
     name: Build ${{ matrix.platform }}
-    needs: main_validation
-    if: ${{ !cancelled() && needs.main_validation.outputs.reused != 'true' }}
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.result != 'failure' && needs.plan.outputs.webui_only != 'true' && needs.plan.outputs.reused != 'true' }}
     permissions:
       actions: read
       contents: read
@@ -73,6 +124,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux archives must stay compatible with glibc 2.39.
           - platform: linux_amd64
             runner: ubuntu-24.04
           - platform: linux_arm64
@@ -97,10 +149,10 @@ jobs:
             **/go.sum
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24.21.0'
+          node-version: ${{ env.NODE_VERSION }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.4'
+          bun-version: ${{ env.BUN_VERSION }}
       - name: Install Just and cargo-nextest
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
@@ -181,7 +233,12 @@ jobs:
           RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'runtime/build.py') }}
         run: |
           native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
-          image="$RUNNER_LABEL-${ImageVersion:-$GITHUB_RUN_ID}"
+          # PR archives are smoke-tested on each runner. Reuse them across image
+          # revisions of the same OS and architecture, but keep release keys exact.
+          image="$RUNNER_LABEL"
+          if [[ "$PROFILE" != dev-small ]]; then
+            image="$image-${ImageVersion:-$GITHUB_RUN_ID}"
+          fi
           key="$(printf '%s\n' "$PLATFORM" "$PROFILE" "$image" "$native_tree" "$RECIPE_HASH" | shasum -a 256 | cut -d' ' -f1)"
           echo "name=mekugi_${PLATFORM}-$key" >> "$GITHUB_OUTPUT"
       - name: Cache packaged native runtime
@@ -430,7 +487,7 @@ jobs:
     name: Publish release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
     steps:
