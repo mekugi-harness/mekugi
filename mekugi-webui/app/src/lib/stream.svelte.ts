@@ -1477,7 +1477,7 @@ export class Stream {
     thread: string,
     turn: string,
     item: string,
-    fields: Pick<Preview, "Files" | "Input" | "Tool" | "Truncated">,
+    fields: Pick<Preview, "Files" | "Tool">,
     caller?: string,
   ): void {
     const key = previewId(thread, turn, item);
@@ -1495,40 +1495,16 @@ export class Stream {
     this.live = [...this.live.filter((edit) => edit.ID !== key), preview].slice(-16);
   }
 
-  #updateShellPreview(
-    thread: string,
-    turn: string,
-    item: string,
-    command: string,
-    userShell: boolean,
-    files: ReviewFile[],
-  ): void {
-    const maxSource = 16 * 1024;
-    this.#updatePreview(
-      thread,
-      turn,
-      item,
-      {
-        Files: files,
-        Input: command.slice(0, maxSource),
-        Tool: "Shell",
-        Truncated: command.length > maxSource,
-      },
-      userShell ? "User shell" : undefined,
-    );
-  }
-
   #updateShellSample(sample: CommandExecutionChangesUpdatedNotification): void {
-    const { threadId, turnId, itemId, command, source, changes } = sample;
+    const { threadId, turnId, itemId, source, changes } = sample;
     const key = previewId(threadId, turnId, itemId);
     if (!changes.length && !this.live.some((edit) => edit.ID === key)) return;
-    this.#updateShellPreview(
+    this.#updatePreview(
       threadId,
       turnId,
       itemId,
-      command,
-      source === "userShell",
-      changes.map(previewFile),
+      { Files: changes.map(previewFile), Tool: "Shell" },
+      source === "userShell" ? "User shell" : undefined,
     );
   }
 
@@ -1969,37 +1945,28 @@ export class Stream {
         const { item, turnId } = notification.params;
         if (this.#showsEdit(targetId)) {
           const key = previewId(targetId, turnId, item.id);
-          if (item.type === "commandExecution" && item.status === "inProgress" && started) {
-            const userShell = item.source === "userShell";
-            if (
-              (userShell || item.commandActions?.some((action) => action.type === "unknown")) &&
-              !this.live.some((edit) => edit.ID === key)
-            ) {
-              this.#updateShellPreview(
-                targetId,
-                turnId,
-                item.id,
-                item.display?.script ?? item.command,
-                userShell,
-                [],
-              );
-            }
-          } else if (
+          if (
             !started &&
             ((item.type === "commandExecution" && item.status !== "inProgress") ||
               item.type === "fileChange")
           ) {
             if (item.type === "commandExecution") {
               const reading = this.#shellReads.get(targetId);
-              if (reading) {
-                reading.add(key);
-                if (!this.live.some((edit) => edit.ID === key)) {
-                  // The snapshot will skip this completion, so no live card will refresh Saved Diff.
+              reading?.add(key);
+              const hasPreview = this.live.some((edit) => edit.ID === key);
+              if (!hasPreview) {
+                if (
+                  item.source === "userShell" ||
+                  item.commandActions?.some((action) => action.type === "unknown")
+                ) {
                   void this.#loadChanges(id, machine, this.#requests.signal);
                 }
+              } else {
+                void this.#settlePreview(targetId, turnId, item.id, id, machine);
               }
+            } else {
+              void this.#settlePreview(targetId, turnId, item.id, id, machine);
             }
-            void this.#settlePreview(targetId, turnId, item.id, id, machine);
           }
         }
         if (targetId !== id) {
@@ -2113,11 +2080,13 @@ export class Stream {
         const item = this.#turns
           .find((turn) => turn.id === turnId)
           ?.items.find((entry) => entry.id === itemId);
-        if (item?.type === "fileChange" && item.status !== "inProgress") return;
+        if (
+          (item?.type === "fileChange" || item?.type === "commandExecution") &&
+          item.status !== "inProgress"
+        )
+          return;
         this.#updatePreview(threadId, turnId, itemId, {
           Tool: "Edit",
-          Input: "",
-          Truncated: false,
           Files: changes.map((change) => ({
             ...previewFile(change),
             Diff: nativePatchDiff(change.kind.type, change.diff),

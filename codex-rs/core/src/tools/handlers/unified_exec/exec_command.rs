@@ -18,6 +18,7 @@ use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
+use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolExecutor;
 use crate::tools::registry::ToolTelemetryTags;
 use crate::unified_exec::ExecCommandRequest;
@@ -42,6 +43,7 @@ use super::ExecCommandWorkdirArgs;
 use super::post_unified_exec_tool_use_payload;
 use super::preparation::ExecCommandLifetime;
 use super::preparation::ParsedExecCommand;
+use super::shell_edit_stream::ExecCommandArgumentDiffConsumer;
 
 // A byte limit is a conservative hard token bound even for byte-fallback tokenizers.
 const EXEC_COMMAND_REJECTION_MAX_BYTES: usize = 900;
@@ -324,6 +326,10 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
 }
 
 impl CoreToolRuntime for ExecCommandHandler {
+    fn create_diff_consumer(&self) -> Option<Box<dyn ToolArgumentDiffConsumer>> {
+        Some(Box::<ExecCommandArgumentDiffConsumer>::default())
+    }
+
     fn telemetry_tags(&self, invocation: &ToolInvocation) -> ToolTelemetryTags {
         // Record the configured mode so fallback calls remain in their rollout cohort.
         // This does not indicate whether the command actually used a snapshot.

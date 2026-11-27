@@ -549,13 +549,10 @@ export type Preview = {
   Turn?: string;
   Thread: string;
   Files: Array<ReviewFile>;
-  Input: string;
-  Truncated: boolean;
   Complete?: boolean;
   Settling?: boolean;
   SavedPath?: string;
   ExternalSummary?: string;
-  DiffText?: boolean;
   Status: string;
   Footer?: string;
   Tool?: string;

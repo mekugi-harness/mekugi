@@ -5,7 +5,6 @@
   import { followBottom } from "./follow-bottom";
   import DiffView from "./DiffView.svelte";
   import AgentName from "./AgentName.svelte";
-  import { highlightLines, type SyntaxToken } from "./highlight";
   import type { Preview } from "./protocol";
   import Button from "./ui/Button.svelte";
   import Dot from "./ui/Dot.svelte";
@@ -33,7 +32,7 @@
   const seen = new Set<string>();
   let primed = false;
   $effect(() => {
-    const mine = previews.filter((p) => p.Files.length > 0 || p.Input.trim() !== "");
+    const mine = previews.filter((p) => p.Files.length > 0);
     untrack(() => {
       const now = Date.now();
       const current = new Map(mine.map((p) => [p.ID, p]));
@@ -71,21 +70,6 @@
   const writing = $derived(shown.some((card) => !card.until && !card.preview.Settling));
   const hasSaved = $derived(shown.some(({ preview }) => preview.SavedPath));
 </script>
-
-{#snippet shellSource(source: string, syntax?: SyntaxToken[][])}
-  <pre
-    class="shell-syntax mt-1.5 rounded-card border border-rule bg-raised py-1 font-mono text-code">{#each source.split("\n") as line, i (i)}{@const tokens =
-      syntax?.[i]}<span class="flex"
-      ><span class="w-[5ch] flex-none pr-2 text-right text-muted select-none">{i + 1}</span><span
-        class="min-w-0 pr-3 whitespace-pre-wrap wrap-anywhere"
-        >{#if tokens
-          ?.map((token) => token.text)
-          .join("") === line}{#each tokens as token, j (j)}<span style={token.style}
-          >{token.text}</span
-        >{/each}{:else}{line}{/if}</span
-      ></span
-    >{/each}</pre>
-{/snippet}
 
 {#if shown.length}
   <section
@@ -164,29 +148,7 @@
                   <DiffView {file} workspace={preview.Workspace} wrap />
                 </div>
               </div>
-            {:else}
-              <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:followBottom>
-                <div>
-                  {#if preview.DiffText}
-                    <DiffView
-                      file={{ BeforePath: "", AfterPath: "", Diff: preview.Input }}
-                      workspace={preview.Workspace}
-                      wrap
-                    />
-                  {:else}
-                    {@const source = preview.Input.replace(/\n$/, "")}
-                    {#await highlightLines(source, "bash")}
-                      {@render shellSource(source)}
-                    {:then syntax}
-                      {@render shellSource(source, syntax)}
-                    {/await}
-                  {/if}
-                </div>
-              </div>
             {/each}
-            {#if preview.Truncated}<p class="mt-1.5 flex-none text-small text-muted">
-                Only the start of this edit is shown.
-              </p>{/if}
             {#if preview.Footer}<p class="mt-1.5 flex-none text-small text-muted">
                 {preview.Footer}
               </p>{/if}

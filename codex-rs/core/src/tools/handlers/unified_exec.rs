@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod exec_command;
 pub(crate) mod preparation;
+mod shell_edit_stream;
 mod write_stdin;
 
 pub use exec_command::ExecCommandHandler;

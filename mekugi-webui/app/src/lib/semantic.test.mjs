@@ -1255,7 +1255,6 @@ test("Main recovers a late delegate's shell edits and follows exact command comp
   assert.equal(stream.live.length, 1);
   assert.equal(stream.live[0].Caller, "writer");
   assert.equal(stream.live[0].Workspace, "/worker");
-  assert.equal(stream.live[0].Input, sample.command);
   assert.match(stream.live[0].Files[0].Diff, /\+live/);
   machine.emitNotification({
     method: "turn/completed",
@@ -1320,8 +1319,7 @@ test("reconnect shell snapshots yield to live pushes and settlement distinguishe
   });
   reconnect.resolve({ data: [sample, failed] });
   await new Promise(setImmediate);
-  const find = ({ command, itemId }) =>
-    stream.live.find((edit) => edit.Input === command && edit.ID.includes(itemId));
+  const find = ({ itemId }) => stream.live.find((edit) => edit.ID.includes(itemId));
   assert.match(find(sample).Files[0].Diff, /\+push/);
 
   for (const { threadId, turnId, itemId } of [sample, failed]) {
