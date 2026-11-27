@@ -24,8 +24,10 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
@@ -1526,6 +1528,25 @@ func TestDirectNativeRetainedRunLink(t *testing.T) {
 	if out := conn.details.Output; out == nil || !out.View.Exited || out.View.Exit != -1 ||
 		!slices.Equal(out.View.Lines, []string{"one", "two", "three"}) {
 		t.Fatalf("step Details should open the normalized invocation output: %+v", out)
+	}
+	const editPath = "/repo/sub/b"
+	const editDiff = "@@ -1 +1 @@\n-old\n+new\n"
+	conn.editReceipts = map[nativeEditItem][]nativeCapturedFile{
+		{"thr-main", "turn-1", run}: {{
+			path: editPath,
+			chunk: changes.Chunk{Workspace: "/repo", Review: diffmodel.ReviewFile{
+				BeforePath: editPath, AfterPath: editPath, Diff: editDiff,
+			}},
+		}},
+	}
+	if err := conn.handleOpenDetails(t.Context(), sessionapi.NativeDetailRequest{
+		Source: visible.Seq, Operation: visible.Values[1].Operation, Path: editPath, Edit: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if details := conn.details; len(details.View.Pages) != 4 || details.Output != nil ||
+		details.Selected != details.View.Pages[3].ID || details.View.Pages[3].Code != editDiff {
+		t.Fatalf("captured edit link should select the diff instead of batch output: %+v", details)
 	}
 
 	for _, tc := range []struct {
