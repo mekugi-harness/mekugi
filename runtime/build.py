@@ -81,7 +81,12 @@ def main():
     env.setdefault("CARGO_PROFILE_RELEASE_STRIP", "symbols")
     if args.action == "build" and not args.profile:
         env.setdefault("CARGO_PROFILE_RELEASE_LTO", "off")
-    env.update(resolve_codex_v8_cargo_env(spec, cache_root=target_dir / "v8-artifacts"))
+    v8_cache_root = (
+        Path(env["CODEX_V8_CACHE_ROOT"])
+        if env.get("CODEX_V8_CACHE_ROOT")
+        else target_dir / "v8-artifacts"
+    )
+    env.update(resolve_codex_v8_cargo_env(spec, cache_root=v8_cache_root))
     if args.action in {"check", "test"}:
         env.pop("BASH_ENV", None)
         env.pop("MEKUGI_EXEC_TRACK", None)
