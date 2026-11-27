@@ -5,6 +5,7 @@
   import { tick } from "svelte";
   import {
     activeAttachments,
+    attachmentOffsets,
     attachmentPlaceholder,
     hostPathAttachment,
     imageAttachment,
@@ -79,8 +80,8 @@
   function remove(item: PendingAttachment) {
     const label = attachmentPlaceholder(item);
     if (label) {
-      const at = text.indexOf(label);
-      if (at >= 0) {
+      const [at] = attachmentOffsets(text, label);
+      if (at !== undefined) {
         const end = at + label.length;
         text = text.slice(0, at) + text.slice(text[end] === " " ? end + 1 : end);
       }

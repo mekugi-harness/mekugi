@@ -112,19 +112,28 @@ export function attachmentPlaceholder(item: PendingAttachment): string | undefin
   return item.placeholder ?? referenceLabel(item);
 }
 
-export function attachmentRanges(text: string, items: PendingAttachment[]) {
-  const ranges: { start: number; end: number }[] = [];
-  for (const item of items) {
-    const label = attachmentPlaceholder(item);
-    if (!label) continue;
-    for (
-      let start = text.indexOf(label);
-      start >= 0;
-      start = text.indexOf(label, start + label.length)
-    )
-      ranges.push({ start, end: start + label.length });
+function attachmentEndsAt(text: string, end: number, label: string): boolean {
+  const barePath = label.startsWith("@") && !/^@['"]/.test(label);
+  return !barePath || /^[.:!?]*(?:$|[\s"'`()[\]{}<>,;])/.test(text.slice(end));
+}
+
+export function attachmentOffsets(text: string, label: string): number[] {
+  const offsets: number[] = [];
+  if (!label) return offsets;
+  for (let at = text.indexOf(label); at >= 0; at = text.indexOf(label, at + label.length)) {
+    // Do not mistake an attached @report for the prefix of a new @report.png query.
+    if (attachmentEndsAt(text, at + label.length, label)) offsets.push(at);
   }
-  return ranges;
+  return offsets;
+}
+
+export function attachmentRanges(text: string, items: PendingAttachment[]) {
+  return items.flatMap((item) => {
+    const label = attachmentPlaceholder(item);
+    return label
+      ? attachmentOffsets(text, label).map((start) => ({ start, end: start + label.length }))
+      : [];
+  });
 }
 
 // Widen native edits before the textarea applies them so undo/redo still
@@ -141,16 +150,22 @@ export function atomicAttachmentInput(
     let { selectionStart: start, selectionEnd: end } = field;
     const { selectionDirection: direction, value } = field;
     const deleting = inputType.startsWith("delete");
+    const word = inputType.startsWith("deleteWord");
+    const backwards = inputType.endsWith("Backward");
+    const forwards = inputType.endsWith("Forward");
+    const caret = start === end ? start : undefined;
+    const adjacent = (edge: number, position: number) =>
+      edge === position || (word && /^[ \t]*$/.test(value.slice(edge, position)));
     for (const range of attachmentRanges(value, draft().items)) {
-      if (start === end && !deleting && range.start < start && start < range.end) {
+      if (caret !== undefined && !deleting && range.start < caret && caret < range.end) {
         start = end = range.end;
-        continue;
+        break;
       }
       if (
         (range.start < end && start < range.end) ||
-        (start === end &&
-          ((start === range.end && inputType.endsWith("Backward")) ||
-            (start === range.start && inputType.endsWith("Forward"))))
+        (caret !== undefined &&
+          ((backwards && range.end <= caret && adjacent(range.end, caret)) ||
+            (forwards && caret <= range.start && adjacent(caret, range.start))))
       ) {
         start = Math.min(start, range.start);
         end = Math.max(end, range.end);
@@ -170,31 +185,34 @@ export function atomicAttachmentInput(
     options,
   );
   field.addEventListener("compositionstart", () => widenSelection("insertText"), options);
-  field.addEventListener(
-    "cut",
-    () => {
-      if (field.selectionStart !== field.selectionEnd) widenSelection("deleteByCut");
-    },
-    options,
-  );
+  const widenClipboard = () => {
+    if (field.selectionStart !== field.selectionEnd) widenSelection("");
+  };
+  field.addEventListener("copy", widenClipboard, options);
+  field.addEventListener("cut", widenClipboard, options);
   field.addEventListener(
     "keydown",
     (event) => {
       if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
       const backwards = event.key === "ArrowLeft";
-      if ((!backwards && event.key !== "ArrowRight") || field.selectionStart !== field.selectionEnd)
-        return;
-      const caret = field.selectionStart;
-      const range = attachmentRanges(field.value, draft().items).find(({ start, end }) =>
-        backwards ? start < caret && caret <= end : start <= caret && caret < end,
+      if (!backwards && event.key !== "ArrowRight") return;
+      const { selectionStart: start, selectionEnd: end, selectionDirection } = field;
+      if (!event.shiftKey && start !== end) return;
+      const reversed = selectionDirection === "backward";
+      const caret = reversed ? start : end;
+      const range = attachmentRanges(field.value, draft().items).find((attachment) =>
+        backwards
+          ? attachment.start < caret && caret <= attachment.end
+          : attachment.start <= caret && caret < attachment.end,
       );
       if (!range) return;
       event.preventDefault();
       const next = backwards ? range.start : range.end;
+      const anchor = event.shiftKey ? (reversed ? end : start) : next;
       field.setSelectionRange(
-        event.shiftKey ? Math.min(caret, next) : next,
-        event.shiftKey ? Math.max(caret, next) : next,
-        backwards ? "backward" : "forward",
+        Math.min(anchor, next),
+        Math.max(anchor, next),
+        next < anchor ? "backward" : "forward",
       );
     },
     options,
@@ -214,8 +232,10 @@ export function atomicAttachmentInput(
       let end = text.length;
       let nextEnd = next.length;
       const selection = prior?.text === text ? prior : undefined;
-      while (start < (selection?.start ?? end) && start < nextEnd && text[start] === next[start])
-        start++;
+      const prefixEnd = event.inputType.startsWith("delete")
+        ? Math.min(selection?.start ?? end, field.selectionStart)
+        : (selection?.start ?? end);
+      while (start < prefixEnd && start < nextEnd && text[start] === next[start]) start++;
       while (
         end > (selection?.end ?? start) &&
         nextEnd > start &&
@@ -227,7 +247,9 @@ export function atomicAttachmentInput(
       if (
         attachmentRanges(text, items).some(
           (range) =>
-            range.start < end && start < range.end && (start > range.start || end < range.end),
+            (range.start < end && start < range.end && (start > range.start || end < range.end)) ||
+            (range.end === start &&
+              !attachmentEndsAt(next, range.end, text.slice(range.start, range.end))),
         )
       ) {
         field.value = text;
@@ -243,7 +265,7 @@ export function atomicAttachmentInput(
 export function labelAttachment(item: PendingAttachment, text: string): string {
   if ("path" in item && item.fileReference) {
     const mention = formatPathMention(item.path);
-    if (!text.includes(mention)) return mention;
+    if (!attachmentOffsets(text, mention).length) return mention;
   }
   const name = ("file" in item ? item.file.name : item.path).replace(/[\r\n]/g, " ");
   const kind =
@@ -262,7 +284,7 @@ export function labelAttachment(item: PendingAttachment, text: string): string {
 export function activeAttachments(text: string, items: PendingAttachment[]): PendingAttachment[] {
   return items.filter((item) => {
     const label = attachmentPlaceholder(item);
-    return !label || text.includes(label);
+    return !label || attachmentOffsets(text, label).length > 0;
   });
 }
 
@@ -296,8 +318,7 @@ export function submissionAttachments(
   return activeAttachments(text, items).filter((item) => {
     const label = attachmentPlaceholder(item);
     if (!label) return true;
-    const start = text.indexOf(label);
-    if (text.indexOf(label, start + 1) >= 0)
+    if (attachmentOffsets(text, label).length > 1)
       throw new Error(
         `The reference ${label} appears more than once. Remove the duplicate before sending.`,
       );
