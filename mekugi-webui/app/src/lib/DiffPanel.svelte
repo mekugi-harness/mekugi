@@ -225,6 +225,9 @@
               <summary
                 class="flex min-h-9 cursor-pointer items-center gap-2 rounded-control bg-raised/60 px-2.5 py-1 text-small transition-colors hover:bg-active/80 {caret}"
               >
+                {#if file.status}<span class="flex-none font-mono text-code text-muted"
+                    >{file.status}</span
+                  >{/if}
                 <span class="min-w-0 flex-1 truncate font-mono text-code font-medium"
                   ><Path path={workspacePath(file.path, review?.workspace ?? "")} /></span
                 >
