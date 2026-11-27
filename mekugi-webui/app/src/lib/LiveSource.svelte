@@ -121,9 +121,7 @@
                 <AgentName name={preview.Caller} current={owner} />
               {/if}
               {#if preview.Tool}<Tag mono>{preview.Tool}</Tag>{/if}
-              {#if preview.Status.startsWith("unavailable: ")}<span class="text-muted"
-                  >{preview.Status.slice(13)}</span
-                >{/if}
+              {#if preview.Status}<span class="text-muted">{preview.Status}</span>{/if}
               <span
                 class={[
                   "ml-auto inline-flex items-center gap-1.5",

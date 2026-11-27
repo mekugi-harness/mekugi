@@ -1585,11 +1585,12 @@ export class Stream {
       ) {
         savedPath = file?.absolutePath ?? file?.path;
         savedFiles = response.files.map(changeFileReview);
+        if (response.nextCursor) status = "More in Saved Diff";
       } else if (preview.Tool === "Shell") {
         savedFiles = [];
       }
     } catch {
-      if (preview.Tool === "Shell") status = "unavailable: Saved Diff could not be read";
+      if (preview.Tool === "Shell") status = "Saved Diff could not be read";
     }
     if (signal.aborted) return;
     this.live = this.live.map((edit) =>
