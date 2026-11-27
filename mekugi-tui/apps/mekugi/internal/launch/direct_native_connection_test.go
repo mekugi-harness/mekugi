@@ -844,6 +844,102 @@ func TestDirectNativeForkPromptAndArchiveConfirmation(t *testing.T) {
 	}
 }
 
+func TestDirectNativeForkKeepsInheritedCommandDetailsThreadScoped(t *testing.T) {
+	const main = "thr-main"
+	const fork = "thr-fork"
+	const turn = "turn-1"
+	const run = "exec-12345678-1234-1234-1234-123456789abc"
+	ctx := t.Context()
+	socket := filepath.Join(shortTempDir(t), "app-server.sock")
+	mock := startMockNativeAppServer(t, socket)
+	command := func(output string) map[string]any {
+		return map[string]any{
+			"type": "commandExecution", "id": run, "command": "echo inherited", "status": "completed",
+			"exitCode": 0, "aggregatedOutput": output,
+		}
+	}
+	retainedFork := func(output string) map[string]any {
+		return map[string]any{"thread": map[string]any{
+			"id": fork, "forkedFromId": main,
+			"turns": []map[string]any{{"id": turn, "items": []map[string]any{command(output)}}},
+		}}
+	}
+	mock.mu.Lock()
+	mock.overrides["thread/fork"] = func(jsontext.Value) any { return retainedFork("first\nsecond\n") }
+	mock.overrides["thread/read"] = func(jsontext.Value) any { return retainedFork("first\nsecond\nthird\n") }
+	mock.mu.Unlock()
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	send := func(op sessionapi.NativeOperation) {
+		t.Helper()
+		if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, op); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mock.send(t, map[string]any{
+		"jsonrpc": "2.0", "method": "item/completed",
+		"params": map[string]any{"threadId": main, "turnId": turn, "item": command("first\n")},
+	})
+	sourceSeq := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return len(ev.Frame.Main.Entries) == 1
+	}).Frame.Main.Entries[0].Seq
+
+	send(sessionapi.NativeOperation{Command: new("/fork")})
+	entries := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Main.ID == fork
+	}).Frame.Main.Entries
+	if len(entries) != 1 || !entries[0].Restored || entries[0].Seq == sourceSeq ||
+		len(entries[0].Values) != 1 || entries[0].Values[0].Code != "echo inherited" {
+		t.Fatalf("fork must publish its own inherited command: %+v", entries)
+	}
+	forkSeq := entries[0].Seq
+
+	// Display refresh replaces this thread's retained records, not the source's.
+	send(sessionapi.NativeOperation{Display: &sessionpresentation.DisplayIntent{
+		Thread: sessionpresentation.Thread{ID: fork},
+	}})
+	reloaded := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		entries := ev.Frame.Main.Entries
+		return len(entries) == 1 && len(entries[0].Values) == 1 &&
+			slices.Contains(entries[0].Values[0].Tail, "third")
+	}).Frame.Main.Entries[0]
+	if reloaded.Seq != forkSeq || reloaded.Values[0].Source != forkSeq {
+		t.Fatalf("reloaded fork changed its command's source: %+v", reloaded)
+	}
+
+	for _, tc := range []struct {
+		thread string
+		seq    uint64
+		output []string
+	}{
+		{fork, forkSeq, []string{"first", "second", "third"}},
+		{main, sourceSeq, []string{"first"}},
+	} {
+		send(sessionapi.NativeOperation{Details: &sessionapi.NativeDetailRequest{
+			Kind: sessionapi.NativeRunDetails, Path: "mekugi:run/" + run,
+			Displayed: sessionpresentation.Thread{ID: tc.thread},
+		}})
+		details := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+			return ev.Frame.Details != nil && ev.Frame.Details.Source.ID == tc.thread
+		}).Frame.Details
+		if len(details.View.Pages) != 1 || details.View.Pages[0].Source != tc.seq ||
+			details.Output == nil || !details.Output.View.Exited || !slices.Equal(details.Output.View.Lines, tc.output) {
+			t.Fatalf("resolved wrong run in %s: %+v", tc.thread, details)
+		}
+	}
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+		Details: &sessionapi.NativeDetailRequest{
+			Kind: sessionapi.NativeEntryDetails, Source: sourceSeq,
+			Displayed: sessionpresentation.Thread{ID: fork},
+		},
+	}); err == nil {
+		t.Fatal("fork details accepted a source transcript row")
+	}
+}
+
 func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	socket := filepath.Join(shortTempDir(t), "app-server.sock")
 	mock := startMockNativeAppServer(t, socket)
@@ -1043,7 +1139,7 @@ func TestDirectNativeProjectionPopulatesEntryValues(t *testing.T) {
 		wire:          &nativeAppServerWire{userAgent: "mekugi/0.172.0"},
 		mainThread:    "thr-main",
 		items:         make(map[string][]*directItemRecord),
-		itemsByID:     make(map[string]*directItemRecord),
+		itemsByID:     make(map[directItemKey]*directItemRecord),
 		threadCallers: map[string]string{"thr-main": "main"},
 		events:        make(chan sessionapi.NativeEvent, 16),
 	}
@@ -1052,7 +1148,7 @@ func TestDirectNativeProjectionPopulatesEntryValues(t *testing.T) {
 		Method: "item/agentMessage/delta",
 		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","itemId":"msg-1","delta":"Hello "}`),
 	})
-	rec := conn.itemsByID["msg-1"]
+	rec := conn.itemsByID[directItemKey{"thr-main", "msg-1"}]
 	if rec == nil || len(rec.entry.Values) != 1 || rec.entry.Values[0].Kind != "text" || rec.entry.Values[0].Body != "Hello " {
 		t.Fatalf("streaming agentMessage did not project Values: %+v", rec)
 	}
@@ -1069,7 +1165,7 @@ func TestDirectNativeProjectionPopulatesEntryValues(t *testing.T) {
 		Method: "item/completed",
 		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","item":{"type":"reasoning","id":"rsn-1","summary":["Thinking step"]}}`),
 	})
-	rsn := conn.itemsByID["rsn-1"]
+	rsn := conn.itemsByID[directItemKey{"thr-main", "rsn-1"}]
 	if rsn == nil || len(rsn.entry.Values) == 0 {
 		t.Fatalf("reasoning item did not project Values: %+v", rsn)
 	}
@@ -1078,7 +1174,7 @@ func TestDirectNativeProjectionPopulatesEntryValues(t *testing.T) {
 		Method: "item/completed",
 		Params: jsontext.Value(`{"threadId":"thr-main","turnId":"turn-1","item":{"type":"plan","id":"pln-1","text":"1. Fix bug"}}`),
 	})
-	pln := conn.itemsByID["pln-1"]
+	pln := conn.itemsByID[directItemKey{"thr-main", "pln-1"}]
 	if pln == nil || len(pln.entry.Values) != 1 || pln.entry.Values[0].Body != "1. Fix bug" {
 		t.Fatalf("plan item did not project Values: %+v", pln)
 	}
@@ -1089,7 +1185,7 @@ func TestDirectNativeSlashCompletionAndMenuAccept(t *testing.T) {
 		wire:          &nativeAppServerWire{userAgent: "mekugi/0.172.0"},
 		mainThread:    "thr-main",
 		items:         make(map[string][]*directItemRecord),
-		itemsByID:     make(map[string]*directItemRecord),
+		itemsByID:     make(map[directItemKey]*directItemRecord),
 		threadCallers: map[string]string{"thr-main": "main"},
 		events:        make(chan sessionapi.NativeEvent, 16),
 	}
@@ -1193,7 +1289,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 		wire:          &nativeAppServerWire{userAgent: "mekugi/0.172.0"},
 		mainThread:    "thr-main",
 		items:         make(map[string][]*directItemRecord),
-		itemsByID:     make(map[string]*directItemRecord),
+		itemsByID:     make(map[directItemKey]*directItemRecord),
 		threadCallers: map[string]string{"thr-main": "main"},
 		events:        make(chan sessionapi.NativeEvent, 16),
 	}
@@ -1208,7 +1304,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 		},
 	})
 
-	cmdRec := conn.itemsByID["cmd-1"]
+	cmdRec := conn.itemsByID[directItemKey{"thr-main", "cmd-1"}]
 	if cmdRec == nil || len(cmdRec.entry.Values) != 1 {
 		t.Fatalf("expected projected commandExecution, got %+v", cmdRec)
 	}
@@ -1220,7 +1316,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 		t.Fatalf("expected completed restored Tail projection, got val=%+v entry=%+v", val, cmdRec.entry)
 	}
 
-	fcRec := conn.itemsByID["fc-1"]
+	fcRec := conn.itemsByID[directItemKey{"thr-main", "fc-1"}]
 	if fcRec == nil || len(fcRec.entry.Values) != 2 {
 		t.Fatalf("expected 2 fileChange values, got %+v", fcRec)
 	}
@@ -1254,13 +1350,13 @@ func TestDirectNativeCommandDetailsFollowNativeExit(t *testing.T) {
 		mainThread:    "thr-main",
 		workspace:     "/tmp/ws",
 		items:         make(map[string][]*directItemRecord),
-		itemsByID:     make(map[string]*directItemRecord),
+		itemsByID:     make(map[directItemKey]*directItemRecord),
 		threadCallers: map[string]string{"thr-main": "/root"},
 		events:        make(chan sessionapi.NativeEvent, 16),
 	}
 	upsert := func(body string) *directItemRecord {
 		conn.upsertWireItemLocked("thr-main", "turn-1", jsontext.Value(body), true)
-		return conn.itemsByID["cmd-1"]
+		return conn.itemsByID[directItemKey{"thr-main", "cmd-1"}]
 	}
 	rec := upsert(`{"type":"commandExecution","id":"cmd-1","command":"cd sub && example","cwd":"/tmp/ws","display":{"segments":["example"],"effectiveCwd":"/tmp/ws/sub"},"status":"inProgress","processId":"35","exitCode":null,"aggregatedOutput":"starting"}`)
 	if !rec.entry.ItemComplete || rec.entry.OutputComplete || rec.entry.Values[0].RowVerb() != "Running" {
@@ -1335,14 +1431,14 @@ func TestDirectNativeRetainedRunLink(t *testing.T) {
 		wire:       &nativeAppServerWire{userAgent: "mekugi/test"},
 		mainThread: "thr-main",
 		items:      make(map[string][]*directItemRecord),
-		itemsByID:  make(map[string]*directItemRecord),
+		itemsByID:  make(map[directItemKey]*directItemRecord),
 		events:     make(chan sessionapi.NativeEvent, 4),
 	}
 	conn.hydrateThreadTurnsLocked("thr-main", []directWireTurn{{
 		ID:    "turn-1",
 		Items: []jsontext.Value{jsontext.Value(`{"type":"commandExecution","id":"` + run + `","command":"/bin/bash -lc 'cd sub && cat a && cat b'","cwd":"/repo","commandActions":[{"type":"unknown","command":"cat"}],"display":{"effectiveCwd":"/repo/sub","segments":["cat a","cat b"]},"status":"failed","exitCode":-1,"aggregatedOutput":"one\ntwo\nthree\n"}`)},
 	}})
-	batch := conn.itemsByID[run].entry.Values
+	batch := conn.itemsByID[directItemKey{"thr-main", run}].entry.Values
 	if len(batch) != 3 || batch[0].Code != "cat a" || batch[1].Code != "cat b" ||
 		batch[0].Workdir != "/repo/sub" || batch[1].Workdir != "/repo/sub" || batch[2].Workdir != "/repo/sub" ||
 		batch[0].Exited || batch[1].Exited || batch[0].Output != 0 || batch[1].Output != 0 ||

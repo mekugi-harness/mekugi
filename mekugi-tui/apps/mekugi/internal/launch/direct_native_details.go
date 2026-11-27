@@ -39,27 +39,6 @@ func clonePanelView(p *sessionpresentation.PanelView) *sessionpresentation.Panel
 	return &cp
 }
 
-func (c *directNativeConnection) findRecordBySeqLocked(threadID string, seq uint64) *directItemRecord {
-	if seq == 0 {
-		return nil
-	}
-	if threadID != "" {
-		for _, rec := range c.items[threadID] {
-			if rec.seq == seq {
-				return rec
-			}
-		}
-	}
-	for _, records := range c.items {
-		for _, rec := range records {
-			if rec.seq == seq {
-				return rec
-			}
-		}
-	}
-	return nil
-}
-
 func (c *directNativeConnection) handleOpenDetails(ctx context.Context, req sessionapi.NativeDetailRequest) error {
 	switch req.Kind {
 	case sessionapi.NativeFileDetails:
@@ -100,8 +79,8 @@ func (c *directNativeConnection) openEntryDetailsLocked(req sessionapi.NativeDet
 		if !ok {
 			return errors.New("the command run link is invalid")
 		}
-		rec := c.itemsByID[id]
-		if rec == nil || rec.threadID != threadID || rec.itemType != "commandExecution" {
+		rec := c.itemsByID[directItemKey{threadID, id}]
+		if rec == nil || rec.itemType != "commandExecution" {
 			return errors.New("the command run is unavailable in this thread")
 		}
 		sources = []uint64{rec.seq}
@@ -121,7 +100,7 @@ func (c *directNativeConnection) openEntryDetailsLocked(req sessionapi.NativeDet
 		values = append(values, c.entryDetailValuesLocked(rec, combinedRun)...)
 	}
 	if len(values) == 0 && req.Path != "" {
-		if rec, ok := c.itemsByID[req.Path]; ok {
+		if rec, ok := c.itemsByID[directItemKey{threadID, req.Path}]; ok {
 			values = append(values, c.entryDetailValuesLocked(rec, combinedRun)...)
 		}
 	}

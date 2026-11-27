@@ -133,10 +133,9 @@ func (c *directNativeConnection) openProcessDetails(ctx context.Context, req ses
 }
 
 func (c *directNativeConnection) processRecordLocked(process sessionpresentation.Process) *directItemRecord {
-	for _, rec := range slices.Backward(c.items[process.Thread]) {
-		if rec.id == process.Item && rec.turnID == process.Turn && rec.itemType == "commandExecution" {
-			return rec
-		}
+	rec := c.itemsByID[directItemKey{process.Thread, process.Item}]
+	if rec != nil && rec.turnID == process.Turn && rec.itemType == "commandExecution" {
+		return rec
 	}
 	return nil
 }

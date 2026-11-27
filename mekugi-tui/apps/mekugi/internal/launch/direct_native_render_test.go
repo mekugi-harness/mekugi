@@ -246,7 +246,7 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 	terminal.Transcript.ToggleExpansion()
 
 	// Open Details dialog on the commandExecution entry and hydrate DetailOutput.
-	cmdSeq := conn.itemsByID["cmd-1"].seq
+	cmdSeq := conn.itemsByID[directItemKey{"thr-main", "cmd-1"}].seq
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
 		Details: &sessionapi.NativeDetailRequest{
 			Kind:   sessionapi.NativeEntryDetails,
@@ -754,7 +754,7 @@ func TestUISnapshotDirectNativeProjection(t *testing.T) {
 	terminal.Transcript.ToggleExpansion()
 
 	// 3. Entry Details dialog with hydrated DetailOutput.
-	cmdSeq := conn.itemsByID["cmd-1"].seq
+	cmdSeq := conn.itemsByID[directItemKey{"thr-main", "cmd-1"}].seq
 	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
 		Details: &sessionapi.NativeDetailRequest{Kind: sessionapi.NativeEntryDetails, Source: cmdSeq},
 	}); err != nil {

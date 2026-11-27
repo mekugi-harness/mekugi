@@ -163,7 +163,7 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 
 	for key := range c.editReceipts {
 		if _, exists := receipts[key]; !exists {
-			if rec := c.itemsByID[key.item]; rec != nil && rec.threadID == key.thread && rec.turnID == key.turn {
+			if rec := c.itemsByID[directItemKey{key.thread, key.item}]; rec != nil && rec.turnID == key.turn {
 				c.setEditReceiptLocked(rec, nil)
 			}
 		}
@@ -173,7 +173,7 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 		slices.SortStableFunc(captures, func(a, b nativeCapturedFile) int {
 			return cmp.Compare(a.chunk.CaptureOrder, b.chunk.CaptureOrder)
 		})
-		if rec := c.itemsByID[key.item]; rec != nil && rec.threadID == key.thread && rec.turnID == key.turn {
+		if rec := c.itemsByID[directItemKey{key.thread, key.item}]; rec != nil && rec.turnID == key.turn {
 			c.setEditReceiptLocked(rec, captures)
 		}
 	}

@@ -56,6 +56,9 @@ type directPendingServerRequest struct {
 	shellGuard bool
 }
 
+// A fork retains item IDs from its source, but owns separate transcript rows.
+type directItemKey struct{ thread, item string }
+
 type directItemRecord struct {
 	id       string
 	threadID string
@@ -233,7 +236,7 @@ type directNativeConnection struct {
 	feedbackRev        uint64
 
 	items       map[string][]*directItemRecord
-	itemsByID   map[string]*directItemRecord
+	itemsByID   map[directItemKey]*directItemRecord
 	mainOutput  []activity.OutputResult
 	agentOutput []activity.OutputResult
 
@@ -327,7 +330,7 @@ func newDirectNativeConnection(ctx context.Context, opts directNativeOptions, at
 		errCh:         make(chan error, 1),
 		workspace:     opts.workspace,
 		items:         make(map[string][]*directItemRecord),
-		itemsByID:     make(map[string]*directItemRecord),
+		itemsByID:     make(map[directItemKey]*directItemRecord),
 		threadCallers: make(map[string]string),
 		threadUsage:   make(map[string]directThreadUsage),
 		requests:      make(map[string]*directPendingServerRequest),
@@ -783,10 +786,14 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 
 	var liveScope preview.Scope
 	if c.liveDirty && c.workspace != "" {
+		threads := map[string]bool{displayed: true}
+		if family != nil && family.Root == displayed {
+			for _, thread := range family.Threads {
+				threads[thread] = true
+			}
+		}
 		liveScope = preview.Scope{
-			Workspaces: map[string]map[string]bool{
-				c.workspace: {displayedCaller: true},
-			},
+			Workspaces: map[string]map[string]bool{c.workspace: threads},
 		}
 	}
 

@@ -389,7 +389,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			c.mu.Lock()
 			threadID := cmp.Or(p.ThreadID, c.mainThread)
 			trackedTurn := threadID == c.mainThread || threadID == c.sideThread
-			item := c.itemsByID[p.ItemID]
+			item := c.itemsByID[directItemKey{threadID, p.ItemID}]
 			if (!trackedTurn || c.activeTurnForLocked(threadID) == p.TurnID) &&
 				(item == nil || item.entry.Completed.IsZero()) {
 				c.setNativeFilePreviewLocked(threadID, p.TurnID, p.ItemID, p.Changes)
@@ -716,9 +716,22 @@ func decodeDirectSecretCall(id string, params jsontext.Value) prompt.CallView {
 	}
 }
 
+func (c *directNativeConnection) findRecordBySeqLocked(threadID string, seq uint64) *directItemRecord {
+	if seq == 0 {
+		return nil
+	}
+	for _, rec := range c.items[threadID] {
+		if rec.seq == seq {
+			return rec
+		}
+	}
+	return nil
+}
+
 func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, itemType, kind string) *directItemRecord {
+	key := directItemKey{threadID, itemID}
 	if itemID != "" {
-		if rec, ok := c.itemsByID[itemID]; ok {
+		if rec, ok := c.itemsByID[key]; ok {
 			return rec
 		}
 	}
@@ -749,7 +762,7 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 	}
 	c.items[threadID] = append(c.items[threadID], rec)
 	if itemID != "" {
-		c.itemsByID[itemID] = rec
+		c.itemsByID[key] = rec
 	}
 	return rec
 }
@@ -759,7 +772,7 @@ func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns
 	for _, rec := range c.items[threadID] {
 		if rec.id != "" {
 			preservedSeq[rec.id] = rec.seq
-			delete(c.itemsByID, rec.id)
+			delete(c.itemsByID, directItemKey{threadID, rec.id})
 		}
 	}
 	c.items[threadID] = nil
@@ -774,9 +787,7 @@ func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns
 		if prevSeq, ok := preservedSeq[rec.id]; ok {
 			rec.seq = prevSeq
 			rec.entry.Seq = prevSeq
-			if rec.entry.Kind == "error" {
-				activity.Identify(rec.entry.Values, prevSeq)
-			}
+			activity.Identify(rec.entry.Values, prevSeq)
 		}
 	}
 }

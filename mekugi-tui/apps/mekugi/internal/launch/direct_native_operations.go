@@ -949,26 +949,21 @@ func (c *directNativeConnection) handleOutputDemand(demand sessionapi.NativeOutp
 	if demand.Agent && c.displayedThread != "" {
 		threadID = c.displayedThread
 	}
-	records := c.items[threadID]
 	for _, d := range demand.Demands {
-		for _, rec := range records {
-			if rec.seq == d.Source {
-				var lines []string
-				if rec.output != "" {
-					lines = strings.Split(strings.TrimSuffix(rec.output, "\n"), "\n")
-				}
-				view := activityfeed.OutputView{Lines: lines, Done: rec.entry.OutputComplete}
-				if rec.itemType == "commandExecution" && len(rec.entry.Values) != 0 {
-					value := rec.entry.Values[len(rec.entry.Values)-1]
-					view.Exited, view.Exit = value.Exited, value.ExitCode
-				}
-				results = append(results, activity.OutputResult{
-					Demand: d,
-					View:   view,
-				})
-				break
-			}
+		rec := c.findRecordBySeqLocked(threadID, d.Source)
+		if rec == nil {
+			continue
 		}
+		var lines []string
+		if rec.output != "" {
+			lines = strings.Split(strings.TrimSuffix(rec.output, "\n"), "\n")
+		}
+		view := activityfeed.OutputView{Lines: lines, Done: rec.entry.OutputComplete}
+		if rec.itemType == "commandExecution" && len(rec.entry.Values) != 0 {
+			value := rec.entry.Values[len(rec.entry.Values)-1]
+			view.Exited, view.Exit = value.Exited, value.ExitCode
+		}
+		results = append(results, activity.OutputResult{Demand: d, View: view})
 	}
 	if demand.Agent {
 		c.agentOutput = results
