@@ -28,7 +28,7 @@ use crate::outgoing_message::OutgoingMessageSender;
 /// Attach usage to the accepted thread itself, including
 /// metadata-only resumes that do not replay turn notifications.
 pub(super) async fn set_thread_usage(thread: &mut Thread, conversation: &CodexThread) {
-    thread.extra = conversation.observed_thread_extra();
+    thread.extra = conversation.observed_thread_extra().await;
     thread.token_usage = conversation.observed_token_usage().await;
     if let Some(usage) = thread.token_usage.as_ref() {
         if usage.last.total_tokens > 0 {

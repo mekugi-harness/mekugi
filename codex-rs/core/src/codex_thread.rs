@@ -1182,13 +1182,21 @@ impl CodexThread {
             .await
     }
 
-    /// Confirmed skill names belonging to this thread.
-    pub fn observed_thread_extra(&self) -> Option<codex_app_server_protocol::ThreadExtra> {
+    /// Confirmed skill names and active background terminal count belonging to this thread.
+    pub async fn observed_thread_extra(&self) -> Option<codex_app_server_protocol::ThreadExtra> {
         let skills = self
             .thread_extension_data()
-            .get::<codex_skills_extension::SkillsThreadState>()?
-            .used_skill_names();
-        (!skills.is_empty()).then_some(codex_app_server_protocol::ThreadExtra { skills })
+            .get::<codex_skills_extension::SkillsThreadState>()
+            .map(|state| state.used_skill_names())
+            .unwrap_or_default();
+        let background_terminal_count =
+            u32::try_from(self.list_background_terminals().await.len()).ok();
+        (!skills.is_empty() || background_terminal_count.is_some()).then_some(
+            codex_app_server_protocol::ThreadExtra {
+                skills,
+                background_terminal_count,
+            },
+        )
     }
 
     /// Records a context fragment without creating a new user turn boundary.

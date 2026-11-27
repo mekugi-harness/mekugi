@@ -4737,6 +4737,7 @@ async fn cold_paginated_resume_restores_usage_without_loading_turns() -> Result<
         thread.extra,
         Some(codex_app_server_protocol::ThreadExtra {
             skills: vec!["retained-skill".into()],
+            background_terminal_count: Some(0),
         })
     );
 

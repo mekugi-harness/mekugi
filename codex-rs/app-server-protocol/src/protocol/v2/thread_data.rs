@@ -170,6 +170,10 @@ pub struct ThreadExtra {
     /// Skills confirmed by the native attachment or read paths for this thread.
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Number of active background terminals on this loaded thread, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub background_terminal_count: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

@@ -9,4 +9,8 @@ export type ThreadExtra = {
 /**
  * Skills confirmed by the native attachment or read paths for this thread.
  */
-skills: Array<string>, };
+skills: Array<string>,
+/**
+ * Number of active background terminals on this loaded thread, when known.
+ */
+backgroundTerminalCount?: number, };
