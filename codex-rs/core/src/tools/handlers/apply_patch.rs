@@ -86,27 +86,24 @@ struct ApplyPatchArgumentDiffConsumer {
 }
 
 impl ToolArgumentDiffConsumer for ApplyPatchArgumentDiffConsumer {
-    fn consume_diff(
-        &mut self,
-        turn: &TurnContext,
-        call_id: String,
-        diff: &str,
-    ) -> Option<EventMsg> {
+    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg> {
         if !turn
             .config
             .features
             .enabled(Feature::ApplyPatchStreamingEvents)
         {
-            return None;
+            return Vec::new();
         }
 
         self.push_delta(call_id, diff)
             .map(EventMsg::PatchApplyUpdated)
+            .into_iter()
+            .collect()
     }
 
-    fn finish(&mut self) -> Result<Option<EventMsg>, FunctionCallError> {
+    fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
         self.finish_update_on_complete()
-            .map(|event| event.map(EventMsg::PatchApplyUpdated))
+            .map(|event| event.map(EventMsg::PatchApplyUpdated).into_iter().collect())
     }
 }
 

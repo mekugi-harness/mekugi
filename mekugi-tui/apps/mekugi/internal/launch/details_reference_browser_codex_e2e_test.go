@@ -284,11 +284,6 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					t.Fatal("Tab did not run the native queued shell draft")
 				}
 			}
-			threadLink := func() string {
-				href := run("get", "attr", "nav[aria-label=Threads] li a[aria-current=page]", "href")
-				return fmt.Sprintf("nav[aria-label=Threads] li a[href=%q]", href)
-			}
-			originalThread := threadLink()
 			run("find", "role", "button", "click", "--name", "New thread", "--exact")
 			run("wait", "--fn", fmt.Sprintf(`document.querySelector('button[title=%s]') !== null`, fmt.Sprintf("%q", workspace)))
 			run("click", fmt.Sprintf("button[title=%q]", workspace))

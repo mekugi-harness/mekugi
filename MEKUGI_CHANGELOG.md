@@ -168,11 +168,13 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   requires an endpoint, cannot redirect inference or catalog requests, and has
   no built-in price. Native exchange measurements feed launch-wide diagnostics
   without retaining prompts, tool input, or response text in the private log.
-- Native patch input feeds provisional live diffs. App-server v2 also sends
-  `item/commandExecution/changesUpdated` for bounded, observed shell edits
-  before the command exits. `thread/changes/live` reads the current snapshots
-  for a thread when attaching or reconnecting. These previews do not establish
-  change IDs or enter rollout history; Saved Diff reads settled captures.
+- Live Diff streams authored edits as the model generates tool call inputs
+  (`apply_patch`, `exec_command`, and nested Code Mode `exec` calls writing
+  via `cat`/`tee` heredocs or Python `open`/`read_text` -> `replace` ->
+  `write_text`/`write`) through `item/fileChange/patchUpdated`. Execution-time
+  OS polling (`item/commandExecution/changesUpdated`) is retired; for
+  compatibility, `thread/changes/live` remains callable and returns empty,
+  while Saved Diff reads settled `exec-track` captures for all commands.
 - When session naming is enabled, new persistent Main threads can receive a
   native title from a one-shot, untooled request carrying `thread_title` turn
   metadata (`gpt-6-luna` on built-in OpenAI, skipping local spend/budget

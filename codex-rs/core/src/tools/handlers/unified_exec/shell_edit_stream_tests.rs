@@ -1,9 +1,11 @@
 use std::path::Path;
 use std::path::PathBuf;
 
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::FileChange;
 use pretty_assertions::assert_eq;
 
+use super::CodeModeEditProjector;
 use super::JsonCmdExtractor;
 use super::ShellEditProjector;
 
@@ -24,10 +26,7 @@ fn project_chunks(
     }
     proj.finish();
     if proj.take_dirty() {
-        let snap = proj.snapshot();
-        if !snap.is_empty() {
-            snapshots.push(snap);
-        }
+        snapshots.push(proj.snapshot());
     }
     snapshots
 }
@@ -64,6 +63,25 @@ fn streams_cat_heredoc_incrementally_before_eof() {
 }
 
 #[test]
+fn streams_cat_heredoc_with_adjoining_redirects_and_overwrite_vs_append() {
+    let snaps = project_chunks(
+        "/repo",
+        &[
+            "cat >notes.txt<<'EOF'\ndraft\nEOF\n",
+            "cat >notes.txt<<'EOF'\nfinal\nEOF\n",
+            "cat >>notes.txt<<'EOF'\nmore\nEOF\n",
+        ],
+    );
+    let last = snaps.last().expect("final snapshot");
+    assert_eq!(
+        last.get(Path::new("/repo/notes.txt")),
+        Some(&FileChange::Add {
+            content: "final\nmore\n".to_string(),
+        })
+    );
+}
+
+#[test]
 fn streams_cat_heredoc_after_cd_and_multiple_files() {
     let snaps = project_chunks(
         "/repo",
@@ -88,6 +106,33 @@ fn streams_cat_heredoc_after_cd_and_multiple_files() {
 }
 
 #[test]
+fn trailing_workdir_rebases_already_streamed_relative_paths() {
+    let mut ext = JsonCmdExtractor::default();
+    let mut proj = ShellEditProjector::new(Path::new("/repo"));
+    for chunk in [
+        "{\"cmd\":\"cat <<'EOF' > out.txt\\nhello\\nEOF\\n\"",
+        ",\"workdir\":\"sub\"}",
+    ] {
+        let (cmd, workdir) = ext.push(chunk);
+        if let Some(dir) = workdir {
+            proj.set_workdir(Path::new(&dir));
+        }
+        if !cmd.is_empty() {
+            proj.push(&cmd);
+        }
+    }
+    proj.finish();
+    let snap = proj.snapshot();
+    assert!(snap.get(Path::new("/repo/out.txt")).is_none());
+    assert_eq!(
+        snap.get(Path::new("/repo/sub/out.txt")),
+        Some(&FileChange::Add {
+            content: "hello\n".to_string(),
+        })
+    );
+}
+
+#[test]
 fn rejects_non_streaming_shell_copies_and_redirects() {
     for cmd in [
         "cat < large.txt > out.txt\n",
@@ -106,7 +151,7 @@ fn rejects_non_streaming_shell_copies_and_redirects() {
 }
 
 #[test]
-fn streams_python_heredoc_read_replace_write_text() {
+fn streams_python_heredoc_read_replace_write_text_with_range_headers() {
     let snaps = project_chunks(
         "/repo",
         &[
@@ -128,7 +173,7 @@ fn streams_python_heredoc_read_replace_write_text() {
     assert_eq!(
         first.get(Path::new("/repo/app.py")),
         Some(&FileChange::Update {
-            unified_diff: "@@\n-old_one\n-old_two\n".to_string(),
+            unified_diff: "@@ -1,2 +1,0 @@\n-old_one\n-old_two\n".to_string(),
             move_path: None,
         })
     );
@@ -136,7 +181,7 @@ fn streams_python_heredoc_read_replace_write_text() {
     assert_eq!(
         last.get(Path::new("/repo/app.py")),
         Some(&FileChange::Update {
-            unified_diff: "@@\n-old_one\n-old_two\n+new_one\n+new_two\n".to_string(),
+            unified_diff: "@@ -1,2 +1,2 @@\n-old_one\n-old_two\n+new_one\n+new_two\n".to_string(),
             move_path: None,
         })
     );
@@ -156,21 +201,74 @@ fn streams_python_open_read_replace_and_inline_minus_c() {
     assert_eq!(
         last.get(Path::new("/repo/notes.txt")),
         Some(&FileChange::Update {
-            unified_diff: "@@\n-before\n+after\n".to_string(),
+            unified_diff: "@@ -1,1 +1,1 @@\n-before\n+after\n".to_string(),
             move_path: None,
         })
     );
 }
 
 #[test]
-fn streams_python_literal_write_text_and_open_write() {
+fn python_print_replace_does_not_emit_false_file_edit() {
     let snaps = project_chunks(
         "/repo",
         &[
             "python3 - <<'PY'\n",
             "from pathlib import Path\n",
-            "Path('created.txt').write_text('line1\n",
-            "line2\n')\n",
+            "text = Path('notes.txt').read_text()\n",
+            "print(text.replace('old', 'new'))\n",
+            "PY\n",
+        ],
+    );
+    assert!(
+        snaps.is_empty(),
+        "expected no live stream for print(replace), got {snaps:?}"
+    );
+
+    // Even an assigned replace with no write retracts on finish.
+    let mut proj = ShellEditProjector::new(Path::new("/repo"));
+    proj.push(
+        "python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('notes.txt').read_text()\nout = text.replace('old', 'new')\nprint(out)\nPY\n",
+    );
+    proj.finish();
+    assert!(
+        proj.snapshot().is_empty(),
+        "expected retracted empty final snapshot when no write occurs, got {:?}",
+        proj.snapshot()
+    );
+}
+
+#[test]
+fn python_write_text_with_replace_targets_destination_path() {
+    let snaps = project_chunks(
+        "/repo",
+        &[
+            "python3 - <<'PY'\n",
+            "from pathlib import Path\n",
+            "text = Path('src.txt').read_text()\n",
+            "Path('dst.txt').write_text(text.replace('a', 'b'))\n",
+            "PY\n",
+        ],
+    );
+    let last = snaps.last().expect("final snapshot");
+    assert!(last.get(Path::new("/repo/src.txt")).is_none());
+    assert_eq!(
+        last.get(Path::new("/repo/dst.txt")),
+        Some(&FileChange::Update {
+            unified_diff: "@@ -1,1 +1,1 @@\n-a\n+b\n".to_string(),
+            move_path: None,
+        })
+    );
+}
+
+#[test]
+fn streams_python_literal_write_text_and_decodes_unicode_hex_escapes() {
+    let snaps = project_chunks(
+        "/repo",
+        &[
+            "python3 - <<'PY'\n",
+            "from pathlib import Path\n",
+            "Path('created.txt').write_text('''caf\\u00e9\\x21\n",
+            "line2\n''')\n",
             "PY\n",
         ],
     );
@@ -182,7 +280,7 @@ fn streams_python_literal_write_text_and_open_write() {
     assert_eq!(
         last.get(Path::new("/repo/created.txt")),
         Some(&FileChange::Add {
-            content: "line1\nline2\n".to_string(),
+            content: "café!\nline2\n".to_string(),
         })
     );
 }
@@ -201,6 +299,60 @@ fn rejects_non_streaming_python_copies() {
             "expected no live stream for {cmd:?}, got {snaps:?}"
         );
     }
+}
+
+#[test]
+fn streams_code_mode_nested_exec_command_and_apply_patch_before_finish() {
+    let mut cm = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let mut emitted = Vec::new();
+    for chunk in [
+        "await tools.exec_command({ cmd: \"cat > notes.txt <<'EOF'\\n",
+        "hello from code mode\\n",
+        "EOF\" });\n",
+        "await tools.apply_patch(`*** Begin Patch\n*** Add File: extra.txt\n+from patch\n*** End Patch`);\n",
+    ] {
+        if let Some(ev) = cm.consume_diff(cwd, "call_cm".to_string(), chunk) {
+            emitted.push(ev);
+        }
+    }
+    assert!(
+        !emitted.is_empty(),
+        "expected PatchApplyUpdated before finish() for nested Code Mode edits"
+    );
+    if let Some(ev) = cm.finish() {
+        emitted.push(ev);
+    }
+    let Some(EventMsg::PatchApplyUpdated(final_ev)) = emitted.last() else {
+        panic!("expected PatchApplyUpdated, got {emitted:?}");
+    };
+    assert_eq!(final_ev.call_id, "call_cm");
+    assert_eq!(
+        final_ev.changes.get(Path::new("/repo/notes.txt")),
+        Some(&FileChange::Add {
+            content: "hello from code mode\n".to_string(),
+        })
+    );
+    assert_eq!(
+        final_ev.changes.get(Path::new("/repo/extra.txt")),
+        Some(&FileChange::Add {
+            content: "from patch\n".to_string(),
+        })
+    );
+}
+
+#[test]
+fn long_heredoc_line_streams_in_linear_time() {
+    let long_line = "x".repeat(64 * 1024);
+    let mut proj = ShellEditProjector::new(Path::new("/repo"));
+    proj.push("cat <<'EOF' > big.txt\n");
+    proj.push(&long_line);
+    assert!(proj.take_dirty());
+    let snap = proj.snapshot();
+    assert_eq!(
+        snap.get(Path::new("/repo/big.txt")),
+        Some(&FileChange::Add { content: long_line })
+    );
 }
 
 #[test]

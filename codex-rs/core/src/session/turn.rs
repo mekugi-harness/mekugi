@@ -3539,9 +3539,11 @@ async fn try_run_sampling_request(
                     }
                 }
                 if let Some((_, _, mut consumer)) = active_tool_argument_diff_consumer.take()
-                    && let Ok(Some(event)) = consumer.finish()
+                    && let Ok(events) = consumer.finish()
                 {
-                    sess.send_event(&turn_context, event).await;
+                    for event in events {
+                        sess.send_event(&turn_context, event).await;
+                    }
                 }
                 let previously_active_item = active_item.take();
                 let previously_streamed_item = if active_item_is_streaming_to_client {
@@ -4018,7 +4020,7 @@ async fn try_run_sampling_request(
                         active_call_id.clone()
                     }
                 };
-                if let Some(event) = consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
+                for event in consumer.consume_diff(turn_context.as_ref(), call_id, &delta) {
                     sess.send_event(&turn_context, event).await;
                 }
             }

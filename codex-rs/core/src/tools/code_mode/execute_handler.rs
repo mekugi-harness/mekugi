@@ -3,6 +3,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::handlers::unified_exec::CodeModeEditProjector;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolExecutor;
@@ -321,30 +322,37 @@ impl CoreToolRuntime for CodeModeExecuteHandler {
 #[derive(Default)]
 struct CodeModeInputPreview {
     offset: u32,
+    edits: CodeModeEditProjector,
 }
 
 impl ToolArgumentDiffConsumer for CodeModeInputPreview {
-    fn consume_diff(
-        &mut self,
-        _turn: &TurnContext,
-        call_id: String,
-        diff: &str,
-    ) -> Option<EventMsg> {
+    fn consume_diff(&mut self, turn: &TurnContext, call_id: String, diff: &str) -> Vec<EventMsg> {
         const MAX_PREVIEW_BYTES: u32 = 256 << 10;
+        let mut events = Vec::new();
+        #[allow(deprecated)]
+        let cwd = turn.cwd.as_path();
+        if let Some(patch_event) = self.edits.consume_diff(cwd, call_id.clone(), diff) {
+            events.push(patch_event);
+        }
         let len = u32::try_from(diff.len()).unwrap_or(u32::MAX);
         if len == 0 {
-            return None;
+            return events;
         }
         if len > MAX_PREVIEW_BYTES - self.offset {
             self.offset = MAX_PREVIEW_BYTES;
-            return None;
+            return events;
         }
         let offset = self.offset;
         self.offset += len;
-        Some(EventMsg::CodeModeInputDelta(CodeModeInputDeltaEvent {
+        events.push(EventMsg::CodeModeInputDelta(CodeModeInputDeltaEvent {
             call_id,
             offset,
             delta: diff.to_owned(),
-        }))
+        }));
+        events
+    }
+
+    fn finish(&mut self) -> Result<Vec<EventMsg>, FunctionCallError> {
+        Ok(self.edits.finish().into_iter().collect())
     }
 }
