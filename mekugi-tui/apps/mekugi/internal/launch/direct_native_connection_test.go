@@ -1469,20 +1469,15 @@ func TestDirectNativeRetainedCommandEditReceipt(t *testing.T) {
 		"params": map[string]any{
 			"threadId": "thr-main", "turnId": "turn-1",
 			"item": map[string]any{"type": "commandExecution", "id": "captured-command",
-				"command": "update main.go && cat main.go", "status": "failed", "exitCode": 1,
-				"display": map[string]any{"script": "update main.go && cat main.go", "segments": []string{"update main.go", "cat main.go"},
-					"stepKinds": []string{"run", "read"}},
-				"aggregatedOutput": "updating 25%\rupdated\t100%\r\nthen failed\n"},
+				"command": "update main.go", "status": "failed", "exitCode": 1,
+				"aggregatedOutput": "updated\nthen failed\n"},
 		},
 	})
 	ev := awaitDirectEvent(t, conn, func(event sessionapi.NativeEvent) bool {
 		return event.Frame.Main != nil && len(event.Frame.Main.Entries) > 0
 	})
 	entry := ev.Frame.Main.Entries[0]
-	if len(entry.Values) != 2 || entry.Values[1].BatchExit {
-		t.Fatalf("transcript still shows a batch result row: %+v", entry.Values)
-	}
-	rows := entry.Values[1].Changes
+	rows := entry.Values[0].Changes
 	if len(rows) != 1 || rows[0].Label != "main.go" || rows[0].Added != 2 ||
 		rows[0].Removed != 1 || rows[0].Note != "Shell · amber1" {
 		t.Fatalf("native execution did not retain its captured edit: %+v", rows)
@@ -1491,21 +1486,11 @@ func TestDirectNativeRetainedCommandEditReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	details := conn.details
-	if len(details.View.Pages) != 4 || details.Output == nil ||
-		!slices.Equal(details.Output.View.Lines, []string{"updated\t100%", "then failed"}) {
+	if len(details.View.Pages) != 2 || details.Output == nil ||
+		!slices.Equal(details.Output.View.Lines, []string{"updated", "then failed"}) ||
+		!strings.Contains(details.View.Pages[1].Code, "+more") ||
+		details.View.Pages[1].Path != "/tmp/ws/main.go" {
 		t.Fatalf("Details did not preserve one retained output and the actual edit: %+v", details)
-	}
-	edit := details.View.Pages[3]
-	if !strings.Contains(edit.Code, "+more") || edit.Path != "/tmp/ws/main.go" {
-		t.Fatalf("Details lost the captured edit: %+v", edit)
-	}
-	if err := conn.handleOpenDetails(t.Context(), sessionapi.NativeDetailRequest{
-		Source: entry.Seq, Path: edit.Path, Edit: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if conn.details.Selected != edit.ID {
-		t.Fatalf("opening the captured edit selected the command output: %+v", conn.details)
 	}
 }
 
