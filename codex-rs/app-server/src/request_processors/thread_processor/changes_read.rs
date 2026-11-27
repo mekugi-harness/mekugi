@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
@@ -31,7 +32,7 @@ use crate::error_code::invalid_request;
 // the bytes of unified diff text.
 const CAPTURE_PAGE_BYTES: usize = 4 << 20;
 const CAPTURE_PATCH_BYTES: usize = 512 << 10;
-const LEGACY_RESPONSE_BYTES: usize = 60 << 20;
+const MAX_RESPONSE_BYTES: usize = 60 << 20;
 
 #[cfg(test)]
 #[path = "changes_read_tests.rs"]
@@ -292,12 +293,67 @@ fn read_changes(
             deletions,
         });
     }
-    if serde_json::to_writer(JsonBudget(LEGACY_RESPONSE_BYTES), &response).is_err() {
+    if params.limit.is_some() {
+        bound_review_page(&mut response, sequence, offset)?;
+    } else if serde_json::to_writer(JsonBudget(MAX_RESPONSE_BYTES), &response).is_err() {
         return Err(invalid_request(
             "Saved Diff exceeds the response limit; request a smaller page or capture",
         ));
     }
     Ok(response)
+}
+
+fn bound_review_page(
+    response: &mut ThreadChangesReadResponse,
+    sequence: u64,
+    offset: usize,
+) -> Result<(), JSONRPCErrorError> {
+    let files = std::mem::take(&mut response.files);
+    let origins = std::mem::take(&mut response.changes);
+    let origin_indices: HashMap<_, _> = origins
+        .iter()
+        .enumerate()
+        .map(|(index, origin)| (origin.change_id.as_str(), index))
+        .collect();
+    let mut included = HashSet::new();
+    let metadata_error = || invalid_request("Saved Diff metadata exceeds the response limit");
+    // Account for the summary once, then each file and each distinct origin
+    // that would be added. Leave room for a replacement cursor and the envelope.
+    let mut budget = JsonBudget(MAX_RESPONSE_BYTES - 1024);
+    serde_json::to_writer(&mut budget, &*response).map_err(|_| metadata_error())?;
+    for (index, mut file) in files.into_iter().enumerate() {
+        let added: Vec<_> = file
+            .change_ids
+            .iter()
+            .filter_map(|id| origin_indices.get(id.as_str()).copied())
+            .filter(|index| !included.contains(index))
+            .collect();
+        let new_origins: Vec<_> = added.iter().map(|&index| &origins[index]).collect();
+        let mut remaining = budget;
+        if serde_json::to_writer(&mut remaining, &(&file, &new_origins)).is_err() {
+            if !response.files.is_empty() {
+                response.next_cursor = Some(format!("{sequence}:{}", offset + index));
+                break;
+            }
+            // A patch that cannot fit on its own must not block the rest of
+            // the review. Its provenance and counts remain available.
+            file.unified_diff = String::new();
+            file.coverage_notes
+                .push("Patch exceeds the Saved Diff display limit.".to_string());
+            remaining = budget;
+            serde_json::to_writer(&mut remaining, &(&file, &new_origins))
+                .map_err(|_| metadata_error())?;
+        }
+        budget = remaining;
+        included.extend(added);
+        response.files.push(file);
+    }
+    response.changes = origins
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, origin)| included.contains(&index).then_some(origin))
+        .collect();
+    Ok(())
 }
 
 fn wire_file(diff: ComposedFileDiff) -> ThreadChangeFileDiff {
@@ -413,6 +469,7 @@ fn read_capture_page(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct JsonBudget(usize);
 
 impl io::Write for JsonBudget {

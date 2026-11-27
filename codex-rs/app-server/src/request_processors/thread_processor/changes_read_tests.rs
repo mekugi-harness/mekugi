@@ -11,6 +11,7 @@ use pretty_assertions::assert_eq;
 use super::CAPTURE_PAGE_BYTES;
 use super::CAPTURE_PATCH_BYTES;
 use super::ChangeHistoryStore;
+use super::MAX_RESPONSE_BYTES;
 use super::ThreadChangesReadParams;
 use super::parse_cursor;
 use super::read_changes;
@@ -114,4 +115,72 @@ fn capture_pages_bound_encoded_payload_and_resume_inside_a_patch() {
         cursor = Some(parse_cursor(&next).expect("valid continuation cursor"));
     }
     panic!("capture pagination never completed");
+}
+
+#[test]
+fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    let escaped = "\u{1}".repeat(6 << 20);
+    record(
+        &store,
+        workspace.path(),
+        "command",
+        vec![
+            ("a", escaped.clone()),
+            ("b", escaped),
+            ("too-large", "\u{1}".repeat(11 << 20)),
+            ("z", "final\n".into()),
+        ],
+    );
+    for caller in [None, Some("thread".to_string())] {
+        let params = ThreadChangesReadParams {
+            thread_id: "thread".into(),
+            include_ephemeral: None,
+            caller_thread_id: caller,
+            item_id: None,
+            per_capture: false,
+            limit: Some(20),
+            cursor: None,
+        };
+        let mut cursor = None;
+        for (index, expected_paths) in [vec!["a"], vec!["b"], vec!["too-large", "z"]]
+            .into_iter()
+            .enumerate()
+        {
+            let page =
+                read_changes(dir.clone(), None, None, params.clone(), cursor).expect("review page");
+            assert!(serde_json::to_vec(&page).expect("encode page").len() < MAX_RESPONSE_BYTES);
+            assert_eq!(page.file_count, 4);
+            assert_eq!((page.total_additions, page.total_deletions), (4, 0));
+            assert_eq!(
+                page.files
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect::<Vec<_>>(),
+                expected_paths
+            );
+            assert_eq!(page.changes.len(), 1);
+            assert!(
+                page.files
+                    .iter()
+                    .all(|file| file.change_ids == [page.changes[0].change_id.as_str()])
+            );
+            if index < 2 {
+                assert!(page.files[0].coverage_notes.is_empty());
+                assert!(page.files[0].unified_diff.contains('\u{1}'));
+                let next = page.next_cursor.expect("continued review");
+                cursor = Some(parse_cursor(&next).expect("valid review continuation"));
+            } else {
+                assert_eq!(
+                    page.files[0].coverage_notes,
+                    ["Patch exceeds the Saved Diff display limit."]
+                );
+                assert!(page.files[0].unified_diff.is_empty());
+                assert!(page.files[1].unified_diff.contains("+final"));
+                assert_eq!(page.next_cursor, None);
+            }
+        }
+    }
 }
