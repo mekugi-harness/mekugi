@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Entry } from "./protocol";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import Button from "./ui/Button.svelte";
 
   // An image bound to an entry: one a user attached, or one an agent viewed.
@@ -28,9 +28,10 @@
   const seq = $derived(entry.seq);
   const itemId = $derived(entry.itemId);
   const agent = $derived(entry.agent);
-  const attachment = $derived(stream.main.attachment);
+  const attachment = $derived(streams.current.main.attachment);
   $effect(() => {
     if (!element) return;
+    const stream = streams.current;
     void attachment;
     const request = { seq, itemId, agent, index, image, retry };
     const controller = new AbortController();

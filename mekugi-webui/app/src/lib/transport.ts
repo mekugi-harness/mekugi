@@ -151,6 +151,25 @@ interface Pending {
 }
 
 type HandshakeParams = InitializeParams & { token: string };
+type ThreadPromptRequest = Extract<
+  ServerRequest,
+  {
+    method:
+      | "item/commandExecution/requestApproval"
+      | "item/fileChange/requestApproval"
+      | "item/tool/requestUserInput"
+      | "shellGuard/requestApproval";
+  }
+>;
+
+function isThreadPromptRequest(request: ServerRequest): request is ThreadPromptRequest {
+  return (
+    request.method === "item/commandExecution/requestApproval" ||
+    request.method === "item/fileChange/requestApproval" ||
+    request.method === "item/tool/requestUserInput" ||
+    request.method === "shellGuard/requestApproval"
+  );
+}
 
 // One physical WebSocket connection speaking native mekugi-app-server JSON-RPC
 // through mekugi connector (/api/control, subprotocol mekugi.control.v9).
@@ -163,6 +182,8 @@ class Channel {
   #closed = false;
   #next = 0;
   #pending = new Map<string, Pending>();
+  #pendingPrompts = new Map<RequestId, ThreadPromptRequest>();
+  #retiringPromptThreads = new Map<string, Promise<void>>();
   #onNotification?: NotificationListener;
   #onServerRequest?: ServerRequestListener;
 
@@ -261,6 +282,8 @@ class Channel {
         ),
       );
     this.#pending.clear();
+    this.#pendingPrompts.clear();
+    this.#retiringPromptThreads.clear();
     this.#resolveClosed();
   }
 
@@ -271,11 +294,35 @@ class Channel {
   }
 
   respond(id: RequestId, result: unknown): void {
+    this.#pendingPrompts.delete(id);
     this.#sendRaw({ jsonrpc: "2.0", id, result });
   }
 
   respondError(id: RequestId, code: number, message: string): void {
+    this.#pendingPrompts.delete(id);
     this.#sendRaw({ jsonrpc: "2.0", id, error: { code, message } });
+  }
+
+  replayServerRequests(listener: ServerRequestListener): void {
+    for (const request of this.#pendingPrompts.values()) listener(request);
+  }
+
+  retireThreadPrompts(threadId: string, done: Promise<void>): void {
+    // Teardown can wait on an in-flight resume. Drop that subscription's
+    // prompts now and ignore any it still delivers before teardown completes.
+    this.#retiringPromptThreads.set(threadId, done);
+    this.#forgetThreadPrompts(threadId);
+    const finish = () => {
+      if (this.#retiringPromptThreads.get(threadId) === done)
+        this.#retiringPromptThreads.delete(threadId);
+    };
+    void done.then(finish, finish);
+  }
+
+  #forgetThreadPrompts(threadId: string): void {
+    for (const [id, request] of this.#pendingPrompts) {
+      if (request.params.threadId === threadId) this.#pendingPrompts.delete(id);
+    }
   }
 
   #sendRaw(payload: unknown): void {
@@ -338,6 +385,7 @@ class Channel {
   }
 
   #receive(data: unknown): void {
+    if (this.#closed) return;
     let message: WireMessage;
     try {
       if (typeof data !== "string" || data.length > 64 * 1024 * 1024)
@@ -355,11 +403,21 @@ class Channel {
 
       // Server -> Client request (has both id and method)
       if (hasId && hasMethod) {
-        this.#onServerRequest?.({
+        const request = {
           id: message.id!,
           method: message.method!,
           params: message.params,
-        } as ServerRequest);
+        } as ServerRequest;
+        // Native resume may resend a request that this channel already delivered.
+        if (isThreadPromptRequest(request)) {
+          if (
+            this.#retiringPromptThreads.has(request.params.threadId) ||
+            this.#pendingPrompts.has(request.id)
+          )
+            return;
+          this.#pendingPrompts.set(request.id, request);
+        }
+        this.#onServerRequest?.(request);
         return;
       }
 
@@ -375,10 +433,22 @@ class Channel {
 
       // Server -> Client notification (has method, no id)
       if (hasMethod) {
-        this.#onNotification?.({
+        const notification = {
           method: message.method!,
           params: message.params,
-        } as ServerNotification);
+        } as ServerNotification;
+        if (notification.method === "serverRequest/resolved") {
+          const { requestId, threadId } = notification.params;
+          if (this.#pendingPrompts.get(requestId)?.params.threadId === threadId)
+            this.#pendingPrompts.delete(requestId);
+        } else if (
+          notification.method === "thread/closed" ||
+          notification.method === "thread/archived" ||
+          notification.method === "thread/deleted"
+        ) {
+          this.#forgetThreadPrompts(notification.params.threadId);
+        }
+        this.#onNotification?.(notification);
         return;
       }
 
@@ -461,7 +531,12 @@ export class Connector {
 
   onServerRequest(listener: ServerRequestListener): () => void {
     this.#serverRequests.add(listener);
+    this.#shared?.replayServerRequests(listener);
     return () => this.#serverRequests.delete(listener);
+  }
+
+  retireThreadPrompts(threadId: string, done: Promise<void>): void {
+    if (this.#shared && !this.#shared.closed) this.#shared.retireThreadPrompts(threadId, done);
   }
 
   respond(id: RequestId, result: unknown): void {

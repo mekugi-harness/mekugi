@@ -1,5 +1,5 @@
 import { parseSelection, selectionHash, type Selection } from "./transport";
-import { stream } from "./stream.svelte";
+import { streams } from "./stream.svelte";
 
 // Connection, logical thread and agent together identify this viewer's selection.
 export const view = $state<Selection>(parseSelection(location.hash));
@@ -23,9 +23,9 @@ export function select(machine: string | undefined): void {
 }
 
 export function show(agent: string | undefined, replace = false): void {
-  const family = stream.family;
+  const family = streams.current.family;
   const main = !agent || agent === "Main" || agent === "/root";
-  const target = main ? undefined : stream.agent(agent);
+  const target = main ? undefined : streams.current.agent(agent);
   const thread = main ? family?.root : target?.thread;
   if (thread && !target?.nonAttachable && family?.threads.includes(thread)) open(thread, replace);
 }

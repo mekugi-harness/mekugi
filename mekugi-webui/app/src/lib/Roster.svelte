@@ -9,7 +9,7 @@
   import { emptyBox } from "./ui/styles";
   import Tag from "./ui/Tag.svelte";
   import { Progress } from "./ui/progress";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import Wait from "./Wait.svelte";
 
   // The agents of the session, as a tree under Main. Selecting one shows its
@@ -184,12 +184,13 @@
     {#each agents as agent (agent.name)}
       {@const time = worked(agent, now)}
       {@const current = agent.state === "working" ? activity(agent) : undefined}
-      {@const what = current && doing(current, (name) => stream.label(name))}
+      {@const what = current && doing(current, (name) => streams.current.label(name))}
       {@const waiting =
-        agent.wait && progressText(agent.wait, (name) => labels.get(name) ?? stream.label(name))}
+        agent.wait &&
+        progressText(agent.wait, (name) => labels.get(name) ?? streams.current.label(name))}
       {@const replied = since(agent.lastResponse, now)}
       {@const edits = changes(agent)}
-      {@const color = stream.roleColor(agent.role)}
+      {@const color = streams.current.roleColor(agent.role)}
       {@const compact = agent.state !== "working"}
       <!-- A nested agent hangs from a guide under its parent. -->
       <li

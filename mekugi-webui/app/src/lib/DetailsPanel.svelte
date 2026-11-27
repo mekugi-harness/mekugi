@@ -12,7 +12,7 @@
   import Markdown from "./Markdown.svelte";
   import type { Entry, ThreadItem } from "./protocol";
   import ReferenceSelection from "./ReferenceSelection.svelte";
-  import { mcpToolEnvelope, stream } from "./stream.svelte";
+  import { mcpToolEnvelope, streams } from "./stream.svelte";
   import { errorText } from "./transport";
   import Button from "./ui/Button.svelte";
   import { Skeleton } from "./ui/skeleton";
@@ -61,7 +61,10 @@
             { thread: id, body: { path: target.path } },
             { signal },
           )
-        : stream.readContent(target?.kind === "run" ? { itemId: target.itemId } : ref!, signal);
+        : streams.current.readContent(
+            target?.kind === "run" ? { itemId: target.itemId } : ref!,
+            signal,
+          );
     void request
       .then((res) => {
         if (signal.aborted) return;
@@ -146,7 +149,7 @@
       {#if item.type === "commandExecution"}
         {@const values = commandValues(item)}
         {@const result = values[values.length - 1]}
-        {@const cwd = normalizeWorkdir(result.workdir, stream.session?.workspace)}
+        {@const cwd = normalizeWorkdir(result.workdir, streams.current.session?.workspace)}
         {@render source(item.display?.script ?? item.command, "bash")}
         <p class="my-2 text-muted">
           {#if result.batchExit}Batch ·

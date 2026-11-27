@@ -402,6 +402,7 @@ export type ContentReference = {
 };
 
 export type Entry = {
+  rowKey?: string;
   itemId?: string;
   turnId?: string;
   traffic?: Traffic | null;

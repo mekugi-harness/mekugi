@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import { show } from "./view.svelte";
 
   // An agent's display name, in its role's colour when it has one. Another
@@ -12,8 +12,8 @@
     quiet = false,
   }: { name?: string; current: string; plain?: boolean; quiet?: boolean } = $props();
 
-  const agent = $derived(stream.agent(name));
-  const color = $derived(stream.roleColor(agent?.role));
+  const agent = $derived(streams.current.agent(name));
+  const color = $derived(streams.current.roleColor(agent?.role));
   const target = $derived(
     !plain && agent?.thread && !agent.nonAttachable && agent.name !== current
       ? agent.name
@@ -31,12 +31,12 @@
       color ? "text-role" : ["hover:text-accent", !quiet && "text-ink"],
     ]}
     style:--role={color}
-    title="Show {stream.label(name)}'s activity"
-    onclick={() => show(target)}>{stream.label(name)}</button
+    title="Show {streams.current.label(name)}'s activity"
+    onclick={() => show(target)}>{streams.current.label(name)}</button
   >
 {:else}
   <span
     class={[!quiet && "font-semibold", color ? "text-role" : !quiet && "text-ink"]}
-    style:--role={color}>{stream.label(name)}</span
+    style:--role={color}>{streams.current.label(name)}</span
   >
 {/if}

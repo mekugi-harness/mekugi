@@ -210,6 +210,127 @@ test("server notifications and server requests dispatch and respond over the nat
   connector.close();
 });
 
+test("a returning prompt listener sees only requests still pending on the connection", async () => {
+  globalThis.WebSocket = FakeSocket;
+  const connector = new Connector("https://box.example", "token-1");
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") socket.reply(message, initResponse);
+    if (message.method === "thread/list") socket.reply(message, { data: [] });
+  };
+  await connector.request("thread/list", {});
+  const socket = FakeSocket.instances[0];
+  const approval = {
+    id: 42,
+    method: "item/commandExecution/requestApproval",
+    params: {
+      kind: "command",
+      threadId: "a",
+      turnId: "turn1",
+      itemId: "item1",
+      startedAtMs: 1000,
+      environmentId: null,
+      command: "pwd",
+    },
+  };
+  const received = [];
+  const leave = connector.onServerRequest((request) => received.push(request));
+  socket.receive(approval);
+  socket.receive(approval);
+  assert.equal(received.length, 1);
+  leave();
+
+  const resolve = (threadId, requestId) =>
+    socket.receive({ method: "serverRequest/resolved", params: { threadId, requestId } });
+  const question = {
+    id: "42",
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "a",
+      turnId: "turn1",
+      itemId: "item2",
+      isBlocking: true,
+      autoResolutionMs: null,
+      questions: [{ id: "q1", question: "Which option?", options: null }],
+    },
+  };
+  socket.receive(question);
+  socket.receive({
+    id: 43,
+    method: "shellGuard/requestSecret",
+    params: { threadId: "a", turnId: "turn1", startedAtMs: 1000 },
+  });
+  resolve("b", 42);
+  const replayed = [];
+  connector.onServerRequest((request) => replayed.push(request))();
+  assert.equal(replayed[0], received[0], "Replayed requests retain their draft identity");
+  assert.deepEqual(replayed, [approval, question]);
+
+  resolve("a", 42);
+  replayed.length = 0;
+  connector.onServerRequest((request) => replayed.push(request))();
+  assert.deepEqual(replayed, [question], "A numeric resolution does not remove a string ID");
+
+  connector.respond("42", { answers: [] });
+  replayed.length = 0;
+  connector.onServerRequest((request) => replayed.push(request))();
+  assert.deepEqual(replayed, []);
+  connector.close();
+});
+
+test("prompt replay ends on thread eviction or physical channel replacement", async () => {
+  globalThis.WebSocket = FakeSocket;
+  const connector = new Connector("https://box.example", "token-1");
+  const finishResume = deferred();
+  const unsubscribeSent = deferred();
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") socket.reply(message, initResponse);
+    if (message.method === "thread/list") socket.reply(message, { data: [] });
+    if (message.method === "thread/unsubscribe") unsubscribeSent.resolve(message);
+  };
+  await connector.request("thread/list", {});
+  const socket = FakeSocket.instances[0];
+  const approval = {
+    id: 1,
+    method: "item/fileChange/requestApproval",
+    params: { threadId: "a", turnId: "turn1", itemId: "item1", reason: null, grantRoot: null },
+  };
+  socket.receive(approval);
+  socket.receive({ ...approval, id: 2, params: { ...approval.params, threadId: "b" } });
+  const retired = finishResume.promise.then(async () => {
+    await connector.request("thread/unsubscribe", { threadId: "a" });
+  });
+  connector.retireThreadPrompts("a", retired);
+
+  const ids = [];
+  const leave = connector.onServerRequest(({ id }) => ids.push(id));
+  assert.deepEqual(ids, [2]);
+  socket.receive(approval);
+  assert.deepEqual(ids, [2], "The old resume cannot restore an evicted prompt");
+
+  finishResume.resolve();
+  const unsubscribe = await unsubscribeSent.promise;
+  socket.receive(approval);
+  assert.deepEqual(ids, [2], "No prompt is delivered while unsubscribe is pending");
+  socket.reply(unsubscribe, { status: "unsubscribed" });
+  await retired;
+
+  socket.receive(approval);
+  socket.receive(approval);
+  assert.deepEqual(ids, [2, 1], "A fresh resume can replay the prompt once");
+  socket.receive({ method: "serverRequest/resolved", params: { threadId: "a", requestId: 1 } });
+  leave();
+  ids.length = 0;
+  connector.onServerRequest(({ id }) => ids.push(id))();
+  assert.deepEqual(ids, [2]);
+
+  socket.close();
+  await connector.request("thread/list", {});
+  ids.length = 0;
+  connector.onServerRequest(({ id }) => ids.push(id))();
+  assert.deepEqual(ids, []);
+  connector.close();
+});
+
 test("401 refusal surfaces required state and mutations fail with unknownOutcome on disconnect", async () => {
   globalThis.WebSocket = FakeSocket;
   const connector = new Connector("https://box.example", "bad-token");

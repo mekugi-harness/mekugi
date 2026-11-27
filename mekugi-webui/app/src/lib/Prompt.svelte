@@ -3,7 +3,7 @@
   import Attachments from "./Attachments.svelte";
   import { onDestroy, tick, untrack } from "svelte";
   import type { Approval, QuestionCall } from "./protocol";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import { semantic, questionDraft, questionAnswers } from "./semantic.svelte";
   import Tag from "./ui/Tag.svelte";
   import Button from "./ui/Button.svelte";
@@ -142,7 +142,7 @@
   data-prompt
   bind:this={card}
 >
-  {#if item.agent}<p class="mb-2 text-small text-muted">{stream.label(item.agent)}</p>{/if}
+  {#if item.agent}<p class="mb-2 text-small text-muted">{streams.current.label(item.agent)}</p>{/if}
   {#if approval}
     <div class="flex items-baseline gap-3">
       <h2 class="font-semibold">{approval.title}</h2>

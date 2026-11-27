@@ -9,7 +9,7 @@
   import RecoveryEditor from "./RecoveryEditor.svelte";
   import ResponseCopy from "./ResponseCopy.svelte";
   import { editableRecoveryPart, semantic } from "./semantic.svelte";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
 
   const queued = $derived(semantic.queued);
   const error = $derived(semantic.error);
@@ -17,7 +17,7 @@
   const answer = $derived(semantic.sideAnswer);
   const hasWaiting = $derived(queued.some((item) => item.kind === "message"));
   const disabled = $derived(semantic.connection !== "open" || semantic.pending > 0);
-  const processes = $derived(stream.processes);
+  const processes = $derived(streams.current.processes);
   let processError = $state<string>();
   let stopping = $state.raw(new Set<string>());
   let queueScroller = $state<HTMLDivElement>();
@@ -56,7 +56,7 @@
     stopping = new Set(stopping).add(key);
     processError = undefined;
     try {
-      const failure = await stream.stopProcess(process);
+      const failure = await streams.current.stopProcess(process);
       if (failure) processError = failure;
     } finally {
       stopping = new Set([...stopping].filter((pending) => pending !== key));
@@ -124,7 +124,9 @@
         <h2 class="mb-1 text-small font-semibold text-muted">Active processes</h2>
         <ul class="grid max-h-36 gap-1 overflow-y-auto">
           {#each processes as process (processKey(process))}
-            {@const owner = stream.roster.agents.find((agent) => agent.thread === process.threadId)}
+            {@const owner = streams.current.roster.agents.find(
+              (agent) => agent.thread === process.threadId,
+            )}
             <li class="flex min-w-0 items-center gap-2">
               <div class="min-w-0 flex-1"><ProcessCommand command={process.command} /></div>
               {#if owner && owner.name !== "/root"}
@@ -226,10 +228,11 @@
                 size="sm"
                 variant="quiet"
                 class="max-sm:min-h-11"
-                disabled={disabled || !stream.activeTurnId}
+                disabled={disabled || !streams.current.activeTurnId}
                 label="Steer queued messages"
                 onclick={() => {
-                  if (stream.activeTurnId) void semantic.steerWaiting(stream.activeTurnId);
+                  if (streams.current.activeTurnId)
+                    void semantic.steerWaiting(streams.current.activeTurnId);
                 }}>Steer</Button
               >
             </div>

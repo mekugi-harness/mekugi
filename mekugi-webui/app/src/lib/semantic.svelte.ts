@@ -1,6 +1,6 @@
 import type { Machine } from "./hub.svelte";
 import { errorText, TransportError, type Connection } from "./transport";
-import { stream } from "./stream.svelte";
+import { streams } from "./stream.svelte";
 import { SideAnswer } from "./side-answer.svelte";
 import {
   formatPathMention,
@@ -177,6 +177,8 @@ export type PromptState = {
   error?: string;
   resolved?: boolean;
 };
+
+type PromptLifetime = { viewId: string; draft?: PromptState };
 
 export function questionDraft(question: Question): QuestionDraft {
   const recommended = question.options?.findIndex((option) => option.recommended) ?? -1;
@@ -451,7 +453,9 @@ export class ThreadControl {
   #stopOpen?: () => void;
   #queueRead = 0;
   #editors = new Map<string, Editor>();
-  #promptStates = new Map<string, PromptState>();
+  #nextPromptView = 0;
+  #promptLifetimes = new WeakMap<ServerRequest, PromptLifetime>();
+  #visiblePrompts = new Map<string, PromptLifetime>();
   #recoveryByMachine = new WeakMap<Machine, Map<string, RecoveryDraft[]>>();
   #answersByMachine = new WeakMap<Machine, Map<string, SideAnswer>>();
   #predictionRequest?: { threadId: string; sourceTurnId: string };
@@ -487,12 +491,13 @@ export class ThreadControl {
     this.sideAnswer = this.#answersByMachine.get(machine)?.get(main);
     this.recoveries = this.#recoveryByMachine.get(machine)?.get(id) ?? [];
     this.error = undefined;
-    this.prompts = { approvals: [], questions: [] };
     this.queued = [];
-    this.#promptStates.clear();
-    this.#stopRequests = machine.onServerRequest((req) => this.#onServerRequest(req));
     this.#stopNotifications = machine.onNotification((n) => this.#onNotification(n));
-    this.#stopOpen = machine.onOpen(() => void this.#refreshQueue());
+    this.#listenForPrompts(machine);
+    this.#stopOpen = machine.onOpen(() => {
+      this.#listenForPrompts(machine);
+      void this.#refreshQueue();
+    });
     void this.#refreshQueue();
   }
 
@@ -510,11 +515,10 @@ export class ThreadControl {
     this.#machine = undefined;
     this.#clearPrediction();
     this.sideAnswer = undefined;
-    this.prompts = { approvals: [], questions: [] };
+    this.#clearPrompts();
     this.queued = [];
     this.recoveries = [];
     ++this.#queueRead;
-    this.#promptStates.clear();
     this.error = undefined;
   }
 
@@ -528,35 +532,60 @@ export class ThreadControl {
   }
 
   prompt(id: string): PromptState {
-    let state = this.#promptStates.get(id);
-    if (!state) {
-      const created = $state<PromptState>({
-        drafts: {},
-        reason: "",
-        sending: false,
-        accepted: false,
-      });
-      this.#promptStates.set(id, created);
-      state = created;
-    }
-    return state;
+    const lifetime = this.#visiblePrompts.get(id);
+    if (lifetime?.draft) return lifetime.draft;
+    const draft = $state<PromptState>({
+      drafts: {},
+      reason: "",
+      sending: false,
+      accepted: false,
+    });
+    if (lifetime) lifetime.draft = draft;
+    return draft;
+  }
+
+  #clearPrompts(): void {
+    this.prompts = { approvals: [], questions: [] };
+    this.#visiblePrompts.clear();
+  }
+
+  #listenForPrompts(machine: Machine): void {
+    this.#stopRequests?.();
+    this.#clearPrompts();
+    this.#stopRequests = machine.onServerRequest((req) => this.#onServerRequest(req));
+  }
+
+  #removePrompt(id: string): void {
+    this.#visiblePrompts.delete(id);
+    this.prompts = {
+      approvals: this.prompts.approvals.filter((a) => a.id !== id),
+      questions: this.prompts.questions.filter((q) => q.id !== id),
+    };
   }
 
   #onServerRequest(req: ServerRequest): void {
     if (!this.#id) return;
     const mapped = serverRequestToPrompt(req, this.#id);
     if (!mapped) return;
+    // The channel replays the same request object while it remains pending. Weak
+    // keys let drafts expire on resolution, eviction, or a replacement channel.
+    let lifetime = this.#promptLifetimes.get(req);
+    if (!lifetime) {
+      lifetime = { viewId: String(++this.#nextPromptView) };
+      this.#promptLifetimes.set(req, lifetime);
+    }
+    const id = lifetime.viewId;
+    if (this.#visiblePrompts.has(id)) return;
+    this.#visiblePrompts.set(id, lifetime);
     if (mapped.kind === "approval") {
-      if (this.prompts.approvals.some((a) => a.id === mapped.approval.id)) return;
       this.prompts = {
         ...this.prompts,
-        approvals: [...this.prompts.approvals, mapped.approval],
+        approvals: [...this.prompts.approvals, { ...mapped.approval, id }],
       };
     } else {
-      if (this.prompts.questions.some((q) => q.id === mapped.call.id)) return;
       this.prompts = {
         ...this.prompts,
-        questions: [...this.prompts.questions, mapped.call],
+        questions: [...this.prompts.questions, { ...mapped.call, id }],
       };
     }
   }
@@ -574,13 +603,20 @@ export class ThreadControl {
         this.#requestPrediction(notification.params.turn.id);
     }
     if (notification.method === "serverRequest/resolved") {
-      if (notification.params.threadId !== this.#id) return;
-      const resolvedId = String(notification.params.requestId);
-      this.prompts = {
-        approvals: this.prompts.approvals.filter((a) => a.id !== resolvedId),
-        questions: this.prompts.questions.filter((q) => q.id !== resolvedId),
-      };
-      this.#promptStates.delete(resolvedId);
+      const { requestId, threadId } = notification.params;
+      if (threadId !== this.#id) return;
+      const prompt =
+        this.prompts.approvals.find((a) => a.requestId === requestId) ??
+        this.prompts.questions.find((q) => q.requestId === requestId);
+      if (prompt) this.#removePrompt(prompt.id);
+      return;
+    }
+    if (
+      notification.method === "thread/closed" ||
+      notification.method === "thread/archived" ||
+      notification.method === "thread/deleted"
+    ) {
+      if (notification.params.threadId === this.#id) this.#clearPrompts();
       return;
     }
     if (notification.method === "thread/queue/changed") {
@@ -592,7 +628,7 @@ export class ThreadControl {
   setPredictions(enabled: boolean): void {
     if (this.predictionsEnabled === enabled) return;
     this.predictionsEnabled = enabled;
-    if (enabled) this.#requestPrediction(stream.latestCompletedTurnId);
+    if (enabled) this.#requestPrediction(streams.current.latestCompletedTurnId);
     else this.#clearPrediction();
   }
 
@@ -658,6 +694,7 @@ export class ThreadControl {
     const id = this.#id;
     const machine = this.#machine;
     if (!id || !machine) return "Open a thread on an execution machine first.";
+    const stream = streams.current;
     const draftAttachments: DraftAttachments = Array.isArray(attachments)
       ? { count: attachments.length, read: () => Promise.resolve(attachments) }
       : attachments;
@@ -856,7 +893,7 @@ export class ThreadControl {
     }
     this.pending++;
     try {
-      await this.#submitDraft(machine, threadId, edited, stream.activeTurnId);
+      await this.#submitDraft(machine, threadId, edited, streams.current.activeTurnId);
       replace();
     } catch (err) {
       replace({ ...edited, error: errorText(err, true) });
@@ -903,7 +940,7 @@ export class ThreadControl {
           answer = new SideAnswer(machine, main);
           answers.set(main, answer);
         }
-        this.sideAnswer = answer;
+        if (this.#machine === machine && this.#main === main) this.sideAnswer = answer;
         return { handled: true, error: await answer.ask(question, input) };
       }
       case "/compact":
@@ -935,7 +972,7 @@ export class ThreadControl {
             : "Open One-off from the composer.",
         };
       case "/ps":
-        stream.notice = "Active processes appear above the composer.";
+        streams.current.notice = "Active processes appear above the composer.";
         return { handled: true };
     }
   }
@@ -955,7 +992,7 @@ export class ThreadControl {
   async interrupt(): Promise<string | undefined> {
     const id = this.#id;
     const machine = this.#machine;
-    const turnId = stream.activeTurnId;
+    const turnId = streams.current.activeTurnId;
     if (!id || !machine || !turnId) return "No active turn to interrupt.";
     this.pending++;
     try {
@@ -973,6 +1010,7 @@ export class ThreadControl {
     const id = this.#id;
     const machine = this.#machine;
     if (!id || !machine) return "Open a thread on an execution machine first.";
+    const stream = streams.current;
     this.pending++;
     try {
       const params: ThreadSetNameParams = { threadId: id, name };
@@ -1031,7 +1069,7 @@ export class ThreadControl {
     beforeItemId: string | null,
     changeIds: string[] | null,
   ): Promise<string | undefined> {
-    if (machine !== this.#machine || threadId !== this.#id || stream.activeTurnId)
+    if (machine !== this.#machine || threadId !== this.#id || streams.current.activeTurnId)
       return "The selected thread is no longer idle and open.";
     this.pending++;
     try {
@@ -1054,6 +1092,7 @@ export class ThreadControl {
     if (!machine || machine.connection !== "open") {
       return "Wait for this machine to reconnect before answering.";
     }
+    if (!this.prompts.approvals.includes(approval)) return "This approval is no longer available.";
     const choice = approval.choices.find((c) => c.id === choiceIndex);
     if (!choice || (choice.decision !== "accept" && choice.decision !== "decline")) {
       return "Only one-time allow or decline decisions are permitted remotely.";
@@ -1071,11 +1110,7 @@ export class ThreadControl {
       };
       machine.respond(approval.requestId, response);
     }
-    this.prompts = {
-      ...this.prompts,
-      approvals: this.prompts.approvals.filter((a) => a.id !== approval.id),
-    };
-    this.#promptStates.delete(approval.id);
+    this.#removePrompt(approval.id);
     return undefined;
   }
 
@@ -1118,11 +1153,7 @@ export class ThreadControl {
     if (answers.some((answer) => answer.items?.length) && !this.prompts.questions.includes(call))
       return "This question is no longer available.";
     machine.respond(call.requestId, payload);
-    this.prompts = {
-      ...this.prompts,
-      questions: this.prompts.questions.filter((q) => q.id !== call.id),
-    };
-    this.#promptStates.delete(call.id);
+    this.#removePrompt(call.id);
     return undefined;
   }
 }

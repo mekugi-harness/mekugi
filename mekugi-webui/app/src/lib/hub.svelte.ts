@@ -31,6 +31,8 @@ import {
 import { select, view } from "./view.svelte";
 
 type SavedMachine = { id: string; label: string; endpoint: string; token: string };
+type ThreadListing = Listed & { id: string };
+type ListingChange = ThreadListing | Partial<Pick<Listed, "title" | "status" | "waiting">> | null;
 const storagePrefix = "mekugi.machine.v1:";
 
 export function threadStatusToStatus(status: ThreadStatus): Status {
@@ -56,14 +58,17 @@ export function threadStatusToStatus(status: ThreadStatus): Status {
   }
 }
 
-export function threadToListed(thread: Thread): Listed {
-  const status = threadStatusToStatus(thread.status);
+function listedActivity(status: ThreadStatus): Pick<Listed, "status" | "waiting"> {
   const waiting =
-    thread.status.type === "active" &&
-    (thread.status.activeFlags.includes("waitingOnApproval") ||
-      thread.status.activeFlags.includes("waitingOnUserInput"))
+    status.type === "active" &&
+    (status.activeFlags.includes("waitingOnApproval") ||
+      status.activeFlags.includes("waitingOnUserInput"))
       ? 1
-      : 0;
+      : undefined;
+  return { status: threadStatusToStatus(status), waiting };
+}
+
+export function threadToListed(thread: Thread): ThreadListing {
   return {
     id: thread.id,
     thread: thread.id,
@@ -71,8 +76,7 @@ export function threadToListed(thread: Thread): Listed {
     title: thread.name || thread.preview || undefined,
     workspace: thread.cwd || undefined,
     started: thread.createdAt ? thread.createdAt * 1000 : undefined,
-    status,
-    waiting: waiting || undefined,
+    ...listedActivity(thread.status),
   };
 }
 
@@ -103,7 +107,7 @@ export class Machine {
   readonly id: string;
   readonly label: string;
   readonly endpoint: string;
-  sessions = $state.raw<Listed[] | undefined>();
+  sessions = $state.raw<ThreadListing[] | undefined>();
   connection = $state<Connection>("connecting");
   error = $state<string | undefined>();
   info = $state.raw<InitializeResponse | undefined>();
@@ -112,6 +116,7 @@ export class Machine {
   #token: string;
   #stop?: () => void;
   #stopNotifications?: () => void;
+  #threadRefresh?: { controller: AbortController; changes: Map<string, ListingChange> };
   #openListeners = new Set<(info: InitializeResponse) => void>();
 
   constructor(label: string, endpoint: string, token: string, id = newIdentity()) {
@@ -143,6 +148,10 @@ export class Machine {
     return this.#connector.onServerRequest(listener);
   }
 
+  retireThreadPrompts(threadId: string, done: Promise<void>): void {
+    this.#connector.retireThreadPrompts(threadId, done);
+  }
+
   onOpen(listener: (info: InitializeResponse) => void): () => void {
     this.#openListeners.add(listener);
     return () => this.#openListeners.delete(listener);
@@ -157,8 +166,12 @@ export class Machine {
   }
 
   async refreshThreads(): Promise<void> {
+    this.#threadRefresh?.controller.abort();
+    const controller = new AbortController();
+    const changes = new Map<string, ListingChange>();
+    this.#threadRefresh = { controller, changes };
     try {
-      const all: Listed[] = [];
+      const all = new Map<string, ThreadListing>();
       const params: ThreadListParams = {
         limit: 100,
         archived: false,
@@ -178,21 +191,43 @@ export class Machine {
         ],
       };
       let cursor: string | undefined;
-      for (;;) {
-        const response = await this.request<ThreadListResponse>("thread/list", {
-          ...params,
-          ...(cursor ? { cursor } : {}),
-        } satisfies ThreadListParams);
+      do {
+        const response = await this.request<ThreadListResponse>(
+          "thread/list",
+          { ...params, ...(cursor ? { cursor } : {}) } satisfies ThreadListParams,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        cursor = response.nextCursor ?? undefined;
+        const previousSize = all.size;
         for (const thread of response.data ?? []) {
-          if (standaloneThread(thread)) all.push(threadToListed(thread));
+          if (standaloneThread(thread) && !all.has(thread.id)) {
+            all.set(thread.id, threadToListed(thread));
+          }
         }
-        const next = response.nextCursor ?? undefined;
-        if (!next) break;
-        cursor = next;
-      }
-      this.sessions = all;
+        if (cursor && all.size === previousSize) continue;
+
+        // Keep live starts not yet in the snapshot and retain the old tail until the final page.
+        const next: ThreadListing[] = [];
+        const stale: ThreadListing[] = [];
+        for (const listed of this.sessions ?? []) {
+          if (all.has(listed.id)) continue;
+          const change = changes.get(listed.id);
+          if (change && "id" in change) next.push(listed);
+          else if (cursor) stale.push(listed);
+        }
+        for (const [id, listed] of all) {
+          const change = changes.get(id);
+          if (change !== null) next.push(change ? { ...listed, ...change } : listed);
+        }
+        if (!cursor || next.length || stale.length) {
+          this.sessions = stale.length ? next.concat(stale) : next;
+        }
+      } while (cursor);
     } catch {
       // Transient refresh failures are surfaced through the connection state.
+    } finally {
+      if (this.#threadRefresh?.controller === controller) this.#threadRefresh = undefined;
     }
   }
 
@@ -208,6 +243,7 @@ export class Machine {
   }
 
   start(): void {
+    this.#threadRefresh?.controller.abort();
     this.#stop?.();
     this.#stopNotifications?.();
     this.#stopNotifications = this.onNotification((notification) => {
@@ -227,45 +263,47 @@ export class Machine {
     );
   }
 
+  #changeListing(threadId: string, change: ListingChange): void {
+    const changes = this.#threadRefresh?.changes;
+    if (changes) {
+      const previous = changes.get(threadId);
+      if (!change || "id" in change) changes.set(threadId, change);
+      else if (previous !== null) changes.set(threadId, { ...previous, ...change });
+    }
+
+    const current = this.sessions ?? [];
+    const index = current.findIndex((s) => s.id === threadId);
+    if (index < 0) {
+      if (change && "id" in change) this.sessions = [change, ...current];
+      return;
+    }
+    const next = current.slice();
+    if (!change) next.splice(index, 1);
+    else next[index] = "id" in change ? change : { ...next[index], ...change };
+    this.sessions = next;
+  }
+
   #handleNotification(notification: ServerNotification): void {
     switch (notification.method) {
       case "thread/started": {
         if (!standaloneThread(notification.params.thread)) break;
         const listed = threadToListed(notification.params.thread);
-        const current = this.sessions ?? [];
-        const index = current.findIndex((s) => s.id === listed.id);
-        this.sessions =
-          index >= 0 ? current.map((s, i) => (i === index ? listed : s)) : [listed, ...current];
+        this.#changeListing(listed.id, listed);
         break;
       }
       case "thread/status/changed": {
         const { threadId, status } = notification.params;
-        if (!this.sessions) return;
-        const mapped = threadStatusToStatus(status);
-        const waiting =
-          status.type === "active" &&
-          (status.activeFlags.includes("waitingOnApproval") ||
-            status.activeFlags.includes("waitingOnUserInput"))
-            ? 1
-            : undefined;
-        this.sessions = this.sessions.map((s) =>
-          s.id === threadId ? { ...s, status: mapped, waiting } : s,
-        );
+        this.#changeListing(threadId, listedActivity(status));
         break;
       }
       case "thread/name/updated": {
         const { threadId, threadName } = notification.params;
-        if (!this.sessions) return;
-        this.sessions = this.sessions.map((s) =>
-          s.id === threadId ? { ...s, title: threadName || s.title } : s,
-        );
+        if (threadName) this.#changeListing(threadId, { title: threadName });
         break;
       }
       case "thread/archived":
       case "thread/deleted": {
-        const { threadId } = notification.params;
-        if (!this.sessions) return;
-        this.sessions = this.sessions.filter((s) => s.id !== threadId);
+        this.#changeListing(notification.params.threadId, null);
         break;
       }
       case "thread/unarchived": {
@@ -295,12 +333,14 @@ export class Machine {
 
   authorize(token: string): void {
     this.#connector.authorize(token);
+    this.#threadRefresh?.controller.abort();
     this.#token = token.trim();
     this.connection = "connecting";
     this.error = undefined;
   }
 
   close(): void {
+    this.#threadRefresh?.controller.abort();
     this.#stop?.();
     this.#stopNotifications?.();
     this.#openListeners.clear();

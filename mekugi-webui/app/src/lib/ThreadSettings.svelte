@@ -7,13 +7,14 @@
     ThreadSettingsUpdateParams,
   } from "./protocol";
   import { semantic } from "./semantic.svelte";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import { errorText } from "./transport";
   import Picker from "./ui/Picker.svelte";
   import { settingToggle } from "./ui/select/styles";
 
   let { disabled = false, onerror }: { disabled?: boolean; onerror: (message?: string) => void } =
     $props();
+  const stream = $derived(streams.current);
   let busy = $state(false);
   let threadModels = $state.raw<Model[] | undefined>();
   let profiles = $state.raw<PermissionProfileListResponse["data"]>([]);

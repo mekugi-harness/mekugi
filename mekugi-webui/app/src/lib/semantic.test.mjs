@@ -49,7 +49,7 @@ const {
   skillsAfterEdit,
   toNativeUserInput,
 } = await import("./semantic.svelte.ts");
-const { Stream, itemToEntry } = await import("./stream.svelte.ts");
+const { Stream, ThreadStreams, itemToEntry } = await import("./stream.svelte.ts");
 const { TransportError } = await import("./transport.ts");
 
 function fakeMachine(handlers = {}) {
@@ -72,6 +72,7 @@ function fakeMachine(handlers = {}) {
       requestListeners.add(fn);
       return () => requestListeners.delete(fn);
     },
+    retireThreadPrompts() {},
     onOpen(fn) {
       openListeners.add(fn);
       return () => openListeners.delete(fn);
@@ -98,6 +99,24 @@ function fakeMachine(handlers = {}) {
     emitServerRequest(r) {
       for (const fn of requestListeners) fn(r);
     },
+  };
+}
+
+function resumedThread(id, initialTurnsPage) {
+  return { thread: { id, cwd: "/repo", status: { type: "idle" }, turns: [] }, initialTurnsPage };
+}
+
+function transcriptTurnPage(last, first, nextCursor) {
+  return {
+    nextCursor,
+    data: Array.from({ length: last - first + 1 }, (_, index) => {
+      const n = last - index;
+      return {
+        id: `t${n}`,
+        status: n === 37 ? "inProgress" : "completed",
+        items: [{ id: `m${n}`, type: "agentMessage", text: `turn ${n}` }],
+      };
+    }),
   };
 }
 
@@ -664,12 +683,13 @@ test("Stream hydrates via thread/resume and applies live ServerNotification delt
       },
     },
   });
+  const structure = s.main;
   machine.emitNotification({
     method: "item/agentMessage/delta",
     params: { threadId: "t1", turnId: "turn-1", itemId: "msg-1", delta: "lo!" },
   });
-  assert.equal(s.main.order.length, 1);
-  assert.equal(s.main.entries[1].text, "Hello!");
+  assert.equal(s.main, structure);
+  assert.equal(s.entry(1).text, "Hello!");
 
   machine.emitNotification({
     method: "thread/started",
@@ -717,6 +737,206 @@ test("Stream hydrates via thread/resume and applies live ServerNotification delt
   assert.ok(
     machine.requests.some((r) => r.method === "thread/unsubscribe" && r.params.threadId === "t1"),
   );
+});
+
+test("warm thread selection retains history, receives offscreen events and resumes only after reconnect", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const machine = fakeMachine({
+    "thread/resume": ({ threadId }) => ({
+      thread: { id: threadId, cwd: "/repo", status: { type: "idle" }, turns: [] },
+      initialTurnsPage: {
+        data: [{ id: "recent", items: [{ id: "item", type: "agentMessage", text: threadId }] }],
+        nextCursor: "older",
+      },
+    }),
+    "thread/turns/list": ({ threadId }) => ({
+      data: [
+        { id: "old", items: [{ id: "item", type: "agentMessage", text: `${threadId} older` }] },
+      ],
+    }),
+  });
+  const count = (method, id) =>
+    machine.requests.filter((entry) => entry.method === method && entry.params.threadId === id)
+      .length;
+  const threads = new ThreadStreams();
+  threads.connect("a", machine);
+  const a = threads.current;
+  await a.refresh();
+  assert.equal(await a.earlier(), true);
+  const retained = a.entry(1);
+
+  threads.connect("b", machine);
+  const b = threads.current;
+  await b.refresh();
+  machine.emitNotification({
+    method: "item/agentMessage/delta",
+    params: { threadId: "a", turnId: "recent", itemId: "item", delta: " streamed" },
+  });
+  assert.equal(b.entry(1).text, "b");
+  threads.connect("a", machine);
+  assert.equal(threads.current, a);
+  assert.equal(a.entry(1), retained);
+  assert.equal(a.entry(2).text, "a streamed");
+  assert.equal(count("thread/resume", "a"), 1);
+  assert.equal(count("thread/unsubscribe", "a"), 0);
+
+  machine.emitOpen();
+  await a.refresh();
+  assert.equal(count("thread/resume", "a"), 2);
+  assert.equal(count("thread/resume", "b"), 1);
+  assert.equal(a.entry(1).text, "a older");
+  assert.equal(a.hasEarlier, false);
+
+  t.mock.timers.tick(5 * 60_000);
+  assert.equal(b.threadId, undefined);
+  assert.equal(threads.current, a);
+  assert.equal(count("thread/unsubscribe", "a"), 0);
+  threads.release("a", machine);
+  t.mock.timers.tick(5 * 60_000);
+  assert.equal(count("thread/unsubscribe", "a"), 1);
+});
+
+test("eviction orders a pending resume, unsubscribe, and subsequent reopen of the same thread", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const firstResume = Promise.withResolvers();
+  const evicting = Promise.withResolvers();
+  const unsubscribe = Promise.withResolvers();
+  let aResumes = 0;
+  const machine = fakeMachine({
+    "thread/resume": ({ threadId }) => {
+      if (threadId === "a" && ++aResumes === 1) return firstResume.promise;
+      return resumedThread(threadId);
+    },
+    "thread/unsubscribe": ({ threadId }) => {
+      if (threadId !== "a") return {};
+      evicting.resolve();
+      return unsubscribe.promise;
+    },
+  });
+  const threads = new ThreadStreams();
+  threads.connect("a", machine);
+  for (const id of ["b", "c", "d", "e", "f", "g"]) threads.connect(id, machine);
+  threads.connect("a", machine);
+  assert.equal(aResumes, 1);
+  assert.ok(
+    !machine.requests.some(
+      (req) => req.method === "thread/unsubscribe" && req.params.threadId === "a",
+    ),
+  );
+
+  firstResume.resolve(resumedThread("a"));
+  await evicting.promise;
+  assert.equal(aResumes, 1);
+  unsubscribe.resolve({ status: "unsubscribed" });
+  await threads.current.refresh();
+  assert.equal(aResumes, 2);
+  assert.equal(threads.current.session.thread, "a");
+});
+
+test("reconnect joins earlier history, then applies live deltas and keeps the fresh terminal list", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const root = resumedThread("a").thread;
+  const child = { ...root, id: "b", parentThreadId: root.id };
+  let processId = "before-reconnect";
+  let failTerminalRead = false;
+  let latest = transcriptTurnPage(10, 6, "after6");
+  const gapPageRequested = Promise.withResolvers();
+  const gapPage = Promise.withResolvers();
+  const machine = fakeMachine({
+    "thread/resume": ({ threadId }) =>
+      threadId === root.id ? resumedThread(root.id, latest) : { thread: child },
+    "thread/subtree/list": () => ({ data: [root, child] }),
+    "thread/backgroundTerminals/list": ({ threadId }) => {
+      if (threadId !== root.id) return { data: [] };
+      if (failTerminalRead) {
+        failTerminalRead = false;
+        throw new Error("Terminal list temporarily unavailable");
+      }
+      return { data: [{ processId }] };
+    },
+    "thread/turns/list": ({ cursor }) => {
+      if (cursor === "after6") return transcriptTurnPage(5, 1);
+      if (cursor === "after33") return transcriptTurnPage(32, 13, "after13");
+      assert.equal(cursor, "after13");
+      gapPageRequested.resolve();
+      return gapPage.promise;
+    },
+  });
+  const threads = new ThreadStreams();
+  threads.connect(root.id, machine);
+  const stream = threads.current;
+  await stream.refresh();
+  assert.equal(await stream.earlier(), true);
+  threads.connect(child.id, machine);
+  await threads.current.refresh();
+  threads.connect(root.id, machine);
+  const visibleText = () => stream.transcriptEntries.map(({ seq }) => stream.entry(seq).text);
+  const retained = visibleText();
+  const notifyTerminalChange = () =>
+    machine.emitNotification({
+      method: "thread/backgroundTerminals/changed",
+      params: { threadId: root.id },
+    });
+
+  latest = transcriptTurnPage(37, 33, "after33");
+  machine.emitOpen();
+  await gapPageRequested.promise;
+  processId = "during-catch-up";
+  notifyTerminalChange();
+  await new Promise(setImmediate);
+  assert.deepEqual(stream.processes, [{ processId, threadId: root.id }]);
+
+  processId = "after-reconnect";
+  failTerminalRead = true;
+  notifyTerminalChange();
+  machine.emitNotification({
+    method: "item/agentMessage/delta",
+    params: { threadId: "a", turnId: "t37", itemId: "m37", delta: " streamed" },
+  });
+  assert.deepEqual(visibleText(), retained);
+  gapPage.resolve(transcriptTurnPage(12, 1));
+  await stream.refresh();
+
+  const expected = Array.from({ length: 36 }, (_, index) => `turn ${index + 1}`);
+  assert.deepEqual(visibleText(), [...expected, "turn 37 streamed"]);
+  assert.equal(stream.hasEarlier, false);
+  await new Promise(setImmediate);
+  assert.deepEqual(stream.processes, [{ processId: "after-reconnect", threadId: root.id }]);
+  await stream.close();
+});
+
+test("a tool-heavy turn reveals older retained items without requesting a native page", async () => {
+  const items = Array.from({ length: 90 }, (_, index) => ({
+    id: `m${index + 1}`,
+    type: "agentMessage",
+    text: `item ${index + 1}`,
+  }));
+  const machine = fakeMachine({
+    "thread/resume": () => resumedThread("a", { data: [{ id: "t", items }] }),
+  });
+  const stream = new Stream();
+  stream.connect("a", machine);
+  await stream.refresh();
+  const shown = () => stream.transcriptEntries.map(({ itemId }) => itemId);
+  assert.deepEqual(
+    shown(),
+    items.slice(-40).map(({ id }) => id),
+  );
+  assert.equal(stream.hasEarlier, true);
+  assert.equal(await stream.earlier(), true);
+  assert.deepEqual(
+    shown(),
+    items.slice(-80).map(({ id }) => id),
+  );
+  assert.equal(await stream.earlier(), true);
+  assert.deepEqual(
+    shown(),
+    items.map(({ id }) => id),
+  );
+  assert.equal(stream.hasEarlier, false);
+  assert.equal(await stream.earlier(), false);
+  assert.ok(!machine.requests.some(({ method }) => method === "thread/turns/list"));
+  await stream.close();
 });
 
 test("live edits follow patch notifications independently of saved changes", async () => {
@@ -847,6 +1067,42 @@ test("background-terminal refresh clears only the thread reported unloaded", asy
   await refreshChild();
   assert.deepEqual(processIds(), ["process-t1"]);
   stream.close();
+});
+
+test("one terminal change refreshes both warm family views with one read", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const root = { id: "root", cwd: "/repo", status: { type: "idle" }, turns: [] };
+  const child = { ...root, id: "child", parentThreadId: root.id };
+  let terminals = [];
+  const machine = fakeMachine({
+    "thread/resume": ({ threadId }) => ({ thread: threadId === root.id ? root : child }),
+    "thread/subtree/list": () => ({ data: [root, child] }),
+    "thread/backgroundTerminals/list": ({ threadId }) => ({
+      data: threadId === child.id ? terminals : [],
+    }),
+  });
+  const threads = new ThreadStreams();
+  threads.connect(root.id, machine);
+  const rootView = threads.current;
+  await rootView.refresh();
+  threads.connect(child.id, machine);
+  const childView = threads.current;
+  await childView.refresh();
+  await new Promise(setImmediate);
+  const before = machine.requests.length;
+
+  terminals = [{ processId: "live" }];
+  machine.emitNotification({
+    method: "thread/backgroundTerminals/changed",
+    params: { threadId: child.id },
+  });
+  await new Promise(setImmediate);
+
+  assert.deepEqual(machine.requests.slice(before), [
+    { method: "thread/backgroundTerminals/list", params: { threadId: child.id } },
+  ]);
+  assert.deepEqual(rootView.processes, [{ processId: "live", threadId: child.id }]);
+  assert.deepEqual(childView.processes, rootView.processes);
 });
 
 test("saved edits page, retain exact caller provenance, and discard stale pages", async () => {
@@ -1284,7 +1540,7 @@ test("Stream tracks child agent metrics/activity, supports earlier() paging, and
       assert.deepEqual(params, {
         threadId: "t-root",
         excludeTurns: true,
-        initialTurnsPage: { sortDirection: "desc", limit: 20, itemsView: "full" },
+        initialTurnsPage: { sortDirection: "desc", limit: 5, itemsView: "full" },
       });
       return {
         thread: {
@@ -1307,8 +1563,8 @@ test("Stream tracks child agent metrics/activity, supports earlier() paging, and
               error: null,
             },
           ],
-          nextCursor: null,
-          backwardsCursor: "cursor-1",
+          nextCursor: "cursor-1",
+          backwardsCursor: "reverse-cursor",
         },
       };
     },
@@ -1326,8 +1582,9 @@ test("Stream tracks child agent metrics/activity, supports earlier() paging, and
         },
       ],
     }),
-    "thread/turns/list": ({ cursor }) => {
+    "thread/turns/list": ({ cursor, limit }) => {
       assert.equal(cursor, "cursor-1");
+      assert.equal(limit, 20);
       return {
         data: [
           {
@@ -1339,7 +1596,7 @@ test("Stream tracks child agent metrics/activity, supports earlier() paging, and
           },
         ],
         nextCursor: null,
-        backwardsCursor: null,
+        backwardsCursor: "another-reverse-cursor",
       };
     },
     "thread/changes/read": () => ({

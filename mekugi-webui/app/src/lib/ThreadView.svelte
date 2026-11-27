@@ -19,7 +19,7 @@
   import { semantic } from "./semantic.svelte";
   import SessionFeatures from "./SessionFeatures.svelte";
   import SessionInfo from "./SessionInfo.svelte";
-  import { stream } from "./stream.svelte";
+  import { streams } from "./stream.svelte";
   import ThreadDocks from "./ThreadDocks.svelte";
   import Transcript from "./Transcript.svelte";
   import { errorText } from "./transport";
@@ -68,13 +68,14 @@
 
   type OneOff = { thread: string; initial?: InitialInput; firstTurn?: string };
   let oneOffs = $state.raw(new Map<string, OneOff>());
-  let selectedSide = $state<string>();
+  let selectedSide = $state.raw<{ main: string; thread: string }>();
   let sideChanging = $state(false);
   let sideError = $state<string>();
   const tabId = $props.id();
   const oneOff = $derived(oneOffs.get(id));
-  const showingSide = $derived(!!oneOff && selectedSide === id);
-  const displayed = $derived(showingSide && oneOff ? oneOff.thread : id);
+  const displayed = $derived(selectedSide?.main === id ? selectedSide.thread : id);
+  const showingSide = $derived(displayed !== id);
+  const stream = $derived(streams.current);
 
   $effect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -97,13 +98,7 @@
     untrack(() => {
       const side = showingSide ? oneOff : undefined;
       semantic.connect(thread, owner, main);
-      stream.connect(
-        thread,
-        owner,
-        stream.family?.threads.includes(thread),
-        (side?.initial ?? initial)?.started,
-        side?.firstTurn,
-      );
+      streams.connect(thread, owner, (side?.initial ?? initial)?.started, side?.firstTurn);
       selectedEntry = undefined;
       selectedLink = undefined;
       renameOpen = false;
@@ -113,7 +108,7 @@
       forking = false;
     });
     return () => {
-      stream.close();
+      streams.release(thread, owner);
       semantic.release(thread, owner);
     };
   });
@@ -126,11 +121,6 @@
   );
   const root = $derived(
     stream.roster.agents.find((a) => a.name === "/root") ?? stream.roster.agents[0],
-  );
-  const mainEntries = $derived(
-    stream.main.order
-      .map((seq) => stream.main.entries[seq])
-      .filter((entry): entry is Entry => !!entry),
   );
   const status = $derived(statusText(stream.status));
   const questionChannel = $derived(
@@ -263,7 +253,9 @@
         },
       };
       oneOffs = new Map(oneOffs).set(main, side);
-      if (id === main && owner === machine) selectedSide = main;
+      if ((id === main && owner === machine) || selectedSide?.main === main) {
+        selectedSide = { main, thread: side.thread };
+      }
       return undefined;
     } catch (error) {
       return errorText(error, true);
@@ -282,7 +274,7 @@
       await machine.request("thread/archive", { threadId: side.thread });
       const remaining = new Map(oneOffs);
       remaining.delete(main);
-      if (selectedSide === main) selectedSide = undefined;
+      if (selectedSide?.main === main) selectedSide = undefined;
       oneOffs = remaining;
       if (id === main) {
         await tick();
@@ -487,7 +479,7 @@
           aria-selected={showingSide}
           tabindex={showingSide ? 0 : -1}
           onkeydown={navigateTabs}
-          onclick={() => (selectedSide = id)}>One-off</button
+          onclick={() => (selectedSide = { main: id, thread: oneOff.thread })}>One-off</button
         >
       </div>
       <Button
@@ -523,7 +515,8 @@
         {/if}
         <div class="relative flex min-h-0 flex-1 flex-col">
           <Transcript
-            entries={mainEntries}
+            entries={stream.transcriptEntries}
+            transcript={stream}
             owner={view.agent ?? "/root"}
             workspace={session?.workspace}
             jumps={stream.jumps}
@@ -533,7 +526,7 @@
             onselect={openDetails}
             onreference={stream.connection === "open" ? addReference : undefined}
           />
-          {#key displayed}
+          {#key stream}
             <LiveSource
               previews={stream.live}
               owner={view.agent ?? "/root"}

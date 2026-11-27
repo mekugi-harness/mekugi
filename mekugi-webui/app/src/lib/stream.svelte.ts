@@ -1,3 +1,4 @@
+import { SvelteMap } from "svelte/reactivity";
 import { commandValues } from "./command";
 import { roleColor } from "./agents";
 import { selectionAppendix, textUploadFrames, type InitialInput } from "./attachments";
@@ -57,7 +58,9 @@ function linesOf(text: string | undefined): string[] | undefined {
   return trimmed ? trimmed.split("\n") : undefined;
 }
 
-const recentTurns = { sortDirection: "desc", limit: 20, itemsView: "full" } as const;
+const recentTurns = { sortDirection: "desc", limit: 5, itemsView: "full" } as const;
+const earlierTurns = { ...recentTurns, limit: 20 } as const;
+const transcriptPageSize = 40;
 
 function extractMcpTail(
   result: { content?: unknown[]; structuredContent?: unknown } | null | undefined,
@@ -627,6 +630,7 @@ export function buildFeed(
   attachment?: string,
   liveItemIds?: ReadonlySet<string>,
   hooks: readonly HookRecord[] = [],
+  indexItem?: (turn: Turn, itemIndex: number, entry: Entry) => void,
 ): Feed {
   const entries: Record<number, Entry> = {};
   const order: number[] = [];
@@ -636,7 +640,10 @@ export function buildFeed(
     if (emittedHooks.has(record.key)) return;
     emittedHooks.add(record.key);
     seq++;
-    entries[seq] = hookRunToEntry(record.run, seq, record.turnId ?? undefined);
+    entries[seq] = {
+      ...hookRunToEntry(record.run, seq, record.turnId ?? undefined),
+      rowKey: `hook:${record.key}`,
+    };
     order.push(seq);
   };
   const hooksByTurn = new Map<string, HookRecord[]>();
@@ -668,6 +675,7 @@ export function buildFeed(
         !!liveItemIds?.has(item.id),
         attachment,
       );
+      indexItem?.(turn, i, entries[seq]);
       order.push(seq);
     }
     while (hookIdx < turnHooks.length) emitHook(turnHooks[hookIdx++]);
@@ -829,6 +837,9 @@ function threadToAgent(thread: Thread, depth: number): Agent {
 const maxCachedHookThreads = 20;
 const maxRoutineHooksPerThread = 200;
 const maxFailedHooksPerThread = 200;
+type HookCache = Map<string, { records: HookRecord[]; sequence: number }>;
+type ProcessChange = Extract<ServerNotification, { method: "thread/backgroundTerminals/changed" }>;
+const processChangeReads = new WeakMap<ProcessChange, Promise<BackgroundTerminalsPage>>();
 
 function isHookFailed(run: HookRunSummary): boolean {
   return run.status === "failed" || run.status === "blocked" || run.status === "stopped";
@@ -865,6 +876,7 @@ export class Stream {
   session = $state.raw<Session | undefined>();
   input = $state.raw<Input | undefined>();
   status = $state.raw<Status>({});
+  // Structural snapshot. Use entry(seq) for live content.
   main = $state.raw<Feed>(empty);
   roster = $state.raw<Roster>({ total: 0, agents: [] });
   family = $state.raw<{ root: string; threads: string[] } | undefined>();
@@ -889,8 +901,15 @@ export class Stream {
     return turn?.status === "completed" ? turn.id : undefined;
   }
 
-  hasEarlier = $state(false);
+  // Stable row seeds for grouping; each mounted row reads its current entry separately.
+  transcriptEntries = $derived.by(() => {
+    const { order, entries } = this.main;
+    return order.slice(this.#hiddenEntries).map((seq) => entries[seq]);
+  });
+  hasEarlier = $derived.by(() => this.#hiddenEntries > 0 || !!this.#turnsBackwardsCursor);
   loadingEarlier = $state(false);
+  hydrating = $state(false);
+  scroll?: { top: number; pinned: boolean; anchor?: { id: string; offset: number } };
   byName = $derived(new Map(this.roster.agents.map((agent) => [agent.name, agent])));
   identities = $derived.by(() => {
     const identities = new Map<string, AgentIdentity>();
@@ -916,14 +935,20 @@ export class Stream {
   jumps = $state(0);
 
   #id?: string;
-  #machine = $state<Machine | undefined>();
+  #machine = $state.raw<Machine>();
   #turns: Turn[] = [];
+  #entries = $state.raw(new SvelteMap<number, Entry>());
+  #deltaTargets = new Map<
+    string,
+    Map<string, { items: ThreadItem[]; index: number; seq: number }>
+  >();
   #firstOwnTurn?: string;
-  #turnsBackwardsCursor?: string;
+  #turnsBackwardsCursor = $state<string>();
+  #hiddenEntries = $state(0);
   #liveItemIds = new Set<string>();
   #shellReads = new Map<string, Set<string>>();
   #hooks: HookRecord[] = [];
-  #hooksByThread = new Map<string, HookRecord[]>();
+  #hooksByThread: HookCache;
   #hookSeq = 0;
   #reviewRevision = 0;
   #workspaces = new Map<string, string>();
@@ -931,6 +956,17 @@ export class Stream {
   #stopNotifications?: () => void;
   #stopOpen?: () => void;
   #requests = new AbortController();
+  #selected = false;
+  #subscribed = false;
+  #maySubscribe = false;
+  #hydration?: Promise<void>;
+  #resumeRequest?: Promise<ThreadResumeResponse>;
+  #predecessor?: Promise<void>;
+  #catchupNotifications?: ServerNotification[];
+
+  constructor(hooksByThread: HookCache = new Map()) {
+    this.#hooksByThread = hooksByThread;
+  }
 
   get connection(): Connection {
     return this.#machine?.connection ?? "connecting";
@@ -944,54 +980,56 @@ export class Stream {
     return this.#id;
   }
 
+  entry(seq: number): Entry | undefined {
+    return this.#entries.get(seq);
+  }
+
   connect(
     id: string,
     machine: Machine,
-    preserveRoster = false,
-    started?: InitialInput["started"],
-    firstOwnTurn?: string,
+    options: {
+      started?: InitialInput["started"];
+      firstOwnTurn?: string;
+      familySource?: Stream;
+      predecessor?: Promise<void>;
+    } = {},
   ): void {
-    if (id === this.#id && machine === this.#machine && this.#stopNotifications) return;
-    preserveRoster &&= machine === this.#machine;
-    this.close();
+    const { started, firstOwnTurn, familySource, predecessor } = options;
     this.#id = id;
     this.#machine = machine;
-    this.#turns = [];
+    this.#selected = true;
     this.#firstOwnTurn = firstOwnTurn;
-    this.#turnsBackwardsCursor = undefined;
-    this.hasEarlier = false;
-    this.loadingEarlier = false;
-    this.#liveItemIds.clear();
-    const cachedHooks = this.#hooksByThread.get(`${machine.id}:${id}`);
-    // Only restore settled hooks across a subscription gap; running hooks may have
-    // finished while the thread was unobserved.
-    this.#hooks = cachedHooks ? cachedHooks.filter((h) => h.run.status !== "running") : [];
-    if (cachedHooks) this.#rememberHooks(`${machine.id}:${id}`, this.#hooks);
-    this.#requests = new AbortController();
-    this.session = this.input = this.gone = undefined;
-    this.activeTurnId = undefined;
-    this.status = {};
-    this.main = empty;
-    if (!preserveRoster) {
-      this.roster = { total: 0, agents: [] };
-      this.family = undefined;
-      this.#workspaces.clear();
+    this.#predecessor = predecessor;
+    if (familySource?.machine === machine && familySource.family?.threads.includes(id)) {
+      this.roster = familySource.roster;
+      this.family = familySource.family;
+      this.processes = familySource.processes;
+      this.roles = familySource.roles;
+      this.#workspaces = new Map(familySource.#workspaces);
     }
-    this.review = null;
-    this.reviewCaller = "";
-    this.reviewCursor = this.reviewError = undefined;
-    this.reviewLoading = false;
-    this.reviewOverview = { callers: [], counts: { Callers: {}, Net: null } };
-    this.live = [];
-    this.error = this.notice = undefined;
+    const cacheKey = `${machine.id}:${id}`;
+    const cachedHooks = this.#hooksByThread.get(cacheKey);
+    // Running hooks may have finished across a subscription gap.
+    if (cachedHooks) {
+      this.#hooks = cachedHooks.records.filter((hook) => hook.run.status !== "running");
+      this.#hookSeq = cachedHooks.sequence;
+      this.#rememberHooks(cacheKey, this.#hooks);
+    }
     this.#stopNotifications = machine.onNotification((n) => this.#onNotification(n));
     this.#stopOpen = machine.onOpen(() => {
+      this.#requests.abort();
+      this.#requests = new AbortController();
+      this.#hydration = this.#resumeRequest = undefined;
+      this.#catchupNotifications = undefined;
+      this.#subscribed = this.#maySubscribe = false;
+      this.loadingEarlier = this.reviewLoading = this.hydrating = false;
       this.error = undefined;
-      void this.#hydrate(id, machine);
+      if (this.#selected) void this.refresh();
     });
     if (started && machine.connection === "open") {
       // thread/start already subscribed this connector. Resume requires a saved
       // turn, so start observing live events before submitting the first input.
+      this.#subscribed = this.#maySubscribe = true;
       this.#applyThread(started.thread, {
         model: started.model,
         effort: started.reasoningEffort ?? undefined,
@@ -999,32 +1037,55 @@ export class Stream {
         permissionProfile: started.activePermissionProfile?.id ?? null,
       });
     } else if (machine.connection === "open") {
-      void this.#hydrate(id, machine);
+      void this.refresh();
     }
   }
 
-  async refresh(): Promise<void> {
-    if (!this.#id || !this.#machine) return;
-    await this.#hydrate(this.#id, this.#machine);
+  setSelected(selected: boolean): void {
+    this.#selected = selected;
+    if (selected && !this.#subscribed && this.#machine?.connection === "open") {
+      void this.refresh();
+    }
+  }
+
+  async refresh(keepEarlier = true): Promise<void> {
+    if (!this.#id || this.#machine?.connection !== "open") return;
+    if (this.#hydration) return this.#hydration;
+    this.hydrating = true;
+    const signal = this.#requests.signal;
+    const hydration = this.#hydrate(this.#id, this.#machine, signal, keepEarlier);
+    this.#hydration = hydration;
+    try {
+      await hydration;
+    } finally {
+      if (this.#hydration === hydration) {
+        this.#hydration = undefined;
+        this.hydrating = false;
+      }
+    }
   }
 
   async earlier(): Promise<boolean> {
     const id = this.#id;
     const machine = this.#machine;
     const cursor = this.#turnsBackwardsCursor;
-    if (!id || !machine || !cursor || this.loadingEarlier) return false;
+    if (!id || this.loadingEarlier || this.hydrating) return false;
+    if (this.#hiddenEntries) {
+      this.#hiddenEntries = Math.max(0, this.#hiddenEntries - transcriptPageSize);
+      return true;
+    }
+    if (machine?.connection !== "open" || !cursor) return false;
     const signal = this.#requests.signal;
     this.loadingEarlier = true;
     try {
       const page = await machine.request<TurnsPage>(
         "thread/turns/list",
-        { threadId: id, cursor, ...recentTurns },
+        { threadId: id, cursor, ...earlierTurns },
         { signal },
       );
-      if (signal.aborted || this.#id !== id || this.#machine !== machine) return false;
-      const nextCursor = page.backwardsCursor ?? page.nextCursor ?? undefined;
+      if (signal.aborted || this.#turnsBackwardsCursor !== cursor) return false;
+      const nextCursor = page.nextCursor;
       this.#turnsBackwardsCursor = nextCursor && nextCursor !== cursor ? nextCursor : undefined;
-      this.hasEarlier = !!this.#turnsBackwardsCursor;
       const existingIds = new Set(this.#turns.map((t) => t.id));
       const older: Turn[] = [];
       for (let i = (page.data?.length ?? 0) - 1; i >= 0; i--) {
@@ -1032,19 +1093,34 @@ export class Stream {
         if (!existingIds.has(t.id)) older.push({ ...t, items: [...t.items] });
       }
       if (!older.length) return false;
+      const retainedCount = this.main.order.length;
       this.#turns = [...older, ...this.#turns];
       this.#rebuildMain();
+      this.#hiddenEntries = Math.max(
+        0,
+        this.main.order.length - retainedCount - transcriptPageSize,
+      );
       return true;
     } catch {
       return false;
     } finally {
-      if (this.#id === id && this.#machine === machine) this.loadingEarlier = false;
+      if (!signal.aborted) this.loadingEarlier = false;
     }
   }
 
-  async #hydrate(id: string, machine: Machine): Promise<void> {
-    const signal = this.#requests.signal;
+  async #hydrate(
+    id: string,
+    machine: Machine,
+    signal: AbortSignal,
+    keepEarlier: boolean,
+  ): Promise<void> {
+    let catchupNotifications: ServerNotification[] | undefined;
     try {
+      if (this.#predecessor) {
+        await this.#predecessor;
+        if (signal.aborted || machine.connection !== "open") return;
+        this.#predecessor = undefined;
+      }
       let thread: Thread;
       let model: string | undefined;
       let effort: string | undefined;
@@ -1053,11 +1129,20 @@ export class Stream {
       let turnsBackwardsCursor: string | undefined;
       let initialPage: TurnsPage | null | undefined;
       try {
-        const resumed = await machine.request<ThreadResumeResponse>(
-          "thread/resume",
-          { threadId: id, excludeTurns: true, initialTurnsPage: recentTurns },
-          { signal },
-        );
+        this.#maySubscribe = true;
+        // Client cancellation cannot undo a sent resume. Let eviction wait for
+        // the wire result before unsubscribing or letting this ID reopen.
+        const request = machine.request<ThreadResumeResponse>("thread/resume", {
+          threadId: id,
+          excludeTurns: true,
+          initialTurnsPage: recentTurns,
+        });
+        this.#resumeRequest = request;
+        const resumed = await request.finally(() => {
+          if (this.#resumeRequest === request) this.#resumeRequest = undefined;
+        });
+        if (signal.aborted) return;
+        this.#subscribed = true;
         thread = resumed.thread;
         model = resumed.model || thread.model || undefined;
         effort = resumed.reasoningEffort ?? thread.reasoningEffort ?? undefined;
@@ -1089,15 +1174,59 @@ export class Stream {
       if (signal.aborted) return;
       this.gone = undefined;
       this.error = undefined;
+      let overlap = -1;
+      const retained = keepEarlier ? this.#turns : [];
       if (initialPage) {
+        const newer = [...initialPage.data];
+        turnsBackwardsCursor = initialPage.nextCursor ?? undefined;
+        const retainedPositions = new Map(retained.map((turn, index) => [turn.id, index]));
+        const first = newer.at(-1);
+        overlap = first ? (retainedPositions.get(first.id) ?? -1) : -1;
+        if (first && overlap < 0 && retained.length && turnsBackwardsCursor) {
+          // Don't publish a gap or overwrite changes after the resume snapshot.
+          // Keep the old transcript visible while joining it to the new tail.
+          this.#catchupNotifications = catchupNotifications = [];
+          let cursor: string | undefined = turnsBackwardsCursor;
+          while (cursor) {
+            let page: TurnsPage;
+            try {
+              page = await machine.request<TurnsPage>(
+                "thread/turns/list",
+                { threadId: id, cursor, ...earlierTurns },
+                { signal },
+              );
+            } catch (err) {
+              if (signal.aborted || machine.connection !== "open") return;
+              // The pages fetched so far are contiguous and still usable.
+              this.error = errorText(err);
+              break;
+            }
+            if (signal.aborted) return;
+            const match = page.data.findIndex((turn) => retainedPositions.has(turn.id));
+            if (match >= 0) {
+              overlap = retainedPositions.get(page.data[match].id)!;
+              newer.push(...page.data.slice(0, match + 1));
+              break;
+            }
+            newer.push(...page.data);
+            cursor = turnsBackwardsCursor =
+              page.nextCursor && page.nextCursor !== cursor ? page.nextCursor : undefined;
+          }
+        }
         // ES2022 has no toReversed; the copy keeps the response in wire order.
         // oxlint-disable-next-line unicorn/no-array-reverse
-        thread = { ...thread, turns: [...initialPage.data].reverse() };
-        turnsBackwardsCursor = initialPage.backwardsCursor ?? initialPage.nextCursor ?? undefined;
+        thread = { ...thread, turns: newer.reverse() };
+      } else if (thread.turns?.length) {
+        overlap = retained.findIndex((turn) => turn.id === thread.turns[0].id);
+      }
+      if (overlap >= 0) {
+        thread = { ...thread, turns: [...retained.slice(0, overlap), ...thread.turns] };
+        turnsBackwardsCursor = this.#turnsBackwardsCursor;
       }
       this.#turnsBackwardsCursor = turnsBackwardsCursor;
-      this.hasEarlier = !!turnsBackwardsCursor;
       this.#applyThread(thread, { model, effort, serviceTier, permissionProfile });
+      const hidden = Math.max(0, this.main.order.length - transcriptPageSize);
+      this.#hiddenEntries = overlap < 0 ? hidden : Math.min(hidden, this.#hiddenEntries);
       const subtreeRoot = this.family?.threads.includes(id)
         ? this.family.root
         : (thread.parentThreadId ?? id);
@@ -1113,6 +1242,13 @@ export class Stream {
       this.error = errorText(err);
       if (err instanceof TransportError && (err.status === 404 || err.status === 410)) {
         this.gone = { status: err.status, text: err.message };
+      }
+    } finally {
+      if (catchupNotifications && this.#catchupNotifications === catchupNotifications) {
+        this.#catchupNotifications = undefined;
+        if (!signal.aborted && machine.connection === "open") {
+          for (const notification of catchupNotifications) this.#onNotification(notification);
+        }
       }
     }
   }
@@ -1470,7 +1606,7 @@ export class Stream {
     if (savedPath) void this.#loadChanges(id, machine, signal);
   }
 
-  async #loadProcesses(threadId: string, machine: Machine): Promise<void> {
+  async #loadProcesses(threadId: string, machine: Machine, change?: ProcessChange): Promise<void> {
     const signal = this.#requests.signal;
     const revision = Symbol();
     this.#processReads.set(threadId, revision);
@@ -1478,11 +1614,18 @@ export class Stream {
       !signal.aborted && this.#processReads.get(threadId) === revision && this.#inFamily(threadId);
     let processes: BackgroundTerminal[] = [];
     try {
-      const page = await machine.request<BackgroundTerminalsPage>(
-        "thread/backgroundTerminals/list",
-        { threadId },
-        { signal },
-      );
+      let request = change && processChangeReads.get(change);
+      if (!request) {
+        // One connector notification can reach several warm family views.
+        // Share its read without letting any one view's eviction cancel it.
+        request = machine.request<BackgroundTerminalsPage>(
+          "thread/backgroundTerminals/list",
+          { threadId },
+          { signal: change ? undefined : signal },
+        );
+        if (change) processChangeReads.set(change, request);
+      }
+      const page = await request;
       processes = page.data.map((process) => ({ ...process, threadId }));
     } catch (error) {
       const rpcError = error instanceof TransportError ? error.rpcError : undefined;
@@ -1523,6 +1666,21 @@ export class Stream {
     const id = this.#id;
     const machine = this.#machine;
     if (!id || !machine) return;
+    // Terminal refreshes are independent of transcript catch-up. Do not replay
+    // one after reconnect has already requested a fresh process list.
+    if (notification.method === "thread/backgroundTerminals/changed") {
+      if (this.#inFamily(notification.params.threadId))
+        void this.#loadProcesses(notification.params.threadId, machine, notification);
+      return;
+    }
+    if (
+      this.#catchupNotifications &&
+      "threadId" in notification.params &&
+      notification.params.threadId === id
+    ) {
+      this.#catchupNotifications.push(notification);
+      return;
+    }
     switch (notification.method) {
       case "thread/started": {
         const started = notification.params.thread;
@@ -1553,16 +1711,17 @@ export class Stream {
         }
         break;
       }
-      case "thread/backgroundTerminals/changed": {
-        if (this.#inFamily(notification.params.threadId))
-          void this.#loadProcesses(notification.params.threadId, machine);
-        break;
-      }
       case "thread/closed": {
         const { threadId } = notification.params;
+        if (threadId === id) this.#subscribed = this.#maySubscribe = false;
         this.#shellReads.delete(threadId);
         this.#processReads.delete(threadId);
         this.processes = this.processes.filter((process) => process.threadId !== threadId);
+        break;
+      }
+      case "thread/archived":
+      case "thread/deleted": {
+        if (notification.params.threadId === id) this.#subscribed = false;
         break;
       }
       case "thread/status/changed": {
@@ -1847,7 +2006,6 @@ export class Stream {
             return { ...item, text: item.text + notification.params.delta };
           return item;
         });
-        this.#rebuildMain();
         break;
       }
       case "item/plan/delta": {
@@ -1856,7 +2014,6 @@ export class Stream {
           if (item.type === "plan") return { ...item, text: item.text + notification.params.delta };
           return item;
         });
-        this.#rebuildMain();
         break;
       }
       case "item/commandExecution/outputDelta": {
@@ -1869,7 +2026,6 @@ export class Stream {
             };
           return item;
         });
-        this.#rebuildMain();
         break;
       }
       case "item/commandExecution/changesUpdated": {
@@ -1889,7 +2045,6 @@ export class Stream {
           summary[idx] += notification.params.delta;
           return { ...item, summary };
         });
-        this.#rebuildMain();
         break;
       }
       case "item/fileChange/patchUpdated": {
@@ -1921,7 +2076,14 @@ export class Stream {
         if (notification.params.threadId !== id) return;
         this.#shellReads.clear();
         this.live = [];
-        void this.#hydrate(id, machine);
+        // A revert can arrive while the previous snapshot is still in flight.
+        const pending = this.#hydration;
+        const signal = this.#requests.signal;
+        if (!pending) void this.refresh(false);
+        else
+          void pending.then(() => {
+            if (!signal.aborted) void this.refresh(false);
+          });
         break;
       }
       default:
@@ -1936,14 +2098,27 @@ export class Stream {
     if (first >= 0) {
       this.#turns = this.#turns.slice(first);
       this.#turnsBackwardsCursor = undefined;
-      this.hasEarlier = false;
     }
-    this.main = buildFeed(this.#turns, this.#id, this.#liveItemIds, this.#hooks);
+    this.#deltaTargets.clear();
+    const main = buildFeed(
+      this.#turns,
+      this.#id,
+      this.#liveItemIds,
+      this.#hooks,
+      (turn, index, entry) => {
+        let items = this.#deltaTargets.get(turn.id);
+        if (!items) this.#deltaTargets.set(turn.id, (items = new Map()));
+        items.set(turn.items[index].id, { items: turn.items, index, seq: entry.seq });
+      },
+    );
+    this.#entries = new SvelteMap(main.order.map((seq) => [seq, main.entries[seq]]));
+    this.main = main;
   }
 
   showFrom(threadId: string, turnId: string): void {
-    if (threadId !== this.#id) return;
+    if (threadId !== this.#id || this.#firstOwnTurn === turnId) return;
     this.#firstOwnTurn = turnId;
+    this.#hiddenEntries = 0;
     this.#rebuildMain();
   }
 
@@ -1983,7 +2158,7 @@ export class Stream {
   #rememberHooks(cacheKey: string, hooks: HookRecord[]): void {
     this.#hooksByThread.delete(cacheKey);
     if (!hooks.length) return;
-    this.#hooksByThread.set(cacheKey, hooks);
+    this.#hooksByThread.set(cacheKey, { records: hooks, sequence: this.#hookSeq });
     while (this.#hooksByThread.size > maxCachedHookThreads) {
       const oldest = this.#hooksByThread.keys().next().value;
       if (oldest === undefined) break;
@@ -2041,16 +2216,25 @@ export class Stream {
   }
 
   #appendItemDelta(turnId: string, itemId: string, update: (item: ThreadItem) => ThreadItem): void {
-    const turn = this.#turns.find((t) => t.id === turnId);
-    if (!turn) return;
-    const index = turn.items.findIndex((existing) => existing.id === itemId);
-    if (index < 0) return;
-    turn.items[index] = update(turn.items[index]);
+    const target = this.#deltaTargets.get(turnId)?.get(itemId);
+    if (!target) return;
+    const { items, index, seq } = target;
+    const previous = items[index];
+    const item = update(previous);
+    if (item === previous) return;
+    items[index] = item;
+    this.#entries.set(
+      seq,
+      itemToEntry(item, seq, 0, turnId, "/root", this.#liveItemIds.has(itemId), this.#id),
+    );
   }
 
-  close(): void {
+  async close(): Promise<void> {
     const prevId = this.#id;
     const prevMachine = this.#machine;
+    const resumeRequest = this.#resumeRequest;
+    const predecessor = this.#predecessor;
+    const maySubscribe = this.#maySubscribe;
     this.#id = undefined;
     this.#machine = undefined;
     this.#liveItemIds.clear();
@@ -2063,8 +2247,10 @@ export class Stream {
     this.#requests.abort();
     this.#processReads.clear();
     this.processes = [];
-    if (prevId && prevMachine && prevMachine.connection === "open") {
-      void prevMachine.request("thread/unsubscribe", { threadId: prevId }).catch(() => {});
+    if (predecessor) await predecessor;
+    if (resumeRequest) await resumeRequest.catch(() => {});
+    if (maySubscribe && prevId && prevMachine?.connection === "open") {
+      await prevMachine.request("thread/unsubscribe", { threadId: prevId }).catch(() => {});
     }
   }
 
@@ -2129,4 +2315,73 @@ export class Stream {
   }
 }
 
-export const stream = new Stream();
+const maxWatchedThreads = 6;
+const warmIdleMs = 5 * 60_000;
+
+export class ThreadStreams {
+  #hooks: HookCache = new Map();
+  current = $state.raw(new Stream(this.#hooks));
+  #selected?: Stream;
+  #watched = new Map<Stream, ReturnType<typeof setTimeout> | undefined>();
+  #retiring = new WeakMap<Machine, Map<string, Promise<void>>>();
+
+  connect(
+    id: string,
+    machine: Machine,
+    started?: InitialInput["started"],
+    firstOwnTurn?: string,
+  ): void {
+    const previous = this.current;
+    if (this.#selected === previous && previous.threadId === id && previous.machine === machine)
+      return;
+    if (this.#selected) this.release(this.#selected.threadId, this.#selected.machine);
+    let next = [...this.#watched.keys()].find(
+      (thread) => thread.threadId === id && thread.machine === machine,
+    );
+    if (next) {
+      clearTimeout(this.#watched.get(next));
+      this.#watched.delete(next);
+      next.setSelected(true);
+      if (firstOwnTurn) next.showFrom(id, firstOwnTurn);
+    } else {
+      next = new Stream(this.#hooks);
+      const predecessor = this.#retiring.get(machine)?.get(id);
+      next.connect(id, machine, { started, firstOwnTurn, familySource: previous, predecessor });
+    }
+    this.current = this.#selected = next;
+    this.#watched.set(next, undefined);
+    if (this.#watched.size > maxWatchedThreads) {
+      const oldest = this.#watched.keys().next().value;
+      if (oldest) this.#evict(oldest);
+    }
+  }
+
+  release(id: string | undefined, machine: Machine | undefined): void {
+    const thread = this.#selected;
+    if (!thread || thread.threadId !== id || thread.machine !== machine) return;
+    this.#selected = undefined;
+    thread.setSelected(false);
+    this.#watched.set(
+      thread,
+      setTimeout(() => this.#evict(thread), warmIdleMs),
+    );
+  }
+
+  #evict(thread: Stream): void {
+    clearTimeout(this.#watched.get(thread));
+    this.#watched.delete(thread);
+    const { threadId: id, machine } = thread;
+    if (!id || !machine) return;
+    if (this.current === thread) this.current = new Stream(this.#hooks);
+    let retiring = this.#retiring.get(machine);
+    if (!retiring) this.#retiring.set(machine, (retiring = new Map()));
+    const done = thread.close();
+    machine.retireThreadPrompts(id, done);
+    retiring.set(id, done);
+    void done.then(() => {
+      if (retiring.get(id) === done) retiring.delete(id);
+    });
+  }
+}
+
+export const streams = new ThreadStreams();
