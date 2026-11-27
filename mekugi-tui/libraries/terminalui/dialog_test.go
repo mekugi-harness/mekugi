@@ -93,6 +93,34 @@ func TestDialogRowsRangePreservesWrappedContent(t *testing.T) {
 	}
 }
 
+func TestDialogRowsRangePreservesStyledCopyOffsets(t *testing.T) {
+	const source = "\u0301e\u0301界\t🧑‍💻value"
+	const display = "\u0301e\u0301界    🧑‍💻value"
+	const styled = "\x1b[31m\u0301e\x1b[32m\u0301界    🧑‍💻value\x1b[0m"
+	fragment := CopyCode(source, 1)
+	page := DialogPage{}
+	page.Add(DialogLine{Number: 1, Gutter: "┆", Text: styled, CopySource: &fragment})
+	for _, width := range []int{5, 9} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			var projected strings.Builder
+			for i := range page.RowCount(0, width) {
+				window := page.RowsRange(0, width, i, 1)
+				if len(window) != 1 {
+					t.Fatalf("missing row %d", i)
+				}
+				painted, spans := ExtractCopy(window[0])
+				if len(spans) != 1 || spans[0].Offset != projected.Len() || spans[0].Text != ansi.Strip(painted)[len("1 ┆ "):] {
+					t.Fatalf("row %d copy projection = %+v, painted %q", i, spans, painted)
+				}
+				projected.WriteString(spans[0].Text)
+			}
+			if got := projected.String(); got != display {
+				t.Fatalf("wrapped projection = %q, want %q", got, display)
+			}
+		})
+	}
+}
+
 func TestDialogRowsRangeMatchesControlWrapping(t *testing.T) {
 	for _, text := range []string{"a\ta", "a\ra", "a\x00a", "a\x7fa", "a\n\tend"} {
 		for _, width := range []int{1, 2, 5} {

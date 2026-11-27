@@ -10273,6 +10273,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "stepKinds": {
+            "default": [],
+            "description": "Classification in source order; one kind for an unsplit script.",
+            "items": {
+              "$ref": "#/definitions/v2/CommandStepKind"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -10659,6 +10667,19 @@
           "name"
         ],
         "type": "object"
+      },
+      "CommandStepKind": {
+        "enum": [
+          "read",
+          "search",
+          "list",
+          "inspect",
+          "stage",
+          "commit",
+          "skill",
+          "run"
+        ],
+        "type": "string"
       },
       "ComposerPreset": {
         "additionalProperties": false,

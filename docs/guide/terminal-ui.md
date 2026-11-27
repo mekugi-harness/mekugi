@@ -85,8 +85,10 @@ native session naming, and
   skills. The selected source counts as depth 1; depth 3 is the last acquired level.
   Deeper or failed reads show omission notices. Directory trees are not expanded.
 - `/oneoff TASK` opens an isolated work-capable snapshot with a One-off tab beside
-  Main, inheriting Main's tools and permissions. It selects One-off immediately and
-  keeps completed results available. Main stays usable and receives no one-off
+  Main. It inherits Main's tools, permissions, current model and reasoning
+  effort, and uses Main's context without showing Main's transcript. It selects
+  One-off immediately, keeps completed results available, and reports its own
+  usage and cost in the footer. Main stays usable and receives no one-off
   transcript; file edits and other external effects still affect the shared
   workspace. Only one One-off is open; creating another offers Replace or Cancel.
   Up on its empty composer returns to Main without closing One-off.

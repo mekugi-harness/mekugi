@@ -492,15 +492,23 @@ func AttachCopy(row string, spans []CopySpan) string {
 	return out.String()
 }
 
-func copyCode(source string, identity uint64) CopyFragment {
-	f := CopyFragment{ID: identity, Code: true}
-	for i, part := range strings.Split(source, "\t") {
-		if i > 0 {
-			f.Tabs = append(f.Tabs, len(f.Text))
-			f.Text += "    "
-		}
-		f.Text += textsanitize.Safe(part, false)
+// CopyCode projects literal source into display text while tracking expanded tabs.
+func CopyCode(source string, identity uint64) CopyFragment {
+	part, rest, tab := strings.Cut(source, "\t")
+	f := CopyFragment{ID: identity, Code: true, Text: textsanitize.Safe(part, false)}
+	if !tab {
+		return f
 	}
+	var display strings.Builder
+	display.Grow(len(source))
+	display.WriteString(f.Text)
+	for tab {
+		f.Tabs = append(f.Tabs, display.Len())
+		display.WriteString("    ")
+		part, rest, tab = strings.Cut(rest, "\t")
+		display.WriteString(textsanitize.Safe(part, false))
+	}
+	f.Text = display.String()
 	return f
 }
 

@@ -166,7 +166,24 @@ pub struct CommandDisplay {
     pub script: String,
     /// Separate source steps, or empty when the script is displayed as one.
     pub segments: Vec<String>,
+    /// Classification in source order; one kind for an unsplit script.
+    #[serde(default)]
+    pub step_kinds: Vec<CommandStepKind>,
     pub effective_cwd: Option<LegacyAppPathString>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum CommandStepKind {
+    Read,
+    Search,
+    List,
+    Inspect,
+    Stage,
+    Commit,
+    Skill,
+    Run,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

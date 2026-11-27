@@ -15,6 +15,7 @@ use crate::protocol::v2::CommandAction;
 use crate::protocol::v2::CommandDisplay;
 use crate::protocol::v2::CommandExecutionSource;
 use crate::protocol::v2::CommandExecutionStatus;
+use crate::protocol::v2::CommandStepKind;
 use crate::protocol::v2::FileUpdateChange;
 use crate::protocol::v2::GuardianApprovalReview;
 use crate::protocol::v2::GuardianApprovalReviewStatus;
@@ -37,10 +38,13 @@ use codex_protocol::protocol::ReviewOutputEvent;
 use codex_protocol::review_format::REVIEW_FALLBACK_MESSAGE;
 use codex_protocol::review_format::render_review_output_text;
 use codex_secrets::redact_secrets;
+use codex_shell_command::bash::parse_shell_script_into_commands;
 use codex_shell_command::parse_command::parse_command;
+use codex_shell_command::parse_command::parse_shell_script;
 use codex_shell_command::parse_command::shlex_join;
 use codex_utils_path_uri::PathUri;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use tracing::warn;
 
@@ -77,15 +81,23 @@ pub fn command_display(
     exit: Option<i32>,
     output: &str,
 ) -> Option<CommandDisplay> {
-    let (shell, script) =
-        codex_shell_command::bash::extract_bash_command(command).or_else(|| {
-            let [shell, flag, script] = command else {
-                return None;
-            };
-            (std::path::Path::new(shell).file_stem()?.to_str()? == "dash"
-                && matches!(flag.as_str(), "-c" | "-lc"))
-            .then_some((shell.as_str(), script.as_str()))
-        })?;
+    let shell_script = codex_shell_command::bash::extract_bash_command(command).or_else(|| {
+        let [shell, flag, script] = command else {
+            return None;
+        };
+        (std::path::Path::new(shell).file_stem()?.to_str()? == "dash"
+            && matches!(flag.as_str(), "-c" | "-lc"))
+        .then_some((shell.as_str(), script.as_str()))
+    });
+    let Some((shell, script)) = shell_script else {
+        let kind = authored_command_kind(command)?;
+        return Some(CommandDisplay {
+            script: redact_secrets(shlex_join(command)),
+            segments: vec![],
+            step_kinds: vec![kind],
+            effective_cwd: None,
+        });
+    };
     let script = redact_secrets(script.to_owned());
     let steps = script
         .contains([';', '&', '|', '\n'])
@@ -93,6 +105,7 @@ pub fn command_display(
         .flatten();
     let Some((mut segments, target)) = steps else {
         return Some(CommandDisplay {
+            step_kinds: vec![shell_step_kind(&script)],
             script,
             segments: vec![],
             effective_cwd: None,
@@ -127,10 +140,113 @@ pub fn command_display(
         segments.remove(0);
     }
     Some(CommandDisplay {
+        step_kinds: segments.iter().map(|step| shell_step_kind(step)).collect(),
         segments: segments.into_iter().map(str::to_owned).collect(),
         script,
         effective_cwd,
     })
+}
+
+impl CommandDisplay {
+    /// Classifies authored steps in retained displays that predate step kinds.
+    pub fn restore_step_kinds(&mut self) {
+        if !self.step_kinds.is_empty() {
+            return;
+        }
+        if !self.segments.is_empty() {
+            self.step_kinds = self
+                .segments
+                .iter()
+                .map(|step| shell_step_kind(step))
+                .collect();
+        } else if !self.script.is_empty() {
+            self.step_kinds.push(shell_step_kind(&self.script));
+        }
+    }
+}
+
+// Keep Mekugi-only presentation labels out of stock command parsing and approvals.
+fn authored_command_kind(argv: &[String]) -> Option<CommandStepKind> {
+    let (program, args) = argv.split_first()?;
+    let program = Path::new(program).file_name()?.to_str()?;
+    match (program, args) {
+        ("mcat" | "cat", [first, rest @ ..])
+            if std::iter::once(first).chain(rest).all(|arg| {
+                Path::new(arg.split(':').next().unwrap_or(arg)).file_name()
+                    == Some(std::ffi::OsStr::new("SKILL.md"))
+            }) =>
+        {
+            Some(CommandStepKind::Skill)
+        }
+        ("mcat", [_, ..]) => Some(CommandStepKind::Read),
+        ("mfinspect", [_, ..]) => Some(CommandStepKind::Inspect),
+        ("command", [flag, name]) if flag == "-v" && !name.starts_with('-') => {
+            Some(CommandStepKind::Inspect)
+        }
+        ("msymbol", args) => {
+            let args = match args {
+                [flag, _, rest @ ..] if flag == "--workspace" => rest,
+                _ => args,
+            };
+            let args = match args {
+                [flag, rest @ ..] if flag == "--" => rest,
+                _ => args,
+            };
+            match args {
+                [mode, _, _, ..] if mode == "refs" => Some(CommandStepKind::Search),
+                [mode, _, _, ..] if mode == "def" => Some(CommandStepKind::Read),
+                _ => None,
+            }
+        }
+        ("skills-mgr", [verb, _, ..]) if matches!(verb.as_str(), "get" | "run") => {
+            Some(CommandStepKind::Skill)
+        }
+        ("git", args) => {
+            let mut args = args.iter().map(String::as_str);
+            while let Some(arg) = args.next() {
+                match arg {
+                    "-C" | "-c" | "--git-dir" | "--work-tree" => {
+                        args.next()?;
+                    }
+                    "--no-pager" | "--paginate" | "--literal-pathspecs" => {}
+                    arg if arg.starts_with("--git-dir=") || arg.starts_with("--work-tree=") => {}
+                    "add" => return Some(CommandStepKind::Stage),
+                    "commit" => return Some(CommandStepKind::Commit),
+                    _ => return None,
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn shell_step_kind(script: &str) -> CommandStepKind {
+    if let Some(commands) = parse_shell_script_into_commands(script)
+        && let [argv] = commands.as_slice()
+        && let Some(kind) = authored_command_kind(argv)
+    {
+        return kind;
+    }
+    let parsed = parse_shell_script(script);
+    let kind = match parsed.first() {
+        Some(ParsedCommand::Read { .. }) => CommandStepKind::Read,
+        Some(ParsedCommand::Search { .. }) => CommandStepKind::Search,
+        Some(ParsedCommand::ListFiles { .. }) => CommandStepKind::List,
+        Some(ParsedCommand::Unknown { .. }) | None => return CommandStepKind::Run,
+    };
+    if parsed.iter().all(|action| {
+        matches!(
+            (kind, action),
+            (CommandStepKind::Read, ParsedCommand::Read { .. })
+                | (CommandStepKind::Search, ParsedCommand::Search { .. })
+                | (CommandStepKind::List, ParsedCommand::ListFiles { .. })
+        )
+    }) {
+        kind
+    } else {
+        CommandStepKind::Run
+    }
 }
 
 pub(crate) fn review_output_text(output: Option<&ReviewOutputEvent>) -> String {

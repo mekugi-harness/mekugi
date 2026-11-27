@@ -106,7 +106,7 @@ func TestDetailLinksAndReferenceThroughNativeBrowser(t *testing.T) {
 	oneOffThread := make(chan string, 1)
 	const oneOffTask = "Check the One-off file link."
 	provider := &toolFrontendCodexProvider{
-		program: `const r = await tools.exec_command({cmd:"for i in $(seq 1 160); do printf 'native run line %s\\n' \"$i\"; done",shell:"/bin/bash",login:false,yield_time_ms:10000});
+		program: `const r = await tools.exec_command({cmd:"for i in $(seq 1 160); do printf 'native run line %s\\n' \"$i\"; done; cat notes.md",shell:"/bin/bash",login:false,yield_time_ms:10000});
 text(r.event_call_id); text(r.output);
 await tools.exec_command({cmd:"sleep 81",shell:"/bin/bash",login:false,yield_time_ms:100});
 await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_time_ms:100});`,
@@ -166,6 +166,9 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 		},
 		afterPrompt: func(t *testing.T, _ io.Writer, _ func(string), _ func(func(string) bool), _ *vt.Emulator) {
 			run("wait", "--text", "Workspace notes")
+			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(row =>
+				row.textContent.includes('Read') && row.textContent.includes('cat notes.md') &&
+				!row.textContent.includes('native run line 160'))`)
 			run("set", "viewport", "360", "800")
 			run("find", "role", "button", "click", "--name", "Session details", "--exact")
 			run("wait", "--fn", fmt.Sprintf(`(() => {
@@ -230,7 +233,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("fill", "#composer-text", "@!not-an-image")
 			run("wait", "[aria-label=Files] [role=option]")
 			run("find", "role", "option", "click", "--name", "not-an-image.png", "--exact")
-			run("wait", "--fn", `document.querySelector('#composer-text').value === '@not-an-image.png ' && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('not-an-image.png') && !document.querySelector('[aria-label="Attachments"] img')`)
+			run("wait", "--fn", `document.querySelector('#composer-text').value === "@'not-an-image.png' " && document.querySelector('[aria-label="Attachments"] li')?.textContent.includes('not-an-image.png') && !document.querySelector('[aria-label="Attachments"] img')`)
 			run("find", "role", "button", "click", "--name", "Remove not-an-image.png", "--exact")
 			run("find", "role", "button", "click", "--name", "Attach", "--exact")
 			run("find", "role", "menuitem", "click", "--name", "Attach path on Details fixture", "--exact")
@@ -251,6 +254,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("find", "role", "button", "click", "--name", "Reference", "--exact")
 			run("wait", "--fn", `document.querySelector('#composer-text').value === '[Selected dialog] [Selected message] ' && !document.querySelector('[aria-label="Attachments"]')`)
 			run("find", "role", "link", "click", "--name", "Run output", "--exact")
+			run("wait", "--fn", `document.querySelector('#activity-details')?.textContent.includes('Batch')`)
 			run("wait", "--fn", `(() => { const mark = document.querySelector('#activity-details mark'); if (mark?.textContent !== 'native run line 130\nnative run line 131\nnative run line 132') return false; const r = mark.getBoundingClientRect(); const pane = document.querySelector('#activity-details > .overflow-y-auto'); return pane.scrollTop > 0 && r.top >= pane.getBoundingClientRect().top && r.bottom <= pane.getBoundingClientRect().bottom; })()`)
 			run("find", "role", "button", "click", "--name", "Close details", "--exact")
 			run("find", "role", "link", "click", "--name", "Unavailable output", "--exact")

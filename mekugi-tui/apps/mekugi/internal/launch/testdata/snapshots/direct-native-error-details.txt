@@ -18,4 +18,4 @@
 ❯ preserve draft 
 ────────────────────────────────────────────────────────────────────────────────────────
   5h 88% left · Weekly 79% left
-  Main • Error details • /tmp/ws • ctrl+e view
+  Main • ◐ 1 • Error details • /tmp/ws • ctrl+e view

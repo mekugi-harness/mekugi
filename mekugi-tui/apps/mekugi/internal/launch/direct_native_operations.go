@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
@@ -192,32 +193,75 @@ type directInputTurnStart struct {
 	completed []string
 }
 
+// Display the first input while native turn admission is still in flight.
+type directFirstInput struct {
+	clientID string
+	turnID   string
+	entry    activity.Entry
+}
+
 func (c *directNativeConnection) startInputTurn(ctx context.Context, threadID string, input []map[string]any) error {
 	start := &directInputTurnStart{threadID: threadID}
+	params := map[string]any{"threadId": threadID, "input": input}
+	var clientID string
 	c.mu.Lock()
+	if _, pending := c.firstInputs[threadID]; !pending && len(c.items[threadID]) == 0 {
+		content, err := json.Marshal(input)
+		if err != nil {
+			c.mu.Unlock()
+			return err
+		}
+		message, spans := extractUserMessage(content)
+		clientID = rand.Text()
+		params["clientUserMessageId"] = clientID
+		c.seq++
+		c.firstInputs[threadID] = directFirstInput{
+			clientID: clientID,
+			entry: activity.Entry{
+				Facts: activity.Facts{
+					Seq: c.seq, Agent: "You", Kind: "user", Text: message, Spans: spans,
+					Observed: time.Now(), Unconfirmed: true,
+				},
+				Revision: 1,
+			},
+		}
+		c.publishLocked()
+	}
 	c.inputTurnStarts = append(c.inputTurnStarts, start)
 	c.mu.Unlock()
 
 	var reply struct {
-		Turn binding.Turn `json:"turn"`
+		Turn struct {
+			binding.Turn
+			StartedAt *int64 `json:"startedAt"`
+		} `json:"turn"`
 	}
-	err := c.wire.Call(ctx, "turn/start", map[string]any{
-		"threadId": threadID,
-		"input":    input,
-	}, &reply)
+	err := c.wire.Call(ctx, "turn/start", params, &reply)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.inputTurnStarts = slices.DeleteFunc(c.inputTurnStarts, func(request *directInputTurnStart) bool {
 		return request == start
 	})
+	if first, ok := c.firstInputs[threadID]; ok && first.clientID == clientID {
+		if err != nil || reply.Turn.ID == "" || slices.Contains(start.completed, reply.Turn.ID) {
+			delete(c.firstInputs, threadID)
+			c.publishLocked()
+		} else {
+			first.turnID = reply.Turn.ID
+			c.firstInputs[threadID] = first
+		}
+	}
 	if err != nil {
 		return err
+	}
+	if threadID == c.sideThread && c.sideFirstTurn == "" {
+		c.sideFirstTurn = reply.Turn.ID
 	}
 	if threadID != "" && (threadID == c.mainThread || threadID == c.sideThread) &&
 		reply.Turn.ID != "" && reply.Turn.Status == "inProgress" &&
 		c.activeTurnForLocked(threadID) == "" && !slices.Contains(start.completed, reply.Turn.ID) {
-		c.setActiveInputTurnLocked(threadID, reply.Turn.ID)
+		c.setActiveInputTurnLocked(threadID, reply.Turn.ID, reply.Turn.StartedAt)
 		c.publishLocked()
 	}
 	return nil
@@ -509,20 +553,24 @@ func (c *directNativeConnection) startSide(ctx context.Context, promptText strin
 		return errors.New("no active thread")
 	}
 	var resp directThreadStartResponse
-	if err := c.wire.Call(ctx, "thread/fork", map[string]any{
+	params := map[string]any{
 		"threadId":     mainID,
 		"threadSource": "mekugi_side",
-	}, &resp); err != nil {
+		"excludeTurns": true,
+	}
+	if err := c.wire.Call(ctx, "thread/fork", params, &resp); err != nil {
 		return fmt.Errorf("fork side thread: %w", err)
 	}
 	sideID := resp.Thread.ID
 	c.mu.Lock()
 	c.sideThread = sideID
+	c.sideFirstTurn = ""
 	c.sideModel, c.sideEffort = resp.Model, resp.ReasoningEffort
 	c.inputThread = sideID
 	c.displayedThread = sideID
 	c.threadCallers[sideID] = sessionpresentation.SideCaller
-	c.hydrateThreadTurnsLocked(sideID, resp.Thread.Turns)
+	c.applyThreadUsageLocked(sideID, resp.Thread.TokenUsage)
+	c.observeThreadSkillsLocked(sideID, resp.Thread.Extra.Skills)
 	c.publishLocked()
 	c.mu.Unlock()
 	return c.startInputTurn(ctx, sideID, appserver.Input(promptText))
@@ -539,7 +587,9 @@ func (c *directNativeConnection) handleCloseSide(ctx context.Context) error {
 		return err
 	}
 	c.mu.Lock()
+	delete(c.firstInputs, sideID)
 	c.sideThread = ""
+	c.sideFirstTurn = ""
 	c.sideModel, c.sideEffort = "", ""
 	c.sideActiveTurn = ""
 	c.sideQueue = directQueueState{}
@@ -954,11 +1004,7 @@ func (c *directNativeConnection) handleOutputDemand(demand sessionapi.NativeOutp
 		if rec == nil {
 			continue
 		}
-		var lines []string
-		if rec.output != "" {
-			lines = strings.Split(strings.TrimSuffix(rec.output, "\n"), "\n")
-		}
-		view := activityfeed.OutputView{Lines: lines, Done: rec.entry.OutputComplete}
+		view := activityfeed.OutputView{Lines: directOutputLines(rec.output), Done: rec.entry.OutputComplete}
 		if rec.itemType == "commandExecution" && len(rec.entry.Values) != 0 {
 			value := rec.entry.Values[len(rec.entry.Values)-1]
 			view.Exited, view.Exit = value.Exited, value.ExitCode

@@ -306,6 +306,123 @@ func TestDirectNativeResumeStartupDismissStartsFresh(t *testing.T) {
 	}
 }
 
+func TestUISnapshotNativeFirstInputWhileTurnStarts(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		name := "accepted"
+		if reject {
+			name = "rejected"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newNativeParitySnapshot(t)
+			entered := make(chan string, 1)
+			release := make(chan struct{})
+			f.server.mu.Lock()
+			f.server.overrides["turn/start"] = func(raw jsontext.Value) any {
+				var p struct {
+					ClientID string `json:"clientUserMessageId"`
+				}
+				_ = json.Unmarshal(raw, &p)
+				entered <- p.ClientID
+				select {
+				case <-release:
+				case <-f.ctx.Done():
+					return mockRPCError("fixture canceled")
+				}
+				if reject {
+					return mockRPCError("admission rejected")
+				}
+				return jsontext.Value(`{"turn":{"id":"first-turn","status":"inProgress"}}`)
+			}
+			f.server.mu.Unlock()
+
+			before := f.await(func(ev sessionapi.NativeEvent) bool { return ev.Frame.View.Draft.Available })
+			if rows := f.rows(before, 76, 12); !strings.Contains(rows[0], "mekugi-app-server/test") {
+				t.Fatalf("expected welcome before sending, got %q", rows[0])
+			}
+			const prompt = "Check the parser."
+			submitted := make(chan error, 1)
+			go func() {
+				_, err := f.conn.Send(f.ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{
+					Composer: &sessionapi.NativeComposerInput{Draft: composer.Draft{Text: prompt}},
+				})
+				submitted <- err
+			}()
+			var clientID string
+			select {
+			case clientID = <-entered:
+			case <-f.ctx.Done():
+				t.Fatal("turn/start did not reach the mock server")
+			}
+			if clientID == "" {
+				t.Fatal("turn/start did not supply a user message identity")
+			}
+			pending := f.await(func(ev sessionapi.NativeEvent) bool {
+				return len(ev.Frame.Main.Entries) == 1 && ev.Frame.Main.Entries[0].Unconfirmed
+			})
+			seq := pending.Frame.Main.Entries[0].Seq
+			if !reject {
+				f.assert("first-input-before-ack", pending, 76, 12)
+			}
+			close(release)
+			err := <-submitted
+			if reject {
+				if err == nil {
+					t.Fatal("turn admission succeeded unexpectedly")
+				}
+				f.await(func(ev sessionapi.NativeEvent) bool { return len(ev.Frame.Main.Entries) == 0 })
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.await(func(ev sessionapi.NativeEvent) bool {
+				return ev.Frame.View.Interrupt.Turn == "first-turn" && len(ev.Frame.Main.Entries) == 1
+			})
+			readStarted, releaseRead, readDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			f.server.mu.Lock()
+			f.server.overrides["thread/read"] = func(jsontext.Value) any {
+				close(readStarted)
+				select {
+				case <-releaseRead:
+					return jsontext.Value(`{"thread":{"id":"thr-main","turns":[],
+						"tokenUsage":{"estimatedCostUsd":0.12},"extra":{"skills":["review"]}}}`)
+				case <-f.ctx.Done():
+					return mockRPCError("fixture canceled")
+				}
+			}
+			f.server.mu.Unlock()
+			go func() {
+				f.conn.reloadThreadTranscript(f.ctx, "thr-main")
+				close(readDone)
+			}()
+			select {
+			case <-readStarted:
+			case <-f.ctx.Done():
+				t.Fatal("stale thread read did not reach the mock server")
+			}
+			f.notify("item/completed", `{"threadId":"thr-main","turnId":"first-turn",
+				"item":{"id":"pre-turn-compaction","type":"contextCompaction"}}`)
+			f.notify("item/completed", `{"threadId":"thr-main","turnId":"first-turn",
+				"item":{"id":"native-user","type":"userMessage","clientId":"`+clientID+`",
+				"content":[{"type":"text","text":"`+prompt+`"}]}}`)
+			accepted := f.await(func(ev sessionapi.NativeEvent) bool {
+				return len(ev.Frame.Main.Entries) == 2 && !ev.Frame.Main.Entries[0].Unconfirmed
+			})
+			if entries := accepted.Frame.Main.Entries; entries[0].Seq != seq || entries[0].Text != prompt || entries[1].Kind != "compaction" {
+				t.Fatalf("native user item did not replace the pending row in place: %+v", entries)
+			}
+			close(releaseRead)
+			<-readDone
+			refreshed := f.await(func(ev sessionapi.NativeEvent) bool {
+				return ev.Frame.View.Caption.CostKnown && len(ev.Frame.View.Info.Skills) == 1
+			})
+			if entries := refreshed.Frame.Main.Entries; len(entries) != 2 || entries[0].Text != prompt {
+				t.Fatalf("an older read displaced live first input: %+v", entries)
+			}
+		})
+	}
+}
+
 func TestDirectNativeResumeTurnStartAcknowledgment(t *testing.T) {
 	for _, tc := range []struct {
 		name, thread, input string
@@ -513,9 +630,20 @@ func TestUISnapshotNativeShellComposer(t *testing.T) {
 
 func TestUISnapshotNativeBTWAlongsideOneoff(t *testing.T) {
 	f := newNativeParitySnapshot(t)
+	f.notify("thread/tokenUsage/updated", `{
+		"threadId":"thr-main","tokenUsage":{"total":{"inputTokens":9000,"outputTokens":8000},"estimatedCostUsd":9.99}
+	}`)
 	f.send(sessionapi.NativeOperation{Command: new("/oneoff Check the parser.")})
 	f.notify("turn/started", `{"threadId":"thr-side","turn":{"id":"side-turn","status":"inProgress"}}`)
 	f.send(sessionapi.NativeOperation{Command: new("/btw Why did the tests fail?")})
+	f.notify("item/completed", `{
+		"threadId":"thr-side","turnId":"side-turn","item":{"id":"side-prompt","type":"userMessage","content":[
+			{"type":"text","text":"Check "},{"type":"localImage","path":"fixture.png"},{"type":"text","text":" for clues."}
+		]}
+	}`)
+	f.notify("thread/tokenUsage/updated", `{
+		"threadId":"thr-side","tokenUsage":{"total":{"inputTokens":1200,"outputTokens":36},"estimatedCostUsd":0.12}
+	}`)
 	f.notify("item/agentMessage/delta", `{
 		"threadId":"thr-side","turnId":"side-turn","itemId":"side-answer","delta":"Reviewing the parser."
 	}`)
@@ -525,7 +653,7 @@ func TestUISnapshotNativeBTWAlongsideOneoff(t *testing.T) {
 	ev := f.await(func(ev sessionapi.NativeEvent) bool {
 		return ev.Frame.View.Displayed.ID == "thr-side" && ev.Frame.View.BTW != nil && len(ev.Frame.View.BTW.Answer) > 0
 	})
-	const width = 70
+	const width = 92
 	uisnapshot.AssertTerminal(t, "testdata/snapshots/native-parity-btw-alongside-oneoff.txt", f.rows(ev, width, 20), width)
 }
 
@@ -559,6 +687,42 @@ func TestUISnapshotNativeProcessFamily(t *testing.T) {
 	f.assert("process-family-retained", settled, 76, 18)
 }
 
+func TestUISnapshotNativeWorkingFooter(t *testing.T) {
+	f := newNativeParitySnapshot(t)
+	f.server.mu.Lock()
+	f.server.overrides["thread/subtree/list"] = func(jsontext.Value) any {
+		return jsontext.Value(`{"data":[
+			{"id":"thr-main","agentPath":"/root","status":{"type":"active"}},
+			{"id":"thr-worker","agentPath":"/root/worker","status":{"type":"idle"},"agentStatus":{"completed":null},
+			 "tokenUsage":{"total":{"inputTokens":300,"outputTokens":6},"estimatedCostUsd":0.18}},
+			{"id":"thr-interrupted","agentPath":"/root/interrupted","status":{"type":"idle"},"agentStatus":"interrupted"}
+		]}`)
+	}
+	f.server.bgTerminals = []map[string]any{
+		{"threadId": "thr-main", "turnId": "turn-1", "itemId": "one", "processId": "one"},
+		{"threadId": "thr-main", "turnId": "turn-1", "itemId": "two", "processId": "two"},
+	}
+	f.server.mu.Unlock()
+	f.conn.refreshSubtree(f.ctx, "thr-main")
+	if err := f.conn.refreshProcesses(f.ctx, "thr-main"); err != nil {
+		t.Fatal(err)
+	}
+	f.notify("thread/name/updated", `{"threadId":"thr-main","threadName":"Check the parser"}`)
+	f.notify("thread/skills/updated", `{"threadId":"thr-main","names":["review"]}`)
+	f.notify("turn/started", `{"threadId":"thr-main","turn":{"id":"turn-1","startedAt":1699999990}}`)
+	f.notify("item/completed", `{"threadId":"thr-main","turnId":"turn-1",
+		"item":{"type":"userMessage","id":"parser-prompt","content":[{"type":"text","text":"Check the parser."}]}}`)
+	f.notify("thread/tokenUsage/updated", `{
+		"threadId":"thr-main","tokenUsage":{"total":{"inputTokens":1200,"outputTokens":36},"estimatedCostUsd":0.12}
+	}`)
+	ev := f.await(func(ev sessionapi.NativeEvent) bool {
+		v := ev.Frame.View
+		return v.Status.Processes == 2 && v.Status.Session.Running && v.Caption.CostKnown &&
+			len(v.Info.Skills) == 1 && v.Info.Title == "Check the parser"
+	})
+	f.assert("working-footer", ev, 112, 16)
+}
+
 func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 	f := newNativeParitySnapshot(t)
 	f.notify("item/started", `{"threadId":"thr-main","turnId":"turn-1","item":{"type":"reasoning","id":"thinking"}}`)
@@ -571,7 +735,13 @@ func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 			"summary":["Inspecting the parser\n\nCompare valid and invalid inputs."],"content":[]}
 	}`)
 	for _, item := range []string{
-		`{"id":"read","type":"commandExecution","command":"cat fixture.txt","status":"completed","exitCode":0}`,
+		`{"id":"read","type":"commandExecution","command":"cat fixture.txt && rg invalid .","status":"completed","exitCode":0,
+			"display":{"script":"cat fixture.txt && rg invalid .","segments":["cat fixture.txt","rg invalid ."],"stepKinds":["read","search"]},
+			"aggregatedOutput":"one\nprogress 10%\rprogress 100%\n"}`,
+		`{"id":"image-1","type":"imageView","path":"/tmp/ws/one.png"}`,
+		`{"id":"image-2","type":"imageView","path":"/tmp/ws/two.png"}`,
+		`{"id":"image-3","type":"imageView","path":"/tmp/ws/three.png"}`,
+		`{"id":"image-4","type":"imageView","path":"/tmp/ws/four.png"}`,
 		`{"id":"test","type":"commandExecution","command":"go test ./parser","status":"failed","exitCode":2}`,
 		`{"id":"status","type":"commandExecution","command":"git status --short","status":"completed","exitCode":0}`,
 		`{"id":"answer","type":"agentMessage","phase":"final_answer","text":"The fixture is invalid."}`,
@@ -579,7 +749,7 @@ func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 		f.notify("item/completed", `{"threadId":"thr-main","turnId":"turn-1","item":`+item+`}`)
 	}
 	ev := f.await(func(ev sessionapi.NativeEvent) bool {
-		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 5
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 9
 	})
 	const width = 76
 	rows := append(f.rows(ev, width, 24), "plain after transcript")

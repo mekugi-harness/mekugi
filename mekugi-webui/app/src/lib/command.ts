@@ -30,38 +30,59 @@ function commandTail(output: string): Pick<Value, "tail" | "tailOmitted" | "tail
   return { tail: tail.length ? tail : undefined, tailOmitted, tailClipped };
 }
 
-export function commandValues(item: CommandItem): Value[] {
-  const workdir = item.display?.effectiveCwd || item.cwd || undefined;
-  const result: Value = {
+const commandVerbs: Readonly<Record<string, string>> = {
+  read: "Read",
+  search: "Search",
+  list: "List",
+  listFiles: "List",
+  inspect: "Inspect",
+  stage: "Stage",
+  commit: "Commit",
+  skill: "Skill",
+};
+
+function commandVerb(kind: string | undefined): string {
+  return (kind && commandVerbs[kind]) || "Run";
+}
+
+function commandSegments(item: CommandItem): string[] {
+  return item.display?.segments ?? (item.commandActions ?? []).map((action) => action.command);
+}
+
+export function commandResult(item: CommandItem): Value {
+  return {
     kind: "op",
     verb: "Run",
-    workdir,
+    workdir: item.display?.effectiveCwd || item.cwd || undefined,
+    batchExit: commandSegments(item).length > 1,
     running: item.status === "inProgress",
     failed: item.status === "failed" || item.status === "declined",
     exitCode: item.exitCode ?? undefined,
     duration: item.durationMs ?? undefined,
-    ...commandTail(item.aggregatedOutput ?? ""),
   };
-  const segments =
-    item.display?.segments ?? (item.commandActions ?? []).map((action) => action.command);
+}
+
+export function commandValues(item: CommandItem): Value[] {
+  const segments = commandSegments(item);
+  const kinds = item.display?.stepKinds;
+  const actions = item.commandActions ?? [];
   if (segments.length < 2)
     return [
       {
-        ...result,
+        ...commandResult(item),
+        verb: commandVerb(kinds?.[0] ?? (actions.length === 1 ? actions[0].type : undefined)),
         code: item.display?.segments[0] ?? item.display?.script ?? item.command,
         lang: "bash",
+        ...commandTail(item.aggregatedOutput ?? ""),
       },
     ];
-  // Source steps describe the script, not which steps executed.
-  // Native completion and output belong only to the whole invocation.
-  return [
-    ...segments.map((code) => ({
-      kind: "op",
-      verb: "Run",
-      code,
-      lang: "bash",
-      workdir,
-    })),
-    { ...result, batchExit: true },
-  ];
+  const workdir = item.display?.effectiveCwd || item.cwd || undefined;
+  // Source steps describe the script, not which steps ran. Details owns the result.
+  return segments.map((code, i) => ({
+    kind: "op",
+    verb: commandVerb(kinds?.[i] ?? (!item.display ? actions[i]?.type : undefined)),
+    code,
+    lang: "bash",
+    workdir,
+  }));
 }

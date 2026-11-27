@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/vt"
 )
@@ -87,13 +88,17 @@ func TestAppServerExecTrackNativeCodex(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
-		afterPrompt: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), _ *vt.Emulator) {
+		afterPrompt: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), screen *vt.Emulator) {
 			expandHostActivity(t, outer)
 			awaitFrame(func(frame string) bool {
 				// These are authored steps, not individual execution records.
-				return hostRowsInOrder(frame, `printf 'HOOK_%s\n' ONE`, `./git push origin main`,
-					`printf 'HOOK_%s\n' RECOVERED`, `printf 'HOOK_%s\n' TWO >&2`, "false", `printf 'HOOK_%s\n' NEVER`,
-					"combined output · exit 1") && strings.Contains(frame, "┆ HOOK_RECOVERED") &&
+				return !strings.Contains(frame, "combined output") &&
+					hostRowsInOrder(frame, `printf 'HOOK_%s\n' ONE`, `./git push origin main`,
+						`printf 'HOOK_%s\n' RECOVERED`, `printf 'HOOK_%s\n' TWO >&2`, "false", `printf 'HOOK_%s\n' NEVER`)
+			})
+			openHostCommandDetails(t, outer, screen, `printf 'HOOK_%s\n' ONE`)
+			awaitFrame(func(frame string) bool {
+				return strings.Contains(frame, "exit 1") && strings.Contains(frame, "┆ HOOK_RECOVERED") &&
 					strings.Contains(frame, "┆ HOOK_TWO")
 			})
 		},
@@ -126,32 +131,26 @@ func TestAppServerExecTrackNativeCodexDash(t *testing.T) {
 		managedRuntime: true, workspace: workspace,
 		environment: []string{"SHELL=/bin/sh"}, codexArgs: []string{"-c", `sandbox_mode="danger-full-access"`},
 		completedText: provider.finalText,
-		duringTurn: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), _ *vt.Emulator) {
+		duringTurn: func(t *testing.T, outer io.Writer, await func(string), _ func(func(string) bool), screen *vt.Emulator) {
 			expandHostActivity(t, outer)
-			awaitFrame(func(frame string) bool {
-				return hostRowsInOrder(frame, "Running combined output", "┆ DASH_FIRST")
-			})
+			await(`printf '%s_%s\n' DASH FIRST`)
+			openHostCommandDetails(t, outer, screen, `printf '%s_%s\n' DASH FIRST`)
+			await("┆ DASH_FIRST")
+			if _, err := io.WriteString(outer, "\x1b"); err != nil {
+				t.Fatal(err)
+			}
 			writeHostFixture(t, gate, "", 0600)
 		},
 		afterPrompt: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), screen *vt.Emulator) {
 			awaitFrame(func(frame string) bool {
-				return strings.Count(frame, "combined output") == 1 && hostRowsInOrder(frame, `printf '%s_%s\n' DASH FIRST`, `printf '%s_%s\n' DASH SECOND >&2`,
-					"false", "touch skipped", "combined output · exit 1", "┆ DASH_FIRST", "┆ DASH_SECOND")
+				return !strings.Contains(frame, "combined output") &&
+					hostRowsInOrder(frame, `printf '%s_%s\n' DASH FIRST`, `printf '%s_%s\n' DASH SECOND >&2`, "false", "touch skipped")
 			})
-			for y, row := range strings.Split(screen.String(), "\n") {
-				if !strings.Contains(row, "combined output · exit 1") {
-					continue
-				}
-				if _, err := fmt.Fprintf(outer, "\x1b[<0;10;%dM\x1b[<0;10;%dm", y+1, y+1); err != nil {
-					t.Fatal(err)
-				}
-				awaitFrame(func(frame string) bool {
-					_, details, ok := strings.Cut(frame, "── ")
-					return ok && hostRowsInOrder(details, "┆ DASH_FIRST", "┆ DASH_SECOND", "y copy")
-				})
-				return
-			}
-			t.Fatalf("no Dash batch output row:\n%s", screen.String())
+			openHostCommandDetails(t, outer, screen, `printf '%s_%s\n' DASH FIRST`)
+			awaitFrame(func(frame string) bool {
+				_, details, ok := strings.Cut(frame, "── ")
+				return ok && hostRowsInOrder(details, "┆ DASH_FIRST", "┆ DASH_SECOND", "y copy")
+			})
 		},
 	})
 	if _, err := os.Stat(filepath.Join(workspace, "skipped")); !os.IsNotExist(err) {
@@ -197,11 +196,15 @@ text("HOST_RESULT_VERIFIED");`, e2eMustMarshalJSON(bash), e2eMustMarshalJSON(bef
 		managedRuntime: true, workspace: workspace,
 		environment: []string{"SHELL=" + bash, "TMPDIR=" + root},
 		codexArgs:   []string{"-c", `sandbox_mode="danger-full-access"`}, completedText: provider.finalText,
-		afterPrompt: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), _ *vt.Emulator) {
+		afterPrompt: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), screen *vt.Emulator) {
 			expandHostActivity(t, outer)
 			awaitFrame(func(frame string) bool {
-				return hostRowsInOrder(frame, "In "+moved, "cat workspace.txt", "false", "touch skipped",
-					"combined output · exit 1", "┆ Moved workspace evidence.")
+				return !strings.Contains(frame, "combined output") &&
+					hostRowsInOrder(frame, "In "+moved, "cat workspace.txt", "false", "touch skipped")
+			})
+			openHostCommandDetails(t, outer, screen, "cat workspace.txt")
+			awaitFrame(func(frame string) bool {
+				return strings.Contains(frame, "exit 1") && strings.Contains(frame, "┆ Moved workspace evidence.")
 			})
 		},
 	})
@@ -241,14 +244,19 @@ func TestAppServerExecTrackNativeCodexSandbox(t *testing.T) {
 				completedText: provider.finalText,
 				duringTurn: func(t *testing.T, outer io.Writer, await func(string), _ func(func(string) bool), _ *vt.Emulator) {
 					expandHostActivity(t, outer)
-					await("Running combined output")
+					await(`printf 'SANDBOX_%s\n' ONE`)
 					writeHostFixture(t, filepath.Join(workspace, "stage", "ready"), "", 0600)
 				},
-				afterPrompt: func(_ *testing.T, _ io.Writer, _ func(string), awaitFrame func(func(string) bool), _ *vt.Emulator) {
+				afterPrompt: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), screen *vt.Emulator) {
 					awaitFrame(func(frame string) bool {
-						return hostRowsInOrder(frame, "exit 9", `printf 'SANDBOX_%s\n' ONE`, `printf 'SANDBOX_%s\n' TWO >&2`,
-							"false", `printf 'SANDBOX_%s\n' NEVER`, "combined output · exit 1") &&
-							strings.Contains(frame, "┆ SANDBOX_ONE") && strings.Contains(frame, "┆ SANDBOX_TWO")
+						return !strings.Contains(frame, "combined output") &&
+							hostRowsInOrder(frame, "exit 9", `printf 'SANDBOX_%s\n' ONE`, `printf 'SANDBOX_%s\n' TWO >&2`,
+								"false", `printf 'SANDBOX_%s\n' NEVER`)
+					})
+					openHostCommandDetails(t, outer, screen, `printf 'SANDBOX_%s\n' ONE`)
+					awaitFrame(func(frame string) bool {
+						return strings.Contains(frame, "exit 1") && strings.Contains(frame, "┆ SANDBOX_ONE") &&
+							strings.Contains(frame, "┆ SANDBOX_TWO")
 					})
 				},
 			})
@@ -266,6 +274,21 @@ func expandHostActivity(t *testing.T, outer io.Writer) {
 	if _, err := io.WriteString(outer, "\x05\x05"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func openHostCommandDetails(t *testing.T, outer io.Writer, screen *vt.Emulator, command string) {
+	t.Helper()
+	frame := screen.String()
+	for y, row := range strings.Split(frame, "\n") {
+		if before, _, found := strings.Cut(row, command); found {
+			x := utf8.RuneCountInString(before) + 1
+			if _, err := fmt.Fprintf(outer, "\x1b[<0;%d;%dM\x1b[<0;%d;%dm", x, y+1, x, y+1); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatalf("no command row for %q:\n%s", command, frame)
 }
 
 // Match each substring on a different row, in order. Matching within a single

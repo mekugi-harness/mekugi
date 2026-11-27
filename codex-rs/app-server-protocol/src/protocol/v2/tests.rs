@@ -3358,17 +3358,57 @@ fn command_display_preserves_steps_and_only_attributes_a_resolved_cd() {
             duration: None,
         });
         let wire = serde_json::to_value(ThreadItemPayload::from(command)).expect("command item");
+        assert_eq!(wire["display"]["script"], json!(script));
         assert_eq!(
-            wire["display"],
-            json!({
-                "script": script,
-                "effectiveCwd": expected_dir.map(|dir| cwd.as_path().join(dir)),
-                "segments": steps
-            }),
+            wire["display"]["effectiveCwd"],
+            json!(expected_dir.map(|dir| cwd.as_path().join(dir))),
             "{script}"
         );
+        assert_eq!(wire["display"]["segments"], json!(steps), "{script}");
         assert_eq!(wire["cwd"], json!(cwd), "{script}");
         assert_eq!(wire["exitCode"], json!(exit), "{script}");
+    }
+}
+
+#[test]
+fn command_display_classifies_authored_steps_without_assigning_execution_results() {
+    use crate::protocol::item_builders::command_display;
+
+    let script = "mcat src.rs && rg keyword .; mfinspect src.rs; git -C sub add src.rs; git -C sub commit -m save; skills-mgr get demo; printf done";
+    let argv = ["bash", "-lc", script].map(str::to_owned);
+    let display = command_display(&argv, None, Some(1), "").expect("command display");
+    assert_eq!(
+        display.step_kinds,
+        vec![
+            CommandStepKind::Read,
+            CommandStepKind::Search,
+            CommandStepKind::Inspect,
+            CommandStepKind::Stage,
+            CommandStepKind::Commit,
+            CommandStepKind::Skill,
+            CommandStepKind::Run,
+        ]
+    );
+    assert_eq!(display.segments.len(), display.step_kinds.len());
+
+    for (script, kind) in [
+        ("cat src.rs", CommandStepKind::Read),
+        (
+            "msymbol --workspace sub def src.rs Thing",
+            CommandStepKind::Read,
+        ),
+        ("msymbol -- refs src.rs Thing", CommandStepKind::Search),
+        ("command -v git", CommandStepKind::Inspect),
+        ("mcat .agents/skills/demo/SKILL.md", CommandStepKind::Skill),
+        ("rg --files", CommandStepKind::List),
+        ("git commit -m 'save changes'", CommandStepKind::Commit),
+        ("printf '%s' 'git add src.rs'", CommandStepKind::Run),
+        ("git add src.rs | tee log", CommandStepKind::Run),
+        ("git commit -m save | tee log", CommandStepKind::Run),
+    ] {
+        let argv = ["bash", "-lc", script].map(str::to_owned);
+        let display = command_display(&argv, None, None, "").expect("command display");
+        assert_eq!(display.step_kinds, vec![kind], "{script}");
     }
 }
 

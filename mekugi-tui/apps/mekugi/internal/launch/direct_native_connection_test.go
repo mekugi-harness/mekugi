@@ -24,8 +24,10 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/terminalsession"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
+	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
@@ -157,7 +159,9 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 			id = "thr-btw"
 		}
 		return map[string]any{
-			"thread": map[string]any{"id": id, "cwd": "/tmp/ws"},
+			"thread":          map[string]any{"id": id, "cwd": "/tmp/ws"},
+			"model":           "gpt-5",
+			"reasoningEffort": "medium",
 		}
 	case "thread/subtree/list":
 		return map[string]any{
@@ -1031,7 +1035,22 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 		if strings.Contains(string(params), `"sessionStartSource":"clear"`) {
 			id = "thr-fresh"
 		}
-		return map[string]any{"thread": map[string]string{"id": id}}
+		return map[string]any{"thread": map[string]string{"id": id}, "reasoningEffort": "medium"}
+	}
+	mock.overrides["thread/fork"] = func(jsontext.Value) any {
+		mock.mu.Lock()
+		count := len(mock.params["thread/fork"])
+		mock.mu.Unlock()
+		if count == 1 {
+			return jsontext.Value(`{"thread":{"id":"thr-side"},"model":"gpt-5","reasoningEffort":"xhigh"}`)
+		}
+		return jsontext.Value(`{"thread":{"id":"thr-btw"},"model":"chosen","reasoningEffort":"high"}`)
+	}
+	mock.overrides["thread/read"] = func(params jsontext.Value) any {
+		return jsontext.Value(`{"thread":{"id":"thr-side","turns":[
+			{"id":"parent-turn","items":[{"id":"old-command","type":"commandExecution","command":"echo inherited","status":"completed"}]},
+			{"id":"side-turn","items":[{"id":"side-answer","type":"agentMessage","text":"One-off answer"}]}
+		]}}`)
 	}
 	mock.mu.Unlock()
 	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, []string{"--yolo"}, "", "")
@@ -1046,8 +1065,21 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	if err := command("/oneoff"); err == nil {
 		t.Fatal("/oneoff without a task succeeded")
 	}
+	if err := command("/effort xhigh"); err != nil {
+		t.Fatal(err)
+	}
 	if err := command("/oneoff First task"); err != nil {
 		t.Fatal(err)
+	}
+	awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Displayed.ID == "thr-side" && ev.Frame.View.Caption.Effort == "xhigh"
+	})
+	conn.reloadThreadTranscript(ctx, "thr-side")
+	conn.mu.Lock()
+	empty := len(conn.publicationForThreadLocked("thr-side").Entries) == 0
+	conn.mu.Unlock()
+	if !empty {
+		t.Fatal("read before One-off starts displayed inherited turns")
 	}
 	conn.handleNotification(appserver.Message{Method: "thread/settings/updated", Params: jsontext.Value(`{
 		"threadId":"thr-side","threadSettings":{"model":"gpt-6.2-sol","effort":"low"}
@@ -1072,6 +1104,13 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	conn.handleNotification(appserver.Message{Method: "turn/started", Params: jsontext.Value(`{
 		"threadId":"thr-side","turn":{"id":"side-turn"}
 	}`)})
+	conn.reloadThreadTranscript(ctx, "thr-side")
+	conn.mu.Lock()
+	entries := conn.publicationForThreadLocked("thr-side").Entries
+	conn.mu.Unlock()
+	if len(entries) != 1 || entries[0].Text != "One-off answer" {
+		t.Fatalf("reattach displayed inherited Main history: %+v", entries)
+	}
 	for _, operation := range []sessionpresentation.ComposerOperation{
 		sessionpresentation.SubmitComposer, sessionpresentation.QueueComposer,
 	} {
@@ -1112,6 +1151,8 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	defer mock.mu.Unlock()
 	if forks := mock.params["thread/fork"]; len(forks) != 2 || !strings.Contains(string(forks[1]), `"threadId":"thr-main"`) {
 		t.Fatalf("only confirmed replacement should fork Main again: %s", forks)
+	} else if strings.Contains(string(forks[0]), `"model_reasoning_effort"`) {
+		t.Fatalf("One-off should inherit native settings, not the stale client cache: %s", forks[0])
 	}
 	if archived := mock.params["thread/archive"]; len(archived) != 1 || !strings.Contains(string(archived[0]), `"threadId":"thr-side"`) {
 		t.Fatalf("replacement did not archive the old One-off: %s", archived)
@@ -1126,9 +1167,10 @@ func TestDirectNativeOneoffReplacementAndClear(t *testing.T) {
 	if inputs := mock.params["turn/start"]; len(inputs) != 2 || !strings.Contains(string(inputs[1]), `"text":"Replacement task"`) {
 		t.Fatalf("expected one replacement submission: %s", inputs)
 	}
-	if updates := mock.params["thread/settings/update"]; len(updates) != 1 ||
-		!strings.Contains(string(updates[0]), `"threadId":"thr-side"`) || !strings.Contains(string(updates[0]), `"effort":"high"`) {
-		t.Fatalf("One-off picker did not target its own thread: %s", updates)
+	if updates := mock.params["thread/settings/update"]; len(updates) != 2 ||
+		!strings.Contains(string(updates[0]), `"threadId":"thr-main"`) || !strings.Contains(string(updates[0]), `"effort":"xhigh"`) ||
+		!strings.Contains(string(updates[1]), `"threadId":"thr-side"`) || !strings.Contains(string(updates[1]), `"effort":"high"`) {
+		t.Fatalf("Main and One-off effort settings did not target their own threads: %s", updates)
 	}
 	starts := mock.params["thread/start"]
 	if len(starts) != 2 {
@@ -1212,6 +1254,26 @@ func TestDirectNativeUserMessageKeepsOnlyTypedSkillRange(t *testing.T) {
 	want := []activity.TextSpan{{Start: len(prefix), End: len(prefix + "$demo"), Kind: activity.SkillToken}}
 	if text != prefix+"$demo, $other" || !slices.Equal(spans, want) {
 		t.Fatalf("skill span projection = %q, %+v; want exact bound range %+v", text, spans, want)
+	}
+}
+
+func TestDirectNativeUserMessageProjectsImageParts(t *testing.T) {
+	text, spans := extractUserMessage(jsontext.Value(`[
+		{"type":"text","text":"before "},
+		{"type":"image","url":"opaque"},
+		{"type":"text","text":" after; browser [Image photo.png]","text_elements":[
+			{"byteRange":{"start":16,"end":33},"placeholder":"[Image photo.png]"}
+		]},
+		{"type":"localImage","path":"/workspace/photo.png"}
+	]`))
+	if text != "before [Image 1] after; browser [Image photo.png]" || len(spans) != 2 {
+		t.Fatalf("image parts projected as %q with spans %+v", text, spans)
+	}
+	for i, want := range []string{"[Image 1]", "[Image photo.png]"} {
+		span := spans[i]
+		if span.Kind != activity.ImageToken || text[span.Start:span.End] != want {
+			t.Fatalf("image span %d: %+v in %q", i, span, text)
+		}
 	}
 }
 
@@ -1439,12 +1501,15 @@ func TestDirectNativeCommandDetailsFollowNativeExit(t *testing.T) {
 		conn.upsertWireItemLocked("thr-main", "turn-1", jsontext.Value(body), true)
 		return conn.itemsByID[directItemKey{"thr-main", "cmd-1"}]
 	}
-	rec := upsert(`{"type":"commandExecution","id":"cmd-1","command":"cd sub && example","cwd":"/tmp/ws","display":{"script":"cd sub && example","segments":["example"],"effectiveCwd":"/tmp/ws/sub"},"status":"inProgress","processId":"35","exitCode":null,"aggregatedOutput":"starting"}`)
+	rec := upsert(`{"type":"commandExecution","id":"cmd-1","command":"cd sub && example","cwd":"/tmp/ws","display":{"script":"cd sub && example","segments":["example"],"effectiveCwd":"/tmp/ws/sub"},"status":"inProgress","processId":"35","exitCode":null,"aggregatedOutput":"starting\rworking\t25%\r\n"}`)
 	if !rec.entry.ItemComplete || rec.entry.OutputComplete || rec.entry.Values[0].RowVerb() != "Running" {
 		t.Fatalf("item completion must not settle a running command: %+v", rec.entry)
 	}
 	if value := rec.entry.Values[0]; !value.ShowWorkdir || value.Workdir != "/tmp/ws/sub" || value.Code != "example" {
 		t.Fatalf("single command lost its effective directory: %+v", value)
+	}
+	if tail := rec.entry.Values[0].Tail; !slices.Equal(tail, []string{"working    25%"}) {
+		t.Fatalf("command tail did not normalize progress output: %q", tail)
 	}
 	if _, err := conn.Send(t.Context(), sessionapi.NativeTarget{}, sessionapi.NativeOperation{
 		Details: &sessionapi.NativeDetailRequest{Kind: sessionapi.NativeRunDetails, Source: rec.seq},
@@ -1454,6 +1519,9 @@ func TestDirectNativeCommandDetailsFollowNativeExit(t *testing.T) {
 	before := conn.details
 	if before.Output == nil || before.Output.View.Done || before.Output.View.Exited {
 		t.Fatalf("live output should have no exit: %+v", before)
+	}
+	if lines := before.Output.View.Lines; !slices.Equal(lines, []string{"working\t25%"}) {
+		t.Fatalf("Details output should normalize progress without changing tabs: %q", lines)
 	}
 	upsert(`{"type":"commandExecution","id":"cmd-1","command":"example","status":"declined","exitCode":null}`)
 	if conn.details.Output.View.Exited || conn.details.View.Pages[0].RowVerb() == "Ran" {
@@ -1518,7 +1586,7 @@ func TestDirectNativeRetainedRunLink(t *testing.T) {
 	}
 	conn.hydrateThreadTurnsLocked("thr-main", []directWireTurn{{
 		ID:    "turn-1",
-		Items: []jsontext.Value{jsontext.Value(`{"type":"commandExecution","id":"` + run + `","command":"/bin/bash -lc 'cd sub && cat a && cat b'","cwd":"/repo","commandActions":[{"type":"unknown","command":"cat"}],"display":{"script":"cd sub && cat a && cat b","effectiveCwd":"/repo/sub","segments":["cat a","cat b"]},"status":"failed","exitCode":-1,"aggregatedOutput":"one\ntwo\nthree\n"}`)},
+		Items: []jsontext.Value{jsontext.Value(`{"type":"commandExecution","id":"` + run + `","command":"/bin/bash -lc 'cd sub && cat a && cat b'","cwd":"/repo","commandActions":[{"type":"unknown","command":"cat"}],"display":{"script":"cd sub && cat a && cat b","effectiveCwd":"/repo/sub","segments":["cat a","cat b"],"stepKinds":["read","read"]},"status":"failed","exitCode":-1,"aggregatedOutput":"one\nold 25%\rtwo\r\nthree\n"}`)},
 	}})
 	batch := conn.itemsByID[directItemKey{"thr-main", run}].entry.Values
 	if len(batch) != 3 || batch[0].Code != "cat a" || batch[1].Code != "cat b" ||
@@ -1527,6 +1595,39 @@ func TestDirectNativeRetainedRunLink(t *testing.T) {
 		!batch[2].BatchExit || !batch[2].Exited || batch[2].ExitCode != -1 || batch[2].Output != 1 {
 		t.Fatalf("expected classified steps with one native batch result, got %+v", batch)
 	}
+	visible := conn.publicationForThreadLocked("thr-main").Entries[0]
+	if len(visible.Values) != 2 || visible.Values[0].Verb != "Read" || visible.Values[1].Verb != "Read" {
+		t.Fatalf("transcript should show only the authored steps: %+v", visible.Values)
+	}
+	if err := conn.handleOpenDetails(t.Context(), sessionapi.NativeDetailRequest{
+		Source: visible.Seq, Operation: visible.Values[1].Operation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if out := conn.details.Output; out == nil || !out.View.Exited || out.View.Exit != -1 ||
+		!slices.Equal(out.View.Lines, []string{"one", "two", "three"}) {
+		t.Fatalf("step Details should open the normalized invocation output: %+v", out)
+	}
+	const editPath = "/repo/sub/b"
+	const editDiff = "@@ -1 +1 @@\n-old\n+new\n"
+	conn.editReceipts = map[nativeEditItem][]nativeCapturedFile{
+		{"thr-main", "turn-1", run}: {{
+			path: editPath,
+			chunk: changes.Chunk{Workspace: "/repo", Review: diffmodel.ReviewFile{
+				BeforePath: editPath, AfterPath: editPath, Diff: editDiff,
+			}},
+		}},
+	}
+	if err := conn.handleOpenDetails(t.Context(), sessionapi.NativeDetailRequest{
+		Source: visible.Seq, Operation: visible.Values[1].Operation, Path: editPath, Edit: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if details := conn.details; len(details.View.Pages) != 4 || details.Output != nil ||
+		details.Selected != details.View.Pages[3].ID || details.View.Pages[3].Code != editDiff {
+		t.Fatalf("captured edit link should select the diff instead of batch output: %+v", details)
+	}
+
 	for _, tc := range []struct {
 		link      string
 		want      sessionpresentation.RunOutputRange

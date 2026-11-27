@@ -16,6 +16,7 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 	activityfeed "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
@@ -29,10 +30,32 @@ func directCommandTail(output string) ([]string, int) {
 		return nil, 0
 	}
 	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
-	if len(lines) <= directCommandTailLimit {
-		return lines, 0
+	omitted := max(0, len(lines)-directCommandTailLimit)
+	lines = lines[omitted:]
+	for i, line := range lines {
+		lines[i] = textsanitize.Safe(directOutputLine(line), false)
 	}
-	return lines[len(lines)-directCommandTailLimit:], len(lines) - directCommandTailLimit
+	return lines, omitted
+}
+
+func directOutputLines(output string) []string {
+	if output == "" {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = textsanitize.MarkdownSource(directOutputLine(line))
+	}
+	return lines
+}
+
+func directOutputLine(line string) string {
+	// CRLF ends the line; an earlier CR replaces the progress text on that line.
+	line = strings.TrimSuffix(line, "\r")
+	if at := strings.LastIndexByte(line, '\r'); at >= 0 {
+		line = line[at+1:]
+	}
+	return line
 }
 
 func (c *directNativeConnection) handleServerMessage(msg appserver.Message) {
@@ -43,10 +66,23 @@ func (c *directNativeConnection) handleServerMessage(msg appserver.Message) {
 	c.handleNotification(msg)
 }
 
-func (c *directNativeConnection) setActiveInputTurnLocked(threadID, turnID string) {
+func (c *directNativeConnection) setActiveInputTurnLocked(threadID, turnID string, startedAt *int64) {
+	var since time.Time
+	if startedAt != nil {
+		since = time.Unix(*startedAt, 0)
+	}
 	if threadID == c.sideThread {
+		if c.sideActiveTurn != turnID || !since.IsZero() {
+			c.sideTurnSince = since
+		}
 		c.sideActiveTurn = turnID
+		if c.sideFirstTurn == "" {
+			c.sideFirstTurn = turnID
+		}
 	} else {
+		if c.activeTurn != turnID || !since.IsZero() {
+			c.activeTurnSince = since
+		}
 		c.activeTurn = turnID
 		c.resetPredictionLocked("")
 	}
@@ -59,7 +95,8 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 		var p struct {
 			ThreadID string `json:"threadId"`
 			Turn     struct {
-				ID string `json:"id"`
+				ID        string `json:"id"`
+				StartedAt *int64 `json:"startedAt"`
 			} `json:"turn"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
@@ -68,10 +105,10 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			case c.btwThread:
 				c.btwRunning = true
 			case c.sideThread:
-				c.setActiveInputTurnLocked(c.sideThread, p.Turn.ID)
+				c.setActiveInputTurnLocked(c.sideThread, p.Turn.ID, p.Turn.StartedAt)
 			default:
 				if p.ThreadID == "" || p.ThreadID == c.mainThread {
-					c.setActiveInputTurnLocked(c.mainThread, p.Turn.ID)
+					c.setActiveInputTurnLocked(c.mainThread, p.Turn.ID, p.Turn.StartedAt)
 				}
 			}
 			c.publishLocked()
@@ -102,6 +139,9 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			c.mu.Lock()
 			threadID := cmp.Or(p.ThreadID, c.mainThread)
 			c.finishSteerTurnLocked(directSteerTurnID{thread: threadID, turn: p.Turn.ID})
+			if first, ok := c.firstInputs[threadID]; ok && first.turnID == p.Turn.ID {
+				delete(c.firstInputs, threadID)
+			}
 			for _, start := range c.inputTurnStarts {
 				if start.threadID == threadID {
 					start.completed = append(start.completed, p.Turn.ID)
@@ -280,6 +320,18 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 				c.applyThreadUsageLocked(target, &p.Usage)
 				c.publishLocked()
 			}
+			c.mu.Unlock()
+		}
+
+	case "thread/skills/updated":
+		var p struct {
+			ThreadID string   `json:"threadId"`
+			Names    []string `json:"names"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			c.observeThreadSkillsLocked(p.ThreadID, p.Names)
+			c.publishLocked()
 			c.mu.Unlock()
 		}
 
@@ -890,6 +942,16 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 
 	switch itemType {
 	case "userMessage":
+		if first, ok := c.firstInputs[threadID]; ok && first.clientID == decodeJSONString(fields["clientId"]) {
+			rec.seq, rec.entry.Seq = first.entry.Seq, first.entry.Seq
+			rec.entry.Observed = first.entry.Observed
+			// Replace the first displayed row, even if pre-turn work arrived first.
+			records := c.items[threadID]
+			index := slices.Index(records, rec)
+			copy(records[1:index+1], records[:index])
+			records[0] = rec
+			delete(c.firstInputs, threadID)
+		}
 		message, spans := extractUserMessage(fields["content"])
 		rec.entry.Text = c.observeQuestionReplyLocked(threadID, message)
 		rec.entry.Spans = nil
@@ -931,6 +993,7 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		var display *struct {
 			Script       string   `json:"script"`
 			Segments     []string `json:"segments"`
+			StepKinds    []string `json:"stepKinds"`
 			EffectiveCwd string   `json:"effectiveCwd"`
 		}
 		if raw := fields["display"]; len(raw) > 0 {
@@ -992,16 +1055,24 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			val.Workdir = ""
 		}
 		val.ShowWorkdir = val.Workdir != ""
-		var segments []string
-		if display != nil {
-			segments = display.Segments
-		} else {
-			var actions []binding.CommandAction
+		var actions []binding.CommandAction
+		if display == nil || len(display.StepKinds) == 0 {
 			_ = json.Unmarshal(fields["commandActions"], &actions)
-			if len(actions) > 1 {
-				for _, action := range actions {
-					segments = append(segments, action.Command)
-				}
+		}
+		var segments, kinds []string
+		if display != nil {
+			segments, kinds = display.Segments, display.StepKinds
+		} else if len(actions) > 1 {
+			for _, action := range actions {
+				segments = append(segments, action.Command)
+				kinds = append(kinds, action.Type)
+			}
+		}
+		if len(segments) < 2 {
+			if len(kinds) == 1 {
+				val.Verb = directCommandVerb(kinds[0])
+			} else if len(actions) == 1 {
+				val.Verb = directCommandVerb(actions[0].Type)
 			}
 		}
 		rec.entry.Values = nil
@@ -1013,9 +1084,13 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			val.Fenced = strings.Contains(val.Code, "\n")
 		} else if len(segments) > 1 {
 			for i, source := range segments {
+				verb := "Run"
+				if i < len(kinds) {
+					verb = directCommandVerb(kinds[i])
+				}
 				rec.entry.Values = append(rec.entry.Values, activity.Value{
-					Content: activityfeed.Content{Kind: "op", Verb: "Run", Code: source, Lang: "bash", Fenced: strings.Contains(source, "\n")},
-					Workdir: val.Workdir, ShowWorkdir: i == 0 && val.ShowWorkdir, Operation: i + 2,
+					Content: activityfeed.Content{Kind: "op", Verb: verb, Code: source, Lang: "bash", Fenced: strings.Contains(source, "\n")},
+					Workdir: val.Workdir, ShowWorkdir: i == 0 && val.ShowWorkdir, Operation: i + 2, Requested: true,
 				})
 			}
 			val.BatchExit, val.Operation, val.Label, val.DetailCode, val.Code = true, 1, "combined output", command, ""
@@ -1030,6 +1105,22 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		if running {
 			rec.entry.Completed = time.Time{}
 		}
+	case "imageView":
+		path := decodeJSONString(fields["path"])
+		rec.entry.Values = []activity.Value{{
+			Path:    path,
+			Running: !complete,
+			Exited:  complete,
+			Content: activityfeed.Content{
+				Kind: "op",
+				Verb: "View",
+			},
+		}}
+		if path != "" {
+			rec.entry.Images = []string{path}
+		}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
+
 	case "fileChange":
 		var changeList []nativeFileChange
 		_ = json.Unmarshal(fields["changes"], &changeList)
@@ -1178,7 +1269,11 @@ func extractUserMessage(raw jsontext.Value) (string, []activity.TextSpan) {
 		return "", nil
 	}
 	var skillLabels map[string]bool
+	var imagesRemaining int
 	for _, part := range parts {
+		if part.Type == "image" || part.Type == "localImage" {
+			imagesRemaining++
+		}
 		if part.Type == "skill" && part.Name != "" {
 			if skillLabels == nil {
 				skillLabels = make(map[string]bool)
@@ -1186,23 +1281,51 @@ func extractUserMessage(raw jsontext.Value) (string, []activity.TextSpan) {
 			skillLabels["$"+part.Name] = true
 		}
 	}
-	// A typed skill names a binding, but only a text element identifies which
-	// occurrence of its label was selected instead of typed as ordinary text.
 	var message strings.Builder
 	var spans []activity.TextSpan
+	var imageIndex, markedImages int
+	imageSpans := make(map[int]bool)
+	var previousText bool
 	for _, part := range parts {
+		if part.Type == "image" || part.Type == "localImage" {
+			imageIndex++
+			imagesRemaining--
+			// The browser sends its typed markers in text before the image parts.
+			// The terminal sends only the image parts at their positions in text.
+			if markedImages > 0 {
+				markedImages--
+				continue
+			}
+			if !previousText && message.Len() != 0 {
+				message.WriteByte(' ')
+			}
+			start := message.Len()
+			message.WriteString(fmt.Sprintf("[Image %d]", imageIndex))
+			spans = append(spans, activity.TextSpan{Start: start, End: message.Len(), Kind: activity.ImageToken})
+			previousText = false
+			continue
+		}
 		if part.Text == "" {
 			continue
 		}
-		if message.Len() != 0 {
+		if previousText {
 			message.WriteByte('\n')
 		}
+		previousText = true
 		offset := message.Len()
 		message.WriteString(part.Text)
 		for _, element := range part.Elements {
 			start, end := element.ByteRange.Start, element.ByteRange.End
-			if skillLabels[element.Placeholder] && start >= 0 && end > start && end <= len(part.Text) &&
-				part.Text[start:end] == element.Placeholder {
+			if start < 0 || end <= start || end > len(part.Text) || part.Text[start:end] != element.Placeholder {
+				continue
+			}
+			switch {
+			case markedImages < imagesRemaining && !imageSpans[offset+start] &&
+				strings.HasPrefix(element.Placeholder, "[Image ") && strings.HasSuffix(element.Placeholder, "]"):
+				imageSpans[offset+start] = true
+				markedImages++
+				spans = append(spans, activity.TextSpan{Start: offset + start, End: offset + end, Kind: activity.ImageToken})
+			case skillLabels[element.Placeholder]:
 				spans = append(spans, activity.TextSpan{Start: offset + start, End: offset + end, Kind: activity.SkillToken})
 			}
 		}
@@ -1217,6 +1340,27 @@ func extractUserMessage(raw jsontext.Value) (string, []activity.TextSpan) {
 		return false
 	})
 	return message.String(), spans
+}
+
+func directCommandVerb(kind string) string {
+	switch kind {
+	case "read":
+		return "Read"
+	case "search":
+		return "Search"
+	case "list", "listFiles":
+		return "List"
+	case "inspect":
+		return "Inspect"
+	case "stage":
+		return "Stage"
+	case "commit":
+		return "Commit"
+	case "skill":
+		return "Skill"
+	default:
+		return "Run"
+	}
 }
 
 func decodeJSONString(raw jsontext.Value) string {
@@ -1298,6 +1442,16 @@ func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, it
 	c.liveDirty = true
 }
 
+func (c *directNativeConnection) observeThreadSkillsLocked(threadID string, names []string) {
+	if threadID == "" || len(names) == 0 {
+		return
+	}
+	if c.threadSkills == nil {
+		c.threadSkills = make(map[string]activity.SkillSet)
+	}
+	c.threadSkills[threadID] = c.threadSkills[threadID].With(names...)
+}
+
 func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread string) {
 	var resp struct {
 		Data []directWireThread `json:"data"`
@@ -1316,6 +1470,7 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 		if _, found := c.threadUsage[th.ID]; !found {
 			c.applyThreadUsageLocked(th.ID, th.TokenUsage)
 		}
+		c.observeThreadSkillsLocked(th.ID, th.Extra.Skills)
 		threads = append(threads, th.ID)
 		name := th.AgentPath
 		if name == "" {
@@ -1334,10 +1489,21 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 			Type string `json:"type"`
 		}
 		_ = json.Unmarshal(th.Status, &statusObj)
-		responding := statusObj.Type == "active"
-		final := statusObj.Type == "idle" && th.ID != rootThread
+		agentState := (binding.ThreadInfo{AgentStatus: th.AgentStatus}).AgentState()
+		responding := agentState == "running" || agentState == "" && statusObj.Type == "active"
+		final := agentState == "completed" && th.ID != rootThread
+		status := ""
+		switch {
+		case responding:
+			status = "responding"
+		case final:
+			status = "answered"
+		case agentState == "errored" || agentState == "" && statusObj.Type == "systemError":
+			status = "error"
+		}
 		roster = append(roster, activity.AgentRow{
 			Agent: activity.Agent{
+				Status: status,
 				AgentFacts: activity.AgentFacts{
 					Name:       name,
 					Role:       th.AgentRole,
@@ -1466,6 +1632,9 @@ func (c *directNativeConnection) refreshRateLimits(ctx context.Context) (*direct
 }
 
 func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, threadID string) {
+	c.mu.Lock()
+	waitingForFirstInput := len(c.items[threadID]) == 0 || c.firstInputs[threadID].clientID != ""
+	c.mu.Unlock()
 	var resp struct {
 		Thread directWireThread `json:"thread"`
 	}
@@ -1474,8 +1643,28 @@ func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, thr
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.applyThreadUsageLocked(threadID, resp.Thread.TokenUsage)
-	c.hydrateThreadTurnsLocked(threadID, resp.Thread.Turns)
+	records := c.items[threadID]
+	preserveFirstInput := waitingForFirstInput && len(records) > 0 &&
+		(threadID == c.mainThread || threadID == c.sideThread) && records[0].entry.Kind == "user"
+	if _, hasUsage := c.threadUsage[threadID]; !preserveFirstInput || !hasUsage {
+		c.applyThreadUsageLocked(threadID, resp.Thread.TokenUsage)
+	}
+	c.observeThreadSkillsLocked(threadID, resp.Thread.Extra.Skills)
+	if preserveFirstInput {
+		// The first canonical user item arrived during this read. Do not replace
+		// the live initial transcript with a snapshot that may predate it.
+		c.publishLocked()
+		return
+	}
+	turns := resp.Thread.Turns
+	if threadID == c.sideThread {
+		first := slices.IndexFunc(turns, func(turn directWireTurn) bool { return turn.ID == c.sideFirstTurn })
+		if c.sideFirstTurn == "" || first < 0 {
+			return
+		}
+		turns = turns[first:]
+	}
+	c.hydrateThreadTurnsLocked(threadID, turns)
 	c.publishLocked()
 }
 

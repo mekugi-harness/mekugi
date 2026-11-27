@@ -115,10 +115,8 @@ func (c *directNativeConnection) openEntryDetailsLocked(req sessionapi.NativeDet
 	selected := pages[0].ID
 	var selectedRec *directItemRecord
 	var selectedPage sessionpresentation.DetailItem
-	for _, page := range pages {
-		if combinedRun {
-			page.CombinedOutput = true
-		}
+	for i, page := range pages {
+		page.CombinedOutput = combinedRun || page.BatchExit
 		rec := c.findRecordBySeqLocked(threadID, page.Source)
 		var outVer uint64
 		retained := false
@@ -137,7 +135,8 @@ func (c *directNativeConnection) openEntryDetailsLocked(req sessionapi.NativeDet
 			OutputLive:    outputLive,
 		}
 		items = append(items, item)
-		if (req.Operation != 0 && page.Operation == req.Operation) ||
+		if i == 0 ||
+			(req.Operation != 0 && page.Operation == req.Operation) ||
 			(req.Output != 0 && page.Output == req.Output) ||
 			(req.Path != "" && (page.Path == req.Path || page.Label == req.Path)) {
 			selected = page.ID
@@ -145,9 +144,13 @@ func (c *directNativeConnection) openEntryDetailsLocked(req sessionapi.NativeDet
 			selectedPage = item
 		}
 	}
-	if selectedRec == nil {
-		selectedPage = items[0]
-		selectedRec = c.findRecordBySeqLocked(threadID, selectedPage.Source)
+	if selectedRec != nil && selectedRec.itemType == "commandExecution" && !selectedPage.Effect {
+		for _, item := range items {
+			if item.Source == selectedRec.seq && item.BatchExit {
+				selected, selectedPage = item.ID, item
+				break
+			}
+		}
 	}
 	c.detailSeq++
 	id := sessionpresentation.DetailID{Attachment: c.attachID, Selection: c.detailSeq}
@@ -463,9 +466,7 @@ func (c *directNativeConnection) buildDetailOutputLocked(id sessionpresentation.
 	var lines []string
 	done := !page.Running
 	if rec != nil {
-		if rec.output != "" {
-			lines = strings.Split(strings.TrimSuffix(rec.output, "\n"), "\n")
-		}
+		lines = directOutputLines(rec.output)
 	}
 	if len(lines) == 0 && len(page.Tail) > 0 {
 		lines = slices.Clone(page.Tail)

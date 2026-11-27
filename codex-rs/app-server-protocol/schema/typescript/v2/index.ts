@@ -112,6 +112,7 @@ export type { CommandExecutionRequestApprovalResponse } from "./CommandExecution
 export type { CommandExecutionSource } from "./CommandExecutionSource";
 export type { CommandExecutionStatus } from "./CommandExecutionStatus";
 export type { CommandMigration } from "./CommandMigration";
+export type { CommandStepKind } from "./CommandStepKind";
 export type { ComposerPreset } from "./ComposerPreset";
 export type { ComputerUseConfig } from "./ComputerUseConfig";
 export type { ComputerUseMacosConfig } from "./ComputerUseMacosConfig";

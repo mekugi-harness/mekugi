@@ -51,6 +51,7 @@ use codex_app_server_protocol::ThreadSearchPartialNotification;
 use codex_app_server_protocol::ThreadSectionChangedNotification;
 use codex_app_server_protocol::ThreadSectionMoveParams;
 use codex_app_server_protocol::ThreadSectionMoveResponse;
+use codex_app_server_protocol::ThreadSource as ApiThreadSource;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_extension_api::ExtensionDataInit;
 use codex_extension_api::ThreadIdleCause;
@@ -6088,7 +6089,7 @@ impl ThreadRequestProcessor {
                 cli_overrides.insert("windows.sandbox".to_string(), serde_json::json!(mode));
             }
         }
-        let request_overrides = if cli_overrides.is_empty() {
+        let mut request_overrides = if cli_overrides.is_empty() {
             None
         } else {
             Some(cli_overrides)
@@ -6121,20 +6122,51 @@ impl ThreadRequestProcessor {
                 .is_some_and(|overrides| overrides.contains_key("approvals_reviewer"));
         let restore_permission_profile =
             !has_permission_override(request_overrides.as_ref(), &typesafe_overrides);
-        let needs_latest_settings =
-            restore_approval_policy || restore_approvals_reviewer || restore_permission_profile;
-        let loaded_parent_settings = if paginated_source && needs_latest_settings {
-            if let Some(parent) = loaded_parent.as_ref() {
-                let snapshot = parent.thread_settings_snapshot().await;
-                Some(PersistedResumeSettings::from(&snapshot))
-            } else {
-                None
+        let restore_live_permissions = paginated_source
+            && (restore_approval_policy
+                || restore_approvals_reviewer
+                || restore_permission_profile);
+        let is_one_off = !experimental_prediction_mode
+            && matches!(&thread_source, Some(ApiThreadSource::Feature(kind)) if kind == "mekugi_side");
+        let request_config_model = request_overrides
+            .as_ref()
+            .and_then(|overrides| overrides.get("model"));
+        let inherit_one_off_model =
+            is_one_off && typesafe_overrides.model.is_none() && request_config_model.is_none();
+        let inherit_one_off_effort = is_one_off
+            && request_overrides
+                .as_ref()
+                .is_none_or(|overrides| !overrides.contains_key("model_reasoning_effort"));
+        let loaded_parent_snapshot = match &loaded_parent {
+            Some(parent)
+                if restore_live_permissions || inherit_one_off_model || inherit_one_off_effort =>
+            {
+                Some(parent.thread_settings_snapshot().await)
             }
-        } else {
-            None
+            _ => None,
         };
-        let latest_context = if paginated_source
-            && needs_latest_settings
+        if let Some(settings) = loaded_parent_snapshot.as_ref() {
+            let requested_model = typesafe_overrides
+                .model
+                .as_deref()
+                .or_else(|| request_config_model?.as_str());
+            if inherit_one_off_effort
+                && (inherit_one_off_model || requested_model == Some(settings.model.as_str()))
+                && let Some(effort) = &settings.reasoning_effort
+            {
+                request_overrides
+                    .get_or_insert_with(HashMap::new)
+                    .insert("model_reasoning_effort".into(), serde_json::json!(effort));
+            }
+            if inherit_one_off_model {
+                typesafe_overrides.model = Some(settings.model.clone());
+            }
+        }
+        let loaded_parent_settings = loaded_parent_snapshot
+            .filter(|_| restore_live_permissions)
+            .as_ref()
+            .map(PersistedResumeSettings::from);
+        let latest_context = if restore_live_permissions
             && loaded_parent.is_none()
             && (last_turn_id.is_some() || before_turn_id.is_some())
         {
@@ -6983,7 +7015,6 @@ fn stored_thread_item_to_api_item(
             stored_item.item_id
         ))
     })?;
-    // Older snapshots retain only the shell-formatted argv, optionally with steps.
     if let ThreadItemPayload::CommandExecution {
         command,
         cwd,
@@ -6992,21 +7023,27 @@ fn stored_thread_item_to_api_item(
         aggregated_output,
         ..
     } = &mut payload
-        && display
+    {
+        // Older snapshots retain only the shell-formatted argv, optionally with steps.
+        if display
             .as_ref()
             .is_none_or(|display| display.script.is_empty())
-        && let Some(argv) = shlex::split(command)
-        && let Some(restored) = codex_app_server_protocol::command_display(
-            &argv,
-            cwd.to_inferred_path_uri().as_ref(),
-            *exit_code,
-            aggregated_output.as_deref().unwrap_or_default(),
-        )
-    {
+            && let Some(argv) = shlex::split(command)
+            && let Some(restored) = codex_app_server_protocol::command_display(
+                &argv,
+                cwd.to_inferred_path_uri().as_ref(),
+                *exit_code,
+                aggregated_output.as_deref().unwrap_or_default(),
+            )
+        {
+            if let Some(display) = display {
+                display.script = restored.script;
+            } else {
+                *display = Some(restored);
+            }
+        }
         if let Some(display) = display {
-            display.script = restored.script;
-        } else {
-            *display = Some(restored);
+            display.restore_step_kinds();
         }
     }
     Ok(ThreadItem {

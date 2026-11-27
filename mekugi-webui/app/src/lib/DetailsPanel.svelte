@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { getAbortSignal, tick } from "svelte";
   import { textUploadFrames } from "./attachments";
   import Alert from "./ui/Alert.svelte";
-  import { commandValues } from "./command";
+  import { commandResult } from "./command";
   import { normalizeWorkdir } from "./workdir";
   import Code from "./Code.svelte";
   import { detailRange, type DetailLink, type LineRange } from "./detail-link";
@@ -34,26 +34,36 @@
     onreference?: (text: string, description: string, source: string) => boolean;
   } = $props();
 
-  let item = $state.raw<ThreadItem | undefined>();
+  let snapshot = $state.raw<ThreadItem | undefined>();
   let file = $state<string>();
   let loading = $state(false);
   let error = $state<string | undefined>();
   let content = $state<HTMLDivElement>();
   let mark = $state<HTMLElement>();
 
+  const command = $derived.by(() => {
+    const ref = entry?.content;
+    if (link || !ref?.turnId || !ref.itemId) return;
+    const stream = streams.current;
+    if (stream.threadId === thread && stream.machine === machine) {
+      return stream.commandExecution(ref.turnId, ref.itemId);
+    }
+  });
+  const hasCommand = $derived(command !== undefined);
+  const item = $derived(command ?? snapshot);
+
   $effect(() => {
     const target = link;
     const owner = machine;
     const id = thread;
     const ref = entry?.content;
-    item = undefined;
+    snapshot = undefined;
     file = undefined;
     error = undefined;
     loading = false;
-    if (!target && !ref?.itemId) return;
-    const controller = new AbortController();
+    if (hasCommand || (!target && !ref?.itemId)) return;
     loading = true;
-    const signal = controller.signal;
+    const signal = getAbortSignal();
     const request =
       target?.kind === "file"
         ? owner.resource<{ text: string }>(
@@ -69,16 +79,16 @@
       .then((res) => {
         if (signal.aborted) return;
         if ("text" in res) file = res.text;
-        else if (target?.kind !== "run" || res.item?.type === "commandExecution") item = res.item;
+        else if (target?.kind !== "run" || res.item?.type === "commandExecution")
+          snapshot = res.item;
         else error = "The referenced command output is unavailable.";
       })
       .catch((failure) => {
         if (!signal.aborted) error = errorText(failure);
       })
       .finally(() => {
-        if (!controller.signal.aborted) loading = false;
+        if (!signal.aborted) loading = false;
       });
-    return () => controller.abort();
   });
 
   $effect(() => {
@@ -136,9 +146,9 @@
     />
   {/if}
   <div bind:this={content} class="min-h-0 flex-1 overflow-y-auto px-3 py-3 text-small">
-    {#if error}
+    {#if !hasCommand && error}
       <Alert>{error}</Alert>
-    {:else if loading}
+    {:else if !hasCommand && loading}
       <div class="grid gap-2" role="status" aria-busy="true" aria-label="Loading item details">
         <Skeleton class="h-4 w-3/4 bg-active" />
         <Skeleton class="h-24 w-full bg-active" />
@@ -147,8 +157,7 @@
       {@render source(file, pathLanguage(link.path), link.range)}
     {:else if item}
       {#if item.type === "commandExecution"}
-        {@const values = commandValues(item)}
-        {@const result = values[values.length - 1]}
+        {@const result = commandResult(item)}
         {@const cwd = normalizeWorkdir(result.workdir, streams.current.session?.workspace)}
         {@render source(item.display?.script ?? item.command, "bash")}
         <p class="my-2 text-muted">

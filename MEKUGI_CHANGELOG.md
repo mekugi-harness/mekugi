@@ -56,7 +56,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - Command items optionally include authored shell steps and a resolved display
   directory. The original command, launch directory, exit and output remain
   unchanged; individual steps do not claim separate execution results.
-  Unified exec streams startup output after the command-start event.
+  The native projection labels recognized steps, and clients show the shared
+  result of a multi-step invocation in Details only. Unified exec streams
+  startup output after the command-start event.
 - Native coordination uses the shared thread manager for live foreign messages,
   side questions, listing and inspection. Child startup, wait-progress selection
   and final change delivery no longer request resources from a connected Go
@@ -255,8 +257,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   If the history cutover fails, the server restores the workspace from its undo
   record. Captures distinguish earlier kept edits even within the same second.
   The browser reads the same launch counters for the selected thread and its
-  descendants. Browser BTW and One-off use native side forks rather than a
-  separate host session.
+  descendants. BTW and One-off use native side forks rather than a separate host
+  session. One-off defaults to Main's current model and reasoning effort. The
+  terminal hides its inherited transcript and shows only One-off's own usage
+  and cost.
   `ThreadTokenUsage` carries per-thread reference cost (`estimatedCostUsd`,
   `costPartial`), measured output throughput (`outputTokensPerSecond`),
   cumulative work duration (`workDurationMs`), and response roundtrip count

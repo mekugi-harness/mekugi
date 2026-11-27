@@ -46,6 +46,8 @@ use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSearchOccurrencesParams;
 use codex_app_server_protocol::ThreadSearchOccurrencesResponse;
+use codex_app_server_protocol::ThreadSettingsUpdateParams;
+use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -3384,6 +3386,123 @@ async fn inheriting_fork_rejects_configuration_overrides() -> Result<()> {
             "override: {key}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mekugi_one_off_inherits_acknowledged_model_and_effort() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_sequence(
+        &server,
+        ["parent", "one-off"]
+            .into_iter()
+            .map(|id| responses::sse(vec![responses::ev_completed_with_tokens(id, 20)]))
+            .collect(),
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    let startup_model = "gpt-6-sol";
+    let live_model = "gpt-5.5";
+    MockResponsesConfig::new(&server.uri())
+        .with_model(startup_model)
+        .with_root_config("model_reasoning_effort = \"medium\"")
+        .write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let parent = app.start_thread(ThreadStartParams::default()).await?;
+    assert_eq!(parent.model, startup_model);
+    assert_eq!(parent.reasoning_effort, Some(ReasoningEffort::Medium));
+    let parent_id = parent.thread.id;
+    app.start_turn_and_wait_for_completion(TurnStartParams {
+        thread_id: parent_id.clone(),
+        input: vec![UserInput::Text {
+            text: "Hello".to_string(),
+            text_elements: vec![],
+        }],
+        ..Default::default()
+    })
+    .await?;
+
+    let update = app
+        .send_thread_settings_update_request(ThreadSettingsUpdateParams {
+            thread_id: parent_id.clone(),
+            model: Some(live_model.to_string()),
+            effort: Some(ReasoningEffort::XHigh),
+            ..Default::default()
+        })
+        .await?;
+    let _: ThreadSettingsUpdateResponse =
+        timeout(DEFAULT_READ_TIMEOUT, app.read_response(update)).await??;
+
+    // Start the One-off after the acknowledgement, without waiting for a settings event.
+    let one_off = Some(ThreadSource::Feature("mekugi_side".to_string()));
+    for (source, model, effort_override, expected_model, expected_effort) in [
+        (
+            one_off.clone(),
+            None,
+            None,
+            live_model,
+            ReasoningEffort::XHigh,
+        ),
+        (
+            one_off.clone(),
+            None,
+            Some("low"),
+            live_model,
+            ReasoningEffort::Low,
+        ),
+        (
+            one_off.clone(),
+            Some(live_model),
+            None,
+            live_model,
+            ReasoningEffort::XHigh,
+        ),
+        (
+            one_off,
+            Some(startup_model),
+            None,
+            startup_model,
+            ReasoningEffort::Medium,
+        ),
+        (None, None, None, startup_model, ReasoningEffort::Medium),
+    ] {
+        let id = app
+            .send_thread_fork_request(ThreadForkParams {
+                thread_id: parent_id.clone(),
+                thread_source: source,
+                model: model.map(str::to_owned),
+                config: effort_override
+                    .map(|effort| [("model_reasoning_effort".to_string(), json!(effort))].into()),
+                exclude_turns: true,
+                ..Default::default()
+            })
+            .await?;
+        let fork: ThreadForkResponse =
+            timeout(DEFAULT_READ_TIMEOUT, app.read_response(id)).await??;
+        assert_eq!(fork.model, expected_model);
+        assert_eq!(fork.reasoning_effort, Some(expected_effort.clone()));
+        if model.is_none() && expected_effort == ReasoningEffort::XHigh {
+            let completed = app
+                .start_turn_and_wait_for_completion(TurnStartParams {
+                    thread_id: fork.thread.id,
+                    input: vec![UserInput::Text {
+                        text: "Continue".to_string(),
+                        text_elements: vec![],
+                    }],
+                    ..Default::default()
+                })
+                .await?;
+            assert_eq!(completed.turn.status, TurnStatus::Completed);
+        }
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    let body = requests[1].body_json();
+    assert_eq!(body["model"], live_model);
+    assert_eq!(body["reasoning"]["effort"], "xhigh");
     Ok(())
 }
 

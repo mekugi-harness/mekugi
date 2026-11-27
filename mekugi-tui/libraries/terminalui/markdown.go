@@ -556,7 +556,7 @@ func (p *Painter) fenced(lang, source string, width int, identity uint64) []stri
 	for index, line := range p.Highlight(lang, textsanitize.Safe(source, false)) {
 		parts := Wrap(line, width-2, true)
 		if len(sources) > 0 {
-			parts = p.CopyWrapped(parts, copyCode(sources[index], CopyID(strconv.Itoa(index), identity)), 0)
+			parts = p.CopyWrapped(parts, CopyCode(sources[index], CopyID(strconv.Itoa(index), identity)), 0)
 		}
 		for _, part := range parts {
 			if ink != "" {

@@ -785,6 +785,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "stepKinds": {
+          "default": [],
+          "description": "Classification in source order; one kind for an unsplit script.",
+          "items": {
+            "$ref": "#/definitions/CommandStepKind"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -807,6 +815,19 @@
         "completed",
         "failed",
         "declined"
+      ],
+      "type": "string"
+    },
+    "CommandStepKind": {
+      "enum": [
+        "read",
+        "search",
+        "list",
+        "inspect",
+        "stage",
+        "commit",
+        "skill",
+        "run"
       ],
       "type": "string"
     },

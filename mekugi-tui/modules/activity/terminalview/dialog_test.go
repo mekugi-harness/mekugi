@@ -10,11 +10,12 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
 
 func TestDialogPageNumberingAndGutters(t *testing.T) {
 	var p Painter
-	page := p.DialogPage(Block{Verb: "Run", Code: "echo one\necho two", Tail: []string{"one", "two"}, TailOmitted: 9}, 80)
+	page := p.DialogPage(Block{Verb: "Run", Code: "echo one\necho two", Tail: []string{"one\tvalue", "two"}, TailOmitted: 9}, 80)
 	var numbered []terminalui.DialogLine
 	for _, line := range page.Lines {
 		if line.Number > 0 {
@@ -36,12 +37,68 @@ func TestDialogPageNumberingAndGutters(t *testing.T) {
 			t.Errorf("line %d gutter=%q", i, numbered[i].Gutter)
 		}
 	}
-	if page.Text != "one\ntwo" {
+	if page.Text != "one\tvalue\ntwo" {
 		t.Fatalf("copy = %q", page.Text)
+	}
+	if got := ansi.Strip(numbered[2].Text); got != "one    value" {
+		t.Fatalf("painted output = %q", got)
 	}
 	read := p.DialogPage(Block{Kind: "reads", Verb: "Read", Reads: []activitymodel.Read{{Path: "sample.txt", Ranges: []string{"42:43"}}}, Tail: []string{"one", "two"}}, 80)
 	if len(read.Lines) != 2 || read.Lines[0].Number != 42 || read.Lines[1].Number != 43 || read.Lines[0].Gutter != "│" {
 		t.Fatalf("read lines = %+v", read.Lines)
+	}
+}
+
+func TestCommandDetailsSelectionWithTab(t *testing.T) {
+	const source = "界key\tvalue"
+	p := Painter{CopySource: true}
+	detail := presentation.DetailPage{Value: presentation.Value{Kind: "op", Verb: "Run"}}
+	output := completedOutput(source)
+	const wide, narrow = 80, 10 // Narrow splits the expanded tab between rows.
+	page := p.DetailDocument(detail, &output, nil, wide)
+	if page.Text != source {
+		t.Fatalf("whole output copy = %q, want %q", page.Text, source)
+	}
+	for _, tc := range []struct {
+		name               string
+		width, first, last int
+		left, right        int
+		want               string
+	}{
+		{"value only", wide, 0, 0, 9, 14, "value"},
+		{"partial tab", wide, 0, 0, 7, 9, "  "},
+		{"whole tab", wide, 0, 0, 5, 9, "\t"},
+		{"wrapped output", narrow, 0, 2, 0, 2, source},
+		{"wrapped tab", narrow, 0, 1, 5, 3, "\t"},
+		{"wrapped value only", narrow, 1, 2, 3, 2, "value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const line = 0
+			indent := page.Indent(line)
+			var parts []terminalui.CopyFragment
+			for row := tc.first; row <= tc.last; row++ {
+				window := page.RowsRange(line, tc.width, row, 1)
+				if len(window) != 1 {
+					t.Fatalf("missing row %d", row)
+				}
+				_, spans := terminalui.ExtractCopy(window[0])
+				left, right := indent, tc.width
+				if row == tc.first {
+					left += tc.left
+				}
+				if row == tc.last {
+					right = indent + tc.right
+				}
+				for _, span := range spans {
+					if part, ok := span.Clip(left, right); ok {
+						parts = append(parts, part)
+					}
+				}
+			}
+			if got := terminalui.CopyText(parts); got != tc.want {
+				t.Fatalf("selected text = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

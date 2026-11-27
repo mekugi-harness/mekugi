@@ -204,6 +204,9 @@ type directNativeConnection struct {
 	displayedThread    string
 	inputThread        string
 	sideThread         string
+	sideFirstTurn      string
+	activeTurnSince    time.Time
+	sideTurnSince      time.Time
 	sideReplaceTask    string
 	sideModel          string
 	sideEffort         string
@@ -226,8 +229,10 @@ type directNativeConnection struct {
 	activeTurn         string
 	sideActiveTurn     string
 	inputTurnStarts    []*directInputTurnStart
+	firstInputs        map[string]directFirstInput
 	archived           bool
 	threadUsage        map[string]directThreadUsage
+	threadSkills       map[string]activity.SkillSet
 	rateLimits         [2]*sessionpresentation.CaptionLimit
 	prediction         directPrediction
 	feedbackText       string
@@ -332,6 +337,7 @@ func newDirectNativeConnection(ctx context.Context, opts directNativeOptions, at
 		workspace:     opts.workspace,
 		items:         make(map[string][]*directItemRecord),
 		itemsByID:     make(map[directItemKey]*directItemRecord),
+		firstInputs:   make(map[string]directFirstInput),
 		threadCallers: make(map[string]string),
 		threadUsage:   make(map[string]directThreadUsage),
 		requests:      make(map[string]*directPendingServerRequest),
@@ -506,6 +512,7 @@ func (c *directNativeConnection) applyThreadBootstrapLocked(response directThrea
 	c.displayedThread = threadID
 	c.inputThread = threadID
 	c.applyThreadUsageLocked(threadID, response.Thread.TokenUsage)
+	c.observeThreadSkillsLocked(threadID, response.Thread.Extra.Skills)
 	if cwd != "" {
 		c.workspace = cwd
 	}
@@ -664,13 +671,10 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	}
 
 	mainUsage := c.threadUsage[c.mainThread]
-	displayedUsage, hasDisplayedUsage := c.threadUsage[displayed]
-	if !hasDisplayedUsage {
-		displayedUsage = mainUsage
-	}
+	displayedUsage := c.threadUsage[displayed]
 	captionCtxTokens := mainUsage.ContextTokens
 	captionCtxWindow := mainUsage.ContextWindow
-	if displayedUsage.ContextWindow > 0 || displayedUsage.ContextTokens > 0 {
+	if displayed == c.sideThread || displayedUsage.ContextWindow > 0 || displayedUsage.ContextTokens > 0 {
 		captionCtxTokens = displayedUsage.ContextTokens
 		captionCtxWindow = displayedUsage.ContextWindow
 	}
@@ -686,10 +690,19 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		})
 	}
 
+	var composerStatus sessionpresentation.Label
+	if c.activeTurnForLocked(input) != "" {
+		since := c.activeTurnSince
+		if input == c.sideThread {
+			since = c.sideTurnSince
+		}
+		composerStatus = sessionpresentation.Label{Text: "Working", Running: true, Started: since}
+	}
 	view := sessionpresentation.View{
 		DisplayedWorkspace: c.workspace,
 		Info: sessionpresentation.MainInfo{
 			Workspace:      c.workspace,
+			Skills:         slices.Clone(c.threadSkills[c.mainThread]),
 			Title:          c.title,
 			BackendVersion: c.wire.UserAgent(),
 			Caller:         mainCaller,
@@ -706,6 +719,8 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 				Text:    c.statusTextLocked(),
 				Running: c.busy,
 			},
+			Session:   composerStatus,
+			Composer:  composerStatus,
 			Processes: len(c.processes),
 			Animating: c.busy,
 		},
@@ -716,6 +731,12 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			ContextTokens: captionCtxTokens,
 			ContextWindow: captionCtxWindow,
 			ContextKnown:  captionCtxWindow > 0,
+			InputTokens:   displayedUsage.InputTokens,
+			OutputTokens:  displayedUsage.OutputTokens,
+			UsagePartial:  displayedUsage.UsagePartial,
+			Cost:          displayedUsage.EstimatedCostUSD,
+			CostKnown:     displayedUsage.CostKnown,
+			CostPartial:   displayedUsage.CostPartial,
 			Items:         captionItems,
 			Limits:        directCaptionLimits(c.rateLimits),
 		},
@@ -860,12 +881,22 @@ func (c *directNativeConnection) publicationForThreadLocked(threadID string) *ac
 	records := c.items[threadID]
 	entries := make([]activity.Entry, 0, len(records))
 	var lastSeq uint64
+	if pending, ok := c.firstInputs[threadID]; ok {
+		entries = append(entries, pending.entry)
+		lastSeq = pending.entry.Seq
+	}
 	for _, rec := range records {
 		entry := rec.entry
 		entry.Spans = slices.Clone(entry.Spans)
 		entry.Images = slices.Clone(entry.Images)
 		entry.Outputs = maps.Clone(entry.Outputs)
-		entry.Values = slices.Clone(entry.Values)
+		if last := len(entry.Values) - 1; rec.itemType == "commandExecution" && last > 0 && entry.Values[last].BatchExit {
+			// Keep captured changes after the invocation's steps without painting its output row.
+			entry.Values = slices.Clone(entry.Values[:last])
+			entry.Values[last-1].Changes = rec.entry.Values[last].Changes
+		} else {
+			entry.Values = slices.Clone(entry.Values)
+		}
 		entries = append(entries, entry)
 		if entry.Seq > lastSeq {
 			lastSeq = entry.Seq
@@ -899,9 +930,11 @@ func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
 	}
 	for i := range rows {
 		agent := &rows[i].Agent
-		if agent.Thread == c.mainThread {
-			agent.Responding = c.busy
+		if agent.Thread == c.mainThread && c.activeTurn != "" {
+			agent.Responding = true
+			agent.Status = "responding"
 		}
+		agent.Skills = slices.Clone(c.threadSkills[agent.Thread])
 		if u, ok := c.threadUsage[agent.Thread]; ok {
 			agent.InputTokens = u.InputTokens
 			agent.OutputTokens = u.OutputTokens
@@ -996,10 +1029,14 @@ type directWireThread struct {
 	} `json:"gitInfo"`
 	AgentPath    string           `json:"agentPath"`
 	AgentRole    string           `json:"agentRole"`
+	AgentStatus  jsontext.Value   `json:"agentStatus"`
 	ThreadSource string           `json:"threadSource"`
 	Status       jsontext.Value   `json:"status"`
 	Turns        []directWireTurn `json:"turns"`
 	TokenUsage   *directWireUsage `json:"tokenUsage"`
+	Extra        struct {
+		Skills []string `json:"skills"`
+	} `json:"extra"`
 }
 
 type directWireTurn struct {

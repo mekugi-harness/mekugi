@@ -5,7 +5,6 @@ package launch
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	json "encoding/json/v2"
 
@@ -98,6 +96,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		cmd := exec.CommandContext(ctx, codex,
 			"-c", `model_providers.preview={name="OpenAI",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`,
 			"-c", `model_provider="preview"`, "-c", `model="gpt-6-astra"`,
+			"-c", `model_reasoning_effort="medium"`,
 			"-c", "features.plugins=false",
 			"-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`)
 		cmd.Env, cmd.Dir = environment, workspace
@@ -130,6 +129,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	mainMetadata, _ := fixtureTurnMetadata(main.headers)
 	terminal.await("MAIN_SEED_ANSWER")
 	terminal.awaitThreadIdle(mainMetadata.ThreadID)
+	terminal.send("/effort xhigh\r")
 	terminal.send("/oneoff ONEOFF_TASK_ONLY\r")
 	fork := next()
 	forkMetadata, _ := fixtureTurnMetadata(fork.headers)
@@ -146,11 +146,15 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	if err := json.Unmarshal(fork.body, &forkFields); err != nil {
 		t.Fatal(err)
 	}
+	if reasoning, ok := forkFields["reasoning"].(map[string]any); !ok || reasoning["effort"] != "xhigh" {
+		t.Fatalf("One-off did not inherit live Main effort: %v", forkFields["reasoning"])
+	}
 	if !reflect.DeepEqual(mainFields["tools"], forkFields["tools"]) {
 		t.Fatal("one-off did not inherit Main's tools")
 	}
 	terminal.awaitMatch("one-off automatically selected", func(frame string) bool {
-		return statLineNames(frame, "One-off") && strings.Contains(frame, "❯ ONEOFF_TASK_ONLY")
+		return statLineNames(frame, "One-off") && strings.Contains(frame, "❯ ONEOFF_TASK_ONLY") &&
+			!strings.Contains(frame, "Main seed") && !strings.Contains(frame, "MAIN_SEED_ANSWER")
 	})
 	result := next()
 	resultMetadata, _ := fixtureTurnMetadata(result.headers)
@@ -205,22 +209,15 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	terminal.awaitMatch("completed one-off retained", func(frame string) bool {
 		return statLineNames(frame, "One-off") &&
 			strings.Contains(frame, "printf") && strings.Contains(frame, "cat oneoff-written.txt") &&
-			strings.Contains(frame, "combined output") && strings.Contains(frame, "Create oneoff-written.txt")
+			!strings.Contains(frame, "combined output") && strings.Contains(frame, "↑ 20 ↓ 10")
 	})
-	// The transcript shows captured changes instead of the tail for this
-	// command. The combined Output view still opens its retained stdout.
-	for y, row := range strings.Split(terminal.screen.String(), "\n") {
-		if before, _, found := strings.Cut(row, "combined output"); found {
-			x := utf8.RuneCountInString(before) + 1
-			terminal.send(fmt.Sprintf("\x1b[<0;%d;%dM\x1b[<0;%d;%dm", x, y+1, x, y+1))
-			break
-		}
-	}
+	openHostCommandDetails(t, terminal.outer, terminal.screen, "cat oneoff-written.txt")
 	terminal.await("ONEOFF_ENV_INHERITED")
 	terminal.send("\x1b")
 	terminal.awaitMatch("combined Output closed", func(frame string) bool {
 		return !strings.Contains(frame, "ONEOFF_ENV_INHERITED")
 	})
+	terminal.await("Create oneoff-written.txt")
 	terminal.send("\x1b[<0;4;30M\x1b[<0;4;30m")
 	terminal.awaitMatch("Main selected at end", func(frame string) bool {
 		return selected("Main", 2) && strings.Contains(frame, "MAIN_CONTINUATION_FINISHED")

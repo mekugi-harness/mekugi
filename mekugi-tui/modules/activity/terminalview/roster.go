@@ -74,23 +74,6 @@ func (v *View) RosterSummary() RosterSummary {
 	return s
 }
 
-// AgentUsage formats caller's input/output tokens and estimated cost; unknown
-// values are empty.
-// AgentUsage is caller's painted input and output tokens and its cost.
-func (v *View) AgentUsage(caller string) (tokens, cost string) {
-	for _, row := range v.roster {
-		if row.Agent.Name != caller {
-			continue
-		}
-		if agent := row.Agent; agent.InputTokens+agent.OutputTokens > 0 {
-			in, out := tokenParts(agent)
-			tokens = "↑ " + in + " ↓ " + out
-		}
-		return tokens, Cost(row.Agent)
-	}
-	return "", ""
-}
-
 // ParentCaller names the displayed caller's nearest roster ancestor, or Main.
 // A non-attachable ancestor has no available destination.
 func (v *View) ParentCaller() string {
