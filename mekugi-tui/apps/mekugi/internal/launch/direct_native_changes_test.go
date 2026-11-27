@@ -3,9 +3,9 @@ package launch
 import (
 	"testing"
 
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
 
 func TestDirectNativeSetEditReceiptCollapsesExternalAndEphemeralFiles(t *testing.T) {

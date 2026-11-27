@@ -40,8 +40,8 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::ExecutedToolCalls;
 use crate::tools::call_trace;
 use crate::tools::context::FunctionToolOutput;
-use crate::tools::context::ToolChangeNotice;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::context::ToolChangeNotice;
 use crate::tools::context::ToolPayload;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::router::ToolCall;
@@ -412,8 +412,8 @@ fn submit_nested_tool(
     cancellation_token: CancellationToken,
 ) -> Result<
     impl std::future::Future<Output = Result<(Option<ToolChangeNotice>, JsonValue), FunctionCallError>>
-        + Send
-        + 'static,
+    + Send
+    + 'static,
     FunctionCallError,
 > {
     let dispatch_started = std::time::Instant::now();

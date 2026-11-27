@@ -1590,37 +1590,57 @@ export class Stream {
     let externalSummary: string | undefined;
     let status = preview.Status;
     try {
-      const response = await machine.request<ThreadChangesReadResponse>(
+      const workspaceResp = await machine.request<ThreadChangesReadResponse>(
         "thread/changes/read",
-        { threadId: thread, itemId: item, includeExternal: true, includeEphemeral: true, limit: 20 },
+        {
+          threadId: thread,
+          itemId: item,
+          includeExternal: false,
+          includeEphemeral: false,
+          limit: 4,
+        },
         { signal },
       );
-      if (
-        response.changes.some(
+      const matchesItem = (resp: ThreadChangesReadResponse) =>
+        resp.changes.some(
           (origin) =>
             origin.threadId === thread && origin.turnId === turn && origin.itemId === item,
-        )
-      ) {
-        const workspaceFiles = response.files.filter(
-          (f) => !f.scope || f.scope === "workspace",
         );
-        const externalFiles = response.files.filter(
-          (f) => f.scope === "external" || f.scope === "ephemeral",
-        );
-        const file = workspaceFiles[0];
+      if (matchesItem(workspaceResp)) {
+        const file = workspaceResp.files[0];
         savedPath = file?.absolutePath ?? file?.path;
-        savedFiles = workspaceFiles.slice(0, 4).map(changeFileReview);
-        if (externalFiles.length > 0) {
-          const ids = [
-            ...new Set(externalFiles.flatMap((f) => f.changeIds ?? [])),
-          ];
-          const noun = externalFiles.length === 1 ? "external file" : "external files";
-          externalSummary = ids.length
-            ? `Captured ${externalFiles.length} ${noun} · mchanges ${ids.join(" ")} --summary`
-            : `Captured ${externalFiles.length} ${noun}`;
-        }
+        savedFiles = workspaceResp.files.map(changeFileReview);
       } else if (preview.Tool === "Shell") {
         savedFiles = [];
+      }
+      if (preview.Tool === "Shell") {
+        try {
+          const allResp = await machine.request<ThreadChangesReadResponse>(
+            "thread/changes/read",
+            {
+              threadId: thread,
+              itemId: item,
+              includeExternal: true,
+              includeEphemeral: true,
+              limit: 100,
+            },
+            { signal },
+          );
+          if (matchesItem(allResp)) {
+            const externalFiles = allResp.files.filter(
+              (f) => f.scope === "external" || f.scope === "ephemeral",
+            );
+            if (externalFiles.length > 0) {
+              const ids = [...new Set(externalFiles.flatMap((f) => f.changeIds ?? []))];
+              const noun = externalFiles.length === 1 ? "external file" : "external files";
+              externalSummary = ids.length
+                ? `Captured ${externalFiles.length} ${noun} · mchanges ${ids.join(" ")} --summary`
+                : `Captured ${externalFiles.length} ${noun}`;
+            }
+          }
+        } catch {
+          // Best-effort external summary; keep workspace preview intact.
+        }
       }
     } catch {
       if (preview.Tool === "Shell") status = "unavailable: Saved Diff could not be read";

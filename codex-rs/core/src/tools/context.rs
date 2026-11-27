@@ -482,12 +482,7 @@ impl ToolOutput for ApplyPatchToolOutput {
                 items.push(FunctionCallOutputContentItem::InputText { text: formatted });
             }
         }
-        function_tool_response(
-            call_id,
-            payload,
-            items,
-            Some(true),
-        )
+        function_tool_response(call_id, payload, items, Some(true))
     }
 
     fn post_tool_use_response(&self, _call_id: &str, _payload: &ToolPayload) -> Option<JsonValue> {
@@ -608,12 +603,7 @@ impl ToolOutput for ExecCommandToolOutput {
                 items.push(FunctionCallOutputContentItem::InputText { text: formatted });
             }
         }
-        function_tool_response(
-            call_id,
-            payload,
-            items,
-            Some(true),
-        )
+        function_tool_response(call_id, payload, items, Some(true))
     }
 
     fn post_tool_use_id(&self, call_id: &str) -> String {

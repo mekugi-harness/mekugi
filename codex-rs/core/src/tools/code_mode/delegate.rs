@@ -106,10 +106,6 @@ impl CodeModeDispatchBroker {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         dispatch_gates.remove(cell_id);
-        self.cell_change_notices
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(cell_id);
         self.executed_tool_calls.finish_cell_recording(cell_id);
     }
 

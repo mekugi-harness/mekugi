@@ -688,7 +688,13 @@ fn hard_ignore_skips_toolchain_caches_and_git_internals_without_concurrent_warni
 
     // Concurrent writes to ignored cache/telemetry/runtime/.git paths produce zero entries
     // and zero concurrent-write warnings.
-    for ignored in [&go_obj, &telemetry_file, &npm_entry, &browser_lock, &git_index] {
+    for ignored in [
+        &go_obj,
+        &telemetry_file,
+        &npm_entry,
+        &browser_lock,
+        &git_index,
+    ] {
         state_a.record_pre_write(ignored);
         state_b.record_pre_write(ignored);
         fs::write(ignored, b"cached-or-locked\n").unwrap();
@@ -731,7 +737,12 @@ fn hard_ignore_skips_toolchain_caches_and_git_internals_without_concurrent_warni
             file.coverage
         );
     }
-    assert!(rec_a.files.iter().any(|f| f.scope == ChangeScope::Workspace && f.rel_path == "app.rs"));
+    assert!(
+        rec_a
+            .files
+            .iter()
+            .any(|f| f.scope == ChangeScope::Workspace && f.rel_path == "app.rs")
+    );
     assert!(
         rec_a
             .files
