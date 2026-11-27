@@ -94,9 +94,12 @@ test("uploads and host paths each get a unique marker and only present markers a
   const photo = { ...upload, placeholder: labelAttachment(upload, "") };
   const notes = { ...file, placeholder: labelAttachment(file, "") };
   assert.equal(photo.placeholder, "[Image shot.png]");
-  assert.equal(notes.placeholder, "@notes.md");
+  assert.equal(notes.placeholder, "@'notes.md'");
   assert.equal(labelAttachment(upload, photo.placeholder), "[Image shot.png 2]");
   assert.deepEqual(submissionAttachments(`see ${notes.placeholder}`, [photo, notes]), [notes]);
+  assert.deepEqual(submissionAttachments("@notes.md.bak @'notes.md'.next", [notes]), [notes]);
+  assert.deepEqual(activeAttachments("@notes.md.bak", [notes]), []);
+  assert.deepEqual(activeAttachments("@'notes.md'#L1", [notes]), [notes]);
 });
 
 test("mixed File and path inputs retain order, bytes and cumulative progress", async () => {

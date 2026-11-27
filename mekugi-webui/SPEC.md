@@ -8,6 +8,7 @@
   dialog parity.
 - Support browser file uploads and execution-machine path attachments within the 32 MiB
   decoded-upload budget per message, with image previews.
+- Edit composer attachment placeholders as indivisible units.
 - Preserve queued edits across browser and native clients, including retraction for editing and
   steering queued input without losing text or attachments.
 - Keep pickers, commands, live diffs, saved changes, images, and shell highlighting responsive on

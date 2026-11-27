@@ -4,6 +4,7 @@
   import Attachments from "./Attachments.svelte";
   import {
     activeAttachments,
+    atomicAttachmentInput,
     prepareAttachments,
     submissionAttachments,
     type InitialInput,
@@ -190,6 +191,7 @@
         data-slot="input-group-control"
         class="{composerText} min-h-20 pt-3.5 pb-1.5"
         bind:value={text}
+        use:atomicAttachmentInput={() => ({ text, items })}
         {onkeydown}
         onpaste={(event) => {
           const files = event.clipboardData?.files;

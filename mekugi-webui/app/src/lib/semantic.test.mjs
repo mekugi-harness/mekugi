@@ -139,7 +139,7 @@ test("toNativeUserInput converts text and attachments to native UserInput items"
 });
 
 test("attachment placeholders are byte-scoped in the input without repeating a file mention", () => {
-  const mention = "@notes.md";
+  const mention = "@'notes.md'";
   const image = "[Image photo.png]";
   const text = `猫 ${mention} ${image}`;
   assert.deepEqual(
@@ -152,8 +152,8 @@ test("attachment placeholders are byte-scoped in the input without repeating a f
         type: "text",
         text,
         text_elements: [
-          { byteRange: { start: 4, end: 13 }, placeholder: mention },
-          { byteRange: { start: 14, end: 31 }, placeholder: image },
+          { byteRange: { start: 4, end: 15 }, placeholder: mention },
+          { byteRange: { start: 16, end: 33 }, placeholder: image },
         ],
       },
       { type: "localImage", path: "photo.png" },
