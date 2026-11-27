@@ -872,16 +872,23 @@ test("reconnect joins earlier history, then applies live deltas and keeps the fr
   threads.connect(root.id, machine);
   const visibleText = () => stream.transcriptEntries.map(({ seq }) => stream.entry(seq).text);
   const retained = visibleText();
+  const notifyTerminalChange = () =>
+    machine.emitNotification({
+      method: "thread/backgroundTerminals/changed",
+      params: { threadId: root.id },
+    });
 
   latest = transcriptTurnPage(37, 33, "after33");
   machine.emitOpen();
   await gapPageRequested.promise;
+  processId = "during-catch-up";
+  notifyTerminalChange();
+  await new Promise(setImmediate);
+  assert.deepEqual(stream.processes, [{ processId, threadId: root.id }]);
+
   processId = "after-reconnect";
   failTerminalRead = true;
-  machine.emitNotification({
-    method: "thread/backgroundTerminals/changed",
-    params: { threadId: root.id },
-  });
+  notifyTerminalChange();
   machine.emitNotification({
     method: "item/agentMessage/delta",
     params: { threadId: "a", turnId: "t37", itemId: "m37", delta: " streamed" },
