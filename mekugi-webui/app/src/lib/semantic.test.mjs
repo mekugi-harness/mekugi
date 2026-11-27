@@ -1035,6 +1035,42 @@ test("background-terminal refresh clears only the thread reported unloaded", asy
   stream.close();
 });
 
+test("one terminal change refreshes both warm family views with one read", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const root = { id: "root", cwd: "/repo", status: { type: "idle" }, turns: [] };
+  const child = { ...root, id: "child", parentThreadId: root.id };
+  let terminals = [];
+  const machine = fakeMachine({
+    "thread/resume": ({ threadId }) => ({ thread: threadId === root.id ? root : child }),
+    "thread/subtree/list": () => ({ data: [root, child] }),
+    "thread/backgroundTerminals/list": ({ threadId }) => ({
+      data: threadId === child.id ? terminals : [],
+    }),
+  });
+  const threads = new ThreadStreams();
+  threads.connect(root.id, machine);
+  const rootView = threads.current;
+  await rootView.refresh();
+  threads.connect(child.id, machine);
+  const childView = threads.current;
+  await childView.refresh();
+  await new Promise(setImmediate);
+  const before = machine.requests.length;
+
+  terminals = [{ processId: "live" }];
+  machine.emitNotification({
+    method: "thread/backgroundTerminals/changed",
+    params: { threadId: child.id },
+  });
+  await new Promise(setImmediate);
+
+  assert.deepEqual(machine.requests.slice(before), [
+    { method: "thread/backgroundTerminals/list", params: { threadId: child.id } },
+  ]);
+  assert.deepEqual(rootView.processes, [{ processId: "live", threadId: child.id }]);
+  assert.deepEqual(childView.processes, rootView.processes);
+});
+
 test("saved edits page, retain exact caller provenance, and discard stale pages", async () => {
   const root = { id: "t1", cwd: "/repo", status: { type: "idle" }, turns: [] };
   const child = { ...root, id: "t2", parentThreadId: "t1", agentNickname: "worker" };

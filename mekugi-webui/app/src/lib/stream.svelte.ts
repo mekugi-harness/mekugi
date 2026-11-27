@@ -838,6 +838,8 @@ const maxCachedHookThreads = 20;
 const maxRoutineHooksPerThread = 200;
 const maxFailedHooksPerThread = 200;
 type HookCache = Map<string, { records: HookRecord[]; sequence: number }>;
+type ProcessChange = Extract<ServerNotification, { method: "thread/backgroundTerminals/changed" }>;
+const processChangeReads = new WeakMap<ProcessChange, Promise<BackgroundTerminalsPage>>();
 
 function isHookFailed(run: HookRunSummary): boolean {
   return run.status === "failed" || run.status === "blocked" || run.status === "stopped";
@@ -874,6 +876,7 @@ export class Stream {
   session = $state.raw<Session | undefined>();
   input = $state.raw<Input | undefined>();
   status = $state.raw<Status>({});
+  // Structural snapshot. Use entry(seq) for live content.
   main = $state.raw<Feed>(empty);
   roster = $state.raw<Roster>({ total: 0, agents: [] });
   family = $state.raw<{ root: string; threads: string[] } | undefined>();
@@ -898,6 +901,7 @@ export class Stream {
     return turn?.status === "completed" ? turn.id : undefined;
   }
 
+  // Stable row seeds for grouping; each mounted row reads its current entry separately.
   transcriptEntries = $derived.by(() => {
     const { order, entries } = this.main;
     return order.slice(this.#hiddenEntries).map((seq) => entries[seq]);
@@ -1602,7 +1606,7 @@ export class Stream {
     if (savedPath) void this.#loadChanges(id, machine, signal);
   }
 
-  async #loadProcesses(threadId: string, machine: Machine): Promise<void> {
+  async #loadProcesses(threadId: string, machine: Machine, change?: ProcessChange): Promise<void> {
     const signal = this.#requests.signal;
     const revision = Symbol();
     this.#processReads.set(threadId, revision);
@@ -1610,11 +1614,18 @@ export class Stream {
       !signal.aborted && this.#processReads.get(threadId) === revision && this.#inFamily(threadId);
     let processes: BackgroundTerminal[] = [];
     try {
-      const page = await machine.request<BackgroundTerminalsPage>(
-        "thread/backgroundTerminals/list",
-        { threadId },
-        { signal },
-      );
+      let request = change && processChangeReads.get(change);
+      if (!request) {
+        // One connector notification can reach several warm family views.
+        // Share its read without letting any one view's eviction cancel it.
+        request = machine.request<BackgroundTerminalsPage>(
+          "thread/backgroundTerminals/list",
+          { threadId },
+          { signal: change ? undefined : signal },
+        );
+        if (change) processChangeReads.set(change, request);
+      }
+      const page = await request;
       processes = page.data.map((process) => ({ ...process, threadId }));
     } catch (error) {
       const rpcError = error instanceof TransportError ? error.rpcError : undefined;
@@ -1695,7 +1706,7 @@ export class Stream {
       }
       case "thread/backgroundTerminals/changed": {
         if (this.#inFamily(notification.params.threadId))
-          void this.#loadProcesses(notification.params.threadId, machine);
+          void this.#loadProcesses(notification.params.threadId, machine, notification);
         break;
       }
       case "thread/closed": {

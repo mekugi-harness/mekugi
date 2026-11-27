@@ -54,6 +54,7 @@
   let pinned = $state(true);
   let mountedSource: Stream | undefined;
   let mountedScroller: HTMLElement | undefined;
+  let pagingViewport: HTMLElement | undefined;
 
   type ReadingPosition = NonNullable<Stream["scroll"]>;
   const rowIdentity = (entry: Entry) =>
@@ -185,6 +186,14 @@
     }
     const anchor = position.anchor;
     const row = anchor && findRow(viewport, anchor.id);
+    if (row && row.classList.contains("deferred") && -anchor.offset >= row.offsetHeight) {
+      // A deep offset may land past the skipped row's placeholder. Keep only
+      // this row laid out until the restored position has been painted.
+      row.setAttribute("data-anchor-layout", "");
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => row.removeAttribute("data-anchor-layout"));
+      });
+    }
     // Align an existing row instead of measuring the list height: retained
     // rows can grow at the other end, and skipped rows have estimated heights.
     const top = row
@@ -196,14 +205,27 @@
     if (Math.abs(viewport.scrollTop - top) >= 1) viewport.scrollTop = top;
   }
 
-  function maybeEarlier(viewport: HTMLElement) {
+  async function maybeEarlier(viewport: HTMLElement) {
+    const source = transcript;
     if (
-      transcript?.hasEarlier &&
-      !transcript.loadingEarlier &&
-      !transcript.hydrating &&
-      viewport.scrollTop < 120
+      !source?.hasEarlier ||
+      source.loadingEarlier ||
+      source.hydrating ||
+      pagingViewport === viewport ||
+      viewport.scrollTop >= 120
     ) {
-      void transcript.earlier();
+      return;
+    }
+    pagingViewport = viewport;
+    try {
+      do {
+        if (!(await source.earlier())) return;
+        await tick();
+        if (scroller !== viewport || transcript !== source) return;
+        // A batch fully hidden by preferences may not trigger another resize.
+      } while (source.hasEarlier && viewport.scrollHeight <= viewport.clientHeight);
+    } finally {
+      if (pagingViewport === viewport) pagingViewport = undefined;
     }
   }
 
@@ -216,7 +238,7 @@
     const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
     pinned = distance < 48;
     transcript.scroll = readingPosition(viewport);
-    maybeEarlier(viewport);
+    void maybeEarlier(viewport);
   }
 
   $effect(() => {
@@ -284,7 +306,7 @@
       if (scroller !== viewport) return;
       if (pinned) viewport.scrollTop = viewport.scrollHeight;
       // A short initial page may not be scrollable at all.
-      if (viewport.scrollHeight <= viewport.clientHeight) maybeEarlier(viewport);
+      if (viewport.scrollHeight <= viewport.clientHeight) void maybeEarlier(viewport);
     });
     observer.observe(content);
     return () => observer.disconnect();
@@ -433,7 +455,8 @@
     contain-intrinsic-block-size: auto 4rem;
   }
 
-  .deferred:focus-within > :global(article) {
+  .deferred:focus-within > :global(article),
+  .deferred:global([data-anchor-layout]) > :global(article) {
     content-visibility: visible;
   }
 </style>
