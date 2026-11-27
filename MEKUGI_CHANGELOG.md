@@ -93,8 +93,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   mutation without Bash AST parsing or shell script rewriting, preserving TTYs
   intact, working on non-git directories, and capturing writes outside `cwd`
   (classifying `/tmp`, `$TMPDIR`, and `$SESSION_TMP` as
-  `ChangeScope::Ephemeral`). Observed writes (including writes before nonzero
-  exits) persist to `codex-change-history` under `ChangeSourceKind::ShellWrite`
+  `ChangeScope::Ephemeral`). On Apple Silicon the interposer loads in both
+  `arm64` and `arm64e` child processes. Observed writes before nonzero
+  exits also persist to `codex-change-history` under `ChangeSourceKind::ShellWrite`
   for agent commands and `ChangeSourceKind::UserShell` (`"user_shell"`,
   unattributed `shellN`) for interactive `!` commands with shared `claim_key`
   deduplication, while classifying Git worktree restores on Linux (`git restore`,
