@@ -122,7 +122,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   native passes them to the model as image input. Catalog parameter overrides
   cannot replace this schema.
   Async questions decode and serialize only the canonical rich-option shape, and
-  retained authored IDs do not reset the runtime question counter.
+  retained authored IDs do not reset the runtime question counter. The shared
+  question schema instructs using option `preview` for appearance or interaction
+  choices to show the same concrete example under each option in the picker, and
+  `request_user_input_async` appends sequencing guidance (batch independent
+  questions; apply outstanding answers before asking dependent questions) to
+  both bundled and catalog-supplied descriptions.
 
 - Tool, unified-exec, and code-mode output uses stock upstream middle
   truncation and spills the omitted portion to

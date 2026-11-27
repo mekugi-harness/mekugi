@@ -408,7 +408,13 @@ async fn freeform_async_message_emits_an_item_without_ending_the_turn(
         .iter()
         .find(|tool| tool["name"] == "request_user_input_async")
         .expect("question tool is still directly available");
-    assert_eq!(question_tool["description"], "Questions only.");
+    assert_eq!(
+        question_tool["description"],
+        format!(
+            "Questions only. {}",
+            codex_prompts::REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE,
+        )
+    );
     assert_eq!(
         requests[1].function_call_output_text(CALL_ID),
         Some(r#"{"accepted":true}"#.to_string())
@@ -527,10 +533,23 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
         .as_ref()
         .and_then(|tools| tools.send_user_message_async.as_ref())
         .and_then(|tool| tool.description.as_deref())
-        .unwrap_or(
-            "Ask the user questions without waiting or ending the turn. Returns runtime IDs. Replies arrive as user messages <question_answers>[answers]</question_answers> containing only newly answered objects: {id,choice,note?} (1-based choice), {id,other}, or {id,skipped:true}. Mark at most one option recommended: true; preserve option order. Omit options for free text only. A preselected option is not submitted automatically.",
-        )
-        .to_string();
+        .map(|description| {
+            let trimmed = description.trim();
+            if trimmed.is_empty() {
+                codex_prompts::REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE.to_string()
+            } else {
+                format!(
+                    "{trimmed} {}",
+                    codex_prompts::REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE
+                )
+            }
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "Ask the user questions without waiting or ending the turn. Returns runtime IDs. Replies arrive as user messages <question_answers>[answers]</question_answers> containing only newly answered objects: {{id,choice,note?}} (1-based choice), {{id,other}}, or {{id,skipped:true}}. Mark at most one option recommended: true; preserve option order. Omit options for free text only. A preselected option is not submitted automatically. {}",
+                codex_prompts::REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE,
+            )
+        });
     let test = test_codex()
         .with_model_info_override("gpt-5.2", move |model| {
             model.tool_mode = Some(ToolMode::CodeModeOnly);
@@ -636,6 +655,13 @@ async fn request_user_input_async_emits_item_and_does_not_end_the_turn(
                 schema["items"]["properties"]["options"]["items"]["type"],
                 "object"
             );
+            let preview_description = schema["items"]["properties"]["options"]["items"]
+                ["properties"]["preview"]["description"]
+                .as_str()
+                .expect("preview description");
+            assert!(preview_description.contains("picker"));
+            assert!(preview_description.contains("appearance or interaction choices"));
+            assert!(preview_description.contains("same concrete example under each option"));
         }
         assert!(
             tools

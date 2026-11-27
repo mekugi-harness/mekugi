@@ -10,6 +10,7 @@ use codex_protocol::openai_models::McpResourceToolMessages;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelMessages;
 use codex_protocol::openai_models::ToolMessage;
+use std::borrow::Cow;
 use permissions::ResolvedApprovalMessages;
 use permissions::ResolvedPermissionMessages;
 
@@ -54,7 +55,8 @@ impl<'a> ResolvedMessage<'a> {
     }
 }
 
-const REQUEST_USER_INPUT_ASYNC_DESCRIPTION: &str = "Ask the user questions without waiting or ending the turn. Returns runtime IDs. Replies arrive as user messages <question_answers>[answers]</question_answers> containing only newly answered objects: {id,choice,note?} (1-based choice), {id,other}, or {id,skipped:true}. Mark at most one option recommended: true; preserve option order. Omit options for free text only. A preselected option is not submitted automatically.";
+pub const REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE: &str = "Batch independent questions. If an outstanding answer could change another question's premise or options, apply that answer before asking the dependent question; you may still ask about every difference and continue independent work while waiting.";
+const REQUEST_USER_INPUT_ASYNC_DESCRIPTION: &str = "Ask the user questions without waiting or ending the turn. Returns runtime IDs. Replies arrive as user messages <question_answers>[answers]</question_answers> containing only newly answered objects: {id,choice,note?} (1-based choice), {id,other}, or {id,skipped:true}. Mark at most one option recommended: true; preserve option order. Omit options for free text only. A preselected option is not submitted automatically. Batch independent questions. If an outstanding answer could change another question's premise or options, apply that answer before asking the dependent question; you may still ask about every difference and continue independent work while waiting.";
 const REMINDER_MESSAGE_TEMPLATE: &str =
     "Your context window is nearly exhausted (only {n_remaining} tokens remaining).";
 const PERSISTENT_INSTRUCTIONS: &str = include_str!("../templates/persistent_mode.md");
@@ -175,12 +177,27 @@ impl<'a> ResolvedModelMessages<'a> {
     }
 
     /// Resolves the asynchronous user-input tool description.
-    pub fn request_user_input_async_description(&self) -> &'a str {
-        self.catalog_messages
+    pub fn request_user_input_async_description(&self) -> Cow<'a, str> {
+        match self
+            .catalog_messages
             .and_then(|messages| messages.tools.as_ref())
             .and_then(|tools| tools.send_user_message_async.as_ref())
             .and_then(|tool| tool.description.as_deref())
-            .unwrap_or(REQUEST_USER_INPUT_ASYNC_DESCRIPTION)
+        {
+            Some(description) => {
+                let trimmed = description.trim();
+                if trimmed.is_empty() {
+                    Cow::Borrowed(REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE)
+                } else if trimmed.contains(REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE) {
+                    Cow::Borrowed(trimmed)
+                } else {
+                    Cow::Owned(format!(
+                        "{trimmed} {REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE}"
+                    ))
+                }
+            }
+            None => Cow::Borrowed(REQUEST_USER_INPUT_ASYNC_DESCRIPTION),
+        }
     }
 
     /// Selects a V2 tool's static description by its name, independently of its runtime namespace.
@@ -279,3 +296,7 @@ mod apps_tests;
 #[cfg(test)]
 #[path = "model_messages/plugins_tests.rs"]
 mod plugins_tests;
+
+#[cfg(test)]
+#[path = "model_messages/request_user_input_async_tests.rs"]
+mod request_user_input_async_tests;

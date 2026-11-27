@@ -946,7 +946,13 @@ async fn request_user_input_async_ignores_catalog_legacy_parameters() {
         panic!("async function tool");
     };
     assert_eq!(blocking.parameters, asynchronous.parameters);
-    assert_eq!(asynchronous.description, "Catalog wording");
+    assert_eq!(
+        asynchronous.description,
+        format!(
+            "Catalog wording {}",
+            codex_prompts::REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE
+        )
+    );
 }
 
 #[tokio::test]

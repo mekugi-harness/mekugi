@@ -2274,7 +2274,10 @@ async fn tool_messages_follow_mid_turn_model_changes() -> Result<()> {
         [MODEL_A, MODEL_B]
             .map(|model| json!({
                 "model": model,
-                "async_description": format!("Async message description for {model}."),
+                "async_description": format!(
+                    "Async message description for {model}. {}",
+                    codex_prompts::REQUEST_USER_INPUT_ASYNC_SEQUENCING_GUIDANCE,
+                ),
                 "multi_agent_messages": MULTI_AGENT_TOOLS
                     .map(|name| (name.to_string(), json!({
                         "description": format!("{name} description for {model}."),
