@@ -231,6 +231,12 @@ func dialNativeAppServer(ctx context.Context, socket string) (*nativeAppServerWi
 
 func (w *nativeAppServerWire) Events() <-chan appserver.Message { return w.events }
 
+func (w *nativeAppServerWire) readError() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closeErr
+}
+
 func (w *nativeAppServerWire) UserAgent() string { return w.userAgent }
 
 func (w *nativeAppServerWire) readLoop() {

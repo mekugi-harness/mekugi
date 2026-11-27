@@ -15,6 +15,9 @@ use codex_app_server_protocol::ThreadChangesReadResponse;
 use codex_change_history::ChangeAuthor;
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeRecord;
+use codex_change_history::ComposedFileDiff;
+use codex_change_history::captured_diff_files;
+use codex_change_history::captured_diff_range;
 use codex_change_history::compose_diff;
 use codex_change_history::compose_file_stats;
 use codex_protocol::ThreadId;
@@ -23,6 +26,16 @@ use super::ThreadRequestProcessor;
 use super::thread_read_view_error;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
+
+// Account for JSON escaping, provenance and the JSON-RPC envelope, not just
+// the bytes of unified diff text.
+const CAPTURE_PAGE_BYTES: usize = 4 << 20;
+const CAPTURE_PATCH_BYTES: usize = 512 << 10;
+const LEGACY_RESPONSE_BYTES: usize = 60 << 20;
+
+#[cfg(test)]
+#[path = "changes_read_tests.rs"]
+mod tests;
 
 impl ThreadRequestProcessor {
     #[tracing::instrument(level = "debug", skip(self))]
@@ -93,14 +106,17 @@ impl ThreadRequestProcessor {
     }
 }
 
-fn parse_cursor(value: &str) -> Result<(u64, usize), JSONRPCErrorError> {
+fn parse_cursor(value: &str) -> Result<(u64, usize, usize), JSONRPCErrorError> {
     let Some((sequence, offset)) = value.split_once(':') else {
         return Err(invalid_request("invalid captured edit cursor"));
     };
+    let (offset, patch) = offset.split_once(':').unwrap_or((offset, "0"));
     sequence
         .parse()
         .ok()
         .zip(offset.parse().ok())
+        .zip(patch.parse().ok())
+        .map(|((sequence, offset), patch)| (sequence, offset, patch))
         .ok_or_else(|| invalid_request("invalid captured edit cursor"))
 }
 
@@ -109,7 +125,7 @@ fn read_changes(
     workspace: Option<String>,
     member_scope: Option<String>,
     params: ThreadChangesReadParams,
-    cursor: Option<(u64, usize)>,
+    cursor: Option<(u64, usize, usize)>,
 ) -> Result<ThreadChangesReadResponse, JSONRPCErrorError> {
     let read_error = |error| internal_error(format!("could not read captured edits: {error}"));
     let mut response = ThreadChangesReadResponse {
@@ -135,8 +151,12 @@ fn read_changes(
     }
     let store = ChangeHistoryStore::open_existing(&dir).map_err(read_error)?;
     let entries = store.list_entries().map_err(read_error)?;
-    let (sequence, offset) =
-        cursor.unwrap_or_else(|| (entries.last().map_or(0, |entry| entry.sequence), 0));
+    let (sequence, offset, patch_offset) =
+        cursor.unwrap_or_else(|| (entries.last().map_or(0, |entry| entry.sequence), 0, 0));
+    let capture_page = params.limit.filter(|_| params.per_capture);
+    if patch_offset != 0 && capture_page.is_none() {
+        return Err(invalid_request("invalid captured edit cursor"));
+    }
     let include_ephemeral = params.include_ephemeral.unwrap_or(false);
     let ids: Vec<_> = entries
         .into_iter()
@@ -165,6 +185,18 @@ fn read_changes(
     }
     if let Some(caller) = params.caller_thread_id.as_ref() {
         records.retain(|record| author_thread(record).as_ref() == Some(caller));
+    }
+    if let Some(limit) = capture_page {
+        read_capture_page(
+            &store,
+            &records,
+            &mut response,
+            sequence,
+            offset,
+            patch_offset,
+            limit.clamp(1, 100) as usize,
+        )?;
+        return Ok(response);
     }
     let separate = params.per_capture || params.caller_thread_id.is_some();
     let mut composed = Vec::new();
@@ -211,24 +243,8 @@ fn read_changes(
     }
     let mut page_ids = HashSet::new();
     for diff in composed.into_iter().skip(offset).take(limit) {
-        let stats = diff.stats;
-        page_ids.extend(stats.change_ids.iter().cloned());
-        response.files.push(ThreadChangeFileDiff {
-            path: stats.rel_path,
-            absolute_path: stats.abs_path.display().to_string(),
-            change_ids: stats
-                .change_ids
-                .into_iter()
-                .map(|id| id.to_string())
-                .collect(),
-            moved_from: stats.moved_from,
-            status: stats.status.to_string(),
-            unified_diff: diff.unified_diff,
-            additions: stats.additions as i64,
-            deletions: stats.deletions as i64,
-            is_binary: stats.is_binary,
-            coverage_notes: stats.coverage_notes,
-        });
+        page_ids.extend(diff.stats.change_ids.iter().cloned());
+        response.files.push(wire_file(diff));
     }
     let all_origins = params.limit.is_none() && cursor.is_none();
     let caller_index = cursor.is_none() && !separate && params.item_id.is_none();
@@ -237,25 +253,14 @@ fn read_changes(
         let author = author_thread(&record);
         let show = all_origins || page_ids.contains(&record.id);
         if show {
-            let (source_kind, source_label) = record.metadata.source_kind.review_source();
-            response.changes.push(ThreadChangeOrigin {
-                change_id: record.id.to_string(),
-                sequence: record.sequence,
-                thread_id: record.metadata.thread_id.clone(),
-                author_thread_id: author.clone(),
-                turn_id: record.metadata.turn_id.clone(),
-                item_id: record.metadata.call_id.clone(),
-                workspace: record.metadata.workspace_root.display().to_string(),
-                source_kind: source_kind.to_string(),
-                source_label: source_label.to_string(),
-                created_at: record.metadata.created_at,
-                paths: record
+            response.changes.push(wire_origin(
+                &record,
+                record
                     .files
                     .iter()
                     .map(|file| file.rel_path.clone())
                     .collect(),
-                incomplete: record.files.iter().any(|file| !file.coverage.is_complete()),
-            });
+            ));
         }
         if caller_index && let Some(author) = author {
             callers.entry(author).or_default().push(record);
@@ -287,7 +292,141 @@ fn read_changes(
             deletions,
         });
     }
+    if serde_json::to_writer(JsonBudget(LEGACY_RESPONSE_BYTES), &response).is_err() {
+        return Err(invalid_request(
+            "Saved Diff exceeds the response limit; request a smaller page or capture",
+        ));
+    }
     Ok(response)
+}
+
+fn wire_file(diff: ComposedFileDiff) -> ThreadChangeFileDiff {
+    let stats = diff.stats;
+    ThreadChangeFileDiff {
+        path: stats.rel_path,
+        absolute_path: stats.abs_path.display().to_string(),
+        change_ids: stats
+            .change_ids
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        moved_from: stats.moved_from,
+        status: stats.status.to_string(),
+        unified_diff: diff.unified_diff,
+        additions: stats.additions as i64,
+        deletions: stats.deletions as i64,
+        is_binary: stats.is_binary,
+        coverage_notes: stats.coverage_notes,
+    }
+}
+
+fn wire_origin(record: &ChangeRecord, paths: Vec<String>) -> ThreadChangeOrigin {
+    let (source_kind, source_label) = record.metadata.source_kind.review_source();
+    ThreadChangeOrigin {
+        change_id: record.id.to_string(),
+        sequence: record.sequence,
+        thread_id: record.metadata.thread_id.clone(),
+        author_thread_id: author_thread(record),
+        turn_id: record.metadata.turn_id.clone(),
+        item_id: record.metadata.call_id.clone(),
+        workspace: record.metadata.workspace_root.display().to_string(),
+        source_kind: source_kind.to_string(),
+        source_label: source_label.to_string(),
+        created_at: record.metadata.created_at,
+        paths,
+        incomplete: record.files.iter().any(|file| !file.coverage.is_complete()),
+    }
+}
+
+fn read_capture_page(
+    store: &ChangeHistoryStore,
+    records: &[ChangeRecord],
+    response: &mut ThreadChangesReadResponse,
+    sequence: u64,
+    offset: usize,
+    patch_offset: usize,
+    limit: usize,
+) -> Result<(), JSONRPCErrorError> {
+    let captured_files: Vec<_> = records
+        .iter()
+        .rev()
+        .flat_map(|record| captured_diff_files(record).map(move |files| (record, files)))
+        .collect();
+    response.file_count = captured_files.len() as u32;
+    if patch_offset != 0 && offset >= captured_files.len() {
+        return Err(invalid_request("invalid captured edit cursor"));
+    }
+    // Leave room for the continuation, page totals and RPC envelope.
+    let mut budget = JsonBudget(CAPTURE_PAGE_BYTES - 1024);
+    serde_json::to_writer(&mut budget, &*response)
+        .map_err(|_| invalid_request("captured edit metadata exceeds the response limit"))?;
+    for (index, (record, files)) in captured_files.into_iter().enumerate().skip(offset) {
+        if response.files.len() == limit {
+            response.next_cursor = Some(format!("{sequence}:{index}"));
+            break;
+        }
+        let start = if index == offset { patch_offset } else { 0 };
+        let Some((diff, next_patch)) =
+            captured_diff_range(store, record, &files, start, CAPTURE_PATCH_BYTES).map_err(
+                |error| internal_error(format!("could not read captured edits: {error}")),
+            )?
+        else {
+            return Err(invalid_request("invalid captured edit cursor"));
+        };
+        let file = wire_file(diff);
+        let origin = response
+            .changes
+            .last()
+            .filter(|previous| previous.change_id == record.id.as_str())
+            .is_none()
+            .then(|| wire_origin(record, vec![file.path.clone()]));
+        // Reserve punctuation as well as the encoded file and its origin.
+        let encoded = match origin.as_ref() {
+            Some(origin) => serde_json::to_writer(&mut budget, &(&file, origin)),
+            None => serde_json::to_writer(&mut budget, &(&file, &file.path)),
+        };
+        if encoded.is_err() {
+            if response.files.is_empty() {
+                return Err(invalid_request(
+                    "captured edit metadata exceeds the response limit",
+                ));
+            }
+            response.next_cursor = Some(format!("{sequence}:{index}"));
+            break;
+        }
+        if let Some(origin) = origin {
+            response.changes.push(origin);
+        } else if let Some(previous) = response.changes.last_mut() {
+            previous.paths.push(file.path.clone());
+        }
+        response.incomplete |= !file.coverage_notes.is_empty();
+        if start == 0 {
+            response.total_additions += file.additions;
+            response.total_deletions += file.deletions;
+        }
+        response.files.push(file);
+        if let Some(next) = next_patch {
+            response.next_cursor = Some(format!("{sequence}:{index}:{next}"));
+            break;
+        }
+    }
+    Ok(())
+}
+
+struct JsonBudget(usize);
+
+impl io::Write for JsonBudget {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_sub(bytes.len())
+            .ok_or_else(|| io::Error::other("saved diff response exceeds its byte budget"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn author_thread(record: &ChangeRecord) -> Option<String> {
