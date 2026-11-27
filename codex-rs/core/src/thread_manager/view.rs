@@ -70,6 +70,7 @@ pub fn thread_from_stored_thread(
         service_tier: None,
         context_tokens: None,
         context_window: None,
+        token_usage: None,
         completed_compactions: None,
         agent_status: None,
 
@@ -129,6 +130,7 @@ pub fn build_thread_from_snapshot(
         service_tier: None,
         context_tokens: None,
         context_window: None,
+        token_usage: None,
         completed_compactions: None,
         agent_status: None,
 

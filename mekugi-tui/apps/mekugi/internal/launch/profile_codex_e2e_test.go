@@ -23,8 +23,19 @@ import (
 	"github.com/coder/websocket"
 
 	launchoptions "github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch/options"
-	codexresponses "github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/responses"
 )
+
+func standaloneFunctionOutput(item map[string]jsontext.Value) bool {
+	var itemType, name string
+	if raw, ok := item["type"]; ok {
+		_ = json.Unmarshal(raw, &itemType)
+	}
+	if raw, ok := item["name"]; ok {
+		_ = json.Unmarshal(raw, &name)
+	}
+	call := bytes.TrimSpace(item["call_id"])
+	return itemType == "function_call_output" && name != "" && (len(call) == 0 || bytes.Equal(call, []byte("null")))
+}
 
 func TestProfileLaunchInstalledCodex(t *testing.T) {
 	codex, err := exec.LookPath("mekugi-app-server")
@@ -155,7 +166,7 @@ func TestProfileLaunchInstalledCodex(t *testing.T) {
 						return
 					}
 					for _, item := range native.Input {
-						if codexresponses.StandaloneFunctionOutput(item) {
+						if standaloneFunctionOutput(item) {
 							t.Error("HTTP/profile provider received a native output without call_id")
 							http.Error(w, "function_call_output requires call_id", http.StatusBadRequest)
 							return
@@ -561,7 +572,7 @@ func TestNativeProviderInterruptionAndFailure(t *testing.T) {
 				cmd.Env = append(environment, "CODEX_ROLLOUT_TRACE_ROOT="+traces)
 				return cmd
 			}, "")
-			terminal.await("Ready")
+			terminal.awaitReady()
 			terminal.send("CANCEL_FIXTURE_TURN\r")
 			select {
 			case <-started:

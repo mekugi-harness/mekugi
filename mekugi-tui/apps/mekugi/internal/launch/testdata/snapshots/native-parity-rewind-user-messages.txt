@@ -1,0 +1,12 @@
+· main  · worker
+
+
+  ── Rewind before a user message ─────────────────────────── [×] ──
+
+  ❯ First user message
+    Steered user message
+    Older messages…
+
+  ↑/↓ choose · enter select · esc cancel
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /tmp/ws • ctrl+e view

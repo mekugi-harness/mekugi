@@ -1,7 +1,6 @@
 package terminalsession
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -55,16 +54,21 @@ func (p *ResumePicker) Render(painter *terminalui.Painter, width, height int, se
 	}
 	put(1, filter)
 	search := "  " + dim + "Type to search" + reset
-	if view.Query != "" {
-		search = "  Search: " + panelText(view.Query)
+	if p.query != "" {
+		search = "  Search: " + panelText(p.query)
 	}
 	if view.Problem != "" {
 		search = "  " + painter.Theme.Danger() + panelText(view.Problem) + reset
 	}
 	put(2, search)
-	footer := "  " + bold + "enter" + reset + dim + " resume · " + reset + bold + "esc" + reset + dim
+	put(3, "  "+option("Active", !view.Archived)+" "+option("Archived", view.Archived)+dim+" · ←/→"+reset)
+	action := "resume"
+	if view.Archived {
+		action = "restore"
+	}
+	footer := "  " + bold + "enter" + reset + dim + " " + action + " · " + reset + bold + "esc" + reset + dim
 	switch {
-	case view.Query != "":
+	case p.query != "":
 		footer += " clear search"
 	case view.Startup:
 		footer += " start new"
@@ -83,7 +87,7 @@ func (p *ResumePicker) Render(painter *terminalui.Painter, width, height int, se
 	footer += " · " + reset + bold + "↑/↓" + reset + dim + " browse" + reset
 	put(height-1, footer)
 
-	rows := view.Rows
+	rows := p.rows
 	first, last := 5, height-2 // Header row at 4; the row before the footer marks more.
 	if height < 8 {
 		first, last = min(3, height-1), height-1
@@ -98,14 +102,14 @@ func (p *ResumePicker) Render(painter *terminalui.Painter, width, height int, se
 	if len(rows) == 0 {
 		message := "No sessions yet"
 		switch {
-		case view.Loading && view.Query != "":
+		case view.PageAfter != "" && p.query != "":
 			message = "Searching…"
-		case view.Loading:
+		case view.PageAfter != "":
 			message = "Loading sessions…"
-		case view.Query != "" && view.HasMore:
-			message = fmt.Sprintf("Search scanned first %d sessions; more may exist", view.Scanned)
-		case view.Query != "":
+		case p.query != "":
 			message = "No results for your search"
+		case view.Archived:
+			message = "No archived sessions"
 		}
 		put(first, "  "+dim+message+reset)
 		return frame
@@ -163,9 +167,7 @@ func (p *ResumePicker) Render(painter *terminalui.Painter, width, height int, se
 	}
 	switch {
 	case last == height-1: // The footer keeps its row in a short pane.
-	case view.Loading:
-		put(last, "  "+dim+"↓ loading more"+reset)
-	case p.Top+p.Viewport < len(rows) || view.HasMore && view.Query == "":
+	case p.Top+p.Viewport < len(rows) || view.PageAfter != "":
 		put(last, "  "+dim+"↓ more"+reset)
 	}
 	return frame

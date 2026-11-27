@@ -1,0 +1,21 @@
+✗ main                                                                         12:40:21
+│ Earlier provider failure
+✗ main                                                                         12:40:21
+│ exec script failed: CreateProcess: command command command command command command
+│ command command command command command command command command command command
+│ command command command command command command command command command comma…
+│ details · ctrl+b !
+
+● main                                                                         12:40:21
+┃ Recovered in the same turn.
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────
+❯ preserve draft 
+────────────────────────────────────────────────────────────────────────────────────────
+  5h 88% left · Weekly 79% left
+  Main • Error details • /tmp/ws • ctrl+e view

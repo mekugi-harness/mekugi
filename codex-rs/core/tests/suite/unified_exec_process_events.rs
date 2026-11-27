@@ -1417,7 +1417,9 @@ timeout = 900
                     } else {
                         assert!(
                             test.codex
-                                .terminate_background_terminal(/*process_id*/ 1000)
+                                .terminate_background_terminal(
+                                    1000, /*expected_invocation*/ None
+                                )
                                 .await
                         );
                     }
@@ -1642,7 +1644,7 @@ timeout = 900
         // The producer is closed without another poll; its unread output stays collectable.
         assert!(
             test.codex
-                .terminate_background_terminal(/*process_id*/ 1000)
+                .terminate_background_terminal(1000, /*expected_invocation*/ None)
                 .await
         );
     }
@@ -1878,7 +1880,7 @@ timeout = 900
         assert!(
             !test
                 .codex
-                .terminate_background_terminal(/*process_id*/ 1000)
+                .terminate_background_terminal(1000, /*expected_invocation*/ None)
                 .await
         );
         POLL_CALL_ID

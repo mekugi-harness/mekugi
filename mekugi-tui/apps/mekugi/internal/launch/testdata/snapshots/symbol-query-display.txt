@@ -1,4 +1,0 @@
-├ Search  refs sample.go Target
-│         -- refs 'other file.go' Other
-│         def sample.go Target refs other.go Other
-└ Ran     msymbol refs sample.go

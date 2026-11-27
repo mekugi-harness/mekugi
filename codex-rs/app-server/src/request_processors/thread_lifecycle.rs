@@ -1320,7 +1320,7 @@ pub(super) async fn handle_pending_thread_resume_request(
     let session_id = conversation.startup_metadata().session_id.to_string();
     thread.session_id = session_id;
 
-    super::token_usage_replay::set_context_usage(&mut thread, conversation).await;
+    super::token_usage_replay::set_thread_usage(&mut thread, conversation).await;
     let response = ThreadResumeResponse {
         thread,
         disabled_plugin_ids,

@@ -1060,7 +1060,15 @@ generatedImage(result);
         .with_env_overrides(&[("OPENAI_API_KEY", None)])
         .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
         .await?;
-    start_image_generation_turn(&mut mcp, ThreadStartParams::default()).await?;
+    // This fixture handles tool responses, not the independent title request.
+    start_image_generation_turn(
+        &mut mcp,
+        ThreadStartParams {
+            ephemeral: Some(true),
+            ..Default::default()
+        },
+    )
+    .await?;
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),

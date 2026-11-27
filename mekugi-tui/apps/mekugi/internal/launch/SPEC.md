@@ -52,5 +52,5 @@
 - Detached servers retain bounded private stderr/exit evidence via a supervisor.
 - On attached exit, idle threads release cleanly; busy `/quit` (including a shell still running
   after its turn) offers Continue in background vs Stop; `/detach` leaves execution running. Exit
-  restores the terminal and prints unsent notices, cumulative Main token usage, and
-  `resume`/`replay-session` commands.
+  restores the terminal and prints unsent notices, cumulative Main token usage, and a
+  `resume` command when the thread can be resumed.

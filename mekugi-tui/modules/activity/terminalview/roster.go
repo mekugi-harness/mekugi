@@ -36,7 +36,7 @@ func (v *View) RosterSummary() RosterSummary {
 		if row.Agent.CostKnown {
 			cost, costKnown = cost+row.Agent.Cost, true
 			partial = partial || row.Agent.CostPartial
-		} else if row.Agent.Turns > 0 {
+		} else if row.Agent.Roundtrips > 0 || row.Agent.UsagePartial {
 			partial = true
 		}
 		if row.Agent.Name == "/root" {

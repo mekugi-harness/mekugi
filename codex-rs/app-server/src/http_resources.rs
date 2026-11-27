@@ -41,6 +41,7 @@ const PROTOCOL_VERSION: &str = "9";
 const UPLOAD_LIMIT: usize = 32 << 20;
 const DEFAULT_RESOURCE_BODY_LIMIT: usize = 1024;
 const ATTACHMENT_IMAGE_BODY_LIMIT: usize = 64 << 10;
+const DETAIL_FILE_LIMIT: usize = 8 << 20;
 const ENVELOPE_OVERHEAD: usize = 64 << 10;
 
 #[derive(Clone)]
@@ -103,6 +104,14 @@ struct AttachmentImageBody {
     path: String,
     #[serde(default)]
     workspace: String,
+    #[serde(default)]
+    probe: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileBody {
+    path: PathBuf,
 }
 
 pub(crate) fn router(thread_processor: Arc<OnceLock<Arc<ThreadRequestProcessor>>>) -> Router {
@@ -200,7 +209,7 @@ async fn resource_handler(
         return response;
     }
     let limit = match kind.as_str() {
-        "attachment-image" => ATTACHMENT_IMAGE_BODY_LIMIT,
+        "attachment-image" | "file" => ATTACHMENT_IMAGE_BODY_LIMIT,
         "image" | "content" => DEFAULT_RESOURCE_BODY_LIMIT,
         _ => return error_response(StatusCode::NOT_FOUND, "Unknown resource endpoint."),
     };
@@ -234,10 +243,96 @@ async fn resource_handler(
     };
     match kind.as_str() {
         "content" => handle_content(thread_processor, params).await,
+        "file" => handle_file(thread_processor, params).await,
         "image" => handle_image(thread_processor, params).await,
         "attachment-image" => handle_attachment_image(thread_processor, params).await,
         _ => error_response(StatusCode::NOT_FOUND, "Unknown resource endpoint."),
     }
+}
+
+#[tracing::instrument(skip_all)]
+async fn handle_file(
+    thread_processor: &ThreadRequestProcessor,
+    params: ResourceParams,
+) -> Response {
+    let Some(body) = params.body else {
+        return error_response(StatusCode::BAD_REQUEST, "A file path is required.");
+    };
+    let Ok(FileBody { path }) = serde_json::from_value(body) else {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid file request.");
+    };
+    if params.thread.is_empty() || path.as_os_str().is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "A thread and file path are required.",
+        );
+    }
+    let Ok(response) = thread_processor
+        .thread_read_response_inner(ThreadReadParams {
+            thread_id: params.thread,
+            include_turns: false,
+        })
+        .await
+    else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "The requested thread is unavailable.",
+        );
+    };
+    let workspace = Path::new(response.thread.cwd.as_str());
+    let Some(path) = resolve_detail_file(workspace, &path).await else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "The requested file is not available in this workspace.",
+        );
+    };
+    let Ok((file, metadata)) = open_resource_file(&path).await else {
+        return error_response(StatusCode::NOT_FOUND, "The requested file is unavailable.");
+    };
+    if !metadata.is_file() {
+        return error_response(StatusCode::NOT_FOUND, "The requested file is unavailable.");
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take((DETAIL_FILE_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .is_err()
+    {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            "The requested file could not be read.",
+        );
+    }
+    if bytes.len() > DETAIL_FILE_LIMIT {
+        return error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "File details are limited to 8 MiB.",
+        );
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "The requested file is not UTF-8 text.",
+        );
+    };
+    if text.contains('\0') {
+        return error_response(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "The requested file is not UTF-8 text.",
+        );
+    }
+    json_response(&serde_json::json!({ "text": text }))
+}
+
+#[tracing::instrument(skip_all)]
+async fn resolve_detail_file(workspace: &Path, path: &Path) -> Option<PathBuf> {
+    if !workspace.is_absolute() {
+        return None;
+    }
+    let root = tokio::fs::canonicalize(workspace).await.ok()?;
+    let path = tokio::fs::canonicalize(root.join(path)).await.ok()?;
+    path.starts_with(&root).then_some(path)
 }
 
 async fn handle_content(
@@ -451,8 +546,9 @@ fn find_published_image_source(
             {
                 continue;
             }
-            for (image_index, candidate) in
-                extract_item_image_sources(&item.payload).into_iter().enumerate()
+            for (image_index, candidate) in extract_item_image_sources(&item.payload)
+                .into_iter()
+                .enumerate()
             {
                 let index_ok = image_body.index.is_none_or(|idx| idx == image_index);
                 let identity_ok =
@@ -479,9 +575,7 @@ async fn handle_attachment_image(
             return error_response(StatusCode::BAD_REQUEST, "Invalid attachment image request.");
         }
     };
-    if request.path.is_empty()
-        || request.path.starts_with("data:")
-        || request.path.contains("://")
+    if request.path.is_empty() || request.path.starts_with("data:") || request.path.contains("://")
     {
         return error_response(
             StatusCode::BAD_REQUEST,
@@ -521,7 +615,72 @@ async fn handle_attachment_image(
         }
         path
     };
-    read_image_source(&workspace, &request.path).await
+    if request.probe {
+        match read_image_file(&workspace, &request.path, ImageFileRead::Probe).await {
+            Ok(bytes) => json_response(&serde_json::json!({ "mime": detect_raster_mime(&bytes) })),
+            Err(response) => response,
+        }
+    } else {
+        read_image_source(&workspace, &request.path).await
+    }
+}
+
+enum ImageFileRead {
+    Probe,
+    Preview,
+}
+
+#[tracing::instrument(skip_all)]
+async fn open_resource_file(path: &Path) -> std::io::Result<(tokio::fs::File, std::fs::Metadata)> {
+    let mut options = tokio::fs::OpenOptions::new();
+    options.read(true);
+    // A named pipe must not block open before we can check the file type.
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let file = options.open(path).await?;
+    let metadata = file.metadata().await?;
+    Ok((file, metadata))
+}
+
+#[tracing::instrument(skip_all)]
+async fn read_image_file(
+    workspace: &Path,
+    source: &str,
+    mode: ImageFileRead,
+) -> Result<Vec<u8>, Response> {
+    let candidate = Path::new(source);
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        if !workspace.is_absolute() {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "The image has no workspace.",
+            ));
+        }
+        workspace.join(candidate)
+    };
+    let unavailable =
+        || error_response(StatusCode::NOT_FOUND, "The attachment file is unavailable.");
+    let (file, metadata) = open_resource_file(&resolved)
+        .await
+        .map_err(|_| unavailable())?;
+    if matches!(mode, ImageFileRead::Probe) && metadata.is_dir() {
+        return Ok(Vec::new());
+    }
+    if !metadata.is_file() {
+        return Err(unavailable());
+    }
+    let limit = match mode {
+        ImageFileRead::Probe => 12,
+        ImageFileRead::Preview => UPLOAD_LIMIT + 1,
+    };
+    let mut bytes = Vec::new();
+    file.take(limit as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| unavailable())?;
+    Ok(bytes)
 }
 
 async fn read_image_source(workspace: &Path, source: &str) -> Response {
@@ -555,33 +714,10 @@ async fn read_image_source(workspace: &Path, source: &str) -> Response {
                 "Remote image URLs are not loaded automatically.",
             );
         }
-        let candidate = Path::new(source);
-        let resolved = if candidate.is_absolute() {
-            candidate.to_path_buf()
-        } else {
-            if !workspace.is_absolute() {
-                return error_response(StatusCode::BAD_REQUEST, "The image has no workspace.");
-            }
-            workspace.join(candidate)
-        };
-        let mut file = match tokio::fs::File::open(&resolved).await {
-            Ok(file) => file,
-            Err(_) => {
-                return error_response(
-                    StatusCode::NOT_FOUND,
-                    "The attached image file is unavailable.",
-                );
-            }
-        };
-        let mut bytes = Vec::new();
-        let mut limited = (&mut file).take((UPLOAD_LIMIT + 1) as u64);
-        if limited.read_to_end(&mut bytes).await.is_err() {
-            return error_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "The attached image could not be read within the upload limit.",
-            );
+        match read_image_file(workspace, source, ImageFileRead::Preview).await {
+            Ok(bytes) => bytes,
+            Err(response) => return response,
         }
-        bytes
     };
     if data.len() > UPLOAD_LIMIT {
         return error_response(
@@ -619,13 +755,68 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn resolves_workspace_file_links_without_following_links_outside_the_workspace() {
+        let temp = tempfile::tempdir().expect("create temp directory");
+        let root = temp.path().join("workspace");
+        let outside = temp.path().join("outside.txt");
+        let linked = root.join("file.txt");
+        std::fs::create_dir(&root).expect("create workspace");
+        std::fs::write(&linked, "inside").expect("create workspace file");
+        std::fs::write(&outside, "outside").expect("create separate file");
+        std::os::unix::fs::symlink(&outside, root.join("escape.txt")).expect("link separate file");
+
+        let canonical = linked.canonicalize().expect("resolve test file");
+        assert_eq!(
+            resolve_detail_file(&root, Path::new("file.txt")).await,
+            Some(canonical.clone())
+        );
+        assert_eq!(resolve_detail_file(&root, &linked).await, Some(canonical));
+        assert_eq!(
+            resolve_detail_file(&root, Path::new("../outside.txt")).await,
+            None
+        );
+        assert_eq!(
+            resolve_detail_file(&root, Path::new("escape.txt")).await,
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn attachment_probe_distinguishes_directories_from_named_pipes() {
+        let temp = tempfile::tempdir().expect("create temp directory");
+        let path = temp.path().join("pipe");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .expect("create named pipe")
+                .success()
+        );
+        assert!(
+            read_image_file(temp.path(), ".", ImageFileRead::Probe)
+                .await
+                .expect("directories are not images")
+                .is_empty()
+        );
+        let error = read_image_file(temp.path(), "pipe", ImageFileRead::Probe)
+            .await
+            .expect_err("named pipes cannot be read as image attachments");
+        assert_eq!(error.status(), StatusCode::NOT_FOUND);
+    }
+
     #[test]
     fn detects_supported_raster_images_only() {
         assert_eq!(
             detect_raster_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
             Some("image/png")
         );
-        assert_eq!(detect_raster_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(
+            detect_raster_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
         assert_eq!(detect_raster_mime(b"GIF89a..."), Some("image/gif"));
         assert_eq!(detect_raster_mime(b"RIFF0000WEBP"), Some("image/webp"));
         assert_eq!(detect_raster_mime(b"<svg></svg>"), None);

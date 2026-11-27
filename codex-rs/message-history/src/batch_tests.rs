@@ -33,6 +33,28 @@ async fn batch_for(entries: &[HistoryEntry], end_offset: usize) -> (TempDir, His
     (home, batch)
 }
 
+#[test]
+fn recent_history_is_bounded_and_chronological() {
+    let home = TempDir::new().expect("temp dir");
+    let config = HistoryConfig::new(home.path(), &History::default());
+    assert_eq!(recent_entries(&config).expect("missing log"), vec![]);
+
+    let entries: Vec<_> = (0..400)
+        .map(|offset| entry(offset, format!("draft {offset}")))
+        .collect();
+    write_entries(&home, &entries);
+    assert_eq!(
+        recent_entries(&config).expect("bounded recent history"),
+        entries[272..],
+    );
+
+    let disabled = HistoryConfig {
+        persistence: HistoryPersistence::None,
+        ..config
+    };
+    assert_eq!(recent_entries(&disabled).expect("disabled log"), vec![]);
+}
+
 #[tokio::test]
 async fn search_batch_returns_bounded_newest_first_absolute_offsets() {
     let entries: Vec<_> = (0..400)

@@ -7269,6 +7269,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
+        usage_metrics: Mutex::new(Default::default()),
         active_turn: Mutex::new(None),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),
@@ -9258,6 +9259,74 @@ async fn submission_loop_channel_close_aborts_active_turn_before_thread_stop_lif
 }
 
 #[tokio::test]
+async fn submitted_interrupt_does_not_abort_a_replacement_turn() -> anyhow::Result<()> {
+    let (session, first, events) = make_session_and_context_with_rx().await;
+    let (thread, rx_sub) = make_thread_for_session(
+        Arc::clone(&session),
+        &first,
+        events.clone(),
+        SessionSource::Exec,
+    )
+    .await;
+    let finish = Arc::new(Notify::new());
+    session
+        .spawn_task(
+            Arc::clone(&first),
+            Vec::new(),
+            HeldStepTask {
+                kind: TaskKind::Regular,
+                finish: Arc::clone(&finish),
+            },
+        )
+        .await;
+    thread
+        .submit_turn_interrupt(first.sub_id.clone(), /*trace*/ None)
+        .await?;
+    finish.notify_one();
+    let completed = recv_terminal_event(&events, TerminalEventKind::TurnComplete).await;
+    assert_eq!(completed.id, first.sub_id);
+
+    // Delay dispatch until after the old turn completes and a replacement registers.
+    let second = session
+        .new_turn_with_default_settings("replacement-turn".into(), Default::default())
+        .await;
+    session
+        .spawn_task(
+            Arc::clone(&second),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    let config = session.get_config().await;
+    let session_loop = tokio::spawn(Box::pin(submission_loop(session, config, rx_sub)));
+    // Observe a later operation as a dispatch barrier before interrupting the replacement.
+    let barrier = thread.submit(Op::RealtimeConversationListVoices).await?;
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let event = events.recv().await.expect("event");
+            if event.id == barrier {
+                break;
+            }
+            assert!(!matches!(event.msg, EventMsg::TurnAborted(_)));
+        }
+    })
+    .await?;
+    assert_eq!(thread.current_turn_id().await, Some(second.sub_id.clone()));
+
+    thread
+        .submit_turn_interrupt(second.sub_id.clone(), /*trace*/ None)
+        .await?;
+    let aborted = recv_terminal_event(&events, TerminalEventKind::TurnAborted).await;
+    assert_eq!(aborted.id, second.sub_id);
+    thread.submit(Op::Shutdown).await?;
+    session_loop.await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn shutdown_and_wait_allows_multiple_waiters() {
     let (_session, _turn_context) = make_session_and_context().await;
     let (tx_sub, rx_sub) = async_channel::bounded::<Box<Submission>>(4);
@@ -9636,6 +9705,7 @@ where
         mcp_prewarm_task: std::sync::Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         realtime_history: None,
+        usage_metrics: Mutex::new(Default::default()),
         active_turn: Mutex::new(None),
         async_hook_results,
         input_queue: super::input_queue::InputQueue::new(),

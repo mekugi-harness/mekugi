@@ -1,4 +1,6 @@
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_protocol::ThreadId;
+use serde::Serialize;
 
 pub(crate) const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 pub(crate) const METHOD_NOT_FOUND_ERROR_CODE: i64 = -32601;
@@ -6,6 +8,32 @@ pub const INVALID_PARAMS_ERROR_CODE: i64 = -32602;
 pub(crate) const INTERNAL_ERROR_CODE: i64 = -32603;
 pub(crate) const OVERLOADED_ERROR_CODE: i64 = -32001;
 pub const INPUT_TOO_LARGE_ERROR_CODE: &str = "input_too_large";
+
+#[derive(Serialize)]
+#[serde(
+    tag = "reason",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum InvalidRequestReason<'a> {
+    NoActiveTurn,
+    ActiveTurnMismatch {
+        expected_turn_id: &'a str,
+        actual_turn_id: &'a str,
+    },
+    ThreadNotLoaded {
+        thread_id: ThreadId,
+    },
+}
+
+pub(crate) fn invalid_request_with_reason(
+    message: impl Into<String>,
+    reason: InvalidRequestReason<'_>,
+) -> JSONRPCErrorError {
+    let mut error = invalid_request(message);
+    error.data = Some(serde_json::json!(reason));
+    error
+}
 
 pub(crate) fn server_draining_error() -> JSONRPCErrorError {
     let mut error = invalid_request("Server is draining; retry after reconnecting");

@@ -1,0 +1,18 @@
+mekugi-app-server/test
+
+
+
+
+
+
+• Queued for the next turn · alt+↑ edits
+  ↳ Check the parser diagnostics.
+    !go test ./parser
+    Keep existing input intact.
+
+
+──────────────────────────────────────────────────────
+❯  
+──────────────────────────────────────────────────────
+  gpt-5 (medium) · standard
+  Main • Direct Session • /tmp/ws • ↓ roster • → diff

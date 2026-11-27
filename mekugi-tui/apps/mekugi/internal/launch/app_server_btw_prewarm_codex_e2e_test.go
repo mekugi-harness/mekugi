@@ -210,7 +210,7 @@ func testAppServerBuiltInOpenAI(t *testing.T, fallback bool) {
 			return request
 		}
 	}
-	terminal.await("Ready")
+	terminal.awaitReady()
 	terminal.send("Main seed\r")
 	first := awaitPrompt("Main seed")
 	if !webExposed {

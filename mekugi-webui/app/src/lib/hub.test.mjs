@@ -82,6 +82,37 @@ afterEach(() => {
   for (const owner of owners.splice(0)) for (const machine of owner.machines) machine.close();
 });
 
+test("the sidebar follows every page of non-archived threads across providers and sources", async () => {
+  const machine = new Machine("Alpha", "https://alpha.example", "fixture");
+  const requests = [];
+  machine.request = async (method, params) => {
+    assert.equal(method, "thread/list");
+    requests.push(params);
+    const page = Number(params.cursor ?? 0);
+    return {
+      data: [{ id: `thread-${page}`, cwd: "/project", status: { type: "idle" } }],
+      nextCursor: page < 10 ? String(page + 1) : null,
+    };
+  };
+  try {
+    await machine.refreshThreads();
+    assert.equal(machine.sessions.length, 11);
+    assert.equal(machine.sessions[0].id, "thread-0");
+    assert.equal(machine.sessions.at(-1).id, "thread-10");
+    assert.ok(
+      requests.every(
+        ({ archived, modelProviders, sourceKinds, useStateDbOnly }) =>
+          archived === false &&
+          useStateDbOnly === true &&
+          modelProviders.length === 0 &&
+          sourceKinds.length === 10,
+      ),
+    );
+  } finally {
+    machine.close();
+  }
+});
+
 test("machines, identities, replacements and removals survive fresh hubs", async () => {
   const owner = restore();
   assert.equal(await owner.add(" Alpha ", "https://alpha.example/", " alpha-token "), undefined);

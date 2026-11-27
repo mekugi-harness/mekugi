@@ -1173,12 +1173,20 @@ async fn unified_exec_emits_exec_command_end_event() -> Result<()> {
 
     submit_unified_exec_turn(&test, "emit end event", PermissionProfile::Disabled).await?;
 
-    let end_event = wait_for_event_match(&test.codex, |msg| match msg {
-        EventMsg::ExecCommandEnd(ev) if ev.call_id == call_id => Some(ev.clone()),
-        _ => None,
-    })
-    .await;
-
+    let mut started = false;
+    let mut streamed = Vec::new();
+    let end_event = loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::ExecCommandBegin(event) if event.call_id == call_id => started = true,
+            EventMsg::ExecCommandOutputDelta(event) if event.call_id == call_id => {
+                assert!(started, "output must follow the command start");
+                streamed.extend(event.chunk);
+            }
+            EventMsg::ExecCommandEnd(event) if event.call_id == call_id => break event,
+            _ => {}
+        }
+    };
+    assert_eq!(streamed, b"END-EVENT\n");
     assert_eq!(end_event.exit_code, 0);
     assert!(
         end_event.aggregated_output.contains("END-EVENT"),

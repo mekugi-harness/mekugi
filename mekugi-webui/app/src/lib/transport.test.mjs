@@ -250,6 +250,27 @@ test("401 refusal surfaces required state and mutations fail with unknownOutcome
   connector2.close();
 });
 
+test("native refusals retain their JSON-RPC data", async () => {
+  globalThis.WebSocket = FakeSocket;
+  const connector = new Connector("https://box.example", "token-1");
+  const refusal = {
+    code: -32600,
+    message: "That thread has gone away.",
+    data: { reason: "threadNotLoaded", threadId: "t1" },
+  };
+  FakeSocket.onSend = (socket, message) => {
+    if (message.method === "initialize") socket.reply(message, initResponse);
+    else if (message.method === "thread/backgroundTerminals/list")
+      socket.replyError(message, refusal);
+  };
+  await assert.rejects(connector.request("thread/backgroundTerminals/list", { threadId: "t1" }), {
+    kind: "refused",
+    message: refusal.message,
+    rpcError: refusal,
+  });
+  connector.close();
+});
+
 test("attachment-bearing turn/start uses a separate bulk channel", async () => {
   globalThis.WebSocket = FakeSocket;
   const connector = new Connector("https://box.example", "token-1");

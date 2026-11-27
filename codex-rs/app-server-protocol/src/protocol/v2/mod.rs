@@ -3,6 +3,7 @@ mod shared;
 mod account;
 mod agent_observation;
 pub use codex_protocol::protocol::ContextReset;
+mod agent_mail;
 mod application;
 mod apps;
 mod attestation;
@@ -49,6 +50,7 @@ mod user_verification;
 mod windows_sandbox;
 
 pub use account::*;
+pub use agent_mail::AgentMailKind;
 pub use agent_observation::*;
 pub use application::*;
 pub use apps::*;

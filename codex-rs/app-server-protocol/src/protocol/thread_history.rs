@@ -451,6 +451,7 @@ impl ThreadHistoryBuilder {
                 if mode == ThreadHistoryMode::Paginated => {}
             EventMsg::UserMessage(payload) => self.handle_user_message(payload),
             EventMsg::AgentMessage(payload) => self.handle_agent_message(payload),
+            EventMsg::RawResponseItem(payload) => self.handle_delivered_agent_mail(&payload.item),
             EventMsg::AgentReasoning(payload) => self.handle_agent_reasoning(payload),
             EventMsg::AgentReasoningRawContent(payload) => {
                 self.handle_agent_reasoning_raw_content(payload)
@@ -578,6 +579,7 @@ impl ThreadHistoryBuilder {
     }
 
     fn handle_response_item(&mut self, item: &codex_protocol::models::ResponseItem) {
+        self.handle_delivered_agent_mail(item);
         let codex_protocol::models::ResponseItem::Message {
             role, content, id, ..
         } = item
@@ -601,6 +603,19 @@ impl ThreadHistoryBuilder {
                 .map(crate::protocol::v2::HookPromptFragment::from)
                 .collect(),
         });
+    }
+
+    fn handle_delivered_agent_mail(&mut self, item: &codex_protocol::models::ResponseItem) {
+        if let Some((turn_id, item)) = ThreadItem::from_delivered_agent_mail(item) {
+            self.upsert_item(
+                Some(turn_id),
+                item.payload,
+                ItemTimes {
+                    started_at_ms: item.started_at_ms,
+                    completed_at_ms: item.completed_at_ms,
+                },
+            );
+        }
     }
 
     fn handle_user_message(&mut self, payload: &UserMessageEvent) {
@@ -1369,6 +1384,8 @@ impl ThreadHistoryBuilder {
         let id = self.next_item_id();
         self.push_item_in_current_turn(ThreadItemPayload::ContextCompaction {
             id,
+            summary_free: false,
+            summary: None,
             source_acquisition: None,
         });
     }
@@ -2134,8 +2151,8 @@ mod tests {
                 raw_content: vec!["content".into()],
             }),
             CoreTurnItem::ContextCompaction(ContextCompactionItem {
-                source_acquisition: None,
                 id: "compaction".into(),
+                ..ContextCompactionItem::default()
             }),
         ] {
             let started = ItemStartedEvent {
@@ -2885,6 +2902,7 @@ mod tests {
                 process_id: Some("pid-1".to_string()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::InProgress,
+                display: None,
                 command_actions: vec![CommandAction::Unknown {
                     command:
                         "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
@@ -2912,6 +2930,7 @@ mod tests {
                 process_id: Some("pid-1".to_string()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
+                display: None,
                 command_actions: vec![CommandAction::Unknown {
                     command:
                         "git -c 'http.extraHeader=Authorization: Bearer [REDACTED_SECRET]' push"
@@ -3651,6 +3670,7 @@ mod tests {
                 process_id: Some("pid-1".into()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
+                display: None,
                 command_actions: vec![CommandAction::Unknown {
                     command: "echo hello world".into(),
                 }],
@@ -3929,6 +3949,7 @@ mod tests {
                 process_id: Some("pid-2".into()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
+                display: None,
                 command_actions: vec![CommandAction::Unknown {
                     command: "ls".into(),
                 }],
@@ -4046,6 +4067,7 @@ mod tests {
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Declined,
+                display: None,
                 command_actions: vec![CommandAction::Unknown {
                     command: "rm -rf /tmp/guardian".into(),
                 }],
@@ -4122,6 +4144,7 @@ mod tests {
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::InProgress,
+                display: None,
                 command_actions: vec![CommandAction::Unknown {
                     command: "/bin/rm -f /tmp/file.sqlite".into(),
                 }],
@@ -4334,6 +4357,7 @@ mod tests {
                 process_id: Some("pid-42".into()),
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
+                display: None,
                 command_actions: vec![CommandAction::Unknown {
                     command: "echo done".into(),
                 }],

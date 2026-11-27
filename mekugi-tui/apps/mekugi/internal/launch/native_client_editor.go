@@ -40,6 +40,9 @@ func (c *nativeClient) accept(event sessionapi.NativeEvent) {
 	previousMenu := c.event.Frame.View.Menu
 	previousStream := c.event.Attachment
 	previous := c.event.Frame.View.Main.ID
+	if c.event.Frame.View.Info.Workspace != event.Frame.View.Info.Workspace {
+		c.preferenceReady = false
+	}
 	if c.event.Attachment != event.Attachment || c.event.Frame.View.Version.Attachment != event.Frame.View.Version.Attachment {
 		c.selection = nil
 		c.closeLocalDetails()
@@ -51,8 +54,8 @@ func (c *nativeClient) accept(event sessionapi.NativeEvent) {
 		*c.renderer.terminal.Prompts = terminalsession.Prompts{}
 		c.renderer.replace(event.Frame.View.Version.Attachment)
 		c.streams, c.links = terminalsession.Streams{}, markdownLinkChecks{}
-		c.prediction, c.predictionRevision = [3]string{}, 0
 		c.completionReady, c.preferenceReady = false, false
+		c.historyRevision = 0
 	}
 	c.reconcilePromptEditors(&event.Frame)
 	c.prompts.update(&event.Frame)
@@ -162,15 +165,6 @@ func (c *nativeClient) applyEffects() {
 		if effect.Restore != nil {
 			editor.Restore(*effect.Restore)
 		}
-		if effect.ShellRestore != nil {
-			main := c.editor("main")
-			if main.Text == "" {
-				main.Replace(*effect.ShellRestore)
-			} else {
-				main.Remember(*effect.ShellRestore)
-				c.notice = "Shell command saved in input history (↑)"
-			}
-		}
 		if selection := effect.Selection; selection != nil {
 			if err := editor.InsertSelection(selection.Description, selection.Text, selection.Source, selection.Pending); err != nil {
 				c.notice = err.Error()
@@ -180,7 +174,11 @@ func (c *nativeClient) applyEffects() {
 			c.notice, _ = c.renderer.terminal.Frame.CopyText(*effect.Clipboard)
 		}
 		if effect.Recall != nil {
-			editor.Remember(editor.Take())
+			previous := editor.Take()
+			editor.Remember(previous)
+			if previous.Text != "" {
+				c.enqueue(sessionapi.NativeOperation{SaveDraft: &previous.Text}, nil, nil)
+			}
 			editor.Replace(composer.Draft{Text: *effect.Recall})
 			c.notice = "Preset loaded · edit before sending"
 		}

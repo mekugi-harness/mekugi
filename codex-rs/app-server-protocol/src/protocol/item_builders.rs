@@ -12,6 +12,7 @@
 use crate::protocol::common::ServerNotification;
 use crate::protocol::v2::AutoReviewDecisionSource;
 use crate::protocol::v2::CommandAction;
+use crate::protocol::v2::CommandDisplay;
 use crate::protocol::v2::CommandExecutionSource;
 use crate::protocol::v2::CommandExecutionStatus;
 use crate::protocol::v2::FileUpdateChange;
@@ -49,16 +50,87 @@ pub struct CommandExecutionPresentation {
     pub command: String,
     /// Parsed command actions with recognizable secrets redacted.
     pub command_actions: Vec<CommandAction>,
+    pub display: Option<CommandDisplay>,
 }
 
 impl CommandExecutionPresentation {
     /// Projects a raw command into its client-facing representation.
-    pub fn from_raw(command: &[String], parsed_cmd: &[ParsedCommand], cwd: &PathUri) -> Self {
+    pub fn from_raw(
+        command: &[String],
+        parsed_cmd: &[ParsedCommand],
+        cwd: &PathUri,
+        exit: Option<i32>,
+        output: &str,
+    ) -> Self {
         Self {
             command: redact_secrets(shlex_join(command)),
+            display: command_display(command, Some(cwd), exit, output),
             command_actions: command_actions_for_path_uri(parsed_cmd, cwd),
         }
     }
+}
+
+/// Projects authored shell text and any separable steps from an invocation.
+pub fn command_display(
+    command: &[String],
+    cwd: Option<&PathUri>,
+    exit: Option<i32>,
+    output: &str,
+) -> Option<CommandDisplay> {
+    let (shell, script) =
+        codex_shell_command::bash::extract_bash_command(command).or_else(|| {
+            let [shell, flag, script] = command else {
+                return None;
+            };
+            (std::path::Path::new(shell).file_stem()?.to_str()? == "dash"
+                && matches!(flag.as_str(), "-c" | "-lc"))
+            .then_some((shell.as_str(), script.as_str()))
+        })?;
+    let script = redact_secrets(script.to_owned());
+    let steps = script
+        .contains([';', '&', '|', '\n'])
+        .then(|| codex_shell_command::bash::display_steps(&script))
+        .flatten();
+    let Some((mut segments, target)) = steps else {
+        return Some(CommandDisplay {
+            script,
+            segments: vec![],
+            effective_cwd: None,
+        });
+    };
+    let effective_cwd = target.and_then(|dir| {
+        // Live and denied invocations cannot confirm a directory change. A
+        // semicolon list can return zero even when its initial cd failed.
+        let first_line = output.lines().map(str::trim).find(|line| !line.is_empty());
+        if !exit.is_some_and(|code| code == 0 || code > 0 && first_line.is_some()) {
+            return None;
+        }
+        if first_line.is_some_and(|line| {
+            let diagnostic = line.strip_prefix("cd:").or_else(|| {
+                let (name, rest) = line.split_once(':')?;
+                if std::path::Path::new(name).file_name() != std::path::Path::new(shell).file_name()
+                {
+                    return None;
+                }
+                rest.trim_start()
+                    .strip_prefix("cd:")
+                    .or_else(|| rest.split_once(": cd:").map(|(_, msg)| msg))
+            });
+            diagnostic.is_some_and(|msg| msg.contains(&dir))
+        }) || dir.contains("[REDACTED_SECRET]")
+        {
+            return None;
+        }
+        cwd?.join(&dir).ok().map(Into::into)
+    });
+    if effective_cwd.is_some() {
+        segments.remove(0);
+    }
+    Some(CommandDisplay {
+        segments: segments.into_iter().map(str::to_owned).collect(),
+        script,
+        effective_cwd,
+    })
 }
 
 pub(crate) fn review_output_text(output: Option<&ReviewOutputEvent>) -> String {
@@ -94,8 +166,13 @@ pub fn build_file_change_end_item(payload: &PatchApplyEndEvent) -> ThreadItemPay
 }
 
 pub fn build_command_execution_begin_item(payload: &ExecCommandBeginEvent) -> ThreadItemPayload {
-    let presentation =
-        CommandExecutionPresentation::from_raw(&payload.command, &payload.parsed_cmd, &payload.cwd);
+    let presentation = CommandExecutionPresentation::from_raw(
+        &payload.command,
+        &payload.parsed_cmd,
+        &payload.cwd,
+        None,
+        "",
+    );
     ThreadItemPayload::CommandExecution {
         model_context: None,
         sandbox_type: None,
@@ -107,6 +184,7 @@ pub fn build_command_execution_begin_item(payload: &ExecCommandBeginEvent) -> Th
         process_id: payload.process_id.clone(),
         source: payload.source.into(),
         status: CommandExecutionStatus::InProgress,
+        display: presentation.display,
         command_actions: presentation.command_actions,
         aggregated_output: None,
         exit_code: None,
@@ -121,8 +199,13 @@ pub fn build_command_execution_end_item(payload: &ExecCommandEndEvent) -> Thread
         Some(payload.aggregated_output.clone())
     };
     let duration_ms = i64::try_from(payload.duration.as_millis()).unwrap_or(i64::MAX);
-    let presentation =
-        CommandExecutionPresentation::from_raw(&payload.command, &payload.parsed_cmd, &payload.cwd);
+    let presentation = CommandExecutionPresentation::from_raw(
+        &payload.command,
+        &payload.parsed_cmd,
+        &payload.cwd,
+        Some(payload.exit_code),
+        &payload.aggregated_output,
+    );
 
     ThreadItemPayload::CommandExecution {
         model_context: None,
@@ -135,6 +218,7 @@ pub fn build_command_execution_end_item(payload: &ExecCommandEndEvent) -> Thread
         process_id: payload.process_id.clone(),
         source: payload.source.into(),
         status: (&payload.status).into(),
+        display: presentation.display,
         command_actions: presentation.command_actions,
         aggregated_output,
         exit_code: Some(payload.exit_code),
@@ -212,6 +296,7 @@ pub fn build_item_from_guardian_event(
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status,
+                display: None,
                 command_actions,
                 aggregated_output: None,
                 exit_code: None,
@@ -252,6 +337,7 @@ pub fn build_item_from_guardian_event(
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status,
+                display: command_display(&argv, Some(&PathUri::from(cwd.clone())), None, ""),
                 command_actions,
                 aggregated_output: None,
                 exit_code: None,

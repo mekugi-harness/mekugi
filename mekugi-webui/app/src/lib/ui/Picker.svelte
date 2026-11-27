@@ -1,6 +1,12 @@
 <script lang="ts" module>
   import type { Tone } from "./Dot.svelte";
-  export type Choice = { value: string; label: string; detail?: string; tone?: Tone };
+  export type Choice = {
+    value: string;
+    label: string;
+    detail?: string;
+    tone?: Tone;
+    disabled?: boolean;
+  };
   export type ChoiceGroup = { label?: string; choices: Choice[] };
 </script>
 
@@ -29,6 +35,7 @@
     entry,
     path = false,
     disabled = false,
+    confirmed = false,
     class: extra = "",
     onchange,
   }: {
@@ -41,6 +48,7 @@
     entry?: string;
     path?: boolean;
     disabled?: boolean;
+    confirmed?: boolean;
     class?: string;
     onchange?: (value: string) => void;
   } = $props();
@@ -69,7 +77,7 @@
   function choose(next: string) {
     open = false;
     if (next === value) return;
-    value = next;
+    if (!confirmed) value = next;
     onchange?.(next);
   }
 
@@ -97,7 +105,7 @@
     <Select.Group>
       {#if group.label}<Select.GroupHeading>{group.label}</Select.GroupHeading>{/if}
       {#each group.choices as choice (choice.value)}
-        <Select.Item value={choice.value} label={choice.label}>
+        <Select.Item value={choice.value} label={choice.label} disabled={choice.disabled}>
           <span class="flex min-w-0 items-center gap-2">
             {#if choice.tone}<Dot tone={choice.tone} size={6} />{/if}
             <span class="block min-w-0"

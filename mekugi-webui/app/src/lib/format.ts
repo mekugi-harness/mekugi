@@ -55,6 +55,10 @@ export function cost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
+export function tps(rate: number): string {
+  return `${rate.toFixed(1)} tok/s`;
+}
+
 // Usage that is partly unknown is a lower bound, as 33.72M+.
 export function atLeast(text: string, partial?: boolean): string {
   return partial ? `${text}+` : text;

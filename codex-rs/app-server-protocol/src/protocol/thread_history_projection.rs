@@ -72,9 +72,17 @@ pub fn project_rollout_line(line: &RolloutLine) -> ThreadHistoryChangeSet {
             }],
             ..Default::default()
         },
+        RolloutItem::ResponseItem(item) => ThreadItem::from_delivered_agent_mail(&item.item)
+            .map(|(turn_id, item)| ThreadHistoryChangeSet {
+                changed_items: vec![ThreadHistoryItemChange {
+                    turn_id: turn_id.to_owned(),
+                    item,
+                }],
+                ..Default::default()
+            })
+            .unwrap_or_default(),
         RolloutItem::DynamicToolsUpdated { .. }
         | RolloutItem::SessionMeta(_)
-        | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::Compacted(_)

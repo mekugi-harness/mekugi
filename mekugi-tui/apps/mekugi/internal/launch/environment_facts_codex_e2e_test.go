@@ -8,8 +8,6 @@ import (
 	"html"
 	"strings"
 	"testing"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
 func environmentFacts(t *testing.T, raw []byte) string {
@@ -24,7 +22,7 @@ func environmentFacts(t *testing.T, raw []byte) string {
 	}
 	var facts string
 	for _, item := range items {
-		content := responses.StringField(item, "content")
+		content := e2eStringField(item, "content")
 		if content == "" {
 			var parts []struct {
 				Text string `json:"text"`

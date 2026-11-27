@@ -154,6 +154,7 @@ func probeNativeAppServer(ctx context.Context, path string) (bool, error) {
 type nativeAppServerRPCError struct {
 	Code    int
 	Message string
+	Data    jsontext.Value
 }
 
 func (e *nativeAppServerRPCError) Error() string {
@@ -337,7 +338,9 @@ func (w *nativeAppServerWire) Call(ctx context.Context, method string, params an
 			return errors.New("mekugi-app-server connection closed")
 		}
 		if reply.Error != nil {
-			return &nativeAppServerRPCError{Code: reply.Error.Code, Message: reply.Error.Message}
+			return &nativeAppServerRPCError{
+				Code: reply.Error.Code, Message: reply.Error.Message, Data: reply.Error.Data,
+			}
 		}
 		if out != nil && len(reply.Result) > 0 {
 			return json.Unmarshal(reply.Result, out)

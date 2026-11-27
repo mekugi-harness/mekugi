@@ -1,2 +1,0 @@
-● child                                                       20:00:00
-│ └ Running timeout 10 sleep 1 (timeout 10s)

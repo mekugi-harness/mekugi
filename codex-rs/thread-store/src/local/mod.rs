@@ -12,6 +12,7 @@ mod paginated_fork;
 mod pending_thread_metadata;
 mod projects;
 mod read_thread;
+mod retained_exec_failure;
 mod revert_thread;
 mod rollout_migration;
 // This lands before the reader PRs that consume the shared lineage resolver.

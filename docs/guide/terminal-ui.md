@@ -52,10 +52,9 @@ native session naming, and
 - Enter steers; Tab queues. A shell-mode command queued while work is busy runs
   after that work settles rather than injecting its result into the active turn.
   Type `?` in an empty draft for shortcuts.
-- `/predictions on|off` controls next-message suggestions in the empty Main composer.
-  Tab accepts a suggestion for editing; typing dismisses it. Availability depends
-  on the OpenAI account, model and remote configuration, and requires Codex
-  0.162.0-alpha.20 or newer. Third-party providers are ineligible.
+- `/predictions` toggles next-message suggestions in the empty Main composer.
+  Tab accepts a suggestion for editing; typing dismisses it. Suggestions are
+  on by default for sessions using ChatGPT sign-in with the OpenAI provider.
 - `/presets` (or `Ctrl-B`, then `p`) opens slots 1–9 and 0. Recall fills the composer without sending;
   the terminal keeps the previous draft in input history. New and Edit use `$EDITOR`
   in the terminal, like Ctrl+G, then ask for an optional label; Rename changes only
@@ -77,8 +76,8 @@ native session naming, and
 - `@` attaches files; `@!` includes ignored files. VCS metadata is excluded;
   unreadable/oversized content has omission notices. Directories attach two-level
   trees honoring `.gitignore`, bounded to 256 entries/16 KiB with truncation notices.
-- Enabled `$skill-name` references attach instructions, using `skills-mgr` when available.
-  Use it for managed skills, `/skills` for Codex toggles; click receipts for submitted contents.
+- Type `$` and select an enabled skill to attach its instructions. Use
+  `/skills` for Codex toggles and `skills-mgr` for managed skills.
 - Select transcript or saved Diff text and press `r` to mention it.
 - Attached file, upload, selection and skill text can include `@path` or
   `@"path with spaces"` to attach referenced files. Relative references resolve
@@ -99,16 +98,16 @@ native session naming, and
   alive but hidden while viewing One-off. Return to Main for `/oneoff`, `/fork`
   and `/btw`; repeat `/btw` for a follow-up. Esc on Main closes only that dock.
   If its answer requires compaction, close the dock, compact Main and ask again.
-- `/model`, `/effort` (or `/reasoning`), and `/tier` open pickers or accept values.
-  Combine choices with `/model MODEL --reasoning=high --speed=fast`; omit MODEL
-  to keep it, and use `--speed=standard` to clear the tier.
-  `/tier default` clears the tier. Changes reach upcoming steps without editing config.
+- `/model` opens the model picker, without arguments. `/effort` (or
+  `/reasoning`) and `/tier` open pickers or accept values.
+  `/tier default` clears the tier. Changes apply to the next turn.
   Model and reasoning controls, including Shift+Up/Down, target the selected Main
   or One-off conversation independently. Service-tier controls target Main.
 - `/permissions` lists Main's permission profiles. Select one, or use
   `/permissions PROFILE --approval-policy=on-request --reviewer=user`.
-  Changes apply from the next turn, after Codex confirms them. Queued input waits
-  while choosing; Esc cancels. Running commands and existing approvals are unchanged.
+  Changes apply from the next turn, after Codex confirms them. Esc cancels.
+  Opening the picker does not pause the queue. Running commands and existing
+  approvals are unchanged.
 - `/compact` resets context: Enter requests it now, Tab queues until idle. `/clear` starts
   fresh while idle, preserving sessions/files. See [compaction](sessions.md#compaction-and-recovery).
   `/btw` requests use low reasoning when the model advertises it,
@@ -118,9 +117,10 @@ native session naming, and
 - `/quit` releases an idle session without deleting its history. When work,
   including a shell still running after its turn, can either continue or be
   stopped, the inline prompt offers **Continue in background** or **Stop**.
-  Stop ends work in the selected session and its delegates; click it twice, or
-  select it and press Enter. Esc keeps the terminal
-  attached. `/detach` always leaves without prompting or stopping work.
+  Stop targets the work that was running when the prompt opened, including
+  work in delegates. Click it twice, or select it and press Enter.
+  Esc keeps the terminal attached. `/detach` always leaves without prompting
+  or stopping work.
   Use `--resume` to reattach to live work, or to reopen saved history after release.
 
 Alt+Up or Shift+Left restores locally waiting input. Esc interrupts then resends only
@@ -132,13 +132,14 @@ details](../../mekugi-tui/apps/mekugi/internal/terminalsession/SPEC.md#layout-co
 
 ## Live diff pane
 
-Supported patches and shell edits appear provisionally as the tool input
-streams. Use `/live` to toggle previews. Open a patch in Activity for its
-native details, or use `mchanges` for the native captured history.
+Supported patches appear provisionally as input streams. Use `/live` to toggle
+previews. Captured shell edits are available after the command settles.
+Open a patch or command in Activity for its details, or use `mchanges` to
+read the captured history.
 
-Saved Diff shows legacy captures and client-side user shell edits, not new
-native captures. Press `s` for the navigator, `/` to filter, `n`/`p` to change
-files, or `[`/`]` to jump hunks. Tab opens Changes by caller.
+Saved Diff shows native captures for the selected thread. Press `s` for the
+navigator, `/` to filter, `n`/`p` to change files, or `[`/`]` to jump hunks.
+Tab opens Changes by caller.
 See [saved-review controls](../../mekugi-tui/modules/changehistory/SPEC.md#saved-review-presentation).
 
 ## Agents

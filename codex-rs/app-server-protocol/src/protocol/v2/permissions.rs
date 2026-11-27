@@ -398,6 +398,9 @@ pub struct PermissionProfileListParams {
     /// Optional working directory to resolve project config layers.
     #[ts(optional = nullable)]
     pub cwd: Option<String>,
+    /// Resolve profiles for this loaded thread's working directory instead of `cwd`.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

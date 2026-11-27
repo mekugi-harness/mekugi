@@ -746,6 +746,7 @@ async fn revert_settles_interrupts_before_replacing_a_runtime() -> Result<()> {
             thread_id: thread_id.to_string(),
             before_turn_id: first.clone(),
             before_item_id: None,
+            expected_change_ids: None,
         },
         /*app_server_client_name*/ None,
         /*app_server_client_version*/ None,

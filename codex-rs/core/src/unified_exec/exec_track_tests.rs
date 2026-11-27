@@ -84,6 +84,7 @@ async fn exec_track_attachment_user_shell_prepares_unattributed_observer() {
         /*session_tmp*/ None,
         ws.path().to_path_buf(),
         store_dir.path().to_path_buf(),
+        "thread-user-1".to_string(),
         "sess-user-1".to_string(),
         "turn-user-1".to_string(),
         "call-user-1".to_string(),

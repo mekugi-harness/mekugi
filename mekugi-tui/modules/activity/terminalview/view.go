@@ -98,9 +98,8 @@ type View struct {
 	FeedSpans       []Span
 	ExpansionAnchor *Span // Top item and its local row before a toggle.
 
-	// opening names the Snippet requested in the shared dialog.
-	Snippet Snippet // Hovered content target.
-	Opening Snippet
+	Snippet Snippet      // Hovered content target.
+	Opening DetailTarget // Painted content requested in the shared dialog.
 	// Passed holds Main's sent messages and operation batches that have
 	// scrolled above the viewport. Messages then show as excerpts linking to
 	// Activity, and batches as one row opening their operations.
@@ -112,6 +111,7 @@ type View struct {
 	FeedLines, FeedRows int
 	FeedSnippets        []Snippet
 	FeedQuestions       []uint64
+	FeedDetails         []DetailSelection
 	FeedTargets         []DetailTarget
 	ActiveDetail        DetailTarget
 	ActiveDetailReveal  bool
@@ -415,7 +415,8 @@ func underlineLink(line string) string {
 func (v *View) PointSnippet(action byte, row, column int) bool {
 	var snippet Snippet
 	editHover := 0
-	if index := row - v.FeedTop; index >= 0 && index < len(v.FeedSnippets) && column >= v.FeedLeft && column <= v.FeedRight {
+	index := row - v.FeedTop
+	if index >= 0 && index < len(v.FeedSnippets) && column >= v.FeedLeft && column <= v.FeedRight {
 		snippet = v.FeedSnippets[index]
 		if snippet.Block == EditNavigationSnippet {
 			editHover = index + 1
@@ -424,7 +425,7 @@ func (v *View) PointSnippet(action byte, row, column int) bool {
 	redraw := editHover != v.EditHover
 	v.EditHover = editHover
 	if action == '\r' && snippet != (Snippet{}) {
-		v.Opening = snippet
+		v.Opening = DetailTarget{Snippet: snippet, Detail: v.FeedDetails[index]}
 		redraw = true
 	}
 	if snippet != v.Snippet {
@@ -556,6 +557,7 @@ func (v *View) Render(width, height int, now time.Time) []string {
 	v.Hits = v.Hits[:0]
 	v.FeedSnippets = nil
 	v.FeedQuestions = nil
+	v.FeedDetails = nil
 	v.RosterTop, v.RosterBottom, v.RosterRight = 0, 0, 0
 	text := max(1, width-1)
 	rows := v.Roster()
@@ -806,7 +808,7 @@ func tokenParts(agent activitypresentation.Agent) (string, string) {
 // Cost omits unknown cost rather than claiming zero; a response
 // that ended without usage makes the observed cost a lower bound.
 func Cost(agent activitypresentation.Agent) string {
-	if agent.Turns == 0 || !agent.CostKnown {
+	if !agent.CostKnown {
 		return ""
 	}
 	if agent.CostPartial {
@@ -1080,7 +1082,7 @@ func (v *View) MetricTable(rows []activitypresentation.AgentRow, now time.Time) 
 			timerCell = strings.Repeat(" ", max(0, 3-len(elapsed))) + metricValues(elapsed) + terminalui.Dim + " · " + terminalui.Undim + metricValues(age)
 		}
 		cost, turns := "", ""
-		if row.Agent.Turns > 0 && row.Agent.CostKnown {
+		if row.Agent.CostKnown {
 			prefix := " "
 			if row.Agent.CostPartial {
 				prefix = "≥"
@@ -1165,6 +1167,8 @@ func (v *View) RenderStrip(rows []activitypresentation.AgentRow, width int) stri
 }
 
 type Feed struct {
+	detailRuns detailRunIndex
+
 	images    []feedImage
 	Spans     []Span
 	paints    []liveActivityPaint // Cold runs to decorate if they enter the viewport.
@@ -1222,8 +1226,14 @@ func (feed *Feed) separator() {
 }
 
 // appendRows keeps row content and metadata aligned; each renderer owns heads.
-func (feed *Feed) appendRows(run Run) {
+func (feed *Feed) appendRows(first uint64, run Run) {
 	head := len(feed.Lines)
+	if len(run.Blocks) > 0 {
+		if feed.detailRuns == nil {
+			feed.detailRuns = make(detailRunIndex)
+		}
+		feed.detailRuns[first] = run.Blocks
+	}
 	for _, span := range run.workdirs {
 		feed.workdirs = append(feed.workdirs, workdirSpan{head + span.start, head + span.end})
 	}
@@ -1387,7 +1397,7 @@ func (v *View) LayoutFeed(width int) Feed {
 		for range run.Lines {
 			feed.Heads = append(feed.Heads, head)
 		}
-		feed.appendRows(run)
+		feed.appendRows(key.First, run)
 		feed.Spans = append(feed.Spans, Span{key.First, head, len(feed.Lines)})
 		i = j
 	}
@@ -1552,11 +1562,7 @@ func (v *View) renderRun(first uint64, agent string, observed time.Time, blocks 
 
 // viewportPosition resolves scrolling without committing viewport geometry.
 func (v *View) viewportPosition(feed Feed, rows int) (int, bool) {
-	var runs detailRunIndex
-	if v.ActiveDetailReveal && rows > 0 && !v.ActiveDetail.Zero() {
-		runs = v.detailRunIndex()
-	}
-	return v.viewportPositionWithRuns(feed, rows, runs)
+	return v.viewportPositionWithRuns(feed, rows, feed.detailRuns)
 }
 
 func (v *View) viewportPositionWithRuns(feed Feed, rows int, runs detailRunIndex) (int, bool) {
@@ -1595,10 +1601,7 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 	if len(v.outputDemands) > 0 {
 		return make([]string, rows)
 	}
-	var runs detailRunIndex
-	if !v.ActiveDetail.Zero() {
-		runs = v.detailRunIndex()
-	}
+	runs := feed.detailRuns
 	v.Offset, v.Following = v.viewportPositionWithRuns(feed, rows, runs)
 	v.ActiveDetailReveal = false
 	if v.ActiveDetail.Zero() {
@@ -1640,6 +1643,7 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 		lines[0], v.FeedSnippets[0] = feed.Lines[heading], Snippet{}
 		v.FeedQuestions[0] = 0
 	}
+	v.FeedDetails = feed.DetailSelections(v.FeedSnippets)
 	if !v.ActiveDetail.Zero() {
 		exactPath, _, _, found := v.activeDetailRowMatch(feed, runs)
 		if found {
@@ -1664,7 +1668,6 @@ func (v *View) Viewport(feed Feed, rows int) []string {
 	}
 	return lines
 }
-
 
 func (v *View) Footer(width int) string {
 	mode, toggle := "ALL", "a only"

@@ -195,8 +195,9 @@ async fn completed_compactions_survive_unload_without_reading_history() {
     let context = session.new_default_turn().await;
     let item = codex_protocol::items::TurnItem::ContextCompaction(
         codex_protocol::items::ContextCompactionItem {
-            source_acquisition: None,
             id: "completed-reset".into(),
+            summary_free: true,
+            ..Default::default()
         },
     );
     session.emit_turn_item_started(&context, &item).await;

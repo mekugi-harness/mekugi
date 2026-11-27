@@ -14,10 +14,8 @@ import type {
   StartOptions,
   Status,
   Thread,
-  ThreadArchiveParams,
+  ThreadListParams,
   ThreadListResponse,
-  ThreadResumeParams,
-  ThreadResumeResponse,
   ThreadStartParams,
   ThreadStartResponse,
   ThreadStatus,
@@ -76,6 +74,10 @@ export function threadToListed(thread: Thread): Listed {
     status,
     waiting: waiting || undefined,
   };
+}
+
+function standaloneThread(thread: Thread): boolean {
+  return !["mekugi_btw", "mekugi_side", "mekugi_side_question"].includes(thread.threadSource ?? "");
 }
 
 function modelsToGroups(models: Model[]): { groups: ModelGroup[]; defaultModel: string } {
@@ -157,16 +159,35 @@ export class Machine {
   async refreshThreads(): Promise<void> {
     try {
       const all: Listed[] = [];
+      const params: ThreadListParams = {
+        limit: 100,
+        archived: false,
+        useStateDbOnly: true,
+        modelProviders: [],
+        sourceKinds: [
+          "cli",
+          "vscode",
+          "exec",
+          "appServer",
+          "subAgent",
+          "subAgentReview",
+          "subAgentCompact",
+          "subAgentThreadSpawn",
+          "subAgentOther",
+          "unknown",
+        ],
+      };
       let cursor: string | undefined;
-      for (let page = 0; page < 10; page++) {
+      for (;;) {
         const response = await this.request<ThreadListResponse>("thread/list", {
-          limit: 100,
-          archived: false,
+          ...params,
           ...(cursor ? { cursor } : {}),
-        });
-        for (const thread of response.data ?? []) all.push(threadToListed(thread));
+        } satisfies ThreadListParams);
+        for (const thread of response.data ?? []) {
+          if (standaloneThread(thread)) all.push(threadToListed(thread));
+        }
         const next = response.nextCursor ?? undefined;
-        if (!next || next === cursor) break;
+        if (!next) break;
         cursor = next;
       }
       this.sessions = all;
@@ -209,6 +230,7 @@ export class Machine {
   #handleNotification(notification: ServerNotification): void {
     switch (notification.method) {
       case "thread/started": {
+        if (!standaloneThread(notification.params.thread)) break;
         const listed = threadToListed(notification.params.thread);
         const current = this.sessions ?? [];
         const index = current.findIndex((s) => s.id === listed.id);
@@ -385,14 +407,8 @@ class Hub {
       const models = response.data ?? [];
       machine.models = models;
       const { groups, defaultModel } = modelsToGroups(models);
-      const workspaces = [
-        ...new Set(
-          (machine.sessions ?? []).map((s) => s.workspace).filter((w): w is string => !!w),
-        ),
-      ];
       return {
         options: {
-          workspaces,
           models: groups,
           defaultModel,
         },
@@ -406,21 +422,9 @@ class Hub {
     start: Start,
     machine: Machine,
     signal?: AbortSignal,
-  ): Promise<{ id: string } | { error: string }> {
+  ): Promise<{ response: ThreadStartResponse } | { error: string }> {
     try {
       const config = start.effort ? { model_reasoning_effort: start.effort } : null;
-      if (start.resume) {
-        const params: ThreadResumeParams = {
-          threadId: start.resume,
-          cwd: start.workspace || null,
-          model: start.model || null,
-          ...(config ? { config } : {}),
-        };
-        const response = await machine.request<ThreadResumeResponse>("thread/resume", params, {
-          signal,
-        });
-        return { id: response.thread.id };
-      }
       const params: ThreadStartParams = {
         cwd: start.workspace || null,
         model: start.model || null,
@@ -429,22 +433,9 @@ class Hub {
       const response = await machine.request<ThreadStartResponse>("thread/start", params, {
         signal,
       });
-      return { id: response.thread.id };
+      return { response };
     } catch (error) {
       return { error: errorText(error, true) };
-    }
-  }
-
-  async endSession(id: string, machine: Machine): Promise<string | undefined> {
-    try {
-      const params: ThreadArchiveParams = { threadId: id };
-      await machine.request("thread/archive", params);
-      if (machine.sessions) {
-        machine.sessions = machine.sessions.filter((s) => s.id !== id);
-      }
-      return undefined;
-    } catch (error) {
-      return errorText(error, true);
     }
   }
 }

@@ -136,7 +136,28 @@ fn persisted_event_msg(
         EventMsg::ItemStarted(event) if matches!(&event.item, TurnItem::AgentMessage(message) if message.questions.is_some()) => {
             Some(Cow::Borrowed(ev))
         }
-        EventMsg::TokenCount(_)
+        EventMsg::RawResponseCompleted(response) => {
+            // Arbitrary provider metadata is not used by retained usage accounting.
+            let Some(metadata) = response
+                .usage_metadata
+                .as_ref()
+                .filter(|m| m.metadata.is_some())
+            else {
+                return Some(Cow::Borrowed(ev));
+            };
+            let mut response = response.clone();
+            response.usage_metadata =
+                metadata
+                    .amount
+                    .as_ref()
+                    .map(|amount| codex_protocol::ResponseUsageMetadata {
+                        amount: Some(amount.clone()),
+                        ..Default::default()
+                    });
+            Some(Cow::Owned(EventMsg::RawResponseCompleted(response)))
+        }
+        EventMsg::SkillsUsed(_)
+        | EventMsg::TokenCount(_)
         | EventMsg::RequestUserInput(_)
         | EventMsg::ThreadGoalUpdated(_)
         | EventMsg::ThreadRolledBack(_)
@@ -200,13 +221,14 @@ fn persisted_event_msg(
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::RawResponseItem(_)
-        | EventMsg::RawResponseCompleted(_)
         | EventMsg::SessionConfigured(_)
         | EventMsg::EnvironmentConnected(_)
         | EventMsg::EnvironmentDisconnected(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::ExecCommandBegin(_)
+        | EventMsg::BackgroundTerminalRegistered
         | EventMsg::TerminalInteraction(_)
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::ExecApprovalRequest(_)
         | EventMsg::RequestPermissions(_)

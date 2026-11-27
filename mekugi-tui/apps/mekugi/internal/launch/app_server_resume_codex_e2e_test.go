@@ -8,12 +8,10 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -21,20 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
-
-	changecapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/capture"
-
-	conversationbinding "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
-
-	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
-
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
-
 	"github.com/charmbracelet/x/vt"
-	"github.com/creack/pty"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/rollout"
-	transportcapture "github.com/mekugi-harness/mekugi/mekugi-tui/modules/transportdiagnostics/capture"
 	"golang.org/x/term"
 )
 
@@ -88,10 +73,15 @@ func (p *appResumeProvider) snapshot() []string {
 	return append([]string(nil), p.threads...)
 }
 
-// Runs fresh installed Codex processes against one isolated Codex home.
-// The provider is local and deterministic; no account or live model is used.
 func TestAppServerResumeNativeCodex(t *testing.T) {
-	codex, err := exec.LookPath("codex")
+	t.Run("settings", testAppServerResumeSettingsNativeCodex)
+	t.Run("picker", testAppServerResumePickerNativeCodex)
+}
+
+// Runs fresh managed processes to exercise native persistence and settings
+// precedence, including an idle setting change that does not sample.
+func testAppServerResumeSettingsNativeCodex(t *testing.T) {
+	codex, err := exec.LookPath("mekugi-app-server")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,36 +91,35 @@ func TestAppServerResumeNativeCodex(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir()) // State belongs to the parent UI, not just its Codex child.
 	environment := routerFaultCodexEnvironment(t)
 	workspace := t.TempDir()
-	model := "gpt-6-astra"
-	var extraOverrides []string
-	providerName := "savedpreview"
+	const savedProvider = "savedpreview"
+	providerName := savedProvider
+	providerConfig := `{name="preview",base_url=` + strconv.Quote(server.URL+"/v1") + `,wire_api="responses",requires_openai_auth=false}`
 	newCommand := func(ctx context.Context) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, codex, "app-server",
-			"-c", `model_providers.`+providerName+`={name="preview",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`,
+		cmd := exec.CommandContext(ctx, codex,
+			"-c", "model_providers."+savedProvider+"="+providerConfig,
+			"-c", "model_providers.preview="+providerConfig,
 			"-c", "model_provider="+strconv.Quote(providerName),
 			"-c", "features.plugins=false")
-		if model != "" {
-			cmd.Args = append(cmd.Args, "-c", "model="+strconv.Quote(model))
-		}
-		cmd.Args = append(cmd.Args, extraOverrides...)
 		cmd.Env = environment
 		cmd.Dir = workspace
 		return cmd
 	}
 
-	first := startAppResumeTerminal(t, newCommand, "")
-	first.await("Ready")
-	first.send("/model gpt-6-sol\r")
-	first.await("gpt-6-sol")
-	first.send("/reasoning high\r")
-	first.await("gpt-6-sol (high)")
-	first.send("/tier flex\r")
+	first := startAppResumeTerminalWithIntegration(t, newCommand, "", appServerIntegration{
+		launchArgs: []string{"-m", "gpt-6-sol", "-c", `model_reasoning_effort="high"`, "-c", `service_tier="flex"`},
+	})
+	first.awaitReady()
 	first.await("gpt-6-sol (high) · flex")
 	first.send("First resume question\r")
 	first.await("Recovered after a retry.")
-	first.await("completed")
+	threads := provider.snapshot()
+	if len(threads) != 1 || threads[0] == "" {
+		t.Fatalf("first turn identities: %q", threads)
+	}
+	thread := threads[0]
+	first.awaitThreadIdle(thread)
 	first.send("/tier priority\r") // Idle changes after the last turn must also restore.
-	first.await("Settings saved")
+	first.await("gpt-6-sol (high) · priority")
 	first.send("\x022") // Focus Diff, then widen Main before persisting this UI state.
 	first.await("s files")
 	first.send("\x02l")
@@ -139,47 +128,17 @@ func TestAppServerResumeNativeCodex(t *testing.T) {
 	})
 	savedSplit := appResumeSplit(first.screen.String())
 	first.stopCanceled()
-	threads := provider.snapshot()
-	if len(threads) != 1 || threads[0] == "" {
-		t.Fatalf("first turn identities: %q", threads)
-	}
-	thread := threads[0]
 	provider.assertSettings(t, 0, "gpt-6-sol", "high", "flex")
-	foundSaved := false
-	for _, variable := range environment {
-		if home, ok := strings.CutPrefix(variable, "CODEX_HOME="); ok {
-			err := filepath.WalkDir(filepath.Join(home, "sessions"), func(path string, entry fs.DirEntry, err error) error {
-				if err != nil {
-					return err
-				}
-				if entry.IsDir() || !strings.HasSuffix(path, ".jsonl") {
-					return nil
-				}
-				if saved := rollout.ResumeSettings(thread, path, time.Time{}); saved["model"] != nil {
-					foundSaved = true
-					if saved["model"] != "gpt-6-sol" || saved["model_reasoning_effort"] != "high" || saved["service_tier"] != "priority" {
-						t.Fatalf("host persisted settings: %#v", saved)
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if !foundSaved {
-		t.Fatal("host did not retain the completed thread's settings")
-	}
-
-	model, providerName = "", "preview"
+	// Cold resume tests the native owner's durable settings through an actual
+	// provider request, independent of the persistence record format.
+	providerName = "preview"
 	second := startAppResumeTerminal(t, newCommand, "--last")
-	second.await("Ready")
+	second.awaitReady()
 	second.await("gpt-6-sol (high)") // Retained usage can crowd the tier out of the narrow footer.
 	second.await("First resume question")
 	second.await("Recovered after a retry.")
 	second.awaitMatch("restored Diff focus and split", func(screen string) bool {
-		return strings.Contains(screen, "2 Diff") && strings.Contains(screen, "s files") && appResumeSplit(screen) == savedSplit
+		return strings.Contains(screen, "s files") && appResumeSplit(screen) == savedSplit
 	})
 	if got := provider.snapshot(); len(got) != 1 {
 		t.Fatalf("resume resent a turn before new input: %q", got)
@@ -187,28 +146,31 @@ func TestAppServerResumeNativeCodex(t *testing.T) {
 	second.send("\x021")
 	second.send("Second resume question\r")
 	second.await("Second resume question")
-	second.await("completed")
+	second.awaitThreadIdle(thread)
 	second.quit()
 	threads = provider.snapshot()
 	provider.assertSettings(t, 1, "gpt-6-sol", "high", "priority")
 	if len(threads) != 2 || threads[1] != thread {
 		t.Fatalf("turns did not retain one thread with no duplicate submission: %q", threads)
 	}
-	model = "gpt-6-astra"
-	third := startAppResumeTerminal(t, newCommand, thread)
-	third.await("Ready")
+	third := startAppResumeTerminalWithIntegration(t, newCommand, thread, appServerIntegration{
+		launchArgs: []string{"-m", "gpt-6-astra"},
+	})
+	third.awaitReady()
 	third.await("gpt-6-astra (high)")
 	third.send("Explicit model keeps saved effort and tier\r")
-	third.await("completed")
+	third.await("Explicit model keeps saved effort and tier")
+	third.awaitThreadIdle(thread)
 	third.quit()
 	provider.assertSettings(t, 2, "gpt-6-astra", "high", "priority")
-	model = ""
-	extraOverrides = []string{"-c", `model_reasoning_effort="low"`, "-c", `service_tier="flex"`}
-	fourth := startAppResumeTerminal(t, newCommand, thread)
-	fourth.await("Ready")
+	fourth := startAppResumeTerminalWithIntegration(t, newCommand, thread, appServerIntegration{
+		launchArgs: []string{"-c", `model_reasoning_effort="low"`, "-c", `service_tier="flex"`},
+	})
+	fourth.awaitReady()
 	fourth.await("gpt-6-astra (low)")
 	fourth.send("Explicit effort and tier keep saved model\r")
-	fourth.await("completed")
+	fourth.await("Explicit effort and tier keep saved model")
+	fourth.awaitThreadIdle(thread)
 	fourth.quit()
 	provider.assertSettings(t, 3, "gpt-6-astra", "low", "flex")
 	if got := provider.snapshot(); len(got) != 4 {
@@ -216,11 +178,11 @@ func TestAppServerResumeNativeCodex(t *testing.T) {
 	}
 }
 
-// The second top-border corner is the right pane's origin in a 100-column PTY.
+// The top row's divider is the right pane's origin in a 100-column PTY.
 func appResumeSplit(screen string) int {
 	row, _, _ := strings.Cut(screen, "\n")
 	for i, r := range []rune(row) {
-		if r == '┌' && i > 0 {
+		if r == '│' && i > 0 {
 			return i
 		}
 	}
@@ -237,40 +199,16 @@ type appResumeTerminal struct {
 	done   chan error
 	screen *vt.Emulator
 	before *term.State
+	socket string
 }
 
 func startAppResumeTerminal(t *testing.T, newCommand func(context.Context) *exec.Cmd, resumeThread string) *appResumeTerminal {
 	return startAppResumeTerminalWithIntegration(t, newCommand, resumeThread, appServerIntegration{})
 }
 
-func startAppResumeTerminalWithIntegration(t *testing.T, newCommand func(context.Context) *exec.Cmd, resumeThread string, integration appServerIntegration, capture ...*transportcapture.Recorder) *appResumeTerminal {
+func startAppResumeTerminalWithIntegration(t *testing.T, newCommand func(context.Context) *exec.Cmd, resumeThread string, integration appServerIntegration) *appResumeTerminal {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
-	outer, inner, err := pty.Open()
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { cancel(); outer.Close(); inner.Close() })
-	if err := pty.Setsize(outer, &pty.Winsize{Cols: 100, Rows: 30}); err != nil {
-		t.Fatal(err)
-	}
-	before, err := term.GetState(int(inner.Fd()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var recorder *transportcapture.Recorder
-	if len(capture) > 0 {
-		recorder = capture[0]
-	}
-	conversation := new(conversationmodel.Service)
-	observations := conversationbinding.Codex.Observation(conversation)
-	reviewSource := new(changecapture.Service)
-	wait, err := startAppServerUI(testTerminalViews(reviewSource), reviewSource, testPresentation(), conversation, new(activitymodel.Service), testHistory(), testPreferences(), testReports(), ctx, newCommand(ctx), inner, inner, integration, nil, resumeThread, true, recorder, nil, "", &observations, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return observeAppResumeTerminal(t, ctx, cancel, outer, inner, before, wait)
+	return startAppResumeTerminalWithDirectNative(t, newCommand, resumeThread, integration)
 }
 
 func observeAppResumeTerminal(t *testing.T, ctx context.Context, cancel context.CancelFunc, outer, inner *os.File, before *term.State, wait func() error) *appResumeTerminal {
@@ -319,10 +257,56 @@ func (s *appResumeTerminal) await(needle string) {
 	})
 }
 
+func (s *appResumeTerminal) awaitReady() {
+	s.t.Helper()
+	s.awaitMatch("available Main composer", func(content string) bool {
+		return strings.Contains(content, "\n❯") && strings.Contains(content, "Main • ") &&
+			!composerStatusShows(content, "Working") && !composerStatusShows(content, "Sending")
+	})
+}
+
 // awaitStatus waits for the composer's status row to start with status.
 func (s *appResumeTerminal) awaitStatus(status string) {
 	s.t.Helper()
 	s.awaitMatch("status "+status, func(content string) bool { return composerStatusShows(content, status) })
+}
+
+// Wait for the native owner to settle before performing an idle-only action.
+// Callers first observe the request or its terminal response.
+func (s *appResumeTerminal) awaitThreadIdle(thread string) {
+	s.t.Helper()
+	s.awaitThreadStatus(thread, "idle")
+}
+
+func (s *appResumeTerminal) awaitThreadStatus(thread, status string) {
+	s.t.Helper()
+	wire, err := dialNativeAppServer(s.ctx, s.socket)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	defer wire.Close()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var result struct {
+			Thread struct {
+				Status struct {
+					Type string `json:"type"`
+				} `json:"status"`
+			} `json:"thread"`
+		}
+		if err := wire.Call(s.ctx, "thread/read", map[string]any{"threadId": thread, "includeTurns": false}, &result); err != nil {
+			s.t.Fatal(err)
+		}
+		if result.Thread.Status.Type == status {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-s.ctx.Done():
+			s.t.Fatalf("thread %s did not become %s: %v", thread, status, s.ctx.Err())
+		}
+	}
 }
 
 func (s *appResumeTerminal) awaitMatch(label string, visible func(string) bool) {
@@ -366,15 +350,28 @@ func (s *appResumeTerminal) send(input string) {
 func (s *appResumeTerminal) quit() {
 	s.t.Helper()
 	s.send("/quit\r")
-	select {
-	case err := <-s.done:
-		if err != nil {
-			s.t.Fatal(err)
+	frames := s.frames
+	for {
+		select {
+		case err := <-s.done:
+			if err != nil {
+				s.t.Fatal(err)
+			}
+			s.checkRestored()
+			return
+		case frame, ok := <-frames:
+			if !ok {
+				frames = nil
+				continue
+			}
+			s.screen.Write(frame)
+			if strings.Contains(s.screen.String(), "Quit this session?") {
+				s.t.Fatalf("quit unexpectedly offered running work\n%s", s.screen.String())
+			}
+		case <-s.ctx.Done():
+			s.t.Fatalf("quit: %v\n%s", s.ctx.Err(), s.screen.String())
 		}
-	case <-s.ctx.Done():
-		s.t.Fatal(s.ctx.Err())
 	}
-	s.checkRestored()
 }
 
 func (s *appResumeTerminal) checkRestored() {
@@ -409,7 +406,7 @@ func TestAppServerOptionWordNavigationNativeCodex(t *testing.T) {
 		cmd.Env, cmd.Dir = environment, workspace
 		return cmd
 	}, "")
-	terminal.await("Ready")
+	terminal.awaitReady()
 	terminal.send("one two three\x1bb\x1bbX\x1bfY")
 	terminal.await("one Xtwo Ythree")
 	terminal.send("\x03")
@@ -422,11 +419,11 @@ func TestAppServerOptionWordNavigationNativeCodex(t *testing.T) {
 	}
 }
 
-// The picker lists installed Codex's saved sessions, switches the running UI
+// The picker lists Mekugi's saved sessions, switches the running UI
 // to one, and serves a bare startup resume. Provider thread identities prove
 // where later input went.
-func TestAppServerResumePickerNativeCodex(t *testing.T) {
-	codex, err := exec.LookPath("codex")
+func testAppServerResumePickerNativeCodex(t *testing.T) {
+	codex, err := exec.LookPath("mekugi-app-server")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +434,7 @@ func TestAppServerResumePickerNativeCodex(t *testing.T) {
 	environment := routerFaultCodexEnvironment(t)
 	workspace := t.TempDir()
 	newCommand := func(ctx context.Context) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, codex, "app-server",
+		cmd := exec.CommandContext(ctx, codex,
 			"-c", `model_providers.pickerpreview={name="preview",base_url=`+strconv.Quote(server.URL+"/v1")+`,wire_api="responses",requires_openai_auth=false}`,
 			"-c", `model_provider="pickerpreview"`, "-c", `model="gpt-6-astra"`,
 			"-c", "features.plugins=false")
@@ -447,15 +444,17 @@ func TestAppServerResumePickerNativeCodex(t *testing.T) {
 	}
 
 	first := startAppResumeTerminal(t, newCommand, "")
-	first.await("Ready")
+	first.awaitReady()
 	first.send("Picker first question\r")
-	first.await("completed")
+	first.await("Recovered after a retry.")
+	first.awaitThreadIdle(provider.snapshot()[0])
 	first.quit()
 
 	second := startAppResumeTerminal(t, newCommand, "")
-	second.await("Ready")
+	second.awaitReady()
 	second.send("Picker second question\r")
-	second.await("completed")
+	second.await("Recovered after a retry.")
+	second.awaitThreadIdle(provider.snapshot()[1])
 	second.send("/resume\r")
 	second.await("Resume a previous session")
 	second.awaitMatch("both saved sessions", func(screen string) bool {
@@ -465,17 +464,17 @@ func TestAppServerResumePickerNativeCodex(t *testing.T) {
 	second.awaitMatch("switched transcript", func(screen string) bool {
 		return strings.Contains(screen, "Picker first question") && !strings.Contains(screen, "Picker second question") && !strings.Contains(screen, "Resume a previous session")
 	})
-	second.await("Ready")
+	second.awaitReady()
 	second.send("Picker follow-up\r")
 	second.await("Picker follow-up")
-	second.await("completed")
+	second.awaitThreadIdle(provider.snapshot()[0])
 	second.quit()
 	threads := provider.snapshot()
 	if len(threads) != 3 || threads[0] == threads[1] || threads[2] != threads[0] {
 		t.Fatalf("switched input did not reach the chosen thread: %q", threads)
 	}
 
-	third := startAppResumeTerminal(t, newCommand, sessioncontrol.ResumePicker)
+	third := startAppResumeTerminal(t, newCommand, "--pick")
 	third.await("Resume a previous session")
 	third.await("esc start new")
 	// The follow-up made the first session the most recently updated.
@@ -485,7 +484,7 @@ func TestAppServerResumePickerNativeCodex(t *testing.T) {
 	})
 	third.send("\r")
 	third.await("Picker follow-up")
-	third.await("Ready")
+	third.awaitReady()
 	third.quit()
 	if got := provider.snapshot(); len(got) != 3 {
 		t.Fatalf("startup picker resent a turn: %q", got)

@@ -177,10 +177,12 @@ async fn interrupt_reply_waits_for_the_requested_turn(queued: bool) -> anyhow::R
             .id
     };
     gates.stopped.notified().await;
-    assert_eq!(
-        interrupt(0, "unknown").await.unwrap_err(),
-        invalid_request("no active turn to interrupt")
-    );
+    let no_active_turn = JSONRPCErrorError {
+        code: crate::error_code::INVALID_REQUEST_ERROR_CODE,
+        message: "no active turn to interrupt".into(),
+        data: Some(json!({"reason": "noActiveTurn"})),
+    };
+    assert_eq!(interrupt(0, "unknown").await.unwrap_err(), no_active_turn);
     assert_eq!(interrupt(2, &first).await, Ok(None));
     gates.finish.notify_one();
     // Hold A's actual terminal event until B has an interrupt waiting for a reply.
@@ -204,15 +206,9 @@ async fn interrupt_reply_waits_for_the_requested_turn(queued: bool) -> anyhow::R
     };
     let second = review.turn.id;
     gates.delegate_start.notified().await;
-    assert_eq!(
-        interrupt(5, &first).await.unwrap_err(),
-        invalid_request("no active turn to interrupt")
-    );
+    assert_eq!(interrupt(5, &first).await.unwrap_err(), no_active_turn);
     // The review owns the slot, but Core has not announced its delegate yet.
-    assert_eq!(
-        interrupt(6, &second).await,
-        Err(invalid_request("no active turn to interrupt"))
-    );
+    assert_eq!(interrupt(6, &second).await, Err(no_active_turn.clone()));
     gates.run_delegate.notify_one();
     wait_for_event(&test.codex, |msg| matches!(msg, EventMsg::TurnStarted(_))).await;
     // The delegate finishes its model work after the stale interrupt. Its parent is still running.
@@ -267,10 +263,7 @@ async fn interrupt_reply_waits_for_the_requested_turn(queued: bool) -> anyhow::R
         state.track_current_turn_event(&first, &activity);
         state.active_turn_id().expect("history turn").to_owned()
     };
-    assert_eq!(
-        interrupt(7, &history_id).await,
-        Err(invalid_request("no active turn to interrupt"))
-    );
+    assert_eq!(interrupt(7, &history_id).await, Err(no_active_turn));
     assert!(state.lock().await.pending_interrupts.is_empty());
     test.codex.shutdown_and_wait().await?;
     watcher.shutdown();

@@ -267,6 +267,7 @@ pub(crate) fn summary_to_thread(
         service_tier: None,
         context_tokens: None,
         context_window: None,
+        token_usage: None,
         completed_compactions: None,
         agent_status: None,
         updated_at: updated_at.map(|dt| dt.timestamp()).unwrap_or(0),

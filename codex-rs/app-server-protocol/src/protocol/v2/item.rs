@@ -36,9 +36,11 @@ use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
+pub use codex_protocol::items::FileUpdateChange;
 pub use codex_protocol::items::McpAppDisplayMode;
 pub use codex_protocol::items::McpAppUi;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
+pub use codex_protocol::items::PatchChangeKind;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
@@ -152,6 +154,19 @@ pub enum CommandAction {
     Unknown {
         command: String,
     },
+}
+
+/// Authored shell steps for display, not observations of individual processes.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CommandDisplay {
+    /// Full redacted script, before splitting steps or attributing a leading cd.
+    #[serde(default)]
+    pub script: String,
+    /// Separate source steps, or empty when the script is displayed as one.
+    pub segments: Vec<String>,
+    pub effective_cwd: Option<LegacyAppPathString>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -405,6 +420,10 @@ pub enum ThreadItemPayload {
         /// This returns a list of CommandAction objects because a single shell command may
         /// be composed of many commands piped together.
         command_actions: Vec<CommandAction>,
+        /// Authored display text for a recognized shell invocation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        display: Option<CommandDisplay>,
         /// The command's output, aggregated from stdout and stderr.
         aggregated_output: Option<String>,
         /// The command's exit code.
@@ -496,6 +515,18 @@ pub enum ThreadItemPayload {
         agent_thread_id: String,
         agent_path: String,
     },
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    AgentMail {
+        id: String,
+        kind: super::AgentMailKind,
+        sender: String,
+        recipient: String,
+        /// The retained plaintext, excluding the envelope and attached model context.
+        text: String,
+        summary: Option<String>,
+        details: Option<String>,
+    },
     WebSearch(WebSearchItem),
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -522,6 +553,14 @@ pub enum ThreadItemPayload {
     #[ts(rename_all = "camelCase")]
     ContextCompaction {
         id: String,
+        /// Present and true for a Mekugi summary-free context reset.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        summary_free: bool,
+        /// Elided unless a local compaction produced a plaintext summary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        summary: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         source_acquisition: Option<codex_protocol::protocol::SourceAcquisition>,
@@ -562,6 +601,7 @@ impl ThreadItemPayload {
             | Self::DynamicToolCall { id, .. }
             | Self::CollabAgentToolCall { id, .. }
             | Self::SubAgentActivity { id, .. }
+            | Self::AgentMail { id, .. }
             | Self::ImageView { id, .. }
             | Self::EnteredReviewMode { id, .. }
             | Self::ExitedReviewMode { id, .. }
@@ -1021,6 +1061,8 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     &command.command,
                     &command.parsed_cmd,
                     &command.cwd,
+                    command.exit_code,
+                    command.aggregated_output.as_deref().unwrap_or_default(),
                 );
                 Self::CommandExecution {
                     id: command.id,
@@ -1033,6 +1075,7 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                     process_id: command.process_id,
                     source: command.source.into(),
                     status: command.status.into(),
+                    display: presentation.display,
                     command_actions: presentation.command_actions,
                     aggregated_output: command
                         .aggregated_output
@@ -1165,6 +1208,8 @@ impl From<CoreTurnItem> for ThreadItemPayload {
             }
             CoreTurnItem::ContextCompaction(compaction) => Self::ContextCompaction {
                 id: compaction.id,
+                summary_free: compaction.summary_free,
+                summary: compaction.summary,
                 source_acquisition: compaction.source_acquisition,
             },
         }
@@ -1241,25 +1286,6 @@ pub enum CollabAgentTool {
     FollowupTask,
     InterruptAgent,
     ListAgents,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
-pub struct FileUpdateChange {
-    pub path: String,
-    pub kind: PatchChangeKind,
-    pub diff: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[ts(tag = "type")]
-#[ts(export_to = "v2/")]
-pub enum PatchChangeKind {
-    Add,
-    Delete,
-    Update { move_path: Option<PathBuf> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1673,6 +1699,44 @@ pub struct CommandExecutionOutputDeltaNotification {
     pub item_id: String,
     pub delta: String,
 }
+
+/// Replaces the running shell item's preview with the currently observed file diffs.
+/// Every diff is a unified diff, including additions and deletions.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CommandExecutionChangesUpdatedNotification {
+    #[serde(flatten)]
+    pub update: LiveCommandChanges,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LiveCommandChanges {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub source: CommandExecutionSource,
+    /// The authored shell script, bounded for preview; not the execution wrapper.
+    pub command: String,
+    pub changes: Vec<FileUpdateChange>,
+}
+
+impl LiveCommandChanges {
+    /// Apply the command item's redaction policy before bounding the display text.
+    pub fn with_redacted_command(mut self) -> Self {
+        const MAX_COMMAND_BYTES: usize = 4096;
+        let mut command = codex_secrets::redact_secrets(self.command);
+        if command.len() > MAX_COMMAND_BYTES {
+            command.truncate(command.floor_char_boundary(MAX_COMMAND_BYTES - '…'.len_utf8()));
+            command.push('…');
+        }
+        self.command = command;
+        self
+    }
+}
+
 /// Deprecated legacy notification for `apply_patch` textual output.
 ///
 /// The server no longer emits this notification.

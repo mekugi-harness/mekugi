@@ -237,6 +237,7 @@ struct OutOfBandElicitations {
 pub struct BackgroundTerminalInfo {
     pub item_id: String,
     pub process_id: String,
+    pub turn_id: String,
     pub command: String,
     pub cwd: PathUri,
 }
@@ -608,6 +609,18 @@ impl CodexThread {
             .await
     }
 
+    /// Queues an interrupt that can affect only the named turn.
+    ///
+    /// Success acknowledges submission. A turn that finishes before dispatch
+    /// keeps its natural outcome, even if new work has since started.
+    pub async fn submit_turn_interrupt(
+        &self,
+        turn_id: String,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<()> {
+        self.io.submit_turn_interrupt(turn_id, trace).await
+    }
+
     /// Waits for input activity without consuming input, following native `wait_agent` behavior.
     ///
     /// The named turn supplies any already-buffered steering input. Subsequent activity is
@@ -668,6 +681,38 @@ impl CodexThread {
                 unreachable!("start-if-idle submission must start or decline")
             }
         }
+    }
+
+    /// Starts a standalone user shell command without replacing or steering a turn.
+    pub async fn start_shell_if_idle(
+        &self,
+        command: String,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        self.io.submit_shell_if_idle(command, trace).await
+    }
+
+    /// Replaces active work with compaction and permits a successful compact to continue.
+    pub async fn compact_and_continue(
+        &self,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        self.io
+            .submit_compact(
+                crate::session::submission::CompactAdmission::ReplaceAndContinue,
+                trace,
+            )
+            .await
+    }
+
+    /// Runs a queued manual compact without replacing an active task.
+    pub async fn start_compact_if_idle(
+        &self,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        self.io
+            .submit_compact(crate::session::submission::CompactAdmission::IfIdle, trace)
+            .await
     }
 
     /// Starts a new internal continuation turn when idle, including in Plan mode.
@@ -1103,8 +1148,14 @@ impl CodexThread {
         self.session.list_background_terminals().await
     }
 
-    pub async fn terminate_background_terminal(&self, process_id: i32) -> bool {
-        self.session.terminate_background_terminal(process_id).await
+    pub async fn terminate_background_terminal(
+        &self,
+        process_id: i32,
+        expected_invocation: Option<(&str, &str)>,
+    ) -> bool {
+        self.session
+            .terminate_background_terminal(process_id, expected_invocation)
+            .await
     }
 
     pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
@@ -1120,6 +1171,24 @@ impl CodexThread {
     /// `thread/tokenUsage/updated` payload incomplete.
     pub async fn token_usage_info(&self) -> Option<TokenUsageInfo> {
         self.session.token_usage_info().await
+    }
+
+    /// Provider usage and the underlying native measurement times for this thread.
+    pub async fn observed_token_usage(
+        &self,
+    ) -> Option<codex_app_server_protocol::ThreadTokenUsage> {
+        self.session
+            .observed_token_usage(self.token_usage_info().await)
+            .await
+    }
+
+    /// Confirmed skill names belonging to this thread.
+    pub fn observed_thread_extra(&self) -> Option<codex_app_server_protocol::ThreadExtra> {
+        let skills = self
+            .thread_extension_data()
+            .get::<codex_skills_extension::SkillsThreadState>()?
+            .used_skill_names();
+        (!skills.is_empty()).then_some(codex_app_server_protocol::ThreadExtra { skills })
     }
 
     /// Records a context fragment without creating a new user turn boundary.

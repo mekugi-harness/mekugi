@@ -32,6 +32,7 @@ use codex_models_manager::model_info::model_info_from_slug;
 use core_test_support::responses;
 use core_test_support::skip_if_remote;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
@@ -130,7 +131,11 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
         JSONRPCErrorError {
             code: INVALID_REQUEST_ERROR_CODE,
             message: format!("expected active turn id wrong-turn but found {turn_id}"),
-            data: None,
+            data: Some(json!({
+                "reason": "activeTurnMismatch",
+                "expectedTurnId": "wrong-turn",
+                "actualTurnId": turn_id,
+            })),
         }
     );
 
@@ -166,7 +171,7 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
         JSONRPCErrorError {
             code: INVALID_REQUEST_ERROR_CODE,
             message: "no active turn to interrupt".to_string(),
-            data: None,
+            data: Some(json!({"reason": "noActiveTurn"})),
         }
     );
 
@@ -236,7 +241,14 @@ async fn turn_interrupt_rejects_completed_turn() -> Result<()> {
         mcp.read_stream_until_error_message(RequestId::Integer(interrupt_id)),
     )
     .await??;
-    assert_eq!(interrupt_err.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        interrupt_err.error,
+        JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: "no active turn to interrupt".to_string(),
+            data: Some(json!({"reason": "noActiveTurn"})),
+        }
+    );
 
     Ok(())
 }

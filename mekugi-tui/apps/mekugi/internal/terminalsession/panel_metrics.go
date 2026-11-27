@@ -8,18 +8,18 @@ import (
 
 // Source: apps/mekugi/internal/router/app_server_session_metrics.go:97:299@630ce384.
 func (p *StatusPanel) renderMetrics() {
-	p.Title = "Session · " + sessionpresentation.MetricViews[p.Tab]
 	p.Controls = "tab/⇧tab views · ↑↓ scroll · r refresh"
-	if p.Tab == 2 {
-		p.Controls = "tab/⇧tab views · [ older / ] newer · ↑↓ scroll"
-	}
-	p.Fields, p.Groups = nil, nil
-	p.Fields = sessionpresentation.MetricFields(p.body, p.Tab, p.exchangeIndex())
-	for i := range p.Fields {
-		field := &p.Fields[i]
-		if field.Group == "Exchange" && field.Label == "Retained" {
-			field.Value += " · [ older / ] newer"
+	p.Title = "Session · Overview"
+	p.Fields = p.body.Fields
+	if p.Features {
+		p.Title = "Session · Features"
+		p.Fields = p.body.FeatureFields
+		if len(p.Fields) == 0 {
+			p.Fields = []sessionpresentation.StatusField{{Group: "Features", Value: "Loading feature counts…"}}
 		}
+	}
+	p.Groups = nil
+	for _, field := range p.Fields {
 		if !slices.Contains(p.Groups, field.Group) {
 			p.Groups = append(p.Groups, field.Group)
 		}

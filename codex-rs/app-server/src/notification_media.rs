@@ -69,7 +69,6 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ThreadSectionChanged(_)
         | ServerNotification::ThreadAttachmentUpdated(_)
         | ServerNotification::ThreadGoalUpdated(_)
-        | ServerNotification::ThreadPredictionUpdated(_)
         | ServerNotification::ThreadGoalCleared(_)
         | ServerNotification::ThreadQueueChanged(_)
         | ServerNotification::ProjectChanged(_)
@@ -88,11 +87,14 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ItemGuardianApprovalReviewCompleted(_)
         | ServerNotification::StrictReviewRequired(_)
         | ServerNotification::RawResponseCompleted(_)
+        | ServerNotification::ThreadSkillsUpdated(_)
         | ServerNotification::AgentMessageDelta(_)
         | ServerNotification::PlanDelta(_)
         | ServerNotification::CommandExecOutputDelta(_)
         | ServerNotification::ProcessOutputDelta(_)
         | ServerNotification::ProcessExited(_)
+        | ServerNotification::ThreadBackgroundTerminalsChanged(_)
+        | ServerNotification::CommandExecutionChangesUpdated(_)
         | ServerNotification::CommandExecutionOutputDelta(_)
         | ServerNotification::TerminalInteraction(_)
         | ServerNotification::FileChangeOutputDelta(_)
@@ -217,6 +219,7 @@ fn without_thread_item_media(mut item: ThreadItemPayload) -> ThreadItemPayload {
         }
         | ThreadItemPayload::CollabAgentToolCall { .. }
         | ThreadItemPayload::SubAgentActivity { .. }
+        | ThreadItemPayload::AgentMail { .. }
         | ThreadItemPayload::WebSearch(_)
         | ThreadItemPayload::ImageView { .. }
         | ThreadItemPayload::AgentSideQuestion(_)

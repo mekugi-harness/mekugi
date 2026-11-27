@@ -72,6 +72,7 @@ async fn run_compact_task_inner(
     }
 
     let mut compaction = ContextCompactionItem::new();
+    compaction.summary_free = true;
     sess.emit_turn_item_started(
         turn_context,
         &TurnItem::ContextCompaction(compaction.clone()),

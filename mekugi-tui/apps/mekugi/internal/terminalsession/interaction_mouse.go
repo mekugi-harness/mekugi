@@ -91,8 +91,9 @@ func (in FrameInput) mouse(state *Interaction, pointer Mouse, yield func(InputEf
 		if button&^28 == 0 {
 			shell.Focus = 0
 		}
-		action := main.Resume.Mouse(button&^28, y-shell.Layout.Main.Y)
-		yield(InputEffect{Resume: &action})
+		if action := main.Resume.Mouse(button&^28, y-shell.Layout.Main.Y); action.Kind != sessionpresentation.ResumeNoAction {
+			yield(InputEffect{Resume: &action})
+		}
 		return
 	}
 	if main != nil && in.Prompts.Rect.Contains(x-shell.Layout.Main.X, y-shell.Layout.Main.Y) {
@@ -192,11 +193,11 @@ func (in FrameInput) mouse(state *Interaction, pointer Mouse, yield func(InputEf
 	case 0:
 		view := in.displayedTranscript()
 		view.HandleMouse(action, y-r.Y+1, x-r.X+1)
-		if snippet := view.Opening; snippet != (activityui.Snippet{}) {
-			view.Opening = activityui.Snippet{}
+		if opening := view.Opening; !opening.Zero() {
+			view.Opening = activityui.DetailTarget{}
 			v, source := main.session.Version, state.Frame.Source
 			v.Attachment = source.Attachment
-			yield(InputEffect{Selection: &SelectionInput{Target: SelectionTarget{Version: v, Thread: source.Thread, Workspace: source.Workspace, View: view, Snippet: snippet}}})
+			yield(InputEffect{Selection: &SelectionInput{Target: SelectionTarget{Version: v, Thread: source.Thread, Workspace: source.Workspace, View: view, Snippet: opening.Snippet, Detail: opening.Detail}}})
 		}
 	case 1:
 		if shell.Auxiliary != nil {

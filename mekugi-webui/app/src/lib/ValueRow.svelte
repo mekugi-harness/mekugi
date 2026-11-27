@@ -46,10 +46,10 @@
   // ran, so the row holds only the outcome and the combined output.
   const result = $derived(value.batchExit && !value.code);
   const verb = $derived(result ? "" : (value.verb ?? value.kind ?? ""));
-  const exited = $derived(value.exitCode !== undefined && value.exitCode !== 0);
+  const exited = $derived(value.exitCode != null && value.exitCode !== 0);
+  const normalizedWorkdir = $derived(normalizeWorkdir(value.workdir, workspace));
   const showWorkdir = $derived(
-    !!value.workdir &&
-      (!groupWorkdir || normalizeWorkdir(value.workdir, workspace) !== groupWorkdir),
+    !!normalizedWorkdir && (!groupWorkdir || normalizedWorkdir !== groupWorkdir),
   );
   const displayPath = $derived(
     groupWorkdir && value.path
@@ -157,6 +157,7 @@
   // they read as one indented document.
   const json = $derived.by(() => {
     if (value.lang !== "json" || !code) return undefined;
+    if (value.opaqueJSON) return code;
     const decode = (v: unknown): unknown => {
       if (typeof v === "string" && /^\s*[[{]/.test(v)) {
         try {
@@ -186,7 +187,12 @@
         json: true,
         lines: lines(value.codeLines ?? json?.split("\n").length ?? codeLines),
       };
-    if (multiline || excerpt !== undefined || (value.codePreview && value.codePreview !== code)) {
+    if (
+      multiline ||
+      excerpt !== undefined ||
+      (value.codePreview && value.codePreview !== code) ||
+      (value.foldSource && !!code)
+    ) {
       const name = value.foldSource ? "Source" : "Script";
       return { name, short: name, lines: lines(codeLines) };
     }
@@ -315,7 +321,9 @@
         >(auto reloaded)</span
       >{/if}
     {#if showWorkdir}<span class="text-muted"
-        >{` in `}<span class="font-mono"><Path path={value.workdir!} /></span></span
+        >{` in `}<span class="font-mono"
+          ><Path path={normalizedWorkdir} title={value.workdir} /></span
+        ></span
       >{/if}
   </div>
   {#if status}<span

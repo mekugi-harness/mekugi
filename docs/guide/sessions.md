@@ -2,10 +2,14 @@
 
 Resume, branch and rewind conversations, and understand compaction and retained storage.
 
+An empty transcript is a draft, not a session. A session starts once you send
+the first message and Codex saves it. Mekugi does not assign a session ID to a
+draft; any native thread ID that stock Codex already assigned stays unchanged.
+
 ## Resume
 
-`resume THREAD_ID` attaches to that thread if it is still running on the local
-server, or restores its saved session otherwise. `resume --last` selects the latest
+`resume THREAD_ID` attaches to a saved thread if it is still running on the
+local server, or restores its session otherwise. `resume --last` selects the latest
 saved session; bare `resume` opens the
 workspace picker. Type to search, Tab for all workspaces, Enter to resume. Inside an
 idle session, `/resume` opens the picker or `/resume THREAD_ID` switches directly. Saved
@@ -13,30 +17,37 @@ model/effort/tier, layout, roster, child history, and retained Diff return; expl
 `-m`/`-c` overrides named settings. Drafts, selections, filters, and scroll positions do
 not return.
 
-While idle, `/fork` takes no arguments and creates a saved branch of the completed
-conversation, then switches to it with current settings and pending input. The
-original stays resumable and workspace files remain unchanged. A failed fork
-keeps the original session usable.
+`/fork` asks Codex to branch the conversation and switches to the new thread
+if Codex accepts it. With `/fork PROMPT`, the trailing text is sent to the
+new thread. The original stays resumable. A failed fork keeps the original
+session usable.
 
-`/rewind` opens a restore-point dialog while idle, after the first user turn,
-listing both turn starts and mid-turn steered messages. Select a point to remove
-it and all later conversation from the same session, keeping current settings
-and pending input. It requires paginated Codex history; legacy sessions are
-refused before edits change.
+`/rewind` opens a restore-point dialog in the terminal and browser while idle,
+after the first user turn. It lists turn starts and mid-turn steered messages.
+Select a point to remove it and all later conversation from the same session,
+keeping current settings and pending input. It requires paginated Codex
+history; legacy sessions are refused before edits change.
 
-Choose Keep edits (the default) or Revert captured edits from that point onward,
-including descendant agents. Without such captures, rewind skips this choice.
-Revert uses `mchanges` and preserves unrelated edits through its normal merge
-behavior. Missing evidence disables Revert; conflicts stop the rewind. Keep
-remains available. Retained change/output evidence stays available, including
-any recorded reversal. If conversation rewind fails after edits were reverted,
-inspect the reversal output before deciding what to recover.
+Choose Keep edits (the default) or Revert edits to undo eligible captures from
+that point onward, including descendant agents. Without such captures only
+Keep edits is available.
+Revert preserves unrelated edits when they can be merged. Missing evidence
+disables Revert; conflicts stop the rewind. Keep remains available. If the
+history replacement fails after file undo, the server attempts to restore the
+pre-undo files and reports any conflict that prevents restoration. Retained
+change and output evidence stays available, including any recorded reversal.
 
 Rewind keeps the session identity and descendants. Codex reloads the caller's
 runtime, so its process handles may stop working. No saved branch or archive
 confirmation is created.
 
 ## Compaction and recovery
+
+In the terminal or browser, submit `/compact` with Enter to compact the selected
+thread now. If work is active, Enter interrupts it first. With the command in
+the composer, press Tab during active work to queue it without interrupting.
+After a successful busy-thread compact, waiting drafts take precedence.
+If none are waiting, the thread continues without adding a user message.
 
 Manual `/compact`, context-full compaction and agent checkpoints reset Codex
 context without generating a handover summary. Agents may select files, line ranges,
@@ -63,18 +74,7 @@ permissions. Failed reads stay visible without blocking the others. Codex suppli
 `AGENTS.md`, so it is excluded from reload. Captured reloads survive resume and fork
 without rereading merely because the thread resumes; the next reset reads current
 sources. Earlier saved sessions retain their compaction summaries, available
-from **Context compacted** in the transcript. Captured changes and output remain
-readable while their [storage](#replay-storage) is retained. See the
+from **Context compacted** in the transcript. See the
 [compaction contract](../reference/agent-guidance.md#compaction-context) (note that stock
 Codex startup still reads a caller-configured `experimental_compact_prompt_file` even though native
 reset ignores it).
-
-## Replay storage
-
-Records live in `$XDG_STATE_HOME/mekugi/replay`, default `~/.local/state/mekugi/replay`.
-Replay never reruns commands/restores processes. Data is capped at **4 GiB**, removed
-after **14 inactive days**; capacity cleanup removes oldest inactive sessions, never
-running work. **Codex chats/workspace files are never deleted.** Cleanup invalidates
-references; power loss can lose recent records. If retention fails, free space and retry
-retention, not the operation. Stop wrappers before moving storage aside. Use `mekugi
-inspect-storage` for storage details.

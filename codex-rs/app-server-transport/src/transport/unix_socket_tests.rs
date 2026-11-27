@@ -639,9 +639,15 @@ async fn control_socket_serves_mounted_http_resources_alongside_websockets() {
         .await
         .expect("write HTTP request");
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await.expect("read HTTP response");
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .expect("read HTTP response");
     let response = String::from_utf8_lossy(&buf);
-    assert!(response.starts_with("HTTP/1.1 200 OK"), "response: {response}");
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "response: {response}"
+    );
     assert!(response.ends_with("ok-resource"), "response: {response}");
 
     shutdown_token.cancel();

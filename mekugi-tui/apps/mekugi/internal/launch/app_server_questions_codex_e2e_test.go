@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 
 	json "encoding/json/v2"
 	"fmt"
@@ -61,7 +60,7 @@ func (p *questionCodexProvider) respond(ctx context.Context, body []byte, _ http
 			"question": "Who should receive the update?", "options": []any{map[string]any{"label": "Customers"}, map[string]any{"label": "Internal team"}},
 		}}}
 	}
-	item := map[string]any{"type": "function_call", "id": fmt.Sprintf("question-item-%s", p.mode), "call_id": fmt.Sprintf("question-call-%s", p.mode), "name": name, "arguments": string(responses.MustMarshalJSON(args)), "status": "completed"}
+	item := map[string]any{"type": "function_call", "id": fmt.Sprintf("question-item-%s", p.mode), "call_id": fmt.Sprintf("question-call-%s", p.mode), "name": name, "arguments": string(e2eMustMarshalJSON(args)), "status": "completed"}
 	response := map[string]any{"id": "question-response", "status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}
 	return fixtureResponsesStream(fixtureResponsesSSE(
 		map[string]any{"type": "response.created", "response": map[string]any{"id": "question-response", "status": "in_progress", "output": []any{}}},
@@ -137,7 +136,7 @@ func TestUserInputQuestionsNativeCodexE2E(t *testing.T) {
 					return nil
 				}
 			}
-			terminal.await("Ready")
+			terminal.awaitReady()
 			terminal.send("Ask the release question\r")
 			_ = next()
 			if mode == "async" {

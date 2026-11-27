@@ -307,7 +307,7 @@ func (v *View) RenderConversation(width int) Feed {
 			}
 			feed.Heads = append(feed.Heads, start)
 		}
-		feed.appendRows(run)
+		feed.appendRows(key.First, run)
 		v.appendImages(&feed, it.first, it.last, head, width)
 		feed.Spans = append(feed.Spans, Span{key.First, head, len(feed.Lines)})
 		if v.sentMessage(it.first) {

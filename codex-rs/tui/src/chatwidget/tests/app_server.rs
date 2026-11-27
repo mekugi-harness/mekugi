@@ -1453,6 +1453,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 script_path: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::InProgress,
+                display: None,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: script.to_string(),
                 }],
@@ -1479,6 +1480,7 @@ async fn live_app_server_command_execution_strips_shell_wrapper() {
                 script_path: None,
                 source: AppServerCommandExecutionSource::UserShell,
                 status: AppServerCommandExecutionStatus::Completed,
+                display: None,
                 command_actions: vec![AppServerCommandAction::Unknown {
                     command: script.to_string(),
                 }],

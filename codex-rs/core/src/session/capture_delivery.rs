@@ -127,6 +127,7 @@ fn render_composed_change_source(
                 schema_version: record.schema_version,
                 id: record.id.clone(),
                 sequence: record.sequence,
+                recorded_at_ms: record.recorded_at_ms,
                 metadata: record.metadata.clone(),
                 files: vec![file.clone()],
             };

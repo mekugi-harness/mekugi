@@ -14,6 +14,7 @@
   } from "./kinds";
   import Path from "./Path.svelte";
   import { preferences } from "./preferences.svelte";
+  import ReferenceSelection from "./ReferenceSelection.svelte";
   import ResponseCopy from "./ResponseCopy.svelte";
   import type { Entry } from "./protocol";
   import { stream } from "./stream.svelte";
@@ -29,6 +30,7 @@
     jumps = 0,
     empty = "No messages yet.",
     onselect,
+    onreference,
     onchanges,
     hasSavedChange,
     onhiddenhooks,
@@ -41,6 +43,7 @@
     jumps?: number;
     empty?: string;
     onselect?: (entry: Entry) => void;
+    onreference?: (text: string, description: string, source: string) => boolean;
     onchanges?: (paths: string[]) => void;
     hasSavedChange?: (paths: string[]) => boolean;
     onhiddenhooks?: (count: number) => void;
@@ -142,6 +145,17 @@
     if (!scroller) return;
     const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     pinned = distance < 48;
+    if (scroller.scrollTop < 120 && stream.hasEarlier && !stream.loadingEarlier) {
+      const prevHeight = scroller.scrollHeight;
+      const prevTop = scroller.scrollTop;
+      void stream.earlier().then((loaded) => {
+        if (!loaded || !scroller) return;
+        void tick().then(() => {
+          if (!scroller) return;
+          scroller.scrollTop = prevTop + (scroller.scrollHeight - prevHeight);
+        });
+      });
+    }
   }
 
   $effect(() => {
@@ -233,6 +247,16 @@
       bind:this={contentEl}
       class="mx-auto max-w-[calc(var(--container-column)+184px)] pt-3 pr-23 pb-10 pl-4 @max-[980px]:pr-11 max-sm:pt-2 max-sm:pb-6"
     >
+      {#if stream.loadingEarlier}
+        <div
+          class="mb-4 ml-19 grid gap-2 max-sm:ml-0"
+          role="status"
+          aria-label="Loading earlier turns"
+        >
+          <Skeleton class="h-4 w-2/3 bg-active" />
+          <Skeleton class="h-4 w-1/2 bg-active" />
+        </div>
+      {/if}
       {#if segments.length}
         {#each segments as seg (seg.key)}
           {#if seg.kind === "group"}
@@ -268,6 +292,9 @@
       {/if}
     </div>
   </div>
+  {#if onreference}
+    <ReferenceSelection root={scroller} {onreference} />
+  {/if}
   {#if !pinned}
     <button
       type="button"

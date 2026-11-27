@@ -45,6 +45,282 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn shell_changes_update_before_completion_and_settle_to_retained_evidence() -> Result<()> {
+    use codex_app_server_protocol::CommandExecutionChangesUpdatedNotification;
+    use codex_app_server_protocol::LiveCommandChanges;
+    use codex_app_server_protocol::PatchChangeKind;
+    use codex_app_server_protocol::ThreadChangesLiveParams;
+    use codex_app_server_protocol::ThreadChangesLiveResponse;
+    use codex_app_server_protocol::ThreadChangesReadParams;
+    use codex_app_server_protocol::ThreadChangesReadResponse;
+    use std::io::Write;
+
+    async fn read_live(
+        app: &mut TestAppServer,
+        thread_id: &str,
+    ) -> Result<Vec<LiveCommandChanges>> {
+        let response: ThreadChangesLiveResponse = app
+            .request(|request_id| ClientRequest::ThreadChangesLive {
+                request_id,
+                params: ThreadChangesLiveParams {
+                    thread_id: thread_id.to_owned(),
+                },
+            })
+            .await?;
+        Ok(response.data)
+    }
+
+    let codex_home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let target = workspace.path().join("observed.txt");
+    std::fs::write(&target, "before\n")?;
+    let fifo = workspace.path().join("release");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()?
+            .success()
+    );
+    let mut release = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&fifo)?;
+
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = app
+        .request(|request_id| ClientRequest::ThreadStart {
+            request_id,
+            params: ThreadStartParams {
+                cwd: Some(workspace.path().display().to_string()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(read_live(&mut app, &thread.id).await?, vec![]);
+    let command = "TOKEN='redactionfixture'; echo live > observed.txt; read line < release; \
+                   echo before > observed.txt; read line < release; \
+                   echo saved > observed.txt; read line < release";
+    let _: ThreadShellCommandResponse = app
+        .request(|request_id| ClientRequest::ThreadShellCommand {
+            request_id,
+            params: ThreadShellCommandParams {
+                thread_id: thread.id.clone(),
+                command: command.into(),
+                timeout_ms: Some(30_000),
+            },
+        })
+        .await?;
+
+    let started = timeout(
+        DEFAULT_READ_TIMEOUT,
+        wait_for_command_execution_started(&mut app, None),
+    )
+    .await??;
+    let item_id = started.item.id();
+    let method = "item/commandExecution/changesUpdated";
+    let CommandExecutionChangesUpdatedNotification { update: live } =
+        timeout(DEFAULT_READ_TIMEOUT, app.read_notification(method)).await??;
+    assert_eq!(live.thread_id, thread.id);
+    assert_eq!(live.turn_id, started.turn_id);
+    assert_eq!(live.item_id, item_id);
+    assert_eq!(live.source, CommandExecutionSource::UserShell);
+    assert_eq!(
+        live.command,
+        command.replace("redactionfixture", "[REDACTED_SECRET]")
+    );
+    let [file] = live.changes.as_slice() else {
+        panic!("expected one live change, got {:?}", live.changes);
+    };
+    assert_eq!(file.path, target.canonicalize()?.to_string_lossy());
+    assert_eq!(file.kind, PatchChangeKind::Update { move_path: None });
+    assert!(file.diff.contains("-before\n+live\n"), "{}", file.diff);
+    assert_eq!(read_live(&mut app, &thread.id).await?, vec![live]);
+
+    writeln!(release, "restore")?;
+    let CommandExecutionChangesUpdatedNotification { update: withdrawn } =
+        timeout(DEFAULT_READ_TIMEOUT, app.read_notification(method)).await??;
+    assert_eq!(withdrawn.item_id, item_id);
+    assert!(withdrawn.changes.is_empty());
+    assert_eq!(read_live(&mut app, &thread.id).await?, vec![]);
+
+    writeln!(release, "write final change")?;
+    let CommandExecutionChangesUpdatedNotification {
+        update: final_preview,
+    } = timeout(DEFAULT_READ_TIMEOUT, app.read_notification(method)).await??;
+    assert_eq!(final_preview.item_id, item_id);
+    assert!(final_preview.changes[0].diff.contains("-before\n+saved\n"));
+    assert_eq!(read_live(&mut app, &thread.id).await?, vec![final_preview]);
+
+    writeln!(release, "finish")?;
+    let completed = timeout(
+        DEFAULT_READ_TIMEOUT,
+        wait_for_command_execution_completed(&mut app, Some(item_id)),
+    )
+    .await??;
+    assert!(matches!(
+        completed.item.payload,
+        ThreadItemPayload::CommandExecution {
+            status: CommandExecutionStatus::Completed,
+            exit_code: Some(0),
+            ..
+        }
+    ));
+    assert_eq!(read_live(&mut app, &thread.id).await?, vec![]);
+
+    let saved: ThreadChangesReadResponse = app
+        .request(|request_id| ClientRequest::ThreadChangesRead {
+            request_id,
+            params: ThreadChangesReadParams {
+                thread_id: thread.id,
+                include_ephemeral: Some(true),
+                caller_thread_id: None,
+                item_id: Some(item_id.to_owned()),
+                per_capture: false,
+                limit: None,
+                cursor: None,
+            },
+        })
+        .await?;
+    assert_eq!(saved.file_count, 1);
+    assert_eq!(saved.changes[0].turn_id, started.turn_id);
+    assert_eq!(saved.changes[0].source_kind, "UserShell");
+    assert_eq!(saved.changes[0].source_label, "User shell");
+    assert_eq!(saved.changes[0].author_thread_id, None);
+    assert!(saved.files[0].unified_diff.contains("-before\n+saved\n"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn saved_shell_caller_stats_count_net_workspace_edits() -> Result<()> {
+    use codex_app_server_protocol::ThreadChangeCallerCounts;
+    use codex_app_server_protocol::ThreadChangesReadParams;
+    use codex_app_server_protocol::ThreadChangesReadResponse;
+    use codex_change_history::ChangeHistoryStore;
+    use codex_change_history::ChangeMetadata;
+    use codex_change_history::ChangeScope;
+    use codex_change_history::ChangeSourceKind;
+    use codex_change_history::CoverageStatus;
+    use codex_change_history::FileSnapshot;
+    use codex_change_history::PendingFileChange;
+    use codex_protocol::ThreadId;
+
+    core_test_support::skip_if_remote!(Ok(()), "seeds the app-server host change store");
+    let codex_home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let project = workspace.path().join("project");
+    std::fs::create_dir(&project)?;
+    let server = create_mock_responses_server_sequence(vec![]).await;
+    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let ThreadStartResponse { thread, .. } = app
+        .request(|request_id| ClientRequest::ThreadStart {
+            request_id,
+            params: ThreadStartParams {
+                cwd: Some(project.display().to_string()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let store_dir = codex_protocol::shell_environment::session_tmp_path(
+        ThreadId::from_string(&thread.id)?.into(),
+    )
+    .join("change-history");
+    let store = ChangeHistoryStore::open(store_dir)?;
+    let record = |call_id: &str, root: &std::path::Path, files| {
+        store.record_change(
+            ChangeMetadata {
+                thread_id: thread.id.clone(),
+                session_id: thread.id.clone(),
+                turn_id: "turn".into(),
+                call_id: call_id.into(),
+                author: None,
+                source_kind: ChangeSourceKind::ShellWrite,
+                workspace_root: root.to_path_buf(),
+                created_at: 1,
+                exit_code: Some(0),
+                summary: None,
+                claim_key: None,
+            },
+            files,
+        )
+    };
+    let edit = |name: &str, before: &[u8], after: &[u8]| PendingFileChange {
+        rel_path: name.into(),
+        abs_path: project.join(name),
+        moved_from: None,
+        before: FileSnapshot::Present(before.into()),
+        after: FileSnapshot::Present(after.into()),
+        coverage: CoverageStatus::Complete,
+        scope: ChangeScope::Workspace,
+    };
+    let mut outside = edit("outside.txt", b"old\n", b"draft\n");
+    outside.abs_path = workspace.path().join("outside.txt");
+    record(
+        "first",
+        workspace.path(),
+        vec![
+            edit("text.txt", b"base\n", b"draft\n"),
+            edit("unchanged.txt", b"base\n", b"draft\n"),
+            outside.clone(),
+        ],
+    )?;
+    outside.before = outside.after;
+    outside.after = FileSnapshot::Present(b"result\n".to_vec());
+    outside.scope = ChangeScope::External;
+    let mut partial = edit("partial.txt", b"base\n", b"draft\n");
+    partial.coverage = CoverageStatus::Partial {
+        reason: "fixture baseline".into(),
+    };
+    record(
+        "second",
+        &project,
+        vec![
+            edit("text.txt", b"draft\n", b"base\nadded\n"),
+            edit("unchanged.txt", b"draft\n", b"base\n"),
+            edit("binary", b"\0before", b"\0after"),
+            outside,
+            partial,
+        ],
+    )?;
+
+    let saved: ThreadChangesReadResponse = app
+        .request(|request_id| ClientRequest::ThreadChangesRead {
+            request_id,
+            params: ThreadChangesReadParams {
+                thread_id: thread.id.clone(),
+                include_ephemeral: None,
+                caller_thread_id: None,
+                item_id: None,
+                per_capture: false,
+                limit: Some(1),
+                cursor: None,
+            },
+        })
+        .await?;
+    assert_eq!(saved.files.len(), 1);
+    assert_eq!(
+        saved.callers,
+        vec![ThreadChangeCallerCounts {
+            thread_id: thread.id,
+            file_count: 4,
+            additions: 1,
+            deletions: 0,
+        }]
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn thread_shell_command_history_responses_exclude_persisted_command_executions() -> Result<()>
 {

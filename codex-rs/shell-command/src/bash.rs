@@ -115,6 +115,97 @@ pub fn extract_bash_command(command: &[String]) -> Option<(&str, &str)> {
     Some((shell, script))
 }
 
+/// Authored top-level steps and an optional literal leading `cd` operand.
+/// Pipelines and compound statements remain intact. No command is evaluated.
+pub fn display_steps(script: &str) -> Option<(Vec<&str>, Option<String>)> {
+    let tree = try_parse_shell(script)?;
+    let root = tree.root_node();
+    if root.has_error() {
+        return None;
+    }
+    let mut pending = vec![root];
+    let mut steps = Vec::new();
+    let mut has_or = false;
+    while let Some(node) = pending.pop() {
+        if matches!(node.kind(), "program" | "list") {
+            for index in (0..node.child_count()).rev() {
+                let child = node.child(index)?;
+                match child.kind() {
+                    "&&" | ";" | "\n" => {}
+                    "||" => has_or = true,
+                    "&" | "comment" => return None,
+                    _ if child.is_named() => pending.push(child),
+                    _ => return None,
+                }
+            }
+        } else {
+            steps.push(node);
+        }
+    }
+    if steps.len() < 2 {
+        return None;
+    }
+    let first = steps[0];
+    let directory = if !has_or
+        && first.kind() == "command"
+        && first
+            .child_by_field_name("name")?
+            .utf8_text(script.as_bytes())
+            .ok()?
+            == "cd"
+    {
+        let mut cursor = first.walk();
+        let words = first
+            .named_children(&mut cursor)
+            .skip(1)
+            .map(|word| parse_literal_shell_word(word, script))
+            .collect::<Option<Vec<_>>>();
+        match words.as_deref() {
+            Some([dir]) if !dir.is_empty() && !dir.starts_with(['-', '~']) => Some(dir.clone()),
+            Some([sep, dir]) if sep == "--" && !dir.is_empty() && dir != "-" => Some(dir.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    // A later directory change, including a shell builtin invocation, makes a
+    // shared effective directory misleading. Keep the authored cd step.
+    let directory = directory.filter(|_| {
+        !steps[1..].iter().any(|step| {
+            let mut nodes = vec![*step];
+            while let Some(node) = nodes.pop() {
+                if node.kind() == "command" {
+                    let name = node
+                        .child_by_field_name("name")
+                        .and_then(|name| name.named_child(0))
+                        .and_then(|name| parse_literal_shell_word(name, script));
+                    if matches!(
+                        name.as_deref(),
+                        None | Some(
+                            "cd" | "pushd"
+                                | "popd"
+                                | "builtin"
+                                | "command"
+                                | "."
+                                | "source"
+                                | "eval"
+                        )
+                    ) {
+                        return true;
+                    }
+                }
+                nodes.extend(node.named_children(&mut node.walk()));
+            }
+            false
+        })
+    });
+    let sources = steps
+        .iter()
+        .map(|node| node.utf8_text(script.as_bytes()).ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some((sources, directory))
+}
+
 /// Returns the sequence of plain commands within a `bash -lc "..."` or
 /// `zsh -lc "..."` invocation when the script only contains word-only commands
 /// joined by safe operators.

@@ -62,6 +62,10 @@ pub struct RequestUserInputAnswer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub other: Option<String>,
+    /// Inline base64 image data URLs attached to this written answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub images: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skipped: bool,
 }
@@ -76,6 +80,8 @@ impl RequestUserInputAnswer {
 
     pub fn is_valid_for(&self, question: &RequestUserInputQuestion) -> bool {
         self.id == question.id
+            && (self.images.as_ref().is_none_or(Vec::is_empty)
+                || (!question.is_secret && self.other.is_some()))
             && match (self.choice, &self.other, self.skipped) {
                 (Some(_), None, false) => self.selected_option(question).is_some(),
                 (None, Some(_), false) | (None, None, true) => self.note.is_none(),

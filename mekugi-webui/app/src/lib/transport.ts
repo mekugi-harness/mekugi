@@ -19,7 +19,7 @@ export type Connection = "connecting" | "open" | "lost" | "required" | "incompat
 export interface RequestOptions {
   signal?: AbortSignal;
 }
-export type ResourceKind = "content" | "image" | "attachment-image";
+export type ResourceKind = "content" | "file" | "image" | "attachment-image";
 type StateListener = (state: Connection, error?: TransportError) => void;
 type OpenListener = (info: InitializeResponse) => void;
 type NotificationListener = (notification: ServerNotification) => void;
@@ -31,6 +31,8 @@ export interface RPCErrorPayload {
   data?: {
     status?: number;
     outcome?: string;
+    reason?: string;
+    threadId?: string;
   };
 }
 
@@ -46,10 +48,17 @@ interface WireMessage {
 export class TransportError extends Error {
   readonly kind: "network" | "unknown" | "required" | "incompatible" | "refused" | "canceled";
   readonly status?: number;
-  constructor(message: string, kind: TransportError["kind"], status?: number) {
+  readonly rpcError?: RPCErrorPayload;
+  constructor(
+    message: string,
+    kind: TransportError["kind"],
+    status?: number,
+    rpcError?: RPCErrorPayload,
+  ) {
     super(message);
     this.kind = kind;
     this.status = status;
+    this.rpcError = rpcError;
   }
 }
 
@@ -107,18 +116,23 @@ function remoteError(error: RPCErrorPayload, initialize = false): TransportError
     );
   if (error.data?.outcome === "unknown")
     return new TransportError(`${error.message} ${unknownOutcome}`, "unknown", status);
-  return new TransportError(error.message, "refused", status);
+  return new TransportError(error.message, "refused", status, error);
 }
 
 const READ_ONLY_METHODS = new Set<RemoteHumanMethod>([
+  "thread/revert/preview",
   "initialize",
   "model/list",
+  "permissionProfile/list",
   "skills/list",
+  "featureUse/read",
+  "server/diagnostics",
   "thread/list",
-  "thread/loaded/list",
+  "thread/presets/list",
   "thread/inspect",
   "thread/subtree/list",
   "thread/changes/read",
+  "thread/backgroundTerminals/list",
   "thread/read",
   "thread/turns/list",
   "thread/items/list",
@@ -551,7 +565,11 @@ export class Connector {
         signal,
       });
       if (!response.ok) throw await resourceError(response);
-      return (await (kind === "content" ? response.json() : response.blob())) as T;
+      const json =
+        kind === "content" ||
+        kind === "file" ||
+        (kind === "attachment-image" && params.body && "probe" in params.body && params.body.probe);
+      return (await (json ? response.json() : response.blob())) as T;
     } catch (error) {
       if (signal.aborted) throw canceled();
       if (error instanceof TransportError) throw error;

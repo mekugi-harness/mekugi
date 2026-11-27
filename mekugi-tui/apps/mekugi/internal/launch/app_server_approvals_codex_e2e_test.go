@@ -8,23 +8,26 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/x/vt"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
 func TestNativeApprovalDenialSameTurnCodexE2E(t *testing.T) {
 	const reason = "Use the existing result instead."
 	shell := execTrackShellExecutable(t, "bash")
-	proxy := newManagedMekugiProxy(t)
-	attachTestReplayStore(t, proxy)
+	workspace := t.TempDir()
+	const marker = "approval-command-ran"
+	writeHostFixture(t, filepath.Join(workspace, "git"), "#!/bin/sh\ntouch "+marker+"\n", 0700)
+	const denied = "remote write denied: " + reason
 	var original fixtureRequestMetadata
 	requests := 0
 	provider := &toolFrontendCodexProvider{
-		program:   `const result = await tools.exec_command({cmd:"echo APPROVAL_COMMAND_RAN",shell:` + string(responses.MustMarshalJSON(shell)) + `,login:false,sandbox_permissions:"require_escalated",justification:"Exercise isolated native command denial"}); text(result.output);`,
-		expected:  []string{"rejected"},
+		program:   hostTrackedCommand(shell, "./git push origin main", 1),
+		expected:  []string{denied, "HOST_RESULT_VERIFIED"},
 		finalText: "Recovered after a retry.",
 		observeRequest: func(body []byte, headers http.Header) error {
 			requests++
@@ -41,42 +44,42 @@ func TestNativeApprovalDenialSameTurnCodexE2E(t *testing.T) {
 			}
 			var request struct {
 				Input []struct {
-					Type    string         `json:"type"`
-					Role    string         `json:"role"`
-					CallID  string         `json:"call_id"`
-					Content jsontext.Value `json:"content"`
-					Output  jsontext.Value `json:"output"`
+					Type   string         `json:"type"`
+					CallID string         `json:"call_id"`
+					Output jsontext.Value `json:"output"`
 				} `json:"input"`
 			}
 			if err := json.Unmarshal(body, &request); err != nil {
 				return err
 			}
-			denied, feedback := false, 0
+			denials := 0
 			for _, item := range request.Input {
 				if item.Type == "custom_tool_call_output" && item.CallID == "frontend-call" {
-					denied = strings.Contains(string(item.Output), "rejected") && !strings.Contains(string(item.Output), "APPROVAL_COMMAND_RAN")
-				}
-				if item.Role == "user" && strings.Contains(string(item.Content), "user denied this command with a reason: "+reason) {
-					feedback++
+					denials += strings.Count(string(item.Output), denied)
 				}
 			}
-			if !denied || feedback != 1 {
-				return fmt.Errorf("first same-turn follow-up lacks atomic denial/reason: denied=%t feedback=%d body=%.3000s", denied, feedback, body)
+			if denials != 1 {
+				return fmt.Errorf("first same-turn follow-up contains %d guarded denials; want one with the supplied reason", denials)
 			}
 			return nil
 		},
 	}
-	runAppServerPreviewWith(t, provider, proxy, appServerPreview{
-		environment: []string{"PATH=" + execTrackPath()},
-		codexArgs:   []string{"-c", `sandbox_mode="read-only"`, "-c", `approval_policy="on-request"`, "-c", "hooks={}"},
-		approvals:   true,
+	runAppServerPreviewWith(t, provider, nil, appServerPreview{
+		managedRuntime: true,
+		workspace:      workspace,
+		// The shell guard needs its Unix socket, independently of the sandbox.
+		codexArgs:     []string{"-c", `sandbox_mode="danger-full-access"`},
+		completedText: provider.finalText,
 		duringTurn: func(t *testing.T, outer io.Writer, await func(string), _ func(func(string) bool), _ *vt.Emulator) {
-			await("Run this command?")
+			await("Approve guarded shell command")
 			if _, err := io.WriteString(outer, reason+"\r"); err != nil {
 				t.Fatal(err)
 			}
 		},
 	})
+	if _, err := os.Stat(filepath.Join(workspace, marker)); !os.IsNotExist(err) {
+		t.Fatalf("denied command ran: %v", err)
+	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
 	if provider.turns != 2 || !provider.resultSeen {

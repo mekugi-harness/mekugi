@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::SessionTask;
 use super::SessionTaskResult;
@@ -13,6 +14,22 @@ use codex_user_input::ResolvedUserInput;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ManualReset(pub(crate) String);
+
+/// A manual compact whose successful checkpoint may be followed by a model turn.
+#[derive(Default)]
+pub(crate) struct ResumeAfterCompact(AtomicBool);
+
+impl ResumeAfterCompact {
+    fn mark_succeeded(ctx: &TurnContext) {
+        if let Some(resume) = ctx.extension_data.get::<Self>() {
+            resume.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn succeeded(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
 
 impl ManualReset {
     pub(crate) async fn report(
@@ -85,6 +102,7 @@ impl SessionTask for CompactTask {
                 &cancellation_token,
             )
             .await?;
+            ResumeAfterCompact::mark_succeeded(&ctx);
             return Ok(None);
         }
 
@@ -119,16 +137,20 @@ impl SessionTask for CompactTask {
                     .await
             }
         };
-        if let Err(err) = result {
-            if super::ends_turn_as_interrupted(&err) {
-                return Err(err);
-            }
-            let error = err.to_codex_protocol_error();
-            if error.is_usage_limit() {
-                // Compaction already emitted the error; notify extensions without emitting it twice.
-                session
-                    .emit_turn_error_lifecycle(ctx.as_ref(), error, err.details())
-                    .await;
+        match result {
+            Ok(true) => ResumeAfterCompact::mark_succeeded(&ctx),
+            Ok(false) => {}
+            Err(err) => {
+                if super::ends_turn_as_interrupted(&err) {
+                    return Err(err);
+                }
+                let error = err.to_codex_protocol_error();
+                if error.is_usage_limit() {
+                    // Compaction already emitted the error; notify extensions without emitting it twice.
+                    session
+                        .emit_turn_error_lifecycle(ctx.as_ref(), error, err.details())
+                        .await;
+                }
             }
         }
         Ok(None)

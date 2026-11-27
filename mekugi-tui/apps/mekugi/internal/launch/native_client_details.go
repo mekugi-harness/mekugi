@@ -30,21 +30,13 @@ func (c *nativeClient) buildTranscriptDetailRequest(view *activityui.View, threa
 		Displayed: sessionpresentation.Thread{ID: thread},
 	}
 	if target.Entry == 0 {
-		snippet := target.Snippet
+		snippet, detail := target.Snippet, target.Detail
 		if last && target.LastSnippet != (activityui.Snippet{}) {
-			snippet = target.LastSnippet
+			snippet, detail = target.LastSnippet, target.LastDetail
 		}
-		request.Source, request.Path = snippet.Run, snippet.Path
+		request.Source, request.Path = detail.Source, snippet.Path
 		request.Edit = snippet.Block == activityui.EditNavigationSnippet
-		if block, ok := view.SnippetBlock(snippet); ok {
-			request.Source, request.Output = block.Source, block.Output
-			request.Operation = block.Operation
-			for _, member := range block.Members {
-				if !slices.Contains(request.Sources, member.Source) {
-					request.Sources = append(request.Sources, member.Source)
-				}
-			}
-		}
+		request.Operation, request.Output, request.Sources = detail.Operation, detail.Output, detail.Sources
 	}
 	return request
 }
@@ -65,6 +57,7 @@ func (c *nativeClient) openTranscriptDetail(version sessionpresentation.Version,
 	active := target
 	if selectLast && target.LastSnippet != (activityui.Snippet{}) {
 		active.Snippet = target.LastSnippet
+		active.Detail = target.LastDetail
 	}
 	active = view.ResolveDetailTarget(active)
 	c.detailNav.view = view

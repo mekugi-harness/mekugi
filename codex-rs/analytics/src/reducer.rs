@@ -568,6 +568,7 @@ impl TurnToolCounts {
             ThreadItemPayload::UserMessage { .. }
             | ThreadItemPayload::HookPrompt { .. }
             | ThreadItemPayload::AgentMessage { .. }
+            | ThreadItemPayload::AgentMail { .. }
             | ThreadItemPayload::FunctionCallOutput { .. }
             | ThreadItemPayload::Plan { .. }
             | ThreadItemPayload::Reasoning { .. }
@@ -2959,6 +2960,7 @@ pub(crate) fn tracked_tool_item_id(item: &ThreadItemPayload) -> Option<&str> {
         ThreadItemPayload::UserMessage { .. }
         | ThreadItemPayload::HookPrompt { .. }
         | ThreadItemPayload::AgentMessage { .. }
+        | ThreadItemPayload::AgentMail { .. }
         | ThreadItemPayload::FunctionCallOutput { .. }
         | ThreadItemPayload::Plan { .. }
         | ThreadItemPayload::Reasoning { .. }

@@ -29,6 +29,7 @@ use crate::state::ActiveTurn;
 use crate::state::AdditionalContextFormat;
 use crate::state::TurnState;
 use crate::tasks::RegularTask;
+use crate::tasks::UserShellCommandTask;
 use codex_features::Feature;
 use codex_history::CodexHarnessMetadata;
 use codex_history::ResponseItemEnvelope;
@@ -47,6 +48,7 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::turn_input::AnnotatedResponseItem;
 use codex_protocol::turn_input::NotSubmittedReason;
 use codex_protocol::turn_input::ResponsesApiClientMetadataUpdate;
+use codex_protocol::turn_input::StartIfIdleSubmission;
 type SubmittedTurnInput = codex_protocol::turn_input::TurnInput<ResolvedUserInput>;
 use codex_protocol::turn_input::TurnInputMode;
 type TurnInputRequest = codex_protocol::turn_input::TurnInputRequest<ResolvedUserInput>;
@@ -579,6 +581,84 @@ pub(super) async fn start_or_steer(
                 .await)
         }
         Err(reason) => Ok(TurnInputSubmission::NotSubmitted { reason }),
+    }
+}
+
+/// Reserves an idle turn before starting a shell so concurrent work cannot
+/// turn an explicitly queued command into an auxiliary command.
+#[tracing::instrument(level = "trace", skip_all)]
+pub(super) async fn start_shell_if_idle(
+    session: &Arc<Session>,
+    submission_id: String,
+    command: String,
+) -> StartIfIdleSubmission {
+    start_task_if_idle(
+        session,
+        submission_id,
+        UserShellCommandTask::new(command, None),
+    )
+    .await
+}
+
+pub(super) async fn start_compact_if_idle(
+    session: &Arc<Session>,
+    submission_id: String,
+) -> StartIfIdleSubmission {
+    start_task_if_idle(session, submission_id, crate::tasks::CompactTask).await
+}
+
+#[tracing::instrument(level = "trace", skip_all)]
+async fn start_task_if_idle(
+    session: &Arc<Session>,
+    submission_id: String,
+    task: impl crate::tasks::SessionTask,
+) -> StartIfIdleSubmission {
+    let Some(_admission) = session.services.extensions.admit_turn_start() else {
+        return StartIfIdleSubmission::NotSubmitted {
+            reason: NotSubmittedReason::ServerDraining,
+        };
+    };
+    let turn_state = {
+        let mut active_turn = session.active_turn.lock().await;
+        if active_turn.is_some() {
+            return StartIfIdleSubmission::NotSubmitted {
+                reason: NotSubmittedReason::NotIdle,
+            };
+        }
+        let reserved = active_turn.insert(ActiveTurn::default());
+        Arc::clone(&reserved.turn_state)
+    };
+    if session.input_queue.has_trigger_turn_mailbox_items().await {
+        session.clear_reserved_idle_turn(&turn_state).await;
+        session.maybe_start_turn_for_pending_work().await;
+        return StartIfIdleSubmission::NotSubmitted {
+            reason: NotSubmittedReason::PendingTriggerTurn,
+        };
+    }
+    let turn_context = session
+        .new_turn_with_default_settings(submission_id, Default::default())
+        .await;
+    if task.kind() == crate::state::TaskKind::Compact {
+        turn_context
+            .extension_data
+            .insert(crate::tasks::ResumeAfterCompact::default());
+    }
+    session.clear_connector_selection().await;
+    match session.start_task(turn_context, Vec::new(), task).await {
+        TurnInputSubmission::Started {
+            turn_id,
+            root_turn_id,
+        } => StartIfIdleSubmission::Started {
+            turn_id,
+            root_turn_id,
+        },
+        TurnInputSubmission::NotSubmitted { reason } => {
+            session.clear_reserved_idle_turn(&turn_state).await;
+            StartIfIdleSubmission::NotSubmitted { reason }
+        }
+        TurnInputSubmission::Steered { .. } | TurnInputSubmission::Accepted => {
+            unreachable!("standalone shell task must start or decline")
+        }
     }
 }
 

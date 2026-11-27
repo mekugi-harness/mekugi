@@ -544,6 +544,13 @@
       "title": "AgentEndResponse",
       "type": "object"
     },
+    "AgentMailKind": {
+      "enum": [
+        "message",
+        "reply"
+      ],
+      "type": "string"
+    },
     "AgentMessageDelivery": {
       "enum": [
         "async"
@@ -1941,6 +1948,21 @@
       },
       "type": "object"
     },
+    "BackgroundTerminalInvocation": {
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "itemId",
+        "turnId"
+      ],
+      "type": "object"
+    },
     "BedrockProviderId": {
       "enum": [
         "amazon-bedrock",
@@ -3110,6 +3132,30 @@
             },
             "method": {
               "enum": [
+                "thread/changes/live"
+              ],
+              "title": "Thread/changes/liveRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadChangesLiveParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/changes/liveRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/changes/read"
               ],
               "title": "Thread/changes/readRequestMethod",
@@ -3125,6 +3171,30 @@
             "params"
           ],
           "title": "Thread/changes/readRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/files/search"
+              ],
+              "title": "Thread/files/searchRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadFileSearchParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/files/searchRequest",
           "type": "object"
         },
         {
@@ -4933,6 +5003,54 @@
             },
             "method": {
               "enum": [
+                "thread/presets/list"
+              ],
+              "title": "Thread/presets/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadPresetsListParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/presets/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/presets/write"
+              ],
+              "title": "Thread/presets/writeRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadPresetWriteParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/presets/writeRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "externalAgentConfig/detect"
               ],
               "title": "ExternalAgentConfig/detectRequestMethod",
@@ -5568,6 +5686,37 @@
         }
       ]
     },
+    "CommandDisplay": {
+      "description": "Authored shell steps for display, not observations of individual processes.",
+      "properties": {
+        "effectiveCwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LegacyAppPathString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "script": {
+          "default": "",
+          "description": "Full redacted script, before splitting steps or attributing a leading cd.",
+          "type": "string"
+        },
+        "segments": {
+          "description": "Separate source steps, or empty when the script is displayed as one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "segments"
+      ],
+      "type": "object"
+    },
     "CommandExecOutputDeltaNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Base64-encoded output chunk emitted for a streaming `command/exec` request.\n\nThese notifications are connection-scoped. If the originating connection closes, the server terminates the process.",
@@ -5856,6 +6005,44 @@
       "title": "CommandExecWriteResponse",
       "type": "object"
     },
+    "CommandExecutionChangesUpdatedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Replaces the running shell item's preview with the currently observed file diffs. Every diff is a unified diff, including additions and deletions.",
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/definitions/FileUpdateChange"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "The authored shell script, bounded for preview; not the execution wrapper.",
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/CommandExecutionSource"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changes",
+        "command",
+        "itemId",
+        "source",
+        "threadId",
+        "turnId"
+      ],
+      "title": "CommandExecutionChangesUpdatedNotification",
+      "type": "object"
+    },
     "CommandExecutionOutputDeltaNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -5907,6 +6094,24 @@
       },
       "required": [
         "name"
+      ],
+      "type": "object"
+    },
+    "ComposerPreset": {
+      "additionalProperties": false,
+      "description": "The reusable draft stored in a numbered composer preset slot.",
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "label": {
+          "description": "Empty to display the first line of the input.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "label"
       ],
       "type": "object"
     },
@@ -11590,6 +11795,41 @@
       "title": "ListMcpServerStatusResponse",
       "type": "object"
     },
+    "LiveCommandChanges": {
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/definitions/FileUpdateChange"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "The authored shell script, bounded for preview; not the execution wrapper.",
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/CommandExecutionSource"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changes",
+        "command",
+        "itemId",
+        "source",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
     "LocalShellAction": {
       "oneOf": [
         {
@@ -14346,6 +14586,13 @@
             "integer",
             "null"
           ]
+        },
+        "threadId": {
+          "description": "Resolve profiles for this loaded thread's working directory instead of `cwd`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "title": "PermissionProfileListParams",
@@ -16268,6 +16515,9 @@
           },
           "type": "array"
         },
+        "kind": {
+          "$ref": "#/definitions/QueuedSubmissionKind"
+        },
         "responsesapiClientMetadata": {
           "additionalProperties": {
             "type": "string"
@@ -16282,9 +16532,18 @@
       "required": [
         "clientUserMessageId",
         "id",
-        "input"
+        "input",
+        "kind"
       ],
       "type": "object"
+    },
+    "QueuedSubmissionKind": {
+      "enum": [
+        "message",
+        "shellCommand",
+        "compact"
+      ],
+      "type": "string"
     },
     "RateLimitReachedType": {
       "enum": [
@@ -18927,26 +19186,6 @@
           "properties": {
             "method": {
               "enum": [
-                "thread/prediction/updated"
-              ],
-              "title": "Thread/prediction/updatedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/ThreadPredictionUpdatedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/prediction/updatedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
                 "thread/goal/cleared"
               ],
               "title": "Thread/goal/clearedNotificationMethod",
@@ -18981,6 +19220,26 @@
             "params"
           ],
           "title": "Thread/queue/changedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/backgroundTerminals/changed"
+              ],
+              "title": "Thread/backgroundTerminals/changedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadBackgroundTerminalsChangedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/backgroundTerminals/changedNotification",
           "type": "object"
         },
         {
@@ -19327,6 +19586,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/skills/updated"
+              ],
+              "title": "Thread/skills/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/ThreadSkillsUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/skills/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "item/agentMessage/delta"
               ],
               "title": "Item/agentMessage/deltaNotificationMethod",
@@ -19465,6 +19744,26 @@
             "params"
           ],
           "title": "Process/exitedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "item/commandExecution/changesUpdated"
+              ],
+              "title": "Item/commandExecution/changesUpdatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/CommandExecutionChangesUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Item/commandExecution/changesUpdatedNotification",
           "type": "object"
         },
         {
@@ -21500,6 +21799,17 @@
           ],
           "description": "Optional analytics source classification for this thread."
         },
+        "tokenUsage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ThreadTokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thread's persisted and live usage evidence, when available."
+        },
         "turns": {
           "description": "Only populated on `thread/resume`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
           "items": {
@@ -21863,11 +22173,61 @@
       "title": "ThreadAttachmentUpdatedNotification",
       "type": "object"
     },
-    "ThreadChangeFileDiff": {
+    "ThreadBackgroundTerminalsChangedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "The thread's native background terminal list may have changed.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadBackgroundTerminalsChangedNotification",
+      "type": "object"
+    },
+    "ThreadChangeCallerCounts": {
       "properties": {
         "additions": {
           "format": "int64",
           "type": "integer"
+        },
+        "deletions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "fileCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "additions",
+        "deletions",
+        "fileCount",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadChangeFileDiff": {
+      "properties": {
+        "absolutePath": {
+          "type": "string"
+        },
+        "additions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "changeIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "coverageNotes": {
           "items": {
@@ -21899,7 +22259,9 @@
         }
       },
       "required": [
+        "absolutePath",
         "additions",
+        "changeIds",
         "coverageNotes",
         "deletions",
         "isBinary",
@@ -21911,6 +22273,13 @@
     },
     "ThreadChangeOrigin": {
       "properties": {
+        "authorThreadId": {
+          "description": "None for captures that were not authored by an agent, such as user shell.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "changeId": {
           "type": "string"
         },
@@ -21920,6 +22289,9 @@
         },
         "incomplete": {
           "type": "boolean"
+        },
+        "itemId": {
+          "type": "string"
         },
         "paths": {
           "items": {
@@ -21933,9 +22305,20 @@
           "type": "integer"
         },
         "sourceKind": {
+          "description": "Stable identifier for the source of the capture.",
+          "type": "string"
+        },
+        "sourceLabel": {
+          "description": "User-facing name for the capture source.",
           "type": "string"
         },
         "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "workspace": {
           "type": "string"
         }
       },
@@ -21943,23 +22326,91 @@
         "changeId",
         "createdAt",
         "incomplete",
+        "itemId",
         "paths",
         "sequence",
         "sourceKind",
+        "sourceLabel",
+        "threadId",
+        "turnId",
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "ThreadChangesLiveParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Request the current provisional shell edits for this exact thread.",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
         "threadId"
       ],
+      "title": "ThreadChangesLiveParams",
+      "type": "object"
+    },
+    "ThreadChangesLiveResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "data": {
+          "description": "The latest nonempty snapshots for currently running commands, oldest update first.",
+          "items": {
+            "$ref": "#/definitions/LiveCommandChanges"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "title": "ThreadChangesLiveResponse",
       "type": "object"
     },
     "ThreadChangesReadParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Request composed saved changes from the native change-history store for a thread.",
       "properties": {
+        "callerThreadId": {
+          "description": "Restrict review to edits made by one member of the selected family.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "includeEphemeral": {
           "description": "Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).",
           "type": [
             "boolean",
             "null"
           ]
+        },
+        "itemId": {
+          "description": "Read one execution's exact captured effects, not the composed session diff.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size for composed files. Omit to read a complete review.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "perCapture": {
+          "description": "Return individual captures, rather than composing them by file.",
+          "type": "boolean"
         },
         "threadId": {
           "type": "string"
@@ -21974,17 +22425,37 @@
     "ThreadChangesReadResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "callers": {
+          "items": {
+            "$ref": "#/definitions/ThreadChangeCallerCounts"
+          },
+          "type": "array"
+        },
         "changes": {
           "items": {
             "$ref": "#/definitions/ThreadChangeOrigin"
           },
           "type": "array"
         },
+        "fileCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "files": {
           "items": {
             "$ref": "#/definitions/ThreadChangeFileDiff"
           },
           "type": "array"
+        },
+        "incomplete": {
+          "type": "boolean"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "threadId": {
           "type": "string"
@@ -22005,8 +22476,11 @@
         }
       },
       "required": [
+        "callers",
         "changes",
+        "fileCount",
         "files",
+        "incomplete",
         "threadId",
         "totalAdditions",
         "totalDeletions"
@@ -22049,6 +22523,24 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ThreadCompactCancelResponse",
       "type": "object"
+    },
+    "ThreadCompactMode": {
+      "oneOf": [
+        {
+          "description": "Continue the replaced regular turn after a successful compact if no draft is waiting.",
+          "enum": [
+            "continueInterrupted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Defer to the native queue, then continue on success if no draft is waiting.",
+          "enum": [
+            "queue"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "ThreadCompactStartParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -22135,6 +22627,16 @@
     },
     "ThreadExtra": {
       "description": "Extra app-server data for a thread.",
+      "properties": {
+        "skills": {
+          "default": [],
+          "description": "Skills confirmed by the native attachment or read paths for this thread.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "ThreadFamilyParams": {
@@ -22167,6 +22669,41 @@
       "required": [
         "environment"
       ],
+      "type": "object"
+    },
+    "ThreadFileSearchParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Search for paths under a loaded thread's workspace.",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "threadId"
+      ],
+      "title": "ThreadFileSearchParams",
+      "type": "object"
+    },
+    "ThreadFileSearchResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "paths": {
+          "description": "Paths relative to the workspace, most relevant first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "title": "ThreadFileSearchResponse",
       "type": "object"
     },
     "ThreadForkParams": {
@@ -22624,6 +23161,21 @@
       "title": "ThreadInjectItemsResponse",
       "type": "object"
     },
+    "ThreadInputHistoryEntry": {
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "text"
+      ],
+      "type": "object"
+    },
     "ThreadInspectParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Explicit inspection may read retained settings and context history, never to count compactions.",
@@ -22899,6 +23451,17 @@
                 }
               ],
               "description": "The command's working directory."
+            },
+            "display": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CommandDisplay"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Authored display text for a recognized shell invocation."
             },
             "durationMs": {
               "description": "The duration of the command execution in milliseconds.",
@@ -23315,6 +23878,55 @@
         },
         {
           "properties": {
+            "details": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/AgentMailKind"
+            },
+            "recipient": {
+              "type": "string"
+            },
+            "sender": {
+              "type": "string"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "description": "The retained plaintext, excluding the envelope and attached model context.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "agentMail"
+              ],
+              "title": "AgentMailThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "recipient",
+            "sender",
+            "text",
+            "type"
+          ],
+          "title": "AgentMailThreadItem",
+          "type": "object"
+        },
+        {
+          "properties": {
             "action": {
               "anyOf": [
                 {
@@ -23603,6 +24215,17 @@
                   "type": "null"
                 }
               ]
+            },
+            "summary": {
+              "description": "Elided unless a local compaction produced a plaintext summary.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "summaryFree": {
+              "description": "Present and true for a Mekugi summary-free context reset.",
+              "type": "boolean"
             },
             "type": {
               "enum": [
@@ -24120,67 +24743,93 @@
       "title": "ThreadNameUpdatedNotification",
       "type": "object"
     },
-    "ThreadPredictionResult": {
-      "oneOf": [
-        {
-          "properties": {
-            "text": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "completed"
-              ],
-              "title": "CompletedThreadPredictionResultType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "CompletedThreadPredictionResult",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "failed"
-              ],
-              "title": "FailedThreadPredictionResultType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FailedThreadPredictionResult",
-          "type": "object"
-        }
-      ]
-    },
-    "ThreadPredictionUpdatedNotification": {
+    "ThreadPresetWriteParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
-        "result": {
-          "$ref": "#/definitions/ThreadPredictionResult"
+        "expected": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComposerPreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The slot shown to the user, or null if empty."
         },
-        "sourceTurnId": {
-          "type": "string"
+        "preset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComposerPreset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new draft, or null to remove the slot."
+        },
+        "slot": {
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "threadId": {
           "type": "string"
         }
       },
       "required": [
-        "result",
-        "sourceTurnId",
+        "slot",
         "threadId"
       ],
-      "title": "ThreadPredictionUpdatedNotification",
+      "title": "ThreadPresetWriteParams",
+      "type": "object"
+    },
+    "ThreadPresetWriteResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "preset": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ComposerPreset"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "ThreadPresetWriteResponse",
+      "type": "object"
+    },
+    "ThreadPresetsListParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "title": "ThreadPresetsListParams",
+      "type": "object"
+    },
+    "ThreadPresetsListResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "presets": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ComposerPreset"
+          },
+          "description": "Occupied slots, keyed by their number (0–9).",
+          "type": "object"
+        }
+      },
+      "required": [
+        "presets"
+      ],
+      "title": "ThreadPresetsListResponse",
       "type": "object"
     },
     "ThreadProjectUpdatedNotification": {
@@ -25294,7 +25943,7 @@
     },
     "ThreadRevertParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nThis only changes persisted conversation history. It does not revert local file changes.",
+      "description": "Replace a paginated thread's durable history with the prefix before one turn.\n\nWithout `expectedChangeIds`, only persisted conversation history changes.",
       "properties": {
         "beforeItemId": {
           "default": null,
@@ -25825,6 +26474,27 @@
     "ThreadShellCommandResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "ThreadShellCommandResponse",
+      "type": "object"
+    },
+    "ThreadSkillsUpdatedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "names": {
+          "description": "Newly confirmed skill names for this thread.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "names",
+        "threadId"
+      ],
+      "title": "ThreadSkillsUpdatedNotification",
       "type": "object"
     },
     "ThreadSortKey": {
@@ -26362,8 +27032,36 @@
     },
     "ThreadTokenUsage": {
       "properties": {
+        "costPartial": {
+          "type": "boolean"
+        },
+        "estimatedCostUsd": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "last": {
           "$ref": "#/definitions/TokenUsageBreakdown"
+        },
+        "lastCompletedAt": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lastResponseAt": {
+          "default": null,
+          "description": "Unix timestamps in seconds, from the producers rather than attachment time.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "modelContextWindow": {
           "format": "int64",
@@ -26372,8 +27070,60 @@
             "null"
           ]
         },
+        "outputTokensPerSecond": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "roundtrips": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "roundtripsPartial": {
+          "type": "boolean"
+        },
         "total": {
           "$ref": "#/definitions/TokenUsageBreakdown"
+        },
+        "turns": {
+          "default": null,
+          "description": "Number of native turns started by this thread, independent of transcript paging.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "usagePartial": {
+          "description": "The counted tokens are a lower bound, not a complete provider total.",
+          "type": "boolean"
+        },
+        "usageUnavailable": {
+          "description": "No provider token counts were available; context measurements can still be present.",
+          "type": "boolean"
+        },
+        "workDurationMs": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workStartedAt": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "required": [

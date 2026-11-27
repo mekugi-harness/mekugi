@@ -78,7 +78,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::protocol::ContextResetStatus;
-pub(crate) use compact::{CompactTask, ManualReset};
+pub(crate) use compact::{CompactTask, ManualReset, ResumeAfterCompact};
 pub(crate) use regular::RegularTask;
 pub(crate) use review::ReviewTask;
 pub(crate) use user_shell::UserShellCommandMode;
@@ -697,8 +697,20 @@ impl Session {
     }
 
     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
+        self.abort_active_task(reason).await;
+    }
+
+    pub(crate) async fn abort_active_task(
+        self: &Arc<Self>,
+        reason: TurnAbortReason,
+    ) -> Option<TaskKind> {
         let active = self.take_active_turn(self.active_turn.lock().await, &reason);
+        let kind = active
+            .as_ref()
+            .and_then(|turn| turn.task.as_ref())
+            .map(|task| task.kind);
         self.abort_taken_tasks(active, reason).await;
+        kind
     }
 
     async fn abort_taken_tasks(
@@ -1134,7 +1146,14 @@ impl Session {
         drop(outcome_handoff);
         // A parent interrupt must not let an idle contributor restart the child.
         if cleared_active_turn && !sampling_interrupted {
-            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
+            let compact_to_continue = (idle_cause == ThreadIdleCause::Completed
+                && turn_context
+                    .extension_data
+                    .get::<ResumeAfterCompact>()
+                    .is_some_and(|resume| resume.succeeded()))
+            .then_some(turn_context.sub_id.as_str());
+            self.emit_idle_with_compaction(idle_cause, compact_to_continue)
+                .await;
         }
         // Private reviewers already flushed the terminal event before delivering it.
         // Other buffering writers still need a barrier for the terminal event.
@@ -1190,10 +1209,14 @@ impl Session {
         self.services.unified_exec_manager.list_processes().await
     }
 
-    pub(crate) async fn terminate_background_terminal(&self, process_id: i32) -> bool {
+    pub(crate) async fn terminate_background_terminal(
+        &self,
+        process_id: i32,
+        expected_invocation: Option<(&str, &str)>,
+    ) -> bool {
         self.services
             .unified_exec_manager
-            .terminate_process(process_id)
+            .terminate_process(process_id, expected_invocation)
             .await
     }
 

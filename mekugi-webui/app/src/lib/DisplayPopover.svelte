@@ -8,13 +8,20 @@
     type TimestampMode,
     type ViewPreset,
   } from "./preferences.svelte";
+  import { semantic } from "./semantic.svelte";
   import Icon from "./ui/Icon.svelte";
   import * as Kbd from "./ui/kbd";
   import * as PopoverPrimitive from "./ui/popover";
   import { Separator } from "./ui/separator";
   import * as ToggleGroup from "./ui/toggle-group";
 
-  let { hiddenHooks = 0 }: { hiddenHooks?: number } = $props();
+  let {
+    hiddenHooks = 0,
+    predictionsAvailable,
+  }: {
+    hiddenHooks?: number;
+    predictionsAvailable: boolean;
+  } = $props();
 
   let open = $state(false);
   let mounted = $state(false);
@@ -152,6 +159,25 @@
         <Separator class="bg-rule" />
 
         <div class="grid gap-2.5">
+          {#if predictionsAvailable}
+            <div class={controlRow}>
+              <span class="font-medium text-ink">Predictions</span>
+              <ToggleGroup.Root
+                type="single"
+                bind:value={
+                  () => (semantic.predictionsEnabled ? "on" : "off"),
+                  (value) => {
+                    if (value) semantic.setPredictions(value === "on");
+                  }
+                }
+                class="grid w-[238px] shrink-0 grid-cols-2 gap-0.5 rounded-control bg-raised p-0.5 max-sm:w-full"
+                aria-label="Predictions"
+              >
+                <ToggleGroup.Item value="off" class={groupItem}>Off</ToggleGroup.Item>
+                <ToggleGroup.Item value="on" class={groupItem}>On</ToggleGroup.Item>
+              </ToggleGroup.Root>
+            </div>
+          {/if}
           <div class={controlRow}>
             <span class="font-medium text-ink">Hooks</span>
             <ToggleGroup.Root

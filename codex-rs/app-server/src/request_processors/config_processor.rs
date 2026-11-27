@@ -63,6 +63,9 @@ use codex_protocol::config_types::WebSearchMode;
 use serde_json::json;
 use std::path::PathBuf;
 
+#[path = "composer_presets.rs"]
+mod composer_presets;
+
 const BACKGROUND_PAGINATED_ROLLOUT_MIGRATION_FEATURE: &str =
     "background_paginated_rollout_migration";
 

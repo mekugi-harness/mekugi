@@ -699,6 +699,7 @@ async fn config_reads_complete_alongside_skills_list_request() -> Result<()> {
             cursor: None,
             limit: None,
             cwd: None,
+            thread_id: None,
         })
         .await?;
 

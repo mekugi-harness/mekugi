@@ -126,6 +126,7 @@ pub(crate) fn fetch(
                             cursor,
                             limit: Some(100),
                             cwd: cwd.clone(),
+                            thread_id: None,
                         },
                     })
                     .await

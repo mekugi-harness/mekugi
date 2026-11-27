@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "names": {
+      "description": "Newly confirmed skill names for this thread.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "names",
+    "threadId"
+  ],
+  "title": "ThreadSkillsUpdatedNotification",
+  "type": "object"
+}

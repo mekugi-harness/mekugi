@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -46,9 +47,43 @@ func TestWorkspaceSnapshotPackageDiscovery(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSnapshotCoverageRejectsAnUnusedFileInATestedPackage(t *testing.T) {
+	workspaceFixture(t, []string{"./mekugi-tui/libraries/first"}, map[string]string{"mekugi-tui/libraries/first": prefix + "/mekugi-tui/libraries/first"})
+	const pkg = "./mekugi-tui/libraries/first/render"
+	good := filepath.Join(pkg, "testdata/snapshots/current.txt")
+	orphan := filepath.Join(pkg, "testdata/snapshots/unused.txt")
+	writeWorkspaceSource(t, good, "current\n")
+	writeWorkspaceSource(t, orphan, "unused\n")
+	visits := t.TempDir()
+	path, err := filepath.Abs(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(visits, "visit-test"), []byte(path), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateSnapshotVisits(visits, []string{pkg + "/..."}); err == nil || !strings.Contains(err.Error(), orphan) || strings.Contains(err.Error(), good) {
+		t.Fatalf("expected only the unused baseline, got %v", err)
+	}
+}
+
 func TestWorkspaceSnapshotPackageDiscoveryRejectsEmpty(t *testing.T) {
 	workspaceFixture(t, []string{"./mekugi-tui/libraries/first"}, map[string]string{"mekugi-tui/libraries/first": prefix + "/mekugi-tui/libraries/first"})
 	if err := run([]string{"run", "go", "test", "@snapshots"}); err == nil || !strings.Contains(err.Error(), "no snapshot test packages") {
 		t.Fatalf("empty selection error=%v", err)
+	}
+}
+
+func TestWorkspaceSnapshotPackageDiscoveryRejectsOrphans(t *testing.T) {
+	workspaceFixture(t, []string{"./mekugi-tui/libraries/first"}, map[string]string{"mekugi-tui/libraries/first": prefix + "/mekugi-tui/libraries/first"})
+	writeWorkspaceSource(t, "mekugi-tui/libraries/first/render/snapshot_test.go", "package render\nimport \"testing\"\nfunc TestUISnapshotFrame(t *testing.T) {}\n")
+	writeWorkspaceSource(t, "mekugi-tui/libraries/first/orphan/plain_test.go", "package orphan\nimport \"testing\"\nfunc TestPlain(t *testing.T) {}\n")
+	writeWorkspaceSource(t, "mekugi-tui/libraries/first/orphan/testdata/snapshots/stale.txt", "stale baseline\n")
+	members, err := workspaceMembers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := expand([]string{"@snapshots"}, members); err == nil || !strings.Contains(err.Error(), "orphan/testdata/snapshots") {
+		t.Fatalf("expected orphaned snapshot error, got %v", err)
 	}
 }

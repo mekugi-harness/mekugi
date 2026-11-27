@@ -5,15 +5,13 @@
 /**
  * Replace a paginated thread's durable history with the prefix before one turn.
  *
- * This only changes persisted conversation history. It does not revert local file changes.
+ * Without `expectedChangeIds`, only persisted conversation history changes.
  */
-export type ThreadRevertParams = { threadId: string,
-/**
+export type ThreadRevertParams = {threadId: string, /**
  * Turn excluded from the replacement history, together with every later turn.
  */
-beforeTurnId: string,
-/**
+beforeTurnId: string, /**
  * Optional user-message item inside `before_turn_id` to cut before instead of reverting the
  * entire turn. When omitted, reverts immediately before `before_turn_id`.
  */
-beforeItemId?: string | null, };
+beforeItemId?: string | null};

@@ -10,6 +10,7 @@ const families: Record<string, Family> = {
   running: "run",
   check: "run",
   "run javascript": "run",
+  call: "run",
   custom: "run",
   mcp: "run",
   read: "read",
@@ -134,7 +135,7 @@ export function responseText(kind?: string, text = "", body = ""): string {
   const response =
     kind === "reply"
       ? body
-      : kind === "text" || kind === "final" || kind === "assistant"
+      : kind === "text" || kind === "final" || kind === "assistant" || kind === "plan"
         ? text
         : "";
   return response.trim() ? response : "";

@@ -158,7 +158,7 @@ pub(crate) async fn run_compact_task(
     step_context: Arc<StepContext>,
     world_state: Arc<WorldState>,
     input: Vec<ResolvedUserInput>,
-) -> CodexResult<()> {
+) -> CodexResult<bool> {
     run_compact_task_inner(
         sess.clone(),
         Arc::clone(&step_context),
@@ -172,8 +172,7 @@ pub(crate) async fn run_compact_task(
             CompactionPhase::StandaloneTurn,
         ),
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 async fn run_compact_task_inner(
@@ -276,11 +275,14 @@ async fn run_compact_task_inner_impl(
     let mut request = crate::hook_runtime::sampling::SamplingRequest::new(
         codex_hooks::SamplingKind::ForegroundCompaction,
     );
-    let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
+    let mut compaction = ContextCompactionItem::new();
     let defer_start = sess.defer_compaction_start(&turn_context, compaction_metadata.phase());
     if !defer_start {
-        sess.emit_turn_item_started(&turn_context, &compaction_item)
-            .await;
+        sess.emit_turn_item_started(
+            &turn_context,
+            &TurnItem::ContextCompaction(compaction.clone()),
+        )
+        .await;
     }
     let (initial_input_for_turn, _) =
         ResolvedUserInput::into_message(&input, LocalImagePreparation::Process);
@@ -452,8 +454,11 @@ async fn run_compact_task_inner_impl(
     let new_history =
         assemble_compaction_history(new_history, prefix, merge_world_state_updates(context));
     if defer_start {
-        sess.emit_turn_item_started(&turn_context, &compaction_item)
-            .await;
+        sess.emit_turn_item_started(
+            &turn_context,
+            &TurnItem::ContextCompaction(compaction.clone()),
+        )
+        .await;
     }
     sess.replace_compacted_history(
         new_history,
@@ -474,7 +479,8 @@ async fn run_compact_task_inner_impl(
     sess.recompute_token_usage(&replacement_step_context.turn)
         .await;
 
-    sess.emit_turn_item_completed(&turn_context, compaction_item)
+    compaction.summary = Some(summary_suffix.clone());
+    sess.emit_turn_item_completed(&turn_context, TurnItem::ContextCompaction(compaction))
         .await;
     Ok(summary_suffix)
 }

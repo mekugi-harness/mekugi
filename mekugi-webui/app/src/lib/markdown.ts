@@ -3,6 +3,8 @@ import MarkdownIt, { type Env } from "markdown-it";
 // Recorded text is untrusted. Local links use the machine's shared file
 // interaction instead of navigating the browser filesystem.
 const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 const web = /^(?:https?:\/\/|mailto:)/i;
 const runPrefix = "mekugi:run/";
@@ -18,19 +20,17 @@ const defaultLinkOpen =
 md.renderer.rules.link_open = (tokens, i, options, env, self) => {
   const href = String(tokens[i].attrGet("href") ?? "");
   if (href.startsWith(runPrefix)) {
-    tokens[i].attrs = [];
-    tokens[i].tag = "span";
+    tokens[i].attrSet("href", "#activity-details");
     tokens[i].attrSet("class", "file-link");
     tokens[i].attrSet("data-run-link", href);
     tokens[i].attrSet("title", href);
-    const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
-    if (close) close.tag = "span";
-    return self.renderToken(tokens, i, options);
+    return defaultLinkOpen(tokens, i, options, env, self);
   }
   if (!web.test(href)) {
     tokens[i].attrs = [];
-    tokens[i].tag = "span";
+    tokens[i].tag = local(href) ? "a" : "span";
     if (local(href)) {
+      tokens[i].attrSet("href", "#activity-details");
       let path = href;
       if (!href.startsWith("file:")) {
         try {
@@ -44,7 +44,7 @@ md.renderer.rules.link_open = (tokens, i, options, env, self) => {
     tokens[i].attrSet("class", "file-link");
     tokens[i].attrSet("title", href);
     const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
-    if (close) close.tag = "span";
+    if (close) close.tag = tokens[i].tag;
     return self.renderToken(tokens, i, options);
   }
   tokens[i].attrSet("target", "_blank");
@@ -101,8 +101,7 @@ export function markedBlock(
   text: string,
   spans: NonNullable<import("./protocol").Entry["spans"]>,
 ): string {
-  const bytes = new TextEncoder().encode(text);
-  const decoder = new TextDecoder();
+  const bytes = encoder.encode(text);
   let prefix = "[mekugi-bound:";
   while (text.includes(prefix)) prefix += ":";
   const markers: { key: string; html: string }[] = [];

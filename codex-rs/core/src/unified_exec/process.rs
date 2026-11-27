@@ -101,6 +101,7 @@ enum ProcessHandle {
 pub(crate) struct UnifiedExecProcess {
     process_handle: ProcessHandle,
     output_tx: broadcast::Sender<Vec<u8>>,
+    output_rx: Option<broadcast::Receiver<Vec<u8>>>,
     output: OutputHandles,
     output_drained: Arc<Notify>,
     interaction_lock: Arc<Mutex<()>>,
@@ -113,7 +114,7 @@ pub(crate) struct UnifiedExecProcess {
     pub(super) termination_requested: AtomicBool,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
-    exec_track: Option<Arc<ExecTrackAttachment>>,
+    pub(super) exec_track: Option<Arc<ExecTrackAttachment>>,
 }
 
 impl std::fmt::Debug for UnifiedExecProcess {
@@ -142,12 +143,13 @@ impl UnifiedExecProcess {
             collection_finished: CancellationToken::new(),
         };
         let output_drained = Arc::new(Notify::new());
-        let (output_tx, _) = broadcast::channel(64);
+        let (output_tx, output_rx) = broadcast::channel(64);
         let (state_tx, state_rx) = watch::channel(ProcessState::default());
 
         Self {
             process_handle,
             output_tx,
+            output_rx: Some(output_rx),
             output,
             output_drained,
             interaction_lock: Arc::new(Mutex::new(())),
@@ -191,8 +193,11 @@ impl UnifiedExecProcess {
         &self.output
     }
 
-    pub(super) fn output_receiver(&self) -> tokio::sync::broadcast::Receiver<Vec<u8>> {
-        self.output_tx.subscribe()
+    /// Transfer the receiver that has been listening since process startup.
+    pub(super) fn take_output_receiver(&mut self) -> broadcast::Receiver<Vec<u8>> {
+        self.output_rx
+            .take()
+            .expect("unified exec output has one streaming consumer")
     }
 
     pub(super) fn cancellation_token(&self) -> CancellationToken {

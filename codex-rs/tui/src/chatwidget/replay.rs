@@ -512,7 +512,8 @@ impl ChatWidget {
             }),
             item @ ThreadItemPayload::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             item @ ThreadItemPayload::DynamicToolCall { .. } => self.on_dynamic_tool_item(item),
-            ThreadItemPayload::AgentSideQuestion(_)
+            ThreadItemPayload::AgentMail { .. }
+            | ThreadItemPayload::AgentSideQuestion(_)
             | ThreadItemPayload::Sleep(_) => {}
         }
 

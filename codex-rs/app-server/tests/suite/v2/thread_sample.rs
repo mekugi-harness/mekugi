@@ -1,8 +1,11 @@
 //! Exercises sampling through JSON-RPC, including cache identity and cleanup.
 
 use anyhow::Result;
+use app_test_support::ChatGptAuthFixture;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use app_test_support::write_chatgpt_auth;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::DynamicToolFunctionSpec;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::HooksListParams;
@@ -13,6 +16,8 @@ use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadPredictionRequestParams;
+use codex_app_server_protocol::ThreadPredictionRequestResponse;
 use codex_app_server_protocol::ThreadSampleCancelResponse;
 use codex_app_server_protocol::ThreadSampleParams;
 use codex_app_server_protocol::ThreadSampleResponse;
@@ -28,6 +33,7 @@ use codex_app_server_protocol::UserInput;
 use codex_core::config::ConfigBuilder;
 use codex_core::test_support::construct_model_info_offline;
 use codex_features::Feature;
+use codex_login::AuthCredentialsStoreMode;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -175,6 +181,141 @@ async fn prediction_fork(client: &mut TestAppServer, parent: &str) -> Result<Str
         .await?;
     let fork: ThreadForkResponse = timeout(WAIT, client.read_response(id)).await??;
     Ok(fork.thread.id)
+}
+
+#[tokio::test]
+async fn prediction_samples_the_current_turn_without_extending_history() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let requests = responses::mount_sse_sequence(
+        &server,
+        [
+            ("parent", "The first answer."),
+            ("suggestion", "Could you show an example?"),
+            ("follow-up", "The follow-up answer."),
+        ]
+        .map(|(id, text)| {
+            responses::sse(vec![
+                responses::ev_assistant_message(id, text),
+                responses::ev_completed(id),
+            ])
+        })
+        .to_vec(),
+    )
+    .await;
+    let home = TempDir::new()?;
+    let mut client = client(&home, &server, /*overrides*/ false).await?;
+    let (thread_id, turn_id) = ready_parent(&mut client, ThreadStartParams::default()).await?;
+
+    let denied = client
+        .send_request(
+            "thread/prediction/request",
+            Some(json!({"threadId": thread_id, "sourceTurnId": turn_id, "automatic": true})),
+        )
+        .await?;
+    let error = timeout(
+        WAIT,
+        client.read_stream_until_error_message(RequestId::Integer(denied)),
+    )
+    .await??;
+    assert!(
+        error
+            .error
+            .message
+            .contains("automatic predictions require")
+    );
+
+    let prediction: ThreadPredictionRequestResponse = timeout(
+        WAIT,
+        client.request(|request_id| ClientRequest::ThreadPredictionRequest {
+            request_id,
+            params: ThreadPredictionRequestParams {
+                thread_id: thread_id.clone(),
+                source_turn_id: turn_id,
+                automatic: false,
+            },
+        }),
+    )
+    .await??;
+    assert_eq!(
+        prediction.text.as_deref(),
+        Some("Could you show an example?")
+    );
+    client
+        .start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id,
+            input: input("A different follow-up"),
+            ..Default::default()
+        })
+        .await?;
+
+    let requests = requests.requests();
+    assert_eq!(requests.len(), 3);
+    let sample = requests[1].body_json().to_string();
+    let follow_up = requests[2].body_json().to_string();
+    assert!(sample.contains("Predict the next message"));
+    assert!(sample.contains("The first answer."));
+    assert!(!follow_up.contains("Predict the next message"));
+    assert!(!follow_up.contains("Could you show an example?"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn automatic_prediction_uses_the_current_openai_account() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let requests = responses::mount_sse_sequence(
+        &server,
+        ["First answer", "Follow up"]
+            .map(|text| {
+                responses::sse(vec![
+                    responses::ev_assistant_message("message", text),
+                    responses::ev_completed("response"),
+                ])
+            })
+            .to_vec(),
+    )
+    .await;
+    let home = TempDir::new()?;
+    let uri = server.uri();
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "model = \"gpt-5.4\"\nopenai_base_url = \"{uri}/v1\"\nchatgpt_base_url = \"{uri}\"\ncli_auth_credentials_store = \"file\"\n[features]\nenable_request_compression = false\n"
+        ),
+    )?;
+    write_chatgpt_auth(
+        home.path(),
+        ChatGptAuthFixture::new("chatgpt-test-token").plan_type("pro"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    let mut client = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .without_managed_config()
+        .build_initialized_with_timeout(WAIT)
+        .await?;
+    let (thread_id, turn_id) = ready_parent(&mut client, ThreadStartParams::default()).await?;
+    let params = json!({"threadId": thread_id, "sourceTurnId": turn_id, "automatic": true});
+    let request = client
+        .send_request("thread/prediction/request", Some(params.clone()))
+        .await?;
+    let prediction: ThreadPredictionRequestResponse =
+        timeout(WAIT, client.read_response(request)).await??;
+    assert_eq!(prediction.text.as_deref(), Some("Follow up"));
+
+    let login = client
+        .send_login_account_api_key_request("test-api-key")
+        .await?;
+    let _: Value = timeout(WAIT, client.read_response(login)).await??;
+    let request = client
+        .send_request("thread/prediction/request", Some(params))
+        .await?;
+    let error = timeout(
+        WAIT,
+        client.read_stream_until_error_message(RequestId::Integer(request)),
+    )
+    .await??;
+    assert!(error.error.message.contains("ChatGPT account"));
+    assert_eq!(requests.requests().len(), 2);
+    Ok(())
 }
 
 #[tokio::test]

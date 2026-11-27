@@ -4,12 +4,14 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tokio::sync::Mutex;
+use tokio::sync::broadcast;
 use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::Sleep;
 
 use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
+use super::exec_track::ExecTrackAttachment;
 use super::process::OutputBuffers;
 use super::process::OutputHandles;
 use super::process::UnifiedExecProcess;
@@ -54,8 +56,11 @@ struct Buffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES> {
 }
 
 /// Spawn a background task that emits ExecCommandOutputDelta events on UTF‑8 boundaries.
-pub(crate) fn start_streaming_output(process: &UnifiedExecProcess, context: &UnifiedExecContext) {
-    let mut receiver = process.output_receiver();
+pub(super) fn start_streaming_output(
+    process: &UnifiedExecProcess,
+    context: &UnifiedExecContext,
+    mut receiver: broadcast::Receiver<Vec<u8>>,
+) {
     let output_drained = process.output_drained_notify();
     let exit_token = process.cancellation_token();
     let OutputHandles {
@@ -177,7 +182,13 @@ pub(crate) fn spawn_exit_watcher(
     let interaction_lock = process.interaction_lock();
 
     tokio::spawn(async move {
-        exit_token.cancelled().await;
+        ExecTrackAttachment::observe_while(
+            process.exec_track.as_ref(),
+            session_ref.get_tx_event(),
+            ExecCommandSource::UnifiedExecStartup,
+            exit_token.cancelled(),
+        )
+        .await;
         output_drained.notified().await;
         // Deferred network denial deliberately remains observable for a short
         // window after process exit. Do not classify the terminal event until

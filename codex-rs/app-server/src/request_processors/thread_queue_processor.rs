@@ -9,6 +9,7 @@ use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::QueuedSubmission;
+use codex_app_server_protocol::QueuedSubmissionKind;
 use codex_app_server_protocol::ThreadQueueAddParams;
 use codex_app_server_protocol::ThreadQueueAddResponse;
 use codex_app_server_protocol::ThreadQueueDeleteParams;
@@ -17,8 +18,12 @@ use codex_app_server_protocol::ThreadQueueListParams;
 use codex_app_server_protocol::ThreadQueueListResponse;
 use codex_app_server_protocol::ThreadQueueReorderParams;
 use codex_app_server_protocol::ThreadQueueReorderResponse;
+use codex_app_server_protocol::ThreadQueueShellCommandParams;
+use codex_app_server_protocol::ThreadQueueShellCommandResponse;
 use codex_app_server_protocol::ThreadQueueStartParams;
 use codex_app_server_protocol::ThreadQueueStartResponse;
+use codex_app_server_protocol::ThreadQueueTakeParams;
+use codex_app_server_protocol::ThreadQueueTakeResponse;
 use codex_app_server_protocol::ThreadQueueUpdateParams;
 use codex_app_server_protocol::ThreadQueueUpdateResponse;
 use codex_app_server_protocol::Turn;
@@ -34,6 +39,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_queue_extension::QueueServiceError;
+use codex_queue_extension::QueuedInput;
 use codex_queue_extension::QueuedItem;
 use codex_queue_extension::QueuedItemService;
 use codex_thread_store::ReadThreadParams;
@@ -100,6 +106,45 @@ impl ThreadQueueRequestProcessor {
         Ok(ThreadQueueAddResponse {
             queued_submission: api_queued_submission(queued_item)?,
         })
+    }
+
+    #[tracing::instrument(level = "trace", skip_all)]
+    pub(crate) async fn add_shell_command(
+        &self,
+        params: ThreadQueueShellCommandParams,
+    ) -> Result<ThreadQueueShellCommandResponse, JSONRPCErrorError> {
+        let (thread_id, loaded_thread, source, _) = self.require_thread(&params.thread_id).await?;
+        ensure_direct_input_allowed(loaded_thread.as_deref(), &source)?;
+        if self
+            .thread_manager
+            .environment_manager()
+            .try_local_environment()
+            .is_none()
+        {
+            return Err(internal_error("local environment is not configured"));
+        }
+        self.service()?
+            .enqueue_shell_command(thread_id, params.command)
+            .await
+            .map_err(queue_error)?;
+        Ok(ThreadQueueShellCommandResponse {})
+    }
+
+    #[tracing::instrument(level = "trace", skip_all)]
+    pub(crate) async fn add_compact(&self, raw_thread_id: &str) -> Result<(), JSONRPCErrorError> {
+        let (thread_id, loaded_thread, source, _) = self.require_thread(raw_thread_id).await?;
+        ensure_direct_input_allowed(loaded_thread.as_deref(), &source)?;
+        let thread = loaded_thread
+            .ok_or_else(|| invalid_request("resume the thread before queuing a compact"))?;
+        self.config_manager
+            .check_thread_model_provider(thread.config().await.as_ref())
+            .await
+            .map_err(|error| config_load_error(&error))?;
+        self.service()?
+            .enqueue_compact(thread_id)
+            .await
+            .map_err(queue_error)?;
+        Ok(())
     }
 
     pub(crate) async fn list(
@@ -183,6 +228,23 @@ impl ThreadQueueRequestProcessor {
             .await
             .map_err(queue_error)?;
         Ok(ThreadQueueDeleteResponse { deleted })
+    }
+
+    #[tracing::instrument(level = "trace", skip_all)]
+    pub(crate) async fn take(
+        &self,
+        params: ThreadQueueTakeParams,
+    ) -> Result<ThreadQueueTakeResponse, JSONRPCErrorError> {
+        let (thread_id, ..) = self.require_thread(&params.thread_id).await?;
+        let data = self
+            .service()?
+            .take(thread_id, params.queued_submission_ids)
+            .await
+            .map_err(queue_error)?
+            .into_iter()
+            .map(api_queued_submission)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ThreadQueueTakeResponse { data })
     }
 
     pub(crate) async fn reorder(
@@ -357,9 +419,10 @@ pub(super) fn queue_error(error: QueueServiceError) -> JSONRPCErrorError {
         QueueServiceError::InputTooLarge { actual_chars } => {
             TurnRequestProcessor::input_too_large_error(actual_chars)
         }
-        error @ (QueueServiceError::InvalidInput | QueueServiceError::InvalidAttachment(_)) => {
-            invalid_request(error.to_string())
-        }
+        error @ (QueueServiceError::InvalidInput
+        | QueueServiceError::ShellUpdate
+        | QueueServiceError::CompactUpdate
+        | QueueServiceError::InvalidAttachment(_)) => invalid_request(error.to_string()),
         QueueServiceError::Storage(ThreadStoreError::InvalidRequest { message }) => {
             invalid_request(message)
         }
@@ -368,16 +431,42 @@ pub(super) fn queue_error(error: QueueServiceError) -> JSONRPCErrorError {
 }
 
 fn api_queued_submission(value: QueuedItem) -> Result<QueuedSubmission, JSONRPCErrorError> {
-    let TurnInput::UserInput { content, client_id } = value.input else {
-        return Err(internal_error(
-            "queued submission does not contain user input",
-        ));
+    let (kind, input, client_user_message_id) = match value.input {
+        QueuedInput::Message(TurnInput::UserInput { content, client_id }) => (
+            QueuedSubmissionKind::Message,
+            content.into_iter().map(Into::into).collect(),
+            client_id.ok_or_else(|| {
+                internal_error("queued submission is missing its client message id")
+            })?,
+        ),
+        // The client already uses a leading ! to display and resubmit shell drafts.
+        QueuedInput::ShellCommand(command) => (
+            QueuedSubmissionKind::ShellCommand,
+            vec![UserInput::Text {
+                text: format!("!{command}"),
+                text_elements: Vec::new(),
+            }],
+            value.id.clone(),
+        ),
+        QueuedInput::Compact => (
+            QueuedSubmissionKind::Compact,
+            vec![UserInput::Text {
+                text: "/compact".into(),
+                text_elements: Vec::new(),
+            }],
+            value.id.clone(),
+        ),
+        QueuedInput::Message(_) => {
+            return Err(internal_error(
+                "queued submission does not contain user input",
+            ));
+        }
     };
     Ok(QueuedSubmission {
         id: value.id,
+        kind,
         responsesapi_client_metadata: value.responsesapi_client_metadata,
-        input: content.into_iter().map(Into::into).collect(),
-        client_user_message_id: client_id
-            .ok_or_else(|| internal_error("queued submission is missing its client message id"))?,
+        input,
+        client_user_message_id,
     })
 }

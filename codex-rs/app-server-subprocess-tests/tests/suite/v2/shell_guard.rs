@@ -230,7 +230,12 @@ text(res.output);"#,
         .build_initialized()
         .await?;
 
-    let ThreadStartResponse { thread, .. } = app.start_thread(ThreadStartParams::default()).await?;
+    let ThreadStartResponse { thread, .. } = app
+        .start_thread(ThreadStartParams {
+            ephemeral: Some(true),
+            ..Default::default()
+        })
+        .await?;
     let _turn = start_turn(&mut app, &thread.id, "run git commands").await?;
 
     for (tool, expected) in [

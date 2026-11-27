@@ -83,8 +83,8 @@ untouched.
   anytime from the terminal or control multiple machines from desktop or phone
   through the [Web UI and authenticated connector](docs/guide/remote.md).
 - **Full session lifecycle.** [Resume, fork, or rewind](docs/guide/sessions.md)
-  sessions, inspect per-agent usage, throughput, and cost (`/session`), replay
-  past sessions offline, use [reusable prompt presets](docs/guide/terminal-ui.md#composer),
+  sessions, inspect per-agent usage, throughput, and cost (`/session`), use
+  [reusable prompt presets](docs/guide/terminal-ui.md#composer),
   and connect [custom OpenAI-compatible Responses providers](docs/guide/providers.md).
 
 ## Install
@@ -148,7 +148,7 @@ mekugi -p work                 # Custom Responses provider profile
 
 Put Mekugi flags **before** `codex` or Codex arguments. Bare `mekugi` requires
 a [custom provider profile](docs/guide/configuration.md#codex-profile-imports).
-Closing the UI leaves threads running and prints resume/replay commands. See
+Closing the UI leaves threads running. See
 [Launch and automation](docs/guide/launch.md) for headless runs and flags.
 
 | To | Do |
@@ -164,7 +164,8 @@ Closing the UI leaves threads running and prints resume/replay commands. See
 ## Guides
 
 - [Terminal UI](docs/guide/terminal-ui.md): panes, composer, live diffs, Agents sheet, and output dialogs.
-- [Sessions and recovery](docs/guide/sessions.md): resume, fork, rewind, compaction, and replay storage.
+- [Sessions and recovery](docs/guide/sessions.md): resume, fork, rewind, and
+  compaction.
 - [Agent tools and change review](docs/guide/agent-tools.md): `mcat`, `mrun`, `msymbol`, `mfinspect`, and `mchanges`.
 - [Approvals and guards](docs/guide/approvals.md): Codex approvals, remote-write/sudo guards, and GPG passphrase entry.
 - [Server, connector and browser](docs/guide/remote.md): remote control, browser UI, and Docker deployment.

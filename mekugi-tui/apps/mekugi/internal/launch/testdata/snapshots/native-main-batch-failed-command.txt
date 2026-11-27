@@ -1,4 +1,0 @@
-├ Search  zzz
-├ Search  bbb · exit 2
-├ Read    bar
-└ Ran     go env GOMODCACHE

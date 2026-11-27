@@ -2,12 +2,45 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "description": "Request composed saved changes from the native change-history store for a thread.",
   "properties": {
+    "callerThreadId": {
+      "description": "Restrict review to edits made by one member of the selected family.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "includeEphemeral": {
       "description": "Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).",
       "type": [
         "boolean",
         "null"
       ]
+    },
+    "itemId": {
+      "description": "Read one execution's exact captured effects, not the composed session diff.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "description": "Page size for composed files. Omit to read a complete review.",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "perCapture": {
+      "description": "Return individual captures, rather than composing them by file.",
+      "type": "boolean"
     },
     "threadId": {
       "type": "string"

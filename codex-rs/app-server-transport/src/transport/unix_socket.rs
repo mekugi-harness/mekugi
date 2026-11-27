@@ -9,6 +9,9 @@ use super::ConnectionOrigin;
 use super::TransportEvent;
 use crate::transport::websocket::MAX_DECOMPRESSED_MESSAGE_SIZE;
 use crate::transport::websocket::run_websocket_connection_with_origin;
+use crate::websocket_compression::WEBSOCKET_COMPRESSION_HEADER;
+use crate::websocket_compression::WebSocketCompression;
+use crate::websocket_compression::ZSTD_STREAM_PROTOCOL;
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::Message as AxumWebSocketMessage;
@@ -20,9 +23,6 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::any;
 use axum::routing::get;
-use crate::websocket_compression::WEBSOCKET_COMPRESSION_HEADER;
-use crate::websocket_compression::WebSocketCompression;
-use crate::websocket_compression::ZSTD_STREAM_PROTOCOL;
 use codex_uds::UnixListener;
 use codex_uds::UnixStream;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -293,7 +293,11 @@ async fn remote_human_websocket_handler(
             .await;
         })
         .into_response();
-    apply_websocket_headers(&mut response, compression, Some(MAX_DECOMPRESSED_MESSAGE_SIZE));
+    apply_websocket_headers(
+        &mut response,
+        compression,
+        Some(MAX_DECOMPRESSED_MESSAGE_SIZE),
+    );
     response
 }
 
@@ -316,7 +320,11 @@ async fn local_control_websocket_handler(
             .await;
         })
         .into_response();
-    apply_websocket_headers(&mut response, compression, default_max_unfragmented_message_bytes());
+    apply_websocket_headers(
+        &mut response,
+        compression,
+        default_max_unfragmented_message_bytes(),
+    );
     response
 }
 
@@ -337,17 +345,19 @@ async fn run_control_socket_acceptor(
     };
     let mut router = Router::new()
         .route("/daemon/shutdown", get(daemon_shutdown_handler))
-        .route(REMOTE_HUMAN_CONTROL_PATH, get(remote_human_websocket_handler))
+        .route(
+            REMOTE_HUMAN_CONTROL_PATH,
+            get(remote_human_websocket_handler),
+        )
         .fallback(any(local_control_websocket_handler))
         .with_state(state);
     if let Some(extra) = http_router {
         router = router.merge(extra);
     }
-    let server = axum::serve(ControlSocketListener(listener), router).with_graceful_shutdown(
-        async move {
+    let server =
+        axum::serve(ControlSocketListener(listener), router).with_graceful_shutdown(async move {
             shutdown_token.cancelled().await;
-        },
-    );
+        });
     if let Err(err) = server.await {
         error!("control socket acceptor failed: {err}");
     }
@@ -359,10 +369,15 @@ async fn run_daemon_shutdown(
     transport_event_tx: mpsc::Sender<TransportEvent>,
 ) {
     let pid = std::process::id().to_string();
-    if !matches!(websocket.next().await, Some(Ok(AxumWebSocketMessage::Text(request))) if request == pid) {
+    if !matches!(websocket.next().await, Some(Ok(AxumWebSocketMessage::Text(request))) if request == pid)
+    {
         return;
     }
-    if websocket.send(AxumWebSocketMessage::Text(pid.into())).await.is_err() {
+    if websocket
+        .send(AxumWebSocketMessage::Text(pid.into()))
+        .await
+        .is_err()
+    {
         return;
     }
     // Let the manager receive the acknowledgment before the main loop closes connections.

@@ -15,6 +15,7 @@ use codex_protocol::ThreadId;
 use tracing::warn;
 
 use super::LocalThreadStore;
+use super::retained_exec_failure::ExecFailureReplay;
 use super::rollout_lineage::AncestorReads;
 use super::thread_history::ProjectedRolloutLine;
 use super::thread_history::RolloutProjectionStep;
@@ -141,6 +142,11 @@ async fn materialize_to_sqlite_with_state_db(
     let expected_ordinal = projection_state
         .as_ref()
         .map_or(initial_ordinal, |state| state.next_ordinal);
+    let exec_failures = match projection_state {
+        Some(state) => ExecFailureReplay::resume(state.active_turn, state.pending_exec_calls)
+            .map_err(|err| thread_store_io_error(std::io::Error::other(err)))?,
+        None => ExecFailureReplay::default(),
+    };
     pipeline::read_and_apply(
         store,
         thread_id,
@@ -149,6 +155,7 @@ async fn materialize_to_sqlite_with_state_db(
         expected_ordinal,
         initial_ordinal,
         subagent_history_start_ordinal,
+        exec_failures,
     )
     .await
 }
@@ -160,6 +167,7 @@ fn read_projection_batches(
     expected_ordinal: u64,
     thread_id: ThreadId,
     subagent_history_start_ordinal: Option<u64>,
+    mut exec_failures: ExecFailureReplay,
     is_cancelled: impl Fn() -> bool,
     mut emit: impl FnMut(Vec<RolloutProjectionStep>, u64) -> ThreadStoreResult<()>,
 ) -> ThreadStoreResult<()> {
@@ -209,6 +217,7 @@ fn read_projection_batches(
         // Flush only between complete records: an ordinal gap and its following line must
         // share a checkpoint. Byte-only progress from skipped records also bounds batches.
         if next_offset - batch_start_offset >= BATCH_SOURCE_BYTES || batch.len() >= BATCH_STEPS {
+            checkpoint_exec_failures(&mut batch, &mut exec_failures)?;
             emit(std::mem::take(&mut batch), next_offset)?;
             batch_start_offset = next_offset;
         }
@@ -315,7 +324,9 @@ fn read_projection_batches(
         let changes = if is_inherited_subagent_history {
             ThreadHistoryChangeSet::default()
         } else {
-            project_rollout_line(&line)
+            let mut changes = project_rollout_line(&line);
+            exec_failures.observe(&line.item, &mut changes);
+            changes
         };
         let realtime_item = if is_inherited_subagent_history {
             None
@@ -406,7 +417,21 @@ fn read_projection_batches(
         )));
     }
     if next_offset != batch_start_offset {
+        checkpoint_exec_failures(&mut batch, &mut exec_failures)?;
         emit(batch, next_offset)?;
+    }
+    Ok(())
+}
+
+fn checkpoint_exec_failures(
+    batch: &mut Vec<RolloutProjectionStep>,
+    replay: &mut ExecFailureReplay,
+) -> ThreadStoreResult<()> {
+    if let Some(pending) = replay
+        .take_checkpoint()
+        .map_err(|err| thread_store_io_error(std::io::Error::other(err)))?
+    {
+        batch.push(RolloutProjectionStep::PendingExecCallsChanged(pending));
     }
     Ok(())
 }

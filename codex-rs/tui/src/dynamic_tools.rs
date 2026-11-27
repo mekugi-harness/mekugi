@@ -1059,6 +1059,7 @@ async fn execute_inner(
                                     | ThreadItemPayload::Plan { .. }
                                     | ThreadItemPayload::Reasoning { .. }
                                     | ThreadItemPayload::SubAgentActivity { .. }
+                                    | ThreadItemPayload::AgentMail { .. }
                                     | ThreadItemPayload::ImageView { .. }
                                     | ThreadItemPayload::EnteredReviewMode { .. }
                                     | ThreadItemPayload::ExitedReviewMode { .. }
@@ -1565,6 +1566,9 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
             } => json!({
                 "type": "subAgentActivity", "id": id, "kind": kind,
                 "agentThreadId": agent_thread_id, "agentPath": agent_path
+            }),
+            ThreadItemPayload::AgentMail { id, .. } => json!({
+                "type": "agentMail", "id": id
             }),
             ThreadItemPayload::WebSearch(item) => json!({
                 "type": "webSearch", "id": item.id,

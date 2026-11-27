@@ -1,11 +1,47 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
-    "ThreadChangeFileDiff": {
+    "ThreadChangeCallerCounts": {
       "properties": {
         "additions": {
           "format": "int64",
           "type": "integer"
+        },
+        "deletions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "fileCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "additions",
+        "deletions",
+        "fileCount",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadChangeFileDiff": {
+      "properties": {
+        "absolutePath": {
+          "type": "string"
+        },
+        "additions": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "changeIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "coverageNotes": {
           "items": {
@@ -37,7 +73,9 @@
         }
       },
       "required": [
+        "absolutePath",
         "additions",
+        "changeIds",
         "coverageNotes",
         "deletions",
         "isBinary",
@@ -49,6 +87,13 @@
     },
     "ThreadChangeOrigin": {
       "properties": {
+        "authorThreadId": {
+          "description": "None for captures that were not authored by an agent, such as user shell.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "changeId": {
           "type": "string"
         },
@@ -58,6 +103,9 @@
         },
         "incomplete": {
           "type": "boolean"
+        },
+        "itemId": {
+          "type": "string"
         },
         "paths": {
           "items": {
@@ -71,9 +119,20 @@
           "type": "integer"
         },
         "sourceKind": {
+          "description": "Stable identifier for the source of the capture.",
+          "type": "string"
+        },
+        "sourceLabel": {
+          "description": "User-facing name for the capture source.",
           "type": "string"
         },
         "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "workspace": {
           "type": "string"
         }
       },
@@ -81,26 +140,50 @@
         "changeId",
         "createdAt",
         "incomplete",
+        "itemId",
         "paths",
         "sequence",
         "sourceKind",
-        "threadId"
+        "sourceLabel",
+        "threadId",
+        "turnId",
+        "workspace"
       ],
       "type": "object"
     }
   },
   "properties": {
+    "callers": {
+      "items": {
+        "$ref": "#/definitions/ThreadChangeCallerCounts"
+      },
+      "type": "array"
+    },
     "changes": {
       "items": {
         "$ref": "#/definitions/ThreadChangeOrigin"
       },
       "type": "array"
     },
+    "fileCount": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "files": {
       "items": {
         "$ref": "#/definitions/ThreadChangeFileDiff"
       },
       "type": "array"
+    },
+    "incomplete": {
+      "type": "boolean"
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "threadId": {
       "type": "string"
@@ -121,8 +204,11 @@
     }
   },
   "required": [
+    "callers",
     "changes",
+    "fileCount",
     "files",
+    "incomplete",
     "threadId",
     "totalAdditions",
     "totalDeletions"

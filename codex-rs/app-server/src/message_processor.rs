@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::Weak;
@@ -12,13 +13,13 @@ use crate::connection_rpc_gate::ConnectionRpcGate;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use crate::error_code::invalid_request;
-use crate::error_code::method_not_found;
 use crate::extensions::ThreadExtensionDependencies;
 use crate::extensions::app_server_extension_event_sink;
 use crate::extensions::thread_extensions;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessor;
 use crate::external_agent_migration::ExternalAgentConfigRequestProcessorArgs;
 use crate::fs_watch::FsWatchManager;
+use crate::fuzzy_file_search::FuzzyFileSearchMode;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
@@ -73,7 +74,9 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::ThreadPredictionRequestResponse;
 use codex_app_server_protocol::ThreadSampleCancelResponse;
+use codex_app_server_protocol::ThreadSampleParams;
 use codex_app_server_protocol::ThreadSearchCancelResponse;
 use codex_app_server_protocol::ThreadSearchParams;
 use codex_app_server_protocol::UserVerificationCancelResponse;
@@ -147,6 +150,7 @@ fn reject_removed_permission_profile(request: &JSONRPCRequest) -> Result<(), JSO
 
 pub(crate) struct MessageProcessor {
     pub(crate) turn_admission: TurnAdmission,
+    debug_path: Option<PathBuf>,
     user_verification: Arc<crate::user_verification::Service>,
     outgoing: Arc<OutgoingMessageSender>,
     startup_warnings: StartupWarnings,
@@ -557,6 +561,10 @@ impl MessageProcessor {
             rpc_transport,
             Arc::clone(&user_verification),
         );
+        let debug_path = state_db
+            .as_ref()
+            .filter(|db| db.diagnostic_logs_error().is_none())
+            .map(|db| db.sqlite().logs_db_path());
         let external_agent_config_processor =
             ExternalAgentConfigRequestProcessor::new(ExternalAgentConfigRequestProcessorArgs {
                 outgoing: outgoing.clone(),
@@ -583,6 +591,7 @@ impl MessageProcessor {
 
         Self {
             turn_admission,
+            debug_path,
             user_verification,
             outgoing,
             startup_warnings: StartupWarnings {
@@ -1041,6 +1050,7 @@ impl MessageProcessor {
             | ClientRequest::ThreadDelete { .. }
             | ClientRequest::ThreadArchive { .. } => (Some(self.turn_admission.admit()?), false),
             ClientRequest::ThreadSample { .. }
+            | ClientRequest::ThreadPredictionRequest { .. }
             | ClientRequest::ThreadGuardianReview { .. }
             | ClientRequest::TurnStart { .. }
             | ClientRequest::TurnSteer { .. }
@@ -1235,7 +1245,9 @@ impl MessageProcessor {
                 })
                 .await;
             }
-            ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            ClientRequest::ServerDiagnostics { .. } => Ok(Some(
+                read_server_diagnostics(self.debug_path.as_deref()).into(),
+            )),
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)
@@ -1269,6 +1281,16 @@ impl MessageProcessor {
             ClientRequest::ConfigValueWrite { params, .. } => {
                 self.config_processor.value_write(params).await.map(Some)
             }
+            ClientRequest::ThreadPresetsList { params, .. } => self
+                .config_processor
+                .list_presets(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::ThreadPresetWrite { params, .. } => self
+                .config_processor
+                .write_preset(params)
+                .await
+                .map(|response| Some(response.into())),
             ClientRequest::ConfigBatchWrite { params, .. } => {
                 self.config_processor.batch_write(params).await.map(Some)
             }
@@ -1443,7 +1465,12 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadSample { params, .. } => self
                 .thread_processor
-                .thread_sample(params, Arc::clone(&session.rpc_gate), request_context)
+                .thread_sample(
+                    params,
+                    /*automatic_prediction*/ false,
+                    Arc::clone(&session.rpc_gate),
+                    request_context,
+                )
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ThreadSampleCancel { params, .. } => {
@@ -1490,6 +1517,11 @@ impl MessageProcessor {
                 .add(params)
                 .await
                 .map(|response| Some(response.into())),
+            ClientRequest::ThreadQueueShellCommand { params, .. } => self
+                .thread_queue_processor
+                .add_shell_command(params)
+                .await
+                .map(|response| Some(response.into())),
             ClientRequest::ThreadQueueList { params, .. } => self
                 .thread_queue_processor
                 .list(params)
@@ -1503,6 +1535,11 @@ impl MessageProcessor {
             ClientRequest::ThreadQueueDelete { params, .. } => self
                 .thread_queue_processor
                 .delete(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::ThreadQueueTake { params, .. } => self
+                .thread_queue_processor
+                .take(params)
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ThreadQueueReorder { params, .. } => self
@@ -1574,9 +1611,26 @@ impl MessageProcessor {
                     .thread_unarchive(request_id.clone(), params)
                     .await
             }
-            ClientRequest::ThreadPredictionRequest { .. } => Err(method_not_found(
-                "thread/prediction/request is not implemented yet",
-            )),
+            ClientRequest::ThreadPredictionRequest { params, .. } => {
+                let sample = self.thread_processor.thread_sample(
+                    ThreadSampleParams {
+                        thread_id: params.thread_id,
+                        expected_turn_id: params.source_turn_id,
+                        prompt: concat!(
+                            "Predict the next message the user is likely to send in this conversation. ",
+                            "Output only the suggested user message, with no framing or explanation."
+                        ).to_string(),
+                        disable_mcp: true,
+                        ..Default::default()
+                    },
+                    params.automatic,
+                    Arc::clone(&session.rpc_gate),
+                    request_context,
+                ).await?;
+                Ok(Some(
+                    ThreadPredictionRequestResponse { text: sample.text }.into(),
+                ))
+            }
             ClientRequest::FeatureUseRead { params, .. } => {
                 self.thread_processor.feature_use_read(params)
             }
@@ -1586,9 +1640,26 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadCompactStart { params, .. } => {
-                self.thread_processor
-                    .thread_compact_start(&request_id, params)
-                    .await
+                use codex_app_server_protocol::ThreadCompactMode;
+                if params.mode.is_some()
+                    && (params.reload.is_some() || params.context_reset_request_id.is_some())
+                {
+                    return Err(invalid_request(
+                        "composer compaction cannot be combined with a context reset",
+                    ));
+                }
+                if params.mode == Some(ThreadCompactMode::Queue) {
+                    self.thread_queue_processor
+                        .add_compact(&params.thread_id)
+                        .await?;
+                    Ok(Some(
+                        codex_app_server_protocol::ThreadCompactStartResponse {}.into(),
+                    ))
+                } else {
+                    self.thread_processor
+                        .thread_compact_start(&request_id, params)
+                        .await
+                }
             }
             ClientRequest::ThreadBackgroundTerminalsClean { params, .. } => {
                 self.thread_processor
@@ -1614,6 +1685,9 @@ impl MessageProcessor {
                         client_version.clone(),
                     )
                     .await
+            }
+            ClientRequest::ThreadRevertPreview { params, .. } => {
+                self.thread_processor.thread_revert_preview(params).await
             }
             ClientRequest::ThreadList { params, .. } => {
                 self.thread_processor.thread_list(params).await
@@ -1687,14 +1761,63 @@ impl MessageProcessor {
             ClientRequest::ThreadSubtreeList { params, .. } => {
                 self.thread_processor.thread_subtree_list(params).await
             }
+            ClientRequest::ThreadChangesLive { params, .. } => {
+                self.thread_processor.thread_changes_live(params).await
+            }
             ClientRequest::ThreadChangesRead { params, .. } => {
                 self.thread_processor.thread_changes_read(params).await
+            }
+            ClientRequest::ThreadFileSearch { params, .. } => {
+                let workspace = self
+                    .thread_processor
+                    .thread_workspace(&params.thread_id)
+                    .await?;
+                let (query, mode) = if let Some(query) = params.query.strip_prefix('!') {
+                    (
+                        query.to_string(),
+                        FuzzyFileSearchMode::WorkspaceIncludingIgnored,
+                    )
+                } else {
+                    (params.query, FuzzyFileSearchMode::Workspace)
+                };
+                let response = self
+                    .search_processor
+                    .fuzzy_file_search(
+                        codex_app_server_protocol::FuzzyFileSearchParams {
+                            query,
+                            roots: vec![workspace],
+                            cancellation_token: Some(format!(
+                                "thread-files:{:?}:{}",
+                                request_id.connection_id, params.thread_id,
+                            )),
+                        },
+                        mode,
+                    )
+                    .await?;
+                let paths = response
+                    .files
+                    .into_iter()
+                    .map(|result| result.path)
+                    .collect();
+                Ok(Some(
+                    codex_app_server_protocol::ThreadFileSearchResponse { paths }.into(),
+                ))
             }
             ClientRequest::AgentEnd { params, .. } => {
                 self.thread_processor.agent_end(&request_id, params).await
             }
             ClientRequest::ThreadRead { params, .. } => {
                 self.thread_processor.thread_read(&request_id, params).await
+            }
+            ClientRequest::ThreadInputHistoryRead { params, .. } => {
+                self.thread_processor
+                    .thread_input_history_read(params)
+                    .await
+            }
+            ClientRequest::ThreadInputHistoryAppend { params, .. } => {
+                self.thread_processor
+                    .thread_input_history_append(params)
+                    .await
             }
             ClientRequest::ThreadReadStateUpdate { params, .. } => {
                 self.thread_processor.thread_read_state_update(params).await
@@ -1806,7 +1929,15 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::PermissionProfileList { params, .. } => {
-                self.catalog_processor.permission_profile_list(params).await
+                if session.origin == crate::transport::ConnectionOrigin::RemoteHuman
+                    && params.thread_id.is_none()
+                {
+                    Err(invalid_request(
+                        "permission profile listing requires a threadId",
+                    ))
+                } else {
+                    self.catalog_processor.permission_profile_list(params).await
+                }
             }
             ClientRequest::CollaborationModeList { params, .. } => {
                 self.catalog_processor.collaboration_mode_list(params).await
@@ -2052,7 +2183,7 @@ impl MessageProcessor {
             }
             ClientRequest::FuzzyFileSearch { params, .. } => self
                 .search_processor
-                .fuzzy_file_search(params)
+                .fuzzy_file_search(params, FuzzyFileSearchMode::ExplicitRoots)
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::FuzzyFileSearchSessionStart { params, .. } => self
@@ -2141,6 +2272,7 @@ fn is_allowed_for_remote_human(method: &str) -> bool {
         "initialize"
             | "model/list"
             | "skills/list"
+            | "permissionProfile/list"
             | "review/start"
             | "turn/start"
             | "turn/steer"
@@ -2159,9 +2291,11 @@ fn is_allowed_for_remote_human(method: &str) -> bool {
             | "thread/goal/get"
             | "thread/goal/clear"
             | "thread/queue/add"
+            | "thread/queue/shellCommand"
             | "thread/queue/list"
             | "thread/queue/update"
             | "thread/queue/delete"
+            | "thread/queue/take"
             | "thread/queue/reorder"
             | "thread/queue/start"
             | "thread/metadata/update"
@@ -2171,6 +2305,8 @@ fn is_allowed_for_remote_human(method: &str) -> bool {
             | "thread/attachment/remove"
             | "thread/section/move"
             | "thread/settings/update"
+            | "thread/presets/list"
+            | "thread/presets/write"
             | "thread/compact/start"
             | "thread/compact/cancel"
             | "thread/shellCommand"
@@ -2179,6 +2315,7 @@ fn is_allowed_for_remote_human(method: &str) -> bool {
             | "thread/backgroundTerminals/list"
             | "thread/backgroundTerminals/terminate"
             | "thread/revert"
+            | "thread/revert/preview"
             | "thread/list"
             | "thread/search"
             | "thread/search/stream"
@@ -2188,7 +2325,11 @@ fn is_allowed_for_remote_human(method: &str) -> bool {
             | "thread/loaded/list"
             | "thread/inspect"
             | "thread/subtree/list"
+            | "featureUse/read"
+            | "server/diagnostics"
+            | "thread/changes/live"
             | "thread/changes/read"
+            | "thread/files/search"
             | "thread/read"
             | "thread/readState/update"
             | "thread/turns/list"
@@ -2229,6 +2370,7 @@ mod remote_human_authority_tests {
             "gitDiffToRemote",
             "config/read",
             "config/value/write",
+            "config/batchWrite",
             "account/read",
             "account/login/start",
             "plugin/list",
@@ -2260,13 +2402,20 @@ mod remote_human_authority_tests {
         for allowed in [
             "initialize",
             "model/list",
+            "permissionProfile/list",
             "thread/start",
             "thread/resume",
             "thread/read",
             "thread/list",
             "thread/items/read",
+            "featureUse/read",
+            "server/diagnostics",
+            "thread/files/search",
+            "thread/presets/list",
+            "thread/presets/write",
             "thread/attachment/add",
             "thread/shellCommand",
+            "thread/queue/shellCommand",
             "turn/start",
             "turn/steer",
             "turn/interrupt",

@@ -5,8 +5,6 @@ package launch
 import (
 	"context"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
-
 	json "encoding/json/v2"
 	"io"
 	"net/http"
@@ -115,7 +113,7 @@ func TestAppServerUserInputProvenanceNativeCodexE2E(t *testing.T) {
 									return m
 								}
 							case <-ctx.Done():
-								t.Fatalf("host timeout: %v; notifications=%s", ctx.Err(), responses.MustMarshalJSON(notifications))
+								t.Fatalf("host timeout: %v; notifications=%s", ctx.Err(), e2eMustMarshalJSON(notifications))
 							}
 						}
 					}
@@ -242,7 +240,7 @@ func TestAppServerUserInputProvenanceNativeCodexE2E(t *testing.T) {
 					hostItems = hostItems[len(hostItems)-len(wantedTexts):]
 					for i, texts := range wantedTexts {
 						item, host := userItems[i], hostItems[i]
-						t.Logf("exact provider user item: %s", responses.MustMarshalJSON(item))
+						t.Logf("exact provider user item: %s", e2eMustMarshalJSON(item))
 						providerID, _ := item["id"].(string)
 						hostID, _ := host["id"].(string)
 						if providerID == "" || hostID == "" || providerID == hostID || providerID == "msg_"+hostID {
@@ -268,7 +266,7 @@ func TestAppServerUserInputProvenanceNativeCodexE2E(t *testing.T) {
 							delete(item, "internal_chat_message_metadata_passthrough")
 						}
 						if !reflect.DeepEqual(item, map[string]any{"type": "message", "role": "user", "content": content}) {
-							t.Fatalf("provider origin shape changed: %s", responses.MustMarshalJSON(item))
+							t.Fatalf("provider origin shape changed: %s", e2eMustMarshalJSON(item))
 						}
 						wantClientID := clientID
 						if trial == "mixed steers" {
@@ -278,7 +276,7 @@ func TestAppServerUserInputProvenanceNativeCodexE2E(t *testing.T) {
 							wantClientID = "mixed-id"
 						}
 						if !reflect.DeepEqual(host, map[string]any{"type": "userMessage", "id": hostID, "clientId": wantClientID, "content": hostContent}) {
-							t.Fatalf("host origin/fragment shape changed: %s", responses.MustMarshalJSON(host))
+							t.Fatalf("host origin/fragment shape changed: %s", e2eMustMarshalJSON(host))
 						}
 						if trial == "routed UserInput" {
 							siblingItem = item

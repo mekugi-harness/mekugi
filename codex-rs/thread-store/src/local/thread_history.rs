@@ -50,6 +50,7 @@ pub(super) struct ProjectedRolloutLine {
 /// prefix even when a complete rollout line cannot be projected.
 pub(super) enum RolloutProjectionStep {
     Line(Box<ProjectedRolloutLine>),
+    PendingExecCallsChanged(Option<String>),
     SkippedOrdinalRange {
         start_ordinal: u64,
         end_ordinal_exclusive: u64,
@@ -59,6 +60,8 @@ pub(super) enum RolloutProjectionStep {
 pub(super) struct RolloutProjectionState {
     pub next_byte_offset: u64,
     pub next_ordinal: u64,
+    pub active_turn: Option<String>,
+    pub pending_exec_calls: Option<String>,
 }
 
 pub(super) async fn projection_state(
@@ -77,11 +80,17 @@ pub(super) async fn projection_state(
     }
 
     let pool = store.thread_history_db().await?;
-    let state = sqlx::query_as::<_, (i64, i64)>(
+    let state = sqlx::query_as::<_, (i64, i64, Option<String>, Option<String>)>(
         r#"
-SELECT next_rollout_byte_offset, next_rollout_ordinal
-FROM thread_history_projection_state
-WHERE thread_id = ?
+SELECT p.next_rollout_byte_offset, p.next_rollout_ordinal, p.pending_exec_calls,
+       (SELECT CASE WHEN rollout_end_ordinal IS NULL OR rollout_end_ordinal >= p.next_rollout_ordinal
+                    THEN turn_id END
+        FROM thread_turns
+        WHERE thread_id = p.thread_id
+          AND rollout_ordinal < p.next_rollout_ordinal
+        ORDER BY rollout_ordinal DESC LIMIT 1)
+FROM thread_history_projection_state p
+WHERE p.thread_id = ?
         "#,
     )
     .bind(thread_id.to_string())
@@ -89,8 +98,9 @@ WHERE thread_id = ?
     .await
     .map_err(thread_history_error)?;
     state
-        .map(|(next_byte_offset, next_ordinal)| {
-            Ok(RolloutProjectionState {
+        .map(
+            |(next_byte_offset, next_ordinal, pending_exec_calls, active_turn)| {
+                Ok(RolloutProjectionState {
                 next_byte_offset: u64::try_from(next_byte_offset).map_err(|_| {
                     ThreadStoreError::Internal {
                         message: format!(
@@ -105,8 +115,11 @@ WHERE thread_id = ?
                         ),
                     }
                 })?,
+                active_turn,
+                pending_exec_calls,
             })
-        })
+            },
+        )
         .transpose()
 }
 
@@ -129,9 +142,9 @@ pub(super) async fn apply_projection(
         .map_err(thread_history_error)?;
     let mut transaction = pool.begin_immediate().await.map_err(thread_history_error)?;
     let thread_id = thread_id.to_string();
-    let projection_state = sqlx::query_as::<_, (i64, i64)>(
+    let projection_state = sqlx::query_as::<_, (i64, i64, Option<String>)>(
         r#"
-SELECT next_rollout_byte_offset, next_rollout_ordinal
+SELECT next_rollout_byte_offset, next_rollout_ordinal, pending_exec_calls
 FROM thread_history_projection_state
 WHERE thread_id = ?
         "#,
@@ -140,8 +153,8 @@ WHERE thread_id = ?
     .fetch_optional(&mut *transaction)
     .await
     .map_err(thread_history_error)?;
-    let (expected_offset, mut next_ordinal) =
-        projection_state.unwrap_or((0, sqlite_integer(initial_ordinal, "rollout ordinal")?));
+    let (expected_offset, mut next_ordinal, mut pending_exec_calls) =
+        projection_state.unwrap_or((0, sqlite_integer(initial_ordinal, "rollout ordinal")?, None));
     let start_offset = sqlite_integer(start_offset, "rollout byte offset")?;
     if expected_offset != start_offset {
         return Err(ThreadStoreError::Internal {
@@ -151,6 +164,7 @@ WHERE thread_id = ?
 
     for projection in projections {
         match projection {
+            RolloutProjectionStep::PendingExecCallsChanged(pending) => pending_exec_calls = pending,
             RolloutProjectionStep::Line(projection) => {
                 let ordinal = sqlite_integer(projection.ordinal, "rollout ordinal")?;
                 if ordinal != next_ordinal {
@@ -237,16 +251,19 @@ ON CONFLICT(thread_id, item_id) DO NOTHING
 INSERT INTO thread_history_projection_state (
     thread_id,
     next_rollout_byte_offset,
-    next_rollout_ordinal
-) VALUES (?, ?, ?)
+    next_rollout_ordinal,
+    pending_exec_calls
+) VALUES (?, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     next_rollout_byte_offset = excluded.next_rollout_byte_offset,
-    next_rollout_ordinal = excluded.next_rollout_ordinal
+    next_rollout_ordinal = excluded.next_rollout_ordinal,
+    pending_exec_calls = excluded.pending_exec_calls
         "#,
     )
     .bind(thread_id.as_str())
     .bind(sqlite_integer(next_offset, "rollout byte offset")?)
     .bind(next_ordinal)
+    .bind(pending_exec_calls)
     .execute(&mut *transaction)
     .await
     .map_err(thread_history_error)?;
@@ -554,6 +571,7 @@ WHERE thread_id = ?
             | ThreadItemPayload::DynamicToolCall { .. }
             | ThreadItemPayload::CollabAgentToolCall { .. }
             | ThreadItemPayload::SubAgentActivity { .. }
+            | ThreadItemPayload::AgentMail { .. }
             | ThreadItemPayload::WebSearch(_)
             | ThreadItemPayload::ImageView { .. }
             | ThreadItemPayload::AgentSideQuestion(_)

@@ -1,3 +1,0 @@
-└ Attach guide.txt (auto reloaded)
-         missing · exit 1
-         amber1..3 · exit 1

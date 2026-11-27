@@ -11,6 +11,7 @@ import type { SleepItem } from "../SleepItem";
 import type { SourceAcquisition } from "../SourceAcquisition";
 import type { WebSearchItem } from "../WebSearchItem";
 import type { JsonValue } from "../serde_json/JsonValue";
+import type { AgentMailKind } from "./AgentMailKind";
 import type { AgentMessageDelivery } from "./AgentMessageDelivery";
 import type { AgentMessageModeration } from "./AgentMessageModeration";
 import type { AsyncUserInputQuestion } from "./AsyncUserInputQuestion";
@@ -18,6 +19,7 @@ import type { CollabAgentState } from "./CollabAgentState";
 import type { CollabAgentTool } from "./CollabAgentTool";
 import type { CollabAgentToolCallStatus } from "./CollabAgentToolCallStatus";
 import type { CommandAction } from "./CommandAction";
+import type { CommandDisplay } from "./CommandDisplay";
 import type { CommandExecutionSource } from "./CommandExecutionSource";
 import type { CommandExecutionStatus } from "./CommandExecutionStatus";
 import type { DynamicToolCallOutputContentItem } from "./DynamicToolCallOutputContentItem";
@@ -72,6 +74,10 @@ processId: string | null, source: CommandExecutionSource, status: CommandExecuti
  * be composed of many commands piped together.
  */
 commandActions: Array<CommandAction>,
+/**
+ * Authored display text for a recognized shell invocation.
+ */
+display?: CommandDisplay,
 /**
  * The command's output, aggregated from stdout and stderr.
  */
@@ -152,4 +158,16 @@ model: string | null,
 /**
  * Resolved reasoning effort at sub-agent creation, when known.
  */
-reasoningEffort: ReasoningEffort | null, id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "agentSideQuestion" } & AgentSideQuestionItem | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string, sourceAcquisition?: SourceAcquisition, });
+reasoningEffort: ReasoningEffort | null, id: string, kind: SubAgentActivityKind, agentThreadId: string, agentPath: string, } | { "type": "agentMail", id: string, kind: AgentMailKind, sender: string, recipient: string,
+/**
+ * The retained plaintext, excluding the envelope and attached model context.
+ */
+text: string, summary: string | null, details: string | null, } | { "type": "webSearch" } & WebSearchItem | { "type": "imageView", id: string, path: LegacyAppPathString, } | { "type": "agentSideQuestion" } & AgentSideQuestionItem | { "type": "sleep" } & SleepItem | { "type": "imageGeneration" } & ImageGenerationItem | { "type": "enteredReviewMode", id: string, review: string, } | { "type": "exitedReviewMode", id: string, review: string, } | { "type": "contextCompaction", id: string,
+/**
+ * Present and true for a Mekugi summary-free context reset.
+ */
+summaryFree?: boolean,
+/**
+ * Elided unless a local compaction produced a plaintext summary.
+ */
+summary?: string, sourceAcquisition?: SourceAcquisition, });

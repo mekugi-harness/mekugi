@@ -2,6 +2,7 @@
   import Path from "./Path.svelte";
   import { untrack } from "svelte";
   import { workspacePath } from "./diff";
+  import { followBottom } from "./follow-bottom";
   import DiffView from "./DiffView.svelte";
   import AgentName from "./AgentName.svelte";
   import type { Preview } from "./protocol";
@@ -13,7 +14,11 @@
   // live source. Each completed call stays for its own settling interval; the
   // transcript returns when no cards remain. Calls already complete when the
   // view opens are history, not arrivals.
-  let { previews, owner }: { previews: Preview[]; owner: string } = $props();
+  let {
+    previews,
+    owner,
+    onsaved,
+  }: { previews: Preview[]; owner: string; onsaved: (path: string) => void } = $props();
 
   // The terminal's completion hold.
   const hold = 1500;
@@ -27,10 +32,7 @@
   const seen = new Set<string>();
   let primed = false;
   $effect(() => {
-    const mine = previews.filter(
-      (p) =>
-        (owner === "/root" || p.Caller === owner) && (p.Files.length > 0 || p.Input.trim() !== ""),
-    );
+    const mine = previews.filter((p) => p.Files.length > 0 || p.Input.trim() !== "");
     untrack(() => {
       const now = Date.now();
       const current = new Map(mine.map((p) => [p.ID, p]));
@@ -46,6 +48,7 @@
       for (const preview of current.values())
         if (!preview.Complete || (primed && !seen.has(preview.ID)))
           next.push({ preview, until: preview.Complete ? now + hold : undefined });
+      seen.clear();
       for (const preview of mine) seen.add(preview.ID);
       primed = true;
       cards = next.filter((card) => card.until === undefined || card.until > now);
@@ -64,31 +67,9 @@
   // Hiding returns the transcript until another call arrives.
   let hidden = $state<string[]>([]);
   const shown = $derived(cards.filter((card) => !hidden.includes(card.preview.ID)));
-  const writing = $derived(shown.some((card) => !card.preview.Complete));
+  const writing = $derived(shown.some((card) => !card.until && !card.preview.Settling));
+  const hasSaved = $derived(shown.some(({ preview }) => preview.SavedPath));
 
-  // Each code block follows independently until its reader scrolls away.
-  function follow(scroller: HTMLElement) {
-    let following = true;
-    let end = 0;
-    const scroll = () => {
-      // Layout can clamp the scroll position before ResizeObserver runs.
-      if (end === scroller.scrollHeight - scroller.clientHeight)
-        following = end - scroller.scrollTop < 40;
-    };
-    const observer = new ResizeObserver(() => {
-      end = scroller.scrollHeight - scroller.clientHeight;
-      if (following) scroller.scrollTop = scroller.scrollHeight;
-    });
-    observer.observe(scroller);
-    observer.observe(scroller.firstElementChild!);
-    scroller.addEventListener("scroll", scroll);
-    return {
-      destroy() {
-        observer.disconnect();
-        scroller.removeEventListener("scroll", scroll);
-      },
-    };
-  }
   const lines = (text: string) => text.replace(/\n$/, "").split("\n");
 </script>
 
@@ -103,7 +84,9 @@
       <h2 class="flex items-center gap-2 font-semibold">
         <Dot tone={writing ? "running" : "done"} size={6} />Live
       </h2>
-      <span class="text-small text-muted">{writing ? "Writing" : "Settling"}; not saved yet.</span>
+      <span class="text-small text-muted">
+        {writing ? "Writing" : hasSaved ? "Captured" : "Settling"}
+      </span>
       <Button
         size="sm"
         variant="quiet"
@@ -115,10 +98,14 @@
       <div
         class="mx-auto grid h-full w-[calc(100%-32px)] auto-rows-fr grid-cols-1 gap-3 pb-6 @min-[40rem]:not-has-[>article:only-child]:grid-cols-2"
       >
-        {#each shown as { preview } (preview.ID)}
+        {#each shown as { preview, until } (preview.ID)}
           <article class="flex min-h-0 min-w-0 flex-col overflow-hidden pt-2 pb-2.5 wrap-anywhere">
             <div class="flex flex-none flex-wrap items-center gap-x-2 gap-y-1 text-small">
-              <AgentName name={preview.Caller} current={owner} />
+              {#if preview.Caller === "User shell"}
+                <span class="text-muted">User shell</span>
+              {:else}
+                <AgentName name={preview.Caller} current={owner} />
+              {/if}
               {#if preview.Tool}<Tag mono>{preview.Tool}</Tag>{/if}
               {#if preview.Status.startsWith("unavailable: ")}<span class="text-muted"
                   >{preview.Status.slice(13)}</span
@@ -126,12 +113,24 @@
               <span
                 class={[
                   "ml-auto inline-flex items-center gap-1.5",
-                  preview.Complete ? "text-muted" : "text-accent",
+                  until || preview.Settling ? "text-muted" : "text-accent",
                 ]}
-                >{#if !preview.Complete}<Dot tone="running" size={6} />{/if}{preview.Complete
+                >{#if !until && !preview.Settling}<Dot tone="running" size={6} />{/if}{until
                   ? "done"
-                  : "writing"}</span
+                  : preview.Settling
+                    ? "settling"
+                    : "writing"}</span
               >
+              {#if preview.SavedPath}
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  onclick={() => {
+                    hidden = cards.map((card) => card.preview.ID);
+                    onsaved(preview.SavedPath!);
+                  }}>Saved Diff</Button
+                >
+              {/if}
             </div>
             {#each preview.Files as file, i (i)}
               {@const path = workspacePath(
@@ -145,12 +144,12 @@
                 >
                   <Path {path} />
                 </h3>
-                <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:follow>
+                <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:followBottom>
                   <DiffView {file} workspace={preview.Workspace} wrap />
                 </div>
               </div>
             {:else}
-              <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:follow>
+              <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:followBottom>
                 <div>
                   {#if preview.DiffText}
                     <DiffView

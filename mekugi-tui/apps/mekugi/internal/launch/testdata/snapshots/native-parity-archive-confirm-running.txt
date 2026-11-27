@@ -1,0 +1,12 @@
+
+
+  ── Archive this session? ────────────────────────────────────── [×] ──
+
+    This will stop the current turn and archive the session.
+
+  ❯ No, don't archive  Return to the current session
+    Yes, archive       Archive this session now
+
+  ↑/↓ choose · enter select · esc cancel
+  gpt-5 (medium) · standard | 5h 88% left · Weekly 79% left
+  Main • Direct Session • /tmp/ws • ctrl+e view

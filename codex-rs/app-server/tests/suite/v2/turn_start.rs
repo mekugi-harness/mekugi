@@ -21,6 +21,7 @@ use codex_app_server::INPUT_TOO_LARGE_ERROR_CODE;
 use codex_app_server::INVALID_PARAMS_ERROR_CODE;
 use codex_app_server_protocol::AdditionalContextEntry;
 use codex_app_server_protocol::AdditionalContextKind;
+use codex_app_server_protocol::BackgroundTerminalInvocation;
 use codex_app_server_protocol::ByteRange;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::ClientRequest;
@@ -47,6 +48,11 @@ use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::TextElement;
+use codex_app_server_protocol::ThreadBackgroundTerminalsChangedNotification;
+use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
+use codex_app_server_protocol::ThreadBackgroundTerminalsListResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminalsTerminateParams;
+use codex_app_server_protocol::ThreadBackgroundTerminalsTerminateResponse;
 use codex_app_server_protocol::ThreadDeleteParams;
 use codex_app_server_protocol::ThreadDeleteResponse;
 use codex_app_server_protocol::ThreadDeletedNotification;
@@ -63,6 +69,9 @@ use codex_app_server_protocol::ThreadShellCommandParams;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::ThreadUnsubscribeParams;
+use codex_app_server_protocol::ThreadUnsubscribeResponse;
+use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use codex_app_server_protocol::TokenUsageBreakdown;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnEnvironmentParams;
@@ -3114,6 +3123,7 @@ async fn turn_start_exec_approval_toggle_v2() -> Result<()> {
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            ephemeral: Some(true),
             ..Default::default()
         })
         .await?;
@@ -3341,6 +3351,7 @@ async fn run_turn_start_exec_approval_rejection_v2(
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            ephemeral: Some(true),
             ..Default::default()
         })
         .await?;
@@ -3436,6 +3447,24 @@ async fn run_turn_start_exec_approval_rejection_v2(
     assert!(!displayed_actions.contains(bearer_token));
     assert!(exit_code.is_none());
     assert!(aggregated_output.is_none());
+
+    let native_result = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: ItemCompletedNotification =
+                mcp.read_notification("item/completed").await?;
+            if let ThreadItemPayload::CommandExecution {
+                id,
+                exit_code: Some(exit_code),
+                ..
+            } = completed.item.payload
+                && id == "call-decline"
+            {
+                return Ok::<i32, anyhow::Error>(exit_code);
+            }
+        }
+    })
+    .await??;
+    assert_eq!(native_result, -1);
 
     timeout(
         DEFAULT_READ_TIMEOUT,
@@ -4309,6 +4338,8 @@ async fn turn_start_streams_apply_patch_change_updates_v2() -> Result<()> {
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
             cwd: Some(workspace.to_string_lossy().into_owned()),
+            ephemeral: Some(true),
+            permissions: Some(codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE.into()),
             ..Default::default()
         })
         .await?;
@@ -5568,12 +5599,14 @@ async fn run_turn_start_file_change_approval_rejection_v2(
     Ok(())
 }
 
-#[cfg_attr(not(windows), test_case(None; "started"))]
-#[test_case(Some(json!({"cmd": "echo unreachable", "workdir": "missing-work-directory", "tty": false})); "pipe_launch_failure")]
-#[test_case(Some(json!({"cmd": "echo unreachable\u{0}", "tty": true, "login": false})); "pty_launch_failure")]
+#[cfg_attr(not(windows), test_case(None, false; "started"))]
+#[cfg_attr(not(windows), test_case(None, true; "stop_background"))]
+#[test_case(Some(json!({"cmd": "echo unreachable", "workdir": "missing-work-directory", "tty": false})), false; "pipe_launch_failure")]
+#[test_case(Some(json!({"cmd": "echo unreachable\u{0}", "tty": true, "login": false})), false; "pty_launch_failure")]
 #[tokio::test]
 async fn command_execution_notifications_include_process_id(
     launch_failure_args: Option<Value>,
+    stop_background: bool,
 ) -> Result<()> {
     // TODO(anp): Add target-Windows process-id expectations for remote executors.
     skip_if_wine_exec!(
@@ -5583,7 +5616,11 @@ async fn command_execution_notifications_include_process_id(
     skip_if_no_network!(Ok(()));
 
     let launch_failed = launch_failure_args.is_some();
-    let command = if let Some(args) = launch_failure_args {
+    let command = if let Some(args) = launch_failure_args.or_else(|| {
+        stop_background.then(
+            || json!({"cmd": "sleep 60 # Bearer abcdefghijklmnopqrstuvwxyz", "yield_time_ms": 100}),
+        )
+    }) {
         responses::sse(vec![
             responses::ev_response_created("launch"),
             responses::ev_function_call("uexec-1", "exec_command", &args.to_string()),
@@ -5612,11 +5649,12 @@ async fn command_execution_notifications_include_process_id(
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
             model: Some("mock-model".to_string()),
+            ephemeral: Some(true),
             ..Default::default()
         })
         .await?;
 
-    let TurnStartResponse { turn: _turn } = mcp
+    let TurnStartResponse { turn } = mcp
         .request(|request_id| ClientRequest::TurnStart {
             request_id,
             params: TurnStartParams {
@@ -5654,6 +5692,50 @@ async fn command_execution_notifications_include_process_id(
     assert_eq!(status, CommandExecutionStatus::InProgress);
     assert_eq!(started_process_id.is_none(), launch_failed);
 
+    if stop_background {
+        let change: ThreadBackgroundTerminalsChangedNotification = mcp
+            .read_notification("thread/backgroundTerminals/changed")
+            .await?;
+        assert_eq!(change.thread_id, thread.id);
+        let list: ThreadBackgroundTerminalsListResponse = mcp
+            .request(|request_id| ClientRequest::ThreadBackgroundTerminalsList {
+                request_id,
+                params: ThreadBackgroundTerminalsListParams {
+                    thread_id: thread.id.clone(),
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await?;
+        let [terminal] = list.data.as_slice() else {
+            panic!("expected one process at its initial announcement, got {list:?}");
+        };
+        assert_eq!(terminal.command, "sleep 60 # Bearer [REDACTED_SECRET]");
+        assert_eq!(terminal.turn_id, turn.id);
+        assert_eq!(terminal.item_id, id);
+        assert_eq!(Some(&terminal.process_id), started_process_id.as_ref());
+        let finished: TurnCompletedNotification = mcp.read_notification("turn/completed").await?;
+        assert_eq!(finished.turn.id, turn.id);
+        for (turn_id, expected) in [("stale-turn", false), (turn.id.as_str(), true)] {
+            let result: ThreadBackgroundTerminalsTerminateResponse = mcp
+                .request(
+                    |request_id| ClientRequest::ThreadBackgroundTerminalsTerminate {
+                        request_id,
+                        params: ThreadBackgroundTerminalsTerminateParams {
+                            thread_id: thread.id.clone(),
+                            process_id: terminal.process_id.clone(),
+                            invocation: Some(BackgroundTerminalInvocation {
+                                turn_id: turn_id.to_string(),
+                                item_id: terminal.item_id.clone(),
+                            }),
+                        },
+                    },
+                )
+                .await?;
+            assert_eq!(result.terminated, expected);
+        }
+    }
+
     let completed_command = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
             let completed: ItemCompletedNotification =
@@ -5664,6 +5746,12 @@ async fn command_execution_notifications_include_process_id(
         }
     })
     .await??;
+    if stop_background {
+        let change: ThreadBackgroundTerminalsChangedNotification = mcp
+            .read_notification("thread/backgroundTerminals/changed")
+            .await?;
+        assert_eq!(change.thread_id, thread.id);
+    }
     let ThreadItemPayload::CommandExecution {
         id: completed_id,
         process_id: completed_process_id,
@@ -5701,11 +5789,13 @@ async fn command_execution_notifications_include_process_id(
     }
     assert_eq!(completed_process_id, started_process_id);
 
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
+    if !stop_background {
+        timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("turn/completed"),
+        )
+        .await??;
+    }
 
     for method in mcp.pending_notification_methods() {
         let notification = mcp.read_stream_until_notification_message(&method).await?;
@@ -5715,6 +5805,201 @@ async fn command_execution_notifications_include_process_id(
         );
     }
 
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn quiet_delegate_terminal_exit_invalidates_an_unsubscribed_observer() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_remote!(Ok(()), "the exit gate is a host filesystem fixture");
+
+    const PARENT_PROMPT: &str = "delegate a background terminal";
+    const CHILD_PROMPT: &str = "run a quiet background terminal";
+    const SPAWN_CALL_ID: &str = "spawn-terminal-worker";
+    const EXEC_CALL_ID: &str = "worker-terminal";
+    const EXIT_GATE: &str = "release-background-terminal";
+
+    let server = responses::start_mock_server().await;
+    responses::mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, PARENT_PROMPT) && !body_contains(req, SPAWN_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("spawn"),
+            responses::ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &json!({"message": CHILD_PROMPT, "task_name": "worker"}).to_string(),
+            ),
+            responses::ev_completed("spawn"),
+        ]),
+    )
+    .await;
+    responses::mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, SPAWN_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("parent-done"),
+            responses::ev_assistant_message("parent-done-message", "delegated"),
+            responses::ev_completed("parent-done"),
+        ]),
+    )
+    .await;
+    responses::mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, CHILD_PROMPT) && !body_contains(req, EXEC_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("exec"),
+            responses::ev_function_call(
+                EXEC_CALL_ID,
+                "exec_command",
+                &json!({
+                    "cmd": format!("while [ ! -f {EXIT_GATE} ]; do sleep 0.05; done"),
+                    "yield_time_ms": 100,
+                })
+                .to_string(),
+            ),
+            responses::ev_completed("exec"),
+        ]),
+    )
+    .await;
+    responses::mount_sse_once_match(
+        &server,
+        |req: &Request| body_contains(req, EXEC_CALL_ID),
+        responses::sse(vec![
+            responses::ev_response_created("child-done"),
+            responses::ev_assistant_message("child-done-message", "terminal yielded"),
+            responses::ev_completed("child-done"),
+        ]),
+    )
+    .await;
+
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_sandbox_mode("danger-full-access")
+        .enable_feature(Feature::MultiAgentV2)
+        .enable_feature(Feature::UnifiedExec)
+        .disable_feature(Feature::ShellSnapshot)
+        .write(codex_home.path())?;
+    write_models_cache(codex_home.path()).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let workspace = mcp.auto_env()?.cwd().to_path_buf();
+    let ThreadStartResponse { thread, .. } = mcp
+        .start_thread(ThreadStartParams {
+            model: Some("gpt-5.4".to_string()),
+            cwd: Some(workspace.display().to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let _: TurnStartResponse = mcp
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id,
+                input: vec![V2UserInput::Text {
+                    text: PARENT_PROMPT.to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+
+    let child_id = timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            let completed: ItemCompletedNotification =
+                mcp.read_notification("item/completed").await?;
+            if let ThreadItemPayload::SubAgentActivity {
+                kind: SubAgentActivityKind::Completed,
+                agent_thread_id,
+                ..
+            } = completed.item.payload
+            {
+                return Ok::<_, anyhow::Error>(agent_thread_id);
+            }
+        }
+    })
+    .await??;
+    let registered: ThreadBackgroundTerminalsChangedNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_notification("thread/backgroundTerminals/changed"),
+    )
+    .await??;
+    assert_eq!(registered.thread_id, child_id);
+    let unsubscribed: ThreadUnsubscribeResponse = mcp
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: child_id.clone(),
+            },
+        })
+        .await?;
+    assert_eq!(unsubscribed.status, ThreadUnsubscribeStatus::Unsubscribed);
+
+    let params = ThreadBackgroundTerminalsListParams {
+        thread_id: child_id.clone(),
+        cursor: None,
+        limit: None,
+    };
+    let live: ThreadBackgroundTerminalsListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadBackgroundTerminalsList {
+            request_id,
+            params: params.clone(),
+        })
+        .await?;
+    let [terminal] = live.data.as_slice() else {
+        panic!("expected one terminal after the delegate finished, got {live:?}");
+    };
+    assert_eq!(terminal.item_id, EXEC_CALL_ID);
+
+    tokio::fs::write(workspace.join(EXIT_GATE), []).await?;
+    let exited = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/backgroundTerminals/changed"),
+    )
+    .await??;
+    assert_eq!(exited.params, Some(json!({"threadId": child_id})));
+    let cleared: ThreadBackgroundTerminalsListResponse = mcp
+        .request(|request_id| ClientRequest::ThreadBackgroundTerminalsList { request_id, params })
+        .await?;
+    assert!(cleared.data.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_terminal_list_distinguishes_unloaded_threads_from_invalid_ids() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let unloaded = codex_protocol::ThreadId::new().to_string();
+
+    for (thread_id, data) in [
+        (
+            unloaded.as_str(),
+            Some(json!({ "reason": "threadNotLoaded", "threadId": unloaded })),
+        ),
+        ("invalid-id", None),
+    ] {
+        let id = mcp
+            .send_request(
+                "thread/backgroundTerminals/list",
+                Some(json!({"threadId": thread_id})),
+            )
+            .await?;
+        let error: JSONRPCError = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+        assert_eq!(error.error.data, data);
+    }
     Ok(())
 }
 

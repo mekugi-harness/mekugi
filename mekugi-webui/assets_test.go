@@ -67,7 +67,7 @@ func TestAssetsOnlyHost(t *testing.T) {
 			if !strings.Contains(policy, "manifest-src 'self'") {
 				t.Fatalf("CSP blocks install manifest: %s", policy)
 			}
-			for _, directive := range []string{"img-src 'self' data: blob:", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "connect-src http: https: ws: wss:", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
+			for _, directive := range []string{"img-src 'self' data: blob:", "media-src data:", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "connect-src http: https: ws: wss:", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
 				if !strings.Contains(policy, directive) {
 					t.Errorf("CSP omits %q: %s", directive, policy)
 				}

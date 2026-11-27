@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/modelprotocol/responses"
 )
 
 const (
@@ -110,7 +109,7 @@ func fixtureResponsesSSE(events ...any) string {
 	var stream strings.Builder
 	for _, event := range events {
 		stream.WriteString("data: ")
-		stream.Write(responses.MustMarshalJSON(event))
+		stream.Write(e2eMustMarshalJSON(event))
 		stream.WriteString("\n\n")
 	}
 	return stream.String()
@@ -125,7 +124,7 @@ func fixtureResponsesStream(wire string) *http.Response {
 }
 
 func writeFixtureResponseSocket(ctx context.Context, conn *websocket.Conn, value any) error {
-	return conn.Write(ctx, websocket.MessageText, responses.MustMarshalJSON(value))
+	return conn.Write(ctx, websocket.MessageText, e2eMustMarshalJSON(value))
 }
 
 func readFixtureResponseSocket(ctx context.Context, conn *websocket.Conn) (map[string]jsonv1.RawMessage, error) {
@@ -145,22 +144,26 @@ func fixtureSocketEvent(kind, id string) map[string]any {
 }
 
 func fixtureResponsesSuccess() *http.Response {
-	const answer = "Recovered after a retry."
+	return fixtureTextResponse("retry", "Recovered after a retry.")
+}
+
+func fixtureTextResponse(id, answer string) *http.Response {
+	itemID, responseID := id+"-answer", id+"-response"
 	item := map[string]any{
-		"type": "message", "id": "retry-answer", "role": "assistant", "status": "completed",
+		"type": "message", "id": itemID, "role": "assistant", "status": "completed",
 		"content": []any{map[string]any{"type": "output_text", "text": answer, "annotations": []any{}}},
 	}
 	return fixtureResponsesStream(fixtureResponsesSSE(
-		map[string]any{"type": "response.created", "response": map[string]any{"id": "retry-response", "status": "in_progress", "output": []any{}}},
+		map[string]any{"type": "response.created", "response": map[string]any{"id": responseID, "status": "in_progress", "output": []any{}}},
 		map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{
-			"type": "message", "id": "retry-answer", "role": "assistant", "status": "in_progress", "content": []any{},
+			"type": "message", "id": itemID, "role": "assistant", "status": "in_progress", "content": []any{},
 		}},
-		map[string]any{"type": "response.content_part.added", "item_id": "retry-answer", "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
-		map[string]any{"type": "response.output_text.delta", "item_id": "retry-answer", "output_index": 0, "content_index": 0, "delta": answer},
-		map[string]any{"type": "response.output_text.done", "item_id": "retry-answer", "output_index": 0, "content_index": 0, "text": answer},
-		map[string]any{"type": "response.content_part.done", "item_id": "retry-answer", "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": answer, "annotations": []any{}}},
+		map[string]any{"type": "response.content_part.added", "item_id": itemID, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": ""}},
+		map[string]any{"type": "response.output_text.delta", "item_id": itemID, "output_index": 0, "content_index": 0, "delta": answer},
+		map[string]any{"type": "response.output_text.done", "item_id": itemID, "output_index": 0, "content_index": 0, "text": answer},
+		map[string]any{"type": "response.content_part.done", "item_id": itemID, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": answer, "annotations": []any{}}},
 		map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item},
-		map[string]any{"type": "response.completed", "response": map[string]any{"id": "retry-response", "status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}},
+		map[string]any{"type": "response.completed", "response": map[string]any{"id": responseID, "status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}},
 	))
 }
 

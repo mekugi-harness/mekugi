@@ -846,7 +846,7 @@ fn compose_diff_and_summary_drop_net_noop_reverted_files() {
 
     let diffs = compose_diff(&store, &[r1, r2], &[]).expect("diff");
     assert_eq!(diffs.len(), 1);
-    assert_eq!(diffs[0].rel_path, "keep.rs");
+    assert_eq!(diffs[0].stats.rel_path, "keep.rs");
 }
 
 #[test]
@@ -1012,7 +1012,7 @@ fn unattributed_author_allocates_shell_stream_and_ephemeral_only_index_flag() {
     let store = ChangeHistoryStore::open(tmp.path().join("store")).unwrap();
 
     let meta = ChangeMetadata {
-        thread_id: String::new(),
+        thread_id: "calling-thread".to_string(),
         session_id: "sess-1".to_string(),
         turn_id: "turn-1".to_string(),
         call_id: "call-u1".to_string(),
@@ -1042,7 +1042,7 @@ fn unattributed_author_allocates_shell_stream_and_ephemeral_only_index_flag() {
     assert_eq!(rec1.id.as_str(), "shell1");
     assert!(rec1.id.is_unattributed());
     assert!(rec1.metadata.is_unattributed());
-    assert_eq!(rec1.metadata.thread_id, "");
+    assert_eq!(rec1.metadata.thread_id, "calling-thread");
 
     let expanded = expand_id_spec("shell1..2").unwrap();
     assert_eq!(
@@ -1052,6 +1052,7 @@ fn unattributed_author_allocates_shell_stream_and_ephemeral_only_index_flag() {
 
     let entries = store.list_entries().unwrap();
     assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].thread_id, "calling-thread");
     assert!(entries[0].is_unattributed());
     assert!(entries[0].ephemeral_only);
 }

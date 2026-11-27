@@ -349,6 +349,7 @@ fn searchable_text(item: &ThreadItemPayload) -> Option<Cow<'_, str>> {
         | ThreadItemPayload::DynamicToolCall { .. }
         | ThreadItemPayload::CollabAgentToolCall { .. }
         | ThreadItemPayload::SubAgentActivity { .. }
+        | ThreadItemPayload::AgentMail { .. }
         | ThreadItemPayload::WebSearch(_)
         | ThreadItemPayload::ImageView { .. }
         | ThreadItemPayload::AgentSideQuestion(_)

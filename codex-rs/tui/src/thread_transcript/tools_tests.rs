@@ -21,6 +21,7 @@ fn command_item(status: CommandExecutionStatus) -> ThreadItemPayload {
         process_id: None,
         source: CommandExecutionSource::Agent,
         status,
+        display: None,
         command_actions: vec![CommandAction::Unknown {
             command: "cargo check".to_string(),
         }],

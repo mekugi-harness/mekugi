@@ -37,5 +37,12 @@ func Input(d composer.Draft) []map[string]any {
 	if selections := d.AnswerSelections + d.UserSelections(); selections != "" {
 		input = append(input, binding.TextInput(selections, nil))
 	}
+	seenSkills := make(map[string]bool, len(d.Skills))
+	for _, skill := range d.Skills {
+		if !seenSkills[skill.Path] {
+			seenSkills[skill.Path] = true
+			input = append(input, map[string]any{"type": "skill", "name": skill.Name, "path": skill.Path})
+		}
+	}
 	return input
 }

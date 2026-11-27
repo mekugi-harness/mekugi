@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { setContext, tick, untrack } from "svelte";
   import type { InitialInput } from "./attachments";
   import Composer from "./Composer.svelte";
+  import { detailLinks, type DetailLink } from "./detail-link";
   import DetailsPanel from "./DetailsPanel.svelte";
   import { matchReviewedFile } from "./diff";
   import DiffPanel from "./DiffPanel.svelte";
@@ -9,16 +10,19 @@
   import { basename, statusText } from "./format";
   import type { Machine } from "./hub.svelte";
   import { editEntryPaths, isEditEntry } from "./kinds";
+  import LiveSource from "./LiveSource.svelte";
   import Path from "./Path.svelte";
   import { preferences } from "./preferences.svelte";
   import Prompt from "./Prompt.svelte";
-  import type { Entry } from "./protocol";
+  import type { Entry, ThreadForkResponse } from "./protocol";
   import Roster from "./Roster.svelte";
   import { semantic } from "./semantic.svelte";
+  import SessionFeatures from "./SessionFeatures.svelte";
   import SessionInfo from "./SessionInfo.svelte";
   import { stream } from "./stream.svelte";
   import ThreadDocks from "./ThreadDocks.svelte";
   import Transcript from "./Transcript.svelte";
+  import { errorText } from "./transport";
   import Alert from "./ui/Alert.svelte";
   import { Badge } from "./ui/badge";
   import Button from "./ui/Button.svelte";
@@ -28,7 +32,7 @@
   import Popover from "./ui/Popover.svelte";
   import { Separator } from "./ui/separator";
   import { input as inputStyle } from "./ui/styles";
-  import { show, view } from "./view.svelte";
+  import { open, show, view } from "./view.svelte";
 
   let {
     machine,
@@ -37,7 +41,6 @@
     oninitial,
     sidebar,
     onsidebar,
-    onend,
   }: {
     machine: Machine;
     id: string;
@@ -45,20 +48,33 @@
     oninitial: () => void;
     sidebar: boolean;
     onsidebar: () => void;
-    onend: (target: { machine: Machine; id: string; title: string }) => void;
   } = $props();
 
   let selectedQuestion = $state("");
   let panel = $state<"agents" | "changes" | "details" | undefined>();
   let selectedEntry = $state<Entry | undefined>();
+  let selectedLink = $state<DetailLink>();
   let focusChangePath = $state<string>();
   let hiddenHooks = $state(0);
   let renameOpen = $state(false);
   let renameValue = $state("");
   let savingName = $state(false);
   let renameError = $state<string | undefined>();
+  let forkError = $state<string>();
+  let forking = $state(false);
   let wall = $state(Date.now());
   let narrow = $state(false);
+  let composer = $state<ReturnType<typeof Composer>>();
+
+  type OneOff = { thread: string; initial?: InitialInput; firstTurn?: string };
+  let oneOffs = $state.raw(new Map<string, OneOff>());
+  let selectedSide = $state<string>();
+  let sideChanging = $state(false);
+  let sideError = $state<string>();
+  const tabId = $props.id();
+  const oneOff = $derived(oneOffs.get(id));
+  const showingSide = $derived(!!oneOff && selectedSide === id);
+  const displayed = $derived(showingSide && oneOff ? oneOff.thread : id);
 
   $effect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -75,15 +91,26 @@
   });
 
   $effect(() => {
-    const thread = id;
+    const main = id;
+    const thread = displayed;
     const owner = machine;
     untrack(() => {
-      stream.connect(thread, owner, stream.family?.threads.includes(thread));
-      semantic.connect(thread, owner);
+      const side = showingSide ? oneOff : undefined;
+      semantic.connect(thread, owner, main);
+      stream.connect(
+        thread,
+        owner,
+        stream.family?.threads.includes(thread),
+        (side?.initial ?? initial)?.started,
+        side?.firstTurn,
+      );
       selectedEntry = undefined;
+      selectedLink = undefined;
       renameOpen = false;
       renameError = undefined;
       savingName = false;
+      forkError = undefined;
+      forking = false;
     });
     return () => {
       stream.close();
@@ -93,7 +120,9 @@
 
   const session = $derived(stream.session);
   const title = $derived(
-    session?.title || (session?.workspace ? basename(session.workspace) : undefined) || id,
+    showingSide
+      ? "One-off"
+      : session?.title || (session?.workspace ? basename(session.workspace) : undefined) || id,
   );
   const root = $derived(
     stream.roster.agents.find((a) => a.name === "/root") ?? stream.roster.agents[0],
@@ -119,8 +148,12 @@
   const hasPrompts = $derived(
     !!(semantic.prompts.approvals.length || semantic.prompts.questions.length),
   );
-  const net = $derived(stream.review?.counts.Net);
-  const hasChanges = $derived(!!stream.review?.files.length);
+  const net = $derived(stream.reviewOverview.counts.Net);
+  const hasChanges = $derived(!!stream.review?.fileCount);
+
+  $effect(() => {
+    if (panel !== "changes" && stream.reviewCaller) stream.selectChangeCaller("");
+  });
 
   function resolveChangePath(paths: string[]): string | undefined {
     const review = stream.review;
@@ -150,7 +183,18 @@
       }
     }
     selectedEntry = entry;
+    selectedLink = undefined;
     panel = "details";
+  }
+
+  setContext(detailLinks, (link: DetailLink) => {
+    selectedEntry = undefined;
+    selectedLink = link;
+    panel = "details";
+  });
+
+  function addReference(text: string, description: string, source: string): boolean {
+    return composer?.addReference(text, description, source) ?? false;
   }
 
   function onkeydown(event: KeyboardEvent) {
@@ -171,6 +215,106 @@
       event.preventDefault();
       panel = panel ? undefined : "agents";
     }
+  }
+
+  async function forkThread() {
+    if (forking) return;
+    const source = id;
+    const owner = machine;
+    forking = true;
+    forkError = undefined;
+    const res = await semantic.fork();
+    if (source !== id || owner !== machine) return;
+    forking = false;
+    if ("id" in res) open(res.id);
+    else forkError = res.error;
+  }
+
+  async function openOneOff(draft: Omit<InitialInput, "started" | "onstarted">) {
+    if (sideChanging) return "One-off is already changing.";
+    const owner = machine;
+    const main = id;
+    const previous = oneOff;
+    sideChanging = true;
+    sideError = undefined;
+    try {
+      const created = await owner.request<ThreadForkResponse>("thread/fork", {
+        threadId: main,
+        threadSource: "mekugi_side",
+        excludeTurns: true,
+      });
+      if (previous) {
+        try {
+          await owner.request("thread/archive", { threadId: previous.thread });
+        } catch (error) {
+          await owner.request("thread/archive", { threadId: created.thread.id }).catch(() => {});
+          throw error;
+        }
+      }
+      const side: OneOff = { thread: created.thread.id };
+      side.initial = {
+        ...draft,
+        started: created,
+        onstarted: (turn) => {
+          const current = oneOffs.get(main);
+          if (current?.thread !== side.thread) return;
+          oneOffs = new Map(oneOffs).set(main, { ...current, firstTurn: turn });
+          stream.showFrom(side.thread, turn);
+        },
+      };
+      oneOffs = new Map(oneOffs).set(main, side);
+      if (id === main && owner === machine) selectedSide = main;
+      return undefined;
+    } catch (error) {
+      return errorText(error, true);
+    } finally {
+      sideChanging = false;
+    }
+  }
+
+  async function closeOneOff() {
+    const side = oneOff;
+    if (!side || sideChanging) return;
+    const main = id;
+    sideChanging = true;
+    sideError = undefined;
+    try {
+      await machine.request("thread/archive", { threadId: side.thread });
+      const remaining = new Map(oneOffs);
+      remaining.delete(main);
+      if (selectedSide === main) selectedSide = undefined;
+      oneOffs = remaining;
+      if (id === main) {
+        await tick();
+        composer?.focus();
+      }
+      return undefined;
+    } catch (error) {
+      sideError = errorText(error, true);
+      return sideError;
+    } finally {
+      sideChanging = false;
+    }
+  }
+
+  function navigateTabs(event: KeyboardEvent) {
+    const button = event.currentTarget as HTMLButtonElement;
+    const tabs = [
+      ...(button.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []),
+    ];
+    const current = tabs.indexOf(button);
+    if (current < 0) return;
+    const next =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? tabs.length - 1
+          : event.key === "ArrowRight" || event.key === "ArrowLeft"
+            ? 1 - current
+            : -1;
+    if (next < 0) return;
+    event.preventDefault();
+    tabs[next]?.focus();
   }
 
   async function saveRename() {
@@ -207,7 +351,7 @@
     </div>
     <div class="flex flex-none items-center gap-1">
       {#if session}
-        <DisplayPopover {hiddenHooks} />
+        <DisplayPopover {hiddenHooks} predictionsAvailable={!showingSide} />
       {/if}
       <span class="flex flex-none items-center gap-1.5 px-1 text-small text-muted max-sm:hidden">
         {#if stream.connection === "open"}
@@ -275,49 +419,134 @@
       {/if}
       {#if session}
         <Popover label="Session details" icon="info">
-          <SessionInfo {session} {root} {status} alert={stream.status.alert} />
-          <div class="flex items-center justify-between gap-2 border-t border-rule px-4 py-2.5">
-            <Button
-              size="sm"
-              variant="quiet"
-              onclick={() => {
-                renameValue = title;
-                renameError = undefined;
-                renameOpen = true;
-              }}>Rename</Button
-            >
-            <Button size="sm" variant="danger" onclick={() => onend({ machine, id, title })}
-              >End thread</Button
-            >
-          </div>
+          {#snippet children(close, visible)}
+            <SessionInfo {session} {root} {status} {machine} {visible} alert={stream.status.alert}>
+              {#if visible}
+                <SessionFeatures {machine} thread={session.thread} />
+              {/if}
+            </SessionInfo>
+            <div class="flex items-center justify-between gap-2 border-t border-rule px-4 py-2.5">
+              <div class="flex items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  onclick={() => {
+                    renameValue = title;
+                    renameError = undefined;
+                    renameOpen = true;
+                  }}>Rename</Button
+                >
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  disabled={forking}
+                  onclick={() => void forkThread()}>{forking ? "Forking…" : "Fork"}</Button
+                >
+              </div>
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={!composer || stream.connection !== "open"}
+                onclick={() => {
+                  close();
+                  composer?.openArchive();
+                }}>Archive</Button
+              >
+            </div>
+            {#if forkError}<Alert class="mx-4 mb-3">{forkError}</Alert>{/if}
+          {/snippet}
         </Popover>
       {/if}
     </div>
   </header>
 
+  {#if oneOff}
+    {@const conversationTab =
+      "min-w-20 rounded-t-control border-b-2 border-transparent px-3 py-1 text-muted transition-colors hover:bg-active hover:text-ink aria-selected:border-accent aria-selected:text-ink max-sm:min-h-11"}
+    <div class="mx-auto flex w-full max-w-column items-center gap-1 px-4 pt-2 max-sm:px-2">
+      <div
+        role="tablist"
+        aria-label="Conversation"
+        class="flex min-w-0 flex-1 gap-1 border-b border-rule"
+      >
+        <button
+          type="button"
+          role="tab"
+          class={conversationTab}
+          id={tabId + "-main"}
+          aria-selected={!showingSide}
+          tabindex={!showingSide ? 0 : -1}
+          onkeydown={navigateTabs}
+          onclick={() => (selectedSide = undefined)}>Main</button
+        >
+        <button
+          type="button"
+          role="tab"
+          class={conversationTab}
+          id={tabId + "-oneoff"}
+          aria-selected={showingSide}
+          tabindex={showingSide ? 0 : -1}
+          onkeydown={navigateTabs}
+          onclick={() => (selectedSide = id)}>One-off</button
+        >
+      </div>
+      <Button
+        variant="quiet"
+        size="sm"
+        icon="close"
+        label="Close One-off"
+        disabled={sideChanging || machine.connection !== "open"}
+        onclick={closeOneOff}
+      />
+    </div>
+    {#if sideError}
+      <div class="mx-auto w-full max-w-column px-4 pt-1 max-sm:px-2">
+        <Alert>{sideError}</Alert>
+      </div>
+    {/if}
+  {/if}
   {#if stream.gone}
     <div class="grid flex-1 place-content-center p-6 text-center">
       <Alert>{stream.gone.text}</Alert>
     </div>
   {:else}
-    <div class="flex min-h-0 flex-1">
+    <div
+      class="flex min-h-0 flex-1"
+      role={oneOff ? "tabpanel" : undefined}
+      aria-labelledby={oneOff ? tabId + (showingSide ? "-oneoff" : "-main") : undefined}
+    >
       <div class="flex min-h-0 min-w-0 flex-1 flex-col">
         {#if stream.error}
           <div class="mx-auto w-full max-w-column px-4 pt-3 max-sm:px-2">
             <Alert>{stream.error}</Alert>
           </div>
         {/if}
-        <Transcript
-          entries={mainEntries}
-          owner={view.agent ?? "/root"}
-          workspace={session?.workspace}
-          jumps={stream.jumps}
-          onhiddenhooks={(count) => (hiddenHooks = count)}
-          onchanges={hasChanges ? openChanges : undefined}
-          hasSavedChange={hasChanges ? hasSavedChange : undefined}
-          onselect={openDetails}
-        />
-        <ThreadDocks />
+        <div class="relative flex min-h-0 flex-1 flex-col">
+          <Transcript
+            entries={mainEntries}
+            owner={view.agent ?? "/root"}
+            workspace={session?.workspace}
+            jumps={stream.jumps}
+            onhiddenhooks={(count) => (hiddenHooks = count)}
+            onchanges={hasChanges ? openChanges : undefined}
+            hasSavedChange={hasChanges ? hasSavedChange : undefined}
+            onselect={openDetails}
+            onreference={stream.connection === "open" ? addReference : undefined}
+          />
+          {#key displayed}
+            <LiveSource
+              previews={stream.live}
+              owner={view.agent ?? "/root"}
+              onsaved={(path) => {
+                stream.selectChangeCaller("");
+                openChanges([path]);
+              }}
+            />
+          {/key}
+        </div>
+        {#key machine.id + ":" + displayed}
+          <ThreadDocks />
+        {/key}
         {#if hasPrompts}
           <div class="mx-auto grid w-full max-w-column gap-2 px-4 pt-2 max-sm:px-2">
             {#each semantic.prompts.approvals.slice(0, 1) as approval (approval.id)}
@@ -328,36 +557,47 @@
               />
             {/each}
             {#if currentQuestion}
-              <Prompt
-                item={currentQuestion.call}
-                questionIndex={currentQuestion.index}
-                position={questionPosition}
-                total={questionChannel.length}
-                onquestion={(index) => {
-                  const target = currentQuestion.call.questions[index];
-                  if (target) selectedQuestion = target.id;
-                }}
-                onprevious={() => {
-                  const prev = questionChannel[questionPosition - 1];
-                  if (prev) selectedQuestion = prev.question.id;
-                }}
-                onnext={() => {
-                  const next = questionChannel[questionPosition + 1];
-                  if (next) selectedQuestion = next.question.id;
-                }}
-                unavailable={stream.connection !== "open"}
-              />
+              {#key currentQuestion.call.id}
+                <Prompt
+                  item={currentQuestion.call}
+                  questionIndex={currentQuestion.index}
+                  position={questionPosition}
+                  total={questionChannel.length}
+                  onquestion={(index) => {
+                    const target = currentQuestion.call.questions[index];
+                    if (target) selectedQuestion = target.id;
+                  }}
+                  onprevious={() => {
+                    const prev = questionChannel[questionPosition - 1];
+                    if (prev) selectedQuestion = prev.question.id;
+                  }}
+                  onnext={() => {
+                    const next = questionChannel[questionPosition + 1];
+                    if (next) selectedQuestion = next.question.id;
+                  }}
+                  unavailable={stream.connection !== "open"}
+                />
+              {/key}
             {/if}
           </div>
         {/if}
         <Composer
+          bind:this={composer}
           {machine}
-          thread={id}
+          thread={displayed}
           input={stream.input}
           agent={view.agent ?? "/root"}
           role={root?.role}
-          {initial}
-          {oninitial}
+          initial={showingSide ? oneOff?.initial : initial}
+          oninitial={() => {
+            if (showingSide && oneOff)
+              oneOffs = new Map(oneOffs).set(id, { ...oneOff, initial: undefined });
+            else oninitial();
+          }}
+          oneOffOpen={!!oneOff}
+          inOneOff={showingSide}
+          ononeoff={openOneOff}
+          onarchive={() => (showingSide ? closeOneOff() : semantic.archive())}
           asking={hasPrompts}
           unavailable={stream.connection !== "open"
             ? machine.error || machine.state.text
@@ -371,6 +611,8 @@
             <div class="h-full overflow-y-auto px-3 pb-4">
               <Roster
                 roster={stream.roster}
+                lines={stream.reviewOverview.counts.Callers}
+                {net}
                 selected={view.agent ?? "/root"}
                 now={wall}
                 loading={stream.connection === "connecting"}
@@ -381,15 +623,35 @@
           {:else if panel === "changes"}
             <DiffPanel
               review={stream.review}
+              caller={stream.review?.caller ?? ""}
+              callers={stream.reviewOverview.callers}
+              callerLabel={(caller) => stream.label(caller)}
+              oncaller={(caller) => stream.selectChangeCaller(caller)}
+              cursor={stream.reviewCursor}
+              loading={stream.reviewLoading}
+              error={stream.reviewError}
+              onpage={(signal) => void stream.moreChanges(signal)}
+              onretry={() => stream.retryChanges()}
               focusPath={focusChangePath}
               onfocused={() => (focusChangePath = undefined)}
             />
-          {:else if panel === "details" && selectedEntry}
+          {:else if panel === "details" && (selectedEntry || selectedLink)}
             <DetailsPanel
               entry={selectedEntry}
+              link={selectedLink}
+              thread={displayed}
+              {machine}
+              onreference={stream.connection === "open"
+                ? (text, description, source) => {
+                    if (!addReference(text, description, source)) return false;
+                    if (narrow) panel = undefined;
+                    return true;
+                  }
+                : undefined}
               onclose={() => {
                 panel = undefined;
                 selectedEntry = undefined;
+                selectedLink = undefined;
               }}
             />
           {/if}

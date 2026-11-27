@@ -53,6 +53,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   `mekugi-app-server` to App-Server Protocol v2 `shellGuard/requestApproval` and
   `shellGuard/requestSecret` requests, keeping secrets zeroized and excluded
   from rollouts, tracing, and analytics.
+- Command items optionally include authored shell steps and a resolved display
+  directory. The original command, launch directory, exit and output remain
+  unchanged; individual steps do not claim separate execution results.
+  Unified exec streams startup output after the command-start event.
 - Native coordination uses the shared thread manager for live foreign messages,
   side questions, listing and inspection. Child startup, wait-progress selection
   and final change delivery no longer request resources from a connected Go
@@ -78,6 +82,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   clients (including the Go TUI connecting to `--listen unix://PATH`) read
   durable saved changes and composed diffs directly from `codex-change-history`
   without an intermediate Go session server.
+- The browser dock and terminal process picker read native per-thread background
+  terminals. The experimental change notification invalidates the list after
+  registration or exit, including for observers not subscribed to a delegate.
+  It carries only the thread ID, not command output.
 - Native process-scoped shell write observation (`codex-exec-track`,
   `MEKUGI-801`): `codex-core` wraps agent and interactive `!` user-shell
   commands with `WriteObserverSession` (Linux `seccomp-unotify` and macOS
@@ -85,8 +93,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   mutation without Bash AST parsing or shell script rewriting, preserving TTYs
   intact, working on non-git directories, and capturing writes outside `cwd`
   (classifying `/tmp`, `$TMPDIR`, and `$SESSION_TMP` as
-  `ChangeScope::Ephemeral`). Observed writes (including writes before nonzero
-  exits) persist to `codex-change-history` under `ChangeSourceKind::ShellWrite`
+  `ChangeScope::Ephemeral`). On Apple Silicon the interposer loads in both
+  `arm64` and `arm64e` child processes. Observed writes before nonzero
+  exits also persist to `codex-change-history` under `ChangeSourceKind::ShellWrite`
   for agent commands and `ChangeSourceKind::UserShell` (`"user_shell"`,
   unattributed `shellN`) for interactive `!` commands with shared `claim_key`
   deduplication, while classifying Git worktree restores on Linux (`git restore`,
@@ -107,7 +116,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   across context resets, forks and resume. Answers are compact indexed objects;
   async replies use `<question_answers>`, without expansion after context reset.
   The v2 response now carries an ordered answer vector, not a string-answer map;
-  clients must migrate. Catalog parameter overrides cannot replace this schema.
+  clients must migrate. A blocking answer can carry images for its own question;
+  native passes them to the model as image input. Catalog parameter overrides
+  cannot replace this schema.
   Async questions decode and serialize only the canonical rich-option shape, and
   retained authored IDs do not reset the runtime question counter.
 
@@ -157,10 +168,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   requires an endpoint, cannot redirect inference or catalog requests, and has
   no built-in price. Native exchange measurements feed launch-wide diagnostics
   without retaining prompts, tool input, or response text in the private log.
-- Native code-mode input events feed provisional live diffs, and Saved Diff
-  reads the session's native capture store alongside legacy captures and
-  client-side user shell edits so newly native-captured edits appear in the
-  Diff pane.
+- Native patch input feeds provisional live diffs. App-server v2 also sends
+  `item/commandExecution/changesUpdated` for bounded, observed shell edits
+  before the command exits. `thread/changes/live` reads the current snapshots
+  for a thread when attaching or reconnecting. These previews do not establish
+  change IDs or enter rollout history; Saved Diff reads settled captures.
 - When session naming is enabled, new persistent Main threads can receive a
   native title from a one-shot, untooled request carrying `thread_title` turn
   metadata (`gpt-6-luna` on built-in OpenAI, skipping local spend/budget
@@ -174,10 +186,17 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   a stopped session keeps explicit choices and uses current defaults otherwise.
 
 - Context resets rebuild from current sources without a generated summary.
+  Retained app-server items distinguish these resets from compaction and include
+  a plaintext summary only when a local compaction generated one.
   `new_context` can reload selected files, skills, and captured changes. Manual
   resets are cancellable and report settlement; reset receipts retain which
   sources were acquired. Accepted user input and agent handoffs can also attach
   sources through the same native acquisition path.
+- In both clients, `/compact` with Enter replaces active work and Tab defers
+  until idle. A successful busy-thread compact continues without a synthetic
+  prompt when no queued draft takes precedence. The experimental
+  `thread/compact/start.mode` opts in; existing compact and reset calls keep
+  their behavior.
 - The runtime captures structured environment facts, prepares the shared
   `SESSION_TMP`, and appends it to `PATH` (reported via `on_path="true"` on
   `<session_tmp>`). The native skills extension uses the local `skills-mgr`
@@ -195,6 +214,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   Context usage notices and deduplication savings come from native observations
   instead of host prompt rewriting. Mekugi only promises resume for Mekugi
   sessions.
+- On cold resume, explicit model and reasoning-effort overrides replace only
+  the named setting. A model change also retains an explicit saved service
+  tier if the new model has neither its own saved choice nor a configured tier.
 - Migration 63 records completed compactions in Mekugi state. The upstream
   0.171.0 state migrations were moved to 64 and 65 to preserve the recorded
   checksum in existing Mekugi databases.
@@ -204,8 +226,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - Native thread start and cold resume accept a private caller environment and
   named profile. Concurrent families keep separate settings and credentials;
   live reattach verifies the selector without reopening its profile.
-  Thread-scoped configuration reads expose only terminal settings and preset
-  ownership metadata.
+  Both clients manage shared user preset slots through `thread/presets/list`
+  and `thread/presets/write`, without access to the full machine configuration.
+  Terminals can save drafts to Codex input history without submitting a turn
+  and recall them from a new attachment.
 - V2 delegation supports recipient-authorized preload, agent and subtree
   inspection, and foreign messages routed through their original resource
   owner. Side questions and progress summaries use a tool-free auxiliary
@@ -214,14 +238,66 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - Native delivery keeps accepted outbound mail separate from model history and
   preserves inbound plaintext mail for live and resumed transcripts. Progress
   and final replies can attach retained change ranges; delivery receipts
-  distinguish what was rendered and sampled in the recipient's context.
+  distinguish what was rendered and sampled in the recipient's context. The
+  transcript shows the author, recipient, and authored reply separately from
+  model-only attachment context.
 - The [JSON-RPC protocol](codex-rs/app-server-protocol/src/protocol/common.rs)
   adds thread inspection and subtree listing, agent end,
   context-reset cancellation and events, mid-turn `beforeItemId` revert targets
   on `thread/revert`, and feature-use reads. Native observation supplies assignment,
   usage, and progress facts to Mekugi without a second agent registry.
+  When the user opts in to browser predictions, `thread/prediction/request`
+  samples the selected finished turn without adding it to history and returns
+  the suggestion in the request's response instead of a separate notification.
+  Native account eligibility gates automatic terminal suggestions.
+  Rewind uses `thread/revert` for both choices. Clients can include the verified
+  IDs from `thread/revert/preview` to undo captured edits without a shell turn.
+  If the history cutover fails, the server restores the workspace from its undo
+  record. Captures distinguish earlier kept edits even within the same second.
+  The browser reads the same launch counters for the selected thread and its
+  descendants. Browser BTW and One-off use native side forks rather than a
+  separate host session.
+  `ThreadTokenUsage` carries per-thread reference cost (`estimatedCostUsd`,
+  `costPartial`), measured output throughput (`outputTokensPerSecond`),
+  cumulative work duration (`workDurationMs`), and response roundtrip count
+  (`roundtrips`). Native restores known totals, coverage, turn counts, and actual
+  measurement times from retained history; clients do not recompute totals.
+  A fork retains its inherited context size without claiming its source
+  thread's cumulative usage.
+  Per-thread skills used are available on saved reads and via
+  `thread/skills/updated` while attached.
   A subtree read during child startup returns its readable members without
   waiting for the child or reporting the parent missing.
+- `thread/files/search` gives composers native fuzzy matches in the selected
+  thread's workspace without traversing directory symlinks. VCS metadata is
+  excluded even when ignored files are requested. The explicit-root fuzzy
+  search interface is unchanged.
+- `thread/changes/read` returns captured edit provenance, its display label,
+  and signed line totals from native history. Web Saved Diff pages by caller;
+  terminal Details join captured effects to the original execution.
+- `thread/queue/shellCommand` places a standalone user-shell turn in queue
+  order, preserving native edit capture without submitting a model prompt.
+  Existing queued prompts retain their stored format.
+- `thread/queue/take` returns waiting drafts in order for editing.
+  The clients steer with ordinary `turn/steer` and remove each admitted draft
+  with `thread/queue/delete`. Queued shell commands cannot steer the model.
+- The browser can list permission profiles for a loaded thread's workspace.
+  Remote clients cannot choose a different catalog directory.
+- Background-terminal listings include the command's turn ID. Callers can
+  resolve retained output in that turn and pass the turn and item IDs to Stop
+  so a stale action cannot terminate a replacement using the same process ID.
+  Older process-ID-only stop requests still work.
+  A unified-exec rejection before launch publishes its native result in the
+  command item, separately from closure of the approval prompt.
+- A named turn interrupt can stop only that turn, even if it finishes and its
+  replacement starts before the interrupt reaches the runtime. JSON-RPC error
+  data identifies a stale interrupt target or an unloaded process-list thread.
+- Command display metadata identifies the authored shell script, its segments
+  and resolved effective working directory for live and saved commands.
+  Batch status and output still belong to the whole invocation, not to
+  individual segments.
+- Thread input-history reads and appends let the terminal save and recover
+  drafts through the native input history, honoring its configured persistence.
 - The private Unix control socket serves a restricted remote-human WebSocket
   endpoint (`/api/control`, negotiating `mekugi.control.v9` with
   `ConnectionOrigin::RemoteHuman`) alongside authenticated HTTP resource

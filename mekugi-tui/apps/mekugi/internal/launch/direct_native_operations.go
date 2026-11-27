@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/json/jsontext"
@@ -8,25 +9,37 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 	activityfeed "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
+	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 )
 
-func (c *directNativeConnection) Send(ctx context.Context, _ sessionapi.NativeTarget, op sessionapi.NativeOperation) (sessionapi.NativeResult, error) {
+func (c *directNativeConnection) Send(ctx context.Context, target sessionapi.NativeTarget, op sessionapi.NativeOperation) (sessionapi.NativeResult, error) {
 	var err error
 	switch {
 	case op.Composer != nil:
 		err = c.handleComposer(ctx, *op.Composer)
 	case op.Command != nil:
-		err = c.handleSlashCommand(ctx, *op.Command)
+		if *op.Command == "/presets" && op.Editor != nil {
+			seed := ""
+			if len(op.Editor.Draft.Spans()) == 0 {
+				seed = op.Editor.Draft.Text
+			}
+			err = c.openPresetMenu(ctx, seed)
+		} else {
+			err = c.handleSlashCommand(ctx, *op.Command, sessionpresentation.ComposerIntent{})
+		}
 	case op.Interrupt != nil:
 		err = c.handleInterrupt(ctx, *op.Interrupt)
 	case op.Approval != nil:
@@ -38,7 +51,7 @@ func (c *directNativeConnection) Send(ctx context.Context, _ sessionapi.NativeTa
 	case op.Side != nil:
 		err = c.handleCloseSide(ctx)
 	case op.BTW != nil:
-		err = c.handleCloseBTW(ctx)
+		err = c.handleCloseBTW(ctx, *op.BTW)
 	case op.Resume != nil:
 		err = c.handleResumeAction(ctx, *op.Resume)
 	case op.Output != nil:
@@ -47,26 +60,35 @@ func (c *directNativeConnection) Send(ctx context.Context, _ sessionapi.NativeTa
 		c.handleDetailOutput(*op.DetailOutput)
 	case op.CloseDetails != nil:
 		c.mu.Lock()
-		c.details = nil
-		c.publishLocked()
+		if c.details != nil && c.details.View.ID == *op.CloseDetails {
+			c.details = nil
+			c.publishLocked()
+		}
 		c.mu.Unlock()
 	case op.Preferences != nil:
-		c.mu.Lock()
-		c.preferences = slices.Clone(op.Preferences.Presentation)
-		c.publishLocked()
-		c.mu.Unlock()
+		err = c.saveTerminalPreferences(ctx, target, op.Preferences.Presentation)
 	case op.Focused != nil:
 		c.mu.Lock()
 		c.focused = *op.Focused
 		c.mu.Unlock()
 	case op.Completion != nil:
-		c.handleCompletion(*op.Completion)
+		c.handleCompletion(ctx, *op.Completion)
 	case op.Menu != nil:
-		c.handleMenu(*op.Menu, op.Editor)
+		err = c.handleMenu(ctx, *op.Menu, op.Editor)
 	case op.Receipt != nil:
 		c.handleReceipt(*op.Receipt)
-	case op.SaveDraft != nil, op.Panel != nil, op.Details != nil, op.Notice != nil, op.Recovery != nil, op.Reference != nil, op.StopProcess != nil:
-		// No-op or handled locally; return current version.
+	case op.Details != nil:
+		err = c.handleOpenDetails(ctx, *op.Details)
+	case op.Panel != nil:
+		err = c.handlePanelAction(ctx, *op.Panel)
+	case op.StopProcess != nil:
+		err = c.handleStopProcess(ctx, *op.StopProcess)
+	case op.Reference != nil:
+		c.handleReference(*op.Reference)
+	case op.Notice != nil:
+		c.handleNotice(*op.Notice)
+	case op.SaveDraft != nil:
+		err = c.saveInputHistory(ctx, *op.SaveDraft)
 	}
 	c.mu.Lock()
 	ver := sessionpresentation.Version{Attachment: c.attachID, Revision: c.revision}
@@ -81,17 +103,10 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 		return c.stepReasoningEffort(ctx, +1)
 	case sessionpresentation.DecreaseEffort:
 		return c.stepReasoningEffort(ctx, -1)
+	case sessionpresentation.RestoreWaiting:
+		return c.editWaiting(ctx, in.Intent.Thread)
 	case sessionpresentation.SteerWaiting:
-		c.mu.Lock()
-		threadID := c.inputThread
-		if threadID == "" {
-			threadID = c.mainThread
-		}
-		c.mu.Unlock()
-		if threadID == "" {
-			return errors.New("no active thread")
-		}
-		return c.wire.Call(ctx, "thread/queue/start", map[string]any{"threadId": threadID}, nil)
+		return c.steerWaiting(ctx, in.Intent.Thread)
 	}
 	hasAttachments := len(in.Draft.Images) > 0 || len(in.Draft.AnswerImages) > 0 || in.Draft.AnswerSelections != "" || in.Draft.UserSelections() != ""
 	if text == "" && !hasAttachments {
@@ -101,7 +116,7 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 		if hasAttachments {
 			return &sessionapi.NativeFailure{Status: http.StatusBadRequest, Reason: "attachments are not supported with slash commands"}
 		}
-		return c.handleSlashCommand(ctx, text)
+		return c.handleSlashCommand(ctx, text, in.Intent)
 	}
 	if strings.HasPrefix(text, "!") {
 		if hasAttachments {
@@ -117,10 +132,21 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 		if threadID == "" {
 			return errors.New("no active thread")
 		}
-		return c.wire.Call(ctx, "thread/shellCommand", map[string]any{
+		method := "thread/shellCommand"
+		if in.Intent.Operation == sessionpresentation.QueueComposer {
+			method = "thread/queue/shellCommand"
+		}
+		err := c.wire.Call(ctx, method, map[string]any{
 			"threadId": threadID,
 			"command":  cmd,
 		}, nil)
+		if refusal, ok := errors.AsType[*nativeAppServerRPCError](err); ok {
+			switch refusal.Code {
+			case -32600, -32601, -32602:
+				return &sessionapi.NativeFailure{Status: http.StatusBadRequest, Reason: refusal.Error()}
+			}
+		}
+		return err
 	}
 
 	c.mu.Lock()
@@ -146,113 +172,243 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 		}, nil)
 	}
 	if busy {
-		params := map[string]any{
-			"threadId": threadID,
-			"input":    input,
+		err := c.steerInput(ctx, directSteerTurnID{thread: threadID, turn: turnID},
+			&directSteer{clientID: rand.Text(), draft: in.Draft.Clone()}, input, nil)
+		if refusal, ok := errors.AsType[*nativeAppServerRPCError](err); ok {
+			switch refusal.Code {
+			case -32600, -32602:
+				return &sessionapi.NativeFailure{Status: http.StatusBadRequest, Reason: refusal.Error()}
+			}
 		}
-		if turnID != "" {
-			params["expectedTurnId"] = turnID
-		}
-		return c.wire.Call(ctx, "turn/steer", params, nil)
+		return err
 	}
-	return c.wire.Call(ctx, "turn/start", map[string]any{
-		"threadId": threadID,
-		"input":    input,
-	}, nil)
+	return c.startInputTurn(ctx, threadID, input)
 }
 
-func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw string) error {
+// A turn may complete before its turn/start reply reaches the client.
+// Keep terminal IDs only for the lifetime of each outstanding start RPC.
+type directInputTurnStart struct {
+	threadID  string
+	completed []string
+}
+
+func (c *directNativeConnection) startInputTurn(ctx context.Context, threadID string, input []map[string]any) error {
+	start := &directInputTurnStart{threadID: threadID}
+	c.mu.Lock()
+	c.inputTurnStarts = append(c.inputTurnStarts, start)
+	c.mu.Unlock()
+
+	var reply struct {
+		Turn binding.Turn `json:"turn"`
+	}
+	err := c.wire.Call(ctx, "turn/start", map[string]any{
+		"threadId": threadID,
+		"input":    input,
+	}, &reply)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inputTurnStarts = slices.DeleteFunc(c.inputTurnStarts, func(request *directInputTurnStart) bool {
+		return request == start
+	})
+	if err != nil {
+		return err
+	}
+	if threadID != "" && (threadID == c.mainThread || threadID == c.sideThread) &&
+		reply.Turn.ID != "" && reply.Turn.Status == "inProgress" &&
+		c.activeTurnForLocked(threadID) == "" && !slices.Contains(start.completed, reply.Turn.ID) {
+		c.setActiveInputTurnLocked(threadID, reply.Turn.ID)
+		c.publishLocked()
+	}
+	return nil
+}
+
+func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw string, intent sessionpresentation.ComposerIntent) error {
 	trimmed := strings.TrimSpace(raw)
 	verb, rest, _ := strings.Cut(trimmed, " ")
 	rest = strings.TrimSpace(rest)
 	c.mu.Lock()
 	mainID := c.mainThread
+	if (verb != "/permissions" || rest != "") && c.isPermissionMenuLocked() {
+		c.clearMenuLocked()
+		c.publishLocked()
+	}
 	c.mu.Unlock()
 
 	switch verb {
-	case "/quit", "/exit", "/detach":
+	case "/quit":
+		return c.requestQuit(ctx, mainID)
+	case "/detach":
 		c.finish(&sessionapi.NativeExit{Code: 0})
 		return nil
 	case "/compact":
-		if mainID == "" {
+		if rest != "" {
+			return errors.New("usage: /compact")
+		}
+		c.mu.Lock()
+		threadID := cmp.Or(intent.Thread, c.inputThread, mainID)
+		busy := c.activeTurnForLocked(threadID) != ""
+		c.mu.Unlock()
+		if threadID == "" {
 			return errors.New("no active thread")
 		}
-		return c.wire.Call(ctx, "thread/compact/start", map[string]any{"threadId": mainID}, nil)
+		mode := "continueInterrupted"
+		if intent.Operation == sessionpresentation.QueueComposer && busy {
+			mode = "queue"
+		}
+		return c.wire.Call(ctx, "thread/compact/start", map[string]string{"threadId": threadID, "mode": mode}, nil)
 	case "/archive":
 		if mainID == "" {
 			return errors.New("no active thread")
 		}
-		if err := c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": mainID}, nil); err != nil {
+		c.mu.Lock()
+		explanation := "Are you sure? This will archive the current session."
+		if c.busy {
+			explanation = "This will stop the current turn and archive the session."
+		}
+		c.openCommandConfirmationLocked(sessionpresentation.MenuArchive, "Archive this session?", explanation, []completion.Choice{
+			{ID: 1, Name: "No, don't archive", Description: "Return to the current session"},
+			{ID: 2, Name: "Yes, archive", Description: "Archive this session now", Danger: true},
+		})
+		c.mu.Unlock()
+		return nil
+	case "/clear":
+		return c.clearThread(ctx)
+	case "/resume":
+		c.mu.Lock()
+		active := c.activeTurnForLocked(cmp.Or(intent.Thread, c.inputThread)) != ""
+		c.mu.Unlock()
+		if active {
+			return errors.New("'/resume' is disabled while a task is in progress")
+		}
+		if rest == "" {
+			return c.openResumePicker(ctx)
+		}
+		return c.resumeByIDOrName(ctx, rest)
+	case "/rewind":
+		if rest != "" {
+			return errors.New("Usage: /rewind")
+		}
+		return c.openRewind(ctx)
+	case "/model":
+		if rest != "" {
+			return errors.New("Usage: /model")
+		}
+		threadID, model, _ := c.selectedModelSettings()
+		if threadID == "" {
+			return errors.New("no active thread")
+		}
+		return c.openModelMenu(ctx, threadID, model)
+	case "/effort", "/reasoning":
+		threadID, model, effort := c.selectedModelSettings()
+		if threadID == "" {
+			return errors.New("no active thread")
+		}
+		if rest == "" {
+			return c.openEffortMenu(ctx, threadID, model, effort)
+		}
+		return c.wire.Call(ctx, "thread/settings/update", map[string]any{
+			"threadId": threadID,
+			"effort":   rest,
+		}, nil)
+	case "/tier":
+		if mainID == "" {
+			return errors.New("no active thread")
+		}
+		if rest == "" {
+			return c.openTierMenu(ctx, mainID)
+		}
+		return c.applyServiceTier(ctx, mainID, rest)
+	case "/permissions":
+		return c.handlePermissions(ctx, mainID, rest)
+	case "/presets":
+		return c.openPresetMenu(ctx, "")
+	case "/oneoff":
+		return c.startSide(ctx, rest)
+	case "/btw":
+		return c.startBTW(ctx, rest)
+	case "/title":
+		if mainID == "" {
+			return errors.New("no active thread")
+		}
+		if rest == "" {
+			c.mu.Lock()
+			c.setFeedbackLocked("Usage: /title <new title>", true)
+			c.publishLocked()
+			c.mu.Unlock()
+			return nil
+		}
+		if err := c.wire.Call(ctx, "thread/name/set", map[string]any{
+			"threadId": mainID,
+			"name":     rest,
+		}, nil); err != nil {
 			return err
 		}
 		c.mu.Lock()
-		c.archived = true
+		c.title = rest
+		c.setFeedbackLocked("Title updated", false)
 		c.publishLocked()
 		c.mu.Unlock()
 		return nil
-	case "/new", "/clear":
-		return c.startFreshThread(ctx)
-	case "/resume":
+	case "/status":
+		return c.openStatusPanel(ctx)
+	case "/session":
+		return c.openSessionPanel(ctx)
+	case "/ps":
+		return c.handleOpenDetails(ctx, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeProcessDetails})
+	case "/skills":
+		c.openSkillsMenu()
+		return nil
+	case "/fork":
+		return c.forkAndSwitchThread(ctx, rest)
+	case "/lock":
 		if rest != "" {
-			return c.resumeThread(ctx, rest)
-		}
-		return c.loadResumeList(ctx, "", false)
-	case "/rewind":
-		if mainID == "" {
-			return errors.New("no active thread")
-		}
-		beforeTurnID := rest
-		if beforeTurnID == "" {
-			resolved, err := c.resolveLatestTurnID(ctx, mainID)
-			if err != nil {
-				return err
-			}
-			beforeTurnID = resolved
-		}
-		return c.wire.Call(ctx, "thread/revert", map[string]any{
-			"threadId":     mainID,
-			"beforeTurnId": beforeTurnID,
-		}, nil)
-	case "/model":
-		if mainID == "" {
-			return errors.New("no active thread")
-		}
-		if rest == "" {
-			return errors.New("specify a model name, e.g. /model gpt-5")
-		}
-		return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-			"threadId": mainID,
-			"model":    rest,
-		}, nil)
-	case "/effort":
-		if mainID == "" {
-			return errors.New("no active thread")
-		}
-		if rest == "" {
-			return errors.New("specify a reasoning effort, e.g. /effort high")
-		}
-		return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-			"threadId":        mainID,
-			"reasoningEffort": rest,
-		}, nil)
-	case "/fast":
-		if mainID == "" {
-			return errors.New("no active thread")
+			return errors.New("Usage: /lock")
 		}
 		c.mu.Lock()
-		nextTier := "fast"
-		if c.tier == "fast" {
-			nextTier = "standard"
-		}
+		c.interruptLocked = true
+		c.emitPresentationEffectLocked("Keyboard interrupt locked (/unlock to re-enable)")
 		c.mu.Unlock()
-		return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-			"threadId":    mainID,
-			"serviceTier": nextTier,
-		}, nil)
-	case "/side":
-		return c.startSide(ctx, rest)
-	case "/btw", "/one-off":
-		return c.startBTW(ctx, rest)
+		return nil
+	case "/unlock":
+		if rest != "" {
+			return errors.New("Usage: /unlock")
+		}
+		c.mu.Lock()
+		c.interruptLocked = false
+		c.emitPresentationEffectLocked("Keyboard interrupt unlocked")
+		c.mu.Unlock()
+		return nil
+	case "/live":
+		if rest != "" {
+			return errors.New("Usage: /live")
+		}
+		c.mu.Lock()
+		c.liveHidden = !c.liveHidden
+		msg := "Live edits shown"
+		if c.liveHidden {
+			msg = "Live edits hidden"
+		}
+		c.emitPresentationEffectLocked(msg)
+		c.mu.Unlock()
+		return nil
+	case "/predictions":
+		if rest != "" {
+			return errors.New("Usage: /predictions")
+		}
+		c.mu.Lock()
+		c.predictionsDisabled = !c.predictionsDisabled
+		msg := "Predictions enabled"
+		if c.predictionsDisabled {
+			c.resetPredictionLocked(c.prediction.turn)
+			msg = "Predictions disabled"
+		}
+		c.emitPresentationEffectLocked(msg)
+		c.mu.Unlock()
+		return nil
+	case "/copy":
+		c.openCopyMenu()
+		return nil
 	default:
 		c.mu.Lock()
 		c.setFeedbackLocked("Unknown command: "+verb, true)
@@ -262,116 +418,139 @@ func (c *directNativeConnection) handleSlashCommand(ctx context.Context, raw str
 	}
 }
 
-func (c *directNativeConnection) resolveLatestTurnID(ctx context.Context, threadID string) (string, error) {
-	var page struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := c.wire.Call(ctx, "thread/turns/list", map[string]any{
-		"threadId":      threadID,
-		"sortDirection": "desc",
-		"limit":         1,
-		"itemsView":     "notLoaded",
-	}, &page); err == nil && len(page.Data) > 0 && page.Data[0].ID != "" {
-		return page.Data[0].ID, nil
-	}
-	var resp struct {
-		Thread directWireThread `json:"thread"`
-	}
-	if err := c.wire.Call(ctx, "thread/read", map[string]any{"threadId": threadID, "includeTurns": true}, &resp); err == nil {
-		for i := len(resp.Thread.Turns) - 1; i >= 0; i-- {
-			if resp.Thread.Turns[i].ID != "" {
-				return resp.Thread.Turns[i].ID, nil
-			}
-		}
-	}
+func (c *directNativeConnection) clearThread(ctx context.Context) error {
+	params := c.newThreadParams()
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if threadID == c.mainThread && c.activeTurn != "" {
-		return c.activeTurn, nil
+	if c.mainThread == "" || c.busy || len(c.mainQueue.pending) != 0 {
+		c.mu.Unlock()
+		return errors.New("wait for the session to be ready and idle before clearing")
 	}
-	records := c.items[threadID]
-	for i := len(records) - 1; i >= 0; i-- {
-		if records[i].turnID != "" {
-			return records[i].turnID, nil
+	previous := c.mainThread
+	params["cwd"] = c.workspace
+	params["sessionStartSource"] = "clear"
+	params["serviceTier"] = directServiceTierValue(c.tier)
+	if c.model != "" {
+		params["model"] = c.model
+	}
+	if c.modelProvider != "" {
+		params["modelProvider"] = c.modelProvider
+	}
+	config, _ := params["config"].(map[string]any)
+	if c.effort != "" {
+		if config == nil {
+			config = make(map[string]any)
+			params["config"] = config
 		}
+		config["model_reasoning_effort"] = c.effort
+	} else {
+		delete(config, "model_reasoning_effort")
 	}
-	return "", errors.New("no turns available to rewind")
+	c.mu.Unlock()
+	if err := c.startFreshThread(ctx, params); err != nil {
+		return err
+	}
+	if err := c.wire.Call(ctx, "thread/unsubscribe", map[string]any{"threadId": previous}, nil); err != nil {
+		c.mu.Lock()
+		c.setFeedbackLocked("New thread started; could not release the previous thread: "+err.Error(), true)
+		c.publishLocked()
+		c.mu.Unlock()
+	}
+	return nil
 }
 
 func (c *directNativeConnection) stepReasoningEffort(ctx context.Context, delta int) error {
-	levels := []string{"low", "medium", "high", "xhigh"}
-	c.mu.Lock()
-	mainID := c.mainThread
-	cur := c.effort
-	c.mu.Unlock()
-	if mainID == "" {
+	threadID, currentModel, currentEffort := c.selectedModelSettings()
+	if threadID == "" {
 		return nil
 	}
-	idx := slices.Index(levels, cur)
+	models, err := c.listWireModels(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	model, _ := findWireModel(models, currentModel)
+	var levels []string
+	for _, effort := range model.SupportedReasoningEfforts {
+		if effort.ReasoningEffort != "" {
+			levels = append(levels, effort.ReasoningEffort)
+		}
+	}
+	if len(levels) == 0 {
+		return errors.New("No advertised reasoning effort choices")
+	}
+	idx := slices.Index(levels, cmp.Or(currentEffort, model.DefaultReasoningEffort))
 	if idx < 0 {
-		idx = 1
+		idx = 0
 	}
 	next := min(max(idx+delta, 0), len(levels)-1)
 	return c.wire.Call(ctx, "thread/settings/update", map[string]any{
-		"threadId":        mainID,
-		"reasoningEffort": levels[next],
+		"threadId": threadID,
+		"effort":   levels[next],
 	}, nil)
 }
 
 func (c *directNativeConnection) startSide(ctx context.Context, promptText string) error {
+	if promptText == "" {
+		return errors.New("provide a task for /oneoff")
+	}
 	c.mu.Lock()
 	mainID := c.mainThread
-	sideID := c.sideThread
+	if c.sideThread != "" {
+		c.openCommandConfirmationLocked(sessionpresentation.MenuSideReplace, "Replace One-off?",
+			"Replace closes only One-off, interrupts its running work and creates a fresh snapshot of Main.", []completion.Choice{
+				{ID: 1, Name: "Cancel"},
+				{ID: 2, Name: "Replace", Danger: true},
+			})
+		c.sideReplaceTask = promptText
+		c.mu.Unlock()
+		return nil
+	}
 	c.mu.Unlock()
 	if mainID == "" {
 		return errors.New("no active thread")
 	}
-	if sideID == "" {
-		var resp directThreadStartResponse
-		if err := c.wire.Call(ctx, "thread/fork", map[string]any{
-			"threadId":  mainID,
-			"ephemeral": true,
-		}, &resp); err != nil {
-			return fmt.Errorf("fork side thread: %w", err)
-		}
-		sideID = resp.Thread.ID
-		c.mu.Lock()
-		c.sideThread = sideID
-		c.inputThread = sideID
-		c.displayedThread = sideID
-		c.threadCallers[sideID] = "side"
-		c.publishLocked()
-		c.mu.Unlock()
-	} else {
-		c.mu.Lock()
-		c.inputThread = sideID
-		c.displayedThread = sideID
-		c.publishLocked()
-		c.mu.Unlock()
+	var resp directThreadStartResponse
+	if err := c.wire.Call(ctx, "thread/fork", map[string]any{
+		"threadId":     mainID,
+		"threadSource": "mekugi_side",
+	}, &resp); err != nil {
+		return fmt.Errorf("fork side thread: %w", err)
 	}
-	if promptText != "" {
-		return c.wire.Call(ctx, "turn/start", map[string]any{
-			"threadId": sideID,
-			"input":    appserver.Input(promptText),
-		}, nil)
-	}
-	return nil
+	sideID := resp.Thread.ID
+	c.mu.Lock()
+	c.sideThread = sideID
+	c.sideModel, c.sideEffort = resp.Model, resp.ReasoningEffort
+	c.inputThread = sideID
+	c.displayedThread = sideID
+	c.threadCallers[sideID] = sessionpresentation.SideCaller
+	c.hydrateThreadTurnsLocked(sideID, resp.Thread.Turns)
+	c.publishLocked()
+	c.mu.Unlock()
+	return c.startInputTurn(ctx, sideID, appserver.Input(promptText))
 }
 
 func (c *directNativeConnection) handleCloseSide(ctx context.Context) error {
 	c.mu.Lock()
 	sideID := c.sideThread
+	c.mu.Unlock()
+	if sideID == "" {
+		return nil
+	}
+	if err := c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": sideID}, nil); err != nil {
+		return err
+	}
+	c.mu.Lock()
 	c.sideThread = ""
+	c.sideModel, c.sideEffort = "", ""
 	c.sideActiveTurn = ""
+	c.sideQueue = directQueueState{}
+	if c.settingsMenuThread == sideID || c.menu != nil && c.menu.Kind == sessionpresentation.MenuSideReplace {
+		c.clearMenuLocked()
+	}
+	c.busy = c.activeTurn != ""
 	c.inputThread = c.mainThread
 	c.displayedThread = c.mainThread
 	c.publishLocked()
 	c.mu.Unlock()
-	if sideID != "" {
-		_ = c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": sideID}, nil)
-	}
 	return nil
 }
 
@@ -384,17 +563,24 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 	btwID := c.btwThread
 	btwMain := c.btwMainThread
 	btwRunning := c.btwRunning
+	btwStatus := c.btw.Status
 	c.mu.Unlock()
 	if mainID == "" {
 		return errors.New("no active thread")
 	}
 	if btwID != "" && btwMain != mainID {
-		_ = c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": btwID}, nil)
+		if err := c.archiveBTW(ctx, btwID); err != nil {
+			return err
+		}
 		btwID = ""
 		btwRunning = false
+		btwStatus = ""
 	}
 	if btwRunning {
 		return &sessionapi.NativeFailure{Status: http.StatusConflict, Reason: "wait for the current /btw answer to finish"}
+	}
+	if btwStatus == conversation.SideCompactionRequired {
+		return errors.New(btwStatus)
 	}
 	if btwID == "" {
 		var resp directThreadStartResponse
@@ -405,39 +591,61 @@ func (c *directNativeConnection) startBTW(ctx context.Context, question string) 
 			"sandbox":        "read-only",
 			"approvalPolicy": "never",
 		}, &resp); err != nil {
-			return fmt.Errorf("fork one-off thread: %w", err)
+			return fmt.Errorf("fork side answer: %w", err)
 		}
 		btwID = resp.Thread.ID
 	}
 	c.mu.Lock()
 	c.btwThread = btwID
 	c.btwMainThread = mainID
-	c.btwExchangeID++
-	c.btwQuestion = question
-	c.btwAnswer.Reset()
+	c.btw.Begin(question)
+	exchange := c.btw.ID
 	c.btwRunning = true
 	c.publishLocked()
 	c.mu.Unlock()
-	return c.wire.Call(ctx, "turn/start", map[string]any{
+	err := c.wire.Call(ctx, "turn/start", map[string]any{
 		"threadId":     btwID,
 		"input":        appserver.Input(question),
 		"environments": []any{},
 	}, nil)
+	if err != nil {
+		c.mu.Lock()
+		if c.btwThread == btwID && c.btw.ID == exchange {
+			c.btwRunning = false
+			c.btw.Status, c.btw.Alert = err.Error(), true
+			c.publishLocked()
+		}
+		c.mu.Unlock()
+	}
+	return err
 }
 
-func (c *directNativeConnection) handleCloseBTW(ctx context.Context) error {
+func (c *directNativeConnection) handleCloseBTW(ctx context.Context, intent sessionpresentation.CloseSideIntent) error {
 	c.mu.Lock()
 	btwID := c.btwThread
+	current := btwID != "" && intent.Key == btwID && intent.Exchange == c.btw.ID
+	c.mu.Unlock()
+	if !current {
+		return sessionpresentation.ErrStaleIntent
+	}
+	return c.archiveBTW(ctx, btwID)
+}
+
+func (c *directNativeConnection) archiveBTW(ctx context.Context, btwID string) error {
+	if err := c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": btwID}, nil); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.btwThread != btwID {
+		return nil
+	}
 	c.btwThread = ""
 	c.btwMainThread = ""
-	c.btwQuestion = ""
-	c.btwAnswer.Reset()
+	c.btw = conversation.SideAnswer{}
+	c.btwCompletedAnswer = ""
 	c.btwRunning = false
 	c.publishLocked()
-	c.mu.Unlock()
-	if btwID != "" {
-		_ = c.wire.Call(ctx, "thread/archive", map[string]any{"threadId": btwID}, nil)
-	}
 	return nil
 }
 
@@ -450,9 +658,13 @@ func (c *directNativeConnection) handleInterrupt(ctx context.Context, intent ses
 	if threadID == "" {
 		threadID = c.mainThread
 	}
-	turnID := intent.Target.Turn
-	if turnID == "" {
-		turnID = c.activeTurnForLocked(threadID)
+	activeTurn := c.activeTurnForLocked(threadID)
+	turnID := cmp.Or(intent.Target.Turn, activeTurn)
+	key := directSteerTurnID{thread: threadID, turn: turnID}
+	var steers *directSteerTurn
+	if intent.Mode == sessioncontrol.RestoreWaiting && turnID != "" && turnID == activeTurn &&
+		c.queueForThreadLocked(threadID) != nil {
+		steers = c.steerTurnLocked(key)
 	}
 	c.mu.Unlock()
 	if threadID == "" {
@@ -462,7 +674,10 @@ func (c *directNativeConnection) handleInterrupt(ctx context.Context, intent ses
 	if turnID != "" {
 		params["turnId"] = turnID
 	}
-	return c.wire.Call(ctx, "turn/interrupt", params, nil)
+	if steers == nil {
+		return c.wire.Call(ctx, "turn/interrupt", params, nil)
+	}
+	return c.interruptAndRestore(ctx, key, steers, params)
 }
 
 func (c *directNativeConnection) handleApproval(ctx context.Context, intent sessionpresentation.ApprovalIntent) error {
@@ -530,6 +745,9 @@ func (c *directNativeConnection) handleAnswers(ctx context.Context, in sessionap
 		c.mu.Unlock()
 		return sessionpresentation.ErrStaleIntent
 	}
+	if !req.question.Sync {
+		return c.answerAsyncQuestions(ctx, in, req)
+	}
 	delete(c.requests, in.Call)
 	c.requestOrder = slices.DeleteFunc(c.requestOrder, func(id string) bool { return id == in.Call })
 	c.publishLocked()
@@ -591,38 +809,135 @@ func (c *directNativeConnection) handleDisplay(ctx context.Context, intent sessi
 	return nil
 }
 
-func (c *directNativeConnection) handleResumeAction(ctx context.Context, action sessionpresentation.ResumeAction) error {
-	switch action.Kind {
-	case sessionpresentation.ResumeChoose:
-		if action.Thread == "" {
+const resumeHyphenatedUUID = `[[:xdigit:]]{8}(?:-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}`
+
+var resumeUUID = regexp.MustCompile(`^(?:[[:xdigit:]]{32}|` + resumeHyphenatedUUID +
+	`|\{` + resumeHyphenatedUUID + `\}|urn:uuid:` + resumeHyphenatedUUID + `)$`)
+
+func (c *directNativeConnection) resumeByIDOrName(ctx context.Context, target string) error {
+	c.mu.Lock()
+	current := c.mainThread
+	c.mu.Unlock()
+	if resumeUUID.MatchString(target) {
+		id := strings.Trim(strings.TrimPrefix(target, "urn:uuid:"), "{}")
+		if strings.EqualFold(strings.ReplaceAll(id, "-", ""), strings.ReplaceAll(current, "-", "")) {
 			return nil
 		}
-		return c.resumeThread(ctx, action.Thread)
-	case sessionpresentation.ResumePage:
-		c.mu.Lock()
-		all := c.resumeView != nil && c.resumeView.All
-		cursor := c.resumeCursor
-		c.mu.Unlock()
-		if cursor == "" {
-			return nil
+		return c.resumeThread(ctx, target)
+	}
+
+	// Native list search narrows candidates; only an exact, unique display label
+	// is accepted, as in the stock terminal's named-session lookup.
+	params := map[string]any{
+		"limit": 100, "modelProviders": []string{}, "archived": false,
+		"useStateDbOnly": true, "sortKey": "created_at", "searchTerm": target,
+	}
+	var match string
+	for {
+		var page directResumePage
+		if err := c.wire.Call(ctx, "thread/list", params, &page); err != nil {
+			return fmt.Errorf("find saved session: %w", err)
 		}
-		return c.loadResumeList(ctx, cursor, all)
-	case sessionpresentation.ResumeToggleWorkspace:
-		c.mu.Lock()
-		all := c.resumeView == nil || !c.resumeView.All
-		c.mu.Unlock()
-		return c.loadResumeList(ctx, "", all)
-	case sessionpresentation.ResumeDismiss, sessionpresentation.ResumeCancel:
-		c.mu.Lock()
-		noMain := c.mainThread == ""
-		c.resumeView = nil
-		c.publishLocked()
-		c.mu.Unlock()
-		if noMain {
-			c.finish(&sessionapi.NativeExit{Code: 0})
+		for _, th := range page.Data {
+			if th.ID == "" || th.ThreadSource == "mekugi_side" || resumeThreadLabel(th) != target {
+				continue
+			}
+			if match != "" && match != th.ID {
+				return fmt.Errorf("multiple sessions match %q; use a session UUID to disambiguate", target)
+			}
+			match = th.ID
 		}
+		if page.NextCursor == "" {
+			break
+		}
+		params["cursor"] = page.NextCursor
+	}
+	if match == "" {
+		return fmt.Errorf("no saved chat found matching %q", target)
+	}
+	if match == current {
 		return nil
 	}
+	return c.resumeThread(ctx, match)
+}
+
+func (c *directNativeConnection) handleResumeAction(ctx context.Context, action sessionpresentation.ResumeAction) error {
+	c.mu.Lock()
+	view := c.resumeView
+	if view == nil || action.Picker != view.ID {
+		c.mu.Unlock()
+		return nil
+	}
+	active := c.activeTurnForLocked(c.inputThread) != ""
+	current := c.mainThread
+	c.mu.Unlock()
+
+	next := *view
+	switch action.Kind {
+	case sessionpresentation.ResumeChoose:
+		if !slices.ContainsFunc(view.Rows, func(row sessionpresentation.ResumeRow) bool { return row.ID == action.Thread }) {
+			return nil
+		}
+		if active {
+			return c.reportResumeError(view, errors.New("'/resume' is disabled while a task is in progress"), false)
+		}
+		if view.Archived {
+			if err := c.wire.Call(ctx, "thread/unarchive", map[string]string{"threadId": action.Thread}, nil); err != nil {
+				return c.reportResumeError(view, fmt.Errorf("restore archived session: %w", err), false)
+			}
+			// Restoration succeeded even if attaching to the session fails.
+			next.Rows = slices.DeleteFunc(slices.Clone(view.Rows), func(row sessionpresentation.ResumeRow) bool {
+				return row.ID == action.Thread
+			})
+			c.mu.Lock()
+			if c.resumeView != view {
+				c.mu.Unlock()
+				return nil
+			}
+			c.resumeView = &next
+			c.publishLocked()
+			c.mu.Unlock()
+			view = &next
+		}
+		if action.Thread != current {
+			if err := c.resumeThread(ctx, action.Thread); err != nil {
+				return c.reportResumeError(view, err, false)
+			}
+			return nil
+		}
+	case sessionpresentation.ResumePage:
+		if action.After == "" || action.After != view.PageAfter {
+			return nil
+		}
+		return c.loadResumeList(ctx, view, next)
+	case sessionpresentation.ResumeToggleWorkspace, sessionpresentation.ResumeToggleArchived:
+		if action.Kind == sessionpresentation.ResumeToggleArchived {
+			next.Archived = !view.Archived
+		} else {
+			next.All = !view.All
+		}
+		next.Rows, next.PageAfter = nil, ""
+		return c.loadResumeList(ctx, view, next)
+	case sessionpresentation.ResumeDismiss:
+		if view.Startup {
+			if err := c.startFreshThread(ctx, c.newThreadParams()); err != nil {
+				return c.reportResumeError(view, err, false)
+			}
+			return nil
+		}
+	case sessionpresentation.ResumeCancel:
+		if view.Startup {
+			c.finish(&sessionapi.NativeExit{Code: 0})
+		}
+	default:
+		return nil
+	}
+	c.mu.Lock()
+	if c.resumeView == view {
+		c.resumeView = nil
+		c.publishLocked()
+	}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -634,36 +949,26 @@ func (c *directNativeConnection) handleOutputDemand(demand sessionapi.NativeOutp
 	if demand.Agent && c.displayedThread != "" {
 		threadID = c.displayedThread
 	}
-	records := c.items[threadID]
 	for _, d := range demand.Demands {
-		for _, rec := range records {
-			if rec.seq == d.Source {
-				var lines []string
-				if rec.output != "" {
-					lines = strings.Split(rec.output, "\n")
-				}
-				results = append(results, activity.OutputResult{
-					Demand: d,
-					View:   activityfeed.OutputView{Lines: lines, Done: rec.entry.OutputComplete},
-				})
-				break
-			}
+		rec := c.findRecordBySeqLocked(threadID, d.Source)
+		if rec == nil {
+			continue
 		}
+		var lines []string
+		if rec.output != "" {
+			lines = strings.Split(strings.TrimSuffix(rec.output, "\n"), "\n")
+		}
+		view := activityfeed.OutputView{Lines: lines, Done: rec.entry.OutputComplete}
+		if rec.itemType == "commandExecution" && len(rec.entry.Values) != 0 {
+			value := rec.entry.Values[len(rec.entry.Values)-1]
+			view.Exited, view.Exit = value.Exited, value.ExitCode
+		}
+		results = append(results, activity.OutputResult{Demand: d, View: view})
 	}
 	if demand.Agent {
 		c.agentOutput = results
 	} else {
 		c.mainOutput = results
 	}
-	c.publishLocked()
-}
-
-func (c *directNativeConnection) handleDetailOutput(req sessionpresentation.DetailOutputRequest) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.details == nil || c.details.View.ID != req.ID {
-		return
-	}
-	c.details.Output = &sessionpresentation.DetailOutput{Page: req.Page, Version: req.Version}
 	c.publishLocked()
 }

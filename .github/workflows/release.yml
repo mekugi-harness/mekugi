@@ -120,6 +120,12 @@ jobs:
       - name: Test offline suite
         if: matrix.platform == 'linux_amd64'
         run: just test @workspace -count=1
+      - name: Compile-check codex_e2e suite
+        if: matrix.platform == 'linux_amd64'
+        run: just test @workspace -tags=codex_e2e -run '^$'
+      - name: Check UI snapshots
+        if: matrix.platform == 'linux_amd64'
+        run: just test-ui-snapshots
       - name: Check documentation and generated references
         if: matrix.platform == 'linux_amd64'
         run: just docs-check check-generated
@@ -147,9 +153,25 @@ jobs:
         run: just test ./mekugi-tui/apps/mekugi/cmd/mekugi
       - name: Test welcome and linked version
         run: |
-          MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" just test ./mekugi-tui/apps/mekugi/internal/launch \
-            -run '^(TestMekugi(BuildVersion|LinkedBuildVersion)|TestNativeWelcome|TestUISnapshotNativeWelcome)' \
-            -ldflags="-X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG"
+          out=$(RTK='' MEKUGI_TEST_BUILD_VERSION="$BUILD_TAG" just test ./mekugi-tui/apps/mekugi/internal/launch \
+            -run '^(TestMekugi(BuildVersion|LinkedBuildVersion)|TestUISnapshotDirectNative)' \
+            -ldflags="-X github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/launch.buildVersion=$BUILD_TAG" \
+            -count=1 -v)
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -q '\[no tests to run\]'; then
+            echo "error: linked version test filter matched zero tests" >&2
+            exit 1
+          fi
+          out=$(RTK='' just test ./mekugi-tui/apps/mekugi/internal/terminalsession \
+            -run '^(TestUISnapshotNativeWelcome|TestNativeWelcomeDoesNotReplaceHistoryOrLiveDock|TestWelcomeTrimsPrefixForUserAgent)$' \
+            -count=1 -v)
+          printf '%s\n' "$out"
+          for test in TestUISnapshotNativeWelcome TestNativeWelcomeDoesNotReplaceHistoryOrLiveDock TestWelcomeTrimsPrefixForUserAgent; do
+            if ! printf '%s\n' "$out" | grep -q "^--- PASS: $test "; then
+              printf 'error: missing welcome test: %s\n' "$test" >&2
+              exit 1
+            fi
+          done
       - name: Resolve native runtime archive key
         id: native_key
         env:
@@ -360,10 +382,25 @@ jobs:
           "$installed/mekugi-app-server" --help
           "$installed/codex-code-mode-host" --help
           test -s "$installed/mekugi-models.json"
+          MEKUGI_REQUIRE_NATIVE_INTEGRATION=1 PATH="$installed:$PATH" \
+            just test ./mekugi-tui/apps/mekugi/internal/launch \
+            -run '^TestDirectNativeRealAppServerIntegration$' -count=1 -v
           if [[ "$RUNNER_OS" == Linux ]]; then
             "$installed/bwrap" --unshare-user --unshare-net \
               --ro-bind / / -- /bin/true
           fi
+      - name: Test browser and terminal with the packaged native runtime
+        if: matrix.platform == 'linux_amd64'
+        env:
+          MEKUGI_TEST_WEBUI_BROWSER: '1'
+        run: |
+          npm install --global agent-browser@0.45.0
+          AGENT_BROWSER_EXECUTABLE_PATH="$(command -v google-chrome)"
+          export AGENT_BROWSER_EXECUTABLE_PATH
+          export PATH="$RUNNER_TEMP/install-smoke/home/.local/bin:$PATH"
+          pattern='^(TestDetailLinksAndReferenceThroughNativeBrowser|TestWaitingEditsAndPermissionsThroughNativeBrowser|TestShellGuardBrowserAndTerminalNativeCodex)$'
+          just test ./mekugi-tui/apps/mekugi/internal/launch -tags=codex_e2e \
+            -run "$pattern" -count=1 -v
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.native_key.outputs.name || format('mekugi_{0}', matrix.platform) }}

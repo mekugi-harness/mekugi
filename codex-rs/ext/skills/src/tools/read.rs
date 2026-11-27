@@ -431,17 +431,19 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ReadTool {
                         });
                 }
 
-                if requested_resource == main_prompt
-                    && args.cursor.is_none()
-                    && let Some(analytics) = self.context.analytics.as_ref()
-                {
-                    analytics.track_skill_invocation(
-                        skill_entry,
-                        &selected_source,
-                        call.model.clone(),
-                        call.turn_id.clone(),
-                        InvocationType::Implicit,
-                    );
+                if requested_resource == main_prompt && args.cursor.is_none() {
+                    self.context
+                        .thread_state
+                        .record_skill_use(&skill_entry.name);
+                    if let Some(analytics) = self.context.analytics.as_ref() {
+                        analytics.track_skill_invocation(
+                            skill_entry,
+                            &selected_source,
+                            call.model.clone(),
+                            call.turn_id.clone(),
+                            InvocationType::Implicit,
+                        );
+                    }
                 }
 
                 outcome = "success";

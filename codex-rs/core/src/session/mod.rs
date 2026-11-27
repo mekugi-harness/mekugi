@@ -302,6 +302,7 @@ pub(crate) mod turn;
 pub(crate) mod turn_context;
 mod turn_input;
 mod turn_suspension;
+pub(crate) mod usage_metrics;
 mod world_state;
 use self::code_mode_warning::unsupported_code_mode_warning;
 use self::compaction_replacement::CompactedHistoryReplacement;
@@ -1269,6 +1270,24 @@ impl SessionIo {
         Ok(())
     }
 
+    pub(crate) async fn submit_turn_interrupt(
+        &self,
+        turn_id: String,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<()> {
+        self.submit_with_id(Box::new(Submission {
+            id: new_submission_id(),
+            op: SubmissionOp::InterruptTurn { turn_id },
+            turn_extension_init: None,
+            trace,
+            parent_turn_id: None,
+            root_turn_id: None,
+            residency_guard: None,
+            message_delivery: None,
+        }))
+        .await
+    }
+
     /// Submits an ordered turn-input call and waits only for Core's routing decision.
     ///
     /// Once queued, dropping the waiter does not retract the call. If the
@@ -1301,6 +1320,46 @@ impl SessionIo {
         }))
         .await?;
         reply_rx.await.unwrap_or(Err(CodexErr::InternalAgentDied))
+    }
+
+    pub(crate) async fn submit_shell_if_idle(
+        &self,
+        command: String,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<codex_protocol::turn_input::StartIfIdleSubmission> {
+        let (reply, result) = oneshot::channel();
+        self.submit_with_id(Box::new(Submission {
+            id: new_submission_id(),
+            op: SubmissionOp::ShellIfIdle { command, reply },
+            trace,
+            turn_extension_init: None,
+            parent_turn_id: None,
+            root_turn_id: None,
+            residency_guard: None,
+            message_delivery: None,
+        }))
+        .await?;
+        result.await.map_err(|_| CodexErr::InternalAgentDied)
+    }
+
+    pub(crate) async fn submit_compact(
+        &self,
+        admission: submission::CompactAdmission,
+        trace: Option<W3cTraceContext>,
+    ) -> CodexResult<codex_protocol::turn_input::StartIfIdleSubmission> {
+        let (reply, result) = oneshot::channel();
+        self.submit_with_id(Box::new(Submission {
+            id: new_submission_id(),
+            op: SubmissionOp::Compact { admission, reply },
+            trace,
+            turn_extension_init: None,
+            parent_turn_id: None,
+            root_turn_id: None,
+            residency_guard: None,
+            message_delivery: None,
+        }))
+        .await?;
+        result.await.map_err(|_| CodexErr::InternalAgentDied)
     }
 
     pub(crate) async fn submit_recover_turn(
@@ -1754,6 +1813,13 @@ impl Session {
         state.token_info()
     }
 
+    pub(crate) async fn observed_token_usage(
+        &self,
+        info: Option<TokenUsageInfo>,
+    ) -> Option<codex_app_server_protocol::ThreadTokenUsage> {
+        self.usage_metrics.lock().await.snapshot(info)
+    }
+
     pub(crate) async fn get_estimated_token_count(
         &self,
         turn_context: &TurnContext,
@@ -1880,6 +1946,53 @@ impl Session {
             InitialHistory::Resumed(resumed_history) => {
                 let turn_context = self.new_default_turn().await;
                 let rollout_items = resumed_history.history;
+                let usage_metrics::RetainedThreadObservation {
+                    mut usage,
+                    mut skills,
+                    ..
+                } = usage_metrics::ThreadUsageMetrics::restore(self.thread_id, &rollout_items);
+                // Paginated model context can stop at a compaction checkpoint. Usage
+                // accounts for the thread's own earlier responses, not just that suffix.
+                if matches!(turn_context.history_mode, ThreadHistoryMode::Paginated)
+                    && rollout_items
+                        .iter()
+                        .any(|item| matches!(item, RolloutItem::Compacted(_)))
+                {
+                    match self
+                        .services
+                        .thread_store
+                        .load_history(codex_thread_store::LoadThreadHistoryParams {
+                            thread_id: self.thread_id,
+                            include_archived: true,
+                        })
+                        .await
+                    {
+                        Ok(history) => {
+                            let observed = usage_metrics::ThreadUsageMetrics::restore(
+                                self.thread_id,
+                                &history.items,
+                            );
+                            usage = observed.usage;
+                            skills = observed.skills;
+                        }
+                        Err(error) => {
+                            warn!(
+                                "failed to read retained usage for {}: {error}",
+                                self.thread_id
+                            );
+                            usage.mark_prior_unknown();
+                        }
+                    }
+                }
+                *self.usage_metrics.lock().await = usage;
+                if !skills.is_empty()
+                    && let Some(observation) = self
+                        .services
+                        .thread_extension_data
+                        .get::<codex_skills_extension::SkillsThreadState>()
+                {
+                    observation.restore_skill_uses(skills);
+                }
                 if matches!(
                     rollout_items.iter().rev().find_map(|item| match item {
                         RolloutItem::EventMsg(event) => agent_status_from_event(event),
@@ -3136,10 +3249,40 @@ impl Session {
         {
             warn!("failed to persist realtime history: {error}");
         }
+        let skills_event = matches!(
+            &event.msg,
+            EventMsg::RawResponseCompleted(_)
+                | EventMsg::TurnComplete(_)
+                | EventMsg::TurnAborted(_)
+        )
+        .then(|| {
+            let skills = self
+                .services
+                .thread_extension_data
+                .get::<codex_skills_extension::SkillsThreadState>()?;
+            let names = skills.take_pending_skill_uses();
+            (!names.is_empty()).then_some(EventMsg::SkillsUsed(
+                codex_protocol::protocol::SkillsUsedEvent {
+                    thread_id: self.thread_id,
+                    names,
+                },
+            ))
+        })
+        .flatten();
         // Persist the event into rollout storage; the store applies its persistence policy.
         if persist {
-            let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
+            let mut rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
+            rollout_items.extend(skills_event.iter().cloned().map(RolloutItem::EventMsg));
             self.persist_rollout_items(&rollout_items).await;
+        }
+        if matches!(
+            &event.msg,
+            EventMsg::RawResponseCompleted(_)
+                | EventMsg::TurnStarted(_)
+                | EventMsg::TurnComplete(_)
+                | EventMsg::TurnAborted(_)
+        ) {
+            self.usage_metrics.lock().await.observe_event(&event.msg);
         }
         self.services
             .rollout_thread_trace
@@ -3153,6 +3296,16 @@ impl Session {
         // the decision. Turn completion skips its separate before/after barriers for this case.
         if flush_guardian_completion && let Err(err) = self.flush_rollout().await {
             warn!("failed to flush completed Guardian review: {err}");
+        }
+        if let Some(msg) = skills_event {
+            self.deliver_event_with_status(
+                Event {
+                    id: event.id.clone(),
+                    msg,
+                },
+                None,
+            )
+            .await;
         }
         self.deliver_event_with_status(event, status).await;
     }
@@ -6114,6 +6267,8 @@ impl Session {
                 Event {
                     id: turn_id.to_owned(),
                     msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                        thread_id: Some(self.thread_id),
+                        completed_at: Some(crate::turn_timing::now_unix_timestamp_ms() / 1000),
                         response_id,
                         token_usage,
                         usage_metadata,
@@ -6123,7 +6278,7 @@ impl Session {
                         request_duration_ms: None,
                     }),
                 },
-                /*persist*/ false,
+                /*persist*/ true,
                 /*status*/ None,
             )
             .await;
@@ -6153,6 +6308,8 @@ impl Session {
         self.send_event(
             turn_context,
             EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                thread_id: Some(self.thread_id),
+                completed_at: Some(crate::turn_timing::now_unix_timestamp_ms() / 1000),
                 response_id: response_id.to_string(),
                 token_usage: usage.cloned(),
                 usage_metadata: usage_metadata.cloned(),

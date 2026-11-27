@@ -1,3 +1,0 @@
-● worker                                                                08:00:00
-│ • Inspecting layout
-│   First checkpoint.

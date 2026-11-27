@@ -1309,6 +1309,7 @@ impl App {
                         | ServerNotification::ThreadRealtimeItemAdded(_)
                         | ServerNotification::RawResponseItemCompleted(_)
                         | ServerNotification::RawResponseCompleted(_)
+                        | ServerNotification::ThreadSkillsUpdated(_)
                 );
                 guard.push_notification(notification);
                 None

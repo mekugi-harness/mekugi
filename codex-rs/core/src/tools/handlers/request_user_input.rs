@@ -17,6 +17,8 @@ use codex_history::RetainedContextEvent;
 use codex_history::VerifiedAnswer;
 use codex_history::VerifiedQuestionAnswer;
 use codex_protocol::config_types::ModeKind;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ImageReference;
 use codex_protocol::request_user_input::RequestUserInputArgs;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
@@ -24,6 +26,8 @@ use codex_tools::ToolSpec;
 pub struct RequestUserInputHandler {
     pub available_modes: Vec<ModeKind>,
 }
+
+const ANSWER_IMAGE_UPLOAD_LIMIT: usize = 32 << 20;
 
 impl ToolExecutor<ToolInvocation> for RequestUserInputHandler {
     fn tool_name(&self) -> ToolName {
@@ -100,15 +104,14 @@ impl RequestUserInputHandler {
                 ))
             })?;
 
-        let answers = questions
+        let mut submitted = accepted.response.answers;
+        let mut answers = questions
             .iter()
             .map(|question| {
-                accepted
-                    .response
-                    .answers
-                    .iter()
+                submitted
+                    .iter_mut()
                     .find(|answer| answer.is_valid_for(question))
-                    .cloned()
+                    .map(std::mem::take)
                     .unwrap_or_else(
                         || codex_protocol::request_user_input::RequestUserInputAnswer {
                             id: question.id.clone(),
@@ -119,6 +122,34 @@ impl RequestUserInputHandler {
             })
             .collect::<Vec<_>>();
 
+        // Serialize only the compact answers. Attach the image content in
+        // question order with its own label rather than putting bytes in text.
+        let mut image_content = Vec::new();
+        let mut remaining_bytes = ANSWER_IMAGE_UPLOAD_LIMIT;
+        for answer in &mut answers {
+            let Some(images) = answer.images.take().filter(|images| !images.is_empty()) else {
+                continue;
+            };
+            image_content.push(FunctionCallOutputContentItem::InputText {
+                text: format!("Images for answer {}:", answer.id),
+            });
+            for image_url in images {
+                let bytes = inline_answer_image_bytes(&image_url).ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "Question answer images must be inline base64 uploads.".to_string(),
+                    )
+                })?;
+                remaining_bytes = remaining_bytes.checked_sub(bytes).ok_or_else(|| {
+                    FunctionCallError::RespondToModel(
+                        "Question answer uploads exceed the 32 MiB limit.".to_string(),
+                    )
+                })?;
+                image_content.push(FunctionCallOutputContentItem::InputImage {
+                    image: ImageReference::Inline { image_url },
+                    detail: None,
+                });
+            }
+        }
         let content = serde_json::to_string(&answers).map_err(|err| {
             FunctionCallError::Fatal(format!(
                 "failed to serialize {REQUEST_USER_INPUT_TOOL_NAME} response: {err}"
@@ -161,11 +192,27 @@ impl RequestUserInputHandler {
             }
         }
 
-        Ok(boxed_tool_output(FunctionToolOutput::from_text(
-            content,
+        let mut output = vec![FunctionCallOutputContentItem::InputText { text: content }];
+        output.append(&mut image_content);
+        Ok(boxed_tool_output(FunctionToolOutput::from_content(
+            output,
             /*success*/ Some(true),
         )))
     }
+}
+
+fn inline_answer_image_bytes(image_url: &str) -> Option<usize> {
+    let (metadata, payload) = image_url.strip_prefix("data:")?.split_once(',')?;
+    let mime = metadata.strip_suffix(";base64")?;
+    if !(mime.starts_with("image/") || mime == "application/octet-stream")
+        || payload.is_empty()
+        || !payload.len().is_multiple_of(4)
+    {
+        return None;
+    }
+    // The existing image preparation decodes and verifies the actual file.
+    let padding = payload.ends_with('=') as usize + payload.ends_with("==") as usize;
+    Some(payload.len() / 4 * 3 - padding)
 }
 
 impl CoreToolRuntime for RequestUserInputHandler {

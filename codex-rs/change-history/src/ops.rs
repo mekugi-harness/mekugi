@@ -42,6 +42,17 @@ struct PlannedWrite {
 }
 
 impl ChangeHistoryStore {
+    /// Check that the same evidence and live workspace state used by a mutation can
+    /// be resolved without writing any files.
+    pub fn validate_workspace_mutation(
+        &self,
+        direction: MutationDirection,
+        records: &[ChangeRecord],
+    ) -> Result<(), ChangeHistoryError> {
+        self.plan_workspace_mutation(direction, records, &[])?;
+        Ok(())
+    }
+
     /// Revert or reapply the selected `ids` (optionally scoped to `path_filters`).
     ///
     /// All referenced records and blobs are verified and all target files are
@@ -57,16 +68,100 @@ impl ChangeHistoryStore {
         actor_session_id: &str,
     ) -> Result<MutationOutcome, ChangeHistoryError> {
         let records = self.load_records(ids)?;
-        let transitions = compose_transitions_with_continuity(self, &records, path_filters, true)?;
-        if transitions.is_empty() {
-            return Err(ChangeHistoryError::NoMatchingPaths);
-        }
-
         let workspace_root = records
             .last()
             .map(|r| r.metadata.workspace_root.clone())
             .unwrap_or_else(|| PathBuf::from("."));
+        let planned = self.plan_workspace_mutation(direction, &records, path_filters)?;
 
+        let source_kind = match direction {
+            MutationDirection::Revert => ChangeSourceKind::MchangesRevert,
+            MutationDirection::Apply => ChangeSourceKind::MchangesApply,
+        };
+        let id_list = ids
+            .iter()
+            .map(ChangeId::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let verb = match direction {
+            MutationDirection::Revert => "revert",
+            MutationDirection::Apply => "apply",
+        };
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let mut written = 0;
+        let result = (|| {
+            for write in &planned {
+                apply_snapshot_to_disk(&write.abs_path, &write.target_after)?;
+                written += 1;
+            }
+            let pending_files = planned
+                .iter()
+                .map(|write| PendingFileChange {
+                    rel_path: write.rel_path.clone(),
+                    abs_path: write.abs_path.clone(),
+                    moved_from: None,
+                    before: write.live_before.clone(),
+                    after: write.target_after.clone(),
+                    coverage: CoverageStatus::Complete,
+                    scope: classify_change_scope(&write.abs_path, &workspace_root, None),
+                })
+                .collect();
+            self.record_change(
+                ChangeMetadata {
+                    thread_id: actor_thread_id.to_string(),
+                    session_id: actor_session_id.to_string(),
+                    turn_id: String::new(),
+                    call_id: String::new(),
+                    author: None,
+                    source_kind,
+                    workspace_root,
+                    created_at,
+                    exit_code: Some(0),
+                    summary: Some(format!("mchanges {verb} {id_list}")),
+                    claim_key: None,
+                },
+                pending_files,
+            )
+        })();
+
+        match result {
+            Ok(recorded) => Ok(MutationOutcome {
+                recorded,
+                affected_paths: planned.into_iter().map(|write| write.rel_path).collect(),
+            }),
+            Err(error) => {
+                let failures: Vec<_> = planned[..written]
+                    .iter()
+                    .rev()
+                    .filter_map(|write| restore_workspace_write(write).err())
+                    .map(|failure| failure.to_string())
+                    .collect();
+                if failures.is_empty() {
+                    Err(error)
+                } else {
+                    Err(ChangeHistoryError::Storage(format!(
+                        "{error}; could not restore the workspace: {}",
+                        failures.join("; ")
+                    )))
+                }
+            }
+        }
+    }
+
+    fn plan_workspace_mutation(
+        &self,
+        direction: MutationDirection,
+        records: &[ChangeRecord],
+        path_filters: &[String],
+    ) -> Result<Vec<PlannedWrite>, ChangeHistoryError> {
+        let transitions = compose_transitions_with_continuity(self, records, path_filters, true)?;
+        if transitions.is_empty() {
+            return Err(ChangeHistoryError::NoMatchingPaths);
+        }
         let mut planned = Vec::with_capacity(transitions.len());
         for tr in transitions {
             if tr.before == tr.after && tr.moved_from.is_none() && tr.coverage_notes.is_empty() {
@@ -92,65 +187,19 @@ impl ChangeHistoryStore {
                 target_after,
             });
         }
-
-        // Commit validated writes to disk.
-        let mut pending_files = Vec::with_capacity(planned.len());
-        let mut affected_paths = Vec::with_capacity(planned.len());
-        for write in planned {
-            apply_snapshot_to_disk(&write.abs_path, &write.target_after)?;
-            affected_paths.push(write.rel_path.clone());
-            let scope = classify_change_scope(&write.abs_path, &workspace_root, None);
-            pending_files.push(PendingFileChange {
-                rel_path: write.rel_path,
-                abs_path: write.abs_path,
-                moved_from: None,
-                before: write.live_before,
-                after: write.target_after,
-                coverage: CoverageStatus::Complete,
-                scope,
-            });
-        }
-
-        let source_kind = match direction {
-            MutationDirection::Revert => ChangeSourceKind::MchangesRevert,
-            MutationDirection::Apply => ChangeSourceKind::MchangesApply,
-        };
-        let id_list = ids
-            .iter()
-            .map(ChangeId::as_str)
-            .collect::<Vec<_>>()
-            .join(" ");
-        let verb = match direction {
-            MutationDirection::Revert => "revert",
-            MutationDirection::Apply => "apply",
-        };
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        let recorded = self.record_change(
-            ChangeMetadata {
-                thread_id: actor_thread_id.to_string(),
-                session_id: actor_session_id.to_string(),
-                turn_id: String::new(),
-                call_id: String::new(),
-                author: None,
-                source_kind,
-                workspace_root,
-                created_at,
-                exit_code: Some(0),
-                summary: Some(format!("mchanges {verb} {id_list}")),
-                claim_key: None,
-            },
-            pending_files,
-        )?;
-
-        Ok(MutationOutcome {
-            recorded,
-            affected_paths,
-        })
+        Ok(planned)
     }
+}
+
+fn restore_workspace_write(write: &PlannedWrite) -> Result<(), ChangeHistoryError> {
+    let live = read_live_snapshot(&write.abs_path)?;
+    let original = resolve_target_snapshot(
+        &write.abs_path,
+        &write.target_after,
+        &write.live_before,
+        &live,
+    )?;
+    apply_snapshot_to_disk(&write.abs_path, &original)
 }
 
 fn read_live_snapshot(path: &Path) -> Result<FileSnapshot, ChangeHistoryError> {

@@ -1,6 +1,9 @@
 use super::*;
 use codex_app_server_protocol::AuthRecoveryNotification;
+use codex_app_server_protocol::CommandExecutionChangesUpdatedNotification;
+use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::ConfigWarningNotification;
+use codex_app_server_protocol::LiveCommandChanges;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerNotificationEnvelope;
@@ -33,7 +36,7 @@ fn app_server_notification(notification: ServerNotification) -> OutgoingMessage 
 }
 
 #[tokio::test]
-async fn optional_search_progress_does_not_disconnect_a_slow_connection() {
+async fn optional_updates_do_not_disconnect_a_slow_connection() {
     let connection_id = ConnectionId(7);
     let (writer_tx, mut writer_rx) = mpsc::channel(1);
     let disconnect = CancellationToken::new();
@@ -47,20 +50,34 @@ async fn optional_search_progress_does_not_disconnect_a_slow_connection() {
             Some(disconnect.clone()),
         ),
     )]);
-    route_outgoing_envelope(
-        &mut connections,
-        OutgoingEnvelope::ToConnection {
-            connection_id,
-            message: app_server_notification(ServerNotification::ThreadSearchPartial(
-                ThreadSearchPartialNotification {
-                    request_id: RequestId::Integer(4),
-                    data: Vec::new(),
+    for notification in [
+        ServerNotification::ThreadSearchPartial(ThreadSearchPartialNotification {
+            request_id: RequestId::Integer(4),
+            data: Vec::new(),
+        }),
+        ServerNotification::CommandExecutionChangesUpdated(
+            CommandExecutionChangesUpdatedNotification {
+                update: LiveCommandChanges {
+                    thread_id: "thread-1".to_string(),
+                    turn_id: "turn-1".to_string(),
+                    item_id: "item-1".to_string(),
+                    source: CommandExecutionSource::UserShell,
+                    command: "echo before > observed.txt".to_string(),
+                    changes: Vec::new(),
                 },
-            )),
-            write_complete_tx: None,
-        },
-    )
-    .await;
+            },
+        ),
+    ] {
+        route_outgoing_envelope(
+            &mut connections,
+            OutgoingEnvelope::ToConnection {
+                connection_id,
+                message: app_server_notification(notification),
+                write_complete_tx: None,
+            },
+        )
+        .await;
+    }
     route_outgoing_envelope(
         &mut connections,
         OutgoingEnvelope::ToConnection {
@@ -72,7 +89,13 @@ async fn optional_search_progress_does_not_disconnect_a_slow_connection() {
     .await;
     assert!(!disconnect.is_cancelled());
     assert!(connections.contains_key(&connection_id));
-    assert!(writer_rx.try_recv().is_ok());
+    assert!(matches!(
+        writer_rx.try_recv().expect("required update").message,
+        OutgoingMessage::AppServerNotification(ServerNotificationEnvelope {
+            notification: ServerNotification::ThreadRealtimeStarted(_),
+            ..
+        })
+    ));
     assert!(writer_rx.try_recv().is_err());
 }
 

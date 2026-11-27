@@ -1,2 +1,0 @@
-└ Attach guide.txt (auto reloaded)
-         commit (auto reloaded)

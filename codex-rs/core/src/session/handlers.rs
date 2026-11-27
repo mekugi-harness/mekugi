@@ -16,6 +16,7 @@ use tracing::debug_span;
 use tracing::info_span;
 
 use crate::session::session::Session;
+use crate::session::submission::CompactAdmission;
 use crate::session::thread_settings;
 use crate::session::turn_input;
 
@@ -26,6 +27,7 @@ use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
 use crate::tasks::ManualReset;
+use crate::tasks::ResumeAfterCompact;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
@@ -271,12 +273,20 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
     Box::pin(sess.reload_user_config_layer()).await;
 }
 
-pub async fn compact(
+#[derive(PartialEq, Eq)]
+enum CompactMode {
+    Stock,
+    ContinueInterrupted,
+}
+
+async fn compact(
     sess: &Arc<Session>,
     sub_id: String,
     reload: Option<codex_protocol::protocol::ReloadSelection>,
     request_id: Option<String>,
-) {
+    mode: CompactMode,
+) -> codex_protocol::turn_input::StartIfIdleSubmission {
+    use codex_protocol::turn_input::{StartIfIdleSubmission, TurnInputSubmission};
     let manual = request_id.map(ManualReset);
     if let Some(manual) = &manual {
         manual
@@ -289,7 +299,7 @@ pub async fn compact(
             .await;
     }
     // Stop the old turn before the compact task picks up the next turn's environments.
-    sess.abort_all_tasks(TurnAbortReason::Replaced).await;
+    let replaced = sess.abort_active_task(TurnAbortReason::Replaced).await;
     let turn_context = sess
         .new_turn_with_default_settings(sub_id, Default::default())
         .await;
@@ -303,7 +313,27 @@ pub async fn compact(
     if let Some(manual) = manual {
         turn_context.extension_data.insert(manual);
     }
-    sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
+    if mode == CompactMode::ContinueInterrupted && replaced == Some(crate::state::TaskKind::Regular)
+    {
+        turn_context
+            .extension_data
+            .insert(ResumeAfterCompact::default());
+    }
+    match sess.spawn_task(turn_context, Vec::new(), CompactTask).await {
+        TurnInputSubmission::Started {
+            turn_id,
+            root_turn_id,
+        } => StartIfIdleSubmission::Started {
+            turn_id,
+            root_turn_id,
+        },
+        TurnInputSubmission::NotSubmitted { reason } => {
+            StartIfIdleSubmission::NotSubmitted { reason }
+        }
+        TurnInputSubmission::Steered { .. } | TurnInputSubmission::Accepted => {
+            unreachable!("standalone compact must start or decline")
+        }
+    }
 }
 
 pub(super) async fn persist_thread_memory_mode_update(
@@ -647,6 +677,18 @@ pub(super) async fn submission_loop(
         let dispatch_span = submission_dispatch_span(&sub);
         let should_exit = async {
             let op = match sub.op {
+                SubmissionOp::InterruptTurn { turn_id } => {
+                    let active = sess.active_turn.lock().await;
+                    // The finishing turn owns its terminal event and next-work wakeup.
+                    if active.as_ref().is_none_or(|turn| {
+                        turn.turn_id.as_deref() != Some(turn_id.as_str())
+                            || turn.finishing.is_some()
+                    }) {
+                        return false;
+                    }
+                    sess.interrupt_task(active).await;
+                    return false;
+                }
                 SubmissionOp::TurnInput {
                     request,
                     mode,
@@ -657,6 +699,23 @@ pub(super) async fn submission_loop(
                         turn_extension_init: sub.turn_extension_init,
                     };
                     let result = turn_input::handle(&sess, request, mode, sub.id.clone()).await;
+                    let _ = reply.send(result);
+                    return false;
+                }
+                SubmissionOp::ShellIfIdle { command, reply } => {
+                    let result = turn_input::start_shell_if_idle(&sess, sub.id.clone(), command).await;
+                    let _ = reply.send(result);
+                    return false;
+                }
+                SubmissionOp::Compact { admission, reply } => {
+                    let result = match admission {
+                        CompactAdmission::ReplaceAndContinue => {
+                            compact(&sess, sub.id.clone(), None, None, CompactMode::ContinueInterrupted).await
+                        }
+                        CompactAdmission::IfIdle => {
+                            turn_input::start_compact_if_idle(&sess, sub.id.clone()).await
+                        }
+                    };
                     let _ = reply.send(result);
                     return false;
                 }
@@ -931,11 +990,11 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::Compact { reload } => {
-                    compact(&sess, sub.id.clone(), reload, None).await;
+                    compact(&sess, sub.id.clone(), reload, None, CompactMode::Stock).await;
                     false
                 }
                 Op::ManualCompact { reload, request_id } => {
-                    compact(&sess, sub.id.clone(), reload, Some(request_id)).await;
+                    compact(&sess, sub.id.clone(), reload, Some(request_id), CompactMode::Stock).await;
                     false
                 }
                 Op::CancelCompact { request_id } => {

@@ -239,6 +239,18 @@ impl ThreadScopedOutgoingMessageSender {
         self.outgoing.send_server_notification(notification).await;
     }
 
+    pub(crate) fn try_send_optional_notification(&self, notification: ServerNotification) {
+        let notifications = std::iter::repeat_n(notification, self.connection_ids.len());
+        for (&connection_id, notification) in self.connection_ids.iter().zip(notifications) {
+            if !self.outgoing.try_send_server_notification(
+                NotificationTarget::Connection(connection_id),
+                notification,
+            ) {
+                break;
+            }
+        }
+    }
+
     pub(crate) async fn resolve_server_request(&self, request_id: RequestId) {
         self.outgoing.cancel_request(&request_id).await;
         self.send_server_notification(ServerNotification::ServerRequestResolved(
@@ -650,7 +662,14 @@ impl OutgoingMessageSender {
         match entry {
             Some((id, entry)) => {
                 let completed_at_ms = now_unix_timestamp_ms();
+                // Do not clone image bytes into the response trace or analytics queue.
+                let has_question_images =
+                    matches!(entry.request, ServerRequest::ToolRequestUserInput { .. })
+                        && result["answers"].as_array().is_some_and(|answers| {
+                            answers.iter().any(|answer| answer.get("images").is_some())
+                        });
                 if entry.verification_owner.is_none()
+                    && !has_question_images
                     && !matches!(entry.request, ServerRequest::ShellGuardRequestSecret { .. })
                     && let Ok(response) = entry.request.response_from_result(result.clone())
                 {
@@ -2069,7 +2088,9 @@ mod tests {
             )
             .await;
 
-        let first = rx.try_recv().expect("local connection should receive secret request");
+        let first = rx
+            .try_recv()
+            .expect("local connection should receive secret request");
         assert!(matches!(
             first,
             OutgoingEnvelope::ToConnection { connection_id, .. } if connection_id == local_conn
@@ -2106,7 +2127,12 @@ mod tests {
                 serde_json::json!({ "decision": "decline" }),
             )
             .await;
-        assert!(secret_waiter.await.expect("local response should resolve").is_ok());
+        assert!(
+            secret_waiter
+                .await
+                .expect("local response should resolve")
+                .is_ok()
+        );
 
         // 2. Secret ToolRequestUserInput (is_secret: true) is also blocked from remote_conn.
         let (secret_q_id, mut secret_q_waiter) = outgoing
@@ -2159,15 +2185,26 @@ mod tests {
                 Some(thread_id),
             )
             .await;
-        let delivered = rx.try_recv().expect("remote-human should receive non-secret question");
+        let delivered = rx
+            .try_recv()
+            .expect("remote-human should receive non-secret question");
         assert!(matches!(
             delivered,
             OutgoingEnvelope::ToConnection { connection_id, .. } if connection_id == remote_conn
         ));
         outgoing
-            .notify_client_response(remote_conn, plain_q_id, serde_json::json!({ "answers": {} }))
+            .notify_client_response(
+                remote_conn,
+                plain_q_id,
+                serde_json::json!({ "answers": {} }),
+            )
             .await;
-        assert!(plain_q_waiter.await.expect("remote non-secret answer resolves").is_ok());
+        assert!(
+            plain_q_waiter
+                .await
+                .expect("remote non-secret answer resolves")
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -2235,9 +2272,18 @@ mod tests {
 
         // One-time approval still succeeds.
         outgoing
-            .notify_client_response(remote_conn, cmd_id, serde_json::json!({ "decision": "accept" }))
+            .notify_client_response(
+                remote_conn,
+                cmd_id,
+                serde_json::json!({ "decision": "accept" }),
+            )
             .await;
-        assert!(cmd_waiter.await.expect("one-time accept should resolve").is_ok());
+        assert!(
+            cmd_waiter
+                .await
+                .expect("one-time accept should resolve")
+                .is_ok()
+        );
 
         // Session-scoped permission grant is also rejected on remote-human.
         let (perm_id, mut perm_waiter) = outgoing
@@ -2278,6 +2324,11 @@ mod tests {
                 serde_json::json!({ "permissions": {}, "scope": "turn" }),
             )
             .await;
-        assert!(perm_waiter.await.expect("turn-scoped grant should resolve").is_ok());
+        assert!(
+            perm_waiter
+                .await
+                .expect("turn-scoped grant should resolve")
+                .is_ok()
+        );
     }
 }

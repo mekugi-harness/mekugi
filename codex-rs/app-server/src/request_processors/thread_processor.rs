@@ -8,9 +8,14 @@ mod daemon_snapshot;
 #[path = "realtime_history.rs"]
 mod realtime_history;
 
+mod changes_read;
 mod resume_permit;
+mod rewind_changes;
 mod workspace_switching;
 use resume_permit::ResumePermit;
+
+#[path = "terminal_input_history.rs"]
+mod terminal_input_history;
 
 #[path = "thread_resume_account.rs"]
 mod thread_resume_account;
@@ -24,6 +29,8 @@ use super::thread_input::ensure_direct_input_allowed;
 use super::thread_lifecycle::thread_closing_for_resume;
 use super::*;
 use crate::connection_rpc_gate::ConnectionRpcGate;
+use crate::error_code::InvalidRequestReason;
+use crate::error_code::invalid_request_with_reason;
 use crate::error_code::method_not_found;
 use crate::thread_sample::SampleTask;
 use crate::thread_sample::SampleThread;
@@ -307,40 +314,24 @@ fn merge_persisted_resume_metadata(
     typesafe_overrides: &mut ConfigOverrides,
     persisted_metadata: &ThreadMetadata,
 ) {
-    let has_model_override =
-        has_model_resume_override(request_overrides.as_ref(), typesafe_overrides);
+    let has_override =
+        |key| has_resume_config_override(key, request_overrides.as_ref(), typesafe_overrides);
+    let restore_provider =
+        typesafe_overrides.model_provider.is_none() && !has_override("model_provider");
+    let restore_model = typesafe_overrides.model.is_none() && !has_override("model");
+    let restore_effort = !has_override("model_reasoning_effort");
 
     // Model and reasoning overrides do not imply a provider change.
-    if typesafe_overrides.model_provider.is_none()
-        && !typesafe_overrides
-            .family
-            .as_ref()
-            .is_some_and(|family| family.overrides("model_provider"))
-        && !request_overrides
-            .as_ref()
-            .is_some_and(|overrides| overrides.contains_key("model_provider"))
-    {
+    if restore_provider {
         typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
     }
 
-    let restore_model = typesafe_overrides
-        .family
-        .as_ref()
-        .map_or(!has_model_override, |family| {
-            typesafe_overrides.model.is_none() && !family.overrides("model")
-        });
     if restore_model {
         typesafe_overrides
             .model
             .clone_from(&persisted_metadata.model);
     }
 
-    let restore_effort = typesafe_overrides
-        .family
-        .as_ref()
-        .map_or(!has_model_override, |family| {
-            !family.overrides("model_reasoning_effort")
-        });
     if restore_effort && let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
         request_overrides.get_or_insert_with(HashMap::new).insert(
             "model_reasoning_effort".to_string(),
@@ -373,21 +364,16 @@ fn normalize_thread_list_cwd_filters(
     Ok(Some(normalized_cwds))
 }
 
-fn has_model_resume_override(
+fn has_resume_config_override(
+    key: &str,
     request_overrides: Option<&HashMap<String, serde_json::Value>>,
     typesafe_overrides: &ConfigOverrides,
 ) -> bool {
-    typesafe_overrides.family.as_ref().is_some_and(|family| {
-        ["model", "model_provider", "model_reasoning_effort"]
-            .iter()
-            .any(|key| family.overrides(key))
-    }) || typesafe_overrides.model.is_some()
-        || typesafe_overrides.model_provider.is_some()
-        || request_overrides.is_some_and(|overrides| {
-            overrides.contains_key("model") || overrides.contains_key("model_provider")
-        })
-        || request_overrides
-            .is_some_and(|overrides| overrides.contains_key("model_reasoning_effort"))
+    typesafe_overrides
+        .family
+        .as_ref()
+        .is_some_and(|family| family.overrides(key))
+        || request_overrides.is_some_and(|overrides| overrides.contains_key(key))
 }
 
 fn has_permission_override(
@@ -738,6 +724,7 @@ impl ThreadRequestProcessor {
     pub(crate) async fn thread_sample(
         &self,
         params: ThreadSampleParams,
+        automatic_prediction: bool,
         rpc_gate: Arc<ConnectionRpcGate>,
         context: RequestContext,
     ) -> Result<ThreadSampleResponse, JSONRPCErrorError> {
@@ -748,8 +735,31 @@ impl ThreadRequestProcessor {
             .get_thread(id)
             .await
             .map_err(|_| invalid_request("thread/sample requires a loaded source"))?;
+        let config = parent.config().await;
+        if automatic_prediction {
+            if config.model_provider_id != codex_model_provider_info::OPENAI_PROVIDER_ID {
+                return Err(invalid_request(
+                    "automatic predictions require the OpenAI provider",
+                ));
+            }
+            let provider = codex_model_provider::create_model_provider(
+                config.model_provider.clone(),
+                Some(Arc::clone(&self.auth_manager)),
+            );
+            let state = provider
+                .account_state()
+                .map_err(|error| invalid_request(error.to_string()))?;
+            if !matches!(
+                state.account,
+                Some(codex_model_provider::ProviderAccount::Chatgpt { .. })
+            ) {
+                return Err(invalid_request(
+                    "automatic predictions require a ChatGPT account",
+                ));
+            }
+        }
         self.config_manager
-            .check_thread_model_provider(parent.config().await.as_ref())
+            .check_thread_model_provider(&config)
             .await
             .map_err(|error| config_load_error(&error))?;
         generate_sample(
@@ -1163,99 +1173,9 @@ impl ThreadRequestProcessor {
         )))
     }
 
-    pub(crate) async fn thread_changes_read(
-        &self,
-        params: codex_app_server_protocol::ThreadChangesReadParams,
-    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        let thread_id = ThreadId::from_string(&params.thread_id)
-            .map_err(|error| invalid_request(format!("invalid thread ID: {error}")))?;
-        let workspace = match self.thread_manager.get_thread(thread_id).await {
-            Ok(thread) => Some(thread.config().await.cwd.display().to_string()),
-            Err(_) => None,
-        };
-        let include_ephemeral = params.include_ephemeral.unwrap_or(false);
-        let store_dir = codex_protocol::shell_environment::session_tmp_path(thread_id.into())
-            .join("change-history");
-        if !store_dir.exists() {
-            return Ok(Some(ClientResponsePayload::ThreadChangesRead(
-                codex_app_server_protocol::ThreadChangesReadResponse {
-                    thread_id: params.thread_id,
-                    workspace,
-                    changes: Vec::new(),
-                    files: Vec::new(),
-                    total_additions: 0,
-                    total_deletions: 0,
-                },
-            )));
-        }
-        let store = codex_change_history::ChangeHistoryStore::open_existing(&store_dir).map_err(
-            |error| internal_error(format!("failed to open native change history: {error}")),
-        )?;
-        let entries = store.list_entries().map_err(|error| {
-            internal_error(format!("failed to list native change history: {error}"))
-        })?;
-        let ids: Vec<_> = entries
-            .iter()
-            .filter(|entry| include_ephemeral || !entry.ephemeral_only)
-            .map(|entry| entry.id.clone())
-            .collect();
-        let records = store.load_records(&ids).map_err(|error| {
-            internal_error(format!("failed to load native change records: {error}"))
-        })?;
-        let workspace = workspace.or_else(|| {
-            records
-                .first()
-                .map(|r| r.metadata.workspace_root.display().to_string())
-        });
-        let composed = codex_change_history::compose_diff(&store, &records, &[]).map_err(|error| {
-            internal_error(format!("failed to compose native change diffs: {error}"))
-        })?;
-        let changes = records
-            .iter()
-            .map(|record| codex_app_server_protocol::ThreadChangeOrigin {
-                change_id: record.id.to_string(),
-                sequence: record.sequence,
-                thread_id: record.metadata.thread_id.clone(),
-                source_kind: format!("{:?}", record.metadata.source_kind),
-                created_at: record.metadata.created_at,
-                paths: record.files.iter().map(|f| f.rel_path.clone()).collect(),
-                incomplete: record
-                    .files
-                    .iter()
-                    .any(|f| f.coverage != codex_change_history::CoverageStatus::Complete),
-            })
-            .collect();
-        let mut total_additions = 0i64;
-        let mut total_deletions = 0i64;
-        let files = composed
-            .into_iter()
-            .map(|diff| {
-                let additions = diff.stats.additions as i64;
-                let deletions = diff.stats.deletions as i64;
-                total_additions += additions;
-                total_deletions += deletions;
-                codex_app_server_protocol::ThreadChangeFileDiff {
-                    path: diff.rel_path,
-                    moved_from: diff.moved_from,
-                    status: diff.stats.status.to_string(),
-                    unified_diff: diff.unified_diff,
-                    additions,
-                    deletions,
-                    is_binary: diff.stats.is_binary,
-                    coverage_notes: diff.stats.coverage_notes,
-                }
-            })
-            .collect();
-        Ok(Some(ClientResponsePayload::ThreadChangesRead(
-            codex_app_server_protocol::ThreadChangesReadResponse {
-                thread_id: params.thread_id,
-                workspace,
-                changes,
-                files,
-                total_additions,
-                total_deletions,
-            },
-        )))
+    pub(crate) async fn thread_workspace(&self, id: &str) -> Result<String, JSONRPCErrorError> {
+        let (_, thread) = self.load_thread(id).await?;
+        Ok(thread.config().await.cwd.display().to_string())
     }
 
     pub(crate) async fn thread_read(
@@ -1395,7 +1315,16 @@ impl ThreadRequestProcessor {
             .thread_manager
             .get_thread(thread_id)
             .await
-            .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
+            .map_err(|error| {
+                let message = format!("thread not found: {thread_id}");
+                match error.details() {
+                    CodexErrorDetails::ThreadNotFound(_) => invalid_request_with_reason(
+                        message,
+                        InvalidRequestReason::ThreadNotLoaded { thread_id },
+                    ),
+                    _ => invalid_request(message),
+                }
+            })?;
 
         Ok((thread_id, thread))
     }
@@ -2592,6 +2521,7 @@ impl ThreadRequestProcessor {
             thread_id,
             before_turn_id,
             before_item_id,
+            expected_change_ids,
         } = params;
         if before_item_id.as_deref() == Some("") {
             return Err(invalid_request("beforeItemId must not be empty"));
@@ -2609,6 +2539,16 @@ impl ThreadRequestProcessor {
                 "thread/revert only supports paginated threads",
             ));
         }
+        let undo_scope = match expected_change_ids {
+            Some(expected) if expected.is_empty() => {
+                return Err(invalid_params("expectedChangeIds must not be empty"));
+            }
+            Some(expected) => {
+                let scope = self.idle_rewind_scope(thread_id, thread.as_ref()).await?;
+                Some((scope, expected))
+            }
+            None => None,
+        };
         let mut config = thread.config().await.as_ref().clone();
         // Give the replacement its own pending lifetime before removal revokes the old runtime.
         let ema_cancellation = config
@@ -2744,15 +2684,16 @@ impl ThreadRequestProcessor {
             .await;
 
         let revert_result = self
-            .thread_store
-            .revert_thread(codex_thread_store::RevertThreadParams {
-                thread_id,
-                before_turn_id,
-                before_item_id,
-                multi_agent_version: thread.multi_agent_version(),
-            })
-            .await
-            .map_err(|err| thread_store_mutation_error("revert", err));
+            .commit_thread_revert(
+                codex_thread_store::RevertThreadParams {
+                    thread_id,
+                    before_turn_id,
+                    before_item_id,
+                    multi_agent_version: thread.multi_agent_version(),
+                },
+                undo_scope,
+            )
+            .await;
         // Receipt lookup or update errors cannot prevent reload or misreport a committed revert.
         // A concurrent mark wins over this cleanup, even while the thread was being truncated.
         if revert_result.is_ok()
@@ -2788,9 +2729,15 @@ impl ThreadRequestProcessor {
                 app_server_client_name,
                 app_server_client_version,
             )
-            .await?;
+            .await;
+        if let (Err(revert), Err(reload)) = (&revert_result, &response) {
+            return Err(internal_error(format!(
+                "{}; could not reload the thread: {}",
+                revert.message, reload.message
+            )));
+        }
         revert_result?;
-        Ok((response, thread_id.to_string()))
+        Ok((response?, thread_id.to_string()))
     }
 
     async fn reload_paginated_thread(
@@ -2908,7 +2855,7 @@ impl ThreadRequestProcessor {
         );
         let (turns_backwards_cursor, items_backwards_cursor) =
             Self::paginated_resume_backwards_cursors(self.thread_store.as_ref(), thread_id).await?;
-        super::token_usage_replay::set_context_usage(&mut thread, &codex_thread).await;
+        super::token_usage_replay::set_thread_usage(&mut thread, &codex_thread).await;
         Ok(ThreadRevertResponse {
             thread,
             turns_backwards_cursor,
@@ -2923,6 +2870,7 @@ impl ThreadRequestProcessor {
     ) -> Result<ThreadCompactStartResponse, JSONRPCErrorError> {
         let ThreadCompactStartParams {
             thread_id,
+            mode,
             reload,
             context_reset_request_id,
         } = params;
@@ -2933,6 +2881,21 @@ impl ThreadRequestProcessor {
             .check_thread_model_provider(thread.config().await.as_ref())
             .await
             .map_err(|error| config_load_error(&error))?;
+        if mode == Some(codex_app_server_protocol::ThreadCompactMode::ContinueInterrupted) {
+            use codex_core::StartIfIdleSubmission;
+            match thread
+                .compact_and_continue(self.request_trace_context(request_id).await)
+                .await
+                .map_err(|err| internal_error(format!("failed to start compaction: {err}")))?
+            {
+                StartIfIdleSubmission::Started { .. } => return Ok(ThreadCompactStartResponse {}),
+                StartIfIdleSubmission::NotSubmitted { reason } => {
+                    return Err(invalid_request(format!(
+                        "compaction did not start: {reason:?}"
+                    )));
+                }
+            }
+        }
         if context_reset_request_id
             .as_ref()
             .is_some_and(String::is_empty)
@@ -2983,7 +2946,8 @@ impl ThreadRequestProcessor {
             .map(|terminal| ThreadBackgroundTerminal {
                 item_id: terminal.item_id,
                 process_id: terminal.process_id,
-                command: terminal.command,
+                turn_id: terminal.turn_id,
+                command: codex_secrets::redact_secrets(terminal.command),
                 cwd: terminal.cwd.into(),
                 os_pid: None,
                 cpu_percent: None,
@@ -3003,13 +2967,19 @@ impl ThreadRequestProcessor {
         let ThreadBackgroundTerminalsTerminateParams {
             thread_id,
             process_id,
+            invocation,
         } = params;
         let process_id = process_id.parse::<i32>().map_err(|err| {
             invalid_request(format!("invalid background terminal process id: {err}"))
         })?;
 
         let (_, thread) = self.load_thread(&thread_id).await?;
-        let terminated = thread.terminate_background_terminal(process_id).await;
+        let invocation = invocation
+            .as_ref()
+            .map(|invocation| (invocation.turn_id.as_str(), invocation.item_id.as_str()));
+        let terminated = thread
+            .terminate_background_terminal(process_id, invocation)
+            .await;
         Ok(ThreadBackgroundTerminalsTerminateResponse { terminated })
     }
 
@@ -3596,6 +3566,13 @@ impl ThreadRequestProcessor {
             .populate_thread_observations(thread_id, &mut thread)
             .await
             .map_err(|error| ThreadReadViewError::Internal(error.to_string()))?;
+        if loaded_thread.is_none()
+            && (!include_turns || matches!(thread.history_mode, ApiThreadHistoryMode::Paginated))
+        {
+            self.thread_manager
+                .populate_retained_thread_usage(thread_id, &mut thread)
+                .await;
+        }
 
         let has_live_in_progress_turn = if let Some(loaded_thread) = loaded_thread.as_ref() {
             matches!(loaded_thread.agent_status().await, AgentStatus::Running)
@@ -3650,6 +3627,7 @@ impl ThreadRequestProcessor {
             thread_from_stored_thread(stored_thread, fallback_provider, &self.config.cwd)
                 .map_err(ThreadReadViewError::JsonRpc)?;
         if include_turns && let Some(history) = history {
+            codex_core::ThreadManager::apply_retained_thread_usage(&mut thread, &history);
             thread.turns = build_legacy_api_turns_from_rollout_items(&history.items);
         }
         Ok(Some(thread))
@@ -4729,22 +4707,12 @@ impl ThreadRequestProcessor {
                 typesafe_overrides.service_tier = Some(service_tier);
             }
         }
-        let has_explicit_model_resume_override =
-            has_model_resume_override(request_overrides.as_ref(), &typesafe_overrides);
         let persisted_model_settings = latest_persisted_model_settings(&thread_history);
         let has_override = |key: &str| {
-            typesafe_overrides
-                .family
-                .as_ref()
-                .is_some_and(|family| family.overrides(key))
-                || request_overrides
-                    .as_ref()
-                    .is_some_and(|overrides| overrides.contains_key(key))
+            has_resume_config_override(key, request_overrides.as_ref(), &typesafe_overrides)
         };
-        let restore_per_field = typesafe_overrides.family.is_some() || retained_settings.is_some();
-        let restore_model =
-            restore_per_field && typesafe_overrides.model.is_none() && !has_override("model");
-        let restore_effort = restore_per_field && !has_override("model_reasoning_effort");
+        let restore_model = typesafe_overrides.model.is_none() && !has_override("model");
+        let restore_effort = !has_override("model_reasoning_effort");
         let restore_service_tier =
             typesafe_overrides.service_tier.is_none() && !has_override("service_tier");
         let restore_summary = !has_override("model_reasoning_summary");
@@ -4765,14 +4733,12 @@ impl ThreadRequestProcessor {
             )
             .await;
 
-        let mut clear_reasoning_effort = (restore_effort
-            && persisted_metadata.is_none()
-            && persisted_model_settings
-                .is_some_and(|settings| settings.reasoning_effort.is_none()))
-            || (restore_effort || !has_explicit_model_resume_override)
-                && persisted_metadata
-                    .as_ref()
-                    .is_some_and(|metadata| metadata.reasoning_effort.is_none());
+        let mut clear_reasoning_effort = restore_effort
+            && match &persisted_metadata {
+                Some(metadata) => metadata.reasoning_effort.is_none(),
+                None => persisted_model_settings
+                    .is_some_and(|settings| settings.reasoning_effort.is_none()),
+            };
         if persisted_metadata.is_none()
             && let Some(settings) = persisted_model_settings
         {
@@ -4890,13 +4856,22 @@ impl ThreadRequestProcessor {
                     config.service_tier_choice =
                         Some(tier.clone().unwrap_or_else(|| "default".to_owned()));
                 }
-            } else if let Some(settings) =
-                persisted_model_settings.filter(|settings| settings.service_tier_choices.is_none())
-            {
-                config
-                    .service_tier_choice
-                    .clone_from(&settings.service_tier);
-                config.service_tier.clone_from(&settings.service_tier);
+            } else if let Some(settings) = persisted_model_settings {
+                if let Some(choices) = &settings.service_tier_choices {
+                    // A model override may select a model with no saved choice.
+                    // Carry the previous explicit tier only when there is no
+                    // choice or exact configured tier for the selected model.
+                    if selected_model.is_some_and(|model| !choices.contains_key(model))
+                        && let Some(tier) = choices.get(&settings.model)
+                    {
+                        config.service_tier_choice = Some(tier.clone());
+                    }
+                } else {
+                    config
+                        .service_tier_choice
+                        .clone_from(&settings.service_tier);
+                    config.service_tier.clone_from(&settings.service_tier);
+                }
             }
         }
         if let Some(settings) = persisted_model_settings {
@@ -5110,7 +5085,7 @@ impl ThreadRequestProcessor {
                 }
 
                 let thread_originator = config_snapshot.originator.clone();
-                super::token_usage_replay::set_context_usage(&mut thread, &codex_thread).await;
+                super::token_usage_replay::set_thread_usage(&mut thread, &codex_thread).await;
                 let response = ThreadResumeResponse {
                     thread,
                     disabled_plugin_ids: config_snapshot.disabled_plugin_ids,
@@ -6470,7 +6445,7 @@ impl ThreadRequestProcessor {
         let active_permission_profile =
             thread_response_active_permission_profile(config_snapshot.active_permission_profile);
         let thread_originator = config_snapshot.originator.clone();
-        super::token_usage_replay::set_context_usage(&mut thread, &forked_thread).await;
+        super::token_usage_replay::set_thread_usage(&mut thread, &forked_thread).await;
         let response = ThreadForkResponse {
             thread: thread.clone(),
             disabled_plugin_ids: config_snapshot.disabled_plugin_ids,
@@ -7002,12 +6977,38 @@ fn paginated_history_list_error(err: ThreadStoreError) -> JSONRPCErrorError {
 fn stored_thread_item_to_api_item(
     stored_item: &codex_thread_store::StoredThreadItem,
 ) -> Result<ThreadItem, JSONRPCErrorError> {
-    let payload = serde_json::from_slice(&stored_item.item_json).map_err(|err| {
+    let mut payload = serde_json::from_slice(&stored_item.item_json).map_err(|err| {
         internal_error(format!(
             "failed to deserialize stored thread item {}: {err}",
             stored_item.item_id
         ))
     })?;
+    // Older snapshots retain only the shell-formatted argv, optionally with steps.
+    if let ThreadItemPayload::CommandExecution {
+        command,
+        cwd,
+        display,
+        exit_code,
+        aggregated_output,
+        ..
+    } = &mut payload
+        && display
+            .as_ref()
+            .is_none_or(|display| display.script.is_empty())
+        && let Some(argv) = shlex::split(command)
+        && let Some(restored) = codex_app_server_protocol::command_display(
+            &argv,
+            cwd.to_inferred_path_uri().as_ref(),
+            *exit_code,
+            aggregated_output.as_deref().unwrap_or_default(),
+        )
+    {
+        if let Some(display) = display {
+            display.script = restored.script;
+        } else {
+            *display = Some(restored);
+        }
+    }
     Ok(ThreadItem {
         payload,
         started_at_ms: stored_item.started_at_ms,

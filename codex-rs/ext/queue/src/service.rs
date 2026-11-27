@@ -37,12 +37,19 @@ use tokio::sync::OwnedMutexGuard;
 use tokio::sync::broadcast::error::TryRecvError;
 use uuid::Uuid;
 
-/// One user message waiting to start on its thread.
+/// One submission waiting to start on its thread.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QueuedItem {
     pub id: String,
-    pub input: TurnInput,
+    pub input: QueuedInput,
     pub responsesapi_client_metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum QueuedInput {
+    Message(TurnInput),
+    ShellCommand(String),
+    Compact,
 }
 
 #[derive(Debug, Error)]
@@ -57,6 +64,10 @@ pub enum QueueServiceError {
     CoreSubmissionError(#[from] CodexErr),
     #[error("only user input can be added to the user-message queue")]
     InvalidInput,
+    #[error("use a shell submission to replace a queued shell command")]
+    ShellUpdate,
+    #[error("a queued compaction cannot be replaced by a message")]
+    CompactUpdate,
     #[error(
         "queued user input exceeds the maximum length of {MAX_USER_INPUT_TEXT_CHARS} characters ({actual_chars} provided)"
     )]
@@ -280,6 +291,31 @@ impl QueuedItemService {
     ) -> Result<QueuedItem, QueueServiceError> {
         let input = prepare_queued_user_input(input).await?;
         let payload = queued_input_payload(&input, responsesapi_client_metadata.as_ref())?;
+        self.enqueue_payload(thread_id, payload).await
+    }
+
+    pub async fn enqueue_shell_command(
+        &self,
+        thread_id: ThreadId,
+        command: String,
+    ) -> Result<QueuedItem, QueueServiceError> {
+        let payload = shell_command_payload(&command)?;
+        self.enqueue_payload(thread_id, payload).await
+    }
+
+    pub async fn enqueue_compact(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<QueuedItem, QueueServiceError> {
+        self.enqueue_payload(thread_id, r#"{"compact":true}"#.to_owned())
+            .await
+    }
+
+    async fn enqueue_payload(
+        &self,
+        thread_id: ThreadId,
+        payload: String,
+    ) -> Result<QueuedItem, QueueServiceError> {
         let item = {
             let _dispatch_guard = self.dispatch_guard(thread_id).await;
             let item = QueuedItem::try_from(self.queue.enqueue(thread_id, payload).await?)?;
@@ -340,9 +376,14 @@ impl QueuedItemService {
             .await?
             .into_iter()
             .find(|item| item.id == queued_item_id);
+        match previous.as_ref().map(|item| &item.input) {
+            Some(QueuedInput::ShellCommand(_)) => return Err(QueueServiceError::ShellUpdate),
+            Some(QueuedInput::Compact) => return Err(QueueServiceError::CompactUpdate),
+            Some(QueuedInput::Message(_)) | None => {}
+        }
         if let TurnInput::UserInput { client_id, .. } = &mut input {
             *client_id = previous.as_ref().and_then(|item| match &item.input {
-                TurnInput::UserInput { client_id, .. } => client_id.clone(),
+                QueuedInput::Message(TurnInput::UserInput { client_id, .. }) => client_id.clone(),
                 _ => None,
             });
         }
@@ -396,6 +437,29 @@ impl QueuedItemService {
         Ok(())
     }
 
+    #[tracing::instrument(level = "trace", skip_all)]
+    pub async fn take(
+        &self,
+        thread_id: ThreadId,
+        queued_item_ids: Vec<String>,
+    ) -> Result<Vec<QueuedItem>, QueueServiceError> {
+        if queued_item_ids.len() > MAX_QUEUE_ITEMS {
+            return Err(ThreadStoreError::InvalidRequest {
+                message: format!("queue cannot contain more than {MAX_QUEUE_ITEMS} submissions"),
+            }
+            .into());
+        }
+        if queued_item_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _dispatch_guard = self.dispatch_guard(thread_id).await;
+        let records = self.queue.take(thread_id, queued_item_ids).await?;
+        if !records.is_empty() {
+            self.emit_changed(thread_id);
+        }
+        records.into_iter().map(QueuedItem::try_from).collect()
+    }
+
     /// Starts the selected queued message only when its thread is idle.
     pub async fn start(
         &self,
@@ -417,27 +481,18 @@ impl QueuedItemService {
                 ),
             })?;
         let queued_item_id = item.id.clone();
-        let input @ TurnInput::UserInput { .. } = item.input else {
-            return Err(QueueServiceError::InvalidInput);
-        };
-        let submission = thread
-            .start_turn_if_idle(
-                TurnInputRequest::new(input)
-                    .with_responses_metadata(item.responsesapi_client_metadata)
-                    .with_trace(trace)
-                    .on_start(TurnStartOptions {
-                        turn_trigger: Some("queue".to_string()),
-                        ..Default::default()
-                    }),
-            )
-            .await?;
+        let submission = submit_queued(thread, item, trace).await?;
         if matches!(submission, StartIfIdleSubmission::Started { .. }) {
             self.delete_locked(thread_id, queued_item_id).await?;
         }
         Ok(submission)
     }
 
-    async fn dispatch_if_idle(&self, thread_id: ThreadId) -> Result<(), QueueServiceError> {
+    async fn dispatch_if_idle(
+        &self,
+        thread_id: ThreadId,
+        compact_to_continue: Option<&str>,
+    ) -> Result<(), QueueServiceError> {
         let Some(manager) = self.thread_manager.upgrade() else {
             return Ok(());
         };
@@ -453,6 +508,14 @@ impl QueuedItemService {
                 .into_iter()
                 .next()
             else {
+                if let Some(compact_turn_id) = compact_to_continue {
+                    thread
+                        .continue_turn_if_idle(
+                            TurnInputRequest::user_input(Vec::new()),
+                            compact_turn_id.to_owned(),
+                        )
+                        .await?;
+                }
                 return Ok(());
             };
             let queued_item_id = record.id.clone();
@@ -465,23 +528,14 @@ impl QueuedItemService {
                     continue;
                 }
             };
-            if !matches!(item.input, TurnInput::UserInput { .. }) {
+            if matches!(item.input, QueuedInput::Message(ref input) if !matches!(input, TurnInput::UserInput { .. }))
+            {
                 tracing::warn!(%queued_item_id, "discarding non-user queued input");
                 self.delete_locked(thread_id, queued_item_id).await?;
                 continue;
             }
 
-            match thread
-                .start_turn_if_idle(
-                    TurnInputRequest::new(item.input)
-                        .with_responses_metadata(item.responsesapi_client_metadata)
-                        .on_start(TurnStartOptions {
-                            turn_trigger: Some("queue".to_string()),
-                            ..Default::default()
-                        }),
-                )
-                .await
-            {
+            match submit_queued(&thread, item, None).await {
                 Ok(StartIfIdleSubmission::Started { .. }) => {
                     self.delete_locked(thread_id, queued_item_id).await?;
                     return Ok(());
@@ -526,6 +580,44 @@ impl QueuedItemService {
             id: Uuid::now_v7().to_string(),
             msg: EventMsg::ThreadQueueChanged(ThreadQueueChangedEvent { thread_id }),
         });
+    }
+}
+
+fn shell_command_payload(command: &str) -> Result<String, QueueServiceError> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(QueueServiceError::InvalidInput);
+    }
+    let actual_chars = command.chars().count();
+    if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+        return Err(QueueServiceError::InputTooLarge { actual_chars });
+    }
+    // Keep a separate encoding so older readers never send it to a model.
+    Ok(serde_json::json!({ "shell_command": command }).to_string())
+}
+
+async fn submit_queued(
+    thread: &CodexThread,
+    item: QueuedItem,
+    trace: Option<W3cTraceContext>,
+) -> Result<StartIfIdleSubmission, QueueServiceError> {
+    match item.input {
+        QueuedInput::Message(input @ TurnInput::UserInput { .. }) => Ok(thread
+            .start_turn_if_idle(
+                TurnInputRequest::new(input)
+                    .with_responses_metadata(item.responsesapi_client_metadata)
+                    .with_trace(trace)
+                    .on_start(TurnStartOptions {
+                        turn_trigger: Some("queue".to_string()),
+                        ..Default::default()
+                    }),
+            )
+            .await?),
+        QueuedInput::ShellCommand(command) => {
+            Ok(thread.start_shell_if_idle(command, trace).await?)
+        }
+        QueuedInput::Compact => Ok(thread.start_compact_if_idle(trace).await?),
+        QueuedInput::Message(_) => Err(QueueServiceError::InvalidInput),
     }
 }
 
@@ -598,7 +690,10 @@ where
                 return;
             };
             let _guard = self.dispatch_guard(thread_id).await;
-            if let Err(error) = self.dispatch_if_idle(thread_id).await {
+            if let Err(error) = self
+                .dispatch_if_idle(thread_id, input.compact_to_continue)
+                .await
+            {
                 tracing::warn!(%thread_id, %error, "failed to dispatch queued user input");
             }
         })
@@ -623,6 +718,20 @@ impl TryFrom<QueuedUserSubmissionRecord> for QueuedItem {
 
     fn try_from(record: QueuedUserSubmissionRecord) -> Result<Self, Self::Error> {
         let mut payload: serde_json::Value = serde_json::from_str(&record.payload)?;
+        if let Some(command) = payload.get_mut("shell_command") {
+            return Ok(QueuedItem {
+                id: record.id,
+                input: QueuedInput::ShellCommand(serde_json::from_value(command.take())?),
+                responsesapi_client_metadata: None,
+            });
+        }
+        if payload.get("compact").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Ok(QueuedItem {
+                id: record.id,
+                input: QueuedInput::Compact,
+                responsesapi_client_metadata: None,
+            });
+        }
         let responsesapi_client_metadata = payload
             .get_mut("UserInput")
             .and_then(serde_json::Value::as_object_mut)
@@ -631,7 +740,7 @@ impl TryFrom<QueuedUserSubmissionRecord> for QueuedItem {
             .transpose()?;
         Ok(QueuedItem {
             id: record.id,
-            input: serde_json::from_value(payload)?,
+            input: QueuedInput::Message(serde_json::from_value(payload)?),
             responsesapi_client_metadata,
         })
     }

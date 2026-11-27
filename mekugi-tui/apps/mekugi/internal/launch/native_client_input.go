@@ -96,7 +96,7 @@ func (c *nativeClient) withInput(thread, displayed sessionpresentation.Thread, t
 
 // Subsequent composer input needs the editor produced by a completion, even
 // when the accepting key had no continuation (for example, Tab then Enter).
-// Navigation outside the resume chooser and cancellation remain independent.
+// Menu search keys likewise need the preceding published query and choices.
 func (c *nativeClient) drainInput() {
 	if c.event.Attachment == "" {
 		return
@@ -105,12 +105,14 @@ func (c *nativeClient) drainInput() {
 		pending := c.request(nativeSemanticCall)
 		dependent := func(call *nativeClientCall) bool {
 			return call != nil && (call.next != nil || call.acceptingCompletion ||
+				call.operation.Menu != nil && call.operation.Menu.Kind == sessionpresentation.MenuSearch ||
 				call.operation.Resume != nil && call.operation.Resume.Kind != sessionpresentation.ResumePage)
 		}
 		queued := c.input[i]
 		event := queued.event
 		independent := event.Kind == terminalsession.ColorInput || event.Kind == terminalsession.FocusInput || event.Kind == terminalsession.MouseInput || event.Kind == terminalsession.KeyInput && (event.Text == "\x03" || event.Text == "\x02" || strings.HasPrefix(event.Text, "\x1b["))
-		if queued.resume != 0 && event.Kind == terminalsession.KeyInput {
+		menu := c.event.Frame.View.Menu
+		if (queued.resume != 0 || menu != nil && menu.Kind == sessionpresentation.MenuManageSkills) && event.Kind == terminalsession.KeyInput {
 			switch event.Text {
 			case "\x1b[A", "\x1b[B", "\x1b[5~", "\x1b[6~", "\x1b[H", "\x1b[F":
 				// Chooser navigation needs the preceding query's published rows.
@@ -258,7 +260,10 @@ func (c *nativeClient) dispatch(event terminalsession.Input) {
 		case effect.BTW != nil:
 			c.enqueue(sessionapi.NativeOperation{BTW: effect.BTW}, nil, nil)
 		case effect.Notice != nil:
-			if c.feedback.Text != "" {
+			if effect.Notice.Feedback == 0 {
+				if c.feedback.Text == "" || effect.Notice.Text != c.feedback.Text {
+					break
+				}
 				if effect.Notice.Dismiss {
 					c.feedback.Set("", false, time.Now())
 				} else {
@@ -336,7 +341,7 @@ func (c *nativeClient) dispatch(event terminalsession.Input) {
 						c.details(target.Version, sessionapi.NativeDetailRequest{Kind: sessionapi.NativeFileDetails, Path: target.Link, Displayed: sessionpresentation.Thread{ID: target.Thread}})
 					}
 				} else {
-					c.openTranscriptDetail(target.Version, target.View, target.Thread, activityui.DetailTarget{Entry: target.Entry, Snippet: target.Snippet}, false)
+					c.openTranscriptDetail(target.Version, target.View, target.Thread, activityui.DetailTarget{Entry: target.Entry, Snippet: target.Snippet, Detail: target.Detail}, false)
 				}
 			}
 		case effect.Reference != nil:
@@ -555,13 +560,27 @@ func (c *nativeClient) composer(input terminalsession.ComposerInput) {
 	var after func(error)
 	if intent.Operation == sessionpresentation.SubmitComposer || intent.Operation == sessionpresentation.QueueComposer {
 		editor.Take()
+		shell := strings.HasPrefix(strings.TrimSpace(value.Text), "!")
 		after = func(err error) {
 			if err == nil {
 				return
 			}
 			if nativeAdmissionRefused(err) {
-				editor.Restore(value)
+				if !shell {
+					editor.Restore(value)
+				} else if editor.Text == "" {
+					editor.Replace(value)
+				} else {
+					editor.Remember(value)
+					c.enqueue(sessionapi.NativeOperation{SaveDraft: &value.Text}, nil, nil)
+					c.notice = "Shell command saved in input history (↑)"
+				}
 				return
+			}
+			if shell {
+				editor.Remember(value)
+				c.enqueue(sessionapi.NativeOperation{SaveDraft: &value.Text}, nil, nil)
+				c.notice = "Shell submission outcome unknown · command saved in input history (↑)"
 			}
 			c.unknown = append(c.unknown, nativeUnknownInput{Draft: value, Thread: intent.Thread})
 		}

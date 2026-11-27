@@ -400,6 +400,8 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ImageGenerationEnd(_)
         | EventMsg::ViewImageToolCall(_)
         | EventMsg::ExecCommandBegin(_)
+        | EventMsg::BackgroundTerminalRegistered
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandEnd(_)
@@ -430,6 +432,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::SkillsUsed(_)
         | EventMsg::ItemStarted(_)
         | EventMsg::ItemCompleted(_)
         | EventMsg::HookStarted(_)
@@ -487,6 +490,8 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::ImageGenerationEnd(_)
         | EventMsg::ViewImageToolCall(_)
         | EventMsg::ExecCommandBegin(_)
+        | EventMsg::BackgroundTerminalRegistered
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandEnd(_)
@@ -517,6 +522,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::RawResponseItem(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::SkillsUsed(_)
         | EventMsg::ItemStarted(_)
         | EventMsg::ItemCompleted(_)
         | EventMsg::HookStarted(_)

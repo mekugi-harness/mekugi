@@ -599,7 +599,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_codex_metadata_from_env() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "# Snapshot file\nexport CODEX_THREAD_ID='parent-thread'\nexport CODEX_TOOL_CALL_ID='parent-call'\nexport CODEX_VERSION='old-version'\n",
+        "# Snapshot file\nexport CODEX_THREAD_ID='parent-thread'\nexport CODEX_TOOL_CALL_ID='parent-call'\nexport CODEX_VERSION='old-version'\nexport SESSION_TMP=/parent\nexport MEKUGI_CHANGE_HISTORY_DIR=/parent/change-history\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -607,12 +607,17 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_codex_metadata_from_env() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "printf '%s|%s|%s' \"$CODEX_THREAD_ID\" \"$CODEX_TOOL_CALL_ID\" \"$CODEX_VERSION\""
+        "printf '%s|%s|%s|%s|%s' \"$CODEX_THREAD_ID\" \"$CODEX_TOOL_CALL_ID\" \"$CODEX_VERSION\" \"$SESSION_TMP\" \"$MEKUGI_CHANGE_HISTORY_DIR\""
             .to_string(),
     ];
     let env = HashMap::from([
         ("CODEX_THREAD_ID".to_string(), "nested-thread".to_string()),
         ("CODEX_TOOL_CALL_ID".to_string(), "nested-call".to_string()),
+        ("SESSION_TMP".to_string(), "/current".to_string()),
+        (
+            "MEKUGI_CHANGE_HISTORY_DIR".to_string(),
+            "/current/change-history".to_string(),
+        ),
         (
             "CODEX_VERSION".to_string(),
             env!("CARGO_PKG_VERSION").to_string(),
@@ -635,7 +640,11 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_codex_metadata_from_env() {
     assert!(output.status.success(), "command failed: {output:?}");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        concat!("nested-thread|nested-call|", env!("CARGO_PKG_VERSION")),
+        concat!(
+            "nested-thread|nested-call|",
+            env!("CARGO_PKG_VERSION"),
+            "|/current|/current/change-history"
+        ),
     );
 }
 

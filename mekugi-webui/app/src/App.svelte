@@ -1,6 +1,5 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import Alert from "./lib/ui/Alert.svelte";
   import type { InitialInput } from "./lib/attachments";
   import { hub, type Machine } from "./lib/hub.svelte";
   import MachineForm from "./lib/MachineForm.svelte";
@@ -11,10 +10,8 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import ThreadView from "./lib/ThreadView.svelte";
   import Button from "./lib/ui/Button.svelte";
-  import Dialog from "./lib/ui/Dialog.svelte";
   import Notice from "./lib/ui/Notice.svelte";
   import * as Tooltip from "./lib/ui/tooltip";
-  import { floating } from "./lib/ui/styles";
   import { view } from "./lib/view.svelte";
 
   // The sidebar sits beside the main area where it fits and is a drawer over
@@ -30,26 +27,7 @@
 
   let settings = $state<{ focus?: Machine }>();
   let switcher = $state(false);
-  let endTarget = $state<{
-    machine: Machine;
-    id: string;
-    title: string;
-    pending: boolean;
-    error?: string;
-  }>();
-  let endNotice = $state<string>();
-  let firstInput = $state<{ machine: string; session: string; input: InitialInput }>();
-  async function endSession() {
-    const target = endTarget;
-    if (!target || target.pending) return;
-    target.pending = true;
-    const prefix = `${target.title} on ${target.machine.label}`;
-    endNotice = `Ending ${prefix}… You can keep using other threads.`;
-    target.error = await hub.endSession(target.id, target.machine);
-    target.pending = false;
-    endNotice = target.error ? `End request for ${prefix}: ${target.error}` : `Ended ${prefix}.`;
-    if (!target.error && endTarget === target) endTarget = undefined;
-  }
+  let firstInput = $state.raw<{ machine: string; input: InitialInput }>();
 
   // A link to a thread on a machine this page has not connected opens a new
   // thread on a connected machine instead.
@@ -79,12 +57,12 @@
       return;
     }
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
-      if (event.key.toLowerCase() === "k" && !settings && !endTarget) {
+      if (event.key.toLowerCase() === "k" && !settings) {
         event.preventDefault();
         switcher = !switcher;
         return;
       }
-      if (event.key === "\\" && !settings && !endTarget && !switcher) {
+      if (event.key === "\\" && !settings && !switcher) {
         event.preventDefault();
         if (modal) closeDrawer();
         else sidebar = !sidebar;
@@ -135,11 +113,11 @@
             id={thread}
             {sidebar}
             onsidebar={() => (sidebar = true)}
-            initial={firstInput?.machine === machine.id && firstInput.session === thread
+            initial={firstInput?.machine === machine.id &&
+            firstInput.input.started.thread.id === thread
               ? firstInput.input
               : undefined}
             oninitial={() => (firstInput = undefined)}
-            onend={(target) => (endTarget = { ...target, pending: false })}
           />
         {/key}
       {:else}
@@ -161,8 +139,8 @@
             </Notice>{/if}
           <NewThread
             {machine}
-            onopened={(machine, session, initial) => {
-              firstInput = initial ? { machine, session, input: initial } : undefined;
+            onopened={(machine, input) => {
+              firstInput = { machine, input };
             }}
           />
         {:else}
@@ -191,20 +169,6 @@
           </section>
         {/if}
       {/if}
-      {#if endNotice}
-        <div
-          class="{floating} absolute top-[calc(var(--topbar)+env(safe-area-inset-top,0px)+8px)] left-1/2 z-20 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2 py-1 pr-1 pl-3.5 text-small"
-          role="status"
-        >
-          <span>{endNotice}</span>
-          <Button
-            variant="quiet"
-            icon="close"
-            label="Dismiss"
-            onclick={() => (endNotice = undefined)}
-          />
-        </div>
-      {/if}
     </div>
   </div>
 </Tooltip.Provider>
@@ -218,23 +182,4 @@
 {/if}
 {#if settings}
   <MachineSettings focus={settings.focus} onclose={() => (settings = undefined)} />
-{/if}
-{#if endTarget}
-  <Dialog title="End thread?" onclose={() => (endTarget = undefined)}>
-    <p class="mb-2">
-      End <strong class="font-semibold">{endTarget.title}</strong> on
-      <strong class="font-semibold">{endTarget.machine.label}</strong>? Active work stops. Saved
-      history stays available to resume.
-    </p>
-    <p class="font-mono text-small text-muted">{endTarget.id}</p>
-    {#if endTarget.error}<Alert class="mt-2">{endTarget.error}</Alert>{/if}
-    <div class="mt-4 flex justify-end gap-2">
-      <Button variant="quiet" onclick={() => (endTarget = undefined)}
-        >{endTarget.pending ? "Dismiss" : "Keep open"}</Button
-      >
-      <Button variant="danger" disabled={endTarget.pending} onclick={endSession}
-        >{endTarget.pending ? "Ending…" : "End"}</Button
-      >
-    </div>
-  </Dialog>
 {/if}

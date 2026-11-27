@@ -24,6 +24,7 @@ type SourceSelection struct {
 	Pane         Rect
 	Questions    []uint64
 	Snippets     []activityui.Snippet
+	details      []activityui.DetailSelection
 	Mention      string
 	Diff         []diffrender.LineSource
 	Workspace    string
@@ -37,6 +38,7 @@ type SelectionTarget struct {
 	View                    *activityui.View
 	Entry                   uint64
 	Snippet                 activityui.Snippet
+	Detail                  activityui.DetailSelection
 }
 
 type SelectionInput struct {
@@ -66,6 +68,9 @@ func (f *Frame) SelectionMouse(in FrameInput, previous *SourceSelection, mouse M
 					out.Target.Entry = s.Questions[index]
 				} else if index >= 0 && index < len(s.Snippets) {
 					out.Target.Snippet = s.Snippets[index]
+					if index < len(s.details) {
+						out.Target.Detail = s.details[index]
+					}
 				}
 			}
 			return out
@@ -102,14 +107,14 @@ func (f *Frame) SelectionMouse(in FrameInput, previous *SourceSelection, mouse M
 	rect := Rect{pane.X + view.FeedLeft - 1, pane.Y + view.FeedTop - 1, view.FeedRight - view.FeedLeft + 1, view.FeedRows}
 	rect.W = min(rect.W, pane.X+pane.W-rect.X)
 	rect.H = min(rect.H, pane.Y+pane.H-rect.Y)
-	questions, snippets := view.FeedQuestions, view.FeedSnippets
+	questions, snippets, details := view.FeedQuestions, view.FeedSnippets, view.FeedDetails
 	if in.Main.BTW.Open() {
 		btw := in.Main.BTW.Rect
 		btw.X += pane.X + 2
 		btw.Y += pane.Y + 1
 		btw.W, btw.H = max(0, btw.W-2), max(0, btw.H-2)
 		if btw.Contains(x, y) {
-			rect, mention, questions, snippets = btw, "side answer", nil, nil
+			rect, mention, questions, snippets, details = btw, "side answer", nil, nil, nil
 		}
 	}
 
@@ -119,14 +124,14 @@ func (f *Frame) SelectionMouse(in FrameInput, previous *SourceSelection, mouse M
 		composer.Y += pane.Y
 		if composer.Contains(x, y) {
 			rect, mention = composer, "text"
-			questions, snippets = nil, nil
+			questions, snippets, details = nil, nil, nil
 		}
 	}
 	if in.Main.session.ReadOnly == sessionpresentation.Editable && in.Main.Panel.Open() {
 		rect, mention = in.Main.Panel.Rect, "status"
 		rect.X += pane.X
 		rect.Y += pane.Y
-		questions, snippets = nil, nil
+		questions, snippets, details = nil, nil, nil
 	}
 	if !rect.Contains(x, y) || len(f.Rows) != in.Height {
 		return out
@@ -145,11 +150,11 @@ func (f *Frame) SelectionMouse(in FrameInput, previous *SourceSelection, mouse M
 				copySource[row] = previous.CopySource[at]
 			}
 		}
-		questions, snippets, mention = previous.Questions, previous.Snippets, previous.Mention
+		questions, snippets, details, mention = previous.Questions, previous.Snippets, previous.details, previous.Mention
 	}
 	rows, link := Screen(in.Width, in.Height, source, x, y)
 	in.Shell.Focus = 0
-	out.Selection = &SourceSelection{Selection: NewSelection(Surface{Rect: rect, Rows: rows, CopySource: copySource}, x, y), Link: link, View: view, Pane: pane, Attachment: sourceContext.Attachment, Thread: sourceContext.Thread, Workspace: sourceContext.Workspace, Questions: slices.Clone(questions), Snippets: slices.Clone(snippets), Mention: mention}
+	out.Selection = &SourceSelection{Selection: NewSelection(Surface{Rect: rect, Rows: rows, CopySource: copySource}, x, y), Link: link, View: view, Pane: pane, Attachment: sourceContext.Attachment, Thread: sourceContext.Thread, Workspace: sourceContext.Workspace, Questions: slices.Clone(questions), Snippets: slices.Clone(snippets), details: details, Mention: mention}
 	if previous != nil && previous.ScreenRows() != 0 && previous.View == view && previous.Rect == rect {
 		next := *previous
 		next.Selection, next.Link = previous.Restart(x, y), link
@@ -182,9 +187,10 @@ func (s *SourceSelection) captureDocument(main *Main, composer composerDocument)
 				top, fixed = top+1, 1
 			}
 			s.Document(feed.Lines, top, fixed)
-			questions, snippets := s.Questions, s.Snippets
+			questions, snippets, details := s.Questions, s.Snippets, s.details
 			s.Questions = append(slices.Clone(feed.Questions), make([]uint64, max(0, len(s.Rows)-s.Rect.Y-len(feed.Questions)))...)
 			s.Snippets = append(slices.Clone(feed.Snippets), make([]activityui.Snippet, max(0, len(s.Rows)-s.Rect.Y-len(feed.Snippets)))...)
+			s.details = feed.DetailSelections(s.Snippets)
 			for row := 0; row < s.Rect.H; row++ {
 				at := s.DocumentY(s.Rect.Y+row) - s.Rect.Y
 				if row < len(questions) {
@@ -192,6 +198,9 @@ func (s *SourceSelection) captureDocument(main *Main, composer composerDocument)
 				}
 				if row < len(snippets) {
 					s.Snippets[at] = snippets[row]
+				}
+				if row < len(details) {
+					s.details[at] = details[row]
 				}
 			}
 			s.capture = nil

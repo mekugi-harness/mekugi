@@ -81,6 +81,10 @@ func TestShellGuardBrowserAndTerminalNativeCodex(t *testing.T) {
 	}
 	runAppServerPreviewWith(t, provider, nil, appServerPreview{
 		managedRuntime: true, integration: &integration, environment: []string{"SHELL=/bin/bash", "CODEX_HOME=" + codexHome},
+		// Test the native guard independently of the Linux network sandbox,
+		// which denies connections to Unix sockets.
+		codexArgs:     []string{"-c", `sandbox_mode="danger-full-access"`},
+		completedText: provider.finalText, saveBeforePrompt: true,
 		beforePrompt: func(t *testing.T, _ io.Writer, _ func(string), _ func(func(string) bool), _ *vt.Emulator) {
 			bridge, err := connector.New(connector.Options{SocketPath: <-socket, TokenFile: tokenFile, Origins: []string{page.URL}})
 			if err != nil {
@@ -91,16 +95,17 @@ func TestShellGuardBrowserAndTerminalNativeCodex(t *testing.T) {
 			t.Cleanup(remote.Close)
 			run("find", "label", "Connector URL", "fill", remote.URL)
 			run("find", "role", "button", "click", "--name", "Connect", "--exact")
+			run("wait", "nav[aria-label=Threads] li a")
 			run("click", "nav[aria-label=Threads] li a")
 			run("wait", "#composer-text")
 		},
 		duringTurn: func(t *testing.T, outer io.Writer, await func(string), _ func(func(string) bool), _ *vt.Emulator) {
-			await("Allow this sudo command?")
-			run("wait", "--text", "Allow this sudo command?")
-			run("find", "role", "button", "click", "--name", "Yes, run it", "--exact")
-			await("Enter your sudo password:")
-			run("wait", "--text", "Answer this secret prompt in the terminal.")
-			run("wait", "--fn", `document.querySelector('[data-prompt]') && !document.querySelector('[data-prompt] input, [data-prompt] textarea')`)
+			await("Approve guarded shell command")
+			run("wait", "--text", "Approve guarded shell action")
+			run("find", "role", "button", "click", "--name", "Allow once", "--exact")
+			await("Enter sudo password")
+			run("wait", "--text", "Waiting for input")
+			run("wait", "--fn", `!document.querySelector('[data-prompt] input, [data-prompt] textarea, input[type=password]')`)
 			if _, err := io.WriteString(outer, secret+"\r"); err != nil {
 				t.Fatal(err)
 			}

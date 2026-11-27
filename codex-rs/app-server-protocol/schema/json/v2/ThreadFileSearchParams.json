@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Search for paths under a loaded thread's workspace.",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "query",
+    "threadId"
+  ],
+  "title": "ThreadFileSearchParams",
+  "type": "object"
+}

@@ -2756,6 +2756,8 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::WebSearchBegin(_)
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ExecCommandBegin(_)
+        | EventMsg::BackgroundTerminalRegistered
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandEnd(_)
@@ -2781,6 +2783,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::RawResponseItem(_)
         | EventMsg::PrivateSessionEvent(_)
         | EventMsg::RawResponseCompleted(_)
+        | EventMsg::SkillsUsed(_)
         | EventMsg::ItemStarted(_)
         | EventMsg::HookStarted(_)
         | EventMsg::HookCompleted(_)

@@ -23,16 +23,11 @@ export function select(machine: string | undefined): void {
 }
 
 export function show(agent: string | undefined, replace = false): void {
-  if (agent === "Main") agent = "/root";
-  if (agent && stream.agent(agent)?.nonAttachable) return;
   const family = stream.family;
-  const thread = !agent || agent === "/root" ? family?.root : stream.agent(agent)?.thread;
-  if (thread && (!agent || agent === "/root" || family?.threads.includes(thread))) {
-    open(thread, replace);
-    return;
-  }
-  if (agent === "/root") agent = undefined;
-  if (agent !== view.agent) go({ ...view, agent }, replace);
+  const main = !agent || agent === "Main" || agent === "/root";
+  const target = main ? undefined : stream.agent(agent);
+  const thread = main ? family?.root : target?.thread;
+  if (thread && !target?.nonAttachable && family?.threads.includes(thread)) open(thread, replace);
 }
 
 export function open(session: string | undefined, replace = false): void {

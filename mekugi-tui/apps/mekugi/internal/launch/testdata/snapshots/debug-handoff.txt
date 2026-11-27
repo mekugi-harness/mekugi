@@ -1,1 +1,0 @@
-Debug bundle saved to: /tmp/mekugi-debug-session

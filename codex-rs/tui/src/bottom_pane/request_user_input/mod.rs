@@ -897,6 +897,7 @@ impl RequestUserInputOverlay {
                         .then(|| notes.clone())
                         .filter(|text| !text.is_empty()),
                     skipped: selected_label.is_none() && notes.is_empty(),
+                    images: None,
                 },
             );
         }

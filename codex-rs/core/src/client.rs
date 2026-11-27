@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 mod response_delivery;
@@ -3679,6 +3680,13 @@ fn api_error_http_status(error: &ApiError) -> Option<u16> {
     }
 }
 
+static PROVIDER_REQUESTS_THIS_LAUNCH: AtomicU64 = AtomicU64::new(0);
+
+/// Native model transport attempts in this process, across all threads.
+pub fn provider_requests_this_launch() -> u64 {
+    PROVIDER_REQUESTS_THIS_LAUNCH.load(Ordering::Relaxed)
+}
+
 struct ApiTelemetry {
     session_telemetry: SessionTelemetry,
     auth_context: AuthRequestTelemetryContext,
@@ -3707,6 +3715,7 @@ impl RequestTelemetry for ApiTelemetry {
         error: Option<&TransportError>,
         duration: Duration,
     ) {
+        PROVIDER_REQUESTS_THIS_LAUNCH.fetch_add(1, Ordering::Relaxed);
         let error_message = error.map(telemetry_transport_error_message);
         let status = status.map(|s| s.as_u16());
         let debug = error
@@ -3747,6 +3756,7 @@ impl SseTelemetry for ApiTelemetry {
 
 impl WebsocketTelemetry for ApiTelemetry {
     fn on_ws_request(&self, duration: Duration, error: Option<&ApiError>, connection_reused: bool) {
+        PROVIDER_REQUESTS_THIS_LAUNCH.fetch_add(1, Ordering::Relaxed);
         let error_message = error.map(telemetry_api_error_message);
         self.session_telemetry.record_websocket_request(
             duration,

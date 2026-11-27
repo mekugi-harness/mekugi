@@ -1,2 +1,0 @@
-├ Move    testdata/{output.txt.new=>output.txt} via mv · ran
-└ Ran     gofmt -w internal/router/native_shell.go

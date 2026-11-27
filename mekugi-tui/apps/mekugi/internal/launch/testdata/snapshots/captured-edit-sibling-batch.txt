@@ -1,3 +1,0 @@
-Search needle in src
-Ran     open('nested.go', 'w').write('PRIVATE_EDIT_SOURCE') · via python3
-Ran     combined output                                                                                             64ms

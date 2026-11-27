@@ -75,6 +75,8 @@ pub enum ThreadIdleCause {
 pub struct ThreadIdleInput<'a> {
     /// Why the thread became idle.
     pub cause: ThreadIdleCause,
+    /// A successful manual compact that may continue if there is no queued input.
+    pub compact_to_continue: Option<&'a str>,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.

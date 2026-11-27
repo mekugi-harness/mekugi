@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
@@ -17,10 +18,22 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 	activityfeed "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
-	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
-	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/livepreview/preview"
 )
+
+const directCommandTailLimit = 3
+
+func directCommandTail(output string) ([]string, int) {
+	if output == "" {
+		return nil, 0
+	}
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
+	if len(lines) <= directCommandTailLimit {
+		return lines, 0
+	}
+	return lines[len(lines)-directCommandTailLimit:], len(lines) - directCommandTailLimit
+}
 
 func (c *directNativeConnection) handleServerMessage(msg appserver.Message) {
 	if len(msg.ID) > 0 && msg.Method != "" {
@@ -28,6 +41,16 @@ func (c *directNativeConnection) handleServerMessage(msg appserver.Message) {
 		return
 	}
 	c.handleNotification(msg)
+}
+
+func (c *directNativeConnection) setActiveInputTurnLocked(threadID, turnID string) {
+	if threadID == c.sideThread {
+		c.sideActiveTurn = turnID
+	} else {
+		c.activeTurn = turnID
+		c.resetPredictionLocked("")
+	}
+	c.busy = true
 }
 
 func (c *directNativeConnection) handleNotification(msg appserver.Message) {
@@ -45,46 +68,81 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			case c.btwThread:
 				c.btwRunning = true
 			case c.sideThread:
-				c.sideActiveTurn = p.Turn.ID
-				c.busy = true
+				c.setActiveInputTurnLocked(c.sideThread, p.Turn.ID)
 			default:
 				if p.ThreadID == "" || p.ThreadID == c.mainThread {
-					c.activeTurn = p.Turn.ID
-					c.busy = true
+					c.setActiveInputTurnLocked(c.mainThread, p.Turn.ID)
 				}
 			}
 			c.publishLocked()
 			c.mu.Unlock()
 		}
 
+	case "error":
+		var p struct {
+			ThreadID  string             `json:"threadId"`
+			TurnID    string             `json:"turnId"`
+			Error     *binding.TurnError `json:"error"`
+			WillRetry bool               `json:"willRetry"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && !p.WillRetry {
+			c.mu.Lock()
+			if p.ThreadID != c.btwThread && c.projectTurnErrorLocked(p.ThreadID, p.TurnID, p.Error) != "" {
+				c.publishLocked()
+			}
+			c.mu.Unlock()
+		}
+
 	case "turn/completed":
 		var p struct {
-			ThreadID string `json:"threadId"`
-			Turn     struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
-				Error  *struct {
-					Message string `json:"message"`
-				} `json:"error"`
-			} `json:"turn"`
+			ThreadID string       `json:"threadId"`
+			Turn     binding.Turn `json:"turn"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
+			threadID := cmp.Or(p.ThreadID, c.mainThread)
+			c.finishSteerTurnLocked(directSteerTurnID{thread: threadID, turn: p.Turn.ID})
+			for _, start := range c.inputTurnStarts {
+				if start.threadID == threadID {
+					start.completed = append(start.completed, p.Turn.ID)
+				}
+			}
+			if p.ThreadID != "" && p.ThreadID == c.mainThread &&
+				p.Turn.Status == "completed" && p.Turn.ID != c.prediction.turn &&
+				(c.activeTurn == "" || p.Turn.ID == c.activeTurn) {
+				c.resetPredictionLocked(p.Turn.ID)
+			}
 			switch p.ThreadID {
 			case c.btwThread:
 				c.btwRunning = false
+				c.btw.Status, c.btw.Alert = p.Turn.Status, p.Turn.Status == "failed"
+				if p.Turn.Status == "completed" && len(c.btw.Answer) != 0 {
+					c.btwCompletedAnswer = c.btw.Answer[len(c.btw.Answer)-1].Text
+				} else if p.Turn.Error != nil && p.Turn.Error.Message != "" {
+					c.btw.Status = p.Turn.Error.Message
+				}
 			case c.sideThread:
-				c.sideActiveTurn = ""
-				c.busy = c.activeTurn != ""
+				if c.sideActiveTurn == p.Turn.ID {
+					c.sideActiveTurn = ""
+				}
+				c.busy = c.activeTurn != "" || c.sideActiveTurn != ""
 			default:
 				if p.ThreadID == "" || p.ThreadID == c.mainThread {
-					c.activeTurn = ""
-					c.busy = c.sideActiveTurn != ""
+					if c.activeTurn == p.Turn.ID {
+						c.activeTurn = ""
+					}
+					c.busy = c.activeTurn != "" || c.sideActiveTurn != ""
 				}
 			}
-			if p.Turn.Error != nil && p.Turn.Error.Message != "" {
-				c.setFeedbackLocked(p.Turn.Error.Message, true)
+			if threadID != c.btwThread {
+				diagnostic := c.projectTurnErrorLocked(threadID, p.Turn.ID, p.Turn.Error)
+				if diagnostic != "" && (threadID == c.mainThread || threadID == c.sideThread) {
+					c.setFeedbackLocked(diagnostic, true)
+				}
 			}
+			c.removeNativePreviewsLocked(func(edit preview.Preview) bool {
+				return edit.Turn == p.Turn.ID && (p.ThreadID == "" || edit.Thread == p.ThreadID)
+			})
 			mainID := c.mainThread
 			c.publishLocked()
 			c.mu.Unlock()
@@ -108,12 +166,15 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			}
 			itemType := c.upsertWireItemLocked(threadID, p.TurnID, p.Item, complete)
 			mainID := c.mainThread
+			displayed := cmp.Or(c.displayedThread, mainID)
 			c.publishLocked()
 			c.mu.Unlock()
 			if complete && mainID != "" {
 				switch itemType {
 				case "fileChange", "commandExecution":
-					go c.refreshChanges(c.ctx, mainID)
+					if threadID == displayed || displayed == mainID {
+						go c.refreshChanges(c.ctx, displayed)
+					}
 				case "collabAgentToolCall", "subAgentActivity":
 					go c.refreshSubtree(c.ctx, mainID)
 				}
@@ -130,13 +191,17 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 		if json.Unmarshal(msg.Params, &p) == nil && p.Delta != "" {
 			c.mu.Lock()
 			if p.ThreadID != "" && p.ThreadID == c.btwThread {
-				c.btwAnswer.WriteString(p.Delta)
+				c.btw.Append(p.ItemID, p.Delta, false)
 			} else {
 				threadID := p.ThreadID
 				if threadID == "" {
 					threadID = c.mainThread
 				}
-				rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "agentMessage", "final")
+				msgKind := "final"
+				if threadID == c.mainThread {
+					msgKind = "text"
+				}
+				rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "agentMessage", msgKind)
 				rec.entry.Text += p.Delta
 				rec.entry.Live = true
 				rec.entry.Running = true
@@ -186,50 +251,44 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "commandExecution", "tool")
 			rec.output += p.Delta
 			if len(rec.entry.Values) > 0 {
-				rec.entry.Values[0].Output = 1
+				result := &rec.entry.Values[0]
+				if rec.itemType == "commandExecution" {
+					result = &rec.entry.Values[len(rec.entry.Values)-1]
+				}
+				result.Output = 1
+				result.Tail, result.TailOmitted = directCommandTail(rec.output)
 			}
 			if rec.entry.Outputs == nil {
 				rec.entry.Outputs = map[int]int{}
 			}
 			rec.entry.Outputs[1]++
 			rec.entry.Revision++
+			c.refreshCommandDetailsLocked(rec)
+			c.updateProcessDetailsLocked()
 			c.publishLocked()
 			c.mu.Unlock()
 		}
 
 	case "thread/tokenUsage/updated":
 		var p struct {
-			ThreadID   string `json:"threadId"`
-			TokenUsage struct {
-				Total struct {
-					TotalTokens           uint64 `json:"totalTokens"`
-					InputTokens           uint64 `json:"inputTokens"`
-					OutputTokens          uint64 `json:"outputTokens"`
-					CachedInputTokens     uint64 `json:"cachedInputTokens"`
-					ReasoningOutputTokens uint64 `json:"reasoningOutputTokens"`
-				} `json:"total"`
-				Last struct {
-					TotalTokens uint64 `json:"totalTokens"`
-				} `json:"last"`
-				ModelContextWindow uint64 `json:"modelContextWindow"`
-			} `json:"tokenUsage"`
+			ThreadID string          `json:"threadId"`
+			Usage    directWireUsage `json:"tokenUsage"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
-			if p.ThreadID == "" || p.ThreadID == c.mainThread {
-				c.usage = sessionapi.NativeUsage{
-					TotalTokens:           p.TokenUsage.Total.TotalTokens,
-					InputTokens:           p.TokenUsage.Total.InputTokens,
-					OutputTokens:          p.TokenUsage.Total.OutputTokens,
-					CachedInputTokens:     p.TokenUsage.Total.CachedInputTokens,
-					ReasoningOutputTokens: p.TokenUsage.Total.ReasoningOutputTokens,
-				}
-				c.contextTokens = p.TokenUsage.Last.TotalTokens
-				c.contextWindow = p.TokenUsage.ModelContextWindow
+			if target := cmp.Or(p.ThreadID, c.mainThread); target != "" {
+				c.applyThreadUsageLocked(target, &p.Usage)
 				c.publishLocked()
 			}
 			c.mu.Unlock()
 		}
+
+	case "account/rateLimits/updated":
+		c.mu.Lock()
+		if directObserveRateLimits(&c.rateLimits, msg.Params) == nil {
+			c.publishLocked()
+		}
+		c.mu.Unlock()
 
 	case "thread/name/updated":
 		var p struct {
@@ -247,74 +306,119 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 
 	case "thread/settings/updated":
 		var p struct {
-			ThreadID        string `json:"threadId"`
-			Model           string `json:"model"`
-			ReasoningEffort string `json:"reasoningEffort"`
-			ServiceTier     string `json:"serviceTier"`
+			ThreadID       string `json:"threadId"`
+			ThreadSettings *struct {
+				Cwd                     string                   `json:"cwd"`
+				ActivePermissionProfile *directPermissionProfile `json:"activePermissionProfile"`
+				ApprovalPolicy          jsontext.Value           `json:"approvalPolicy"`
+				SandboxPolicy           directSandboxPolicy      `json:"sandboxPolicy"`
+				Model                   string                   `json:"model"`
+				ModelProvider           string                   `json:"modelProvider"`
+				Effort                  *string                  `json:"effort"`
+				ServiceTier             *string                  `json:"serviceTier"`
+			} `json:"threadSettings"`
 		}
-		if json.Unmarshal(msg.Params, &p) == nil {
-			c.mu.Lock()
-			if p.ThreadID == "" || p.ThreadID == c.mainThread {
-				if p.Model != "" {
-					c.model = p.Model
-				}
-				if p.ReasoningEffort != "" {
-					c.effort = p.ReasoningEffort
-				}
-				if p.ServiceTier != "" {
-					c.tier = p.ServiceTier
-				}
-				c.publishLocked()
+		if json.Unmarshal(msg.Params, &p) != nil || p.ThreadSettings == nil {
+			break
+		}
+		s := p.ThreadSettings
+		c.mu.Lock()
+		switch p.ThreadID {
+		case c.mainThread:
+			c.workspace = cmp.Or(s.Cwd, c.workspace)
+			c.permissionProfile = ""
+			if s.ActivePermissionProfile != nil {
+				c.permissionProfile = s.ActivePermissionProfile.ID
 			}
-			c.mu.Unlock()
+			if len(s.ApprovalPolicy) > 0 {
+				c.approvalPolicy = directApprovalLabel(s.ApprovalPolicy)
+			}
+			c.sandboxPolicy = cmp.Or(s.SandboxPolicy.Type, c.sandboxPolicy)
+			c.model = cmp.Or(s.Model, c.model)
+			if s.ModelProvider != "" && s.ModelProvider != c.modelProvider {
+				c.modelProvider = s.ModelProvider
+				c.resetPredictionLocked(c.prediction.turn)
+			}
+			c.effort = ""
+			if s.Effort != nil {
+				c.effort = *s.Effort
+			}
+			c.tier = ""
+			if s.ServiceTier != nil {
+				c.tier = *s.ServiceTier
+			}
+			c.publishLocked()
+		case c.sideThread:
+			c.sideModel = cmp.Or(s.Model, c.sideModel)
+			c.sideEffort = ""
+			if s.Effort != nil {
+				c.sideEffort = *s.Effort
+			}
+			c.publishLocked()
 		}
+		c.mu.Unlock()
+
+	case "skills/changed":
+		c.mu.Lock()
+		c.invalidateSkillsLocked()
+		c.publishLocked()
+		c.mu.Unlock()
 
 	case "thread/queue/changed":
 		var p struct {
 			ThreadID string `json:"threadId"`
-			Items    []struct {
-				Text string `json:"text"`
-			} `json:"items"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
-			if p.ThreadID == "" || p.ThreadID == c.mainThread {
-				c.queue = make([]conversation.PendingText, 0, len(p.Items))
-				for _, item := range p.Items {
-					c.queue = append(c.queue, conversation.PendingText{Text: item.Text})
-				}
+			target := p.ThreadID
+			if target == "" {
+				target = c.mainThread
+			}
+			hasQueue := c.queueForThreadLocked(target) != nil
+			c.mu.Unlock()
+			if hasQueue && c.wire != nil {
+				go c.refreshQueue(c.ctx, target)
+			}
+		}
+
+	case "item/fileChange/patchUpdated":
+		var p struct {
+			ThreadID string             `json:"threadId"`
+			TurnID   string             `json:"turnId"`
+			ItemID   string             `json:"itemId"`
+			Changes  []nativeFileChange `json:"changes"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			threadID := cmp.Or(p.ThreadID, c.mainThread)
+			trackedTurn := threadID == c.mainThread || threadID == c.sideThread
+			item := c.itemsByID[directItemKey{threadID, p.ItemID}]
+			if (!trackedTurn || c.activeTurnForLocked(threadID) == p.TurnID) &&
+				(item == nil || item.entry.Completed.IsZero()) {
+				c.setNativeFilePreviewLocked(threadID, p.TurnID, p.ItemID, p.Changes)
 				c.publishLocked()
 			}
 			c.mu.Unlock()
 		}
 
-	case "thread/prediction/updated":
-		var p struct {
-			ThreadID   string `json:"threadId"`
-			TurnID     string `json:"turnId"`
-			Prediction string `json:"prediction"`
-		}
-		if json.Unmarshal(msg.Params, &p) == nil {
-			c.mu.Lock()
-			if p.ThreadID == "" || p.ThreadID == c.mainThread {
-				c.prediction = p.Prediction
-				c.predictionTurn = p.TurnID
-				c.publishLocked()
-			}
-			c.mu.Unlock()
-		}
+	case "account/updated":
+		c.mu.Lock()
+		c.resetPredictionLocked(c.prediction.turn)
+		c.publishLocked()
+		c.mu.Unlock()
 
 	case "thread/reverted":
 		var p struct {
 			ThreadID string `json:"threadId"`
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
-			target := p.ThreadID
-			if target == "" {
-				c.mu.Lock()
-				target = c.mainThread
-				c.mu.Unlock()
+			c.mu.Lock()
+			target := cmp.Or(p.ThreadID, c.mainThread)
+			if target != "" && target == c.mainThread {
+				c.resetPredictionLocked("")
+				c.publishLocked()
 			}
+			c.mu.Unlock()
 			if target != "" {
 				go func() {
 					c.reloadThreadTranscript(c.ctx, target)
@@ -329,6 +433,38 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 		c.mu.Unlock()
 		if mainID != "" {
 			go c.refreshSubtree(c.ctx, mainID)
+		}
+
+	case "thread/backgroundTerminals/changed":
+		var p struct {
+			ThreadID string `json:"threadId"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.ThreadID != "" {
+			c.mu.Lock()
+			root := c.mainThread
+			inFamily := p.ThreadID == root || c.family != nil && c.family.Root == root && slices.Contains(c.family.Threads, p.ThreadID)
+			if inFamily {
+				c.invalidateProcessListLocked(p.ThreadID)
+			}
+			c.mu.Unlock()
+			if inFamily {
+				go func() { _ = c.refreshProcesses(c.ctx, root) }()
+			}
+		}
+
+	case "thread/closed":
+		var p struct {
+			ThreadID string `json:"threadId"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil && p.ThreadID != "" {
+			c.mu.Lock()
+			c.invalidateProcessListLocked(p.ThreadID)
+			c.processes = slices.DeleteFunc(c.processes, func(process sessionpresentation.Process) bool {
+				return process.Thread == p.ThreadID
+			})
+			c.updateProcessDetailsLocked()
+			c.publishLocked()
+			c.mu.Unlock()
 		}
 
 	case "serverRequest/resolved":
@@ -584,16 +720,33 @@ func decodeDirectSecretCall(id string, params jsontext.Value) prompt.CallView {
 	}
 }
 
+func (c *directNativeConnection) findRecordBySeqLocked(threadID string, seq uint64) *directItemRecord {
+	if seq == 0 {
+		return nil
+	}
+	for _, rec := range c.items[threadID] {
+		if rec.seq == seq {
+			return rec
+		}
+	}
+	return nil
+}
+
 func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, itemType, kind string) *directItemRecord {
+	key := directItemKey{threadID, itemID}
 	if itemID != "" {
-		if rec, ok := c.itemsByID[itemID]; ok {
+		if rec, ok := c.itemsByID[key]; ok {
 			return rec
 		}
 	}
 	c.seq++
-	caller := c.threadCallers[threadID]
-	if caller == "" {
-		caller = "main"
+	agent := c.threadCallers[threadID]
+	if threadID == "" || threadID == c.mainThread || agent == "" || agent == "/root" {
+		if kind == "user" {
+			agent = "You"
+		} else {
+			agent = "Main"
+		}
 	}
 	rec := &directItemRecord{
 		id:       itemID,
@@ -604,7 +757,7 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 		entry: activity.Entry{
 			Facts: activity.Facts{
 				Seq:      c.seq,
-				Agent:    caller,
+				Agent:    agent,
 				Kind:     kind,
 				Observed: time.Now(),
 			},
@@ -613,7 +766,7 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 	}
 	c.items[threadID] = append(c.items[threadID], rec)
 	if itemID != "" {
-		c.itemsByID[itemID] = rec
+		c.itemsByID[key] = rec
 	}
 	return rec
 }
@@ -623,7 +776,7 @@ func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns
 	for _, rec := range c.items[threadID] {
 		if rec.id != "" {
 			preservedSeq[rec.id] = rec.seq
-			delete(c.itemsByID, rec.id)
+			delete(c.itemsByID, directItemKey{threadID, rec.id})
 		}
 	}
 	c.items[threadID] = nil
@@ -631,13 +784,41 @@ func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns
 		for _, rawItem := range turn.Items {
 			c.upsertWireItemLocked(threadID, turn.ID, rawItem, true)
 		}
+		c.projectTurnErrorLocked(threadID, turn.ID, turn.Error)
 	}
 	for _, rec := range c.items[threadID] {
+		rec.entry.Restored = true
 		if prevSeq, ok := preservedSeq[rec.id]; ok {
 			rec.seq = prevSeq
 			rec.entry.Seq = prevSeq
+			activity.Identify(rec.entry.Values, prevSeq)
 		}
 	}
+}
+
+// projectTurnErrorLocked shares one row for the live notification, completion,
+// and the retained native turn. The full diagnostic stays in its detail value.
+func (c *directNativeConnection) projectTurnErrorLocked(threadID, turnID string, failure *binding.TurnError) string {
+	if failure == nil || failure.Message == "" || threadID == "" || turnID == "" {
+		return ""
+	}
+	diagnostic := failure.Message
+	if failure.AdditionalDetails != "" {
+		diagnostic += " · " + failure.AdditionalDetails
+	}
+	rec := c.ensureItemLocked(threadID, turnID, "native:turn-error:"+threadID+":"+turnID, "error", "error")
+	if rec.entry.Completed.IsZero() {
+		rec.entry.Completed = rec.entry.Observed
+		rec.entry.ItemComplete = true
+	}
+	projectDirectError(rec, diagnostic)
+	rec.entry.Revision++
+	return diagnostic
+}
+
+func projectDirectError(rec *directItemRecord, diagnostic string) {
+	rec.entry.Text = activity.ErrorPreview(diagnostic)
+	rec.entry.Values = (activity.ItemContent{Facts: rec.entry.Facts, ErrorDetail: diagnostic}).Values()
 }
 
 // upsertWireItemLocked maps native mekugi-app-server ThreadItem payloads
@@ -650,10 +831,11 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 	}
 	itemType := decodeJSONString(fields["type"])
 	itemID := decodeJSONString(fields["id"])
-	if threadID == c.btwThread && itemType == "agentMessage" {
-		if text := decodeJSONString(fields["text"]); text != "" {
-			c.btwAnswer.Reset()
-			c.btwAnswer.WriteString(text)
+	if threadID != "" && threadID == c.btwThread {
+		if itemType == "agentMessage" {
+			if text := decodeJSONString(fields["text"]); text != "" {
+				c.btw.Append(itemID, text, complete)
+			}
 		}
 		return itemType
 	}
@@ -662,14 +844,28 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 	switch itemType {
 	case "userMessage":
 		kind = "user"
+		if clientID := decodeJSONString(fields["clientId"]); clientID != "" {
+			c.commitSteerLocked(directSteerTurnID{thread: threadID, turn: turnID}, clientID)
+		}
 	case "agentMessage":
-		kind = "final"
+		if threadID == "" || threadID == c.mainThread {
+			kind = "text"
+		} else {
+			kind = "final"
+		}
 	case "reasoning":
 		kind = "reasoning"
 	case "plan":
 		kind = "plan"
 	case "contextCompaction":
 		kind = "compaction"
+	case "functionCallOutput":
+		if decodeJSONString(fields["namespace"]) == "functions" &&
+			decodeJSONString(fields["name"]) == "exec" && strings.HasPrefix(itemID, "code-mode-error:") {
+			kind = "error"
+			// A provider call ID is scoped to a turn, and forks may retain it.
+			itemID = "native:tool-error:" + threadID + ":" + turnID + ":" + itemID
+		}
 	}
 
 	rec := c.ensureItemLocked(threadID, turnID, itemID, itemType, kind)
@@ -682,10 +878,28 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		rec.entry.OutputComplete = true
 	}
 
+	if kind == "error" {
+		diagnostic := "exec script failed"
+		if errorText := decodeJSONString(fields["output"]); strings.TrimSpace(errorText) != "" {
+			diagnostic += ": " + errorText
+		}
+		projectDirectError(rec, diagnostic)
+		rec.entry.Revision++
+		return itemType
+	}
+
 	switch itemType {
 	case "userMessage":
-		rec.entry.Text = extractUserMessageText(fields["content"])
+		message, spans := extractUserMessage(fields["content"])
+		rec.entry.Text = c.observeQuestionReplyLocked(threadID, message)
+		rec.entry.Spans = nil
+		if rec.entry.Text == message {
+			rec.entry.Spans = spans
+		}
 	case "agentMessage":
+		if complete && decodeJSONString(fields["delivery"]) == "async" {
+			c.observeAsyncQuestionsLocked(threadID, turnID, itemID, fields["questions"])
+		}
 		if text := decodeJSONString(fields["text"]); text != "" {
 			rec.entry.Text = text
 		}
@@ -714,18 +928,55 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		refreshProjectedValues(rec)
 	case "commandExecution":
 		command := decodeJSONString(fields["command"])
+		var display *struct {
+			Script       string   `json:"script"`
+			Segments     []string `json:"segments"`
+			EffectiveCwd string   `json:"effectiveCwd"`
+		}
+		if raw := fields["display"]; len(raw) > 0 {
+			_ = json.Unmarshal(raw, &display)
+		}
+		if display != nil {
+			command = display.Script
+		}
 		status := decodeJSONString(fields["status"])
+		cwd := decodeJSONString(fields["cwd"])
 		agg := decodeJSONString(fields["aggregatedOutput"])
 		if agg != "" {
 			rec.output = agg
 		}
+		running := status == "inProgress"
+		var exitCode *int
+		if raw, ok := fields["exitCode"]; ok && len(raw) > 0 {
+			_ = json.Unmarshal(raw, &exitCode)
+		}
+		var durationMs int64
+		if raw, ok := fields["durationMs"]; ok && len(raw) > 0 {
+			_ = json.Unmarshal(raw, &durationMs)
+		}
+		tail, tailOmitted := directCommandTail(rec.output)
 		val := activity.Value{
 			Content: activityfeed.Content{
-				Kind: "op",
-				Verb: "Run",
-				Code: command,
-				Body: rec.output,
+				Kind:   "op",
+				Verb:   "Run",
+				Code:   command,
+				Lang:   "bash",
+				Fenced: strings.Contains(command, "\n"),
 			},
+			Workdir:     cwd,
+			Running:     running,
+			Exited:      exitCode != nil,
+			Requested:   status == "declined",
+			Failed:      status == "failed" || status == "declined",
+			Duration:    time.Duration(durationMs) * time.Millisecond,
+			Tail:        tail,
+			TailOmitted: tailOmitted,
+		}
+		if exitCode != nil {
+			val.ExitCode = *exitCode
+		}
+		if status == "declined" {
+			val.Approval = "Denied"
 		}
 		if rec.output != "" {
 			val.Output = 1
@@ -734,35 +985,87 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			}
 			rec.entry.Outputs[1]++
 		}
-		rec.entry.Values = []activity.Value{val}
+		if display != nil && display.EffectiveCwd != "" {
+			val.Workdir = display.EffectiveCwd
+		}
+		if filepath.Clean(val.Workdir) == filepath.Clean(c.workspace) {
+			val.Workdir = ""
+		}
+		val.ShowWorkdir = val.Workdir != ""
+		var segments []string
+		if display != nil {
+			segments = display.Segments
+		} else {
+			var actions []binding.CommandAction
+			_ = json.Unmarshal(fields["commandActions"], &actions)
+			if len(actions) > 1 {
+				for _, action := range actions {
+					segments = append(segments, action.Command)
+				}
+			}
+		}
+		rec.entry.Values = nil
+		if len(segments) == 1 {
+			val.Code = segments[0]
+			if val.Code != command {
+				val.DetailCode = command
+			}
+			val.Fenced = strings.Contains(val.Code, "\n")
+		} else if len(segments) > 1 {
+			for i, source := range segments {
+				rec.entry.Values = append(rec.entry.Values, activity.Value{
+					Content: activityfeed.Content{Kind: "op", Verb: "Run", Code: source, Lang: "bash", Fenced: strings.Contains(source, "\n")},
+					Workdir: val.Workdir, ShowWorkdir: i == 0 && val.ShowWorkdir, Operation: i + 2,
+				})
+			}
+			val.BatchExit, val.Operation, val.Label, val.DetailCode, val.Code = true, 1, "combined output", command, ""
+			val.ShowWorkdir = false
+		}
+		rec.entry.Values = append(rec.entry.Values, val)
 		activity.Identify(rec.entry.Values, rec.entry.Seq)
 		rec.entry.Outcome = status
-	case "fileChange":
-		var changeList []struct {
-			Path string `json:"path"`
-			Kind string `json:"kind"`
-			Diff string `json:"diff"`
+		rec.entry.Live = running
+		rec.entry.Running = running
+		rec.entry.OutputComplete = status != "" && !running
+		if running {
+			rec.entry.Completed = time.Time{}
 		}
+	case "fileChange":
+		var changeList []nativeFileChange
 		_ = json.Unmarshal(fields["changes"], &changeList)
+		status := decodeJSONString(fields["status"])
+		running := status == "inProgress"
+		exited := status != "" && !running
 		vals := make([]activity.Value, 0, len(changeList))
 		for _, ch := range changeList {
-			verb := "Edit"
-			if ch.Kind != "" {
-				verb = strings.ToUpper(ch.Kind[:1]) + ch.Kind[1:]
-			}
+			verb, label := ch.Kind.operation(ch.Path)
 			vals = append(vals, activity.Value{
+				Path:   ch.Path,
+				Effect: true,
 				Content: activityfeed.Content{
-					Kind:  "op",
-					Verb:  verb,
-					Label: ch.Path,
-					Code:  ch.Diff,
-					Lang:  "diff",
+					Kind:   "op",
+					Verb:   verb,
+					Label:  "`" + label + "`",
+					Code:   ch.Diff,
+					Lang:   "diff",
+					Fenced: ch.Diff != "",
 				},
+				Running: running,
+				Exited:  exited,
 			})
 		}
 		rec.entry.Values = vals
 		activity.Identify(rec.entry.Values, rec.entry.Seq)
-		rec.entry.Outcome = decodeJSONString(fields["status"])
+		rec.entry.Outcome = status
+		rec.entry.OutputComplete = exited
+		if exited && rec.entry.Completed.IsZero() {
+			rec.entry.Completed = time.Now()
+		}
+		if running && len(changeList) > 0 {
+			c.setNativeFilePreviewLocked(threadID, rec.turnID, rec.id, changeList)
+		} else if exited {
+			c.setNativeFilePreviewLocked(threadID, rec.turnID, rec.id, nil)
+		}
 	case "mcpToolCall", "dynamicToolCall":
 		tool := decodeJSONString(fields["tool"])
 		server := decodeJSONString(fields["server"])
@@ -813,13 +1116,13 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 	default:
 		// Render server-owned inline cards and future ThreadItem models directly
 		// from their server-published fields without adding Go backend state.
-		title := firstNonEmpty(
+		title := cmp.Or(
 			decodeJSONString(fields["title"]),
 			decodeJSONString(fields["header"]),
 			decodeJSONString(fields["label"]),
 			itemType,
 		)
-		body := firstNonEmpty(
+		body := cmp.Or(
 			decodeJSONString(fields["body"]),
 			decodeJSONString(fields["markdown"]),
 			decodeJSONString(fields["text"]),
@@ -837,6 +1140,17 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		rec.entry.Outcome = decodeJSONString(fields["status"])
 	}
 	rec.entry.Revision++
+	if itemType == "commandExecution" {
+		if files := c.editReceipts[nativeEditItem{rec.threadID, rec.turnID, rec.id}]; len(files) > 0 {
+			c.setEditReceiptLocked(rec, files)
+		}
+		c.refreshCommandDetailsLocked(rec)
+		if processID := decodeJSONString(fields["processId"]); rec.entry.OutputComplete && processID != "" {
+			c.removeLiveProcessLocked(sessionpresentation.Process{Thread: threadID, Turn: turnID, Item: itemID, ID: processID})
+		} else {
+			c.updateProcessDetailsLocked()
+		}
+	}
 	return itemType
 }
 
@@ -849,20 +1163,60 @@ func refreshProjectedValues(rec *directItemRecord) {
 }
 
 func extractUserMessageText(raw jsontext.Value) string {
+	message, _ := extractUserMessage(raw)
+	return message
+}
+
+func extractUserMessage(raw jsontext.Value) (string, []activity.TextSpan) {
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string                     `json:"type"`
+		Text     string                     `json:"text"`
+		Name     string                     `json:"name"`
+		Elements []binding.InputTextElement `json:"text_elements"`
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return ""
+		return "", nil
 	}
-	var out []string
+	var skillLabels map[string]bool
 	for _, part := range parts {
-		if part.Text != "" {
-			out = append(out, part.Text)
+		if part.Type == "skill" && part.Name != "" {
+			if skillLabels == nil {
+				skillLabels = make(map[string]bool)
+			}
+			skillLabels["$"+part.Name] = true
 		}
 	}
-	return strings.Join(out, "\n")
+	// A typed skill names a binding, but only a text element identifies which
+	// occurrence of its label was selected instead of typed as ordinary text.
+	var message strings.Builder
+	var spans []activity.TextSpan
+	for _, part := range parts {
+		if part.Text == "" {
+			continue
+		}
+		if message.Len() != 0 {
+			message.WriteByte('\n')
+		}
+		offset := message.Len()
+		message.WriteString(part.Text)
+		for _, element := range part.Elements {
+			start, end := element.ByteRange.Start, element.ByteRange.End
+			if skillLabels[element.Placeholder] && start >= 0 && end > start && end <= len(part.Text) &&
+				part.Text[start:end] == element.Placeholder {
+				spans = append(spans, activity.TextSpan{Start: offset + start, End: offset + end, Kind: activity.SkillToken})
+			}
+		}
+	}
+	slices.SortFunc(spans, func(a, b activity.TextSpan) int { return cmp.Compare(a.Start, b.Start) })
+	previousEnd := 0
+	spans = slices.DeleteFunc(spans, func(span activity.TextSpan) bool {
+		if span.Start < previousEnd {
+			return true
+		}
+		previousEnd = span.End
+		return false
+	})
+	return message.String(), spans
 }
 
 func decodeJSONString(raw jsontext.Value) string {
@@ -876,13 +1230,72 @@ func decodeJSONString(raw jsontext.Value) string {
 	return ""
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
+type nativeFileChange struct {
+	Path string          `json:"path"`
+	Kind nativePatchKind `json:"kind"`
+	Diff string          `json:"diff"`
+}
+
+type nativePatchKind struct {
+	Type     string `json:"type"`
+	MovePath string `json:"move_path"`
+}
+
+func (kind nativePatchKind) operation(path string) (verb, label string) {
+	switch kind.Type {
+	case "add":
+		return "Create", path
+	case "delete":
+		return "Delete", path
+	case "update":
+		if kind.MovePath != "" {
+			return "Move", path + " => " + kind.MovePath
 		}
 	}
-	return ""
+	return "Edit", path
+}
+
+func (c *directNativeConnection) removeNativePreviewsLocked(match func(preview.Preview) bool) {
+	if slices.ContainsFunc(c.live, match) {
+		c.live = slices.DeleteFunc(c.live, match)
+		c.liveDirty = true
+	}
+}
+
+func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, itemID string, updates []nativeFileChange) {
+	id := "filechange:" + itemID
+	match := func(p preview.Preview) bool { return p.Thread == threadID && p.Turn == turnID && p.ID == id }
+	if len(updates) == 0 {
+		c.removeNativePreviewsLocked(match)
+		return
+	}
+	files := make([]diffmodel.ReviewFile, 0, len(updates))
+	for _, update := range updates {
+		file := diffmodel.ReviewFile{BeforePath: update.Path, AfterPath: cmp.Or(update.Kind.MovePath, update.Path), Diff: update.Diff}
+		switch update.Kind.Type {
+		case "add":
+			file.BeforePath = ""
+			if file.Diff != "" {
+				file.Diff = "@@ -0 +1 @@\n+" + strings.ReplaceAll(strings.TrimSuffix(file.Diff, "\n"), "\n", "\n+")
+			}
+		case "delete":
+			file.AfterPath = ""
+			if file.Diff != "" {
+				file.Diff = "@@ -1 +0 @@\n-" + strings.ReplaceAll(strings.TrimSuffix(file.Diff, "\n"), "\n", "\n-")
+			}
+		}
+		files = append(files, file)
+	}
+	edit := preview.Preview{
+		ID: id, Workspace: c.workspace, Caller: cmp.Or(c.threadCallers[threadID], "/root"),
+		Turn: turnID, Thread: threadID, Files: files, DiffText: true, Status: "Editing",
+	}
+	if index := slices.IndexFunc(c.live, match); index >= 0 {
+		c.live[index] = edit
+	} else {
+		c.live = append(c.live, edit)
+	}
+	c.liveDirty = true
 }
 
 func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread string) {
@@ -893,35 +1306,50 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.mainThread != rootThread {
+		c.mu.Unlock()
+		return
+	}
 	var threads []string
 	var roster []activity.AgentRow
 	for i, th := range resp.Data {
+		if _, found := c.threadUsage[th.ID]; !found {
+			c.applyThreadUsageLocked(th.ID, th.TokenUsage)
+		}
 		threads = append(threads, th.ID)
 		name := th.AgentPath
 		if name == "" {
 			if th.ID == rootThread {
-				name = "main"
+				name = "/root"
 			} else {
-				name = fmt.Sprintf("agent-%d", i)
+				name = fmt.Sprintf("/root/agent-%d", i)
 			}
 		}
 		c.threadCallers[th.ID] = name
-		depth := strings.Count(name, "/")
+		depth := strings.Count(strings.TrimPrefix(name, "/"), "/")
 		if th.ID == rootThread {
 			depth = 0
 		}
+		var statusObj struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(th.Status, &statusObj)
+		responding := statusObj.Type == "active"
+		final := statusObj.Type == "idle" && th.ID != rootThread
 		roster = append(roster, activity.AgentRow{
 			Agent: activity.Agent{
 				AgentFacts: activity.AgentFacts{
-					Name:   name,
-					Role:   th.AgentRole,
-					Thread: th.ID,
+					Name:       name,
+					Role:       th.AgentRole,
+					Thread:     th.ID,
+					Responding: responding,
+					Final:      final,
 				},
 			},
 			Depth: depth,
 		})
 	}
+	processScopeChanged := c.family == nil || !slices.Equal(c.family.Threads, threads)
 	c.family = &sessionapi.Family{
 		Root:    rootThread,
 		Threads: threads,
@@ -929,85 +1357,112 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 		Status:  sessionpresentation.Label{Text: c.statusTextLocked(), Running: c.busy},
 	}
 	c.publishLocked()
+	c.mu.Unlock()
+	if processScopeChanged {
+		_ = c.refreshProcesses(ctx, rootThread)
+	}
 }
 
-func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID string) {
-	var resp directThreadChangesResponse
-	if err := c.wire.Call(ctx, "thread/changes/read", map[string]any{"threadId": threadID}, &resp); err != nil {
+type directRateLimitWindow struct {
+	Used    float64 `json:"usedPercent"`
+	Minutes *int64  `json:"windowDurationMins"`
+	Resets  *int64  `json:"resetsAt"`
+}
+
+func (w directRateLimitWindow) label(position int) string {
+	if w.Minutes == nil {
+		return []string{"primary", "secondary"}[position]
+	}
+	switch minutes := *w.Minutes; {
+	case minutes == 10080:
+		return "weekly"
+	case minutes > 0 && minutes%60 == 0:
+		return fmt.Sprintf("%dh", minutes/60)
+	default:
+		return fmt.Sprintf("%dm", minutes)
+	}
+}
+
+type directRateLimitSnapshot struct {
+	ID        *string                `json:"limitId"`
+	Name      string                 `json:"limitName"`
+	Primary   *directRateLimitWindow `json:"primary"`
+	Secondary *directRateLimitWindow `json:"secondary"`
+	Credits   *struct {
+		Unlimited bool    `json:"unlimited"`
+		Balance   *string `json:"balance"`
+	} `json:"credits"`
+}
+
+func directObserveRateLimitSnapshot(windows *[2]*sessionpresentation.CaptionLimit, snapshot directRateLimitSnapshot) {
+	if windows == nil {
 		return
+	}
+	for i, w := range []*directRateLimitWindow{snapshot.Primary, snapshot.Secondary} {
+		if w != nil {
+			windows[i] = &sessionpresentation.CaptionLimit{
+				Label: w.label(i),
+				Used:  max(0, min(100, w.Used)),
+			}
+		}
+	}
+}
+
+func directObserveRateLimits(windows *[2]*sessionpresentation.CaptionLimit, params []byte) error {
+	var update struct {
+		RateLimits directRateLimitSnapshot `json:"rateLimits"`
+	}
+	if err := json.Unmarshal(params, &update); err != nil {
+		return err
+	}
+	if id := update.RateLimits.ID; id != nil && *id != "" && *id != "codex" {
+		return nil
+	}
+	directObserveRateLimitSnapshot(windows, update.RateLimits)
+	return nil
+}
+
+func directCaptionLimits(windows [2]*sessionpresentation.CaptionLimit) []sessionpresentation.CaptionLimit {
+	var limits []sessionpresentation.CaptionLimit
+	for _, w := range windows {
+		if w != nil {
+			limits = append(limits, *w)
+		}
+	}
+	return limits
+}
+
+type directRateLimitsResponse struct {
+	RateLimits directRateLimitSnapshot            `json:"rateLimits"`
+	ByID       map[string]directRateLimitSnapshot `json:"rateLimitsByLimitId"`
+	Resets     *struct {
+		Available int64 `json:"availableCount"`
+		Credits   []struct {
+			Type    string `json:"resetType"`
+			Status  string `json:"status"`
+			Expires *int64 `json:"expiresAt"`
+			Title   string `json:"title"`
+		} `json:"credits"`
+	} `json:"rateLimitResetCredits"`
+}
+
+func (c *directNativeConnection) refreshRateLimits(ctx context.Context) (*directRateLimitsResponse, error) {
+	if c.wire == nil {
+		return nil, nil
+	}
+	var resp directRateLimitsResponse
+	if err := c.wire.Call(ctx, "account/rateLimits/read", nil, &resp); err != nil {
+		return nil, err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.reviewRev++
-	files := make([]changes.File, 0, len(resp.Files))
-	for i, f := range resp.Files {
-		beforePath := f.Path
-		if f.MovedFrom != "" {
-			beforePath = f.MovedFrom
-		}
-		if f.Status == "A" {
-			beforePath = ""
-		}
-		afterPath := f.Path
-		if f.Status == "D" {
-			afterPath = ""
-		}
-		reviewFile := diffmodel.ReviewFile{
-			BeforePath: beforePath,
-			AfterPath:  afterPath,
-			Diff:       f.UnifiedDiff,
-			Binary:     f.IsBinary,
-		}
-		if len(f.CoverageNotes) > 0 {
-			reviewFile.Incomplete = strings.Join(f.CoverageNotes, "; ")
-		}
-		chunk := changes.Chunk{
-			Key:          fmt.Sprintf("native-%d-%s", i, f.Path),
-			Status:       f.Status,
-			Workspace:    resp.Workspace,
-			CaptureOrder: uint64(i + 1),
-			Review:       reviewFile,
-			Origin: changes.Origin{
-				Caller: c.threadCallers[threadID],
-				Source: "native",
-			},
-		}
-		files = append(files, changes.File{
-			Path:   f.Path,
-			Chunks: []changes.Chunk{chunk},
-			Status: diffmodel.StatusOf(reviewFile),
-		})
-	}
-	var pub changes.Publication
-	pub = pub.With(files)
-	ws := resp.Workspace
-	if ws == "" {
-		ws = c.workspace
-	}
-	c.review = &changes.ReviewView{
-		Publication: pub,
-		Workspace:   ws,
-		Revision:    c.reviewRev,
+	if codex, ok := resp.ByID["codex"]; ok {
+		directObserveRateLimitSnapshot(&c.rateLimits, codex)
+	} else {
+		directObserveRateLimitSnapshot(&c.rateLimits, resp.RateLimits)
 	}
 	c.publishLocked()
-}
-
-func (c *directNativeConnection) refreshQueue(ctx context.Context, threadID string) {
-	var resp struct {
-		Items []struct {
-			Text string `json:"text"`
-		} `json:"items"`
-	}
-	if err := c.wire.Call(ctx, "thread/queue/list", map[string]any{"threadId": threadID}, &resp); err != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.queue = make([]conversation.PendingText, 0, len(resp.Items))
-	for _, item := range resp.Items {
-		c.queue = append(c.queue, conversation.PendingText{Text: item.Text})
-	}
-	c.publishLocked()
+	return &resp, nil
 }
 
 func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, threadID string) {
@@ -1019,65 +1474,92 @@ func (c *directNativeConnection) reloadThreadTranscript(ctx context.Context, thr
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.applyThreadUsageLocked(threadID, resp.Thread.TokenUsage)
 	c.hydrateThreadTurnsLocked(threadID, resp.Thread.Turns)
 	c.publishLocked()
 }
 
-func (c *directNativeConnection) loadResumeList(ctx context.Context, cursor string, all bool) error {
-	params := map[string]any{"limit": 50}
+type directResumePage struct {
+	Data       []directWireThread `json:"data"`
+	NextCursor string             `json:"nextCursor"`
+}
+
+func resumeThreadLabel(th directWireThread) string {
+	return cmp.Or(strings.TrimSpace(th.Name), strings.TrimSpace(th.Preview))
+}
+
+func (c *directNativeConnection) openResumePicker(ctx context.Context) error {
+	c.mu.Lock()
+	previous := c.resumeView
+	view := sessionpresentation.ResumeView{Workspace: c.workspace, Startup: c.mainThread == ""}
+	c.mu.Unlock()
+	return c.loadResumeList(ctx, previous, view)
+}
+
+func (c *directNativeConnection) loadResumeList(ctx context.Context, previous *sessionpresentation.ResumeView, view sessionpresentation.ResumeView) error {
+	params := map[string]any{
+		"limit": 50, "modelProviders": []string{}, "archived": view.Archived,
+		"currentAccountOnly": true, "sortKey": "updated_at",
+	}
+	cursor := view.PageAfter
 	if cursor != "" {
 		params["cursor"] = cursor
 	}
-	if !all && c.workspace != "" {
-		params["cwd"] = c.workspace
+	if !view.All && view.Workspace != "" {
+		params["cwd"] = view.Workspace
 	}
-	var resp struct {
-		Data       []directWireThread `json:"data"`
-		NextCursor string             `json:"nextCursor"`
-	}
+	var resp directResumePage
 	if err := c.wire.Call(ctx, "thread/list", params, &resp); err != nil {
-		return fmt.Errorf("list native threads: %w", err)
+		return c.reportResumeError(previous, fmt.Errorf("list native threads: %w", err), cursor != "")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var rows []sessionpresentation.ResumeRow
-	if cursor != "" && c.resumeView != nil {
-		rows = slices.Clone(c.resumeView.Rows)
+	if c.resumeView != previous {
+		return nil
 	}
+	if view.ID == 0 {
+		view.ID = c.revision + 1
+	}
+	view.Rows = slices.Clone(view.Rows)
 	for _, th := range resp.Data {
-		if !all && c.workspace != "" && th.Cwd != "" && th.Cwd != c.workspace {
+		if th.ID == "" || th.ThreadSource == "mekugi_side" {
 			continue
 		}
-		title := th.Name
-		if title == "" {
-			title = th.Preview
+		title, preview := resumeThreadLabel(th), strings.TrimSpace(th.Preview)
+		if title == preview {
+			preview = ""
 		}
-		rows = append(rows, sessionpresentation.ResumeRow{
+		view.Rows = append(view.Rows, sessionpresentation.ResumeRow{
 			ID:        th.ID,
 			Title:     title,
+			Preview:   preview,
 			Workspace: th.Cwd,
 			Updated:   th.UpdatedAt,
+			Branch:    th.GitInfo.Branch,
 		})
 	}
-	c.resumeCursor = resp.NextCursor
-	id := uint64(1)
-	if c.resumeView != nil {
-		id = c.resumeView.ID + 1
+	view.PageAfter, view.Problem = resp.NextCursor, ""
+	if cursor == "" {
+		view.LoadedAt = time.Now()
 	}
-	c.resumeView = &sessionpresentation.ResumeView{
-		ID:        id,
-		Workspace: c.workspace,
-		Startup:   c.mainThread == "",
-		All:       all,
-		HasMore:   resp.NextCursor != "",
-		CanPage:   resp.NextCursor != "",
-		PageAfter: resp.NextCursor,
-		Rows:      rows,
-		Scanned:   len(rows),
-		LoadedAt:  time.Now(),
-	}
+	c.resumeView = &view
 	c.publishLocked()
 	return nil
+}
+
+func (c *directNativeConnection) reportResumeError(view *sessionpresentation.ResumeView, err error, stopPaging bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if view != nil && c.resumeView == view {
+		next := *view
+		next.Problem = err.Error()
+		if stopPaging {
+			next.PageAfter = ""
+		}
+		c.resumeView = &next
+		c.publishLocked()
+	}
+	return err
 }
 
 func (c *directNativeConnection) setFeedbackLocked(text string, alert bool) {

@@ -37,6 +37,9 @@ Rank tradeoffs within a change, while preserving correctness:
   introduce extra user-facing modes. Direct execution mode is unsupported.
 - **Product-local session resume.** Mekugi resumes Mekugi sessions; stock Codex resumes stock Codex
   sessions. Cross-product resume is unsupported in either direction.
+- **Session identity.** A session starts only after the first message is sent
+  and saved. An empty transcript is not a session and has no Mekugi session
+  ID. If stock Codex already assigns an ID, keep it unchanged.
 - **Auxiliary features stay non-invasive.** Presentation, previews, metrics, and diagnostics do not
   alter execution outcomes or add display-only text to model context.
 
@@ -54,7 +57,7 @@ Rank tradeoffs within a change, while preserving correctness:
   of model context, and hook trust prompts.
 - **Server-owned multi-client sessions**: terminal and browser UIs sharing a reusable Session API
   over an authenticated connector, surviving client disconnect, plus headless automation, custom
-  Responses providers, offline inspection, and replay.
+  Responses providers.
 
 ## Current approach (replaceable)
 
@@ -64,9 +67,9 @@ The current product implements these requirements through:
   (`new_context`), source/skill acquisition, OS/Git environment facts, context-usage notices,
   model-input output deduplication, provider routing, captured changes and
   `mchanges`, and native helper commands (`mcat`, `mrun`, `msymbol`, `mfinspect`).
-- **Go server and clients (`mekugi-tui/apps/mekugi`, `modules/`)** owning client attachments,
-  terminal and Svelte browser UIs, live edit presentation, shell guards, and offline
-  inspection and replay.
+- **Go server and clients (`mekugi-tui/apps/mekugi`, `modules/`)** owning client
+  attachments, terminal and Svelte browser UIs, live edit presentation, and
+  shell guards.
 - **Single-generation model structure**: compaction selections and child reply summaries ride
   existing replies rather than adding separate summarization calls (except opt-in wait progress
   summaries for changed developers).

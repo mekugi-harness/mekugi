@@ -1,13 +1,7 @@
-<script module lang="ts">
-  import type { Machine } from "./hub.svelte";
-  export type PreviewTarget = { machine: Machine; thread?: string; workspace?: string };
-</script>
-
 <script lang="ts">
-  let { file, path, target }: { file?: File; path?: string; target?: PreviewTarget } = $props();
-  // Any path may turn out to be an image, but only one named as an image
-  // waits in, or fails into, a preview box; other paths keep their plain chip.
-  const imageName = $derived(/\.(png|jpe?g|gif|webp)$/i.test(path ?? ""));
+  import type { AttachmentPathTarget } from "./attachments";
+  let { file, path, target }: { file?: File; path?: string; target?: AttachmentPathTarget } =
+    $props();
   let url = $state<string>();
   let failed = $state(false);
   let unsupported = $state(false);
@@ -32,8 +26,7 @@
         })
         .catch(() => {
           if (controller.signal.aborted) return;
-          unsupported = !imageName;
-          failed = imageName;
+          failed = true;
         });
     }
     return () => {
@@ -59,7 +52,7 @@
       failed = !unsupported;
     }}
   />
-{:else if !unsupported && (file || (target && imageName))}
+{:else if !unsupported && (file || (target && path))}
   <span class="my-1 flex size-16 shrink-0 items-center text-center text-small" role="status"
     >Loading preview…</span
   >

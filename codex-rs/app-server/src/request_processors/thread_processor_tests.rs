@@ -2,6 +2,47 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_thread_store::ThreadStoreError;
 use pretty_assertions::assert_eq;
 
+#[test]
+fn stored_command_display_recovers_authored_shell_text() {
+    use codex_thread_store::StoredThreadItem;
+    use serde_json::json;
+
+    for (script, old_display, steps) in [
+        (r#"printf "%s" 'a b'"#, None, json!([])),
+        (
+            "cd sub && pwd",
+            Some(json!({"effectiveCwd": "/repo/sub", "segments": ["pwd"]})),
+            json!(["pwd"]),
+        ),
+    ] {
+        let command = shlex::try_join(["/bin/dash", "-c", script]).unwrap();
+        let mut old = json!({
+            "type": "commandExecution", "id": "c", "command": command, "cwd": "/repo",
+            "commandActions": [], "status": "completed", "exitCode": 0,
+        });
+        if let Some(display) = old_display {
+            old["display"] = display;
+        }
+        let item = super::stored_thread_item_to_api_item(&StoredThreadItem {
+            turn_id: "turn".into(),
+            item_id: "c".into(),
+            updated_at_ordinal: 0,
+            created_at_ms: 0,
+            started_at_ms: None,
+            completed_at_ms: None,
+            item_json: serde_json::to_vec(&old).unwrap(),
+        })
+        .unwrap();
+        let wire = serde_json::to_value(item).unwrap();
+        assert_eq!(wire["display"]["script"], script);
+        assert_eq!(wire["display"]["segments"], steps);
+        assert_eq!(
+            wire["display"]["effectiveCwd"],
+            old["display"]["effectiveCwd"]
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn thread_cwd_rejects_invalid_utf8() {
@@ -128,6 +169,7 @@ mod background_terminal_pagination_tests {
         ThreadBackgroundTerminal {
             item_id: format!("item-{process_id}"),
             process_id: process_id.to_string(),
+            turn_id: "turn-1".to_string(),
             command: format!("command-{process_id}"),
             cwd: LegacyAppPathString::from_string(cwd),
             os_pid: None,
@@ -920,7 +962,8 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn merge_persisted_resume_metadata_preserves_provider_when_model_overridden() -> Result<()> {
+    fn merge_persisted_resume_metadata_preserves_provider_and_effort_when_model_overridden()
+    -> Result<()> {
         let mut request_overrides = Some(HashMap::from([(
             "model".to_string(),
             serde_json::Value::String("gpt-5.2-codex".to_string()),
@@ -942,16 +985,22 @@ mod thread_processor_behavior_tests {
         );
         assert_eq!(
             request_overrides,
-            Some(HashMap::from([(
-                "model".to_string(),
-                serde_json::Value::String("gpt-5.2-codex".to_string()),
-            )]))
+            Some(HashMap::from([
+                (
+                    "model".to_string(),
+                    serde_json::Value::String("gpt-5.2-codex".to_string()),
+                ),
+                (
+                    "model_reasoning_effort".to_string(),
+                    serde_json::Value::String("high".to_string()),
+                ),
+            ]))
         );
         Ok(())
     }
 
     #[test]
-    fn merge_persisted_resume_metadata_skips_persisted_values_when_provider_overridden()
+    fn merge_persisted_resume_metadata_preserves_model_and_effort_when_provider_overridden()
     -> Result<()> {
         let mut request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides {
@@ -967,14 +1016,23 @@ mod thread_processor_behavior_tests {
             &persisted_metadata,
         );
 
-        assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(
+            typesafe_overrides.model,
+            Some("gpt-5.1-codex-max".to_string())
+        );
         assert_eq!(typesafe_overrides.model_provider, Some("oss".to_string()));
-        assert_eq!(request_overrides, None);
+        assert_eq!(
+            request_overrides,
+            Some(HashMap::from([(
+                "model_reasoning_effort".to_string(),
+                serde_json::Value::String("high".to_string()),
+            )]))
+        );
         Ok(())
     }
 
     #[test]
-    fn merge_persisted_resume_metadata_preserves_provider_when_reasoning_effort_overridden()
+    fn merge_persisted_resume_metadata_preserves_model_and_provider_when_effort_overridden()
     -> Result<()> {
         let mut request_overrides = Some(HashMap::from([(
             "model_reasoning_effort".to_string(),
@@ -990,7 +1048,10 @@ mod thread_processor_behavior_tests {
             &persisted_metadata,
         );
 
-        assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(
+            typesafe_overrides.model,
+            Some("gpt-5.1-codex-max".to_string())
+        );
         assert_eq!(
             typesafe_overrides.model_provider,
             Some("mock_provider".to_string())

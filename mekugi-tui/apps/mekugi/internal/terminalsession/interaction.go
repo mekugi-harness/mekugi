@@ -279,8 +279,9 @@ func (in FrameInput) send(state *Interaction, key string, yield func(InputEffect
 		return
 	}
 	if main != nil && shell.Focus == 0 && main.Resume.Open() {
-		action := main.Resume.Key(key)
-		yield(InputEffect{Resume: &action})
+		if action := main.Resume.Key(key); action.Kind != sessionpresentation.ResumeNoAction {
+			yield(InputEffect{Resume: &action})
+		}
 		return
 	}
 	if key == "\x1b" && main != nil && shell.Focus == 0 {

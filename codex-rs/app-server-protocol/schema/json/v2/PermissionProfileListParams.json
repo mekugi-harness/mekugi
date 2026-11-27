@@ -23,6 +23,13 @@
         "integer",
         "null"
       ]
+    },
+    "threadId": {
+      "description": "Resolve profiles for this loaded thread's working directory instead of `cwd`.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "PermissionProfileListParams",
