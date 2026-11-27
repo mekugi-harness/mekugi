@@ -8,11 +8,13 @@
   dialog parity.
 - Support browser file uploads and execution-machine path attachments within the 32 MiB
   decoded-upload budget per message, with image previews.
+- Edit composer attachment placeholders as indivisible units.
 - Preserve queued edits across browser and native clients, including retraction for editing and
   steering queued input without losing text or attachments.
 - Keep pickers, commands, live diffs, saved changes, images, and shell highlighting responsive on
   desktop and phone layouts (light and dark), showing worktree directory names and omitting
   expansion controls on empty items.
+- Offer a browser display setting for disabling Live Diff without disabling Saved Diff.
 - Show Main/delegate public reasoning summaries, spawn assignments, and per-agent usage/cost
   without raw reasoning or duplicate completion entries.
 - Keep work server-owned: closing the browser or connector leaves threads running; ending a thread

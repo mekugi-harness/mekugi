@@ -19,6 +19,8 @@
     callers,
     callerLabel,
     oncaller,
+    includeExternal = false,
+    onincludeexternal,
     cursor,
     loading,
     error,
@@ -32,6 +34,8 @@
     callers: CallerReview[];
     callerLabel: (caller: string) => string;
     oncaller: (caller: string) => void;
+    includeExternal?: boolean;
+    onincludeexternal?: (include: boolean) => void;
     cursor?: string;
     loading: boolean;
     error?: string;
@@ -181,6 +185,17 @@
         onchange={(choice) => oncaller(choice === "all" ? "" : choice)}
       />
     {/if}
+    {#if onincludeexternal}
+      <Button
+        variant={includeExternal ? "default" : "quiet"}
+        size="sm"
+        class="text-muted"
+        aria-pressed={includeExternal}
+        onclick={() => onincludeexternal(!includeExternal)}
+      >
+        {includeExternal ? "External: on" : "External: off"}
+      </Button>
+    {/if}
     {#if net}
       <span class="font-mono tabular-nums">
         <span class="text-positive">+{net.Added}</span>
@@ -225,6 +240,9 @@
               <summary
                 class="flex min-h-9 cursor-pointer items-center gap-2 rounded-control bg-raised/60 px-2.5 py-1 text-small transition-colors hover:bg-active/80 {caret}"
               >
+                {#if file.status}<span class="flex-none font-mono text-code text-muted"
+                    >{file.status}</span
+                  >{/if}
                 <span class="min-w-0 flex-1 truncate font-mono text-code font-medium"
                   ><Path path={workspacePath(file.path, review?.workspace ?? "")} /></span
                 >

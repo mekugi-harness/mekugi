@@ -212,7 +212,12 @@ export function diffRows(diff: string): DiffRow[] {
     } else if (!started) {
       // File headers and the review's operation line repeat what the view
       // already says about the file.
-      if (!line.startsWith("--- ") && !line.startsWith("+++ ") && !operation.test(line))
+      if (
+        !line.startsWith("diff --git ") &&
+        !line.startsWith("--- ") &&
+        !line.startsWith("+++ ") &&
+        !operation.test(line)
+      )
         rows.push({ kind: "note", text: line });
     } else if (line.startsWith("+")) rows.push({ kind: "add", text: line.slice(1), new: now++ });
     else if (line.startsWith("-")) rows.push({ kind: "remove", text: line.slice(1), old: old++ });

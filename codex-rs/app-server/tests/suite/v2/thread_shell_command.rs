@@ -180,6 +180,7 @@ async fn shell_changes_update_before_completion_and_settle_to_retained_evidence(
             request_id,
             params: ThreadChangesReadParams {
                 thread_id: thread.id,
+                include_external: None,
                 include_ephemeral: Some(true),
                 caller_thread_id: None,
                 item_id: Some(item_id.to_owned()),
@@ -299,6 +300,7 @@ async fn saved_shell_caller_stats_count_net_workspace_edits() -> Result<()> {
             request_id,
             params: ThreadChangesReadParams {
                 thread_id: thread.id.clone(),
+                include_external: None,
                 include_ephemeral: None,
                 caller_thread_id: None,
                 item_id: None,

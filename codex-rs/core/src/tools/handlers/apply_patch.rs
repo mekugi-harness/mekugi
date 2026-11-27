@@ -17,12 +17,12 @@ use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::session::turn_context::TurnEnvironment;
 use crate::tools::context::ApplyPatchToolOutput;
-use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolEnvironments;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
+use crate::tools::context::tool_change_notice_from_record;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
 use crate::tools::handlers::apply_granted_turn_permissions;
@@ -334,8 +334,11 @@ impl ApplyPatchHandler {
             call_id,
             tool_name,
         };
-        let content = execute_prepared_patch(request, Some(&tracker), tool_ctx).await?;
-        Ok(boxed_tool_output(ApplyPatchToolOutput::from_text(content)))
+        let (content, change_notice) =
+            execute_prepared_patch(request, Some(&tracker), tool_ctx).await?;
+        Ok(boxed_tool_output(
+            ApplyPatchToolOutput::from_text(content).with_change_notice(change_notice),
+        ))
     }
 }
 
@@ -433,7 +436,7 @@ pub(crate) async fn intercept_apply_patch(
     tracker: Option<&SharedTurnDiffTracker>,
     call_id: &str,
     tool_name: &str,
-) -> Result<Option<FunctionToolOutput>, FunctionCallError> {
+) -> Result<Option<ApplyPatchToolOutput>, FunctionCallError> {
     let Some(request) =
         prepare_intercepted_patch(command, cwd, fs, turn_environment, &step_context).await?
     else {
@@ -446,8 +449,10 @@ pub(crate) async fn intercept_apply_patch(
         call_id: call_id.to_string(),
         tool_name: ToolName::plain(tool_name),
     };
-    let content = execute_prepared_patch(request, tracker, tool_ctx).await?;
-    Ok(Some(FunctionToolOutput::from_text(content, Some(true))))
+    let (content, change_notice) = execute_prepared_patch(request, tracker, tool_ctx).await?;
+    Ok(Some(
+        ApplyPatchToolOutput::from_text(content).with_change_notice(change_notice),
+    ))
 }
 
 pub(crate) async fn prepare_intercepted_patch(
@@ -587,7 +592,7 @@ async fn execute_prepared_patch(
     request: ApplyPatchRequest,
     tracker: Option<&SharedTurnDiffTracker>,
     tool_ctx: ToolCtx,
-) -> Result<String, FunctionCallError> {
+) -> Result<(String, Option<codex_tools::ToolChangeNotice>), FunctionCallError> {
     let emitter = ToolEmitter::apply_patch_for_environment(
         request.changes.as_ref().clone(),
         matches!(
@@ -631,11 +636,11 @@ async fn execute_prepared_patch(
         &tool_ctx.call_id,
         tracker,
     );
-    let (finish_input, persist_error) = match persist_result {
-        Ok(_) => (result, None),
+    let (finish_input, persisted_record, persist_error) = match persist_result {
+        Ok(record) => (result, record, None),
         Err(err) => {
             let msg = format!("failed to persist change evidence: {err}");
-            (Err(ToolError::Rejected(msg.clone())), Some(msg))
+            (Err(ToolError::Rejected(msg.clone())), None, Some(msg))
         }
     };
     let finish_result = emitter
@@ -644,7 +649,11 @@ async fn execute_prepared_patch(
     if let Some(msg) = persist_error {
         return Err(FunctionCallError::RespondToModel(msg));
     }
-    finish_result
+    let content = finish_result?;
+    let change_notice = persisted_record
+        .as_ref()
+        .and_then(tool_change_notice_from_record);
+    Ok((content, change_notice))
 }
 
 fn require_environment_id(

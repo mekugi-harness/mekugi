@@ -194,7 +194,7 @@ text("HOST_RESULT_VERIFIED");`, e2eMustMarshalJSON(bash), e2eMustMarshalJSON(bef
 	}
 	runAppServerPreviewWith(t, provider, nil, appServerPreview{
 		managedRuntime: true, workspace: workspace,
-		environment: []string{"SHELL=" + bash, "TMPDIR=" + root, "MEKUGI_NATIVE_MCHANGES=1"},
+		environment: []string{"SHELL=" + bash, "TMPDIR=" + root},
 		codexArgs:   []string{"-c", `sandbox_mode="danger-full-access"`}, completedText: provider.finalText,
 		afterPrompt: func(t *testing.T, outer io.Writer, _ func(string), awaitFrame func(func(string) bool), screen *vt.Emulator) {
 			expandHostActivity(t, outer)

@@ -201,7 +201,7 @@ impl ExecCommandHandler {
                 chunk_id: String::new(),
                 wall_time: std::time::Duration::ZERO,
                 raw_output: CapturedStream {
-                    text: output.into_text(),
+                    text: output.text,
                     omitted_bytes: 0,
                 },
                 truncation_policy: step_context.settings.model_info.truncation_policy.into(),
@@ -214,6 +214,7 @@ impl ExecCommandHandler {
                 truncated_output_dir: Some(codex_utils_output_truncation::truncated_output_dir(
                     &crate::exec_env::session_tmp_path(session.session_id()),
                 )),
+                change_notice: output.change_notice,
             }));
         }
 
@@ -277,6 +278,7 @@ impl ExecCommandHandler {
                             &crate::exec_env::session_tmp_path(context.session.session_id()),
                         ),
                     ),
+                    change_notice: None,
                 }))
             }
             Err(err) => {

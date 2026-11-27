@@ -622,3 +622,177 @@ fn stop_before_finish_and_persist_preserves_pre_write_baselines() {
     assert_eq!(record.files.len(), 1);
     assert_eq!(record.files[0].rel_path, "timed_out.txt");
 }
+
+#[test]
+fn hard_ignore_skips_toolchain_caches_and_git_internals_without_concurrent_warnings() {
+    let root = TempDir::new().expect("root");
+    let workspace = root.path().join("workspace");
+    let session_tmp = root.path().join("session-tmp");
+    let agent_work = root.path().join("fake-home/.local/state/agent-work");
+    let go_cache = root.path().join("fake-home/.cache/go-build");
+    let go_telemetry = root.path().join("fake-home/.config/go/telemetry");
+    let npm_cache = root.path().join("fake-home/.npm/_cacache");
+    let xdg_runtime = root.path().join("xdg-runtime");
+    let store_dir = root.path().join("store");
+    for dir in [
+        &workspace,
+        &workspace.join(".git"),
+        &session_tmp,
+        &agent_work,
+        &go_cache,
+        &go_telemetry,
+        &npm_cache,
+        &xdg_runtime,
+    ] {
+        fs::create_dir_all(dir).unwrap();
+    }
+
+    let ws_file = workspace.join("app.rs");
+    let git_index = workspace.join(".git/index");
+    let stmp_file = session_tmp.join("scratch.txt");
+    let agent_work_file = agent_work.join("notes.md");
+    let go_obj = go_cache.join("00/build.a");
+    let telemetry_file = go_telemetry.join("count.v1");
+    let npm_entry = npm_cache.join("index-v5/entry");
+    let browser_lock = xdg_runtime.join("agent-browser/profile.lock");
+    fs::create_dir_all(go_obj.parent().unwrap()).unwrap();
+    fs::create_dir_all(npm_entry.parent().unwrap()).unwrap();
+    fs::create_dir_all(browser_lock.parent().unwrap()).unwrap();
+
+    // Build two concurrent ObservationStates sharing the same ignored cache roots.
+    let ignored_root_a = root.path().join("obs-a");
+    let ignored_root_b = root.path().join("obs-b");
+    fs::create_dir_all(&ignored_root_a).unwrap();
+    fs::create_dir_all(&ignored_root_b).unwrap();
+    let cache_roots = vec![
+        go_cache.clone(),
+        go_telemetry.clone(),
+        npm_cache.clone(),
+        xdg_runtime.clone(),
+    ];
+
+    let mut state_a = crate::persist::ObservationState::new_with_roots(
+        "call-ignore-a".to_string(),
+        ignored_root_a,
+        Some(workspace.clone()),
+        cache_roots.clone(),
+        Arc::new(|_| true),
+    );
+    let mut state_b = crate::persist::ObservationState::new_with_roots(
+        "call-ignore-b".to_string(),
+        ignored_root_b,
+        Some(workspace.clone()),
+        cache_roots,
+        Arc::new(|_| true),
+    );
+
+    // Concurrent writes to ignored cache/telemetry/runtime/.git paths produce zero entries
+    // and zero concurrent-write warnings.
+    for ignored in [
+        &go_obj,
+        &telemetry_file,
+        &npm_entry,
+        &browser_lock,
+        &git_index,
+    ] {
+        state_a.record_pre_write(ignored);
+        state_b.record_pre_write(ignored);
+        fs::write(ignored, b"cached-or-locked\n").unwrap();
+    }
+
+    // Legitimate authored writes (workspace, $SESSION_TMP, ~/.local/state/agent-work) capture cleanly.
+    for kept in [&ws_file, &stmp_file, &agent_work_file] {
+        state_a.record_pre_write(kept);
+        fs::write(kept, b"authored\n").unwrap();
+    }
+
+    let rec_b = state_b
+        .finalize_and_persist(
+            &store_dir,
+            &workspace,
+            Some(&session_tmp),
+            sample_metadata("t1", "call-ignore-b", workspace.clone()),
+        )
+        .unwrap();
+    assert!(
+        rec_b.is_none(),
+        "ignored-only writes must not persist any change record"
+    );
+
+    let rec_a = state_a
+        .finalize_and_persist(
+            &store_dir,
+            &workspace,
+            Some(&session_tmp),
+            sample_metadata("t1", "call-ignore-a", workspace.clone()),
+        )
+        .unwrap()
+        .expect("authored writes must persist");
+    assert_eq!(rec_a.files.len(), 3);
+    for file in &rec_a.files {
+        assert!(
+            file.coverage.is_complete(),
+            "no spurious concurrent-write warning expected for {}: {:?}",
+            file.rel_path,
+            file.coverage
+        );
+    }
+    assert!(
+        rec_a
+            .files
+            .iter()
+            .any(|f| f.scope == ChangeScope::Workspace && f.rel_path == "app.rs")
+    );
+    assert!(
+        rec_a
+            .files
+            .iter()
+            .any(|f| f.scope == ChangeScope::Ephemeral && f.abs_path.ends_with("scratch.txt"))
+    );
+    assert!(
+        rec_a
+            .files
+            .iter()
+            .any(|f| f.abs_path.ends_with("agent-work/notes.md"))
+    );
+}
+
+#[test]
+fn workspace_root_takes_precedence_over_ignored_cache_roots() {
+    let root = TempDir::new().expect("root");
+    let cache_root = root.path().join(".cache/go-build");
+    let workspace_inside_cache = cache_root.join("checked-out-repo");
+    let git_dir = workspace_inside_cache.join(".git");
+    let obs_dir = root.path().join("obs");
+    let store_dir = root.path().join("store");
+    for dir in [&workspace_inside_cache, &git_dir, &obs_dir] {
+        fs::create_dir_all(dir).unwrap();
+    }
+
+    let worktree_file = workspace_inside_cache.join("lib.rs");
+    let git_head = git_dir.join("HEAD");
+
+    let mut state = crate::persist::ObservationState::new_with_roots(
+        "call-ws-prec".to_string(),
+        obs_dir,
+        Some(workspace_inside_cache.clone()),
+        vec![cache_root],
+        Arc::new(|_| true),
+    );
+    state.record_pre_write(&worktree_file);
+    state.record_pre_write(&git_head);
+    fs::write(&worktree_file, b"pub fn ok() {}\n").unwrap();
+    fs::write(&git_head, b"ref: refs/heads/main\n").unwrap();
+
+    let rec = state
+        .finalize_and_persist(
+            &store_dir,
+            &workspace_inside_cache,
+            None,
+            sample_metadata("t1", "call-ws-prec", workspace_inside_cache.clone()),
+        )
+        .unwrap()
+        .expect("workspace file inside ignored root must still capture");
+    assert_eq!(rec.files.len(), 1);
+    assert_eq!(rec.files[0].rel_path, "lib.rs");
+}

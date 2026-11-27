@@ -213,7 +213,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 				switch itemType {
 				case "fileChange", "commandExecution":
 					if threadID == displayed || displayed == mainID {
-						go c.refreshChanges(c.ctx, displayed)
+						c.requestChanges(displayed)
 					}
 				case "collabAgentToolCall", "subAgentActivity":
 					go c.refreshSubtree(c.ctx, mainID)
@@ -474,7 +474,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			if target != "" {
 				go func() {
 					c.reloadThreadTranscript(c.ctx, target)
-					c.refreshChanges(c.ctx, target)
+					c.requestChanges(target)
 				}()
 			}
 		}

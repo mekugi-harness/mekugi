@@ -435,6 +435,7 @@ fn exec_command_tool_output_formats_truncated_response() {
         hook_command: None,
         tool_cwd: None,
         truncated_output_dir: None,
+        change_notice: None,
     };
     assert_eq!(
         output.log_output(),
@@ -492,6 +493,7 @@ fn exec_command_tool_output_reserves_metadata_budget_and_preserves_policy_units(
             hook_command: None,
             tool_cwd: None,
             truncated_output_dir: None,
+            change_notice: None,
         }
         .to_response_item("call-42", &payload);
 
@@ -539,6 +541,7 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
         hook_command: None,
         tool_cwd: None,
         truncated_output_dir: None,
+        change_notice: None,
     };
     let expected_header = "Chunk ID: abc123\nWall time: 1.2500 seconds\nProcess exited with code 0\nOriginal token count: 42000\nOutput:\n";
     assert_eq!(
@@ -564,4 +567,92 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
     assert!(text.contains("Original token count: 42000"));
     assert!(text.contains("Warning: truncated output (original token count: 42000)"));
     assert_eq!(text.matches(&marker).count(), 1);
+}
+
+#[test]
+fn apply_patch_output_appends_change_notice_without_modifying_host_text() {
+    let output = ApplyPatchToolOutput::from_text("Success. Updated files:\nM foo.rs\n".to_string())
+        .with_change_notice(Some(ToolChangeNotice {
+            change_id: "amber1".to_string(),
+            incomplete_notes: vec!["\"foo.rs\": baseline unavailable".to_string()],
+        }));
+    let payload = ToolPayload::Custom {
+        input: String::new(),
+    };
+    let ResponseInputItem::CustomToolCallOutput {
+        output: response_payload,
+        ..
+    } = output.to_response_item("call-patch", &payload)
+    else {
+        panic!("expected CustomToolCallOutput");
+    };
+    let FunctionCallOutputBody::ContentItems(items) = response_payload.body else {
+        panic!("expected content items");
+    };
+    assert_eq!(
+        items,
+        vec![
+            FunctionCallOutputContentItem::InputText {
+                text: "Success. Updated files:\nM foo.rs\n".to_string(),
+            },
+            FunctionCallOutputContentItem::InputText {
+                text: "amber1\nCapture incomplete: \"foo.rs\": baseline unavailable".to_string(),
+            },
+        ]
+    );
+    assert_eq!(
+        output.code_mode_result(&payload),
+        serde_json::json!({
+            "output": "Success. Updated files:\nM foo.rs\n",
+            "change_id": "amber1",
+            "capture_incomplete": ["\"foo.rs\": baseline unavailable"],
+        })
+    );
+}
+
+#[test]
+fn exec_command_output_appends_change_notice_as_separate_text_item() {
+    let output = ExecCommandToolOutput {
+        event_call_id: "call-shell".to_string(),
+        chunk_id: "chunk1".to_string(),
+        wall_time: Duration::from_millis(50),
+        raw_output: CapturedStream {
+            text: "ok\n".to_string(),
+            omitted_bytes: 0,
+        },
+        truncation_policy: TruncationPolicy::Tokens(4000),
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: Some(1),
+        hook_command: None,
+        tool_cwd: None,
+        truncated_output_dir: None,
+        change_notice: Some(ToolChangeNotice {
+            change_id: "amber2".to_string(),
+            incomplete_notes: Vec::new(),
+        }),
+    };
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let ResponseInputItem::FunctionCallOutput {
+        output: response_payload,
+        ..
+    } = output.to_response_item("call-shell", &payload)
+    else {
+        panic!("expected FunctionCallOutput");
+    };
+    let FunctionCallOutputBody::ContentItems(items) = response_payload.body else {
+        panic!("expected content items");
+    };
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[1],
+        FunctionCallOutputContentItem::InputText {
+            text: "amber2".to_string(),
+        }
+    );
+    let code_mode = output.code_mode_result(&payload);
+    assert_eq!(code_mode["change_id"], serde_json::json!("amber2"));
 }

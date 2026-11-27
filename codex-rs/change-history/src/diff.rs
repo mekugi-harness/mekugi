@@ -13,7 +13,9 @@ use similar::TextDiff;
 use crate::error::ChangeHistoryError;
 use crate::identity::ChangeId;
 use crate::model::ChangeRecord;
+use crate::model::ChangeScope;
 use crate::model::CoverageStatus;
+use crate::model::FileEvidence;
 use crate::model::FileSnapshot;
 use crate::store::ChangeHistoryStore;
 
@@ -29,6 +31,7 @@ pub struct FileDiffStats {
     pub deletions: usize,
     pub is_binary: bool,
     pub coverage_notes: Vec<String>,
+    pub scope: ChangeScope,
 }
 
 /// Composed summary across one or more [`ChangeRecord`]s.
@@ -54,6 +57,7 @@ pub(crate) struct ComposedFileTransition {
     pub(crate) before: FileSnapshot,
     pub(crate) after: FileSnapshot,
     pub(crate) coverage_notes: Vec<String>,
+    pub(crate) scope: ChangeScope,
     change_ids: Vec<ChangeId>,
 }
 
@@ -234,6 +238,7 @@ pub(crate) fn compose_transitions_with_continuity(
                             before,
                             after,
                             coverage_notes,
+                            scope: file.scope,
                             change_ids: vec![record.id.clone()],
                         },
                     ),
@@ -262,6 +267,67 @@ pub fn compose_diff(
             }
         })
         .collect())
+}
+
+/// Reviewable files within one capture, in the same order as its composed diff.
+/// Group equivalent path spellings without reading any snapshot bytes.
+pub fn captured_diff_files(record: &ChangeRecord) -> impl Iterator<Item = Vec<&FileEvidence>> {
+    let mut by_path = BTreeMap::<_, Vec<_>>::new();
+    for file in &record.files {
+        by_path
+            .entry(normalize_abs_path(&file.abs_path))
+            .or_default()
+            .push(file);
+    }
+    by_path.into_values().filter(|files| {
+        let first = files[0];
+        first.before != first.after
+            || first.moved_from.is_some()
+            || files.iter().any(|file| !file.coverage.is_complete())
+    })
+}
+
+/// Render a UTF-8 range of one captured file's patch without allocating its
+/// entire rendered text. The returned cursor is a byte offset in that patch.
+pub fn captured_diff_range(
+    store: &ChangeHistoryStore,
+    record: &ChangeRecord,
+    files: &[&FileEvidence],
+    offset: usize,
+    max_bytes: usize,
+) -> Result<Option<(ComposedFileDiff, Option<usize>)>, ChangeHistoryError> {
+    let selected = ChangeRecord {
+        schema_version: record.schema_version,
+        id: record.id.clone(),
+        sequence: record.sequence,
+        recorded_at_ms: record.recorded_at_ms,
+        metadata: record.metadata.clone(),
+        files: files.iter().map(|file| (*file).clone()).collect(),
+    };
+    let Some(transition) =
+        compose_changed_files(store, std::slice::from_ref(&selected), &[])?.next()
+    else {
+        return Ok(None);
+    };
+    let mut output = DiffRange {
+        text: String::new(),
+        skip: offset,
+        max_bytes,
+    };
+    let diff = transition.text_diff();
+    let stopped = write_transition_diff(&mut output, &transition, diff.as_ref()).is_err();
+    let text_counts = diff.as_ref().map(count_lines);
+    if output.skip != 0 || (offset != 0 && output.text.is_empty()) {
+        return Ok(None);
+    }
+    let next = stopped.then_some(offset + output.text.len());
+    Ok(Some((
+        ComposedFileDiff {
+            unified_diff: output.text,
+            stats: transition.into_stats(text_counts),
+        },
+        next,
+    )))
 }
 
 /// Compute per-file statistics across `records` without rendering unified diffs.
@@ -398,6 +464,7 @@ impl ComposedFileTransition {
             deletions,
             is_binary: text_counts.is_none(),
             coverage_notes: self.coverage_notes,
+            scope: self.scope,
         }
     }
 }
@@ -420,23 +487,32 @@ fn render_transition_diff<'a>(
     diff: Option<&'a TextDiff<'a, 'a, 'a, str>>,
 ) -> String {
     let mut out = String::new();
+    let _ = write_transition_diff(&mut out, tr, diff);
+    out
+}
+
+fn write_transition_diff<'a>(
+    out: &mut impl fmt::Write,
+    tr: &ComposedFileTransition,
+    diff: Option<&'a TextDiff<'a, 'a, 'a, str>>,
+) -> fmt::Result {
     let from_header = tr.moved_from.as_deref().unwrap_or(tr.rel_path.as_str());
-    let _ = writeln!(&mut out, "diff --git a/{from_header} b/{}", tr.rel_path);
+    writeln!(out, "diff --git a/{from_header} b/{}", tr.rel_path)?;
     if let Some(from) = &tr.moved_from {
-        let _ = writeln!(&mut out, "rename from {from}");
-        let _ = writeln!(&mut out, "rename to {}", tr.rel_path);
+        writeln!(out, "rename from {from}")?;
+        writeln!(out, "rename to {}", tr.rel_path)?;
     }
     for note in &tr.coverage_notes {
-        let _ = writeln!(&mut out, "# coverage: {note}");
+        writeln!(out, "# coverage: {note}")?;
     }
 
     if let Some(diff) = diff {
-        let _ = write_text_hunks(
-            &mut out,
+        write_text_hunks(
+            out,
             diff,
             matches!(tr.before, FileSnapshot::Present(_)).then_some(from_header),
             matches!(tr.after, FileSnapshot::Present(_)).then_some(tr.rel_path.as_str()),
-        );
+        )
     } else {
         let old_label = match &tr.before {
             FileSnapshot::Missing => "/dev/null".to_string(),
@@ -446,9 +522,33 @@ fn render_transition_diff<'a>(
             FileSnapshot::Missing => "/dev/null".to_string(),
             FileSnapshot::Present(_) => format!("b/{}", tr.rel_path),
         };
-        let _ = writeln!(&mut out, "Binary files {old_label} and {new_label} differ");
+        writeln!(out, "Binary files {old_label} and {new_label} differ")
     }
-    out
+}
+
+struct DiffRange {
+    text: String,
+    skip: usize,
+    max_bytes: usize,
+}
+
+impl fmt::Write for DiffRange {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if self.skip >= value.len() {
+            self.skip -= value.len();
+            return Ok(());
+        }
+        let value = value.get(self.skip..).ok_or(fmt::Error)?;
+        self.skip = 0;
+        let room = self.max_bytes - self.text.len();
+        if value.len() > room {
+            self.text
+                .push_str(&value[..value.floor_char_boundary(room)]);
+            return Err(fmt::Error);
+        }
+        self.text.push_str(value);
+        Ok(())
+    }
 }
 
 /// Render a provisional single-file text diff without accessing the history store.

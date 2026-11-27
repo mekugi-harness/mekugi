@@ -156,6 +156,11 @@ impl CodeModeExecuteHandler {
         code_cell_trace.record_initial_response(&response);
         // Yielded cells keep running, so terminal lifecycle is only emitted
         // here when the first response also ended the runtime.
+        let change_notices = exec
+            .session
+            .services
+            .code_mode_service
+            .take_cell_change_notices(&cell_id);
         if matches!(response, codex_code_mode::RuntimeResponse::Yielded { .. }) {
             telemetry.record_cell_timing(
                 &cell_id,
@@ -217,6 +222,7 @@ impl CodeModeExecuteHandler {
             Some(&codex_utils_output_truncation::truncated_output_dir(
                 &crate::exec_env::session_tmp_path(exec.session.session_id()),
             )),
+            &change_notices,
         ))
     }
 }

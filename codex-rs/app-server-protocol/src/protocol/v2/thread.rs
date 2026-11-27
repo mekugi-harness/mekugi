@@ -2747,6 +2747,10 @@ pub struct ThreadChangesLiveResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadChangesReadParams {
     pub thread_id: String,
+    /// Include non-ephemeral changes outside the workspace root (default false for Saved Diff).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub include_external: Option<bool>,
     /// Include ephemeral temp-path changes (e.g. /tmp, $TMPDIR, $SESSION_TMP).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -2806,6 +2810,9 @@ pub struct ThreadChangeFileDiff {
     pub deletions: i64,
     pub is_binary: bool,
     pub coverage_notes: Vec<String>,
+    /// Filesystem scope of the change: "workspace", "external", or "ephemeral".
+    #[serde(default)]
+    pub scope: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

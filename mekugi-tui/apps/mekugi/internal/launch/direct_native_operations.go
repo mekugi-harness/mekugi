@@ -854,7 +854,7 @@ func (c *directNativeConnection) handleDisplay(ctx context.Context, intent sessi
 	// Drive Herdr/Agents/Saved Changes panels from the attached frontend's selection.
 	go func(threadID string) {
 		c.reloadThreadTranscript(c.ctx, threadID)
-		c.refreshChanges(c.ctx, threadID)
+		c.requestChanges(threadID)
 	}(intent.Thread.ID)
 	return nil
 }

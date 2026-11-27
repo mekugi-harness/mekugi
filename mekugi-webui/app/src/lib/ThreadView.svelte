@@ -526,16 +526,18 @@
             onselect={openDetails}
             onreference={stream.connection === "open" ? addReference : undefined}
           />
-          {#key stream}
-            <LiveSource
-              previews={stream.live}
-              owner={view.agent ?? "/root"}
-              onsaved={(path) => {
-                stream.selectChangeCaller("");
-                openChanges([path]);
-              }}
-            />
-          {/key}
+          {#if preferences.liveDiff}
+            {#key stream}
+              <LiveSource
+                previews={stream.live}
+                owner={view.agent ?? "/root"}
+                onsaved={(path) => {
+                  stream.selectChangeCaller("");
+                  openChanges([path]);
+                }}
+              />
+            {/key}
+          {/if}
         </div>
         {#key machine.id + ":" + displayed}
           <ThreadDocks />
@@ -620,6 +622,8 @@
               callers={stream.reviewOverview.callers}
               callerLabel={(caller) => stream.label(caller)}
               oncaller={(caller) => stream.selectChangeCaller(caller)}
+              includeExternal={stream.reviewIncludeExternal}
+              onincludeexternal={(include) => stream.setIncludeExternalChanges(include)}
               cursor={stream.reviewCursor}
               loading={stream.reviewLoading}
               error={stream.reviewError}

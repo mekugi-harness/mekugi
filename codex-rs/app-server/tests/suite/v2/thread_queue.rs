@@ -1265,6 +1265,7 @@ async fn queue_drains_shell_before_prompt_and_persists_shell_edits() -> Result<(
             request_id,
             params: ThreadChangesReadParams {
                 thread_id: thread_id.clone(),
+                include_external: None,
                 include_ephemeral: Some(true),
                 caller_thread_id: None,
                 item_id: Some(shell_item.item.id().to_string()),
@@ -1293,6 +1294,7 @@ async fn queue_drains_shell_before_prompt_and_persists_shell_edits() -> Result<(
             request_id,
             params: ThreadChangesReadParams {
                 thread_id: thread_id.clone(),
+                include_external: None,
                 include_ephemeral: Some(true),
                 caller_thread_id: None,
                 item_id: Some(shell_item.item.id().to_string()),

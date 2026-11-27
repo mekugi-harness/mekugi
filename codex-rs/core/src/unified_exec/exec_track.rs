@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -28,6 +29,9 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use tokio_util::task::AbortOnDropHandle;
 
+use crate::tools::context::ToolChangeNotice;
+use crate::tools::context::tool_change_notice_from_record;
+
 // Preview updates are replaceable. If the event consumer is lagging, skip a
 // sample rather than queueing large diffs behind other shell/turn events.
 const LIVE_PREVIEW_QUEUE_WATERMARK: usize = 8;
@@ -46,6 +50,7 @@ pub(crate) struct ExecTrackAttachment {
     source_kind: ChangeSourceKind,
     summary: String,
     settled: OnceLock<()>,
+    pending_notice: Mutex<Option<ToolChangeNotice>>,
 }
 
 impl ExecTrackAttachment {
@@ -120,9 +125,11 @@ impl ExecTrackAttachment {
         call_id: String,
         source_kind: ChangeSourceKind,
     ) -> Arc<Self> {
-        let observer = match WriteObserverSession::start(call_id.clone(), move |path| {
-            Self::can_read_path(&read_policy, path)
-        }) {
+        let observer = match WriteObserverSession::start_with_workspace(
+            call_id.clone(),
+            Some(workspace_root.clone()),
+            move |path| Self::can_read_path(&read_policy, path),
+        ) {
             Ok(obs) => Some(obs),
             Err(err) => {
                 tracing::debug!("write observer start failed; running unobserved: {err}");
@@ -143,6 +150,7 @@ impl ExecTrackAttachment {
             source_kind,
             summary: authored_script.to_string(),
             settled: OnceLock::new(),
+            pending_notice: Mutex::new(None),
         })
     }
 
@@ -277,17 +285,37 @@ impl ExecTrackAttachment {
             summary: Some(self.summary.clone()),
             claim_key: Some(claim_key),
         };
-        if let Err(err) = observer.finish_and_persist(
+        match observer.finish_and_persist(
             &self.store_dir,
             &self.workspace_root,
             self.session_tmp.as_deref(),
             metadata,
         ) {
-            tracing::warn!(
-                call_id = %self.call_id,
-                "failed to persist shell-write change evidence: {err}"
-            );
+            Ok(Some(record)) => {
+                if let Some(notice) = tool_change_notice_from_record(&record) {
+                    let mut slot = self
+                        .pending_notice
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *slot = Some(notice);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(
+                    call_id = %self.call_id,
+                    "failed to persist shell-write change evidence: {err}"
+                );
+            }
         }
+    }
+
+    /// Take the durable change-history notice settled for this command at most once.
+    pub(crate) fn take_change_notice(&self) -> Option<ToolChangeNotice> {
+        self.pending_notice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     fn can_read_path(policy: &Option<(FileSystemSandboxPolicy, PathBuf)>, path: &Path) -> bool {

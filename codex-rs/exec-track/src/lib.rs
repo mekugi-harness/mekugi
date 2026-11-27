@@ -19,6 +19,7 @@ mod persist;
 
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -67,15 +68,26 @@ impl WriteObserverSession {
         call_id: String,
         can_read: impl Fn(&Path) -> bool + Send + Sync + 'static,
     ) -> io::Result<Self> {
+        Self::start_with_workspace(call_id, None, can_read)
+    }
+
+    /// Start a new per-command write observer with an explicit workspace root
+    /// (which takes precedence over non-authored toolchain cache ignores).
+    pub fn start_with_workspace(
+        call_id: String,
+        workspace_root: Option<PathBuf>,
+        can_read: impl Fn(&Path) -> bool + Send + Sync + 'static,
+    ) -> io::Result<Self> {
         let dir = tempfile::Builder::new().prefix("mekugi-obs-").tempdir()?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700));
         }
-        let state = Arc::new(Mutex::new(ObservationState::new(
+        let state = Arc::new(Mutex::new(ObservationState::new_with_workspace(
             call_id,
             dir.path().to_path_buf(),
+            workspace_root,
             Arc::new(can_read),
         )));
         #[cfg(target_os = "linux")]

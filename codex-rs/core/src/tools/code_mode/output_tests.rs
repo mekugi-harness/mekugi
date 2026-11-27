@@ -105,6 +105,7 @@ fn max_output_tokens_above_history_budget_preserves_spill_id_without_double_trun
         Duration::from_millis(120),
         /*experimental_show_cell_overhead*/ false,
         Some(spill_dir.path()),
+        &[],
     );
     let ResponseInputItem::CustomToolCallOutput {
         output: mut payload,
@@ -133,5 +134,72 @@ fn max_output_tokens_above_history_budget_preserves_spill_id_without_double_trun
     assert!(
         text.contains(" (id: "),
         "expected spill id marker in: {text}"
+    );
+}
+
+#[test]
+fn handle_runtime_response_appends_change_notices_after_truncation() {
+    use crate::tools::code_mode::handle_runtime_response;
+    use crate::tools::context::ToolChangeNotice;
+    use codex_code_mode::CellId;
+    use codex_code_mode::CodeModeOutputTruncation;
+    use codex_code_mode::FunctionCallOutputContentItem as CodeModeContentItem;
+    use codex_code_mode::RuntimeResponse;
+    use codex_models_manager::model_info::model_info_from_slug;
+    use codex_protocol::models::FunctionCallOutputBody;
+
+    let model_info = model_info_from_slug("gpt-5.2-codex");
+    let response = RuntimeResponse::Result {
+        cell_id: CellId::new("cell-1".to_string()),
+        content_items: vec![CodeModeContentItem::InputText {
+            text: "host output".to_string(),
+        }],
+        error_text: None,
+        result_buffered_for: Duration::ZERO,
+        code_mode_host_duration: Some(Duration::from_millis(25)),
+    };
+    let notices = vec![
+        ToolChangeNotice {
+            change_id: "amber1".to_string(),
+            incomplete_notes: Vec::new(),
+        },
+        ToolChangeNotice {
+            change_id: "amber2".to_string(),
+            incomplete_notes: vec!["\"a.rs\": concurrent write".to_string()],
+        },
+    ];
+    let output = handle_runtime_response(
+        &model_info,
+        response,
+        Some(1000),
+        CodeModeOutputTruncation::Client,
+        Duration::from_millis(25),
+        false,
+        None,
+        &notices,
+    );
+    let ResponseInputItem::CustomToolCallOutput { output, .. } = output.to_response_item(
+        "call-1",
+        &ToolPayload::Custom {
+            input: String::new(),
+        },
+    ) else {
+        panic!("expected CustomToolCallOutput");
+    };
+    let FunctionCallOutputBody::ContentItems(items) = output.body else {
+        panic!("expected content items");
+    };
+    assert_eq!(items.len(), 3);
+    assert_eq!(
+        items[1],
+        FunctionCallOutputContentItem::InputText {
+            text: "host output".to_string(),
+        }
+    );
+    assert_eq!(
+        items[2],
+        FunctionCallOutputContentItem::InputText {
+            text: "amber1 amber2\nCapture incomplete: \"a.rs\": concurrent write".to_string(),
+        }
     );
 }

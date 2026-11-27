@@ -249,6 +249,7 @@ type directNativeConnection struct {
 	review              *changes.ReviewView
 	reviewRev           uint64
 	reviewThread        string
+	reviewPending       chan struct{}
 	editReceipts        map[nativeEditItem][]nativeCapturedFile
 	mainQueue           directQueueState
 	sideQueue           directQueueState
@@ -332,6 +333,7 @@ func newDirectNativeConnection(ctx context.Context, opts directNativeOptions, at
 		cancel:        cancel,
 		events:        make(chan sessionapi.NativeEvent, 64),
 		errCh:         make(chan error, 1),
+		reviewPending: make(chan struct{}, 1),
 		workspace:     opts.workspace,
 		items:         make(map[string][]*directItemRecord),
 		itemsByID:     make(map[directItemKey]*directItemRecord),
@@ -350,6 +352,7 @@ func newDirectNativeConnection(ctx context.Context, opts directNativeOptions, at
 	c.publishLocked()
 	c.mu.Unlock()
 	go c.eventLoop()
+	go c.reviewLoop()
 	return c, nil
 }
 
@@ -550,10 +553,7 @@ func (c *directNativeConnection) refreshAuxiliary(ctx context.Context, threadID 
 		return
 	}
 	c.refreshSubtree(ctx, threadID)
-	c.mu.Lock()
-	displayed := cmp.Or(c.displayedThread, threadID)
-	c.mu.Unlock()
-	c.refreshChanges(ctx, displayed)
+	c.requestChanges("")
 	c.refreshQueue(ctx, threadID)
 	c.refreshRateLimits(ctx)
 }
@@ -610,7 +610,7 @@ func (c *directNativeConnection) eventLoop() {
 		case msg, ok := <-c.wire.Events():
 			if !ok {
 				select {
-				case c.errCh <- io.EOF:
+				case c.errCh <- cmp.Or(c.wire.readError(), io.EOF):
 				default:
 				}
 				return

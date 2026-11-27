@@ -53,17 +53,61 @@ enum WriteProvenance {
 pub(crate) struct ObservationState {
     call_id: String,
     ignored_root: PathBuf,
+    workspace_root: Option<PathBuf>,
+    ignored_cache_roots: Vec<PathBuf>,
     can_read: ReadPolicyFn,
     baselines: BTreeMap<PathBuf, ObservedFile>,
     partial_reasons: Vec<String>,
 }
 
 impl ObservationState {
+    #[cfg(test)]
     pub(crate) fn new(call_id: String, ignored_root: PathBuf, can_read: ReadPolicyFn) -> Self {
+        Self::new_with_workspace(call_id, ignored_root, None, can_read)
+    }
+
+    pub(crate) fn new_with_workspace(
+        call_id: String,
+        ignored_root: PathBuf,
+        workspace_root: Option<PathBuf>,
+        can_read: ReadPolicyFn,
+    ) -> Self {
+        Self::new_with_roots(
+            call_id,
+            ignored_root,
+            workspace_root,
+            default_ignored_cache_roots(),
+            can_read,
+        )
+    }
+
+    pub(crate) fn new_with_roots(
+        call_id: String,
+        ignored_root: PathBuf,
+        workspace_root: Option<PathBuf>,
+        ignored_cache_roots: Vec<PathBuf>,
+        can_read: ReadPolicyFn,
+    ) -> Self {
         let ignored_root = resolve_canonical_path(&ignored_root);
+        let workspace_root = workspace_root.map(|ws| resolve_canonical_path(&ws));
+        let mut expanded = Vec::with_capacity(ignored_cache_roots.len() * 2);
+        for root in ignored_cache_roots {
+            if root.as_os_str().is_empty() {
+                continue;
+            }
+            let canonical = resolve_canonical_path(&root);
+            if !expanded.contains(&root) {
+                expanded.push(root);
+            }
+            if !expanded.contains(&canonical) {
+                expanded.push(canonical);
+            }
+        }
         Self {
             call_id,
             ignored_root,
+            workspace_root,
+            ignored_cache_roots: expanded,
             can_read,
             baselines: BTreeMap::new(),
             partial_reasons: Vec::new(),
@@ -82,11 +126,11 @@ impl ObservationState {
         raw_path: &Path,
         is_vcs_diagnostic: bool,
     ) {
-        if should_ignore_path(raw_path, &self.ignored_root) {
+        if is_always_ignored_path(raw_path, &self.ignored_root) {
             return;
         }
         let path = resolve_canonical_path(raw_path);
-        if should_ignore_path(&path, &self.ignored_root) {
+        if self.should_ignore(&path) {
             return;
         }
         let provenance = if is_vcs_diagnostic {
@@ -228,9 +272,43 @@ impl ObservationState {
         }
         Ok(vcs_record)
     }
+
+    fn should_ignore(&self, path: &Path) -> bool {
+        should_ignore_path(
+            path,
+            &self.ignored_root,
+            self.workspace_root.as_deref(),
+            &self.ignored_cache_roots,
+        )
+    }
 }
 
-fn should_ignore_path(path: &Path, ignored_root: &Path) -> bool {
+fn should_ignore_path(
+    path: &Path,
+    ignored_root: &Path,
+    workspace_root: Option<&Path>,
+    ignored_cache_roots: &[PathBuf],
+) -> bool {
+    if is_always_ignored_path(path, ignored_root) {
+        return true;
+    }
+    // Workspace root takes precedence over toolchain cache ignores (for example,
+    // if a repository is checked out under an otherwise-ignored cache root).
+    if let Some(ws) = workspace_root
+        && path.starts_with(ws)
+    {
+        return false;
+    }
+    let s = path.to_string_lossy();
+    if s.starts_with("/run/user/") {
+        return true;
+    }
+    ignored_cache_roots
+        .iter()
+        .any(|root| path.starts_with(root))
+}
+
+fn is_always_ignored_path(path: &Path, ignored_root: &Path) -> bool {
     if path.as_os_str().is_empty() {
         return true;
     }
@@ -238,13 +316,65 @@ fn should_ignore_path(path: &Path, ignored_root: &Path) -> bool {
         return true;
     }
     let s = path.to_string_lossy();
-    s == "/dev/null"
+    if s == "/dev/null"
         || s == "/dev/tty"
         || s == "/dev/stdout"
         || s == "/dev/stderr"
         || s.starts_with("/dev/")
         || s.starts_with("/proc/")
         || s.starts_with("/sys/")
+    {
+        return true;
+    }
+    is_git_internal_path(path)
+}
+
+fn is_git_internal_path(path: &Path) -> bool {
+    path.components()
+        .any(|comp| matches!(comp, Component::Normal(name) if name == ".git"))
+}
+
+fn default_ignored_cache_roots() -> Vec<PathBuf> {
+    const HOME_IGNORED_CACHE_PATHS: &[&str] = &[
+        ".cache/go-build",
+        ".config/go/telemetry",
+        "go/pkg/mod/cache",
+        ".npm/_cacache",
+        ".npm/_logs",
+        ".cache/pip",
+        ".cache/uv",
+        ".cargo/registry",
+        ".cargo/git",
+    ];
+    let non_empty_env_os = |key: &str| std::env::var_os(key).filter(|v| !v.is_empty());
+
+    let mut roots = Vec::new();
+    if let Some(gocache) = non_empty_env_os("GOCACHE").filter(|v| v != "off") {
+        roots.push(PathBuf::from(gocache));
+    }
+    if let Some(gomodcache) = non_empty_env_os("GOMODCACHE") {
+        roots.push(PathBuf::from(gomodcache).join("cache"));
+    }
+    if let Some(gopath) = non_empty_env_os("GOPATH") {
+        roots.extend(
+            std::env::split_paths(&gopath)
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.join("pkg/mod/cache")),
+        );
+    }
+    if let Some(cargo_home) = non_empty_env_os("CARGO_HOME") {
+        let cargo = PathBuf::from(cargo_home);
+        roots.push(cargo.join("registry"));
+        roots.push(cargo.join("git"));
+    }
+    if let Some(xdg_runtime) = non_empty_env_os("XDG_RUNTIME_DIR") {
+        roots.push(PathBuf::from(xdg_runtime));
+    }
+    if let Some(home) = non_empty_env_os("HOME") {
+        let home = PathBuf::from(home);
+        roots.extend(HOME_IGNORED_CACHE_PATHS.iter().map(|rel| home.join(rel)));
+    }
+    roots
 }
 
 pub(crate) fn resolve_canonical_path(path: &Path) -> PathBuf {

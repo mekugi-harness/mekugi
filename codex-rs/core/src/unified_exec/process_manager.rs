@@ -757,7 +757,7 @@ impl UnifiedExecProcessManager {
             return Err(UnifiedExecError::process_failed(message));
         }
         let process_id = request.process_id;
-        let (response_process_id, exit_code) = if process_stored {
+        let (response_process_id, exit_code, change_notice) = if process_stored {
             let retention = if completion.is_some() {
                 OutputRetention::UntilExit
             } else {
@@ -771,7 +771,7 @@ impl UnifiedExecProcessManager {
                     exit_code,
                     process_id,
                     ..
-                } => (Some(process_id), exit_code),
+                } => (Some(process_id), exit_code, None),
                 ProcessStatus::Exited { exit_code, entry } => {
                     entry.process.cancellation_token().cancel();
                     let trailing = std::mem::take(&mut output_buffer.lock().await.pending);
@@ -813,6 +813,7 @@ impl UnifiedExecProcessManager {
                         .as_ref()
                         .and_then(take_plugin_metrics_sidecar);
                     entry.process.settle_exec_track(exit_code);
+                    let change_notice = entry.process.take_exec_track_change_notice();
                     finish_and_track_measurements(
                         metrics_sidecar,
                         exit_code.unwrap_or(-1),
@@ -822,7 +823,7 @@ impl UnifiedExecProcessManager {
                         &context.call_id,
                     )
                     .await;
-                    (None, exit_code)
+                    (None, exit_code, change_notice)
                 }
                 ProcessStatus::Unknown => {
                     return Err(UnifiedExecError::UnknownProcessId { process_id });
@@ -856,6 +857,7 @@ impl UnifiedExecProcessManager {
             let exit_code = process.exit_code();
             let exit = exit_code.unwrap_or(-1);
             process.settle_exec_track(exit_code);
+            let change_notice = process.take_exec_track_change_notice();
             initial_exec_command_guard
                 .finish_plugin_metrics(context, exit)
                 .await;
@@ -884,7 +886,7 @@ impl UnifiedExecProcessManager {
                 .map_err(|err| {
                     err.with_output_collection_metadata(original_token_count, output_omitted_bytes)
                 })?;
-            (None, exit_code)
+            (None, exit_code, change_notice)
         };
 
         let response = ExecCommandToolOutput {
@@ -908,6 +910,7 @@ impl UnifiedExecProcessManager {
             truncated_output_dir: Some(codex_utils_output_truncation::truncated_output_dir(
                 &crate::exec_env::session_tmp_path(context.session.session_id()),
             )),
+            change_notice,
         };
 
         Ok(response)
@@ -1132,12 +1135,12 @@ impl UnifiedExecProcessManager {
         let status = self
             .refresh_process_state(process_id, locked_process, OutputRetention::UntilCollected)
             .await;
-        let (process_id, exit_code, event_call_id) = match status {
+        let (process_id, exit_code, event_call_id, change_notice) = match status {
             ProcessStatus::Alive {
                 exit_code,
                 call_id,
                 process_id,
-            } => (Some(process_id), exit_code, call_id),
+            } => (Some(process_id), exit_code, call_id, None),
             ProcessStatus::Exited { exit_code, entry } => {
                 entry.process.cancellation_token().cancel();
                 let trailing = std::mem::take(&mut output.output_buffer.lock().await.pending);
@@ -1150,18 +1153,20 @@ impl UnifiedExecProcessManager {
                     collected = CapturedStream::from(&collected_output);
                 }
                 entry.process.settle_exec_track(exit_code);
+                let change_notice = entry.process.take_exec_track_change_notice();
                 let call_id = entry.call_id.clone();
                 if let Err(message) =
                     finish_network_approval_after_process_exit_for_entry(&entry).await
                 {
                     return Err(fail_process_with_message(entry.process.as_ref(), message));
                 }
-                (None, exit_code, call_id)
+                (None, exit_code, call_id, change_notice)
             }
             ProcessStatus::Unknown => {
                 if process.has_exited() {
                     process.settle_exec_track(process.exit_code());
-                    (None, process.exit_code(), call_id)
+                    let change_notice = process.take_exec_track_change_notice();
+                    (None, process.exit_code(), call_id, change_notice)
                 } else {
                     return Err(UnifiedExecError::UnknownProcessId { process_id });
                 }
@@ -1183,6 +1188,7 @@ impl UnifiedExecProcessManager {
             truncated_output_dir: Some(codex_utils_output_truncation::truncated_output_dir(
                 &crate::exec_env::session_tmp_path(context.session.session_id()),
             )),
+            change_notice,
         };
 
         let should_emit_interaction = !request.input.is_empty() || response.process_id.is_some();

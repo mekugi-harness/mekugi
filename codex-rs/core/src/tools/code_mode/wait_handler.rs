@@ -159,6 +159,7 @@ impl CodeModeWaitHandler {
                     telemetry.finish(/*success*/ false);
                     FunctionCallError::RespondToModel(error)
                 })?;
+                let mut change_notices = Vec::new();
                 if let codex_code_mode::WaitOutcome::LiveCell(response) = &wait_response {
                     // Dispatch already records failed waits. Re-parsing {"cell_id": 5} during
                     // replay used to abort the whole trace, and even a valid string can name
@@ -183,6 +184,11 @@ impl CodeModeWaitHandler {
                         .services
                         .executed_tool_calls
                         .register_cell(runtime_cell_id, &call_id);
+                    change_notices = exec
+                        .session
+                        .services
+                        .code_mode_service
+                        .take_cell_change_notices(runtime_cell_id);
                     if !matches!(response, RuntimeResponse::Yielded { .. }) {
                         exec.session
                             .services
@@ -232,6 +238,7 @@ impl CodeModeWaitHandler {
                     Some(&codex_utils_output_truncation::truncated_output_dir(
                         &crate::exec_env::session_tmp_path(exec.session.session_id()),
                     )),
+                    &change_notices,
                 )))
             }
             _ => Err(FunctionCallError::RespondToModel(format!(
