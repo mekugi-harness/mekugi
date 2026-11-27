@@ -176,9 +176,12 @@ RUN --mount=type=bind,source=mekugi-webui/app/package.json,target=/tmp/bun-warm/
 # 8. Pre-warm Go module cache for the workspace.
 RUN --mount=type=bind,source=.,target=/tmp/repo,readonly \
     set -eux; \
-    for go_mod in /tmp/repo/mekugi-webui/go.mod $(find /tmp/repo/mekugi-tui -name go.mod -not -path '*/testdata/*'); do \
-      (cd "$(dirname "$go_mod")" && GOWORK=/tmp/repo/mekugi-tui/go.work go mod download); \
-    done
+    mkdir -p /tmp/go-warm; \
+    (cd /tmp/repo && find mekugi-tui mekugi-webui -not -path '*/testdata/*' \( -name go.work -o -name go.work.sum -o -name go.mod -o -name go.sum \) -print0 | tar --null -T - -cf - | tar -xf - -C /tmp/go-warm); \
+    for go_mod in /tmp/go-warm/mekugi-webui/go.mod $(find /tmp/go-warm/mekugi-tui -name go.mod); do \
+      (cd "$(dirname "$go_mod")" && GOWORK=/tmp/go-warm/mekugi-tui/go.work go mod download); \
+    done; \
+    rm -rf /tmp/go-warm
 
 # 9. Pre-warm Cargo registry, git repos (including rusty_v8 + Chromium submodules), and prebuilt V8 artifacts.
 RUN --mount=type=bind,source=.,target=/tmp/repo,readonly \
