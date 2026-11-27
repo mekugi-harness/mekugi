@@ -318,7 +318,15 @@ func (f *Frame) Render(ctx context.Context, in FrameInput) (out RenderedFrame, e
 	}
 	if plan.Stats > 0 {
 		var usage captionUsage
-		usage.Tokens, usage.Cost = in.Agents.AgentUsage(in.skillsCaller())
+		measured := activitypresentation.Agent{AgentFacts: activitypresentation.AgentFacts{
+			InputTokens: view.Caption.InputTokens, OutputTokens: view.Caption.OutputTokens,
+			UsagePartial: view.Caption.UsagePartial,
+			Cost:         view.Caption.Cost, CostKnown: view.Caption.CostKnown, CostPartial: view.Caption.CostPartial,
+		}}
+		if measured.InputTokens > 0 || measured.OutputTokens > 0 {
+			usage.Tokens = activityui.Tokens(measured)
+		}
+		usage.Cost = activityui.Cost(measured)
 		if view.Displayed.ID == view.Main.ID && summary.Children && summary.Cost != usage.Cost {
 			usage.Total = summary.Cost
 		}

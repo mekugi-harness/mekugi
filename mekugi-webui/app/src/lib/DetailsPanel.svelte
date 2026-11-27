@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import { textUploadFrames } from "./attachments";
   import Alert from "./ui/Alert.svelte";
-  import { commandValues } from "./command";
+  import { commandResult } from "./command";
   import { normalizeWorkdir } from "./workdir";
   import Code from "./Code.svelte";
   import { detailRange, type DetailLink, type LineRange } from "./detail-link";
@@ -147,8 +147,7 @@
       {@render source(file, pathLanguage(link.path), link.range)}
     {:else if item}
       {#if item.type === "commandExecution"}
-        {@const values = commandValues(item)}
-        {@const result = values[values.length - 1]}
+        {@const result = commandResult(item)}
         {@const cwd = normalizeWorkdir(result.workdir, streams.current.session?.workspace)}
         {@render source(item.display?.script ?? item.command, "bash")}
         <p class="my-2 text-muted">

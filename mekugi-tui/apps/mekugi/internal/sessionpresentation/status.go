@@ -97,6 +97,10 @@ type Caption struct {
 	Model, Effort, Tier          string
 	ContextTokens, ContextWindow uint64
 	ContextKnown                 bool
+	InputTokens, OutputTokens    uint64
+	UsagePartial                 bool
+	Cost                         float64
+	CostKnown, CostPartial       bool
 	Items                        []presentation.Item
 	Limits                       []CaptionLimit // Account rate-limit windows, shortest first.
 }

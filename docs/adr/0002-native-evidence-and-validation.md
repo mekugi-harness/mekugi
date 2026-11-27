@@ -29,9 +29,11 @@ the requested output range; file links and errors open the selected range or
 error.
 
 Command presentation preserves effective working directories and distinct
-command segments. Web Details normalizes commands and shows clipping and batch
-status. Both clients provide one command Output view. An activity row finishing
-does not establish command completion: an ongoing command remains Running.
+command segments. Recognized steps retain their activity labels. Both clients
+show a multi-step invocation's output and exit status once, in Details; the
+transcript does not claim that individual steps ran or exited separately.
+An activity row finishing does not establish command completion: an ongoing
+command remains Running.
 Preserve the actual `-1` command result for approval denial and timeout.
 
 Web file links open Details at the linked line or range within the selected
