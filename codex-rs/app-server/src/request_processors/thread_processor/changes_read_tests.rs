@@ -126,12 +126,17 @@ fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() 
     record(
         &store,
         workspace.path(),
-        "command",
+        "last-page-command",
+        vec![("z", "final\n".into())],
+    );
+    record(
+        &store,
+        workspace.path(),
+        "first-page-command",
         vec![
             ("a", escaped.clone()),
             ("b", escaped),
             ("too-large", "\u{1}".repeat(11 << 20)),
-            ("z", "final\n".into()),
         ],
     );
     for caller in [None, Some("thread".to_string())] {
@@ -161,11 +166,20 @@ fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() 
                     .collect::<Vec<_>>(),
                 expected_paths
             );
-            assert_eq!(page.changes.len(), 1);
-            assert!(
-                page.files
+            assert_eq!(
+                page.changes
                     .iter()
-                    .all(|file| file.change_ids == [page.changes[0].change_id.as_str()])
+                    .map(|change| change.item_id.as_str())
+                    .collect::<Vec<_>>(),
+                if index < 2 {
+                    vec!["first-page-command"]
+                } else {
+                    vec!["last-page-command", "first-page-command"]
+                }
+            );
+            assert_eq!(
+                page.files[0].change_ids,
+                [page.changes.last().expect("file origin").change_id.as_str()]
             );
             if index < 2 {
                 assert!(page.files[0].coverage_notes.is_empty());
@@ -179,6 +193,10 @@ fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() 
                 );
                 assert!(page.files[0].unified_diff.is_empty());
                 assert!(page.files[1].unified_diff.contains("+final"));
+                assert_eq!(
+                    page.files[1].change_ids,
+                    [page.changes[0].change_id.as_str()]
+                );
                 assert_eq!(page.next_cursor, None);
             }
         }
