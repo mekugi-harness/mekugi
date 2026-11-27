@@ -29,7 +29,6 @@ permissions:
   contents: read
 
 env:
-  CI_IMAGE: ghcr.io/mekugi-harness/mekugi-ci:latest
   NODE_VERSION: '26.13.1'
   BUN_VERSION: '1.4.5'
 
@@ -93,7 +92,7 @@ jobs:
     if: needs.plan.outputs.webui_only == 'true'
     runs-on: ubuntu-24.04
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/mekugi-harness/mekugi-ci:latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -112,7 +111,7 @@ jobs:
       contents: read
     runs-on: ${{ matrix.runner }}
     container:
-      image: ${{ env.CI_IMAGE }}
+      image: ghcr.io/mekugi-harness/mekugi-ci:latest
       options: --privileged
     strategy:
       fail-fast: false
