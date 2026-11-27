@@ -1967,6 +1967,15 @@ impl UnifiedExecProcessManager {
         })
     }
 
+    pub(crate) async fn process_count(&self) -> usize {
+        let store = self.process_store.lock().await;
+        store
+            .processes
+            .values()
+            .filter(|entry| !entry.process.has_exited())
+            .count()
+    }
+
     pub(crate) async fn list_processes(&self) -> Vec<BackgroundTerminalInfo> {
         let store = self.process_store.lock().await;
         let mut entries = store

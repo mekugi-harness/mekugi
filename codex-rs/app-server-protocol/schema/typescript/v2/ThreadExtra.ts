@@ -13,4 +13,4 @@ skills: Array<string>,
 /**
  * Number of active background terminals on this loaded thread, when known.
  */
-backgroundTerminalCount?: number, };
+backgroundTerminalCount: number | null, };

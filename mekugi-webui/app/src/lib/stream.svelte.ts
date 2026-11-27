@@ -629,7 +629,7 @@ export function buildFeed(
   attachment?: string,
   liveItemIds?: ReadonlySet<string>,
   hooks: readonly HookRecord[] = [],
-  indexItem?: (turn: Turn, itemIndex: number, entry: Entry, turnIndex: number) => void,
+  indexItem?: (turn: Turn, itemIndex: number, entry: Entry) => void,
 ): Feed {
   const entries: Record<number, Entry> = {};
   const order: number[] = [];
@@ -674,7 +674,7 @@ export function buildFeed(
         !!liveItemIds?.has(item.id),
         attachment,
       );
-      indexItem?.(turn, i, entries[seq], t + 1);
+      indexItem?.(turn, i, entries[seq]);
       order.push(seq);
     }
     while (hookIdx < turnHooks.length) emitHook(turnHooks[hookIdx++]);
@@ -948,7 +948,7 @@ export class Stream {
   #entries = $state.raw(new SvelteMap<number, Entry>());
   #deltaTargets = new Map<
     string,
-    Map<string, { items: ThreadItem[]; index: number; seq: number; turnIndex: number }>
+    Map<string, { items: ThreadItem[]; index: number; seq: number }>
   >();
   #firstOwnTurn?: string;
   #turnsBackwardsCursor = $state<string>();
@@ -2132,10 +2132,10 @@ export class Stream {
       this.#id,
       this.#liveItemIds,
       this.#hooks,
-      (turn, index, entry, turnIndex) => {
+      (turn, index, entry) => {
         let items = this.#deltaTargets.get(turn.id);
         if (!items) this.#deltaTargets.set(turn.id, (items = new Map()));
-        items.set(turn.items[index].id, { items: turn.items, index, seq: entry.seq, turnIndex });
+        items.set(turn.items[index].id, { items: turn.items, index, seq: entry.seq });
       },
     );
     this.#entries = new SvelteMap(main.order.map((seq) => [seq, main.entries[seq]]));
@@ -2245,14 +2245,14 @@ export class Stream {
   #appendItemDelta(turnId: string, itemId: string, update: (item: ThreadItem) => ThreadItem): void {
     const target = this.#deltaTargets.get(turnId)?.get(itemId);
     if (!target) return;
-    const { items, index, seq, turnIndex } = target;
+    const { items, index, seq } = target;
     const previous = items[index];
     const item = update(previous);
     if (item === previous) return;
     items[index] = item;
     this.#entries.set(
       seq,
-      itemToEntry(item, seq, turnIndex, turnId, "/root", this.#liveItemIds.has(itemId), this.#id),
+      itemToEntry(item, seq, 0, turnId, "/root", this.#liveItemIds.has(itemId), this.#id),
     );
   }
 

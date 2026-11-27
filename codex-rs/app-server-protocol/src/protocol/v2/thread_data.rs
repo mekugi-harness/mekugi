@@ -171,8 +171,7 @@ pub struct ThreadExtra {
     #[serde(default)]
     pub skills: Vec<String>,
     /// Number of active background terminals on this loaded thread, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[serde(default)]
     pub background_terminal_count: Option<u32>,
 }
 

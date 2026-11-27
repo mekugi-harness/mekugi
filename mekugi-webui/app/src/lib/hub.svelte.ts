@@ -298,6 +298,12 @@ export class Machine {
       const seen = new Set<string>();
       const upserts = new Map<string, ThreadListing>();
       const removed = new Set<string>();
+      let nextUpdatedAt = watermark;
+      const trackUpdatedAt = (thread: Pick<Thread, "updatedAt">) => {
+        if (typeof thread.updatedAt === "number" && Number.isFinite(thread.updatedAt)) {
+          nextUpdatedAt = Math.max(nextUpdatedAt, thread.updatedAt);
+        }
+      };
 
       let cursor: string | undefined;
       do {
@@ -315,7 +321,7 @@ export class Machine {
         const page = response.data ?? [];
         let reachedWatermark = false;
         for (const thread of page) {
-          this.#recordUpdatedAt(thread);
+          trackUpdatedAt(thread);
           if (standaloneThread(thread)) {
             seen.add(thread.id);
             if (!upserts.has(thread.id)) upserts.set(thread.id, threadToListed(thread));
@@ -368,7 +374,7 @@ export class Machine {
         if (controller.signal.aborted) return;
         const found = new Set<string>();
         for (const thread of response.data ?? []) {
-          this.#recordUpdatedAt(thread);
+          trackUpdatedAt(thread);
           if (standaloneThread(thread)) {
             found.add(thread.id);
             upserts.set(thread.id, threadToListed(thread));
@@ -398,6 +404,10 @@ export class Machine {
         next = insertListingInOrder(next, entry);
       }
       this.sessions = next;
+      this.#lastUpdatedAt =
+        this.#lastUpdatedAt === undefined
+          ? nextUpdatedAt
+          : Math.max(this.#lastUpdatedAt, nextUpdatedAt);
     } catch {
       // Transient refresh failures are surfaced through the connection state.
     } finally {

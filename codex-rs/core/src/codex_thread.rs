@@ -1144,6 +1144,10 @@ impl CodexThread {
         matches!(*self.io.agent_status.borrow(), AgentStatus::Shutdown)
     }
 
+    pub async fn background_terminal_count(&self) -> usize {
+        self.session.background_terminal_count().await
+    }
+
     pub async fn list_background_terminals(&self) -> Vec<BackgroundTerminalInfo> {
         self.session.list_background_terminals().await
     }
@@ -1190,7 +1194,7 @@ impl CodexThread {
             .map(|state| state.used_skill_names())
             .unwrap_or_default();
         let background_terminal_count =
-            u32::try_from(self.list_background_terminals().await.len()).ok();
+            u32::try_from(self.background_terminal_count().await).ok();
         (!skills.is_empty() || background_terminal_count.is_some()).then_some(
             codex_app_server_protocol::ThreadExtra {
                 skills,
