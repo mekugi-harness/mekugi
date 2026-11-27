@@ -65,6 +65,14 @@
             : undefined,
         ],
         [
+          "Uncached input tokens",
+          root?.inputTokens != null &&
+          root.cachedInputTokens != null &&
+          root.cachedInputTokens <= root.inputTokens
+            ? atLeast(tokens(root.inputTokens - root.cachedInputTokens), root.usagePartial)
+            : undefined,
+        ],
+        [
           "Output tokens",
           root?.outputTokens != null
             ? atLeast(tokens(root.outputTokens), root.usagePartial)

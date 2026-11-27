@@ -169,6 +169,14 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					value.left >= box.left && value.right <= box.right &&
 					panel.scrollWidth <= panel.clientWidth + 1;
 			})()`, workspace))
+			run("wait", "--fn", `(() => {
+				const labels = [...document.querySelectorAll('[aria-label="Session details"] dt')];
+				const count = (label) => labels.find(node => node.textContent === label)
+					?.nextElementSibling?.textContent;
+				const input = count("Input tokens");
+				return input === "20+" && count("Cached input tokens") === "0+" &&
+					count("Uncached input tokens") === "20+";
+			})()`)
 			run("press", "Escape")
 			run("set", "viewport", "1280", "900")
 			checkComposerPresets(t, run)

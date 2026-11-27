@@ -1893,6 +1893,19 @@ func TestDirectNativeUsageRateLimitsAndQueueRefresh(t *testing.T) {
 		t.Fatalf("unexpected worker roster agent: %+v", workerAgent)
 	}
 
+	if _, err := conn.Send(ctx, sessionapi.NativeTarget{}, sessionapi.NativeOperation{Command: new("/session")}); err != nil {
+		t.Fatal(err)
+	}
+	overview := awaitDirectEvent(t, conn, func(event sessionapi.NativeEvent) bool {
+		return event.Frame.View.Panel != nil && event.Frame.View.Panel.Session
+	})
+	fields := overview.Frame.View.Panel.Fields
+	if !slices.ContainsFunc(fields, func(field sessionpresentation.StatusField) bool {
+		return field.Group == "Usage" && field.Label == "Uncached input tokens" && field.Value == "16K"
+	}) {
+		t.Fatalf("expected 18K input less 2K cached input in Session, got %+v", fields)
+	}
+
 	// Sparse account/rateLimits/updated merges updated primary window while preserving secondary.
 	conn.handleNotification(appserver.Message{
 		Method: "account/rateLimits/updated",

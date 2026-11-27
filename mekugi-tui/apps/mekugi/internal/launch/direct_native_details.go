@@ -733,6 +733,9 @@ func (c *directNativeConnection) openSessionPanel(ctx context.Context) error {
 		}
 		add("Usage", "Input tokens", prefix+activityui.FormatUsageTokens(totalIn))
 		add("Usage", "Cached input tokens", prefix+activityui.FormatUsageTokens(totalCached))
+		if totalCached <= totalIn {
+			add("Usage", "Uncached input tokens", prefix+activityui.FormatUsageTokens(totalIn-totalCached))
+		}
 		add("Usage", "Output tokens", prefix+activityui.FormatUsageTokens(totalOut))
 		add("Usage", "Reasoning tokens", prefix+activityui.FormatUsageTokens(totalReasoning))
 	}
