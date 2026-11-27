@@ -41,7 +41,7 @@ pub(crate) fn question_parameters() -> JsonSchema {
         BTreeMap::from([
             ("label".into(), JsonSchema::string(Some("Short user-facing label.".into()))),
             ("description".into(), JsonSchema::string(Some("Impact or tradeoff of this choice.".into()))),
-            ("preview".into(), JsonSchema::string(Some("Inline plain text or Markdown preview; no HTML.".into()))),
+            ("preview".into(), JsonSchema::string(Some("Inline plain text or Markdown preview shown in the picker; no HTML. Use for appearance or interaction choices to show the same concrete example under each option.".into()))),
             ("recommended".into(), JsonSchema::boolean(Some("Mark at most one option recommended. Preserve option order; do not alter labels.".into()))),
         ]), Some(vec!["label".into()]), Some(false.into()),
     );
