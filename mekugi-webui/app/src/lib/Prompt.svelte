@@ -150,7 +150,7 @@
       {#if count > 1}<span class="ml-auto whitespace-nowrap text-muted">1 of {count}</span>{/if}
     </div>
     {#if approval.subject}<pre
-        class="my-3 rounded-control border border-rule bg-surface p-2.5 text-code whitespace-pre-wrap wrap-anywhere"><code
+        class="shell-syntax my-3 rounded-control border border-rule bg-surface p-2.5 text-code whitespace-pre-wrap wrap-anywhere"><code
           >{#if approval.method === "item/fileChange/requestApproval"}{approval.subject}{:else}<Code
             code={approval.subject}
             lang="bash"

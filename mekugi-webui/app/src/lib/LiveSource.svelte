@@ -74,7 +74,7 @@
 
 {#snippet shellSource(source: string, syntax?: SyntaxToken[][])}
   <pre
-    class="mt-1.5 rounded-card border border-rule bg-raised py-1 font-mono text-code">{#each source.split("\n") as line, i (i)}{@const tokens =
+    class="shell-syntax mt-1.5 rounded-card border border-rule bg-raised py-1 font-mono text-code">{#each source.split("\n") as line, i (i)}{@const tokens =
       syntax?.[i]}<span class="flex"
       ><span class="w-[5ch] flex-none pr-2 text-right text-muted select-none">{i + 1}</span><span
         class="min-w-0 pr-3 whitespace-pre-wrap wrap-anywhere"
