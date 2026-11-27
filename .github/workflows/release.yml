@@ -93,6 +93,10 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/mekugi-harness/mekugi-ci:latest
+    env:
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: '*'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,6 +128,9 @@ jobs:
             runner: ubuntu-24.04-arm
     env:
       CGO_ENABLED: '1'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: '*'
       BUILD_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
       NATIVE_PACKAGE_PROFILE: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch') && 'release' || 'dev-small' }}
       SCCACHE_GHA_ENABLED: 'true'
@@ -187,7 +194,7 @@ jobs:
           # revisions of the same OS and architecture, but keep release keys exact.
           image="$RUNNER_LABEL"
           if [[ "$PROFILE" != dev-small ]]; then
-            image="$image-${ImageVersion:-$GITHUB_RUN_ID}"
+            image="$image-${ImageVersion:-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}"
           fi
           key="$(printf '%s\n' "$PLATFORM" "$PROFILE" "$image" "$native_tree" "$RECIPE_HASH" | shasum -a 256 | cut -d' ' -f1)"
           echo "name=mekugi_${PLATFORM}-$key" >> "$GITHUB_OUTPUT"
@@ -300,6 +307,8 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
           PLATFORM: ${{ matrix.platform }}
           RUSTC_WRAPPER: sccache
+          # Allow rustup to install a newer toolchain if a PR bumps rust-toolchain.toml.
+          RUSTUP_AUTO_INSTALL: '1'
         run: |
           # App-server integration fixtures use debug-only startup options.
           TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" python3 runtime/build.py test
