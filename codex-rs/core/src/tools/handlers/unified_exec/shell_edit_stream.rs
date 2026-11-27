@@ -286,10 +286,7 @@ impl CodeModeEditProjector {
                 if projector.take_dirty() {
                     self.dirty = true;
                 }
-                let snap = projector.snapshot();
-                if !snap.is_empty() {
-                    self.committed.extend(snap);
-                }
+                merge_shell_snapshot(&mut self.committed, &projector);
             }
             ActiveCodeModeOp::Patch {
                 mut parser,
@@ -309,7 +306,7 @@ impl CodeModeEditProjector {
                     self.dirty = true;
                 }
                 if !changes.is_empty() {
-                    self.committed.extend(changes);
+                    merge_capped_changes(&mut self.committed, changes);
                 }
             }
         }
@@ -322,14 +319,14 @@ impl CodeModeEditProjector {
                 projector,
                 aborted: false,
             }) => {
-                out.extend(projector.snapshot());
+                merge_shell_snapshot(&mut out, projector);
             }
             Some(ActiveCodeModeOp::Patch {
                 changes,
                 aborted: false,
                 ..
             }) => {
-                out.extend(changes.clone());
+                merge_capped_changes(&mut out, changes.clone());
             }
             _ => {}
         }
@@ -356,6 +353,41 @@ impl CodeModeEditProjector {
             call_id,
             changes,
         }))
+    }
+}
+
+fn merge_shell_snapshot(target: &mut HashMap<PathBuf, FileChange>, shell: &ShellEditProjector) {
+    for (path, (change, append_only)) in shell.snapshot_entries() {
+        if append_only
+            && let FileChange::Add { content: added } = &change
+            && let Some(FileChange::Add { content: existing }) = target.get_mut(&path)
+        {
+            let remaining = MAX_STREAM_FILE_BYTES.saturating_sub(existing.len());
+            if added.len() <= remaining {
+                existing.push_str(added);
+            } else if remaining > 0 {
+                let mut cut = remaining;
+                while cut > 0 && !added.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                existing.push_str(&added[..cut]);
+            }
+            continue;
+        }
+        if target.contains_key(&path) || target.len() < MAX_STREAM_FILES {
+            target.insert(path, change);
+        }
+    }
+}
+
+fn merge_capped_changes(
+    target: &mut HashMap<PathBuf, FileChange>,
+    incoming: HashMap<PathBuf, FileChange>,
+) {
+    for (path, change) in incoming {
+        if target.contains_key(&path) || target.len() < MAX_STREAM_FILES {
+            target.insert(path, change);
+        }
     }
 }
 
@@ -441,17 +473,36 @@ enum JsCommentState {
     Line,
     Block,
     BlockStar,
+    Regex {
+        escaped: bool,
+        in_class: bool,
+    },
 }
 
-#[derive(Default)]
 struct JsNestedEditScanner {
     ident: String,
     prev_ident: String,
     after_dot: bool,
+    regex_allowed: bool,
     state: JsScanState,
     comment: JsCommentState,
     escape: JsEscape,
     high_surrogate: Option<u16>,
+}
+
+impl Default for JsNestedEditScanner {
+    fn default() -> Self {
+        Self {
+            ident: String::new(),
+            prev_ident: String::new(),
+            after_dot: false,
+            regex_allowed: true,
+            state: JsScanState::Normal,
+            comment: JsCommentState::None,
+            escape: JsEscape::None,
+            high_surrogate: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -531,6 +582,35 @@ impl JsNestedEditScanner {
                         }
                         continue;
                     }
+                    JsCommentState::Regex { escaped, in_class } => {
+                        if escaped {
+                            self.comment = JsCommentState::Regex {
+                                escaped: false,
+                                in_class,
+                            };
+                        } else if ch == '\\' {
+                            self.comment = JsCommentState::Regex {
+                                escaped: true,
+                                in_class,
+                            };
+                        } else if in_class {
+                            if ch == ']' {
+                                self.comment = JsCommentState::Regex {
+                                    escaped: false,
+                                    in_class: false,
+                                };
+                            }
+                        } else if ch == '[' {
+                            self.comment = JsCommentState::Regex {
+                                escaped: false,
+                                in_class: true,
+                            };
+                        } else if ch == '/' || ch == '\n' {
+                            self.comment = JsCommentState::None;
+                            self.regex_allowed = ch == '\n';
+                        }
+                        continue;
+                    }
                     JsCommentState::SlashPending => {
                         if ch == '/' {
                             self.comment = JsCommentState::Line;
@@ -538,17 +618,25 @@ impl JsNestedEditScanner {
                         } else if ch == '*' {
                             self.comment = JsCommentState::Block;
                             continue;
+                        } else if self.regex_allowed && ch != '\n' {
+                            self.comment = JsCommentState::Regex {
+                                escaped: ch == '\\',
+                                in_class: ch == '[',
+                            };
+                            continue;
                         } else {
                             self.comment = JsCommentState::None;
                             if matches!(self.state, JsScanState::Normal) {
                                 self.after_dot = false;
                                 self.prev_ident.clear();
                             }
+                            self.regex_allowed = true;
                         }
                     }
                     JsCommentState::None => {
                         if ch == '/' {
                             if matches!(self.state, JsScanState::Normal) && !self.ident.is_empty() {
+                                self.regex_allowed = js_keyword_allows_regex(&self.ident);
                                 self.prev_ident = std::mem::take(&mut self.ident);
                             }
                             self.comment = JsCommentState::SlashPending;
@@ -567,6 +655,7 @@ impl JsNestedEditScanner {
                         // skip
                     } else if matches!(self.escape, JsEscape::None) && ch == q {
                         self.state = JsScanState::Normal;
+                        self.regex_allowed = false;
                     }
                     continue;
                 }
@@ -852,11 +941,13 @@ impl JsNestedEditScanner {
             }
             if !self.ident.is_empty() {
                 let name = std::mem::take(&mut self.ident);
+                self.regex_allowed = js_keyword_allows_regex(&name);
                 if self.after_dot {
                     self.after_dot = false;
                     if ch == '(' {
                         if self.prev_ident == "tools" && name == "exec_command" {
                             self.prev_ident.clear();
+                            self.regex_allowed = true;
                             events.push(JsEditEvent::ExecCallStart);
                             self.state = JsScanState::InExecArgs {
                                 brace_depth: 0,
@@ -867,6 +958,7 @@ impl JsNestedEditScanner {
                         }
                         if self.prev_ident == "tools" && name == "apply_patch" {
                             self.prev_ident.clear();
+                            self.regex_allowed = true;
                             self.state = JsScanState::AwaitPatchArg;
                             continue;
                         }
@@ -879,6 +971,7 @@ impl JsNestedEditScanner {
             match ch {
                 '.' => {
                     self.after_dot = true;
+                    self.regex_allowed = false;
                 }
                 '"' | '\'' | '`' => {
                     self.after_dot = false;
@@ -888,10 +981,16 @@ impl JsNestedEditScanner {
                 '/' => {
                     self.after_dot = false;
                 }
+                ')' | ']' => {
+                    self.after_dot = false;
+                    self.prev_ident.clear();
+                    self.regex_allowed = false;
+                }
                 _ if ch.is_whitespace() => {}
                 _ => {
                     self.after_dot = false;
                     self.prev_ident.clear();
+                    self.regex_allowed = true;
                 }
             }
         }
@@ -904,6 +1003,25 @@ impl JsNestedEditScanner {
         }
         events
     }
+}
+
+fn js_keyword_allows_regex(ident: &str) -> bool {
+    matches!(
+        ident,
+        "return"
+            | "throw"
+            | "case"
+            | "in"
+            | "of"
+            | "typeof"
+            | "void"
+            | "delete"
+            | "await"
+            | "yield"
+            | "new"
+            | "else"
+            | "do"
+    )
 }
 
 fn feed_js_string_char(
@@ -1219,6 +1337,7 @@ enum StreamedFile {
         committed: String,
         partial: String,
         allow_empty: bool,
+        append_only: bool,
     },
     Update {
         committed: String,
@@ -1233,6 +1352,7 @@ impl StreamedFile {
                 committed,
                 partial,
                 allow_empty,
+                ..
             } => {
                 let tail = extra_tail.unwrap_or("");
                 if !*allow_empty && committed.is_empty() && partial.is_empty() && tail.is_empty() {
@@ -1357,6 +1477,7 @@ impl ShellEditProjector {
                                 committed: String::new(),
                                 partial: String::new(),
                                 allow_empty: true,
+                                append_only: false,
                             },
                         );
                         self.dirty = true;
@@ -1364,8 +1485,9 @@ impl ShellEditProjector {
                 } else if !tail.is_empty() {
                     let path = path.clone();
                     let content = trimmed.to_owned();
+                    let is_overwrite = *overwrite;
                     *wrote_any = true;
-                    self.commit_add_line(&path, &content, false);
+                    self.commit_add_line(&path, &content, false, !is_overwrite);
                 }
             }
             ShellMode::PythonHeredoc {
@@ -1396,11 +1518,19 @@ impl ShellEditProjector {
     }
 
     pub(crate) fn snapshot(&self) -> HashMap<PathBuf, FileChange> {
-        let active_heredoc: Option<(&Path, &str)> = match &self.mode {
+        self.snapshot_entries()
+            .into_iter()
+            .map(|(path, (change, _))| (path, change))
+            .collect()
+    }
+
+    pub(crate) fn snapshot_entries(&self) -> HashMap<PathBuf, (FileChange, bool)> {
+        let active_heredoc: Option<(&Path, &str, bool)> = match &self.mode {
             ShellMode::Heredoc {
                 path,
                 delimiter,
                 strip_tabs,
+                overwrite,
                 line_buf,
                 ..
             } => {
@@ -1410,7 +1540,7 @@ impl ShellEditProjector {
                     line_buf.as_str()
                 };
                 if !candidate.is_empty() && !delimiter.starts_with(candidate) {
-                    Some((path.as_path(), candidate))
+                    Some((path.as_path(), candidate, !*overwrite))
                 } else {
                     None
                 }
@@ -1420,20 +1550,30 @@ impl ShellEditProjector {
 
         let mut out = HashMap::new();
         for (raw_path, file) in &self.files {
-            let tail = active_heredoc.and_then(|(p, t)| (p == raw_path.as_path()).then_some(t));
+            let tail = active_heredoc.and_then(|(p, t, _)| (p == raw_path.as_path()).then_some(t));
             if let Some(change) = file.to_file_change(tail) {
-                out.insert(self.resolve_abs(raw_path), change);
+                let append_only = matches!(
+                    file,
+                    StreamedFile::Add {
+                        append_only: true,
+                        ..
+                    }
+                );
+                out.insert(self.resolve_abs(raw_path), (change, append_only));
             }
         }
-        if let Some((raw_path, tail)) = active_heredoc
+        if let Some((raw_path, tail, append_only)) = active_heredoc
             && !self.files.contains_key(raw_path)
             && self.files.len() < MAX_STREAM_FILES
         {
             out.insert(
                 self.resolve_abs(raw_path),
-                FileChange::Add {
-                    content: tail.to_owned(),
-                },
+                (
+                    FileChange::Add {
+                        content: tail.to_owned(),
+                    },
+                    append_only,
+                ),
             );
         }
         out
@@ -1515,6 +1655,7 @@ impl ShellEditProjector {
                                     committed: String::new(),
                                     partial: String::new(),
                                     allow_empty: true,
+                                    append_only: false,
                                 },
                             );
                             self.dirty = true;
@@ -1523,8 +1664,9 @@ impl ShellEditProjector {
                     } else {
                         let path = path.clone();
                         let owned = line.to_owned();
+                        let is_overwrite = *overwrite;
                         *wrote_any = true;
-                        self.commit_add_line(&path, &owned, true);
+                        self.commit_add_line(&path, &owned, true, !is_overwrite);
                     }
                 } else if line_buf.len() < MAX_STREAM_FILE_BYTES {
                     line_buf.push(ch);
@@ -1681,7 +1823,13 @@ impl ShellEditProjector {
         }
     }
 
-    fn commit_add_line(&mut self, path: &Path, line: &str, trailing_newline: bool) {
+    fn commit_add_line(
+        &mut self,
+        path: &Path,
+        line: &str,
+        trailing_newline: bool,
+        append_only: bool,
+    ) {
         if !self.files.contains_key(path) && self.files.len() >= MAX_STREAM_FILES {
             return;
         }
@@ -1692,11 +1840,18 @@ impl ShellEditProjector {
                 committed: String::new(),
                 partial: String::new(),
                 allow_empty: false,
+                append_only,
             });
         if let StreamedFile::Add {
-            committed, partial, ..
+            committed,
+            partial,
+            append_only: existing_append,
+            ..
         } = entry
         {
+            if !append_only {
+                *existing_append = false;
+            }
             partial.clear();
             if committed.len() + line.len() + usize::from(trailing_newline) <= MAX_STREAM_FILE_BYTES
             {
@@ -2758,6 +2913,7 @@ fn push_py_str_slice(
                     committed: String::new(),
                     partial: String::new(),
                     allow_empty: false,
+                    append_only: false,
                 });
             if let StreamedFile::Add {
                 committed, partial, ..

@@ -536,3 +536,82 @@ fn code_mode_suppresses_interpolated_template_and_preserves_escaped_dollar() {
         })
     );
 }
+
+#[test]
+fn code_mode_composes_appends_across_shell_calls_and_replaces_on_overwrite() {
+    let mut cm = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let mut last = None;
+    for chunk in [
+        "await tools.exec_command({ cmd: \"cat > notes.txt <<'EOF'\\nfirst\\nEOF\" });\n",
+        "await tools.exec_command({ cmd: \"cat >> notes.txt <<'EOF'\\nsecond\\nEOF\" });\n",
+    ] {
+        if let Some(EventMsg::PatchApplyUpdated(ev)) =
+            cm.consume_diff(cwd, "call_append".to_string(), chunk)
+        {
+            last = Some(ev.changes);
+        }
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm.finish() {
+        last = Some(ev.changes);
+    }
+    assert_eq!(
+        last.expect("expected append snapshot")
+            .get(Path::new("/repo/notes.txt")),
+        Some(&FileChange::Add {
+            content: "first\nsecond\n".to_string(),
+        })
+    );
+
+    let mut cm_overwrite = CodeModeEditProjector::default();
+    let mut ow_last = None;
+    for chunk in [
+        "await tools.exec_command({ cmd: \"cat > notes.txt <<'EOF'\\nfirst\\nEOF\" });\n",
+        "await tools.exec_command({ cmd: \"cat > notes.txt <<'EOF'\\nsecond\\nEOF\" });\n",
+    ] {
+        if let Some(EventMsg::PatchApplyUpdated(ev)) =
+            cm_overwrite.consume_diff(cwd, "call_ow".to_string(), chunk)
+        {
+            ow_last = Some(ev.changes);
+        }
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm_overwrite.finish() {
+        ow_last = Some(ev.changes);
+    }
+    assert_eq!(
+        ow_last
+            .expect("expected overwrite snapshot")
+            .get(Path::new("/repo/notes.txt")),
+        Some(&FileChange::Add {
+            content: "second\n".to_string(),
+        })
+    );
+}
+
+#[test]
+fn code_mode_handles_regex_literals_containing_slash_star() {
+    let mut cm = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let mut last = None;
+    for chunk in [
+        "const dir = path.replace(/\\/*$/, '');\n",
+        "const re = /[/*]+/g;\n",
+        "await tools.exec_command({ cmd: \"cat > out.txt <<'EOF'\\nok\\nEOF\" });\n",
+    ] {
+        if let Some(EventMsg::PatchApplyUpdated(ev)) =
+            cm.consume_diff(cwd, "call_regex".to_string(), chunk)
+        {
+            last = Some(ev.changes);
+        }
+    }
+    if let Some(EventMsg::PatchApplyUpdated(ev)) = cm.finish() {
+        last = Some(ev.changes);
+    }
+    assert_eq!(
+        last.expect("expected regex snapshot")
+            .get(Path::new("/repo/out.txt")),
+        Some(&FileChange::Add {
+            content: "ok\n".to_string(),
+        })
+    );
+}
