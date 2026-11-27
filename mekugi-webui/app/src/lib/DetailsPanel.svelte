@@ -147,9 +147,7 @@
         {@const values = commandValues(item)}
         {@const result = values[values.length - 1]}
         {@const cwd = normalizeWorkdir(result.workdir, stream.session?.workspace)}
-        {#each values as step}
-          {#if step.code}{@render source(step.code, "bash")}{/if}
-        {/each}
+        {@render source(item.display?.script ?? item.command, "bash")}
         <p class="my-2 text-muted">
           {#if result.batchExit}Batch ·
           {/if}

@@ -805,6 +805,7 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
       id: "cmd-run",
       type: "commandExecution",
       command: "/bin/bash -lc 'sleep 1'",
+      display: { script: "sleep 1", segments: [], effectiveCwd: null },
       cwd: "/repo",
       status: "inProgress",
       exitCode: null,
@@ -828,7 +829,11 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
       id: "batch",
       type: "commandExecution",
       command: "/bin/bash -lc 'cd sub && cat a && cat b'",
-      display: { effectiveCwd: "/repo/sub", segments: ["cat a", "cat b"] },
+      display: {
+        script: "cd sub && cat a && cat b",
+        effectiveCwd: "/repo/sub",
+        segments: ["cat a", "cat b"],
+      },
       cwd: "/repo",
       status: "failed",
       exitCode: -1,
@@ -837,7 +842,7 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
         { type: "read", command: "cat a", name: "a", path: "/repo/a" },
         { type: "read", command: "cat b", name: "b", path: "/repo/b" },
       ],
-      aggregatedOutput: "one\ntwo\nthree\nfour\nfive\n" + "é".repeat(300) + "\n",
+      aggregatedOutput: "one\ntwo\nthree\nfour\nfive\na" + "é".repeat(300) + "\n",
     },
     2,
     1,
@@ -849,7 +854,7 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   );
   assert.ok(batch.values.every((v) => v.workdir === "/repo/sub"));
   const result = batch.values.at(-1);
-  assert.equal(result.tail.at(-1), "é".repeat(256) + "…");
+  assert.equal(result.tail.at(-1), "a" + "é".repeat(255) + "…");
   assert.equal(result.tailClipped, true);
   const batchHtml = render(EntryView, {
     props: { entry: batch, at: "", stamp: "", owner: "/root", workspace: "/repo" },

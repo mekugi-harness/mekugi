@@ -6,4 +6,12 @@ import type { LegacyAppPathString } from "../LegacyAppPathString";
 /**
  * Authored shell steps for display, not observations of individual processes.
  */
-export type CommandDisplay = { segments: Array<string>, effectiveCwd: LegacyAppPathString | null, };
+export type CommandDisplay = {
+/**
+ * Full redacted script, before splitting steps or attributing a leading cd.
+ */
+script: string,
+/**
+ * Separate source steps, or empty when the script is displayed as one.
+ */
+segments: Array<string>, effectiveCwd: LegacyAppPathString | null, };

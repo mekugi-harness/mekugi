@@ -335,7 +335,10 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			}
 			c.sandboxPolicy = cmp.Or(s.SandboxPolicy.Type, c.sandboxPolicy)
 			c.model = cmp.Or(s.Model, c.model)
-			c.modelProvider = cmp.Or(s.ModelProvider, c.modelProvider)
+			if s.ModelProvider != "" && s.ModelProvider != c.modelProvider {
+				c.modelProvider = s.ModelProvider
+				c.resetPredictionLocked(c.prediction.turn)
+			}
 			c.effort = ""
 			if s.Effort != nil {
 				c.effort = *s.Effort
@@ -399,9 +402,10 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 		}
 
 	case "account/updated":
-		c.updatePredictionAccount(msg)
-	case "thread/prediction/updated":
-		c.handlePrediction(msg)
+		c.mu.Lock()
+		c.resetPredictionLocked(c.prediction.turn)
+		c.publishLocked()
+		c.mu.Unlock()
 
 	case "thread/reverted":
 		var p struct {
@@ -923,7 +927,18 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		}
 		refreshProjectedValues(rec)
 	case "commandExecution":
-		command := unwrapDirectShellCommand(decodeJSONString(fields["command"]))
+		command := decodeJSONString(fields["command"])
+		var display *struct {
+			Script       string   `json:"script"`
+			Segments     []string `json:"segments"`
+			EffectiveCwd string   `json:"effectiveCwd"`
+		}
+		if raw := fields["display"]; len(raw) > 0 {
+			_ = json.Unmarshal(raw, &display)
+		}
+		if display != nil {
+			command = display.Script
+		}
 		status := decodeJSONString(fields["status"])
 		cwd := decodeJSONString(fields["cwd"])
 		agg := decodeJSONString(fields["aggregatedOutput"])
@@ -970,35 +985,34 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			}
 			rec.entry.Outputs[1]++
 		}
-		var display struct {
-			Segments     []string `json:"segments"`
-			EffectiveCwd string   `json:"effectiveCwd"`
-		}
-		if raw := fields["display"]; len(raw) > 0 {
-			_ = json.Unmarshal(raw, &display)
-		}
-		if display.EffectiveCwd != "" {
+		if display != nil && display.EffectiveCwd != "" {
 			val.Workdir = display.EffectiveCwd
 		}
 		if filepath.Clean(val.Workdir) == filepath.Clean(c.workspace) {
 			val.Workdir = ""
 		}
 		val.ShowWorkdir = val.Workdir != ""
-		if len(display.Segments) == 0 {
+		var segments []string
+		if display != nil {
+			segments = display.Segments
+		} else {
 			var actions []binding.CommandAction
 			_ = json.Unmarshal(fields["commandActions"], &actions)
 			if len(actions) > 1 {
 				for _, action := range actions {
-					display.Segments = append(display.Segments, action.Command)
+					segments = append(segments, action.Command)
 				}
 			}
 		}
 		rec.entry.Values = nil
-		if len(display.Segments) == 1 {
-			val.Code = display.Segments[0]
+		if len(segments) == 1 {
+			val.Code = segments[0]
+			if val.Code != command {
+				val.DetailCode = command
+			}
 			val.Fenced = strings.Contains(val.Code, "\n")
-		} else if len(display.Segments) > 1 {
-			for i, source := range display.Segments {
+		} else if len(segments) > 1 {
+			for i, source := range segments {
 				rec.entry.Values = append(rec.entry.Values, activity.Value{
 					Content: activityfeed.Content{Kind: "op", Verb: "Run", Code: source, Lang: "bash", Fenced: strings.Contains(source, "\n")},
 					Workdir: val.Workdir, ShowWorkdir: i == 0 && val.ShowWorkdir, Operation: i + 2,
@@ -1214,40 +1228,6 @@ func decodeJSONString(raw jsontext.Value) string {
 		return s
 	}
 	return ""
-}
-
-func unwrapDirectShellCommand(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	fields := strings.SplitN(trimmed, " ", 3)
-	if len(fields) != 3 {
-		return raw
-	}
-	shell := fields[0]
-	if idx := strings.LastIndex(shell, "/"); idx >= 0 {
-		shell = shell[idx+1:]
-	}
-	if shell != "bash" && shell != "sh" && shell != "zsh" && shell != "dash" {
-		return raw
-	}
-	if fields[1] != "-lc" && fields[1] != "-c" {
-		return raw
-	}
-	arg := strings.TrimSpace(fields[2])
-	if len(arg) >= 2 && arg[0] == '\'' && arg[len(arg)-1] == '\'' {
-		return strings.ReplaceAll(arg[1:len(arg)-1], "'\\''", "'")
-	}
-	if len(arg) >= 2 && arg[0] == '"' && arg[len(arg)-1] == '"' {
-		inner := arg[1 : len(arg)-1]
-		inner = strings.ReplaceAll(inner, "\\\"", "\"")
-		inner = strings.ReplaceAll(inner, "\\\\", "\\")
-		inner = strings.ReplaceAll(inner, "\\$", "$")
-		inner = strings.ReplaceAll(inner, "\\`", "`")
-		return inner
-	}
-	if !strings.ContainsAny(arg, " \t\r\n") {
-		return arg
-	}
-	return raw
 }
 
 type nativeFileChange struct {

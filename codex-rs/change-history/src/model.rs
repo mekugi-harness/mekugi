@@ -162,6 +162,18 @@ impl ChangeSourceKind {
             Self::VcsDiagnostic => "vcs_diagnostic",
         }
     }
+
+    /// Stable saved-review source kind and its user-facing label, in that order.
+    pub fn review_source(self) -> (&'static str, &'static str) {
+        match self {
+            Self::ApplyPatch => ("ApplyPatch", "apply_patch"),
+            Self::ShellWrite => ("ShellWrite", "Shell"),
+            Self::UserShell => ("UserShell", "User shell"),
+            Self::MchangesRevert => ("MchangesRevert", "mchanges revert"),
+            Self::MchangesApply => ("MchangesApply", "mchanges apply"),
+            Self::VcsDiagnostic => ("VcsDiagnostic", "VCS diagnostic"),
+        }
+    }
 }
 
 /// Honesty marker for per-file baseline/snapshot coverage.
@@ -200,8 +212,16 @@ pub enum FileSnapshot {
 
 impl FileSnapshot {
     pub fn is_binary(bytes: &[u8]) -> bool {
+        Self::decode_text(bytes).is_none()
+    }
+
+    /// Decode file bytes using the same text/binary cutoff as durable evidence.
+    pub fn decode_text(bytes: &[u8]) -> Option<&str> {
         let sample_len = bytes.len().min(8192);
-        bytes[..sample_len].contains(&0) || std::str::from_utf8(bytes).is_err()
+        if bytes[..sample_len].contains(&0) {
+            return None;
+        }
+        std::str::from_utf8(bytes).ok()
     }
 }
 

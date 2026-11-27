@@ -979,6 +979,30 @@
             },
             "method": {
               "enum": [
+                "thread/changes/live"
+              ],
+              "title": "Thread/changes/liveRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadChangesLiveParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/changes/liveRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/changes/read"
               ],
               "title": "Thread/changes/readRequestMethod",
@@ -5298,26 +5322,6 @@
           "properties": {
             "method": {
               "enum": [
-                "thread/prediction/updated"
-              ],
-              "title": "Thread/prediction/updatedNotificationMethod",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/definitions/v2/ThreadPredictionUpdatedNotification"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "title": "Thread/prediction/updatedNotification",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "enum": [
                 "thread/goal/cleared"
               ],
               "title": "Thread/goal/clearedNotificationMethod",
@@ -5876,6 +5880,26 @@
             "params"
           ],
           "title": "Process/exitedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "item/commandExecution/changesUpdated"
+              ],
+              "title": "Item/commandExecution/changesUpdatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/CommandExecutionChangesUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Item/commandExecution/changesUpdatedNotification",
           "type": "object"
         },
         {
@@ -10238,7 +10262,13 @@
               }
             ]
           },
+          "script": {
+            "default": "",
+            "description": "Full redacted script, before splitting steps or attributing a leading cd.",
+            "type": "string"
+          },
           "segments": {
+            "description": "Separate source steps, or empty when the script is displayed as one.",
             "items": {
               "type": "string"
             },
@@ -10536,6 +10566,44 @@
         "$schema": "http://json-schema.org/draft-07/schema#",
         "description": "Empty success response for `command/exec/write`.",
         "title": "CommandExecWriteResponse",
+        "type": "object"
+      },
+      "CommandExecutionChangesUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Replaces the running shell item's preview with the currently observed file diffs. Every diff is a unified diff, including additions and deletions.",
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/definitions/v2/FileUpdateChange"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "The authored shell script, bounded for preview; not the execution wrapper.",
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/definitions/v2/CommandExecutionSource"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "command",
+          "itemId",
+          "source",
+          "threadId",
+          "turnId"
+        ],
+        "title": "CommandExecutionChangesUpdatedNotification",
         "type": "object"
       },
       "CommandExecutionOutputDeltaNotification": {
@@ -16108,6 +16176,41 @@
           "data"
         ],
         "title": "ListMcpServerStatusResponse",
+        "type": "object"
+      },
+      "LiveCommandChanges": {
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/definitions/v2/FileUpdateChange"
+            },
+            "type": "array"
+          },
+          "command": {
+            "description": "The authored shell script, bounded for preview; not the execution wrapper.",
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/definitions/v2/CommandExecutionSource"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "command",
+          "itemId",
+          "source",
+          "threadId",
+          "turnId"
+        ],
         "type": "object"
       },
       "LocalShellAction": {
@@ -24743,6 +24846,11 @@
             "type": "integer"
           },
           "sourceKind": {
+            "description": "Stable identifier for the source of the capture.",
+            "type": "string"
+          },
+          "sourceLabel": {
+            "description": "User-facing name for the capture source.",
             "type": "string"
           },
           "threadId": {
@@ -24763,10 +24871,42 @@
           "paths",
           "sequence",
           "sourceKind",
+          "sourceLabel",
           "threadId",
           "turnId",
           "workspace"
         ],
+        "type": "object"
+      },
+      "ThreadChangesLiveParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "Request the current provisional shell edits for this exact thread.",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadChangesLiveParams",
+        "type": "object"
+      },
+      "ThreadChangesLiveResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "description": "The latest nonempty snapshots for currently running commands, oldest update first.",
+            "items": {
+              "$ref": "#/definitions/v2/LiveCommandChanges"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "ThreadChangesLiveResponse",
         "type": "object"
       },
       "ThreadChangesReadParams": {
@@ -25862,7 +26002,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "Only present for a shell invocation with separate display steps."
+                "description": "Authored display text for a recognized shell invocation."
               },
               "durationMs": {
                 "description": "The duration of the command execution in milliseconds.",
@@ -27142,69 +27282,6 @@
           "threadId"
         ],
         "title": "ThreadNameUpdatedNotification",
-        "type": "object"
-      },
-      "ThreadPredictionResult": {
-        "oneOf": [
-          {
-            "properties": {
-              "text": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "type": {
-                "enum": [
-                  "completed"
-                ],
-                "title": "CompletedThreadPredictionResultType",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "title": "CompletedThreadPredictionResult",
-            "type": "object"
-          },
-          {
-            "properties": {
-              "type": {
-                "enum": [
-                  "failed"
-                ],
-                "title": "FailedThreadPredictionResultType",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "title": "FailedThreadPredictionResult",
-            "type": "object"
-          }
-        ]
-      },
-      "ThreadPredictionUpdatedNotification": {
-        "$schema": "http://json-schema.org/draft-07/schema#",
-        "properties": {
-          "result": {
-            "$ref": "#/definitions/v2/ThreadPredictionResult"
-          },
-          "sourceTurnId": {
-            "type": "string"
-          },
-          "threadId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "result",
-          "sourceTurnId",
-          "threadId"
-        ],
-        "title": "ThreadPredictionUpdatedNotification",
         "type": "object"
       },
       "ThreadPresetWriteParams": {

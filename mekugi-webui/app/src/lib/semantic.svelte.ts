@@ -25,6 +25,7 @@ import type {
   ServerRequest,
   ShellGuardRequestApprovalResponse,
   ThreadForkResponse,
+  ThreadPredictionRequestResponse,
   ThreadQueueAddParams,
   ThreadQueueListResponse,
   ThreadRevertResponse,
@@ -39,6 +40,8 @@ import type {
   UserInput,
 } from "./protocol";
 
+const encoder = new TextEncoder();
+
 export type Editor = {
   text: string;
   items: PendingAttachment[];
@@ -48,6 +51,30 @@ export type Editor = {
 };
 
 export type SelectedSkill = { start: number; name: string; path: string };
+
+export const SLASH_COMMANDS = [
+  { name: "/compact", description: "Compact context now; Tab queues while busy" },
+  { name: "/ps", description: "Show active processes" },
+  { name: "/btw", description: "Ask a side question", argument: "QUESTION" },
+  { name: "/oneoff", description: "Run a task in a separate conversation", argument: "TASK" },
+  { name: "/rewind", description: "Rewind before a user message" },
+  { name: "/archive", description: "Archive this thread" },
+] as const;
+
+type DraftAttachments = {
+  count: number;
+  read: () => Promise<Attachment[]>;
+};
+
+type SlashActions = {
+  archive: () => void;
+  rewind: () => string | undefined;
+  oneOff: (
+    task: string,
+    readAttachments: DraftAttachments["read"],
+    skills?: SelectedSkill[],
+  ) => Promise<string | undefined>;
+};
 
 export type RewindPreview = { changeIds: string[]; reason: string | null };
 
@@ -74,7 +101,6 @@ export function editableRecoveryPart(
 
 function reviseRecoveryInput(input: UserInput[], edits: string[]): UserInput[] {
   let index = 0;
-  const encoder = new TextEncoder();
   return input.map((part) => {
     if (!editableRecoveryPart(part)) return part;
     const text = edits[index++] ?? part.text;
@@ -248,7 +274,6 @@ export function toNativeUserInput(
   const items: UserInput[] = [];
   const selections: string[] = [];
   if (text.trim()) {
-    const encoder = new TextEncoder();
     const elements = attachments.flatMap((attachment) => {
       const placeholder =
         attachment.placeholder ??
@@ -429,7 +454,7 @@ export class ThreadControl {
   #promptStates = new Map<string, PromptState>();
   #recoveryByMachine = new WeakMap<Machine, Map<string, RecoveryDraft[]>>();
   #answersByMachine = new WeakMap<Machine, Map<string, SideAnswer>>();
-  #predictionTurn?: string;
+  #predictionRequest?: { threadId: string; sourceTurnId: string };
 
   pending = $state(0);
   error = $state<string | undefined>();
@@ -548,12 +573,6 @@ export class ThreadControl {
       if (notification.params.turn.status === "completed")
         this.#requestPrediction(notification.params.turn.id);
     }
-    if (notification.method === "thread/prediction/updated") {
-      const { threadId, sourceTurnId, result } = notification.params;
-      if (threadId === this.#id && sourceTurnId === this.#predictionTurn)
-        this.prediction =
-          result.type === "completed" ? result.text?.trim() || undefined : undefined;
-    }
     if (notification.method === "serverRequest/resolved") {
       if (notification.params.threadId !== this.#id) return;
       const resolvedId = String(notification.params.requestId);
@@ -578,7 +597,7 @@ export class ThreadControl {
   }
 
   #clearPrediction(): void {
-    this.#predictionTurn = undefined;
+    this.#predictionRequest = undefined;
     this.prediction = undefined;
   }
 
@@ -591,16 +610,19 @@ export class ThreadControl {
       !threadId ||
       threadId !== this.#main ||
       !turnId ||
-      this.#predictionTurn === turnId
+      this.#predictionRequest?.sourceTurnId === turnId
     )
       return;
-    this.#predictionTurn = turnId;
+    const request = { threadId, sourceTurnId: turnId };
+    this.#predictionRequest = request;
     this.prediction = undefined;
     void machine
-      .request("thread/prediction/request", { threadId, sourceTurnId: turnId })
+      .request<ThreadPredictionRequestResponse>("thread/prediction/request", request)
+      .then(({ text }) => {
+        if (request === this.#predictionRequest) this.prediction = text?.trim() || undefined;
+      })
       .catch(() => {
-        if (machine === this.#machine && threadId === this.#id && turnId === this.#predictionTurn)
-          this.#clearPrediction();
+        if (request === this.#predictionRequest) this.#clearPrediction();
       });
   }
 
@@ -623,11 +645,12 @@ export class ThreadControl {
 
   async sendInput(
     text: string,
-    attachments: Attachment[] = [],
+    attachments: Attachment[] | DraftAttachments = [],
     options: {
       queue?: boolean;
       signal?: AbortSignal;
       skills?: SelectedSkill[];
+      slashActions?: SlashActions;
       onRecovery?: () => void;
       onStarted?: (turnId: string) => void;
     } = {},
@@ -635,24 +658,29 @@ export class ThreadControl {
     const id = this.#id;
     const machine = this.#machine;
     if (!id || !machine) return "Open a thread on an execution machine first.";
+    const draftAttachments: DraftAttachments = Array.isArray(attachments)
+      ? { count: attachments.length, read: () => Promise.resolve(attachments) }
+      : attachments;
     let shell: string | undefined;
     let input: UserInput[] = [];
     if (!options.onStarted && text.startsWith("!")) {
       shell = text.slice(1).trim();
       if (!shell) return "Enter a shell command after !.";
-      if (attachments.length) return "Shell commands do not accept attachments.";
+      if (draftAttachments.count) return "Shell commands do not accept attachments.";
     } else {
       if (!options.onStarted) {
         const slash = await this.#trySlashCommand(
           text,
-          attachments,
+          { id, machine },
+          draftAttachments,
           !!options.queue,
           options.skills,
           options.signal,
+          options.slashActions,
         );
         if (slash.handled) return slash.error;
       }
-      input = toNativeUserInput(text, attachments, options.skills);
+      input = toNativeUserInput(text, await draftAttachments.read(), options.skills);
       if (!input.length) return "Write a message or attach something.";
     }
     const draft: RecoveryDraft = {
@@ -839,26 +867,32 @@ export class ThreadControl {
 
   async #trySlashCommand(
     raw: string,
-    attachments: Attachment[],
+    { id, machine }: { id: string; machine: Machine },
+    attachments: DraftAttachments,
     queue: boolean,
     skills?: SelectedSkill[],
     signal?: AbortSignal,
+    actions?: SlashActions,
   ): Promise<{ handled: boolean; error?: string }> {
-    const trimmed = raw.trim();
-    if (!trimmed.startsWith("/")) return { handled: false };
-    const spaceIdx = trimmed.search(/\s/);
-    const cmd = (spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed).toLowerCase();
-    const rest = spaceIdx >= 0 ? trimmed.slice(spaceIdx + 1).trim() : "";
-    const id = this.#id;
-    const machine = this.#machine;
-    if (!id || !machine)
-      return { handled: true, error: "Open a thread on an execution machine first." };
-    if (attachments.length && cmd !== "/btw")
+    const prefix = /^\s*(\/\S*)\s*/.exec(raw);
+    if (!prefix) return { handled: false };
+    const cmd = prefix[1].toLowerCase();
+    const command = SLASH_COMMANDS.find(({ name }) => name === cmd);
+    if (!command)
+      return { handled: true, error: `Unknown command ${cmd}. Type / to see commands.` };
+
+    const rest = raw.slice(prefix[0].length);
+    const argument = "argument" in command ? command.argument : undefined;
+    if (attachments.count && cmd !== "/btw" && cmd !== "/oneoff")
       return { handled: true, error: "This command does not accept attachments." };
-    switch (cmd) {
+    if (argument ? !rest : rest)
+      return { handled: true, error: `Usage: ${cmd}${argument ? " " + argument : ""}` };
+
+    switch (command.name) {
       case "/btw": {
-        if (!rest) return { handled: true, error: "Usage: /btw QUESTION" };
         const main = this.#main ?? id;
+        const question = rest.trimEnd();
+        const input = toNativeUserInput(question, await attachments.read(), skills);
         let answers = this.#answersByMachine.get(machine);
         if (!answers) {
           answers = new Map();
@@ -870,13 +904,9 @@ export class ThreadControl {
           answers.set(main, answer);
         }
         this.sideAnswer = answer;
-        return {
-          handled: true,
-          error: await answer.ask(rest, toNativeUserInput(rest, attachments, skills)),
-        };
+        return { handled: true, error: await answer.ask(question, input) };
       }
       case "/compact":
-        if (rest) return { handled: true, error: "Usage: /compact" };
         try {
           await machine.request(
             "thread/compact/start",
@@ -888,15 +918,25 @@ export class ThreadControl {
           return { handled: true, error: errorText(err, true) };
         }
       case "/archive":
-        return { handled: true, error: rest ? "Usage: /archive" : "Confirm archive first." };
+        if (!actions) return { handled: true, error: "Confirm archive first." };
+        actions.archive();
+        return { handled: true };
       case "/rewind":
-        return { handled: true, error: rest ? "Usage: /rewind" : "Choose a message first." };
+        return { handled: true, error: actions ? actions.rewind() : "Choose a message first." };
+      case "/oneoff":
+        return {
+          handled: true,
+          error: actions
+            ? await actions.oneOff(
+                rest,
+                attachments.read,
+                skills?.map((skill) => ({ ...skill, start: skill.start - prefix[0].length })),
+              )
+            : "Open One-off from the composer.",
+        };
       case "/ps":
-        if (rest) return { handled: true, error: "Usage: /ps" };
         stream.notice = "Active processes appear above the composer.";
         return { handled: true };
-      default:
-        return { handled: true, error: `Unknown command ${cmd}. Type / to see commands.` };
     }
   }
 

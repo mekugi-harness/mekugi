@@ -44,7 +44,7 @@ impl RewindEdits {
         store: ChangeHistoryStore,
         session_id: String,
         ids: Vec<ChangeId>,
-    ) -> Result<(ChangeHistoryStore, ChangeId, String), JSONRPCErrorError> {
+    ) -> Result<Option<(ChangeHistoryStore, ChangeId, String)>, JSONRPCErrorError> {
         tokio::task::spawn_blocking(move || {
             let outcome = store
                 .mutate_workspace(
@@ -57,7 +57,11 @@ impl RewindEdits {
                     &session_id,
                 )
                 .map_err(change_error)?;
-            Ok((store, outcome.recorded.id, session_id))
+            Ok((!outcome.affected_paths.is_empty()).then_some((
+                store,
+                outcome.recorded.id,
+                session_id,
+            )))
         })
         .await
         .map_err(change_error)?
@@ -137,7 +141,7 @@ impl ThreadRequestProcessor {
                 ));
             }
             let ids = plan.records.into_iter().map(|record| record.id).collect();
-            Some(RewindEdits::mutate(plan.store, plan.session_id, ids).await?)
+            RewindEdits::mutate(plan.store, plan.session_id, ids).await?
         } else {
             None
         };
@@ -272,22 +276,22 @@ impl ThreadRequestProcessor {
         turn_id: &str,
         item_id: Option<&str>,
     ) -> Result<i64, JSONRPCErrorError> {
-        let mut position = None;
+        let mut request = ListItemsParams {
+            item_ids: item_id.map(|id| vec![id.to_string()]),
+            thread_id,
+            turn_id: Some(turn_id.to_string()),
+            include_archived: false,
+            position: None,
+            page_size: if item_id.is_some() { 1 } else { 20 },
+            sort_direction: SortDirection::Asc,
+            sort_key: ItemSortKey::CreatedAtOrdinal,
+            after_updated_at_ordinal: None,
+            before_updated_at_ordinal: None,
+        };
         loop {
             let page = self
                 .thread_store
-                .list_items(ListItemsParams {
-                    item_ids: item_id.map(|id| vec![id.to_string()]),
-                    thread_id,
-                    turn_id: Some(turn_id.to_string()),
-                    include_archived: false,
-                    position: position.clone(),
-                    page_size: if item_id.is_some() { 1 } else { 20 },
-                    sort_direction: SortDirection::Asc,
-                    sort_key: ItemSortKey::CreatedAtOrdinal,
-                    after_updated_at_ordinal: None,
-                    before_updated_at_ordinal: None,
-                })
+                .list_items(request.clone())
                 .await
                 .map_err(change_error)?;
             for item in page.items {
@@ -301,13 +305,14 @@ impl ThreadRequestProcessor {
                     });
                 }
             }
-            let Some(next) = page.next_cursor else {
-                return Err(invalid_request(
-                    "The selected user message is no longer in the history",
-                ));
+            let Some(next) = page.next_cursor.filter(|_| item_id.is_none()) else {
+                break;
             };
-            position = Some(codex_thread_store::ListItemsPosition::Cursor(next));
+            request.position = Some(codex_thread_store::ListItemsPosition::Cursor(next));
         }
+        Err(invalid_request(
+            "The selected user message is no longer in the history",
+        ))
     }
 
     async fn rewind_history_items<'a>(

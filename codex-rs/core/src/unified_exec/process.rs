@@ -114,7 +114,7 @@ pub(crate) struct UnifiedExecProcess {
     pub(super) termination_requested: AtomicBool,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
-    exec_track: Option<Arc<ExecTrackAttachment>>,
+    pub(super) exec_track: Option<Arc<ExecTrackAttachment>>,
 }
 
 impl std::fmt::Debug for UnifiedExecProcess {

@@ -40,7 +40,7 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 			"turnId":    "turn-1",
 			"itemId":    "cmd-bg",
 			"processId": "proc-42",
-			"command":   "/bin/bash -lc 'tail -f app.log'",
+			"command":   "tail -f app.log",
 			"cwd":       ws,
 		},
 		{
@@ -102,6 +102,7 @@ func TestDirectNativeProjectsIntoTerminalSessionFrame(t *testing.T) {
 			"item":{
 				"type":"commandExecution","id":"cmd-1",
 				"command":"/bin/bash -lc 'echo hello-world'",
+				"display":{"script":"echo hello-world","segments":[],"effectiveCwd":null},
 				"status":"completed","exitCode":0,
 				"aggregatedOutput":"line-1\nline-2\nline-3\nline-4\nline-5\nline-6\nline-7\nhello-world\n"
 			}
@@ -640,6 +641,7 @@ func TestUISnapshotDirectNativeProjection(t *testing.T) {
 			"item":{
 				"type":"commandExecution","id":"cmd-1",
 				"command":"/bin/bash -lc 'go test ./internal/launch'",
+				"display":{"script":"go test ./internal/launch","segments":[],"effectiveCwd":null},
 				"status":"completed","exitCode":0,
 				"aggregatedOutput":"ok 1\nok 2\nok 3\nok 4\nok 5\nPASS\n"
 			}

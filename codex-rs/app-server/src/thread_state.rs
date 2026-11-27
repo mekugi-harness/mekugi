@@ -1,6 +1,7 @@
 use crate::bespoke_event_handling::CommandExecutionCompletionItem;
 use crate::outgoing_message::ConnectionId;
 use crate::outgoing_message::ConnectionRequestId;
+use codex_app_server_protocol::LiveCommandChanges;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadHistoryBuilder;
 use codex_app_server_protocol::ThreadHistoryTurnMetadata;
@@ -16,6 +17,7 @@ use codex_protocol::ThreadId;
 #[cfg(test)]
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::items::AgentMessageContent as CoreAgentMessageContent;
+use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::protocol::EventMsg;
@@ -35,6 +37,8 @@ use tokio::sync::watch;
 use tracing::error;
 
 type PendingInterruptQueue = Vec<(String, ConnectionRequestId)>;
+
+const MAX_LIVE_COMMAND_PREVIEWS: usize = 16;
 
 // The unload that inserts an entry owns its removal. Dropping the sender wakes deferred
 // listener attachment only after that unload finishes cleanup.
@@ -115,6 +119,7 @@ pub(crate) struct ThreadState {
     pub(crate) turn_summaries: HashMap<String, TurnSummary>,
     // A background command can emit events even after its originating turn finishes.
     pub(crate) command_start_times: HashMap<String, HashMap<String, i64>>,
+    live_command_changes: Vec<LiveCommandChanges>,
     /// A terminal event can arrive after the listener has already started the next turn.
     pub(crate) last_started_turn_id: Option<String>,
     // A delegate may announce a different ID from the one on its terminal event.
@@ -175,6 +180,7 @@ impl ThreadState {
         self.forwarded_turn_id = None;
         self.turn_summaries.clear();
         self.command_start_times.clear();
+        self.clear_live_command_changes();
         self.shutdown_drain = Some(shutdown_drain);
         self.listener_generation = self.listener_generation.wrapping_add(1);
         self.listener_shutdown = false;
@@ -200,6 +206,7 @@ impl ThreadState {
         self.forwarded_turn_id = None;
         self.turn_summaries.clear();
         self.command_start_times.clear();
+        self.clear_live_command_changes();
         self.listener_thread = None;
         self.watch_registration = WatchRegistration::default();
     }
@@ -267,6 +274,25 @@ impl ThreadState {
         self.turn_summaries.remove(turn_id).unwrap_or_default()
     }
 
+    pub(crate) fn clear_live_command_changes(&mut self) {
+        self.live_command_changes.clear();
+    }
+
+    fn remove_live_command_changes(&mut self, turn_id: &str, item_id: &str) {
+        self.live_command_changes
+            .retain(|update| update.turn_id != turn_id || update.item_id != item_id);
+    }
+
+    pub(crate) fn note_live_command_changes(&mut self, update: &LiveCommandChanges) {
+        self.remove_live_command_changes(&update.turn_id, &update.item_id);
+        if !update.changes.is_empty() {
+            if self.live_command_changes.len() == MAX_LIVE_COMMAND_PREVIEWS {
+                self.live_command_changes.remove(0);
+            }
+            self.live_command_changes.push(update.clone());
+        }
+    }
+
     pub(crate) fn note_turn_started(&mut self, turn_id: &str, started_at: Option<i64>) {
         self.last_started_turn_id = Some(turn_id.to_owned());
         self.turn_summaries.insert(
@@ -308,6 +334,17 @@ impl ThreadState {
                 .handle_event_for_history_mode(event, self.history_mode);
         }
         match event {
+            EventMsg::ExecCommandEnd(command) => {
+                self.remove_live_command_changes(event_turn_id, &command.call_id);
+            }
+            EventMsg::ItemCompleted(payload) => {
+                // Canonical completion is sent to clients before the legacy command end.
+                if let CoreTurnItem::CommandExecution(command) = &payload.item
+                    && command.status != CommandExecutionStatus::InProgress
+                {
+                    self.remove_live_command_changes(event_turn_id, &command.id);
+                }
+            }
             EventMsg::TurnComplete(_) => {
                 self.last_terminal_turn_id = Some(event_turn_id.to_string());
                 if !self.current_turn_history.has_active_turn() {
@@ -577,6 +614,29 @@ impl ThreadStateManager {
     pub(crate) async fn thread_state(&self, thread_id: ThreadId) -> Arc<Mutex<ThreadState>> {
         let mut state = self.state.lock().await;
         state.threads.entry(thread_id).or_default().state.clone()
+    }
+
+    #[tracing::instrument(level = "trace", skip(self, thread))]
+    pub(crate) async fn live_command_changes(
+        &self,
+        thread_id: ThreadId,
+        thread: &Arc<CodexThread>,
+    ) -> Vec<LiveCommandChanges> {
+        let state = self
+            .state
+            .lock()
+            .await
+            .threads
+            .get(&thread_id)
+            .map(|entry| Arc::clone(&entry.state));
+        let Some(state) = state else {
+            return Vec::new();
+        };
+        let state = state.lock().await;
+        if !state.listener_matches(thread) || thread.has_shutdown_status() {
+            return Vec::new();
+        }
+        state.live_command_changes.clone()
     }
 
     pub(crate) async fn created_listener_state(

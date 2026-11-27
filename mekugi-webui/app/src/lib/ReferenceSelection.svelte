@@ -14,27 +14,36 @@
   } = $props();
 
   let selected = $state<{ text: string; left: number; top: number }>();
+  // Keep tracking offscreen selections so the action returns on scroll.
+  let ownsSelection = $state(false);
   let selecting = false;
   let button = $state<HTMLButtonElement>();
 
+  function clear() {
+    ownsSelection = false;
+    selected = undefined;
+  }
+
   function measure() {
+    const action = button;
     const selection = document.getSelection();
     if (
-      selecting ||
       !root ||
+      selecting ||
       !selection?.rangeCount ||
       !root.contains(selection.anchorNode) ||
       !root.contains(selection.focusNode) ||
       !selection.focusNode
     ) {
-      selected = undefined;
+      clear();
       return;
     }
     const text = selection.toString();
     if (!text.trim()) {
-      selected = undefined;
+      clear();
       return;
     }
+    ownsSelection = true;
 
     const endpoint = document.createRange();
     endpoint.setStart(selection.focusNode, selection.focusOffset);
@@ -48,8 +57,8 @@
       return;
     }
     const gap = 8;
-    const height = button?.offsetHeight ?? 44;
-    const edge = gap + (button?.offsetWidth ?? 104) / 2;
+    const height = action?.offsetHeight ?? 44;
+    const edge = gap + (action?.offsetWidth ?? 104) / 2;
     const top = rect.top >= height + 2 * gap ? rect.top - height - gap : rect.bottom + gap;
     selected = {
       text,
@@ -58,26 +67,37 @@
     };
   }
 
+  $effect(measure);
+
   $effect(() => {
-    if (button) measure();
+    if (!root || !ownsSelection) return;
+    const listeners = new AbortController();
+    const { signal } = listeners;
+    document.addEventListener("scroll", measure, { capture: true, passive: true, signal });
+    window.addEventListener("resize", measure, { signal });
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    return () => {
+      listeners.abort();
+      observer.disconnect();
+    };
   });
 
   function capture() {
     const selection = selected;
     if (selection && onreference(selection.text, description, source)) {
       document.getSelection()?.removeAllRanges();
-      selected = undefined;
+      clear();
     }
   }
 </script>
 
-<svelte:window onresize={measure} />
 <svelte:document
   onselectionchange={measure}
   onpointerdown={(event) => {
     if (event.button === 0 && !button?.contains(event.target as Node)) {
       selecting = true;
-      selected = undefined;
+      clear();
     }
   }}
   onpointerup={() => {
@@ -88,7 +108,6 @@
     selecting = false;
     measure();
   }}
-  onscrollcapture={measure}
 />
 
 {#if selected}

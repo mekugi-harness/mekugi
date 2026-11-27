@@ -23,13 +23,19 @@ func TestDirectNativeTerminalPrediction(t *testing.T) {
 	socket := filepath.Join(shortTempDir(t), "native.sock")
 	server := startMockNativeAppServer(t, socket)
 	requests := make(chan jsontext.Value, 8)
+	replies := make(chan string)
 	server.mu.Lock()
 	server.overrides["thread/start"] = func(jsontext.Value) any {
 		return jsontext.Value(`{"thread":{"id":"thr-main","cwd":"/tmp/ws"},"modelProvider":"openai"}`)
 	}
 	server.overrides["thread/prediction/request"] = func(params jsontext.Value) any {
 		requests <- params
-		return jsontext.Value(`{}`)
+		select {
+		case text := <-replies:
+			return map[string]string{"text": text}
+		case <-ctx.Done():
+			return mockRPCError("prediction timed out")
+		}
 	}
 	server.mu.Unlock()
 	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")
@@ -68,23 +74,25 @@ func TestDirectNativeTerminalPrediction(t *testing.T) {
 		client.acquirePrediction()
 		select {
 		case params := <-requests:
-			var got map[string]string
-			if err := json.Unmarshal(params, &got); err != nil || len(got) != 2 || got["threadId"] != "thr-main" || got["sourceTurnId"] != turn {
+			var got map[string]any
+			if err := json.Unmarshal(params, &got); err != nil || got["automatic"] != true || got["threadId"] != "thr-main" || got["sourceTurnId"] != turn {
 				t.Fatalf("request used the wrong source: %s (%v)", params, err)
 			}
 		case <-ctx.Done():
 			t.Fatalf("no native request for %s: %v", turn, ctx.Err())
 		}
 	}
-	notifyResult := func(thread, turn, text string) {
+	reply := func(text string) {
 		t.Helper()
-		server.send(t, map[string]any{"jsonrpc": "2.0", "method": "thread/prediction/updated", "params": map[string]any{
-			"threadId": thread, "sourceTurnId": turn, "result": map[string]string{"type": "completed", "text": text},
-		}})
+		select {
+		case replies <- text:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
 	}
-	result := func(turn, text string) {
+	result := func(text string) {
 		t.Helper()
-		notifyResult("thr-main", turn, text)
+		reply(text)
 		accept(func(event sessionapi.NativeEvent) bool {
 			return event.Frame.View.Draft.Prediction == strings.TrimSpace(text)
 		})
@@ -94,8 +102,7 @@ func TestDirectNativeTerminalPrediction(t *testing.T) {
 	finish("thr-worker", "foreign")
 	finish("thr-main", "turn-1")
 	request("turn-1")
-	notifyResult("thr-worker", "turn-1", "Wrong thread")
-	result("turn-1", " "+suggestion+" ")
+	result(" " + suggestion + " ")
 	rendered, err := terminal.Frame.Render(ctx, terminal.FrameInput(time.Now(), "test"))
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +123,7 @@ func TestDirectNativeTerminalPrediction(t *testing.T) {
 	request("turn-2")
 	client.editor("main").InsertText("private draft")
 	client.editor("main").Take()
-	result("turn-2", "Arrived after typing")
+	result("Arrived after typing")
 	if got := client.renderer.frame.View.Draft.Prediction; got != "" {
 		t.Fatalf("a changed draft revision admitted a late suggestion: %q", got)
 	}
@@ -142,7 +149,7 @@ func TestDirectNativeTerminalPrediction(t *testing.T) {
 	}
 	toggle("Predictions enabled")
 	request("turn-2")
-	result("turn-2", "Restored on re-enable")
+	result("Restored on re-enable")
 	if got := client.renderer.frame.View.Draft.Prediction; got != "Restored on re-enable" {
 		t.Fatalf("the enabled toggle did not restore suggestions: %q", got)
 	}
@@ -153,36 +160,33 @@ func TestDirectNativeTerminalPrediction(t *testing.T) {
 		"threadId": "thr-main", "turn": map[string]string{"id": "turn-4", "status": "inProgress"},
 	}})
 	accept(func(event sessionapi.NativeEvent) bool { return event.Frame.Facts.Busy })
-	notifyResult("thr-main", "turn-3", "The old turn's prediction")
+	reply("The old turn's prediction")
 	finish("thr-main", "turn-4")
 	request("turn-4")
 	if got := client.renderer.frame.View.Draft.Prediction; got != "" {
 		t.Fatalf("the new turn inherited an older suggestion: %q", got)
 	}
-	result("turn-4", "The new turn's prediction")
+	result("The new turn's prediction")
 
 	server.send(t, map[string]any{"jsonrpc": "2.0", "method": "account/updated", "params": map[string]string{
 		"authMode": "apikey",
 	}})
 	accept(func(event sessionapi.NativeEvent) bool {
-		return event.Frame.Facts.PredictionTurn == "" && event.Frame.View.Draft.Prediction == ""
+		return event.Frame.Facts.PredictionTurn == "turn-4" && event.Frame.View.Draft.Prediction == ""
 	})
-	client.acquirePrediction()
-	select {
-	case params := <-requests:
-		t.Fatalf("API-key account requested a prediction: %s", params)
-	default:
-	}
+	request("turn-4")
+	accept(func(event sessionapi.NativeEvent) bool { return event.Frame.Facts.PredictionTurn == "" })
+	reply("")
 
 	server.send(t, map[string]any{"jsonrpc": "2.0", "method": "account/updated", "params": map[string]string{
 		"authMode": "chatgpt",
 	}})
 	request("turn-4")
-	result("turn-4", "Prediction after signing in")
+	result("Prediction after signing in")
 	server.mu.Lock()
 	reads := len(server.params["account/read"])
 	server.mu.Unlock()
-	if reads != 1 {
-		t.Fatalf("read account %d times for multiple predictions, want once", reads)
+	if reads != 0 {
+		t.Fatalf("read account %d times for multiple predictions, want none", reads)
 	}
 }

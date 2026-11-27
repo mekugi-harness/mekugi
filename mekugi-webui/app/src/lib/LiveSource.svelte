@@ -2,6 +2,7 @@
   import Path from "./Path.svelte";
   import { untrack } from "svelte";
   import { workspacePath } from "./diff";
+  import { followBottom } from "./follow-bottom";
   import DiffView from "./DiffView.svelte";
   import AgentName from "./AgentName.svelte";
   import type { Preview } from "./protocol";
@@ -69,29 +70,6 @@
   const writing = $derived(shown.some((card) => !card.until && !card.preview.Settling));
   const hasSaved = $derived(shown.some(({ preview }) => preview.SavedPath));
 
-  // Each code block follows independently until its reader scrolls away.
-  function follow(scroller: HTMLElement) {
-    let following = true;
-    let end = 0;
-    const scroll = () => {
-      // Layout can clamp the scroll position before ResizeObserver runs.
-      if (end === scroller.scrollHeight - scroller.clientHeight)
-        following = end - scroller.scrollTop < 40;
-    };
-    const observer = new ResizeObserver(() => {
-      end = scroller.scrollHeight - scroller.clientHeight;
-      if (following) scroller.scrollTop = scroller.scrollHeight;
-    });
-    observer.observe(scroller);
-    observer.observe(scroller.firstElementChild!);
-    scroller.addEventListener("scroll", scroll);
-    return {
-      destroy() {
-        observer.disconnect();
-        scroller.removeEventListener("scroll", scroll);
-      },
-    };
-  }
   const lines = (text: string) => text.replace(/\n$/, "").split("\n");
 </script>
 
@@ -166,12 +144,12 @@
                 >
                   <Path {path} />
                 </h3>
-                <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:follow>
+                <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:followBottom>
                   <DiffView {file} workspace={preview.Workspace} wrap />
                 </div>
               </div>
             {:else}
-              <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:follow>
+              <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain" use:followBottom>
                 <div>
                   {#if preview.DiffText}
                     <DiffView

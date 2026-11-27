@@ -46,13 +46,14 @@ const fileSnapshotPrefix = "<mekugi-file-attachments-v2>\n";
 const fileSnapshotSuffix = "\n</mekugi-file-attachments-v2>";
 const fileSnapshotLimit = 192 * 1024;
 const fileFrameBytes = 24 * 1024;
+const encoder = new TextEncoder();
+const snapshotDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
+const uploadDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // Use the native request builder's existing retained attachment envelope.
 export function textUploadSnapshot(attachments: Attachment[], id: string): string | undefined {
   const files = attachments.filter((item) => item.source === "textUpload");
   if (!files.length) return;
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
   const frames: string[] = [];
   for (const file of files) {
     const bytes = encoder.encode(file.data);
@@ -62,7 +63,7 @@ export function textUploadSnapshot(attachments: Attachment[], id: string): strin
       let end = Math.min(start + fileFrameBytes, bytes.length);
       while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
       const header = `Attached file ${name} (UTF-8 bytes ${start}:${end} of ${bytes.length}; file content, not a separate request):\n`;
-      frames.push(header + decoder.decode(bytes.subarray(start, end)));
+      frames.push(header + snapshotDecoder.decode(bytes.subarray(start, end)));
       start = end;
     } while (start < bytes.length);
   }
@@ -245,9 +246,7 @@ export async function prepareAttachments(
             return;
           }
           try {
-            const data = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-              reader.result as ArrayBuffer,
-            );
+            const data = uploadDecoder.decode(reader.result as ArrayBuffer);
             if (data.includes("\0")) throw new Error("NUL byte");
             resolve({ source: "textUpload", ...metadata, data });
           } catch {

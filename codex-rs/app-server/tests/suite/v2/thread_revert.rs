@@ -381,6 +381,96 @@ async fn thread_revert_can_keep_or_undo_native_shell_captures(undo: bool) -> Res
     Ok(())
 }
 
+#[tokio::test]
+async fn thread_revert_accepts_net_zero_shell_captures() -> Result<()> {
+    skip_if_remote!(Ok(()), "uses the app-server host shell and workspace");
+    let provider = create_mock_responses_server_repeating_assistant("Saved answer").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&provider.uri()).write(codex_home.path())?;
+    let workspace = TempDir::new()?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    initialize_experimental(&mut app).await?;
+    let ThreadStartResponse { thread, .. } = app
+        .request(|request_id| ClientRequest::ThreadStart {
+            request_id,
+            params: ThreadStartParams {
+                cwd: Some(workspace.path().display().to_string()),
+                ..Default::default()
+            },
+        })
+        .await?;
+    let completed = app
+        .start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![UserInput::Text {
+                text: "Remove this history".into(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    for command in ["printf 'captured' > net-zero.txt", "rm net-zero.txt"] {
+        let (exit, _) = run_rewind_shell(&mut app, &thread.id, command.into()).await?;
+        assert_eq!(exit, 0);
+    }
+    let file = workspace.path().join("net-zero.txt");
+    std::fs::write(&file, "recreated outside the captured commands")?;
+
+    let before_turn_id = completed.turn.id;
+    let preview: ThreadRevertPreviewResponse = app
+        .request(|request_id| ClientRequest::ThreadRevertPreview {
+            request_id,
+            params: ThreadRevertPreviewParams {
+                thread_id: thread.id.clone(),
+                before_turn_id: before_turn_id.clone(),
+                before_item_id: None,
+            },
+        })
+        .await?;
+    assert_eq!(preview.reason, None);
+    assert_eq!(preview.change_ids.len(), 2);
+    let params = ThreadRevertParams {
+        thread_id: thread.id,
+        before_turn_id,
+        before_item_id: None,
+        expected_change_ids: Some(preview.change_ids),
+    };
+
+    let sqlite = codex_state::SqliteConfig::new_for_testing(codex_home.path().abs());
+    let pool = sqlite.open_read_write_pool(&sqlite.state_db_path()).await?;
+    sqlx::query(
+        "CREATE TRIGGER fail_rewind_cutover BEFORE UPDATE OF rollout_path ON threads
+         WHEN OLD.rollout_path <> NEW.rollout_path
+         BEGIN SELECT RAISE(FAIL, 'rewind history cutover fixture'); END",
+    )
+    .execute(&pool)
+    .await?;
+    let failure = rewind_error(&mut app, &params).await?;
+    let message = &failure.error.message;
+    assert!(
+        message.contains("rewind history cutover fixture"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("could not restore the workspace"),
+        "{message}"
+    );
+    sqlx::query("DROP TRIGGER fail_rewind_cutover")
+        .execute(&pool)
+        .await?;
+    let _: ThreadRevertResponse = app
+        .request(|request_id| ClientRequest::ThreadRevert { request_id, params })
+        .await?;
+    assert_eq!(
+        std::fs::read_to_string(file)?,
+        "recreated outside the captured commands"
+    );
+    Ok(())
+}
+
 async fn rewind_error(
     app: &mut TestAppServer,
     params: &ThreadRevertParams,

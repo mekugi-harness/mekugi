@@ -105,6 +105,7 @@ export type { CommandExecWriteParams } from "./CommandExecWriteParams";
 export type { CommandExecWriteResponse } from "./CommandExecWriteResponse";
 export type { CommandExecutionApprovalDecision } from "./CommandExecutionApprovalDecision";
 export type { CommandExecutionApprovalKind } from "./CommandExecutionApprovalKind";
+export type { CommandExecutionChangesUpdatedNotification } from "./CommandExecutionChangesUpdatedNotification";
 export type { CommandExecutionOutputDeltaNotification } from "./CommandExecutionOutputDeltaNotification";
 export type { CommandExecutionRequestApprovalParams } from "./CommandExecutionRequestApprovalParams";
 export type { CommandExecutionRequestApprovalResponse } from "./CommandExecutionRequestApprovalResponse";
@@ -280,6 +281,7 @@ export type { ItemGuardianApprovalReviewStartedNotification } from "./ItemGuardi
 export type { ItemStartedNotification } from "./ItemStartedNotification";
 export type { ListMcpServerStatusParams } from "./ListMcpServerStatusParams";
 export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse";
+export type { LiveCommandChanges } from "./LiveCommandChanges";
 export type { LoginAccountParams } from "./LoginAccountParams";
 export type { LoginAccountResponse } from "./LoginAccountResponse";
 export type { LoginAppBrand } from "./LoginAppBrand";
@@ -559,6 +561,8 @@ export type { ThreadBackgroundTerminalsChangedNotification } from "./ThreadBackg
 export type { ThreadChangeCallerCounts } from "./ThreadChangeCallerCounts";
 export type { ThreadChangeFileDiff } from "./ThreadChangeFileDiff";
 export type { ThreadChangeOrigin } from "./ThreadChangeOrigin";
+export type { ThreadChangesLiveParams } from "./ThreadChangesLiveParams";
+export type { ThreadChangesLiveResponse } from "./ThreadChangesLiveResponse";
 export type { ThreadChangesReadParams } from "./ThreadChangesReadParams";
 export type { ThreadChangesReadResponse } from "./ThreadChangesReadResponse";
 export type { ThreadClosedNotification } from "./ThreadClosedNotification";
@@ -608,8 +612,6 @@ export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoU
 export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
 export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
 export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
-export type { ThreadPredictionResult } from "./ThreadPredictionResult";
-export type { ThreadPredictionUpdatedNotification } from "./ThreadPredictionUpdatedNotification";
 export type { ThreadPresetWriteParams } from "./ThreadPresetWriteParams";
 export type { ThreadPresetWriteResponse } from "./ThreadPresetWriteResponse";
 export type { ThreadPresetsListParams } from "./ThreadPresetsListParams";

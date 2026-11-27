@@ -6,4 +6,12 @@ export type ThreadChangeOrigin = { changeId: string, sequence: number, threadId:
 /**
  * None for captures that were not authored by an agent, such as user shell.
  */
-authorThreadId: string | null, turnId: string, itemId: string, workspace: string, sourceKind: string, createdAt: number, paths: Array<string>, incomplete: boolean, };
+authorThreadId: string | null, turnId: string, itemId: string, workspace: string,
+/**
+ * Stable identifier for the source of the capture.
+ */
+sourceKind: string,
+/**
+ * User-facing name for the capture source.
+ */
+sourceLabel: string, createdAt: number, paths: Array<string>, incomplete: boolean, };

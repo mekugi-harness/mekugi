@@ -401,6 +401,7 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
         | EventMsg::ViewImageToolCall(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::BackgroundTerminalRegistered
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandEnd(_)
@@ -490,6 +491,7 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
         | EventMsg::ViewImageToolCall(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::BackgroundTerminalRegistered
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandEnd(_)

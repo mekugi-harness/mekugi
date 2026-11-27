@@ -29,6 +29,8 @@ use super::thread_input::ensure_direct_input_allowed;
 use super::thread_lifecycle::thread_closing_for_resume;
 use super::*;
 use crate::connection_rpc_gate::ConnectionRpcGate;
+use crate::error_code::InvalidRequestReason;
+use crate::error_code::invalid_request_with_reason;
 use crate::error_code::method_not_found;
 use crate::thread_sample::SampleTask;
 use crate::thread_sample::SampleThread;
@@ -722,6 +724,7 @@ impl ThreadRequestProcessor {
     pub(crate) async fn thread_sample(
         &self,
         params: ThreadSampleParams,
+        automatic_prediction: bool,
         rpc_gate: Arc<ConnectionRpcGate>,
         context: RequestContext,
     ) -> Result<ThreadSampleResponse, JSONRPCErrorError> {
@@ -732,8 +735,31 @@ impl ThreadRequestProcessor {
             .get_thread(id)
             .await
             .map_err(|_| invalid_request("thread/sample requires a loaded source"))?;
+        let config = parent.config().await;
+        if automatic_prediction {
+            if config.model_provider_id != codex_model_provider_info::OPENAI_PROVIDER_ID {
+                return Err(invalid_request(
+                    "automatic predictions require the OpenAI provider",
+                ));
+            }
+            let provider = codex_model_provider::create_model_provider(
+                config.model_provider.clone(),
+                Some(Arc::clone(&self.auth_manager)),
+            );
+            let state = provider
+                .account_state()
+                .map_err(|error| invalid_request(error.to_string()))?;
+            if !matches!(
+                state.account,
+                Some(codex_model_provider::ProviderAccount::Chatgpt { .. })
+            ) {
+                return Err(invalid_request(
+                    "automatic predictions require a ChatGPT account",
+                ));
+            }
+        }
         self.config_manager
-            .check_thread_model_provider(parent.config().await.as_ref())
+            .check_thread_model_provider(&config)
             .await
             .map_err(|error| config_load_error(&error))?;
         generate_sample(
@@ -1289,7 +1315,16 @@ impl ThreadRequestProcessor {
             .thread_manager
             .get_thread(thread_id)
             .await
-            .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
+            .map_err(|error| {
+                let message = format!("thread not found: {thread_id}");
+                match error.details() {
+                    CodexErrorDetails::ThreadNotFound(_) => invalid_request_with_reason(
+                        message,
+                        InvalidRequestReason::ThreadNotLoaded { thread_id },
+                    ),
+                    _ => invalid_request(message),
+                }
+            })?;
 
         Ok((thread_id, thread))
     }
@@ -2912,7 +2947,7 @@ impl ThreadRequestProcessor {
                 item_id: terminal.item_id,
                 process_id: terminal.process_id,
                 turn_id: terminal.turn_id,
-                command: terminal.command,
+                command: codex_secrets::redact_secrets(terminal.command),
                 cwd: terminal.cwd.into(),
                 os_pid: None,
                 cpu_percent: None,
@@ -6942,12 +6977,38 @@ fn paginated_history_list_error(err: ThreadStoreError) -> JSONRPCErrorError {
 fn stored_thread_item_to_api_item(
     stored_item: &codex_thread_store::StoredThreadItem,
 ) -> Result<ThreadItem, JSONRPCErrorError> {
-    let payload = serde_json::from_slice(&stored_item.item_json).map_err(|err| {
+    let mut payload = serde_json::from_slice(&stored_item.item_json).map_err(|err| {
         internal_error(format!(
             "failed to deserialize stored thread item {}: {err}",
             stored_item.item_id
         ))
     })?;
+    // Older snapshots retain only the shell-formatted argv, optionally with steps.
+    if let ThreadItemPayload::CommandExecution {
+        command,
+        cwd,
+        display,
+        exit_code,
+        aggregated_output,
+        ..
+    } = &mut payload
+        && display
+            .as_ref()
+            .is_none_or(|display| display.script.is_empty())
+        && let Some(argv) = shlex::split(command)
+        && let Some(restored) = codex_app_server_protocol::command_display(
+            &argv,
+            cwd.to_inferred_path_uri().as_ref(),
+            *exit_code,
+            aggregated_output.as_deref().unwrap_or_default(),
+        )
+    {
+        if let Some(display) = display {
+            display.script = restored.script;
+        } else {
+            *display = Some(restored);
+        }
+    }
     Ok(ThreadItem {
         payload,
         started_at_ms: stored_item.started_at_ms,

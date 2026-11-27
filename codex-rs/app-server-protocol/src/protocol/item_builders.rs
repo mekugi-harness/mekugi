@@ -64,18 +64,18 @@ impl CommandExecutionPresentation {
     ) -> Self {
         Self {
             command: redact_secrets(shlex_join(command)),
-            display: command_display(command, cwd, exit, output, parsed_cmd.len()),
+            display: command_display(command, Some(cwd), exit, output),
             command_actions: command_actions_for_path_uri(parsed_cmd, cwd),
         }
     }
 }
 
-fn command_display(
+/// Projects authored shell text and any separable steps from an invocation.
+pub fn command_display(
     command: &[String],
-    cwd: &PathUri,
+    cwd: Option<&PathUri>,
     exit: Option<i32>,
     output: &str,
-    action_count: usize,
 ) -> Option<CommandDisplay> {
     let (shell, script) =
         codex_shell_command::bash::extract_bash_command(command).or_else(|| {
@@ -86,14 +86,15 @@ fn command_display(
                 && matches!(flag.as_str(), "-c" | "-lc"))
             .then_some((shell.as_str(), script.as_str()))
         })?;
-    if action_count < 2 && !script.contains([';', '&', '|', '\n']) {
-        return None;
-    }
     let script = redact_secrets(script.to_owned());
-    let Some((mut segments, target)) = codex_shell_command::bash::display_steps(&script) else {
-        // Multiple summaries may describe a single pipeline, not separate steps.
-        return (action_count > 1).then_some(CommandDisplay {
-            segments: vec![script],
+    let steps = script
+        .contains([';', '&', '|', '\n'])
+        .then(|| codex_shell_command::bash::display_steps(&script))
+        .flatten();
+    let Some((mut segments, target)) = steps else {
+        return Some(CommandDisplay {
+            script,
+            segments: vec![],
             effective_cwd: None,
         });
     };
@@ -120,13 +121,14 @@ fn command_display(
         {
             return None;
         }
-        cwd.join(&dir).ok().map(Into::into)
+        cwd?.join(&dir).ok().map(Into::into)
     });
     if effective_cwd.is_some() {
         segments.remove(0);
     }
     Some(CommandDisplay {
         segments: segments.into_iter().map(str::to_owned).collect(),
+        script,
         effective_cwd,
     })
 }
@@ -335,13 +337,7 @@ pub fn build_item_from_guardian_event(
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status,
-                display: command_display(
-                    &argv,
-                    &PathUri::from(cwd.clone()),
-                    None,
-                    "",
-                    command_actions.len(),
-                ),
+                display: command_display(&argv, Some(&PathUri::from(cwd.clone())), None, ""),
                 command_actions,
                 aggregated_output: None,
                 exit_code: None,

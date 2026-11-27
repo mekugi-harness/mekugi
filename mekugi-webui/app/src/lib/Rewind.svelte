@@ -31,6 +31,7 @@
   let failure = $state<string>();
   let actions = $state<HTMLElement>();
   const lifetime = new AbortController();
+  let previewRequest: AbortController | undefined;
 
   onMount(() => {
     void load(null);
@@ -70,20 +71,22 @@
   }
 
   async function choose(target: Target) {
+    previewRequest = new AbortController();
+    const signal = AbortSignal.any([lifetime.signal, previewRequest.signal]);
     chosen = target;
     failure = undefined;
     await tick();
+    if (signal.aborted) return;
     actions?.querySelector<HTMLButtonElement>("[data-initial-focus]")?.focus();
     try {
       const result = await machine.request<RewindPreview>(
         "thread/revert/preview",
         { threadId: thread, beforeTurnId: target.turnId, beforeItemId: target.itemId },
-        { signal: lifetime.signal },
+        { signal },
       );
-      if (chosen === target) preview = result;
+      if (!signal.aborted) preview = result;
     } catch (err) {
-      if (!lifetime.signal.aborted && chosen === target)
-        preview = { changeIds: [], reason: errorText(err, true) };
+      if (!signal.aborted) preview = { changeIds: [], reason: errorText(err, true) };
     }
   }
 
@@ -119,6 +122,7 @@
         variant="quiet"
         disabled={pending}
         onclick={() => {
+          previewRequest?.abort();
           chosen = undefined;
           preview = undefined;
           failure = undefined;

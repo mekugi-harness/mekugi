@@ -168,10 +168,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   requires an endpoint, cannot redirect inference or catalog requests, and has
   no built-in price. Native exchange measurements feed launch-wide diagnostics
   without retaining prompts, tool input, or response text in the private log.
-- Native code-mode input events feed provisional live diffs, and Saved Diff
-  reads the session's native capture store alongside legacy captures and
-  client-side user shell edits so newly native-captured edits appear in the
-  Diff pane.
+- Native patch input feeds provisional live diffs. App-server v2 also sends
+  `item/commandExecution/changesUpdated` for bounded, observed shell edits
+  before the command exits. `thread/changes/live` reads the current snapshots
+  for a thread when attaching or reconnecting. These previews do not establish
+  change IDs or enter rollout history; Saved Diff reads settled captures.
 - When session naming is enabled, new persistent Main threads can receive a
   native title from a one-shot, untooled request carrying `thread_title` turn
   metadata (`gpt-6-luna` on built-in OpenAI, skipping local spend/budget
@@ -246,7 +247,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   on `thread/revert`, and feature-use reads. Native observation supplies assignment,
   usage, and progress facts to Mekugi without a second agent registry.
   When the user opts in to browser predictions, `thread/prediction/request`
-  samples the selected finished turn without adding the suggestion to history.
+  samples the selected finished turn without adding it to history and returns
+  the suggestion in the request's response instead of a separate notification.
+  Native account eligibility gates automatic terminal suggestions.
   Rewind uses `thread/revert` for both choices. Clients can include the verified
   IDs from `thread/revert/preview` to undo captured edits without a shell turn.
   If the history cutover fails, the server restores the workspace from its undo
@@ -269,9 +272,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   thread's workspace without traversing directory symlinks. VCS metadata is
   excluded even when ignored files are requested. The explicit-root fuzzy
   search interface is unchanged.
-- `thread/changes/read` returns captured edit provenance and signed line
-  totals from native history. Web Saved Diff pages by caller; terminal
-  Details join captured effects to the original execution.
+- `thread/changes/read` returns captured edit provenance, its display label,
+  and signed line totals from native history. Web Saved Diff pages by caller;
+  terminal Details join captured effects to the original execution.
 - `thread/queue/shellCommand` places a standalone user-shell turn in queue
   order, preserving native edit capture without submitting a model prompt.
   Existing queued prompts retain their stored format.
@@ -287,10 +290,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   A unified-exec rejection before launch publishes its native result in the
   command item, separately from closure of the approval prompt.
 - A named turn interrupt can stop only that turn, even if it finishes and its
-  replacement starts before the interrupt reaches the runtime.
-- Optional command display metadata identifies authored shell segments and a
-  resolved effective working directory. Batch status and output still belong
-  to the whole invocation, not to individual segments.
+  replacement starts before the interrupt reaches the runtime. JSON-RPC error
+  data identifies a stale interrupt target or an unloaded process-list thread.
+- Command display metadata identifies the authored shell script, its segments
+  and resolved effective working directory for live and saved commands.
+  Batch status and output still belong to the whole invocation, not to
+  individual segments.
 - Thread input-history reads and appends let the terminal save and recover
   drafts through the native input history, honoring its configured persistence.
 - The private Unix control socket serves a restricted remote-human WebSocket

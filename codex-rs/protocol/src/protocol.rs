@@ -1754,6 +1754,17 @@ pub enum EventMsg {
     /// Incremental chunk of output from a running command.
     ExecCommandOutputDelta(ExecCommandOutputDeltaEvent),
 
+    /// Best-effort, live-only observed changes for a running shell command.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    ExecCommandChangesUpdated {
+        call_id: String,
+        source: ExecCommandSource,
+        command: String,
+        changes: Vec<crate::items::FileUpdateChange>,
+    },
+
     /// Terminal interaction for an in-progress command (stdin sent and stdout observed).
     TerminalInteraction(TerminalInteractionEvent),
 

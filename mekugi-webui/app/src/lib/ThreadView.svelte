@@ -557,25 +557,27 @@
               />
             {/each}
             {#if currentQuestion}
-              <Prompt
-                item={currentQuestion.call}
-                questionIndex={currentQuestion.index}
-                position={questionPosition}
-                total={questionChannel.length}
-                onquestion={(index) => {
-                  const target = currentQuestion.call.questions[index];
-                  if (target) selectedQuestion = target.id;
-                }}
-                onprevious={() => {
-                  const prev = questionChannel[questionPosition - 1];
-                  if (prev) selectedQuestion = prev.question.id;
-                }}
-                onnext={() => {
-                  const next = questionChannel[questionPosition + 1];
-                  if (next) selectedQuestion = next.question.id;
-                }}
-                unavailable={stream.connection !== "open"}
-              />
+              {#key currentQuestion.call.id}
+                <Prompt
+                  item={currentQuestion.call}
+                  questionIndex={currentQuestion.index}
+                  position={questionPosition}
+                  total={questionChannel.length}
+                  onquestion={(index) => {
+                    const target = currentQuestion.call.questions[index];
+                    if (target) selectedQuestion = target.id;
+                  }}
+                  onprevious={() => {
+                    const prev = questionChannel[questionPosition - 1];
+                    if (prev) selectedQuestion = prev.question.id;
+                  }}
+                  onnext={() => {
+                    const next = questionChannel[questionPosition + 1];
+                    if (next) selectedQuestion = next.question.id;
+                  }}
+                  unavailable={stream.connection !== "open"}
+                />
+              {/key}
             {/if}
           </div>
         {/if}
@@ -637,7 +639,7 @@
             <DetailsPanel
               entry={selectedEntry}
               link={selectedLink}
-              thread={id}
+              thread={displayed}
               {machine}
               onreference={stream.connection === "open"
                 ? (text, description, source) => {

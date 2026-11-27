@@ -1,4 +1,4 @@
-import { commandValues, unwrapShellCommand } from "./command";
+import { commandValues } from "./command";
 import { roleColor } from "./agents";
 import { selectionAppendix, textUploadFrames, type InitialInput } from "./attachments";
 import { threadStatusToStatus, type Machine } from "./hub.svelte";
@@ -9,9 +9,11 @@ import type {
   AgentState,
   BackgroundTerminal,
   BackgroundTerminalsPage,
+  CommandExecutionChangesUpdatedNotification,
   ContentReference,
   ContentResourceResponse,
   Entry,
+  FileUpdateChange,
   HookRunSummary,
   Input,
   Preview,
@@ -24,6 +26,7 @@ import type {
   Status,
   Thread,
   ThreadChangeFileDiff,
+  ThreadChangesLiveResponse,
   ThreadChangesReadResponse,
   ThreadItem,
   ThreadListResponse,
@@ -89,8 +92,6 @@ export function mcpToolEnvelope(item: Extract<ThreadItem, { type: "mcpToolCall" 
 
 const inlineAudio = /^data:audio\/(?:aac|flac|mp4|mpeg|ogg|wav|wave|webm|x-wav);base64,/i;
 
-export { unwrapShellCommand } from "./command";
-
 function countDiffLines(
   diff: string | undefined,
   kind: string,
@@ -137,6 +138,8 @@ export interface Gone {
 }
 
 const empty: Feed = { order: [], entries: {} };
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 function threadStatusToAgentState(status: ThreadStatus): AgentState {
   switch (status.type) {
@@ -177,8 +180,6 @@ export function itemToEntry(
       const parts: string[] = [];
       const images: string[] = [];
       const spans: TextSpan[] = [];
-      const encoder = new TextEncoder();
-      const decoder = new TextDecoder();
       let offset = 0;
       for (const input of item.content) {
         if (input.type === "text") {
@@ -675,6 +676,7 @@ export function buildFeed(
   return { attachment, order, entries, revision: seq };
 }
 
+// apply_patch sends raw contents for additions and deletions, unlike shell observations.
 function nativePatchDiff(kind: "add" | "delete" | "update", diff: string): string {
   if (kind === "update" || !diff) return diff;
   const header = kind === "add" ? "@@ -0 +1 @@" : "@@ -1 +0 @@";
@@ -684,6 +686,20 @@ function nativePatchDiff(kind: "add" | "delete" | "update", diff: string): strin
     .split("\n")
     .map((line) => sign + line);
   return [header, ...lines].join("\n");
+}
+
+function previewFile({ path, kind, diff }: FileUpdateChange): ReviewFile {
+  const afterPath = kind.type === "update" ? (kind.move_path ?? path) : path;
+  return {
+    Path: path,
+    BeforePath: kind.type === "add" ? undefined : path,
+    AfterPath: kind.type === "delete" ? undefined : afterPath,
+    Diff: diff,
+  };
+}
+
+function previewId(thread: string, turn: string, item: string): string {
+  return JSON.stringify([thread, turn, item]);
 }
 
 const changesPageSize = 20;
@@ -715,7 +731,7 @@ function changesToReview(
       {
         Change: change.changeId,
         Caller: change.authorThreadId ? callerName(change.authorThreadId) : "",
-        Source: change.sourceKind,
+        Source: change.sourceLabel,
       },
     ]),
   );
@@ -905,6 +921,7 @@ export class Stream {
   #firstOwnTurn?: string;
   #turnsBackwardsCursor?: string;
   #liveItemIds = new Set<string>();
+  #shellReads = new Map<string, Set<string>>();
   #hooks: HookRecord[] = [];
   #hooksByThread = new Map<string, HookRecord[]>();
   #hookSeq = 0;
@@ -1087,6 +1104,8 @@ export class Stream {
       for (const member of this.family?.threads ?? [id]) {
         void this.#loadProcesses(member, machine);
       }
+      const shellThreads = id === this.family?.root ? this.family.threads : [id];
+      void this.#loadLiveShells(shellThreads, machine, signal);
       void this.#loadSubtree(subtreeRoot, machine, signal);
       void this.#loadChanges(id, machine, signal);
     } catch (err) {
@@ -1207,6 +1226,10 @@ export class Stream {
       });
       this.roster = { total: agents.length, agents };
       this.#observeRoles();
+      if (this.#id === root.id) {
+        const added = this.family.threads.filter((thread) => !previous.has(thread));
+        void this.#loadLiveShells(added, machine, signal);
+      }
     } catch {
       // Subtree listing is optional for single-agent threads.
     }
@@ -1301,7 +1324,7 @@ export class Stream {
     fields: Pick<Preview, "Files" | "Input" | "Tool" | "Truncated">,
     caller?: string,
   ): void {
-    const key = JSON.stringify([thread, turn, item]);
+    const key = previewId(thread, turn, item);
     const preview: Preview = {
       ID: key,
       Thread: thread,
@@ -1316,6 +1339,85 @@ export class Stream {
     this.live = [...this.live.filter((edit) => edit.ID !== key), preview].slice(-16);
   }
 
+  #updateShellPreview(
+    thread: string,
+    turn: string,
+    item: string,
+    command: string,
+    userShell: boolean,
+    files: ReviewFile[],
+  ): void {
+    const maxSource = 16 * 1024;
+    this.#updatePreview(
+      thread,
+      turn,
+      item,
+      {
+        Files: files,
+        Input: command.slice(0, maxSource),
+        Tool: "Shell",
+        Truncated: command.length > maxSource,
+      },
+      userShell ? "User shell" : undefined,
+    );
+  }
+
+  #updateShellSample(sample: CommandExecutionChangesUpdatedNotification): void {
+    const { threadId, turnId, itemId, command, source, changes } = sample;
+    const key = previewId(threadId, turnId, itemId);
+    if (!changes.length && !this.live.some((edit) => edit.ID === key)) return;
+    this.#updateShellPreview(
+      threadId,
+      turnId,
+      itemId,
+      command,
+      source === "userShell",
+      changes.map(previewFile),
+    );
+  }
+
+  async #loadLiveShells(threads: string[], machine: Machine, signal: AbortSignal): Promise<void> {
+    for (const thread of threads) {
+      if (signal.aborted) return;
+      if (this.#showsEdit(thread)) await this.#loadLiveShell(thread, machine, signal);
+    }
+  }
+
+  async #loadLiveShell(thread: string, machine: Machine, signal: AbortSignal): Promise<void> {
+    // Pushes and exact completions observed during the read win over its snapshot.
+    const touched = new Set<string>();
+    this.#shellReads.set(thread, touched);
+    const missing = new Set(
+      this.live
+        .filter(
+          (edit) =>
+            edit.Thread === thread && edit.Tool === "Shell" && !edit.Complete && !edit.Settling,
+        )
+        .map((edit) => edit.ID),
+    );
+    try {
+      const { data } = await machine.request<ThreadChangesLiveResponse>(
+        "thread/changes/live",
+        { threadId: thread },
+        { signal },
+      );
+      if (signal.aborted || this.#shellReads.get(thread) !== touched || !this.#showsEdit(thread))
+        return;
+      for (const sample of data) {
+        if (sample.threadId !== thread) continue;
+        const key = previewId(thread, sample.turnId, sample.itemId);
+        missing.delete(key);
+        if (!touched.has(key)) this.#updateShellSample(sample);
+      }
+      if (missing.size)
+        this.live = this.live.filter((edit) => !missing.has(edit.ID) || touched.has(edit.ID));
+    } catch {
+      // A failed refresh must not discard the last observed preview.
+    } finally {
+      if (this.#shellReads.get(thread) === touched) this.#shellReads.delete(thread);
+    }
+  }
+
   async #settlePreview(
     thread: string,
     turn: string,
@@ -1323,12 +1425,14 @@ export class Stream {
     id: string,
     machine: Machine,
   ): Promise<void> {
-    const key = JSON.stringify([thread, turn, item]);
-    if (!this.live.some((edit) => edit.ID === key && !edit.Complete && !edit.Settling)) return;
+    const key = previewId(thread, turn, item);
+    const preview = this.live.find((edit) => edit.ID === key);
+    if (!preview || preview.Complete || preview.Settling) return;
     this.live = this.live.map((edit) => (edit.ID === key ? { ...edit, Settling: true } : edit));
     const signal = this.#requests.signal;
     let savedPath: string | undefined;
     let savedFiles: ReviewFile[] | undefined;
+    let status = preview.Status;
     try {
       const response = await machine.request<ThreadChangesReadResponse>(
         "thread/changes/read",
@@ -1336,12 +1440,19 @@ export class Stream {
         { signal },
       );
       const file = response.files[0];
-      if (response.changes.some((origin) => origin.itemId === item && origin.turnId === turn)) {
+      if (
+        response.changes.some(
+          (origin) =>
+            origin.threadId === thread && origin.turnId === turn && origin.itemId === item,
+        )
+      ) {
         savedPath = file?.absolutePath ?? file?.path;
         savedFiles = response.files.map(changeFileReview);
+      } else if (preview.Tool === "Shell") {
+        savedFiles = [];
       }
     } catch {
-      // A provisional preview is not evidence of persisted edits.
+      if (preview.Tool === "Shell") status = "unavailable: Saved Diff could not be read";
     }
     if (signal.aborted) return;
     this.live = this.live.map((edit) =>
@@ -1352,6 +1463,7 @@ export class Stream {
             Settling: false,
             Files: savedFiles ?? edit.Files,
             SavedPath: savedPath,
+            Status: status,
           }
         : edit,
     );
@@ -1373,7 +1485,12 @@ export class Stream {
       );
       processes = page.data.map((process) => ({ ...process, threadId }));
     } catch (error) {
-      if (!(error instanceof TransportError && error.message === `thread not found: ${threadId}`))
+      const rpcError = error instanceof TransportError ? error.rpcError : undefined;
+      if (
+        rpcError?.code !== -32600 ||
+        rpcError.data?.reason !== "threadNotLoaded" ||
+        rpcError.data.threadId !== threadId
+      )
         return;
     }
     if (current()) {
@@ -1416,8 +1533,10 @@ export class Stream {
         ) {
           const rootId = this.family?.root ?? parent;
           const threads = this.family?.threads ?? [rootId];
-          if (!threads.includes(started.id)) {
+          const added = !threads.includes(started.id);
+          if (added) {
             this.family = { root: rootId, threads: [...threads, started.id] };
+            this.#workspaces.set(started.id, started.cwd);
             void this.#loadProcesses(started.id, machine);
           }
           const nextAgent = threadToAgent(started, 1);
@@ -1428,6 +1547,9 @@ export class Stream {
               : [...this.roster.agents, nextAgent];
           this.roster = { total: agents.length, agents };
           this.#observeRoles();
+          if (added && this.#showsEdit(started.id)) {
+            void this.#loadLiveShell(started.id, machine, this.#requests.signal);
+          }
         }
         break;
       }
@@ -1438,6 +1560,7 @@ export class Stream {
       }
       case "thread/closed": {
         const { threadId } = notification.params;
+        this.#shellReads.delete(threadId);
         this.#processReads.delete(threadId);
         this.processes = this.processes.filter((process) => process.threadId !== threadId);
         break;
@@ -1552,12 +1675,15 @@ export class Stream {
       }
       case "turn/completed": {
         const targetId = notification.params.threadId;
+        const turn = notification.params.turn;
         const matchesMain = targetId === id;
         const matchesRoster = this.roster.agents.some((a) => a.thread === targetId);
         if (!matchesMain && !matchesRoster) return;
-        const turn = notification.params.turn;
         this.live = this.live.map((edit) =>
-          edit.Thread === targetId && edit.Turn === turn.id && !edit.Settling
+          edit.Thread === targetId &&
+          edit.Turn === turn.id &&
+          edit.Tool !== "Shell" &&
+          !edit.Settling
             ? { ...edit, Complete: true }
             : edit,
         );
@@ -1625,22 +1751,20 @@ export class Stream {
         const started = notification.method === "item/started";
         const { item, turnId } = notification.params;
         if (this.#showsEdit(targetId)) {
+          const key = previewId(targetId, turnId, item.id);
           if (item.type === "commandExecution" && item.status === "inProgress" && started) {
             const userShell = item.source === "userShell";
-            if (userShell || item.commandActions?.some((action) => action.type === "unknown")) {
-              const command = unwrapShellCommand(item.command);
-              const maxSource = 16 * 1024;
-              this.#updatePreview(
+            if (
+              (userShell || item.commandActions?.some((action) => action.type === "unknown")) &&
+              !this.live.some((edit) => edit.ID === key)
+            ) {
+              this.#updateShellPreview(
                 targetId,
                 turnId,
                 item.id,
-                {
-                  Files: [],
-                  Input: command.slice(0, maxSource),
-                  Tool: "Shell",
-                  Truncated: command.length > maxSource,
-                },
-                userShell ? "User shell" : undefined,
+                item.display?.script ?? item.command,
+                userShell,
+                [],
               );
             }
           } else if (
@@ -1648,6 +1772,16 @@ export class Stream {
             ((item.type === "commandExecution" && item.status !== "inProgress") ||
               item.type === "fileChange")
           ) {
+            if (item.type === "commandExecution") {
+              const reading = this.#shellReads.get(targetId);
+              if (reading) {
+                reading.add(key);
+                if (!this.live.some((edit) => edit.ID === key)) {
+                  // The snapshot will skip this completion, so no live card will refresh Saved Diff.
+                  void this.#loadChanges(id, machine, this.#requests.signal);
+                }
+              }
+            }
             void this.#settlePreview(targetId, turnId, item.id, id, machine);
           }
         }
@@ -1738,6 +1872,13 @@ export class Stream {
         this.#rebuildMain();
         break;
       }
+      case "item/commandExecution/changesUpdated": {
+        const { threadId, turnId, itemId } = notification.params;
+        if (!this.#showsEdit(threadId)) return;
+        this.#shellReads.get(threadId)?.add(previewId(threadId, turnId, itemId));
+        this.#updateShellSample(notification.params);
+        break;
+      }
       case "item/reasoning/summaryTextDelta": {
         if (notification.params.threadId !== id) return;
         this.#appendItemDelta(notification.params.turnId, notification.params.itemId, (item) => {
@@ -1764,16 +1905,9 @@ export class Stream {
           Tool: "Edit",
           Input: "",
           Truncated: false,
-          Files: changes.map(({ path, kind, diff }) => ({
-            Path: path,
-            BeforePath: kind.type === "add" ? undefined : path,
-            AfterPath:
-              kind.type === "delete"
-                ? undefined
-                : kind.type === "update"
-                  ? (kind.move_path ?? path)
-                  : path,
-            Diff: nativePatchDiff(kind.type, diff),
+          Files: changes.map((change) => ({
+            ...previewFile(change),
+            Diff: nativePatchDiff(change.kind.type, change.diff),
           })),
         });
         break;
@@ -1785,6 +1919,7 @@ export class Stream {
       }
       case "thread/reverted": {
         if (notification.params.threadId !== id) return;
+        this.#shellReads.clear();
         this.live = [];
         void this.#hydrate(id, machine);
         break;
@@ -1919,6 +2054,7 @@ export class Stream {
     this.#id = undefined;
     this.#machine = undefined;
     this.#liveItemIds.clear();
+    this.#shellReads.clear();
     this.#hooks = [];
     this.#stopNotifications?.();
     this.#stopNotifications = undefined;

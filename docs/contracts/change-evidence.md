@@ -36,6 +36,12 @@
   boundaries, including dynamic patches inside `exec` cells. Shell targets
   include tracked `mktemp` files and direct redirects through `SESSION_TMP`.
   Evidence is written to the native store before an ID is exposed.
+- Browser Live shows bounded provisional snapshots of authored paths the
+  native shell observer witnessed, with thread, turn, and command identity.
+  It does not predict changes from shell text. `thread/changes/live` restores
+  available snapshots on attach, and command updates replace each snapshot
+  until exit even if the turn has already ended. Saved Diff uses the
+  persisted capture rather than the preview.
 - Native `mchanges`, preload, context reset and agent handoffs consume that
   store. Both clients read saved changes, including user shell edits, through
   `thread/changes/read`. A capture can be attributed to an agent or to an

@@ -2,6 +2,47 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_thread_store::ThreadStoreError;
 use pretty_assertions::assert_eq;
 
+#[test]
+fn stored_command_display_recovers_authored_shell_text() {
+    use codex_thread_store::StoredThreadItem;
+    use serde_json::json;
+
+    for (script, old_display, steps) in [
+        (r#"printf "%s" 'a b'"#, None, json!([])),
+        (
+            "cd sub && pwd",
+            Some(json!({"effectiveCwd": "/repo/sub", "segments": ["pwd"]})),
+            json!(["pwd"]),
+        ),
+    ] {
+        let command = shlex::try_join(["/bin/dash", "-c", script]).unwrap();
+        let mut old = json!({
+            "type": "commandExecution", "id": "c", "command": command, "cwd": "/repo",
+            "commandActions": [], "status": "completed", "exitCode": 0,
+        });
+        if let Some(display) = old_display {
+            old["display"] = display;
+        }
+        let item = super::stored_thread_item_to_api_item(&StoredThreadItem {
+            turn_id: "turn".into(),
+            item_id: "c".into(),
+            updated_at_ordinal: 0,
+            created_at_ms: 0,
+            started_at_ms: None,
+            completed_at_ms: None,
+            item_json: serde_json::to_vec(&old).unwrap(),
+        })
+        .unwrap();
+        let wire = serde_json::to_value(item).unwrap();
+        assert_eq!(wire["display"]["script"], script);
+        assert_eq!(wire["display"]["segments"], steps);
+        assert_eq!(
+            wire["display"]["effectiveCwd"],
+            old["display"]["effectiveCwd"]
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn thread_cwd_rejects_invalid_utf8() {

@@ -49,7 +49,7 @@ const {
   skillsAfterEdit,
   toNativeUserInput,
 } = await import("./semantic.svelte.ts");
-const { Stream, itemToEntry, unwrapShellCommand } = await import("./stream.svelte.ts");
+const { Stream, itemToEntry } = await import("./stream.svelte.ts");
 const { TransportError } = await import("./transport.ts");
 
 function fakeMachine(handlers = {}) {
@@ -91,6 +91,9 @@ function fakeMachine(handlers = {}) {
     },
     emitNotification(n) {
       for (const fn of notificationListeners) fn(n);
+    },
+    emitOpen() {
+      for (const fn of openListeners) fn();
     },
     emitServerRequest(r) {
       for (const fn of requestListeners) fn(r);
@@ -159,6 +162,34 @@ test("selected text reaches the model but live and saved messages show only its 
     assert.equal(entry.text, text);
     assert.deepEqual(entry.spans, [{ Start: 4, End: 23, Kind: 2 }]);
   }
+});
+
+test("re-enabling predictions ignores the previous reply for the same turn", async () => {
+  const replies = [];
+  const machine = fakeMachine({
+    "thread/prediction/request": () => {
+      const reply = Promise.withResolvers();
+      replies.push(reply);
+      return reply.promise;
+    },
+  });
+  const control = new ThreadControl();
+  control.connect("main", machine);
+  const completed = {
+    method: "turn/completed",
+    params: { threadId: "main", turn: { id: "turn", status: "completed" } },
+  };
+  control.setPredictions(true);
+  machine.emitNotification(completed);
+  control.setPredictions(false);
+  control.setPredictions(true);
+  machine.emitNotification(completed);
+  assert.equal(replies.length, 2);
+  replies[1].resolve({ text: "Current suggestion" });
+  replies[0].resolve({ text: "Stale suggestion" });
+  await new Promise(setImmediate);
+  assert.equal(control.prediction, "Current suggestion");
+  control.release();
 });
 
 test("queued sendInput supplies clientUserMessageId and refreshQueue reads response.data", async () => {
@@ -754,7 +785,7 @@ test("live edits follow patch notifications independently of saved changes", asy
   assert.equal(stream.live[0].SavedPath, undefined);
   assert.match(stream.live[0].Files[0].Diff, /latest/);
   finishRead({
-    changes: [{ itemId: "patch-1", turnId: turn.id }],
+    changes: [{ threadId: "t1", itemId: "patch-1", turnId: turn.id }],
     files: [{ absolutePath: "/repo/live.txt", unifiedDiff: "@@ -0 +1 @@\n+retained" }],
   });
   await new Promise(setImmediate);
@@ -770,6 +801,54 @@ test("live edits follow patch notifications independently of saved changes", asy
   stream.close();
 });
 
+test("background-terminal refresh clears only the thread reported unloaded", async () => {
+  const root = { id: "t1", cwd: "/repo", status: { type: "idle" }, turns: [] };
+  const child = { ...root, id: "t2", parentThreadId: root.id };
+  let refusal;
+  const machine = fakeMachine({
+    "thread/resume": () => ({ thread: root }),
+    "thread/subtree/list": () => ({ data: [root, child] }),
+    "thread/backgroundTerminals/list": ({ threadId }) => {
+      if (threadId === child.id && refusal) throw refusal;
+      return { data: [{ processId: `process-${threadId}` }] };
+    },
+  });
+  const stream = new Stream();
+  stream.connect(root.id, machine);
+  await new Promise(setImmediate);
+  const processIds = () => stream.processes.map(({ processId }) => processId);
+  assert.deepEqual(processIds(), ["process-t1", "process-t2"]);
+
+  const refreshChild = async () => {
+    machine.emitNotification({
+      method: "thread/backgroundTerminals/changed",
+      params: { threadId: child.id },
+    });
+    await new Promise(setImmediate);
+  };
+  const missingThread = (threadId) => {
+    const message = "That thread has gone away.";
+    return new TransportError(message, "refused", undefined, {
+      code: -32600,
+      message,
+      data: { reason: "threadNotLoaded", threadId },
+    });
+  };
+
+  refusal = new TransportError(`thread not found: ${child.id}`, "refused");
+  await refreshChild();
+  assert.deepEqual(processIds(), ["process-t1", "process-t2"]);
+
+  refusal = missingThread(root.id);
+  await refreshChild();
+  assert.deepEqual(processIds(), ["process-t1", "process-t2"]);
+
+  refusal = missingThread(child.id);
+  await refreshChild();
+  assert.deepEqual(processIds(), ["process-t1"]);
+  stream.close();
+});
+
 test("saved edits page, retain exact caller provenance, and discard stale pages", async () => {
   const root = { id: "t1", cwd: "/repo", status: { type: "idle" }, turns: [] };
   const child = { ...root, id: "t2", parentThreadId: "t1", agentNickname: "worker" };
@@ -778,6 +857,7 @@ test("saved edits page, retain exact caller provenance, and discard stale pages"
     authorThreadId: "t2",
     threadId: "t2",
     sourceKind: "ShellWrite",
+    sourceLabel: "Shell",
   };
   const workerFile = {
     path: "shared.txt",
@@ -814,7 +894,7 @@ test("saved edits page, retain exact caller provenance, and discard stale pages"
   stream.connect(root.id, machine);
   await stream.refresh();
   assert.deepEqual(stream.review.files[0].origins, [
-    { Change: "apple1", Caller: "worker", Source: "ShellWrite" },
+    { Change: "apple1", Caller: "worker", Source: "Shell" },
   ]);
   assert.deepEqual(stream.reviewOverview.callers[0].counts, { Added: 1, Removed: 1 });
   assert.deepEqual(stream.reviewOverview.counts.Callers, { t2: { Added: 1, Removed: 1 } });
@@ -850,7 +930,7 @@ test("saved edits page, retain exact caller provenance, and discard stale pages"
   stream.close();
 });
 
-test("live shell source follows the caller and hands off only a persisted edit", async () => {
+test("Main recovers a late delegate's shell edits and follows exact command completion", async () => {
   const main = { id: "t1", cwd: "/main", status: { type: "idle" }, turns: [] };
   const worker = {
     ...main,
@@ -860,57 +940,158 @@ test("live shell source follows the caller and hands off only a persisted edit",
     agentNickname: "writer",
   };
   const empty = { changes: [], files: [] };
+  let savedDuringAttach = false;
+  const snapshot = Promise.withResolvers();
+  const sample = {
+    threadId: worker.id,
+    turnId: "turn-1",
+    itemId: "shell-1",
+    command: "bash -c 'printf live > out.txt'",
+    source: "unifiedExecStartup",
+    changes: [{ path: "/worker/out.txt", kind: { type: "add" }, diff: "@@ -0 +1 @@\n+live" }],
+  };
   const machine = fakeMachine({
     "thread/resume": () => ({ thread: main }),
-    "thread/subtree/list": () => ({ data: [main, worker] }),
-    "thread/changes/read": ({ threadId, itemId }) =>
-      threadId === "t2" && itemId === "shell-1"
-        ? {
-            changes: [{ itemId, turnId: "turn-1" }],
-            files: [{ absolutePath: "/worker/out.txt", unifiedDiff: "@@ -0 +1 @@\n+saved" }],
-          }
-        : empty,
+    "thread/subtree/list": () => ({ data: [main] }),
+    "thread/changes/live": ({ threadId }) =>
+      threadId === worker.id ? snapshot.promise : { data: [] },
+    "thread/changes/read": ({ threadId, itemId }) => {
+      if (threadId === worker.id && itemId === sample.itemId)
+        return {
+          changes: [{ threadId, itemId, turnId: sample.turnId }],
+          files: [{ absolutePath: "/worker/out.txt", unifiedDiff: "@@ -0 +1 @@\n+saved" }],
+        };
+      if (threadId === main.id && !itemId && savedDuringAttach)
+        return { ...empty, files: [{ absolutePath: "/worker/finished.txt" }] };
+      return empty;
+    },
   });
   const stream = new Stream();
   stream.connect(main.id, machine);
   await stream.refresh();
-  const notify = (method, threadId, status) =>
+  const notify = (status, turnId = sample.turnId, itemId = sample.itemId) =>
     machine.emitNotification({
-      method,
+      method: "item/completed",
       params: {
-        threadId,
-        turnId: "turn-1",
+        threadId: worker.id,
+        turnId,
         item: {
           type: "commandExecution",
-          id: "shell-1",
-          command: "printf saved > out.txt",
-          source: "unifiedExecStartup",
+          id: itemId,
+          command: sample.command,
+          source: sample.source,
           commandActions: [{ type: "unknown" }],
           status,
         },
       },
     });
-  notify("item/started", "unrelated", "inProgress");
+
+  machine.emitNotification({ method: "item/commandExecution/changesUpdated", params: sample });
   assert.deepEqual(stream.live, []);
-  notify("item/started", "t2", "inProgress");
+  machine.emitNotification({ method: "thread/started", params: { thread: worker } });
+  savedDuringAttach = true;
+  notify("completed", sample.turnId, "already-finished");
+  snapshot.resolve({
+    data: [sample, { ...sample, itemId: "already-finished" }, { ...sample, threadId: "unrelated" }],
+  });
+  await new Promise(setImmediate);
+  assert.equal(stream.review.files[0].path, "/worker/finished.txt");
+  assert.equal(stream.live.length, 1);
   assert.equal(stream.live[0].Caller, "writer");
   assert.equal(stream.live[0].Workspace, "/worker");
-  assert.equal(stream.live[0].Input, "printf saved > out.txt");
-  notify("item/completed", "t2", "inProgress");
+  assert.equal(stream.live[0].Input, sample.command);
+  assert.match(stream.live[0].Files[0].Diff, /\+live/);
+  machine.emitNotification({
+    method: "turn/completed",
+    params: { threadId: worker.id, turn: { id: sample.turnId, status: "completed" } },
+  });
+  machine.emitNotification({
+    method: "turn/started",
+    params: { threadId: worker.id, turn: { id: "turn-2", status: "inProgress" } },
+  });
+  machine.emitNotification({
+    method: "item/commandExecution/changesUpdated",
+    params: { ...sample, changes: [{ ...sample.changes[0], diff: "@@ -0 +1 @@\n+late" }] },
+  });
+  notify("completed", "turn-2");
+  notify("inProgress");
+  assert.equal(stream.live[0].Complete, undefined);
   assert.equal(stream.live[0].Settling, undefined);
-  notify("item/completed", "t2", "failed");
+  assert.match(stream.live[0].Files[0].Diff, /\+late/);
+  notify("failed");
+  assert.equal(stream.live[0].Settling, true);
   await new Promise(setImmediate);
   assert.equal(stream.live[0].SavedPath, "/worker/out.txt");
   assert.match(stream.live[0].Files[0].Diff, /\+saved/);
   stream.close();
 });
 
-test("unwrapShellCommand strips shell -lc/-c wrappers across quote styles", () => {
-  assert.equal(unwrapShellCommand("/home/linuxbrew/.linuxbrew/bin/bash -lc pwd"), "pwd");
-  assert.equal(unwrapShellCommand("/bin/bash -lc 'rm -rf /tmp/foo'"), "rm -rf /tmp/foo");
-  assert.equal(unwrapShellCommand("bash -c 'echo '\\''hi'\\'''"), "echo 'hi'");
-  assert.equal(unwrapShellCommand('zsh -lc "echo \\"$HOME\\""'), 'echo "$HOME"');
-  assert.equal(unwrapShellCommand("git status -sb"), "git status -sb");
+test("reconnect shell snapshots yield to live pushes and settlement distinguishes missing from failed", async () => {
+  const main = { id: "t1", cwd: "/repo", status: { type: "idle" }, turns: [] };
+  const empty = { changes: [], files: [] };
+  const sample = {
+    threadId: main.id,
+    turnId: "turn-1",
+    itemId: "shell-without-capture",
+    command: "printf live > out.txt",
+    source: "userShell",
+    changes: [{ path: "/repo/out.txt", kind: { type: "add" }, diff: "@@ -0 +1 @@\n+attach" }],
+  };
+  const failed = { ...sample, itemId: "shell-read-failed" };
+  let snapshot = Promise.resolve({ data: [sample, failed] });
+  const machine = fakeMachine({
+    "thread/resume": () => ({ thread: main }),
+    "thread/subtree/list": () => ({ data: [main] }),
+    "thread/changes/live": () => snapshot,
+    "thread/changes/read": ({ itemId }) => {
+      if (itemId === failed.itemId) throw new Error("capture store unavailable");
+      return empty;
+    },
+  });
+  const stream = new Stream();
+  stream.connect(main.id, machine);
+  await new Promise(setImmediate);
+  assert.equal(stream.live.length, 2);
+  assert.ok(stream.live.every((edit) => edit.Caller === "User shell"));
+
+  const reconnect = Promise.withResolvers();
+  snapshot = reconnect.promise;
+  machine.emitOpen();
+  await new Promise(setImmediate);
+  machine.emitNotification({
+    method: "item/commandExecution/changesUpdated",
+    params: { ...sample, changes: [{ ...sample.changes[0], diff: "@@ -0 +1 @@\n+push" }] },
+  });
+  reconnect.resolve({ data: [sample, failed] });
+  await new Promise(setImmediate);
+  const find = ({ command, itemId }) =>
+    stream.live.find((edit) => edit.Input === command && edit.ID.includes(itemId));
+  assert.match(find(sample).Files[0].Diff, /\+push/);
+
+  for (const { threadId, turnId, itemId } of [sample, failed]) {
+    machine.emitNotification({
+      method: "item/completed",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          id: itemId,
+          type: "commandExecution",
+          status: "completed",
+          command: sample.command,
+        },
+      },
+    });
+  }
+  await new Promise(setImmediate);
+  assert.equal(find(sample).Complete, true);
+  assert.equal(find(sample).SavedPath, undefined);
+  assert.deepEqual(find(sample).Files, []);
+  assert.equal(find(failed).Complete, true);
+  assert.equal(find(failed).SavedPath, undefined);
+  assert.match(find(failed).Files[0].Diff, /\+attach/);
+  assert.match(find(failed).Status, /Saved Diff could not be read/);
+  stream.close();
 });
 
 test("itemToEntry maps commandExecution with bash lang and fileChange as per-file op rows", () => {
@@ -919,6 +1100,7 @@ test("itemToEntry maps commandExecution with bash lang and fileChange as per-fil
       id: "c1",
       type: "commandExecution",
       command: "/bin/bash -lc 'git diff --stat'",
+      display: { script: "git diff --stat", segments: [], effectiveCwd: null },
       cwd: "/repo",
       status: "completed",
       exitCode: 0,
@@ -1018,6 +1200,7 @@ test("turn/completed with summary itemsView preserves existing turn items and tr
         id: "c1",
         type: "commandExecution",
         command: "/bin/bash -lc pwd",
+        display: { script: "pwd", segments: [], effectiveCwd: null },
         cwd: "/repo",
         status: "completed",
         exitCode: 0,
@@ -1220,6 +1403,7 @@ test("Stream tracks child agent metrics/activity, supports earlier() paging, and
         id: "child-cmd",
         type: "commandExecution",
         command: "/bin/bash -lc 'rg foo'",
+        display: { script: "rg foo", segments: [], effectiveCwd: null },
         cwd: "/repo",
         status: "inProgress",
         exitCode: null,

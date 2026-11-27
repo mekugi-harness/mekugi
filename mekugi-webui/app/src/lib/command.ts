@@ -2,27 +2,10 @@ import type { ThreadItem, Value } from "./protocol";
 
 type CommandItem = Extract<ThreadItem, { type: "commandExecution" }>;
 
-export function unwrapShellCommand(raw: string): string {
-  const trimmed = raw.trim();
-  const match = /^(?:\/\S+\/)?(?:bash|sh|zsh|dash)\s+-(?:lc|c)\s+([\s\S]+)$/.exec(trimmed);
-  if (!match) return raw;
-  const arg = match[1].trim();
-  if (arg.length >= 2 && arg.startsWith("'") && arg.endsWith("'")) {
-    return arg.slice(1, -1).replace(/'\\''/g, "'");
-  }
-  if (arg.length >= 2 && arg.startsWith('"') && arg.endsWith('"')) {
-    return arg
-      .slice(1, -1)
-      .replace(/\\(["\\$`])/g, "$1")
-      .replace(/\\n/g, "\n");
-  }
-  if (!/\s/.test(arg)) return arg;
-  return raw;
-}
-
 // Inline previews retain the last five nonblank lines, up to 512 UTF-8 bytes
 // each. Details reads the complete aggregate, including lines clipped here.
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 function commandTail(output: string): Pick<Value, "tail" | "tailOmitted" | "tailClipped"> {
   const tail: string[] = [];
   let tailClipped = false;
@@ -35,8 +18,9 @@ function commandTail(output: string): Pick<Value, "tail" | "tailOmitted" | "tail
     const bytes = encoder.encode(line.slice(0, 513));
     if (bytes.length > 512) {
       tailClipped = true;
-      // A streaming decode drops an unfinished code point at the cut.
-      tail.unshift(new TextDecoder().decode(bytes.subarray(0, 512), { stream: true }) + "…");
+      let cut = 512;
+      while ((bytes[cut] & 0xc0) === 0x80) cut--;
+      tail.unshift(decoder.decode(bytes.subarray(0, cut)) + "…");
     } else {
       tail.unshift(line);
     }
@@ -64,7 +48,7 @@ export function commandValues(item: CommandItem): Value[] {
     return [
       {
         ...result,
-        code: item.display?.segments[0] ?? unwrapShellCommand(item.command),
+        code: item.display?.segments[0] ?? item.display?.script ?? item.command,
         lang: "bash",
       },
     ];

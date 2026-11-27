@@ -8,12 +8,15 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::ThreadChangeCallerCounts;
 use codex_app_server_protocol::ThreadChangeFileDiff;
 use codex_app_server_protocol::ThreadChangeOrigin;
+use codex_app_server_protocol::ThreadChangesLiveParams;
+use codex_app_server_protocol::ThreadChangesLiveResponse;
 use codex_app_server_protocol::ThreadChangesReadParams;
 use codex_app_server_protocol::ThreadChangesReadResponse;
 use codex_change_history::ChangeAuthor;
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeRecord;
 use codex_change_history::compose_diff;
+use codex_change_history::compose_file_stats;
 use codex_protocol::ThreadId;
 
 use super::ThreadRequestProcessor;
@@ -22,6 +25,27 @@ use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
 
 impl ThreadRequestProcessor {
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(crate) async fn thread_changes_live(
+        &self,
+        params: ThreadChangesLiveParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let id = ThreadId::from_string(&params.thread_id)
+            .map_err(|error| invalid_request(format!("invalid thread ID: {error}")))?;
+        let data = if let Ok(thread) = self.thread_manager.get_thread(id).await {
+            self.thread_state_manager
+                .live_command_changes(id, &thread)
+                .await
+        } else {
+            self.read_stored_thread_for_read(id, /*include_history*/ false)
+                .await
+                .map_err(thread_read_view_error)?
+                .ok_or_else(|| invalid_request(format!("unknown thread: {id}")))?;
+            Vec::new()
+        };
+        Ok(Some(ThreadChangesLiveResponse { data }.into()))
+    }
+
     pub(crate) async fn thread_changes_read(
         &self,
         params: ThreadChangesReadParams,
@@ -157,7 +181,12 @@ fn read_changes(
             .map(|record| (&record.id, record.sequence))
             .collect();
         composed.sort_by_cached_key(|file| {
-            std::cmp::Reverse(file.change_ids.last().and_then(|id| sequence_by_id.get(id)))
+            std::cmp::Reverse(
+                file.stats
+                    .change_ids
+                    .last()
+                    .and_then(|id| sequence_by_id.get(id)),
+            )
         });
     }
     response.file_count = composed.len() as u32;
@@ -182,22 +211,23 @@ fn read_changes(
     }
     let mut page_ids = HashSet::new();
     for diff in composed.into_iter().skip(offset).take(limit) {
-        page_ids.extend(diff.change_ids.iter().cloned());
+        let stats = diff.stats;
+        page_ids.extend(stats.change_ids.iter().cloned());
         response.files.push(ThreadChangeFileDiff {
-            path: diff.rel_path,
-            absolute_path: diff.abs_path.display().to_string(),
-            change_ids: diff
+            path: stats.rel_path,
+            absolute_path: stats.abs_path.display().to_string(),
+            change_ids: stats
                 .change_ids
                 .into_iter()
                 .map(|id| id.to_string())
                 .collect(),
-            moved_from: diff.moved_from,
-            status: diff.stats.status.to_string(),
+            moved_from: stats.moved_from,
+            status: stats.status.to_string(),
             unified_diff: diff.unified_diff,
-            additions: diff.stats.additions as i64,
-            deletions: diff.stats.deletions as i64,
-            is_binary: diff.stats.is_binary,
-            coverage_notes: diff.stats.coverage_notes,
+            additions: stats.additions as i64,
+            deletions: stats.deletions as i64,
+            is_binary: stats.is_binary,
+            coverage_notes: stats.coverage_notes,
         });
     }
     let all_origins = params.limit.is_none() && cursor.is_none();
@@ -207,6 +237,7 @@ fn read_changes(
         let author = author_thread(&record);
         let show = all_origins || page_ids.contains(&record.id);
         if show {
+            let (source_kind, source_label) = record.metadata.source_kind.review_source();
             response.changes.push(ThreadChangeOrigin {
                 change_id: record.id.to_string(),
                 sequence: record.sequence,
@@ -215,7 +246,8 @@ fn read_changes(
                 turn_id: record.metadata.turn_id.clone(),
                 item_id: record.metadata.call_id.clone(),
                 workspace: record.metadata.workspace_root.display().to_string(),
-                source_kind: format!("{:?}", record.metadata.source_kind),
+                source_kind: source_kind.to_string(),
+                source_label: source_label.to_string(),
                 created_at: record.metadata.created_at,
                 paths: record
                     .files
@@ -234,18 +266,18 @@ fn read_changes(
             .iter()
             .map(|record| (&record.id, &record.metadata.workspace_root))
             .collect();
-        let files = compose_diff(&store, &records, &[]).map_err(read_error)?;
+        let files = compose_file_stats(&store, &records, &[]).map_err(read_error)?;
         let (mut additions, mut deletions) = (0, 0);
         for file in &files {
-            if file.stats.coverage_notes.is_empty()
+            if file.coverage_notes.is_empty()
                 && file
                     .change_ids
                     .last()
                     .and_then(|id| workspaces.get(id))
                     .is_some_and(|workspace| file.abs_path.starts_with(workspace))
             {
-                additions += file.stats.additions as i64;
-                deletions += file.stats.deletions as i64;
+                additions += file.additions as i64;
+                deletions += file.deletions as i64;
             }
         }
         response.callers.push(ThreadChangeCallerCounts {

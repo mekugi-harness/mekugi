@@ -1344,7 +1344,13 @@
             }
           ]
         },
+        "script": {
+          "default": "",
+          "description": "Full redacted script, before splitting steps or attributing a leading cd.",
+          "type": "string"
+        },
         "segments": {
+          "description": "Separate source steps, or empty when the script is displayed as one.",
           "items": {
             "type": "string"
           },
@@ -1406,6 +1412,42 @@
           "type": "string"
         }
       ]
+    },
+    "CommandExecutionChangesUpdatedNotification": {
+      "description": "Replaces the running shell item's preview with the currently observed file diffs. Every diff is a unified diff, including additions and deletions.",
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/definitions/FileUpdateChange"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "The authored shell script, bounded for preview; not the execution wrapper.",
+          "type": "string"
+        },
+        "itemId": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/CommandExecutionSource"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changes",
+        "command",
+        "itemId",
+        "source",
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
     },
     "CommandExecutionOutputDeltaNotification": {
       "properties": {
@@ -5581,7 +5623,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Only present for a shell invocation with separate display steps."
+              "description": "Authored display text for a recognized shell invocation."
             },
             "durationMs": {
               "description": "The duration of the command execution in milliseconds.",
@@ -6398,67 +6440,6 @@
         }
       },
       "required": [
-        "threadId"
-      ],
-      "type": "object"
-    },
-    "ThreadPredictionResult": {
-      "oneOf": [
-        {
-          "properties": {
-            "text": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "enum": [
-                "completed"
-              ],
-              "title": "CompletedThreadPredictionResultType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "CompletedThreadPredictionResult",
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "enum": [
-                "failed"
-              ],
-              "title": "FailedThreadPredictionResultType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "title": "FailedThreadPredictionResult",
-          "type": "object"
-        }
-      ]
-    },
-    "ThreadPredictionUpdatedNotification": {
-      "properties": {
-        "result": {
-          "$ref": "#/definitions/ThreadPredictionResult"
-        },
-        "sourceTurnId": {
-          "type": "string"
-        },
-        "threadId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "result",
-        "sourceTurnId",
         "threadId"
       ],
       "type": "object"
@@ -8648,26 +8629,6 @@
       "properties": {
         "method": {
           "enum": [
-            "thread/prediction/updated"
-          ],
-          "title": "Thread/prediction/updatedNotificationMethod",
-          "type": "string"
-        },
-        "params": {
-          "$ref": "#/definitions/ThreadPredictionUpdatedNotification"
-        }
-      },
-      "required": [
-        "method",
-        "params"
-      ],
-      "title": "Thread/prediction/updatedNotification",
-      "type": "object"
-    },
-    {
-      "properties": {
-        "method": {
-          "enum": [
             "thread/goal/cleared"
           ],
           "title": "Thread/goal/clearedNotificationMethod",
@@ -9226,6 +9187,26 @@
         "params"
       ],
       "title": "Process/exitedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "item/commandExecution/changesUpdated"
+          ],
+          "title": "Item/commandExecution/changesUpdatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/CommandExecutionChangesUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Item/commandExecution/changesUpdatedNotification",
       "type": "object"
     },
     {

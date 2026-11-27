@@ -228,6 +228,7 @@ fn persisted_event_msg(
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::BackgroundTerminalRegistered
         | EventMsg::TerminalInteraction(_)
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::ExecApprovalRequest(_)
         | EventMsg::RequestPermissions(_)

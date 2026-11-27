@@ -22,6 +22,8 @@ use codex_protocol::turn_input::InjectedResponseItem;
 use codex_protocol::turn_input::ResponseItemAnnotations;
 use codex_utils_path_uri::PathUri;
 
+use crate::error_code::InvalidRequestReason;
+use crate::error_code::invalid_request_with_reason;
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
 
@@ -1567,12 +1569,16 @@ impl TurnRequestProcessor {
             if let Some(active_turn_id) = listener_turn_id
                 && active_turn_id != turn_id
             {
-                return Err(invalid_request(format!(
-                    "expected active turn id {turn_id} but found {active_turn_id}"
-                )));
+                return Err(invalid_request_with_reason(
+                    format!("expected active turn id {turn_id} but found {active_turn_id}"),
+                    InvalidRequestReason::ActiveTurnMismatch {
+                        expected_turn_id: &turn_id,
+                        actual_turn_id: active_turn_id,
+                    },
+                ));
             }
             let terminal_turn_id = interrupt_terminal_turn_id(&thread_state, &turn_id)
-                .ok_or_else(|| invalid_request("no active turn to interrupt"))?;
+                .ok_or_else(no_active_turn_to_interrupt)?;
             let submit_interrupt = match thread.current_turn_id().await {
                 // Core reserves the ID before it announces the turn.
                 Some(id)
@@ -1598,7 +1604,7 @@ impl TurnRequestProcessor {
                     listener_turn_id == Some(terminal_turn_id)
                         && thread_state.last_started_turn_id.as_deref() != Some(terminal_turn_id)
                 }
-                Some(_) | None => return Err(invalid_request("no active turn to interrupt")),
+                Some(_) | None => return Err(no_active_turn_to_interrupt()),
             };
             let terminal_turn_id = terminal_turn_id.to_owned();
             thread_state
@@ -1665,6 +1671,13 @@ impl TurnRequestProcessor {
         )
         .await
     }
+}
+
+fn no_active_turn_to_interrupt() -> JSONRPCErrorError {
+    invalid_request_with_reason(
+        "no active turn to interrupt",
+        InvalidRequestReason::NoActiveTurn,
+    )
 }
 
 fn interrupt_terminal_turn_id<'a>(state: &'a ThreadState, turn_id: &'a str) -> Option<&'a str> {

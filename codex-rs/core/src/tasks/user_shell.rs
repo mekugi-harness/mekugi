@@ -26,6 +26,7 @@ use crate::tools::runtimes::RuntimePathPrepends;
 use crate::tools::runtimes::apply_package_path_prepend;
 use crate::tools::runtimes::maybe_wrap_shell_lc_with_snapshot;
 use crate::tools::runtimes::strip_managed_proxy_env;
+use crate::unified_exec::exec_track::ExecTrackAttachment;
 use crate::user_shell_command::user_shell_command_record_item;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
@@ -175,17 +176,16 @@ pub(crate) async fn execute_user_shell_command(
     }
     let call_id = Uuid::new_v4().to_string();
     let raw_command = command;
-    let user_shell_track =
-        crate::unified_exec::exec_track::ExecTrackAttachment::prepare_for_user_shell(
-            &raw_command,
-            Some(crate::exec_env::session_tmp_path(session.session_id())),
-            cwd.as_path().to_path_buf(),
-            crate::exec_env::change_history_dir(session.session_id()),
-            session.thread_id().to_string(),
-            session.session_id().to_string(),
-            turn_context.sub_id.clone(),
-            call_id.clone(),
-        );
+    let user_shell_track = ExecTrackAttachment::prepare_for_user_shell(
+        &raw_command,
+        Some(crate::exec_env::session_tmp_path(session.session_id())),
+        cwd.as_path().to_path_buf(),
+        crate::exec_env::change_history_dir(session.session_id()),
+        session.thread_id().to_string(),
+        session.session_id().to_string(),
+        turn_context.sub_id.clone(),
+        call_id.clone(),
+    );
     let mut exec_command = prepare_user_shell_exec_command(
         &display_command,
         environment_shell,
@@ -252,9 +252,13 @@ pub(crate) async fn execute_user_shell_command(
         tx_event: session.get_tx_event(),
     });
 
-    let exec_result = execute_env(exec_env, stdout_stream)
-        .or_cancel(&cancellation_token)
-        .await;
+    let exec_result = ExecTrackAttachment::observe_while(
+        (!skip_for_setuid).then_some(&user_shell_track),
+        session.get_tx_event(),
+        ExecCommandSource::UserShell,
+        execute_env(exec_env, stdout_stream).or_cancel(&cancellation_token),
+    )
+    .await;
 
     match exec_result {
         Err(CancelErr::Cancelled) => {

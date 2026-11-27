@@ -11,6 +11,7 @@ use tokio::time::Sleep;
 
 use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
+use super::exec_track::ExecTrackAttachment;
 use super::process::OutputBuffers;
 use super::process::OutputHandles;
 use super::process::UnifiedExecProcess;
@@ -181,7 +182,13 @@ pub(crate) fn spawn_exit_watcher(
     let interaction_lock = process.interaction_lock();
 
     tokio::spawn(async move {
-        exit_token.cancelled().await;
+        ExecTrackAttachment::observe_while(
+            process.exec_track.as_ref(),
+            session_ref.get_tx_event(),
+            ExecCommandSource::UnifiedExecStartup,
+            exit_token.cancelled(),
+        )
+        .await;
         output_drained.notified().await;
         // Deferred network denial deliberately remains observable for a short
         // window after process exit. Do not classify the terminal event until

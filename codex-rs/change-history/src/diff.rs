@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::fmt;
 use std::fmt::Write as _;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Instant;
 
-use similar::ChangeTag;
+use similar::DiffTag;
 use similar::TextDiff;
 
 use crate::error::ChangeHistoryError;
@@ -15,10 +17,12 @@ use crate::model::CoverageStatus;
 use crate::model::FileSnapshot;
 use crate::store::ChangeHistoryStore;
 
-/// Per-file statistics in a composed summary.
+/// Per-file statistics and provenance in a composed summary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileDiffStats {
     pub rel_path: String,
+    pub abs_path: PathBuf,
+    pub change_ids: Vec<ChangeId>,
     pub moved_from: Option<String>,
     pub status: char,
     pub additions: usize,
@@ -39,10 +43,6 @@ pub struct ComposedSummary {
 /// Composed diff across one or more [`ChangeRecord`]s.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComposedFileDiff {
-    pub rel_path: String,
-    pub abs_path: PathBuf,
-    pub change_ids: Vec<ChangeId>,
-    pub moved_from: Option<String>,
     pub unified_diff: String,
     pub stats: FileDiffStats,
 }
@@ -251,23 +251,31 @@ pub fn compose_diff(
     records: &[ChangeRecord],
     path_filters: &[String],
 ) -> Result<Vec<ComposedFileDiff>, ChangeHistoryError> {
-    let transitions = compose_transitions(store, records, path_filters)?;
-    let mut out = Vec::with_capacity(transitions.len());
-    for tr in transitions {
-        if tr.before == tr.after && tr.moved_from.is_none() && tr.coverage_notes.is_empty() {
-            continue;
-        }
-        let (unified_diff, stats) = render_transition_diff(&tr);
-        out.push(ComposedFileDiff {
-            rel_path: tr.rel_path,
-            abs_path: tr.abs_path,
-            change_ids: tr.change_ids,
-            moved_from: tr.moved_from,
-            unified_diff,
-            stats,
-        });
-    }
-    Ok(out)
+    Ok(compose_changed_files(store, records, path_filters)?
+        .map(|tr| {
+            let diff = tr.text_diff();
+            let unified_diff = render_transition_diff(&tr, diff.as_ref());
+            let text_counts = diff.as_ref().map(count_lines);
+            ComposedFileDiff {
+                unified_diff,
+                stats: tr.into_stats(text_counts),
+            }
+        })
+        .collect())
+}
+
+/// Compute per-file statistics across `records` without rendering unified diffs.
+pub fn compose_file_stats(
+    store: &ChangeHistoryStore,
+    records: &[ChangeRecord],
+    path_filters: &[String],
+) -> Result<Vec<FileDiffStats>, ChangeHistoryError> {
+    Ok(compose_changed_files(store, records, path_filters)?
+        .map(|tr| {
+            let text_counts = tr.text_diff().as_ref().map(count_lines);
+            tr.into_stats(text_counts)
+        })
+        .collect())
 }
 
 /// Compute a composed summary across `records`, optionally filtered by `path_filters`.
@@ -276,10 +284,9 @@ pub fn compose_summary(
     records: &[ChangeRecord],
     path_filters: &[String],
 ) -> Result<ComposedSummary, ChangeHistoryError> {
-    let diffs = compose_diff(store, records, path_filters)?;
-    let total_additions = diffs.iter().map(|d| d.stats.additions).sum();
-    let total_deletions = diffs.iter().map(|d| d.stats.deletions).sum();
-    let files = diffs.into_iter().map(|d| d.stats).collect();
+    let files = compose_file_stats(store, records, path_filters)?;
+    let total_additions = files.iter().map(|file| file.additions).sum();
+    let total_deletions = files.iter().map(|file| file.deletions).sum();
     let ids = records.iter().map(|r| r.id.clone()).collect();
     Ok(ComposedSummary {
         ids,
@@ -287,6 +294,18 @@ pub fn compose_summary(
         total_additions,
         total_deletions,
     })
+}
+
+fn compose_changed_files(
+    store: &ChangeHistoryStore,
+    records: &[ChangeRecord],
+    path_filters: &[String],
+) -> Result<impl Iterator<Item = ComposedFileTransition>, ChangeHistoryError> {
+    Ok(compose_transitions(store, records, path_filters)?
+        .into_iter()
+        .filter(|tr| {
+            tr.before != tr.after || tr.moved_from.is_some() || !tr.coverage_notes.is_empty()
+        }))
 }
 
 /// Render chronological per-record history (including diagnostic records and exit codes).
@@ -342,21 +361,64 @@ pub fn render_history(records: &[ChangeRecord], path_filters: &[String]) -> Stri
     out
 }
 
-fn render_transition_diff(tr: &ComposedFileTransition) -> (String, FileDiffStats) {
-    let status = if tr.moved_from.is_some() {
-        'R'
-    } else {
-        match (&tr.before, &tr.after) {
-            (FileSnapshot::Missing, FileSnapshot::Present(_)) => 'A',
-            (FileSnapshot::Present(_), FileSnapshot::Missing) => 'D',
-            (FileSnapshot::Present(_), FileSnapshot::Present(_))
-            | (FileSnapshot::Missing, FileSnapshot::Missing) => 'M',
+impl ComposedFileTransition {
+    fn text_diff(&self) -> Option<TextDiff<'_, '_, '_, str>> {
+        fn text(snapshot: &FileSnapshot) -> Option<&str> {
+            match snapshot {
+                FileSnapshot::Missing => Some(""),
+                FileSnapshot::Present(bytes) => FileSnapshot::decode_text(bytes),
+            }
         }
-    };
 
-    let is_binary = matches!(&tr.before, FileSnapshot::Present(b) if FileSnapshot::is_binary(b))
-        || matches!(&tr.after, FileSnapshot::Present(b) if FileSnapshot::is_binary(b));
+        Some(TextDiff::from_lines(
+            text(&self.before)?,
+            text(&self.after)?,
+        ))
+    }
 
+    fn into_stats(self, text_counts: Option<(usize, usize)>) -> FileDiffStats {
+        let status = if self.moved_from.is_some() {
+            'R'
+        } else {
+            match (&self.before, &self.after) {
+                (FileSnapshot::Missing, FileSnapshot::Present(_)) => 'A',
+                (FileSnapshot::Present(_), FileSnapshot::Missing) => 'D',
+                (FileSnapshot::Present(_), FileSnapshot::Present(_))
+                | (FileSnapshot::Missing, FileSnapshot::Missing) => 'M',
+            }
+        };
+        let (additions, deletions) = text_counts.unwrap_or_default();
+        FileDiffStats {
+            rel_path: self.rel_path,
+            abs_path: self.abs_path,
+            change_ids: self.change_ids,
+            moved_from: self.moved_from,
+            status,
+            additions,
+            deletions,
+            is_binary: text_counts.is_none(),
+            coverage_notes: self.coverage_notes,
+        }
+    }
+}
+
+fn count_lines(diff: &TextDiff<'_, '_, '_, str>) -> (usize, usize) {
+    let mut additions = 0;
+    let mut deletions = 0;
+    for op in diff.ops() {
+        let (tag, old, new) = op.as_tag_tuple();
+        if tag != DiffTag::Equal {
+            additions += new.len();
+            deletions += old.len();
+        }
+    }
+    (additions, deletions)
+}
+
+fn render_transition_diff<'a>(
+    tr: &ComposedFileTransition,
+    diff: Option<&'a TextDiff<'a, 'a, 'a, str>>,
+) -> String {
     let mut out = String::new();
     let from_header = tr.moved_from.as_deref().unwrap_or(tr.rel_path.as_str());
     let _ = writeln!(&mut out, "diff --git a/{from_header} b/{}", tr.rel_path);
@@ -368,7 +430,14 @@ fn render_transition_diff(tr: &ComposedFileTransition) -> (String, FileDiffStats
         let _ = writeln!(&mut out, "# coverage: {note}");
     }
 
-    if is_binary {
+    if let Some(diff) = diff {
+        let _ = write_text_hunks(
+            &mut out,
+            diff,
+            matches!(tr.before, FileSnapshot::Present(_)).then_some(from_header),
+            matches!(tr.after, FileSnapshot::Present(_)).then_some(tr.rel_path.as_str()),
+        );
+    } else {
         let old_label = match &tr.before {
             FileSnapshot::Missing => "/dev/null".to_string(),
             FileSnapshot::Present(_) => format!("a/{from_header}"),
@@ -378,65 +447,60 @@ fn render_transition_diff(tr: &ComposedFileTransition) -> (String, FileDiffStats
             FileSnapshot::Present(_) => format!("b/{}", tr.rel_path),
         };
         let _ = writeln!(&mut out, "Binary files {old_label} and {new_label} differ");
-        return (
-            out,
-            FileDiffStats {
-                rel_path: tr.rel_path.clone(),
-                moved_from: tr.moved_from.clone(),
-                status,
-                additions: 0,
-                deletions: 0,
-                is_binary: true,
-                coverage_notes: tr.coverage_notes.clone(),
-            },
-        );
     }
+    out
+}
 
-    let old_text = match &tr.before {
-        FileSnapshot::Missing => "",
-        FileSnapshot::Present(bytes) => std::str::from_utf8(bytes).unwrap_or_default(),
+/// Render a provisional single-file text diff without accessing the history store.
+/// A missing endpoint is distinct from an empty file. Returns no partial output
+/// when the complete diff does not fit the caller's byte budget.
+pub fn render_provisional_text_diff(
+    path: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+    max_bytes: usize,
+    deadline: Instant,
+) -> Option<String> {
+    let mut out = BoundedDiff {
+        text: String::new(),
+        max_bytes,
     };
-    let new_text = match &tr.after {
-        FileSnapshot::Missing => "",
-        FileSnapshot::Present(bytes) => std::str::from_utf8(bytes).unwrap_or_default(),
-    };
+    writeln!(&mut out, "diff --git a/{path} b/{path}").ok()?;
+    let diff = TextDiff::configure()
+        .deadline(deadline)
+        .diff_lines(before.unwrap_or_default(), after.unwrap_or_default());
+    write_text_hunks(&mut out, &diff, before.map(|_| path), after.map(|_| path)).ok()?;
+    Some(out.text)
+}
 
-    let diff = TextDiff::from_lines(old_text, new_text);
-    let mut additions = 0usize;
-    let mut deletions = 0usize;
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Insert => additions += 1,
-            ChangeTag::Delete => deletions += 1,
-            ChangeTag::Equal => {}
-        }
-    }
-
-    let old_header = match &tr.before {
-        FileSnapshot::Missing => "/dev/null".to_string(),
-        FileSnapshot::Present(_) => format!("a/{from_header}"),
-    };
-    let new_header = match &tr.after {
-        FileSnapshot::Missing => "/dev/null".to_string(),
-        FileSnapshot::Present(_) => format!("b/{}", tr.rel_path),
-    };
-    let unified = diff
-        .unified_diff()
-        .context_radius(3)
-        .header(&old_header, &new_header)
-        .to_string();
-    out.push_str(&unified);
-
-    (
+fn write_text_hunks<'a>(
+    out: &mut impl fmt::Write,
+    diff: &'a TextDiff<'a, 'a, 'a, str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> fmt::Result {
+    let old_header = from.map_or_else(|| "/dev/null".to_string(), |path| format!("a/{path}"));
+    let new_header = to.map_or_else(|| "/dev/null".to_string(), |path| format!("b/{path}"));
+    write!(
         out,
-        FileDiffStats {
-            rel_path: tr.rel_path.clone(),
-            moved_from: tr.moved_from.clone(),
-            status,
-            additions,
-            deletions,
-            is_binary: false,
-            coverage_notes: tr.coverage_notes.clone(),
-        },
+        "{}",
+        diff.unified_diff()
+            .context_radius(3)
+            .header(&old_header, &new_header)
     )
+}
+
+struct BoundedDiff {
+    text: String,
+    max_bytes: usize,
+}
+
+impl fmt::Write for BoundedDiff {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if value.len() > self.max_bytes - self.text.len() {
+            return Err(fmt::Error);
+        }
+        self.text.push_str(value);
+        Ok(())
+    }
 }

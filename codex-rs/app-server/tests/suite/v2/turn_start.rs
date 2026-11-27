@@ -5616,9 +5616,11 @@ async fn command_execution_notifications_include_process_id(
     skip_if_no_network!(Ok(()));
 
     let launch_failed = launch_failure_args.is_some();
-    let command = if let Some(args) = launch_failure_args
-        .or_else(|| stop_background.then(|| json!({"cmd": "sleep 60", "yield_time_ms": 100})))
-    {
+    let command = if let Some(args) = launch_failure_args.or_else(|| {
+        stop_background.then(
+            || json!({"cmd": "sleep 60 # Bearer abcdefghijklmnopqrstuvwxyz", "yield_time_ms": 100}),
+        )
+    }) {
         responses::sse(vec![
             responses::ev_response_created("launch"),
             responses::ev_function_call("uexec-1", "exec_command", &args.to_string()),
@@ -5708,6 +5710,7 @@ async fn command_execution_notifications_include_process_id(
         let [terminal] = list.data.as_slice() else {
             panic!("expected one process at its initial announcement, got {list:?}");
         };
+        assert_eq!(terminal.command, "sleep 60 # Bearer [REDACTED_SECRET]");
         assert_eq!(terminal.turn_id, turn.id);
         assert_eq!(terminal.item_id, id);
         assert_eq!(Some(&terminal.process_id), started_process_id.as_ref());
@@ -5964,6 +5967,39 @@ async fn quiet_delegate_terminal_exit_invalidates_an_unsubscribed_observer() -> 
         .request(|request_id| ClientRequest::ThreadBackgroundTerminalsList { request_id, params })
         .await?;
     assert!(cleared.data.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_terminal_list_distinguishes_unloaded_threads_from_invalid_ids() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let unloaded = codex_protocol::ThreadId::new().to_string();
+
+    for (thread_id, data) in [
+        (
+            unloaded.as_str(),
+            Some(json!({ "reason": "threadNotLoaded", "threadId": unloaded })),
+        ),
+        ("invalid-id", None),
+    ] {
+        let id = mcp
+            .send_request(
+                "thread/backgroundTerminals/list",
+                Some(json!({"threadId": thread_id})),
+            )
+            .await?;
+        let error: JSONRPCError = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(id)),
+        )
+        .await??;
+        assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+        assert_eq!(error.error.data, data);
+    }
     Ok(())
 }
 

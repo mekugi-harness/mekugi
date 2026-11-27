@@ -1,5 +1,6 @@
 <script lang="ts">
   import AgentName from "./AgentName.svelte";
+  import { followBottom } from "./follow-bottom";
   import Markdown from "./Markdown.svelte";
   import ProcessCommand from "./ProcessCommand.svelte";
   import Alert from "./ui/Alert.svelte";
@@ -47,8 +48,8 @@
       .join(" ")
       .trim() || item.id;
 
-  const processKey = ({ threadId, turnId, itemId }: BackgroundTerminal) =>
-    JSON.stringify([threadId, turnId, itemId]);
+  const processKey = ({ threadId, processId, turnId, itemId }: BackgroundTerminal) =>
+    JSON.stringify([threadId, processId, turnId, itemId]);
 
   async function stopProcess(process: BackgroundTerminal) {
     const key = processKey(process);
@@ -85,17 +86,24 @@
             onclick={() => void answer.close()}
           />
         </header>
-        <div class="flex max-h-[24dvh] flex-col gap-2 overflow-y-auto scroll-py-1 p-1 -m-1">
-          {#each answer.exchanges as exchange}
-            <div class="text-muted"><Markdown text={exchange.question} /></div>
-            {#each [...exchange.messages] as [id, text] (id)}
-              <div class="group/entry">
-                <Markdown {text} />
-                {#if text.trim()}<ResponseCopy {text} />{/if}
-              </div>
-            {/each}
-          {/each}
-        </div>
+        {#key answer}
+          <div
+            class="max-h-[24dvh] overflow-y-auto overscroll-contain scroll-py-1 p-1 -m-1"
+            use:followBottom
+          >
+            <div class="flex flex-col gap-2">
+              {#each answer.exchanges as exchange (exchange.id)}
+                <div class="text-muted"><Markdown text={exchange.question} /></div>
+                {#each [...exchange.messages] as [id, text] (id)}
+                  <div class="group/entry">
+                    <Markdown {text} />
+                    {#if text.trim()}<ResponseCopy {text} />{/if}
+                  </div>
+                {/each}
+              {/each}
+            </div>
+          </div>
+        {/key}
         {#if answer.error}
           <Alert class="mt-1">{answer.error}</Alert>
         {:else if answer.closing || answer.busy}

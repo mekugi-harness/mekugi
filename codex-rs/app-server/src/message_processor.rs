@@ -74,10 +74,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
-use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadPredictionRequestResponse;
-use codex_app_server_protocol::ThreadPredictionResult;
-use codex_app_server_protocol::ThreadPredictionUpdatedNotification;
 use codex_app_server_protocol::ThreadSampleCancelResponse;
 use codex_app_server_protocol::ThreadSampleParams;
 use codex_app_server_protocol::ThreadSearchCancelResponse;
@@ -1468,7 +1465,12 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadSample { params, .. } => self
                 .thread_processor
-                .thread_sample(params, Arc::clone(&session.rpc_gate), request_context)
+                .thread_sample(
+                    params,
+                    /*automatic_prediction*/ false,
+                    Arc::clone(&session.rpc_gate),
+                    request_context,
+                )
                 .await
                 .map(|response| Some(response.into())),
             ClientRequest::ThreadSampleCancel { params, .. } => {
@@ -1610,10 +1612,10 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadPredictionRequest { params, .. } => {
-                let result = self.thread_processor.thread_sample(
+                let sample = self.thread_processor.thread_sample(
                     ThreadSampleParams {
-                        thread_id: params.thread_id.clone(),
-                        expected_turn_id: params.source_turn_id.clone(),
+                        thread_id: params.thread_id,
+                        expected_turn_id: params.source_turn_id,
                         prompt: concat!(
                             "Predict the next message the user is likely to send in this conversation. ",
                             "Output only the suggested user message, with no framing or explanation."
@@ -1621,26 +1623,13 @@ impl MessageProcessor {
                         disable_mcp: true,
                         ..Default::default()
                     },
+                    params.automatic,
                     Arc::clone(&session.rpc_gate),
                     request_context,
-                ).await;
-                let result = match result {
-                    Ok(sample) => ThreadPredictionResult::Completed { text: sample.text },
-                    Err(_) => ThreadPredictionResult::Failed,
-                };
-                self.outgoing
-                    .send_server_notification_to_connections(
-                        &[connection_id],
-                        ServerNotification::ThreadPredictionUpdated(
-                            ThreadPredictionUpdatedNotification {
-                                thread_id: params.thread_id,
-                                source_turn_id: params.source_turn_id,
-                                result,
-                            },
-                        ),
-                    )
-                    .await;
-                Ok(Some(ThreadPredictionRequestResponse {}.into()))
+                ).await?;
+                Ok(Some(
+                    ThreadPredictionRequestResponse { text: sample.text }.into(),
+                ))
             }
             ClientRequest::FeatureUseRead { params, .. } => {
                 self.thread_processor.feature_use_read(params)
@@ -1771,6 +1760,9 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadSubtreeList { params, .. } => {
                 self.thread_processor.thread_subtree_list(params).await
+            }
+            ClientRequest::ThreadChangesLive { params, .. } => {
+                self.thread_processor.thread_changes_live(params).await
             }
             ClientRequest::ThreadChangesRead { params, .. } => {
                 self.thread_processor.thread_changes_read(params).await
@@ -2335,6 +2327,7 @@ fn is_allowed_for_remote_human(method: &str) -> bool {
             | "thread/subtree/list"
             | "featureUse/read"
             | "server/diagnostics"
+            | "thread/changes/live"
             | "thread/changes/read"
             | "thread/files/search"
             | "thread/read"

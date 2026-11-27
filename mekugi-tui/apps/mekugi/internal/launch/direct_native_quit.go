@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionpresentation"
@@ -127,14 +126,27 @@ func (c *directNativeConnection) stopAndQuit(ctx context.Context, work directQui
 		}, nil); err != nil {
 			// The turn named in the prompt can finish before Stop reaches the server.
 			// Keep the original target; don't look up or interrupt its replacement.
-			refusal, ok := errors.AsType[*nativeAppServerRPCError](err)
-			if !ok || refusal.Code != -32600 ||
-				(refusal.Message != "no active turn to interrupt" &&
-					!strings.HasPrefix(refusal.Message, "expected active turn id "+target.turn+" but found ")) {
+			if !quitTurnNoLongerActive(err, target.turn) {
 				return fmt.Errorf("stop running turn: %w", err)
 			}
 		}
 	}
 	c.finish(&sessionapi.NativeExit{Code: 0})
 	return nil
+}
+
+func quitTurnNoLongerActive(err error, turnID string) bool {
+	refusal, ok := errors.AsType[*nativeAppServerRPCError](err)
+	if !ok || refusal.Code != -32600 {
+		return false
+	}
+	var data struct {
+		Reason         string `json:"reason"`
+		ExpectedTurnID string `json:"expectedTurnId"`
+	}
+	if json.Unmarshal(refusal.Data, &data) != nil {
+		return false
+	}
+	return data.Reason == "noActiveTurn" ||
+		(data.Reason == "activeTurnMismatch" && data.ExpectedTurnID == turnID)
 }

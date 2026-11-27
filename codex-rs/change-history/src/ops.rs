@@ -159,6 +159,9 @@ impl ChangeHistoryStore {
         path_filters: &[String],
     ) -> Result<Vec<PlannedWrite>, ChangeHistoryError> {
         let transitions = compose_transitions_with_continuity(self, records, path_filters, true)?;
+        if transitions.is_empty() {
+            return Err(ChangeHistoryError::NoMatchingPaths);
+        }
         let mut planned = Vec::with_capacity(transitions.len());
         for tr in transitions {
             if tr.before == tr.after && tr.moved_from.is_none() && tr.coverage_notes.is_empty() {
@@ -183,9 +186,6 @@ impl ChangeHistoryStore {
                 live_before,
                 target_after,
             });
-        }
-        if planned.is_empty() {
-            return Err(ChangeHistoryError::NoMatchingPaths);
         }
         Ok(planned)
     }

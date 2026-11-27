@@ -1,6 +1,7 @@
 use super::ActivePermissionProfile;
 use super::ApprovalsReviewer;
 use super::AskForApproval;
+use super::LiveCommandChanges;
 use super::SandboxMode;
 use super::SandboxPolicy;
 use super::Thread;
@@ -2724,6 +2725,22 @@ pub struct ThreadInspectParams {
     pub thread_id: String,
 }
 
+/// Request the current provisional shell edits for this exact thread.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadChangesLiveParams {
+    pub thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadChangesLiveResponse {
+    /// The latest nonempty snapshots for currently running commands, oldest update first.
+    pub data: Vec<LiveCommandChanges>,
+}
+
 /// Request composed saved changes from the native change-history store for a thread.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -2763,7 +2780,10 @@ pub struct ThreadChangeOrigin {
     pub turn_id: String,
     pub item_id: String,
     pub workspace: String,
+    /// Stable identifier for the source of the capture.
     pub source_kind: String,
+    /// User-facing name for the capture source.
+    pub source_label: String,
     #[ts(type = "number")]
     pub created_at: i64,
     pub paths: Vec<String>,

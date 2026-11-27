@@ -2757,6 +2757,7 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<RealtimeEventTex
         | EventMsg::WebSearchEnd(_)
         | EventMsg::ExecCommandBegin(_)
         | EventMsg::BackgroundTerminalRegistered
+        | EventMsg::ExecCommandChangesUpdated { .. }
         | EventMsg::ExecCommandOutputDelta(_)
         | EventMsg::TerminalInteraction(_)
         | EventMsg::ExecCommandEnd(_)

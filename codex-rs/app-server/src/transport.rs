@@ -168,17 +168,21 @@ async fn send_message_to_connection(
     }
 
     let writer = connection_state.writer.clone();
-    let optional_progress = matches!(
+    let optional_notification = matches!(
         &message,
         OutgoingMessage::AppServerNotification(envelope)
-            if matches!(&envelope.notification, ServerNotification::ThreadSearchPartial(_))
+            if matches!(
+                &envelope.notification,
+                ServerNotification::ThreadSearchPartial(_)
+                    | ServerNotification::CommandExecutionChangesUpdated(_)
+            )
     );
     let queued_message = QueuedOutgoingMessage {
         message,
         write_complete_tx,
     };
-    if optional_progress {
-        // Keep room for the required response that follows optional progress.
+    if optional_notification {
+        // Keep room for required messages even if optional updates pile up.
         if writer.capacity() <= 1 {
             return false;
         }

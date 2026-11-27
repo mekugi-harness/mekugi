@@ -103,6 +103,8 @@ func TestDetailLinksAndReferenceThroughNativeBrowser(t *testing.T) {
 	}
 	quoted := make(chan struct{}, 1)
 	created := make(chan struct{}, 1)
+	oneOffThread := make(chan string, 1)
+	const oneOffTask = "Check the One-off file link."
 	provider := &toolFrontendCodexProvider{
 		program: `const r = await tools.exec_command({cmd:"for i in $(seq 1 160); do printf 'native run line %s\\n' \"$i\"; done",shell:"/bin/bash",login:false,yield_time_ms:10000});
 text(r.event_call_id); text(r.output);
@@ -112,7 +114,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 		prediction: "Could you explain the workspace notes?",
 	}
 	runID := regexp.MustCompile(`exec-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}`)
-	provider.observeRequest = func(body []byte, _ http.Header) error {
+	provider.observeRequest = func(body []byte, headers http.Header) error {
 		if id := runID.Find(body); len(id) > 0 && !strings.Contains(provider.finalText, "Workspace notes") {
 			provider.finalText = fmt.Sprintf("Reference me. [Workspace notes](notes.md#L2) [Run output](mekugi:run/%s#L130-L132) [Unavailable output](mekugi:run/%s#L900)", id, id)
 		}
@@ -128,6 +130,13 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 		if strings.Contains(string(body), "First browser message.") {
 			select {
 			case created <- struct{}{}:
+			default:
+			}
+		}
+		if strings.Contains(string(body), oneOffTask) {
+			metadata, _ := fixtureTurnMetadata(headers)
+			select {
+			case oneOffThread <- metadata.ThreadID:
 			default:
 			}
 		}
@@ -189,6 +198,35 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("wait", "--fn", `!document.querySelector('[aria-label="Stop sleep 81"]') && !!document.querySelector('[aria-label="Stop sleep 82"]')`)
 			run("find", "role", "button", "click", "--name", "Stop sleep 82", "--exact")
 			run("wait", "--fn", `!document.querySelector('[aria-label="Active processes"]')`)
+			run("fill", "#composer-text", "/oneoff "+oneOffTask)
+			run("press", "Enter")
+			run("wait", "--fn", `document.querySelector('[role=tab][aria-selected=true]')?.textContent.trim() === 'One-off'`)
+			var scopedThread string
+			select {
+			case scopedThread = <-oneOffThread:
+				if scopedThread == "" {
+					t.Fatal("the One-off provider request had no thread identity")
+				}
+			case <-ctx.Done():
+				t.Fatal("the One-off provider request did not arrive")
+			}
+			run("wait", "--text", "Workspace notes")
+			run("eval", `(() => {
+				const fetch = window.fetch;
+				window.fetch = (...args) => {
+					if (String(args[0]).endsWith('/api/resources/file')) {
+						document.body.dataset.checkedFileThread = JSON.parse(args[1].body).thread;
+						window.fetch = fetch;
+					}
+					return fetch(...args);
+				};
+			})()`)
+			run("find", "role", "link", "click", "--name", "Workspace notes", "--exact")
+			run("wait", "--fn", fmt.Sprintf(`document.body.dataset.checkedFileThread === %q &&
+				document.querySelector('#activity-details mark')?.textContent?.trim() === 'file range line'`, scopedThread))
+			run("find", "role", "button", "click", "--name", "Close details", "--exact")
+			run("find", "role", "button", "click", "--name", "Close One-off", "--exact")
+			run("wait", "--fn", `!document.querySelector('[role=tablist][aria-label=Conversation]')`)
 			run("fill", "#composer-text", "@!not-an-image")
 			run("wait", "[aria-label=Files] [role=option]")
 			run("find", "role", "option", "click", "--name", "not-an-image.png", "--exact")
@@ -246,6 +284,11 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					t.Fatal("Tab did not run the native queued shell draft")
 				}
 			}
+			threadLink := func() string {
+				href := run("get", "attr", "nav[aria-label=Threads] li a[aria-current=page]", "href")
+				return fmt.Sprintf("nav[aria-label=Threads] li a[href=%q]", href)
+			}
+			originalThread := threadLink()
 			run("find", "role", "button", "click", "--name", "New thread", "--exact")
 			run("wait", "--fn", fmt.Sprintf(`document.querySelector('button[title=%s]') !== null`, fmt.Sprintf("%q", workspace)))
 			run("click", fmt.Sprintf("button[title=%q]", workspace))
@@ -265,6 +308,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			}
 			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(row => row.textContent.includes('First browser message.'))`)
 			run("wait", "--fn", `[...document.querySelectorAll('[data-kind=user]')].some(row => row.textContent.includes('[Image browser-image.png]') && row.querySelector('img')?.naturalWidth === 2)`)
+			release := filepath.Join(t.TempDir(), "release-shell")
 			for _, test := range []struct {
 				message, path, action string
 			}{
@@ -278,7 +322,26 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 				run("wait", "--text", test.message)
 				run("wait", "--fn", idle)
 				path := filepath.Join(manualWorkspace, test.path)
-				run("fill", "#composer-text", "!printf captured > '"+strings.ReplaceAll(path, "'", "'\\''")+"'")
+				cmd := "!printf captured > '" + strings.ReplaceAll(path, "'", "'\\''") + "'"
+				if test.action == "Keep edits" {
+					// Don't finish until Chrome has painted the diff; timeout also bounds a failed fixture.
+					cmd += " && for ((i=0; i<300; i++)); do if [ -f '" +
+						strings.ReplaceAll(release, "'", "'\\''") +
+						"' ]; then exit 0; fi; sleep 0.1; done; exit 1"
+				}
+				if test.action == "Keep edits" {
+					run("fill", "#composer-text", "!")
+					run("wait", "--fn", `document.querySelector('#composer-text')?.value === '!' &&
+						document.getElementById('composer-shell-target')?.textContent.includes('Shell command on Details fixture')`)
+				}
+				run("fill", "#composer-text", cmd)
+				if test.action == "Keep edits" {
+					run("eval", `(() => { const field = document.querySelector('#composer-text');
+						field.setSelectionRange(1, 7); field.dispatchEvent(new Event('select')); })()`)
+					run("wait", "--fn", `(() => { const field = document.querySelector('#composer-text');
+						return field.selectionStart === 1 && field.selectionEnd === 7 &&
+							!field.classList.contains('shell-highlighted'); })()`)
+				}
 				run("press", "Enter")
 				for {
 					if contents, _ := os.ReadFile(path); string(contents) == "captured" {
@@ -289,6 +352,38 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					case <-ctx.Done():
 						t.Fatal("browser shell did not write its rewind fixture file")
 					}
+				}
+				if test.action == "Keep edits" {
+					liveHunk := `(() => {
+						const live = document.querySelector('[aria-label="Live edits"]');
+						const card = [...(live?.querySelectorAll('article') ?? [])].find(
+							entry => entry.querySelector('h3')?.textContent.trim().split('/').at(-1) === 'keep.txt');
+						const hunk = card?.querySelector('.bg-add');
+						return live?.textContent.includes('Writing') &&
+							card?.textContent.includes('User shell') &&
+							hunk?.textContent.includes('captured') &&
+							hunk.getBoundingClientRect().height > 0;
+					})()`
+					run("wait", "--fn", liveHunk)
+					heldThread := threadLink()
+					run("click", originalThread)
+					run("wait", "--text", "Workspace notes")
+					run("wait", `[aria-label="Live edits"]`, "--state", "hidden")
+					run("click", heldThread)
+					run("wait", "--fn", liveHunk)
+					if err := os.WriteFile(release, nil, 0600); err != nil {
+						t.Fatal(err)
+					}
+					run("find", "role", "button", "click", "--name", "Changes", "--exact")
+					run("wait", "--fn", `(() => {
+						const panel = [...document.querySelectorAll('aside')].find(pane => pane.textContent.includes('Saved Diff'));
+						const file = [...(panel?.querySelectorAll('[data-file]') ?? [])].find(
+							entry => entry.querySelector('summary')?.textContent.includes('keep.txt'));
+						return !document.querySelector('[aria-label="Live edits"]') &&
+							file?.textContent.includes('User shell') &&
+							file.querySelector('.bg-add')?.textContent.includes('captured');
+					})()`)
+					run("find", "role", "button", "click", "--name", "Changes", "--exact")
 				}
 				run("wait", "--fn", idle)
 				run("fill", "#composer-text", "/rewind")
@@ -318,13 +413,24 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("click", `[aria-label="Predictions"] button[data-value="on"]`)
 			run("press", "Escape")
 			run("wait", "--text", provider.prediction)
+			run("focus", "#composer-text")
+			run("press", "Tab")
+			run("wait", "--fn", fmt.Sprintf(`document.activeElement?.id === 'composer-text' &&
+				document.activeElement.value === %q && !document.querySelector('button[aria-label="Interrupt turn"]')`, provider.prediction))
+			run("fill", "#composer-text", "")
+			run("find", "role", "button", "click", "--name", "Display settings")
+			run("click", `[aria-label="Predictions"] button[data-value="off"]`)
+			run("click", `[aria-label="Predictions"] button[data-value="on"]`)
+			run("press", "Escape")
+			run("wait", "--text", provider.prediction)
 			run("find", "role", "button", "click", "--name", provider.prediction, "--exact")
-			run("wait", "--fn", fmt.Sprintf(`document.querySelector('#composer-text')?.value === %q`, provider.prediction))
+			run("wait", "--fn", fmt.Sprintf(`document.activeElement?.id === 'composer-text' &&
+				document.activeElement.value === %q`, provider.prediction))
 			run("fill", "#composer-text", "")
 			run("find", "role", "button", "click", "--name", "Display settings")
 			run("click", `[aria-label="Predictions"] button[data-value="off"]`)
 			run("press", "Escape")
-			run("wait", "--fn", fmt.Sprintf(`![...document.querySelectorAll('form button')].some(button => button.textContent.trim() === %q)`, provider.prediction))
+			run("wait", "--fn", `!document.getElementById('composer-prediction')`)
 		},
 	})
 }
@@ -360,8 +466,16 @@ func checkComposerPresets(t *testing.T, run func(...string) string) {
 	open()
 	run("press", "1")
 	run("wait", "--fn", `document.querySelector('[role=dialog] textarea')?.value === 'Review carefully.\nKeep this line.'`)
-	button("Continue")
 	run("find", "label", "Label", "fill", "你好")
+	run("find", "label", "Prompt or slash command", "fill", "!echo not a preset")
+	button("Save")
+	run("wait", "--text", "Presets support prompts and slash commands, not shell commands.")
+	run("wait", "--fn", `(() => {
+		const dialog = document.querySelector('[role=dialog]');
+		return dialog.querySelector('textarea')?.value === '!echo not a preset' &&
+			dialog.querySelector('input[name=label]')?.value === '你好';
+	})()`)
+	run("find", "label", "Prompt or slash command", "fill", "Review carefully.\nKeep this line.")
 	button("Save")
 	run("wait", "--text", "你好")
 	run("press", "Escape")
@@ -370,16 +484,13 @@ func checkComposerPresets(t *testing.T, run func(...string) string) {
 		t.Fatalf("saving a preset changed the draft to %q", draft)
 	}
 	open()
-	run("press", "r")
-	run("press", "1")
+	button("Edit preset 1")
 	run("find", "label", "Label", "fill", "你好 renamed")
 	button("Save")
 	run("wait", "--text", "你好 renamed")
-	run("press", "e")
-	run("press", "1")
+	button("Edit preset 1")
 	run("find", "label", "Prompt or slash command", "fill", "Review carefully.")
-	button("Continue")
-	button("Continue")
+	button("Save")
 	button("Replace preset 1")
 	run("wait", "--text", "你好 renamed")
 	run("press", "1")
@@ -395,10 +506,9 @@ func checkComposerPresets(t *testing.T, run func(...string) string) {
 			!document.querySelector('[aria-label="Attachments"]');
 	})()`)
 	open()
-	run("press", "d")
-	run("press", "1")
 	button("Delete preset 1")
-	run("wait", "--fn", `document.querySelector('[role=dialog] li button:enabled')?.textContent.includes('Empty')`)
+	button("Delete preset 1")
+	run("wait", "--fn", `!!document.querySelector('[role=dialog] button[aria-label="Add preset 1"]:enabled')`)
 	run("press", "Escape")
 	run("wait", "--fn", `!document.querySelector('[role=dialog]')`)
 	run("fill", "#composer-text", "/")

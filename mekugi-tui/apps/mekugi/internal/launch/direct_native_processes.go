@@ -30,7 +30,7 @@ func (c *directNativeConnection) listThreadProcesses(ctx context.Context, thread
 	for _, item := range response.Data {
 		processes = append(processes, sessionpresentation.Process{
 			Thread: thread, Turn: item.Turn, Item: item.Item, ID: item.Process,
-			Agent: caller, Command: unwrapDirectShellCommand(item.Command),
+			Agent: caller, Command: item.Command,
 		})
 	}
 	return processes, nil

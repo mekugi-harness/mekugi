@@ -239,6 +239,18 @@ impl ThreadScopedOutgoingMessageSender {
         self.outgoing.send_server_notification(notification).await;
     }
 
+    pub(crate) fn try_send_optional_notification(&self, notification: ServerNotification) {
+        let notifications = std::iter::repeat_n(notification, self.connection_ids.len());
+        for (&connection_id, notification) in self.connection_ids.iter().zip(notifications) {
+            if !self.outgoing.try_send_server_notification(
+                NotificationTarget::Connection(connection_id),
+                notification,
+            ) {
+                break;
+            }
+        }
+    }
+
     pub(crate) async fn resolve_server_request(&self, request_id: RequestId) {
         self.outgoing.cancel_request(&request_id).await;
         self.send_server_notification(ServerNotification::ServerRequestResolved(

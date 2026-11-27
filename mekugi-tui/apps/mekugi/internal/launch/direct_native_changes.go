@@ -27,7 +27,7 @@ type directChangeOrigin struct {
 	Sequence       uint64  `json:"sequence"`
 	ThreadID       string  `json:"threadId"`
 	AuthorThreadID *string `json:"authorThreadId"`
-	SourceKind     string  `json:"sourceKind"`
+	SourceLabel    string  `json:"sourceLabel"`
 	TurnID         string  `json:"turnId"`
 	ItemID         string  `json:"itemId"`
 	Workspace      string  `json:"workspace"`
@@ -49,23 +49,6 @@ type directThreadChangesResponse struct {
 		IsBinary      bool     `json:"isBinary"`
 		CoverageNotes []string `json:"coverageNotes"`
 	} `json:"files"`
-}
-
-func capturedSource(kind string) string {
-	switch kind {
-	case "ApplyPatch":
-		return "apply_patch"
-	case "ShellWrite":
-		return "Shell"
-	case "UserShell":
-		return "User shell"
-	case "MchangesApply":
-		return "mchanges apply"
-	case "MchangesRevert":
-		return "mchanges revert"
-	default:
-		return kind
-	}
 }
 
 func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID string) {
@@ -135,7 +118,7 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 				Binary: f.IsBinary, Incomplete: strings.Join(f.CoverageNotes, "; "),
 			},
 			Origin: changes.Origin{
-				Change: origin.ChangeID, Caller: caller, Source: capturedSource(origin.SourceKind),
+				Change: origin.ChangeID, Caller: caller, Source: origin.SourceLabel,
 			},
 		}
 		captures = append(captures, chunk)

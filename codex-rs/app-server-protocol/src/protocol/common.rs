@@ -962,6 +962,11 @@ client_request_definitions! {
         manual_payload_conversion: manual,
         response: v2::ThreadListResponse,
     },
+    ThreadChangesLive => "thread/changes/live" {
+        params: v2::ThreadChangesLiveParams,
+        serialization: None,
+        response: v2::ThreadChangesLiveResponse,
+    },
     ThreadChangesRead => "thread/changes/read" {
         params: v2::ThreadChangesReadParams,
         serialization: None,
@@ -2185,8 +2190,6 @@ server_notification_definitions! {
     ThreadSectionChanged => "thread/section/changed" (v2::ThreadSectionChangedNotification),
     ThreadAttachmentUpdated => "thread/attachment/updated" (v2::ThreadAttachmentUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
-    #[experimental("thread/prediction/updated")]
-    ThreadPredictionUpdated => "thread/prediction/updated" (v2::ThreadPredictionUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
     #[experimental("thread/queue/changed")]
     ThreadQueueChanged => "thread/queue/changed" (v2::ThreadQueueChangedNotification),
@@ -2235,6 +2238,7 @@ server_notification_definitions! {
     /// Final exit notification for a `process/spawn` session.
     #[experimental("process/exited")]
     ProcessExited => "process/exited" (v2::ProcessExitedNotification),
+    CommandExecutionChangesUpdated => "item/commandExecution/changesUpdated" (v2::CommandExecutionChangesUpdatedNotification),
     CommandExecutionOutputDelta => "item/commandExecution/outputDelta" (v2::CommandExecutionOutputDeltaNotification),
     TerminalInteraction => "item/commandExecution/terminalInteraction" (v2::TerminalInteractionNotification),
     /// Deprecated legacy apply_patch output stream notification.

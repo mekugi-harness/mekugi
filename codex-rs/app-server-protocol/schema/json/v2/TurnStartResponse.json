@@ -606,7 +606,13 @@
             }
           ]
         },
+        "script": {
+          "default": "",
+          "description": "Full redacted script, before splitting steps or attributing a leading cd.",
+          "type": "string"
+        },
         "segments": {
+          "description": "Separate source steps, or empty when the script is displayed as one.",
           "items": {
             "type": "string"
           },
@@ -1675,7 +1681,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Only present for a shell invocation with separate display steps."
+              "description": "Authored display text for a recognized shell invocation."
             },
             "durationMs": {
               "description": "The duration of the command execution in milliseconds.",

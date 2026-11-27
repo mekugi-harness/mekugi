@@ -1,9 +1,14 @@
 //! Shared pre-write baseline state, path normalization, scope classification,
 //! and `ChangeHistoryStore` persistence across Linux and macOS observers.
 
+#[path = "live.rs"]
+pub(crate) mod live;
+
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::io::ErrorKind;
+use std::io::Read as _;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,10 +34,18 @@ const MAX_CAPTURE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) type ReadPolicyFn = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 
 struct ObservedFile {
-    before: FileSnapshot,
+    // None is a non-regular path or an unavailable baseline, not a missing file.
+    before: Option<Arc<FileSnapshot>>,
     coverage: CoverageStatus,
     keys: Vec<WriterKey>,
-    vcs_diagnostic_only: bool,
+    provenance: WriteProvenance,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WriteProvenance {
+    Authored,
+    VcsDiagnostic,
+    Mixed,
 }
 
 /// Mutable per-command write observation state shared between the OS supervisor
@@ -76,9 +89,14 @@ impl ObservationState {
         if should_ignore_path(&path, &self.ignored_root) {
             return;
         }
+        let provenance = if is_vcs_diagnostic {
+            WriteProvenance::VcsDiagnostic
+        } else {
+            WriteProvenance::Authored
+        };
         if let Some(existing) = self.baselines.get_mut(&path) {
-            if !is_vcs_diagnostic {
-                existing.vcs_diagnostic_only = false;
+            if existing.provenance != provenance {
+                existing.provenance = WriteProvenance::Mixed;
             }
             return;
         }
@@ -95,10 +113,10 @@ impl ObservationState {
         self.baselines.insert(
             path,
             ObservedFile {
-                before: snapshot,
+                before: snapshot.map(Arc::new),
                 coverage,
                 keys,
-                vcs_diagnostic_only: is_vcs_diagnostic,
+                provenance,
             },
         );
     }
@@ -144,16 +162,20 @@ impl ObservationState {
 
         let mut authored_files = Vec::new();
         let mut vcs_files = Vec::new();
-        for (abs_path, obs) in &baselines {
-            if !(self.can_read)(abs_path)
-                || fs::canonicalize(abs_path)
+        for (abs_path, obs) in baselines {
+            if !(self.can_read)(&abs_path)
+                || fs::canonicalize(&abs_path)
                     .ok()
                     .is_some_and(|canon| !(self.can_read)(&canon))
             {
                 continue;
             }
-            let (after, after_cov) = read_bounded_snapshot(abs_path);
-            let mut coverage = obs.coverage.clone().merge(after_cov);
+            let (after, after_cov) = read_bounded_snapshot(&abs_path);
+            let before = obs
+                .before
+                .map_or(FileSnapshot::Missing, Arc::unwrap_or_clone);
+            let after = after.unwrap_or(FileSnapshot::Missing);
+            let mut coverage = obs.coverage.merge(after_cov);
             if obs.keys.iter().any(|k| conflicted.contains(k)) {
                 coverage = coverage.merge(CoverageStatus::Partial {
                     reason: "concurrent write to same file".to_string(),
@@ -164,21 +186,21 @@ impl ObservationState {
                     reason: partial_reasons.join("; "),
                 });
             }
-            if obs.before == after && coverage == CoverageStatus::Complete {
+            if before == after && coverage == CoverageStatus::Complete {
                 continue;
             }
-            let rel_path = display_rel_path(workspace_root, abs_path);
-            let scope = classify_change_scope(abs_path, workspace_root, session_tmp);
+            let rel_path = display_rel_path(workspace_root, &abs_path);
+            let scope = classify_change_scope(&abs_path, workspace_root, session_tmp);
             let change = PendingFileChange {
                 rel_path,
-                abs_path: abs_path.clone(),
+                abs_path,
                 moved_from: None,
-                before: obs.before.clone(),
+                before,
                 after,
                 coverage,
                 scope,
             };
-            if obs.vcs_diagnostic_only {
+            if obs.provenance == WriteProvenance::VcsDiagnostic {
                 vcs_files.push(change);
             } else {
                 authored_files.push(change);
@@ -252,15 +274,19 @@ pub(crate) fn resolve_canonical_path(path: &Path) -> PathBuf {
     resolved
 }
 
-fn read_bounded_snapshot(path: &Path) -> (FileSnapshot, CoverageStatus) {
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
+fn read_bounded_snapshot(path: &Path) -> (Option<FileSnapshot>, CoverageStatus) {
+    let opened = open_observed_file(path).and_then(|file| {
+        let metadata = file.metadata()?;
+        Ok((file, metadata))
+    });
+    let (file, meta) = match opened {
+        Ok(opened) => opened,
         Err(err) if err.kind() == ErrorKind::NotFound => {
-            return (FileSnapshot::Missing, CoverageStatus::Complete);
+            return (Some(FileSnapshot::Missing), CoverageStatus::Complete);
         }
         Err(err) => {
             return (
-                FileSnapshot::Missing,
+                None,
                 CoverageStatus::MissingBaseline {
                     reason: err.to_string(),
                 },
@@ -268,11 +294,11 @@ fn read_bounded_snapshot(path: &Path) -> (FileSnapshot, CoverageStatus) {
         }
     };
     if !meta.file_type().is_file() {
-        return (FileSnapshot::Missing, CoverageStatus::Complete);
+        return (None, CoverageStatus::Complete);
     }
     if meta.len() > MAX_CAPTURE_FILE_BYTES {
         return (
-            FileSnapshot::Missing,
+            None,
             CoverageStatus::Partial {
                 reason: format!(
                     "file exceeds {MAX_CAPTURE_FILE_BYTES}-byte capture limit ({} bytes)",
@@ -281,18 +307,94 @@ fn read_bounded_snapshot(path: &Path) -> (FileSnapshot, CoverageStatus) {
             },
         );
     }
-    match fs::read(path) {
-        Ok(bytes) => (FileSnapshot::Present(bytes), CoverageStatus::Complete),
-        Err(err) if err.kind() == ErrorKind::NotFound => {
-            (FileSnapshot::Missing, CoverageStatus::Complete)
+    let mut bytes = Vec::new();
+    match file
+        .take(MAX_CAPTURE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+    {
+        Ok(len) if len as u64 <= MAX_CAPTURE_FILE_BYTES => {
+            (Some(FileSnapshot::Present(bytes)), CoverageStatus::Complete)
         }
+        Ok(_) => (
+            None,
+            CoverageStatus::Partial {
+                reason: format!("file exceeds {MAX_CAPTURE_FILE_BYTES}-byte capture limit"),
+            },
+        ),
         Err(err) => (
-            FileSnapshot::Missing,
+            None,
             CoverageStatus::MissingBaseline {
                 reason: err.to_string(),
             },
         ),
     }
+}
+
+/// Open the canonical observation path without traversing replacement symlinks.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_observed_file(path: &Path) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd as _;
+    use std::os::fd::FromRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    #[cfg(target_os = "linux")]
+    const OPEN_DIR: libc::c_int = libc::O_PATH | libc::O_DIRECTORY;
+    #[cfg(not(target_os = "linux"))]
+    const OPEN_DIR: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY;
+
+    let path = path
+        .strip_prefix("/")
+        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "expected an absolute file path"))?;
+    let mut components = path.components().peekable();
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(OPEN_DIR)
+        .open("/")?;
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "non-canonical file path",
+            ));
+        };
+        let name = CString::new(name.as_bytes())?;
+        let access = if components.peek().is_some() {
+            OPEN_DIR
+        } else {
+            libc::O_RDONLY | libc::O_NONBLOCK
+        };
+        // Each call resolves just one name under an already-open directory and creates
+        // a new descriptor. The current directory fd remains valid through the call.
+        let fd = unsafe {
+            libc::openat(
+                file.as_raw_fd(),
+                name.as_ptr(),
+                access | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        file = unsafe { fs::File::from_raw_fd(fd) };
+    }
+    Ok(file)
+}
+
+#[cfg(target_os = "macos")]
+fn open_observed_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW_ANY | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_observed_file(_path: &Path) -> io::Result<fs::File> {
+    Err(io::Error::from(ErrorKind::Unsupported))
 }
 
 fn display_rel_path(workspace_root: &Path, abs: &Path) -> String {

@@ -3288,6 +3288,7 @@ fn answer_moderation_preserves_the_display_instruction() {
 fn command_display_preserves_steps_and_only_attributes_a_resolved_cd() {
     let cwd = absolute_path("repo");
     for (script, exit, output, expected_dir, steps) in [
+        (r#"printf '%s' 'a"b'"#, Some(0), "", None, vec![]),
         (
             "cd 'my dir' && cat a | head && printf b",
             Some(0),
@@ -3360,6 +3361,7 @@ fn command_display_preserves_steps_and_only_attributes_a_resolved_cd() {
         assert_eq!(
             wire["display"],
             json!({
+                "script": script,
                 "effectiveCwd": expected_dir.map(|dir| cwd.as_path().join(dir)),
                 "segments": steps
             }),

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Trash2Icon from "@lucide/svelte/icons/trash-2";
   import { tick } from "svelte";
   import type { Machine } from "./hub.svelte";
   import type {
@@ -38,112 +39,80 @@
     onsaved: (slot: number, preset: ComposerPreset | null) => void;
   } = $props();
 
-  type Slot = { index: number; preset: ComposerPreset | null };
-  type Action = "save" | "edit" | "rename" | "delete";
-  type Step =
-    | { kind: "quick" }
-    | { kind: "slots"; action: Action }
-    | { kind: "input"; slot?: Slot }
-    | { kind: "label"; slot?: Slot; rename?: boolean }
-    | { kind: "confirm"; slot: Slot; deleting?: boolean };
+  type Slot<P = ComposerPreset | null> = { index: number; preset: P };
+  type View =
+    | { kind: "list" }
+    | { kind: "edit"; slot: Slot }
+    | { kind: "confirm"; slot: Slot<ComposerPreset>; action: "replace" | "delete" };
 
   const slotNumbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
-  const slotTitles = {
-    save: "Save preset to slot",
-    edit: "Edit a preset",
-    rename: "Rename a preset",
-    delete: "Delete a preset",
-  };
-  const actions = ["edit", "rename", "delete"] as const;
-  let step: Step = $state({ kind: "quick" });
+  let view: View = $state({ kind: "list" });
   let body = $state<HTMLDivElement>();
   let draft = $state("");
   let label = $state("");
   let pending = $state(false);
   let error = $state<string>();
-  const listedSlots = $derived(
-    slotNumbers.filter(
-      (index) => step.kind !== "slots" || step.action === "save" || slots?.[index],
-    ),
-  );
+
   const frozen = $derived(disabled || pending);
   const slotsDisabled = $derived(frozen || loading || !!readError);
-  const draftTitle = $derived.by(() => {
-    switch (step.kind) {
-      case "quick":
+  const title = $derived.by(() => {
+    switch (view.kind) {
+      case "list":
         return "Presets";
-      case "slots":
-        return slotTitles[step.action];
-      case "input":
-        return step.slot?.preset ? `Edit preset ${step.slot.index}` : "New preset";
-      case "label":
-        return step.slot
-          ? `${step.rename ? "Rename" : "Label"} preset ${step.slot.index}`
-          : "Label new preset";
+      case "edit":
+        return `${view.slot.preset ? "Edit" : "Add"} preset ${view.slot.index}`;
       case "confirm":
-        return `${step.deleting ? "Delete" : "Replace"} preset ${step.slot.index}?`;
+        return `${view.action === "replace" ? "Replace" : "Delete"} preset ${view.slot.index}?`;
     }
   });
 
-  function enter(next: Step) {
+  function show(next: View, focus = "[data-initial-focus]") {
     error = undefined;
-    step = next;
-    void tick().then(() => body?.querySelector<HTMLElement>("[data-initial-focus]")?.focus());
+    view = next;
+    void tick().then(() => body?.querySelector<HTMLElement>(focus)?.focus());
   }
 
-  function edit(slot?: Slot) {
-    draft = slot?.preset?.input ?? seed;
-    label = slot?.preset?.label ?? "";
-    enter({ kind: "input", slot });
+  function showList(index: number, action?: "edit" | "delete") {
+    const button = action ? `button[data-preset-action="${action}"]` : "button";
+    show({ kind: "list" }, `[data-preset-slot="${index}"] ${button}`);
+  }
+
+  function edit(slot: Slot) {
+    draft = slot.preset?.input ?? seed;
+    label = slot.preset?.label ?? "";
+    show({ kind: "edit", slot });
   }
 
   function choose(index: number) {
     if (slotsDisabled || !slots) return;
-    const slot = { index, preset: slots[index] ?? null };
-    if (step.kind === "quick") {
-      if (slot.preset) onrecall(slot.preset.input);
-      else edit(slot);
+    const preset = slots[index];
+    if (preset) onrecall(preset.input);
+    else edit({ index, preset: null });
+  }
+
+  function submit(event: SubmitEvent) {
+    event.preventDefault();
+    if (frozen || view.kind !== "edit") return;
+    const { index, preset } = view.slot;
+    if (preset && draft !== preset.input) {
+      show({ kind: "confirm", action: "replace", slot: { index, preset } });
       return;
     }
-    if (step.kind !== "slots") return;
-    switch (step.action) {
-      case "save":
-        if (slot.preset) enter({ kind: "confirm", slot });
-        else void save(slot);
-        break;
-      case "edit":
-        edit(slot);
-        break;
-      case "rename":
-        if (!slot.preset) break;
-        draft = slot.preset.input;
-        label = slot.preset.label;
-        enter({ kind: "label", slot, rename: true });
-        break;
-      case "delete":
-        enter({ kind: "confirm", slot, deleting: true });
-        break;
-    }
+    void save(view.slot, { input: draft, label });
   }
 
-  function advance(event: SubmitEvent) {
-    event.preventDefault();
-    if (frozen) return;
-    if (step.kind === "input") {
-      if (!draft.trim()) error = "Preset input cannot be empty.";
-      else if (draft.trimStart().startsWith("!"))
-        error = "Presets support prompts and slash commands, not shell commands.";
-      else if (new TextEncoder().encode(draft).length > 8000)
-        error = "Preset input cannot exceed 8,000 UTF-8 bytes.";
-      else enter({ kind: "label", slot: step.slot });
-    } else if (step.kind === "label") {
-      if (!step.slot) enter({ kind: "slots", action: "save" });
-      else if (!step.rename && step.slot.preset) enter({ kind: "confirm", slot: step.slot });
-      else void save(step.slot);
-    }
+  function cancelConfirmation() {
+    if (view.kind !== "confirm") return;
+    if (view.action === "replace") show({ kind: "edit", slot: view.slot });
+    else showList(view.slot.index, "delete");
   }
 
-  async function save(slot: Slot, deleting = false) {
+  function confirm() {
+    if (view.kind !== "confirm") return;
+    void save(view.slot, view.action === "delete" ? null : { input: draft, label });
+  }
+
+  async function save(slot: Slot, preset: ComposerPreset | null) {
     if (frozen) return;
     pending = true;
     error = undefined;
@@ -151,7 +120,7 @@
       threadId: thread,
       slot: slot.index,
       expected: slot.preset,
-      preset: deleting ? null : { input: draft, label: label.trim() },
+      preset,
     };
     try {
       const result = await machine.request<ThreadPresetWriteResponse>(
@@ -159,9 +128,10 @@
         params,
       );
       onsaved(slot.index, result.preset);
-      enter({ kind: "quick" });
+      showList(slot.index);
     } catch (failure) {
-      error = errorText(failure);
+      show(preset ? { kind: "edit", slot } : view);
+      error = errorText(failure, true);
     } finally {
       pending = false;
     }
@@ -169,7 +139,7 @@
 
   function shortcut(event: KeyboardEvent) {
     if (
-      (step.kind !== "quick" && step.kind !== "slots") ||
+      view.kind !== "list" ||
       slotsDisabled ||
       !slots ||
       !body?.closest("[role=dialog]")?.contains(document.activeElement) ||
@@ -179,155 +149,139 @@
       event.ctrlKey ||
       event.shiftKey ||
       event.altKey ||
-      event.metaKey
+      event.metaKey ||
+      !/^[0-9]$/.test(event.key)
     )
       return;
-    if (/^[0-9]$/.test(event.key) && listedSlots.includes(Number(event.key))) {
-      event.preventDefault();
-      choose(Number(event.key));
-    } else if (step.kind === "quick") {
-      if (event.key === "n") {
-        event.preventDefault();
-        edit();
-      } else {
-        const action = actions.find((choice) => choice[0] === event.key);
-        if (!action || !Object.keys(slots).length) return;
-        event.preventDefault();
-        enter({ kind: "slots", action });
-      }
-    }
+    event.preventDefault();
+    choose(Number(event.key));
   }
 </script>
 
 <svelte:window onkeydown={shortcut} />
 
-<Dialog title={draftTitle} {onclose}>
+<Dialog {title} {onclose}>
   <div bind:this={body}>
-    {#if step.kind === "quick" || step.kind === "slots"}
-      {#if step.kind === "quick"}
-        <p class="mb-3 text-muted">Load a preset into the composer without sending.</p>
-      {/if}
+    {#if view.kind === "list"}
+      <p class="mb-3 text-muted">Load a preset into the composer without sending.</p>
       {#if !slots && !readError}
-        <div
-          class="grid grid-cols-2 gap-2 max-sm:grid-cols-1"
-          aria-busy="true"
-          aria-label="Presets"
-        >
+        <div class="grid gap-0.5" aria-busy="true" aria-label="Presets">
           {#each slotNumbers as index (index)}
             <div class="h-9 rounded-control bg-raised max-sm:h-11"></div>
           {/each}
         </div>
       {:else if slots}
-        <ul
-          class="grid grid-cols-1 gap-x-2 gap-y-0.5 sm:grid-flow-col sm:grid-cols-2 sm:[grid-template-rows:var(--preset-slot-rows)]"
-          style:--preset-slot-rows={`repeat(${Math.max(1, Math.ceil(listedSlots.length / 2))}, auto)`}
-        >
-          {#each listedSlots as index, i (index)}
-            {@const stored = slots[index]}
-            <li>
+        <ul class="grid gap-0.5" role="list" aria-busy={loading}>
+          {#each slotNumbers as index, i (index)}
+            {@const preset = slots[index]}
+            {@const summary =
+              preset && (preset.label.trim() || preset.input.trim()).split("\n", 1)[0]}
+            <li class="flex min-w-0 items-center gap-1" data-preset-slot={index}>
               <button
                 type="button"
-                class="flex min-h-9 w-full cursor-pointer items-center gap-3 rounded-control px-2 py-1.5 text-left text-small hover:enabled:bg-ui-accent disabled:cursor-default max-sm:min-h-11"
+                class="flex min-h-9 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-control px-2 py-1.5 text-left text-small hover:enabled:bg-ui-accent disabled:cursor-default max-sm:min-h-11"
                 disabled={slotsDisabled}
+                aria-label={preset ? `Load preset ${index}: ${summary}` : `Add preset ${index}`}
+                aria-keyshortcuts={String(index)}
+                title={summary}
                 data-initial-focus={i === 0 && !slotsDisabled ? "" : undefined}
                 onclick={() => choose(index)}
               >
                 <kbd
                   class="flex size-6 shrink-0 items-center justify-center rounded-chip bg-raised font-mono text-small text-muted"
-                  >{index}</kbd
+                  aria-hidden="true">{index}</kbd
                 >
-                <span class={stored ? "min-w-0 truncate font-medium" : "text-muted"}>
-                  {stored
-                    ? (stored.label.trim() || stored.input.trim()).split("\n", 1)[0]
-                    : "Empty"}
+                <span class={preset ? "min-w-0 truncate font-medium" : "text-muted"}>
+                  {preset ? summary : "Add preset"}
                 </span>
               </button>
+              {#if preset}
+                <Button
+                  variant="quiet"
+                  icon="compose"
+                  label={`Edit preset ${index}`}
+                  tooltip
+                  data-preset-action="edit"
+                  disabled={slotsDisabled}
+                  onclick={() => edit({ index, preset })}
+                />
+                <Button
+                  variant="quiet"
+                  shape="icon"
+                  label={`Delete preset ${index}`}
+                  tooltip
+                  data-preset-action="delete"
+                  disabled={slotsDisabled}
+                  onclick={() =>
+                    show({ kind: "confirm", action: "delete", slot: { index, preset } })}
+                >
+                  <Trash2Icon strokeWidth={1.5} aria-hidden="true" />
+                </Button>
+              {/if}
             </li>
           {/each}
         </ul>
-        {#if step.kind === "quick"}
-          <div class="mt-4 flex flex-wrap justify-end gap-2">
-            <Button disabled={slotsDisabled} onclick={() => edit()}>New preset</Button>
-            {#each actions as action (action)}
-              <Button
-                variant="quiet"
-                disabled={slotsDisabled || !Object.keys(slots).length}
-                onclick={() => enter({ kind: "slots", action })}>{slotTitles[action]}</Button
-              >
-            {/each}
-          </div>
-        {:else}
-          <div class="mt-4 flex justify-end">
-            <Button variant="quiet" disabled={pending} onclick={() => enter({ kind: "quick" })}
-              >Cancel</Button
-            >
-          </div>
-        {/if}
       {/if}
-    {:else if step.kind === "input" || step.kind === "label"}
-      <form class="grid gap-4" onsubmit={advance}>
-        {#if step.kind === "input"}
-          <Field label="Prompt or slash command">
-            <textarea
-              class="{input} min-h-40 resize-y font-mono"
-              data-initial-focus
-              bind:value={draft}
-              onkeydown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-                  event.preventDefault();
-                  event.currentTarget.form?.requestSubmit();
-                }
-              }}></textarea>
-          </Field>
-        {:else}
-          <Field label="Label">
-            <input
-              class={input}
-              data-initial-focus
-              bind:value={label}
-              placeholder="First line when empty"
-            />
-          </Field>
-        {/if}
+      {#if readError}<Alert class="mt-3">{readError}</Alert>{/if}
+    {:else if view.kind === "edit"}
+      {@const slot = view.slot}
+      <form class="grid gap-4" onsubmit={submit}>
+        <Field label="Prompt or slash command">
+          <textarea
+            name="prompt"
+            class="{input} h-40 max-h-[45dvh] resize-y font-mono"
+            data-initial-focus
+            aria-required="true"
+            readonly={pending}
+            bind:value={draft}></textarea>
+        </Field>
+        <Field label="Label">
+          <input
+            name="label"
+            class={input}
+            readonly={pending}
+            bind:value={label}
+            placeholder="First line when empty"
+          />
+        </Field>
+        {#if error}<Alert>{error}</Alert>{/if}
         <div class="flex justify-end gap-2">
-          <Button variant="quiet" disabled={pending} onclick={() => enter({ kind: "quick" })}
-            >Cancel</Button
+          <Button
+            variant="quiet"
+            disabled={pending}
+            onclick={() => showList(slot.index, slot.preset ? "edit" : undefined)}>Cancel</Button
           >
           <Button type="submit" variant="primary" disabled={frozen}>
-            {pending
-              ? "Saving…"
-              : step.kind === "label" && (step.rename || (step.slot && !step.slot.preset))
-                ? "Save"
-                : "Continue"}
+            {pending ? "Saving…" : "Save"}
           </Button>
         </div>
       </form>
-    {:else if step.kind === "confirm"}
-      <p class="max-h-40 overflow-y-auto whitespace-pre-wrap wrap-anywhere">
-        {step.slot.preset?.input}
-      </p>
-      {#if !step.deleting}
-        <p class="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap wrap-anywhere">→ {draft}</p>
-      {/if}
-      <div class="mt-4 flex justify-end gap-2">
-        <Button
-          variant="quiet"
-          data-initial-focus
-          disabled={pending}
-          onclick={() => enter({ kind: "quick" })}>Cancel</Button
-        >
-        <Button
-          variant="danger"
-          disabled={frozen}
-          onclick={() => {
-            if (step.kind === "confirm") void save(step.slot, step.deleting);
-          }}
-          >{pending
-            ? "Saving…"
-            : `${step.deleting ? "Delete" : "Replace"} preset ${step.slot.index}`}</Button
-        >
+    {:else}
+      {@const action = view.action === "replace" ? "Replace" : "Delete"}
+      <div class="grid gap-3">
+        <div>
+          <p class="text-small text-muted">Current prompt</p>
+          <p class="max-h-28 overflow-y-auto whitespace-pre-wrap wrap-anywhere">
+            {view.slot.preset.input}
+          </p>
+        </div>
+        {#if view.action === "replace"}
+          <div>
+            <p class="text-small text-muted">Replacement prompt</p>
+            <p class="max-h-28 overflow-y-auto whitespace-pre-wrap wrap-anywhere">{draft}</p>
+          </div>
+        {/if}
+        {#if error}<Alert>{error}</Alert>{/if}
+        <!-- Keep confirmation clear of the right-aligned actions that open it. -->
+        <div class="flex gap-2">
+          <Button variant="quiet" data-initial-focus disabled={pending} onclick={cancelConfirmation}
+            >Cancel</Button
+          >
+          <Button variant="danger" disabled={frozen} onclick={confirm}
+            >{pending ? "Saving…" : `${action} preset ${view.slot.index}`}</Button
+          >
+        </div>
       </div>
     {/if}
-    {#if error ?? readError}<Alert class="mt-3">{error ?? readError}</Alert>{/if}
   </div>
 </Dialog>

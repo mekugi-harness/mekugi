@@ -95,10 +95,13 @@ func startMockNativeAppServer(t *testing.T, socket string) *mockNativeAppServer 
 			}
 			result := m.handleCall(msg.Method, msg.Params)
 			if errMsg, ok := result.(mockRPCError); ok {
+				result = &appserver.Error{Code: -32600, Message: string(errMsg)}
+			}
+			if refusal, ok := result.(*appserver.Error); ok {
 				reply, _ := json.Marshal(map[string]any{
 					"jsonrpc": "2.0",
 					"id":      msg.ID,
-					"error":   map[string]any{"code": -32600, "message": string(errMsg)},
+					"error":   refusal,
 				})
 				_ = conn.Write(r.Context(), websocket.MessageText, reply)
 				continue
@@ -172,7 +175,7 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 			"changes": []map[string]any{
 				{"changeId": "amber1", "sequence": 1, "threadId": "thr-main",
 					"authorThreadId": "thr-main", "turnId": "turn-1", "itemId": "captured-command",
-					"sourceKind": "ShellWrite", "workspace": "/tmp/ws"},
+					"sourceKind": "ShellWrite", "sourceLabel": "Shell", "workspace": "/tmp/ws"},
 			},
 			"files": []map[string]any{
 				{"path": "main.go", "absolutePath": "/tmp/ws/main.go", "changeIds": []string{"amber1"},
@@ -1298,7 +1301,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 		{
 			ID: "turn-1",
 			Items: []jsontext.Value{
-				jsontext.Value("{\"id\":\"cmd-1\",\"type\":\"commandExecution\",\"command\":\"/home/linuxbrew/.linuxbrew/bin/bash -lc 'printf \\\"a\\\\nb\\\\nc\\\\n\\\"'\",\"cwd\":\"/tmp/ws\",\"status\":\"completed\",\"exitCode\":0,\"durationMs\":125,\"aggregatedOutput\":\"a\\nb\\nc\\n\"}"),
+				jsontext.Value(`{"id":"cmd-1","type":"commandExecution","command":"/bin/bash -lc 'printf \"a\\nb\\nc\\n\"'","display":{"script":"printf \"a\\nb\\nc\\n\"","segments":[],"effectiveCwd":null},"cwd":"/tmp/ws","status":"completed","exitCode":0,"durationMs":125,"aggregatedOutput":"a\nb\nc\n"}`),
 				jsontext.Value("{\"id\":\"fc-1\",\"type\":\"fileChange\",\"status\":\"completed\",\"changes\":[{\"path\":\"a.go\",\"kind\":{\"type\":\"add\"},\"diff\":\"+line1\\n+line2\\n\"},{\"path\":\"b.go\",\"kind\":{\"type\":\"update\",\"move_path\":\"c.go\"},\"diff\":\"-old\\n+new\\n\"}]}"),
 			},
 		},
@@ -1309,7 +1312,7 @@ func TestDirectNativeProjectionCommandFileChangeAndCtrlECollapse(t *testing.T) {
 		t.Fatalf("expected projected commandExecution, got %+v", cmdRec)
 	}
 	val := cmdRec.entry.Values[0]
-	if val.Lang != "bash" || strings.Contains(val.Code, "bash -lc") {
+	if val.Lang != "bash" || val.Code != `printf "a\nb\nc\n"` {
 		t.Fatalf("expected unwrapped bash command, got lang=%q code=%q", val.Lang, val.Code)
 	}
 	if !val.Exited || val.Running || val.ExitCode != 0 || len(val.Tail) != 3 || !cmdRec.entry.OutputComplete || !cmdRec.entry.Restored {
@@ -1358,7 +1361,7 @@ func TestDirectNativeCommandDetailsFollowNativeExit(t *testing.T) {
 		conn.upsertWireItemLocked("thr-main", "turn-1", jsontext.Value(body), true)
 		return conn.itemsByID[directItemKey{"thr-main", "cmd-1"}]
 	}
-	rec := upsert(`{"type":"commandExecution","id":"cmd-1","command":"cd sub && example","cwd":"/tmp/ws","display":{"segments":["example"],"effectiveCwd":"/tmp/ws/sub"},"status":"inProgress","processId":"35","exitCode":null,"aggregatedOutput":"starting"}`)
+	rec := upsert(`{"type":"commandExecution","id":"cmd-1","command":"cd sub && example","cwd":"/tmp/ws","display":{"script":"cd sub && example","segments":["example"],"effectiveCwd":"/tmp/ws/sub"},"status":"inProgress","processId":"35","exitCode":null,"aggregatedOutput":"starting"}`)
 	if !rec.entry.ItemComplete || rec.entry.OutputComplete || rec.entry.Values[0].RowVerb() != "Running" {
 		t.Fatalf("item completion must not settle a running command: %+v", rec.entry)
 	}
@@ -1436,7 +1439,7 @@ func TestDirectNativeRetainedRunLink(t *testing.T) {
 	}
 	conn.hydrateThreadTurnsLocked("thr-main", []directWireTurn{{
 		ID:    "turn-1",
-		Items: []jsontext.Value{jsontext.Value(`{"type":"commandExecution","id":"` + run + `","command":"/bin/bash -lc 'cd sub && cat a && cat b'","cwd":"/repo","commandActions":[{"type":"unknown","command":"cat"}],"display":{"effectiveCwd":"/repo/sub","segments":["cat a","cat b"]},"status":"failed","exitCode":-1,"aggregatedOutput":"one\ntwo\nthree\n"}`)},
+		Items: []jsontext.Value{jsontext.Value(`{"type":"commandExecution","id":"` + run + `","command":"/bin/bash -lc 'cd sub && cat a && cat b'","cwd":"/repo","commandActions":[{"type":"unknown","command":"cat"}],"display":{"script":"cd sub && cat a && cat b","effectiveCwd":"/repo/sub","segments":["cat a","cat b"]},"status":"failed","exitCode":-1,"aggregatedOutput":"one\ntwo\nthree\n"}`)},
 	}})
 	batch := conn.itemsByID[directItemKey{"thr-main", run}].entry.Values
 	if len(batch) != 3 || batch[0].Code != "cat a" || batch[1].Code != "cat b" ||
@@ -1468,6 +1471,7 @@ func TestDirectNativeRetainedRunLink(t *testing.T) {
 			t.Fatal(err)
 		}
 		if details := conn.details; details.RunRange == nil || *details.RunRange != tc.want ||
+			details.View.Pages[0].DetailCode != "cd sub && cat a && cat b" ||
 			details.Output == nil || !slices.Equal(details.Output.View.Lines, []string{"one", "two", "three"}) {
 			t.Fatalf("%s opened wrong output or range: %+v", tc.link, details)
 		}
@@ -1475,8 +1479,30 @@ func TestDirectNativeRetainedRunLink(t *testing.T) {
 }
 
 func TestDirectNativeQuitOffersToStopRunningWork(t *testing.T) {
-	for _, kind := range []string{"main", "delegate", "command"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind string
+		refusal    *appserver.Error
+		wantError  bool
+	}{
+		{name: "continue main", kind: "main"},
+		{name: "stop command", kind: "command"},
+		{name: "completed delegate", kind: "delegate", refusal: &appserver.Error{
+			Code: -32600, Message: "The turn has finished.", Data: jsontext.Value(`{"reason":"noActiveTurn"}`),
+		}},
+		{name: "replaced delegate", kind: "delegate", refusal: &appserver.Error{
+			Code: -32600, Message: "A replacement is now active.",
+			Data: jsontext.Value(`{"reason":"activeTurnMismatch","expectedTurnId":"turn-running","actualTurnId":"turn-replacement"}`),
+		}},
+		{name: "untyped refusal", kind: "delegate", wantError: true, refusal: &appserver.Error{
+			Code: -32600, Message: "no active turn to interrupt",
+		}},
+		{name: "different interrupt target", kind: "delegate", wantError: true, refusal: &appserver.Error{
+			Code: -32600, Message: "Different target.",
+			Data: jsontext.Value(`{"reason":"activeTurnMismatch","expectedTurnId":"other","actualTurnId":"turn-replacement"}`),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kind := tc.kind
 			socket := filepath.Join(shortTempDir(t), "native.sock")
 			server := startMockNativeAppServer(t, socket)
 			state := func(id string) map[string]any {
@@ -1521,26 +1547,34 @@ func TestDirectNativeQuitOffersToStopRunningWork(t *testing.T) {
 				menu.Choices[1].Name != "Stop" || !menu.Choices[1].Danger {
 				t.Fatalf("quit choices: %+v", menu.Choices)
 			}
-			choose := func(index int) {
-				t.Helper()
-				if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
+			choose := func(index int) error {
+				_, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{Menu: &sessionpresentation.MenuAction{
 					Menu: menu.ID, Kind: sessionpresentation.MenuAccept, Choice: menu.Choices[index].Identity(),
-				}}); err != nil {
-					t.Fatal(err)
-				}
+				}})
+				return err
 			}
-			if kind == "delegate" {
+			if tc.refusal != nil {
 				server.mu.Lock()
 				activeTurn = "turn-replacement"
 				server.overrides["turn/interrupt"] = func(jsontext.Value) any {
-					return mockRPCError("expected active turn id turn-running but found turn-replacement")
+					return tc.refusal
 				}
 				server.mu.Unlock()
 			}
+			var quitErr error
 			if kind == "main" {
-				choose(0)
+				quitErr = choose(0)
 			} else {
-				choose(1)
+				quitErr = choose(1)
+			}
+			if tc.wantError {
+				if refusal, ok := errors.AsType[*nativeAppServerRPCError](quitErr); !ok || refusal.Message != tc.refusal.Message {
+					t.Fatalf("Stop error: %v, want %q", quitErr, tc.refusal.Message)
+				}
+				return
+			}
+			if quitErr != nil {
+				t.Fatal(quitErr)
 			}
 			select {
 			case err := <-conn.errCh:

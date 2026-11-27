@@ -25,7 +25,7 @@
     ThreadPresetsListResponse,
   } from "./protocol";
   import Rewind from "./Rewind.svelte";
-  import { semantic, skillsAfterEdit } from "./semantic.svelte";
+  import { semantic, skillsAfterEdit, SLASH_COMMANDS } from "./semantic.svelte";
   import { stream } from "./stream.svelte";
   import { errorText, newIdentity } from "./transport";
   import ThreadSettings from "./ThreadSettings.svelte";
@@ -36,7 +36,7 @@
   import Menu from "./ui/Menu.svelte";
   import MenuItem from "./ui/MenuItem.svelte";
   import Tag from "./ui/Tag.svelte";
-  import { composerText, composerTools } from "./ui/styles";
+  import { composerText, composerTools, kbd } from "./ui/styles";
 
   let {
     machine,
@@ -79,6 +79,7 @@
   let tray = $state<ReturnType<typeof Attachments>>();
   let field = $state<HTMLTextAreaElement>();
   let syntax = $state<HTMLElement>();
+  let selectedText = $state(false);
   let controller = $state<AbortController>();
   let fileRequest = $state<AbortController>();
   let archiveTarget = $state<{ thread: string; pending: boolean; error?: string }>();
@@ -94,6 +95,8 @@
   let readingPresets = $state(false);
   const touch = matchMedia("(pointer: coarse)").matches;
   const shell = $derived(text.startsWith("!"));
+  const bareShell = $derived(text === "!");
+  const highlightShell = $derived(shell && !bareShell && !selectedText);
   const addressee = $derived(inOneOff ? "One-off" : stream.label(agent));
   const shellText = "whitespace-pre-wrap wrap-break-word font-mono [scrollbar-gutter:stable]";
 
@@ -167,19 +170,6 @@
   const canSend = $derived(
     !disabled && !fileRequest && !tray?.checkingPath() && (!!text.trim() || !!activeItems.length),
   );
-
-  const SLASH_COMMANDS = [
-    {
-      name: "/compact",
-      description: "Compact context now; Tab queues while busy",
-      insert: "/compact",
-    },
-    { name: "/ps", description: "Show active processes", insert: "/ps" },
-    { name: "/btw", description: "Ask a side question", insert: "/btw " },
-    { name: "/oneoff", description: "Run a task in a separate conversation", insert: "/oneoff " },
-    { name: "/rewind", description: "Rewind before a user message", insert: "/rewind" },
-    { name: "/archive", description: "Archive this thread", insert: "/archive" },
-  ];
 
   type CompletionChoice = {
     name: string;
@@ -353,7 +343,7 @@
         ? SLASH_COMMANDS.map((c) => ({
             name: c.name,
             description: c.description,
-            insert: c.insert,
+            insert: c.name + ("argument" in c ? " " : ""),
           }))
         : skillCatalog.map((s) => ({
             name: "$" + s.name,
@@ -489,41 +479,23 @@
     replace = false,
     onStarted?: InitialInput["onstarted"],
   ) {
-    if (sending || fileRequest || tray?.checkingPath()) return;
+    if (controller || fileRequest || tray?.checkingPath()) return;
     const bodyText = text;
     const itemCount = prepared?.length ?? activeItems.length;
     if (!bodyText.trim() && !itemCount) return;
-    const taskPrefix = onStarted ? undefined : /^\s*\/oneoff(?:\s+|$)/i.exec(bodyText)?.[0];
-    if (taskPrefix) {
-      if (!bodyText.slice(taskPrefix.length).trim()) {
-        error = "Usage: /oneoff TASK";
-        return;
-      }
-      if (oneOffOpen && !replace) {
-        replacing = true;
-        return;
-      }
-    }
-    if (!onStarted && bodyText.trim().toLowerCase() === "/archive" && !itemCount) {
-      openArchive();
-      text = "";
-      return;
-    }
-    if (!onStarted && bodyText.trim().toLowerCase() === "/rewind" && !itemCount) {
-      if (stoppable) {
-        error = "Wait for the thread to be idle before rewinding.";
-        return;
-      }
-      error = undefined;
-      rewindThread = thread;
-      text = "";
-      return;
-    }
     const pending = new AbortController();
     controller = pending;
     sending = true;
+    progress = "Sending…";
     error = undefined;
     const origin = editor;
+    const draftItems = [...items];
+    let openingDialog = false;
+    const finishInDialog = () => {
+      openingDialog = true;
+      sending = false;
+      progress = "";
+    };
     const clear = () => {
       origin.text = "";
       origin.items = [];
@@ -533,11 +505,11 @@
         items = [];
       }
     };
-    try {
+    const readAttachments = async () => {
       const attachments =
         prepared ??
         (await prepareAttachments(
-          submissionAttachments(bodyText, items),
+          submissionAttachments(bodyText, draftItems),
           pending.signal,
           (read, total) => {
             progress = total
@@ -545,41 +517,58 @@
               : "Preparing input…";
           },
         ));
-      if (pending.signal.aborted || editor !== origin) return;
+      pending.signal.throwIfAborted();
+      if (editor !== origin) throw new DOMException("Draft changed", "AbortError");
       progress = "Sending…";
-      const skills = skillsAfterEdit(origin.text, bodyText, origin.skills);
-      if (taskPrefix) {
-        const failure = await ononeoff({
-          text: bodyText.slice(taskPrefix.length),
-          items: [...items],
-          attachments,
-          skills: skills.map((skill) => ({ ...skill, start: skill.start - taskPrefix.length })),
-        });
-        if (failure) {
-          if (editor === origin) error = failure;
-        } else clear();
-        return;
-      }
+      return attachments;
+    };
+    try {
       let recovered = false;
-      const result = await semantic.sendInput(bodyText, attachments, {
-        queue,
-        signal: pending.signal,
-        skills,
-        onStarted,
-        onRecovery: () => {
-          recovered = true;
-          clear();
+      const result = await semantic.sendInput(
+        bodyText,
+        { count: itemCount, read: readAttachments },
+        {
+          queue,
+          signal: pending.signal,
+          skills: skillsAfterEdit(origin.text, bodyText, origin.skills),
+          slashActions: {
+            archive() {
+              finishInDialog();
+              openArchive();
+              text = "";
+            },
+            rewind() {
+              if (stoppable) return "Wait for the thread to be idle before rewinding.";
+              finishInDialog();
+              rewindThread = thread;
+              text = "";
+            },
+            async oneOff(task, read, skills) {
+              if (oneOffOpen && !replace) {
+                finishInDialog();
+                replacing = true;
+                return;
+              }
+              return ononeoff({ text: task, items: draftItems, attachments: await read(), skills });
+            },
+          },
+          onStarted,
+          onRecovery: () => {
+            recovered = true;
+            clear();
+          },
         },
-      });
+      );
       if (result) {
         if (!recovered && editor === origin) error = result;
         return;
       }
+      if (openingDialog) return;
       clear();
       await tick();
       if (editor === origin) field?.focus();
     } catch (failure) {
-      if (!pending.signal.aborted) {
+      if (!pending.signal.aborted && editor === origin) {
         error = failure instanceof Error ? failure.message : "Could not send message.";
       }
     } finally {
@@ -624,6 +613,15 @@
     field?.setSelectionRange(next.length, next.length);
   }
 
+  function acceptPrediction() {
+    if (prediction) void rewrite(prediction);
+  }
+
+  function recordSelection(target: HTMLTextAreaElement) {
+    caret = target.selectionStart;
+    selectedText = caret !== target.selectionEnd;
+  }
+
   function onkeydown(event: KeyboardEvent) {
     if (event.isComposing || (event.key === "Enter" && event.keyCode === 229)) return;
     if (fileRequest && event.key === "Escape") {
@@ -662,6 +660,18 @@
           return;
         }
       }
+    }
+    if (
+      prediction &&
+      (event.key === "Tab" || event.key === "ArrowRight") &&
+      !event.shiftKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      acceptPrediction();
+      return;
     }
     if (event.key === "Enter" && !event.shiftKey && !touch) {
       event.preventDefault();
@@ -726,75 +736,98 @@
     <label class="sr-only" for="composer-text"
       >{shell ? "Shell command" : `Message ${addressee}`}</label
     >
-    <div class="relative">
-      {#if shell}
-        <pre
+    <div class="flex items-start touch:[&_button]:min-h-11 touch:[&_button]:min-w-11">
+      <div class="relative min-w-0 flex-1">
+        {#if shell && !bareShell}
+          <pre
+            class={[
+              composerText,
+              shellText,
+              "pointer-events-none absolute inset-0 min-h-14 overflow-hidden pt-3 pb-1.5 forced-colors:hidden",
+              selectedText && "invisible",
+            ]}
+            aria-hidden="true"
+            bind:this={syntax}><Code
+              code={text.endsWith("\n") ? text + " " : text}
+              lang="bash"
+            /></pre>
+        {/if}
+        {#if bareShell}
+          <span
+            id="composer-shell-target"
+            class="pointer-events-none absolute inset-x-0 top-3 truncate px-4 font-mono leading-[22px] text-muted max-sm:px-3.5 max-sm:text-base"
+            ><span class="invisible" aria-hidden="true">! </span>Shell command on {machine.label}</span
+          >
+        {:else if prediction}
+          <span
+            id="composer-prediction"
+            class="pointer-events-none absolute inset-x-0 top-3 truncate px-4 leading-[22px] text-muted max-sm:px-3.5 max-sm:text-base"
+            >{prediction}</span
+          >
+        {/if}
+        <textarea
+          id="composer-text"
+          bind:this={field}
+          data-slot="input-group-control"
           class={[
             composerText,
-            shellText,
-            "pointer-events-none absolute inset-0 min-h-14 overflow-hidden pt-3 pb-1.5 forced-colors:hidden",
+            "relative min-h-14 pt-3 pb-1.5",
+            shell && shellText,
+            shell && "overflow-x-hidden overflow-y-auto",
           ]}
-          aria-hidden="true"
-          bind:this={syntax}><Code
-            code={text.endsWith("\n") ? text + " " : text}
-            lang="bash"
-          /></pre>
-      {/if}
-      <textarea
-        id="composer-text"
-        bind:this={field}
-        data-slot="input-group-control"
-        class={[
-          composerText,
-          "min-h-14 pt-3 pb-1.5",
-          shell && shellText,
-          shell && "relative overflow-x-hidden overflow-y-auto selection:text-ink",
-        ]}
-        style:color={shell ? "transparent" : undefined}
-        style:caret-color="var(--text)"
-        onscroll={() => {
-          if (syntax && field) {
-            syntax.scrollTop = field.scrollTop;
-            syntax.scrollLeft = field.scrollLeft;
-          }
-        }}
-        bind:value={text}
-        oninput={(event) => (caret = event.currentTarget.selectionStart)}
-        onselect={(event) => (caret = event.currentTarget.selectionStart)}
-        {onkeydown}
-        onpaste={(event) => {
-          const files = event.clipboardData?.files;
-          if (!files?.length || disabled || shell) return;
-          if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
-          tray?.add(files);
-        }}
-        rows="2"
-        {disabled}
-        placeholder={shell
-          ? `Shell command on ${machine.label}`
-          : asking
-            ? "Answer the prompt above, or write a follow-up…"
-            : stoppable
-              ? "Steer the active turn…"
-              : prediction
-                ? ""
+          class:shell-highlighted={highlightShell}
+          style:caret-color="var(--text)"
+          aria-describedby={bareShell
+            ? "composer-shell-target"
+            : prediction
+              ? "composer-prediction"
+              : undefined}
+          aria-keyshortcuts={prediction ? "Tab ArrowRight" : undefined}
+          onscroll={() => {
+            if (syntax && field) {
+              syntax.scrollTop = field.scrollTop;
+              syntax.scrollLeft = field.scrollLeft;
+            }
+          }}
+          bind:value={text}
+          oninput={(event) => recordSelection(event.currentTarget)}
+          onselect={(event) => recordSelection(event.currentTarget)}
+          onselectionchange={(event) => recordSelection(event.currentTarget)}
+          {onkeydown}
+          onpaste={(event) => {
+            const files = event.clipboardData?.files;
+            if (!files?.length || disabled || shell) return;
+            if (!event.clipboardData?.types.includes("text/plain")) event.preventDefault();
+            tray?.add(files);
+          }}
+          rows="2"
+          {disabled}
+          placeholder={shell || prediction
+            ? ""
+            : asking
+              ? "Answer the prompt above, or write a follow-up…"
+              : stoppable
+                ? "Steer the active turn…"
                 : `Message ${addressee}`}></textarea>
+      </div>
       {#if prediction}
-        <button
-          type="button"
-          class="absolute top-1 left-4 h-9 max-w-[calc(100%-2rem)] cursor-pointer truncate rounded-control text-left leading-[22px] text-muted hover:text-ink max-sm:top-0 max-sm:left-3.5 max-sm:h-11 max-sm:text-base"
-          onclick={() => {
-            text = prediction ?? "";
-            field?.focus();
-          }}>{prediction}</button
+        <Button
+          variant="quiet"
+          icon="check"
+          label={prediction}
+          title="Insert suggestion as an editable draft"
+          class="mt-1 mr-2"
+          onclick={acceptPrediction}
         >
+          {#if !touch}<kbd class={kbd} aria-hidden="true">Tab</kbd>{/if}
+        </Button>
       {/if}
     </div>
     <InputGroup.Addon
       align="block-end"
-      class="{composerTools} cursor-default gap-1 text-body font-normal select-auto"
+      class="{composerTools} cursor-default gap-1 text-body font-normal select-auto touch:[&_button]:min-h-11 touch:[&_button]:min-w-11"
     >
-      <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1 sm:flex-nowrap">
+      <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1">
         <Menu label="Attach" icon="plus" disabled={disabled || shell}>
           {#snippet children(close)}
             <MenuItem
@@ -843,7 +876,7 @@
           variant="quiet"
           icon="stop"
           label="Interrupt turn"
-          class="max-sm:self-end"
+          class="self-end"
           disabled={semantic.connection !== "open"}
           onclick={() => void stop()}
         />
@@ -854,7 +887,7 @@
         shape="round"
         icon="send"
         label={shell ? "Run shell command" : stoppable ? "Steer turn" : "Send message"}
-        class="max-sm:self-end"
+        class="self-end"
         disabled={!canSend}
       />
     </InputGroup.Addon>
@@ -926,3 +959,15 @@
     </div>
   </Dialog>
 {/if}
+
+<style>
+  .shell-highlighted {
+    color: transparent;
+  }
+
+  @media (forced-colors: active) {
+    .shell-highlighted {
+      color: CanvasText;
+    }
+  }
+</style>

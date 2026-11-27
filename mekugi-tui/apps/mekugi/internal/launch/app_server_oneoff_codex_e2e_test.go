@@ -19,6 +19,8 @@ import (
 	"unicode/utf8"
 
 	json "encoding/json/v2"
+
+	uv "github.com/charmbracelet/ultraviolet"
 )
 
 // Hold only the fork's final provider round so Main can finish independently
@@ -112,6 +114,16 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		}
 		return btwCodexRequest{}
 	}
+	selected := func(label string, column int) bool {
+		y := terminal.screen.Height() - 1
+		for i, ch := range label {
+			cell := terminal.screen.CellAt(column+i, y)
+			if cell == nil || cell.Content != string(ch) || cell.Style.Attrs&uv.AttrBold == 0 {
+				return false
+			}
+		}
+		return true
+	}
 	terminal.awaitReady()
 	terminal.send("Main seed\r")
 	main := next()
@@ -162,12 +174,18 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	terminal.await("/btw · completed")
 	terminal.send("\x1b")
 	terminal.awaitMatch("BTW closed while One-off remains", func(frame string) bool {
-		return !strings.Contains(frame, "/btw ·") && statLineNames(frame, "One-off")
+		return !strings.Contains(frame, "/btw ·") && !strings.Contains(frame, "BTW_INDEPENDENT_ANSWER") && selected("One-off", 9)
 	})
 	terminal.send("\x1b[<0;4;30M\x1b[<0;4;30m")
-	terminal.await("MAIN_SEED_ANSWER")
+	terminal.awaitMatch("Main selected before continuing", func(frame string) bool {
+		return selected("Main", 2) && strings.Contains(frame, "MAIN_SEED_ANSWER") &&
+			!strings.Contains(frame, "ONEOFF_TASK_ONLY")
+	})
 	terminal.send("Main continuation\r")
 	after := next()
+	if prompt := btwLastUserPrompt(after.body); prompt != "Main continuation" {
+		t.Fatalf("main continuation prompt = %q", prompt)
+	}
 	afterMetadata, _ := fixtureTurnMetadata(after.headers)
 	if afterMetadata.ThreadID != mainMetadata.ThreadID || after.key != main.key {
 		t.Fatal("Main continuation changed thread/cache identity")
@@ -181,7 +199,7 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 	terminal.awaitThreadIdle(mainMetadata.ThreadID)
 	close(p.finish)
 	terminal.send("\x1b[<0;12;30M\x1b[<0;12;30m")
-	terminal.await("ONEOFF_FINISHED")
+	terminal.awaitMatch("One-off selected and finished", func(frame string) bool { return selected("One-off", 9) && strings.Contains(frame, "ONEOFF_FINISHED") })
 	terminal.awaitThreadIdle(forkMetadata.ThreadID)
 	expandHostActivity(t, terminal.outer)
 	terminal.awaitMatch("completed one-off retained", func(frame string) bool {
@@ -204,6 +222,8 @@ func TestAppServerOneoffNativeCodexE2E(t *testing.T) {
 		return !strings.Contains(frame, "ONEOFF_ENV_INHERITED")
 	})
 	terminal.send("\x1b[<0;4;30M\x1b[<0;4;30m")
-	terminal.await("MAIN_CONTINUATION_FINISHED")
+	terminal.awaitMatch("Main selected at end", func(frame string) bool {
+		return selected("Main", 2) && strings.Contains(frame, "MAIN_CONTINUATION_FINISHED")
+	})
 	terminal.quit()
 }

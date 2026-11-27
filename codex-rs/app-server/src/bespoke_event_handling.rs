@@ -17,6 +17,7 @@ use codex_app_server_protocol::CodexErrorInfo as V2CodexErrorInfo;
 use codex_app_server_protocol::CommandAction as V2ParsedCommand;
 use codex_app_server_protocol::CommandDisplay;
 use codex_app_server_protocol::CommandExecutionApprovalDecision;
+use codex_app_server_protocol::CommandExecutionChangesUpdatedNotification;
 use codex_app_server_protocol::CommandExecutionPresentation;
 use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
@@ -36,6 +37,7 @@ use codex_app_server_protocol::HookCompletedNotification;
 use codex_app_server_protocol::HookStartedNotification;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
+use codex_app_server_protocol::LiveCommandChanges;
 use codex_app_server_protocol::McpServerElicitationAction;
 use codex_app_server_protocol::McpServerElicitationRequestParams;
 use codex_app_server_protocol::McpServerElicitationRequestResponse;
@@ -1302,6 +1304,34 @@ pub(crate) async fn apply_bespoke_event_handling(
                 notify_background_terminals_changed(&outgoing, conversation_id).await;
             }
         }
+        EventMsg::ExecCommandChangesUpdated {
+            call_id,
+            source,
+            command,
+            changes,
+        } => {
+            let update = LiveCommandChanges {
+                thread_id: conversation_id.to_string(),
+                turn_id: event_turn_id,
+                item_id: call_id,
+                source: source.into(),
+                command,
+                changes,
+            }
+            .with_redacted_command();
+            {
+                let mut state = thread_state.lock().await;
+                if !state.listener_matches(&conversation) {
+                    return;
+                }
+                state.note_live_command_changes(&update);
+            }
+            outgoing.try_send_optional_notification(
+                ServerNotification::CommandExecutionChangesUpdated(
+                    CommandExecutionChangesUpdatedNotification { update },
+                ),
+            );
+        }
         msg @ (EventMsg::PatchApplyUpdated(_)
         | EventMsg::CodeModeInputDelta(_)
         | EventMsg::TerminalInteraction(_)) => {
@@ -1515,7 +1545,13 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
         EventMsg::ShutdownComplete => {
             // The proxy waiter may send its resolution after this last core event.
-            let approvals = std::mem::take(&mut thread_state.lock().await.network_approvals);
+            let approvals = {
+                let mut state = thread_state.lock().await;
+                if state.listener_matches(&conversation) {
+                    state.clear_live_command_changes();
+                }
+                std::mem::take(&mut state.network_approvals)
+            };
             for pending in approvals.into_values() {
                 outgoing.resolve_server_request(pending.request_id).await;
                 drop(pending.permission_guard);

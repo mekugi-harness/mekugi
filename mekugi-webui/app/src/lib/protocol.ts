@@ -12,12 +12,14 @@ export type { ServerNotification } from "@codex-protocol/ServerNotification";
 export type { ServerRequest } from "@codex-protocol/ServerRequest";
 
 export type { CommandExecutionApprovalDecision } from "@codex-protocol/v2/CommandExecutionApprovalDecision";
+export type { CommandExecutionChangesUpdatedNotification } from "@codex-protocol/v2/CommandExecutionChangesUpdatedNotification";
 export type { CommandExecutionRequestApprovalParams } from "@codex-protocol/v2/CommandExecutionRequestApprovalParams";
 export type { CommandExecutionRequestApprovalResponse } from "@codex-protocol/v2/CommandExecutionRequestApprovalResponse";
 export type { ComposerPreset } from "@codex-protocol/v2/ComposerPreset";
 export type { FileChangeApprovalDecision } from "@codex-protocol/v2/FileChangeApprovalDecision";
 export type { FileChangeRequestApprovalParams } from "@codex-protocol/v2/FileChangeRequestApprovalParams";
 export type { FileChangeRequestApprovalResponse } from "@codex-protocol/v2/FileChangeRequestApprovalResponse";
+export type { FileUpdateChange } from "@codex-protocol/v2/FileUpdateChange";
 export type { HookRunSummary } from "@codex-protocol/v2/HookRunSummary";
 export type { Model } from "@codex-protocol/v2/Model";
 export type { ModelListParams } from "@codex-protocol/v2/ModelListParams";
@@ -32,6 +34,7 @@ export type { SkillsListResponse } from "@codex-protocol/v2/SkillsListResponse";
 export type { ThreadArchiveParams } from "@codex-protocol/v2/ThreadArchiveParams";
 export type { ThreadChangeFileDiff } from "@codex-protocol/v2/ThreadChangeFileDiff";
 export type { ThreadChangeOrigin } from "@codex-protocol/v2/ThreadChangeOrigin";
+export type { ThreadChangesLiveResponse } from "@codex-protocol/v2/ThreadChangesLiveResponse";
 export type { ThreadChangesReadParams } from "@codex-protocol/v2/ThreadChangesReadParams";
 export type { ThreadChangesReadResponse } from "@codex-protocol/v2/ThreadChangesReadResponse";
 export type { ThreadFileSearchResponse } from "@codex-protocol/v2/ThreadFileSearchResponse";
@@ -148,6 +151,7 @@ export type RemoteHumanMethod =
   | "thread/list"
   | "thread/inspect"
   | "thread/subtree/list"
+  | "thread/changes/live"
   | "thread/changes/read"
   | "thread/files/search"
   | "thread/read"
@@ -156,6 +160,8 @@ export type RemoteHumanMethod =
   | "thread/items/read";
 
 // Experimental native RPC payloads whose Rust definitions are gated behind experimentalApi.
+export type ThreadPredictionRequestResponse = { text: string | null };
+
 export type ThreadSettingsUpdateParams = {
   threadId: string;
   model?: string | null;

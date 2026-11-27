@@ -2,40 +2,26 @@ package launch
 
 import (
 	"cmp"
-	json "encoding/json/v2"
 	"strings"
-
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
 )
 
 type directPrediction struct {
 	turn, text string
 	revision   uint64
 	attempted  bool
-	pending    *directPredictionRequest
+	pending    bool
 }
 
-type directPredictionRequest struct {
-	thread, turn string
-	revision     uint64
-	discard      bool
-}
-
-// resetPredictionLocked also retires a notification that may still be in flight.
-// Keep its request occupied until it settles: notifications identify only the
-// source, so two requests for one turn cannot be distinguished.
+// A reset invalidates the current attempt. Keep its slot occupied until the
+// RPC settles so rapid turn or preference changes cannot stack samples.
 func (c *directNativeConnection) resetPredictionLocked(turn string) {
 	p := &c.prediction
 	p.turn, p.text, p.attempted = turn, "", false
-	if p.pending != nil {
-		p.pending.discard = true
-	}
 }
 
 func (c *directNativeConnection) predictionAllowedLocked(thread, turn string) bool {
 	return !c.closed && !c.predictionsDisabled && !c.archived && !c.busy &&
-		c.opts.profile == "" && c.modelProvider == "openai" &&
-		(c.predictionChatGPT == nil || *c.predictionChatGPT) &&
+		c.opts.profile == "" &&
 		thread != "" && thread == c.mainThread &&
 		(c.family == nil || c.family.Root == thread) &&
 		cmp.Or(c.inputThread, c.mainThread) == thread && cmp.Or(c.displayedThread, c.mainThread) == thread &&
@@ -47,87 +33,27 @@ func (c *directNativeConnection) predictionAllowedLocked(thread, turn string) bo
 func (c *directNativeConnection) requestPrediction(thread, turn string, revision uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.prediction.pending != nil || c.prediction.attempted || !c.predictionAllowedLocked(thread, turn) {
+	if c.prediction.pending || c.prediction.attempted || !c.predictionAllowedLocked(thread, turn) {
 		return
 	}
-	req := &directPredictionRequest{thread: thread, turn: turn, revision: revision}
-	c.prediction.pending, c.prediction.attempted = req, true
+	c.prediction.pending, c.prediction.attempted = true, true
 	c.publishLocked()
-	go c.samplePrediction(req)
+	go c.samplePrediction(thread, turn, revision)
 }
 
-func (c *directNativeConnection) samplePrediction(req *directPredictionRequest) {
-	c.mu.Lock()
-	if c.predictionChatGPT == nil {
-		c.mu.Unlock()
-		var account struct {
-			Account *struct {
-				Type string `json:"type"`
-			} `json:"account"`
-		}
-		err := c.wire.Call(c.ctx, "account/read", map[string]bool{"refreshToken": false}, &account)
-		c.mu.Lock()
-		// Account notifications received during this read take precedence.
-		if err == nil && c.predictionChatGPT == nil {
-			c.predictionChatGPT = new(account.Account != nil && account.Account.Type == "chatgpt")
-		}
+func (c *directNativeConnection) samplePrediction(thread, turn string, revision uint64) {
+	var reply struct {
+		Text string `json:"text"`
 	}
-	send := c.predictionChatGPT != nil && !req.discard && c.predictionAllowedLocked(req.thread, req.turn)
-	c.mu.Unlock()
-	if send && c.wire.Call(c.ctx, "thread/prediction/request", map[string]string{
-		"threadId":     req.thread,
-		"sourceTurnId": req.turn,
-	}, nil) == nil {
-		// The native server publishes the result separately from its reply.
-		return
-	}
+	err := c.wire.Call(c.ctx, "thread/prediction/request", map[string]any{
+		"threadId": thread, "sourceTurnId": turn, "automatic": true,
+	}, &reply)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.prediction.pending == req {
-		c.prediction.pending = nil
-		c.publishLocked()
-	}
-}
-
-func (c *directNativeConnection) updatePredictionAccount(msg appserver.Message) {
-	var account struct {
-		AuthMode string `json:"authMode"`
-	}
-	if json.Unmarshal(msg.Params, &account) != nil {
-		return
-	}
-	chatGPT := account.AuthMode == "chatgpt" || account.AuthMode == "chatgptAuthTokens"
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.predictionChatGPT == nil || *c.predictionChatGPT != chatGPT {
-		c.predictionChatGPT = &chatGPT
-		c.resetPredictionLocked(c.prediction.turn)
-		c.publishLocked()
-	}
-}
-
-func (c *directNativeConnection) handlePrediction(msg appserver.Message) {
-	var p struct {
-		ThreadID     string `json:"threadId"`
-		SourceTurnID string `json:"sourceTurnId"`
-		Result       struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"result"`
-	}
-	if json.Unmarshal(msg.Params, &p) != nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	req := c.prediction.pending
-	if req == nil || req.thread != p.ThreadID || req.turn != p.SourceTurnID {
-		return
-	}
-	c.prediction.pending = nil
-	if !req.discard && c.predictionAllowedLocked(req.thread, req.turn) && p.Result.Type == "completed" {
-		c.prediction.text = strings.TrimSpace(p.Result.Text)
-		c.prediction.revision = req.revision
+	c.prediction.pending = false
+	if err == nil && c.prediction.attempted && c.predictionAllowedLocked(thread, turn) {
+		c.prediction.text = strings.TrimSpace(reply.Text)
+		c.prediction.revision = revision
 	}
 	c.publishLocked()
 }

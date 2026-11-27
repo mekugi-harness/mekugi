@@ -10,7 +10,7 @@ contracts, and `graphify` or source search for file-level lookup. Native Rust ru
 - **Native (`codex-rs`)**: family admission (app-server), root/child execution,
   coordination (`core/src/{agent,thread_manager}`), direct provider requests and
   usage (model client, `core/src/session/usage_metrics.rs`, and
-  `app-server/src/request_processors/token_usage_replay.rs`), retained edits
+  `app-server/src/request_processors/token_usage_replay.rs`), live and saved edits
   (`change-history`, `exec-track`),
   model templates (`models-manager`), helper/child-reply guidance (`core/src/mekugi_guidance`),
   native helper tools (`mcat`, `mchanges`, `mfinspect`, `msymbol`, `mrun`), native shell guard

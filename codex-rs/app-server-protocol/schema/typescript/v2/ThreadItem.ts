@@ -75,7 +75,7 @@ processId: string | null, source: CommandExecutionSource, status: CommandExecuti
  */
 commandActions: Array<CommandAction>,
 /**
- * Only present for a shell invocation with separate display steps.
+ * Authored display text for a recognized shell invocation.
  */
 display?: CommandDisplay,
 /**

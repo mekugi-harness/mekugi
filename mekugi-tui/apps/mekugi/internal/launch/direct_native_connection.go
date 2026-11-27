@@ -230,7 +230,6 @@ type directNativeConnection struct {
 	threadUsage        map[string]directThreadUsage
 	rateLimits         [2]*sessionpresentation.CaptionLimit
 	prediction         directPrediction
-	predictionChatGPT  *bool
 	feedbackText       string
 	feedbackAlert      bool
 	feedbackRev        uint64
@@ -802,7 +801,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		review = c.review
 	}
 	predictionTurn := ""
-	if c.prediction.pending == nil && !c.prediction.attempted && c.predictionAllowedLocked(c.mainThread, c.prediction.turn) {
+	if !c.prediction.pending && !c.prediction.attempted && c.predictionAllowedLocked(c.mainThread, c.prediction.turn) {
 		predictionTurn = c.prediction.turn
 	}
 	frame := sessionapi.NativeFrame{

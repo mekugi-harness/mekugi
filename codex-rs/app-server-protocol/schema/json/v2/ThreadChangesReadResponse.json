@@ -119,6 +119,11 @@
           "type": "integer"
         },
         "sourceKind": {
+          "description": "Stable identifier for the source of the capture.",
+          "type": "string"
+        },
+        "sourceLabel": {
+          "description": "User-facing name for the capture source.",
           "type": "string"
         },
         "threadId": {
@@ -139,6 +144,7 @@
         "paths",
         "sequence",
         "sourceKind",
+        "sourceLabel",
         "threadId",
         "turnId",
         "workspace"

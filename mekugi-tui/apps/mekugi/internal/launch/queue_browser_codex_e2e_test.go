@@ -106,8 +106,26 @@ func TestWaitingEditsAndPermissionsThroughNativeBrowser(t *testing.T) {
 				t.Fatal("the native turn did not reach the provider")
 			}
 			call("wait", `button[aria-label="Steer turn"]`)
+			call("set", "viewport", "1120", "900")
+			call("find", "role", "button", "click", "--name", "Changes", "--exact")
+			call("wait", "--fn", `(() => {
+				const form = document.querySelector('#composer-text')?.closest('form');
+				const bounds = form?.getBoundingClientRect();
+				const controls = [...(form?.querySelectorAll('button') ?? [])].filter(
+					button => /^(Attach|Permissions|Interrupt turn|Steer turn)$/.test(button.ariaLabel ?? button.title));
+				return !!document.querySelector('nav[aria-label=Threads]') &&
+					[...document.querySelectorAll('aside')].some(panel => panel.textContent.includes('Saved Diff')) &&
+					controls.length >= 3 && controls.every(button => {
+						const box = button.getBoundingClientRect();
+						return box.width > 0 && box.left >= bounds.left && box.right <= bounds.right;
+					});
+			})()`)
+			call("find", "role", "button", "click", "--name", "Changes", "--exact")
+			call("set", "viewport", "1280", "900")
 			call("find", "role", "button", "click", "--name", "Session details", "--exact")
-			call("find", "text", "Features", "click", "--exact")
+			call("wait", "--text", "This launch")
+			call("focus", `[aria-label="Session details"] summary`)
+			call("press", "Enter")
 			call("wait", "--fn", `[...document.querySelectorAll('[aria-label="Session details"] th')].some(th => th.textContent === 'Descendants') && [...document.querySelectorAll('[aria-label="Session details"] th')].some(th => th.textContent === 'Output deduplication')`)
 			call("find", "role", "button", "click", "--name", "Archive", "--exact")
 			call("wait", "--text", "This will stop the current turn and archive the thread.")
@@ -146,11 +164,19 @@ func TestWaitingEditsAndPermissionsThroughNativeBrowser(t *testing.T) {
 				![...document.querySelectorAll('[data-entry]')].some(row=>row.textContent.trim().endsWith('/compact'))`)
 		},
 		afterPrompt: func(t *testing.T, _ io.Writer, _ func(string), _ func(func(string) bool), _ *vt.Emulator) {
+			const scroller = `document.querySelector('[aria-label="Side answer"] .overflow-y-auto')`
+			paragraphs := strings.Repeat("\n\nSide question context for the separate answer.", 16)
 			for _, question := range []string{"What is a separate answer?", "A distinct follow-up?"} {
-				call("fill", "#composer-text", "/btw "+question)
+				call("fill", "#composer-text", "/btw "+question+paragraphs)
 				call("press", "Enter")
 				call("wait", "--fn", `(() => { const dock = document.querySelector('[aria-label="Side answer"]'); return dock?.textContent.includes('`+question+`') && dock.textContent.includes('Recovered after a retry.') && !dock.textContent.includes('Answering…') && document.querySelector('#composer-text')?.value === ''; })()`)
 				for !bytes.Contains(next(), []byte(question)) {
+				}
+				if question == "What is a separate answer?" {
+					call("wait", "--fn", `(() => { const s = `+scroller+`; return s?.scrollTop > 0 && s.scrollHeight - s.clientHeight - s.scrollTop < 2; })()`)
+					call("eval", `(() => { const s = `+scroller+`; s.scrollTop = 0; s.dispatchEvent(new Event('scroll')); })()`)
+				} else {
+					call("wait", "--fn", scroller+`?.scrollTop === 0`)
 				}
 			}
 			call("wait", "--fn", `document.querySelector('[aria-label="Side answer"]')?.textContent.includes('What is a separate answer?') && document.querySelector('[aria-label="Side answer"]')?.textContent.includes('Recovered after a retry.') && document.querySelectorAll('nav[aria-label="Threads"] li a').length === 1 && ![...document.querySelectorAll('[data-entry]')].some(entry => entry.textContent.includes('What is a separate answer?'))`)

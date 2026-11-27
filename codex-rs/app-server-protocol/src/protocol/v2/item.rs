@@ -36,9 +36,11 @@ use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
+pub use codex_protocol::items::FileUpdateChange;
 pub use codex_protocol::items::McpAppDisplayMode;
 pub use codex_protocol::items::McpAppUi;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
+pub use codex_protocol::items::PatchChangeKind;
 use codex_protocol::items::TurnItem as CoreTurnItem;
 use codex_protocol::memory_citation::MemoryCitation as CoreMemoryCitation;
 use codex_protocol::memory_citation::MemoryCitationEntry as CoreMemoryCitationEntry;
@@ -159,6 +161,10 @@ pub enum CommandAction {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct CommandDisplay {
+    /// Full redacted script, before splitting steps or attributing a leading cd.
+    #[serde(default)]
+    pub script: String,
+    /// Separate source steps, or empty when the script is displayed as one.
     pub segments: Vec<String>,
     pub effective_cwd: Option<LegacyAppPathString>,
 }
@@ -414,7 +420,7 @@ pub enum ThreadItemPayload {
         /// This returns a list of CommandAction objects because a single shell command may
         /// be composed of many commands piped together.
         command_actions: Vec<CommandAction>,
-        /// Only present for a shell invocation with separate display steps.
+        /// Authored display text for a recognized shell invocation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         display: Option<CommandDisplay>,
@@ -1285,25 +1291,6 @@ pub enum CollabAgentTool {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
-pub struct FileUpdateChange {
-    pub path: String,
-    pub kind: PatchChangeKind,
-    pub diff: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(tag = "type", rename_all = "camelCase")]
-#[ts(tag = "type")]
-#[ts(export_to = "v2/")]
-pub enum PatchChangeKind {
-    Add,
-    Delete,
-    Update { move_path: Option<PathBuf> },
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export_to = "v2/")]
 pub enum PatchApplyStatus {
     InProgress,
     Completed,
@@ -1712,6 +1699,44 @@ pub struct CommandExecutionOutputDeltaNotification {
     pub item_id: String,
     pub delta: String,
 }
+
+/// Replaces the running shell item's preview with the currently observed file diffs.
+/// Every diff is a unified diff, including additions and deletions.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct CommandExecutionChangesUpdatedNotification {
+    #[serde(flatten)]
+    pub update: LiveCommandChanges,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct LiveCommandChanges {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub source: CommandExecutionSource,
+    /// The authored shell script, bounded for preview; not the execution wrapper.
+    pub command: String,
+    pub changes: Vec<FileUpdateChange>,
+}
+
+impl LiveCommandChanges {
+    /// Apply the command item's redaction policy before bounding the display text.
+    pub fn with_redacted_command(mut self) -> Self {
+        const MAX_COMMAND_BYTES: usize = 4096;
+        let mut command = codex_secrets::redact_secrets(self.command);
+        if command.len() > MAX_COMMAND_BYTES {
+            command.truncate(command.floor_char_boundary(MAX_COMMAND_BYTES - '…'.len_utf8()));
+            command.push('…');
+        }
+        self.command = command;
+        self
+    }
+}
+
 /// Deprecated legacy notification for `apply_patch` textual output.
 ///
 /// The server no longer emits this notification.

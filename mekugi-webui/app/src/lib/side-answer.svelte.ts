@@ -8,6 +8,7 @@ import type {
 import { errorText } from "./transport";
 
 type Exchange = {
+  id: number;
   question: string;
   messages: Map<string, string>;
 };
@@ -24,6 +25,7 @@ export class SideAnswer {
   #listen?: () => void;
   #main: string;
   #machine: Machine;
+  #nextExchangeId = 0;
 
   constructor(machine: Machine, main: string) {
     this.#machine = machine;
@@ -36,7 +38,7 @@ export class SideAnswer {
     this.error = undefined;
     this.#turn = undefined;
     const previous = this.exchanges;
-    this.exchanges = [...previous, { question, messages: new Map() }];
+    this.exchanges = [...previous, { id: this.#nextExchangeId++, question, messages: new Map() }];
     try {
       if (!this.#thread) {
         this.#fork = this.#machine.request<ThreadForkResponse>("thread/fork", {

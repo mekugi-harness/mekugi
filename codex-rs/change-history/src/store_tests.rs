@@ -846,7 +846,7 @@ fn compose_diff_and_summary_drop_net_noop_reverted_files() {
 
     let diffs = compose_diff(&store, &[r1, r2], &[]).expect("diff");
     assert_eq!(diffs.len(), 1);
-    assert_eq!(diffs[0].rel_path, "keep.rs");
+    assert_eq!(diffs[0].stats.rel_path, "keep.rs");
 }
 
 #[test]
