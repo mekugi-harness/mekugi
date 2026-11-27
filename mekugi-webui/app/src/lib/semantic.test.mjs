@@ -1312,6 +1312,10 @@ test("shell preview settlement distinguishes missing from failed and empty patch
   assert.match(find(sample).Files[0].Diff, /\+push/);
 
   machine.emitNotification({
+    method: "turn/started",
+    params: { threadId: main.id, turn: { id: "turn-1", status: "inProgress" } },
+  });
+  machine.emitNotification({
     method: "item/fileChange/patchUpdated",
     params: {
       threadId: main.id,
