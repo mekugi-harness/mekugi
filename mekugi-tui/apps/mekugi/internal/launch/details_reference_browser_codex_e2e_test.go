@@ -169,7 +169,7 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(row =>
 				row.textContent.includes('Read') && row.textContent.includes('cat notes.md') &&
 				!row.textContent.includes('native run line 160'))`)
-			run("set", "viewport", "360", "800")
+			setBrowserViewport(t, run, 360, 800)
 			run("find", "role", "button", "click", "--name", "Session details", "--exact")
 			run("wait", "--fn", fmt.Sprintf(`(() => {
 				const panel = document.querySelector('[aria-label="Session details"]:not(button)');
@@ -190,10 +190,11 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 					count("Uncached input tokens") === "20+";
 			})()`)
 			run("press", "Escape")
-			run("set", "viewport", "1280", "900")
-			checkComposerPresets(t, run)
+			run("wait", "--fn", `document.querySelector('button[aria-label="Session details"]')?.getAttribute('aria-expanded') === 'false'`)
+			setBrowserViewport(t, run, 1280, 900)
 			run("wait", `[aria-label="Active processes"] button[aria-label="Stop sleep 81"]`)
 			run("wait", `[aria-label="Active processes"] button[aria-label="Stop sleep 82"]`)
+			checkComposerPresets(t, run)
 			run("fill", "#composer-text", "/ps")
 			run("press", "Enter")
 			run("wait", "--text", "Active processes appear above the composer.")
@@ -418,19 +419,37 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 	})
 }
 
+func setBrowserViewport(t *testing.T, run func(...string) string, width, height int) {
+	t.Helper()
+	run("set", "viewport", fmt.Sprintf("%d", width), fmt.Sprintf("%d", height))
+	run("wait", "--fn", fmt.Sprintf(`(() => {
+		if (innerWidth !== %d || innerHeight !== %d) return false;
+		const wide = %t;
+		return Boolean(document.querySelector('nav[aria-label="Threads"]')) === wide &&
+			Boolean(document.querySelector('button[aria-label="Show sidebar"]')) === !wide;
+	})()`, width, height, width >= 900))
+}
+
 func checkComposerPresets(t *testing.T, run func(...string) string) {
 	t.Helper()
 	button := func(name string) {
 		run("find", "role", "button", "click", "--name", name, "--exact")
 	}
 	open := func() {
+		run("wait", "--fn", `(() => {
+			const b = document.querySelector('button[aria-label="Presets"]');
+			if (!b || b.disabled) return false;
+			const r = b.getBoundingClientRect();
+			return r.width > 0 && r.height > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
+		})()`)
 		button("Presets")
 		run("wait", `[role=dialog] li:first-child button:enabled`)
 	}
-	for _, width := range []string{"1280", "768", "390"} {
-		run("set", "viewport", width, "844")
-		if width == "390" {
+	for _, width := range []int{1280, 768, 390} {
+		setBrowserViewport(t, run, width, 844)
+		if width == 390 {
 			run("set", "media", "dark")
+			run("wait", "--fn", `matchMedia('(prefers-color-scheme: dark)').matches`)
 		}
 		open()
 		run("wait", "--fn", `(() => {
@@ -501,5 +520,6 @@ func checkComposerPresets(t *testing.T, run func(...string) string) {
 	})()`)
 	run("fill", "#composer-text", "")
 	run("set", "media", "light")
-	run("set", "viewport", "1280", "900")
+	run("wait", "--fn", `!matchMedia('(prefers-color-scheme: dark)').matches`)
+	setBrowserViewport(t, run, 1280, 900)
 }
