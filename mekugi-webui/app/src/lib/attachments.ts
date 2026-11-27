@@ -96,10 +96,8 @@ export function textUploadFrames(text: string): string[] {
 }
 
 export function formatPathMention(path: string): string {
-  if (/[ \t"'`()[\]{}<>,;]/.test(path) || /[.,:!?]$/.test(path) || /^@|#L/.test(path)) {
-    return "@" + (path.includes("'") ? JSON.stringify(path) : "'" + path + "'");
-  }
-  return "@" + path;
+  // A closing quote separates the attachment from adjacent edits and longer paths.
+  return "@" + (path.includes("'") ? JSON.stringify(path) : "'" + path + "'");
 }
 
 export function referenceLabel(item: PendingAttachment): string | undefined {
@@ -112,17 +110,11 @@ export function attachmentPlaceholder(item: PendingAttachment): string | undefin
   return item.placeholder ?? referenceLabel(item);
 }
 
-function attachmentEndsAt(text: string, end: number, label: string): boolean {
-  const barePath = label.startsWith("@") && !/^@['"]/.test(label);
-  return !barePath || /^[.:!?]*(?:$|[\s"'`()[\]{}<>,;])/.test(text.slice(end));
-}
-
 export function attachmentOffsets(text: string, label: string): number[] {
   const offsets: number[] = [];
   if (!label) return offsets;
   for (let at = text.indexOf(label); at >= 0; at = text.indexOf(label, at + label.length)) {
-    // Do not mistake an attached @report for the prefix of a new @report.png query.
-    if (attachmentEndsAt(text, at + label.length, label)) offsets.push(at);
+    offsets.push(at);
   }
   return offsets;
 }
@@ -247,9 +239,7 @@ export function atomicAttachmentInput(
       if (
         attachmentRanges(text, items).some(
           (range) =>
-            (range.start < end && start < range.end && (start > range.start || end < range.end)) ||
-            (range.end === start &&
-              !attachmentEndsAt(next, range.end, text.slice(range.start, range.end))),
+            range.start < end && start < range.end && (start > range.start || end < range.end),
         )
       ) {
         field.value = text;
