@@ -1,5 +1,5 @@
 // Viewer display preferences: stream visibility (hooks, thoughts, timestamps,
-// agent telemetry) and chroma palette. Stored in this browser's localStorage
+// agent telemetry, live diffs) and chroma palette. Stored in this browser's localStorage
 // alongside appearance; every setting has a calm, low-noise default.
 
 export const hookModes = ["off", "errors", "all"] as const;
@@ -25,10 +25,11 @@ export type StoredPreferences = {
   thoughts: ThoughtMode;
   timestamps: TimestampMode;
   telemetry: TelemetryMode;
+  liveDiff: boolean;
   palette: Palette;
 };
 
-export const presetValues: Record<ViewPreset, Omit<StoredPreferences, "palette">> = {
+export const presetValues: Record<ViewPreset, Omit<StoredPreferences, "liveDiff" | "palette">> = {
   focus: {
     hooks: "errors",
     thoughts: "collapsed",
@@ -62,6 +63,7 @@ class Preferences {
   thoughts = $state<ThoughtMode>("collapsed");
   timestamps = $state<TimestampMode>("hover");
   telemetry = $state<TelemetryMode>("compact");
+  liveDiff = $state(true);
   palette = $state<Palette>("sumi");
   storageError = $state<string>();
 
@@ -74,6 +76,7 @@ class Preferences {
         this.thoughts = pick(parsed.thoughts, thoughtModes, "collapsed");
         this.timestamps = pick(parsed.timestamps, timestampModes, "hover");
         this.telemetry = pick(parsed.telemetry, telemetryModes, "compact");
+        this.liveDiff = parsed.liveDiff !== false;
         this.palette = pick(parsed.palette, palettes, "sumi");
       }
     } catch {
@@ -103,6 +106,7 @@ class Preferences {
         thoughts: this.thoughts,
         timestamps: this.timestamps,
         telemetry: this.telemetry,
+        liveDiff: this.liveDiff,
         palette: this.palette,
       };
       localStorage.setItem(storageKey, JSON.stringify(payload));
@@ -134,6 +138,11 @@ class Preferences {
 
   setTelemetry(mode: TelemetryMode): void {
     this.telemetry = mode;
+    this.persist();
+  }
+
+  setLiveDiff(enabled: boolean): void {
+    this.liveDiff = enabled;
     this.persist();
   }
 

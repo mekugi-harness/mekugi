@@ -274,7 +274,13 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   search interface is unchanged.
 - `thread/changes/read` returns captured edit provenance, its display label,
   and signed line totals from native history. Web Saved Diff pages by caller;
-  terminal Details join captured effects to the original execution.
+  terminal Details join captured effects to the original execution. Terminal
+  attachment does not wait for Saved Diff. Paginated per-capture reads bound
+  each reply, may continue within a patch, and report line totals for the page.
+  Composed and caller-filtered pages keep their totals and continue at the
+  next file when a reply would exceed the connector limit. An oversized
+  individual patch keeps its metadata and shows a display-limit note.
+  Oversized unpaged replies return an RPC error instead of closing the client.
 - `thread/queue/shellCommand` places a standalone user-shell turn in queue
   order, preserving native edit capture without submitting a model prompt.
   Existing queued prompts retain their stored format.

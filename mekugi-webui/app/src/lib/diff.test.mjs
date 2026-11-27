@@ -36,6 +36,20 @@ test("Unicode words, whitespace, graphemes, notes and separate hunks preserve so
   }
 });
 
+test("diff rows omit file headers without hiding source or capture notes", () => {
+  assert.deepEqual(
+    diffRows(
+      "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\nPartial capture\n@@ -1 +1 @@\n-old\n+diff --git source text\n",
+    ),
+    [
+      { kind: "note", text: "Partial capture" },
+      { kind: "hunk", text: "@@ -1 +1 @@" },
+      { kind: "remove", text: "old", old: 1 },
+      { kind: "add", text: "diff --git source text", new: 1 },
+    ],
+  );
+});
+
 test("large replacement blocks keep row-only fills and leave smaller later blocks usable", () => {
   for (const source of ["x".repeat(65536), "a + ".repeat(520)]) {
     const rows = diffRows(`@@ -1,3 +1,3 @@\n-${source}\n+changed\n context\n-old\n+new\n`);

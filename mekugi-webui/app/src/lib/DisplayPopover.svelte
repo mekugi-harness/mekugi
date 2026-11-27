@@ -179,6 +179,23 @@
             </div>
           {/if}
           <div class={controlRow}>
+            <span class="font-medium text-ink">Live Diff</span>
+            <ToggleGroup.Root
+              type="single"
+              bind:value={
+                () => (preferences.liveDiff ? "on" : "off"),
+                (value) => {
+                  if (value) preferences.setLiveDiff(value === "on");
+                }
+              }
+              class="grid w-[238px] shrink-0 grid-cols-2 gap-0.5 rounded-control bg-raised p-0.5 max-sm:w-full"
+              aria-label="Live Diff"
+            >
+              <ToggleGroup.Item value="off" class={groupItem}>Off</ToggleGroup.Item>
+              <ToggleGroup.Item value="on" class={groupItem}>On</ToggleGroup.Item>
+            </ToggleGroup.Root>
+          </div>
+          <div class={controlRow}>
             <span class="font-medium text-ink">Hooks</span>
             <ToggleGroup.Root
               type="single"

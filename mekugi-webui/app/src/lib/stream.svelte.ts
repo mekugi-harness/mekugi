@@ -697,11 +697,12 @@ function nativePatchDiff(kind: "add" | "delete" | "update", diff: string): strin
 }
 
 function previewFile({ path, kind, diff }: FileUpdateChange): ReviewFile {
-  const afterPath = kind.type === "update" ? (kind.move_path ?? path) : path;
+  const movedTo = kind.type === "update" ? kind.move_path : undefined;
   return {
     Path: path,
     BeforePath: kind.type === "add" ? undefined : path,
-    AfterPath: kind.type === "delete" ? undefined : afterPath,
+    AfterPath: kind.type === "delete" ? undefined : (movedTo ?? path),
+    Action: kind.type === "add" ? "A" : kind.type === "delete" ? "D" : movedTo ? "R" : "M",
     Diff: diff,
   };
 }
@@ -1584,11 +1585,12 @@ export class Stream {
       ) {
         savedPath = file?.absolutePath ?? file?.path;
         savedFiles = response.files.map(changeFileReview);
+        if (response.nextCursor) status = "More in Saved Diff";
       } else if (preview.Tool === "Shell") {
         savedFiles = [];
       }
     } catch {
-      if (preview.Tool === "Shell") status = "unavailable: Saved Diff could not be read";
+      if (preview.Tool === "Shell") status = "Saved Diff could not be read";
     }
     if (signal.aborted) return;
     this.live = this.live.map((edit) =>
