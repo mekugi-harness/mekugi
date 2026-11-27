@@ -1313,7 +1313,7 @@ test("shell preview settlement distinguishes missing from failed and empty patch
 
   machine.emitNotification({
     method: "turn/started",
-    params: { threadId: main.id, turn: { id: "turn-1", status: "inProgress" } },
+    params: { threadId: main.id, turn: { id: "turn-1", status: "inProgress", items: [] } },
   });
   machine.emitNotification({
     method: "item/fileChange/patchUpdated",
