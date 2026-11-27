@@ -1590,7 +1590,7 @@ export class Stream {
     let externalSummary: string | undefined;
     let status = preview.Status;
     try {
-      const workspaceResp = await machine.request<ThreadChangesReadResponse>(
+      const workspaceReq = machine.request<ThreadChangesReadResponse>(
         "thread/changes/read",
         {
           threadId: thread,
@@ -1601,6 +1601,23 @@ export class Stream {
         },
         { signal },
       );
+      const allReq =
+        preview.Tool === "Shell"
+          ? machine
+              .request<ThreadChangesReadResponse>(
+                "thread/changes/read",
+                {
+                  threadId: thread,
+                  itemId: item,
+                  includeExternal: true,
+                  includeEphemeral: true,
+                  limit: 100,
+                },
+                { signal },
+              )
+              .catch(() => undefined)
+          : Promise.resolve(undefined);
+      const [workspaceResp, allResp] = await Promise.all([workspaceReq, allReq]);
       const matchesItem = (resp: ThreadChangesReadResponse) =>
         resp.changes.some(
           (origin) =>
@@ -1613,33 +1630,16 @@ export class Stream {
       } else if (preview.Tool === "Shell") {
         savedFiles = [];
       }
-      if (preview.Tool === "Shell") {
-        try {
-          const allResp = await machine.request<ThreadChangesReadResponse>(
-            "thread/changes/read",
-            {
-              threadId: thread,
-              itemId: item,
-              includeExternal: true,
-              includeEphemeral: true,
-              limit: 100,
-            },
-            { signal },
-          );
-          if (matchesItem(allResp)) {
-            const externalFiles = allResp.files.filter(
-              (f) => f.scope === "external" || f.scope === "ephemeral",
-            );
-            if (externalFiles.length > 0) {
-              const ids = [...new Set(externalFiles.flatMap((f) => f.changeIds ?? []))];
-              const noun = externalFiles.length === 1 ? "external file" : "external files";
-              externalSummary = ids.length
-                ? `Captured ${externalFiles.length} ${noun} · mchanges ${ids.join(" ")} --summary`
-                : `Captured ${externalFiles.length} ${noun}`;
-            }
-          }
-        } catch {
-          // Best-effort external summary; keep workspace preview intact.
+      if (allResp && matchesItem(allResp)) {
+        const externalFiles = allResp.files.filter(
+          (f) => f.scope === "external" || f.scope === "ephemeral",
+        );
+        if (externalFiles.length > 0) {
+          const ids = [...new Set(externalFiles.flatMap((f) => f.changeIds ?? []))];
+          const noun = externalFiles.length === 1 ? "external file" : "external files";
+          externalSummary = ids.length
+            ? `Captured ${externalFiles.length} ${noun} · mchanges ${ids.join(" ")} --summary`
+            : `Captured ${externalFiles.length} ${noun}`;
         }
       }
     } catch {

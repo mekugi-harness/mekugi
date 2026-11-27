@@ -17,6 +17,10 @@ import (
 
 type nativeEditItem struct{ thread, turn, item string }
 
+func isWorkspaceScope(scope string) bool {
+	return scope == "" || scope == "workspace"
+}
+
 type nativeCapturedFile struct {
 	chunk          changes.Chunk
 	path           string
@@ -129,7 +133,7 @@ func (c *directNativeConnection) refreshChanges(ctx context.Context, threadID st
 		}
 		// Saved Diff defaults to Workspace edits; External/Ephemeral remain in
 		// ChangeHistoryStore for mchanges and compact transcript summaries.
-		if f.Scope == "" || f.Scope == "workspace" {
+		if isWorkspaceScope(f.Scope) {
 			captures = append(captures, chunk)
 		}
 		if origin.ItemID != "" {
@@ -182,7 +186,7 @@ func (c *directNativeConnection) setEditReceiptLocked(rec *directItemRecord, fil
 	var externalIDs []string
 	for _, file := range files {
 		chunk := file.chunk
-		if file.scope == "external" || file.scope == "ephemeral" {
+		if !isWorkspaceScope(file.scope) {
 			externalCount++
 			if chunk.Change != "" && !slices.Contains(externalIDs, chunk.Change) {
 				externalIDs = append(externalIDs, chunk.Change)

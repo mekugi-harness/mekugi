@@ -53,6 +53,14 @@ impl ChangeScope {
     pub fn is_ephemeral(self) -> bool {
         matches!(self, Self::Ephemeral)
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::External => "external",
+            Self::Ephemeral => "ephemeral",
+        }
+    }
 }
 
 /// Classify an absolute path as `Workspace`, `External`, or `Ephemeral`.

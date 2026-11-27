@@ -335,65 +335,44 @@ fn is_git_internal_path(path: &Path) -> bool {
 }
 
 fn default_ignored_cache_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let mut push_root = |path: PathBuf| {
-        if path.as_os_str().is_empty() {
-            return;
-        }
-        let canonical = resolve_canonical_path(&path);
-        if !roots.contains(&path) {
-            roots.push(path);
-        }
-        if !roots.contains(&canonical) {
-            roots.push(canonical);
-        }
-    };
+    const HOME_IGNORED_CACHE_PATHS: &[&str] = &[
+        ".cache/go-build",
+        ".config/go/telemetry",
+        "go/pkg/mod/cache",
+        ".npm/_cacache",
+        ".npm/_logs",
+        ".cache/pip",
+        ".cache/uv",
+        ".cargo/registry",
+        ".cargo/git",
+    ];
+    let non_empty_env_os = |key: &str| std::env::var_os(key).filter(|v| !v.is_empty());
 
-    if let Ok(gocache) = std::env::var("GOCACHE")
-        && !gocache.is_empty()
-        && gocache != "off"
-    {
-        push_root(PathBuf::from(gocache));
+    let mut roots = Vec::new();
+    if let Some(gocache) = non_empty_env_os("GOCACHE").filter(|v| v != "off") {
+        roots.push(PathBuf::from(gocache));
     }
-    if let Ok(gomodcache) = std::env::var("GOMODCACHE")
-        && !gomodcache.is_empty()
-    {
-        push_root(PathBuf::from(gomodcache).join("cache"));
+    if let Some(gomodcache) = non_empty_env_os("GOMODCACHE") {
+        roots.push(PathBuf::from(gomodcache).join("cache"));
     }
-    if let Ok(gopath) = std::env::var("GOPATH")
-        && !gopath.is_empty()
-    {
-        for entry in std::env::split_paths(&gopath) {
-            if !entry.as_os_str().is_empty() {
-                push_root(entry.join("pkg").join("mod").join("cache"));
-            }
-        }
+    if let Some(gopath) = non_empty_env_os("GOPATH") {
+        roots.extend(
+            std::env::split_paths(&gopath)
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.join("pkg/mod/cache")),
+        );
     }
-    if let Ok(cargo_home) = std::env::var("CARGO_HOME")
-        && !cargo_home.is_empty()
-    {
+    if let Some(cargo_home) = non_empty_env_os("CARGO_HOME") {
         let cargo = PathBuf::from(cargo_home);
-        push_root(cargo.join("registry"));
-        push_root(cargo.join("git"));
+        roots.push(cargo.join("registry"));
+        roots.push(cargo.join("git"));
     }
-    if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR")
-        && !xdg_runtime.is_empty()
-    {
-        push_root(PathBuf::from(xdg_runtime));
+    if let Some(xdg_runtime) = non_empty_env_os("XDG_RUNTIME_DIR") {
+        roots.push(PathBuf::from(xdg_runtime));
     }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
+    if let Some(home) = non_empty_env_os("HOME") {
         let home = PathBuf::from(home);
-        push_root(home.join(".cache").join("go-build"));
-        push_root(home.join(".config").join("go").join("telemetry"));
-        push_root(home.join("go").join("pkg").join("mod").join("cache"));
-        push_root(home.join(".npm").join("_cacache"));
-        push_root(home.join(".npm").join("_logs"));
-        push_root(home.join(".cache").join("pip"));
-        push_root(home.join(".cache").join("uv"));
-        push_root(home.join(".cargo").join("registry"));
-        push_root(home.join(".cargo").join("git"));
+        roots.extend(HOME_IGNORED_CACHE_PATHS.iter().map(|rel| home.join(rel)));
     }
     roots
 }

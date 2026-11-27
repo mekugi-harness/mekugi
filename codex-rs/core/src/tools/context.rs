@@ -444,6 +444,22 @@ pub(crate) fn tool_change_notice_from_record(
     })
 }
 
+fn text_response_with_notice(
+    call_id: &str,
+    payload: &ToolPayload,
+    text: String,
+    change_notice: Option<&ToolChangeNotice>,
+) -> ResponseInputItem {
+    let mut items = vec![FunctionCallOutputContentItem::InputText { text }];
+    if let Some(text) = change_notice
+        .map(ToolChangeNotice::format_notice)
+        .filter(|s| !s.is_empty())
+    {
+        items.push(FunctionCallOutputContentItem::InputText { text });
+    }
+    function_tool_response(call_id, payload, items, Some(true))
+}
+
 pub struct ApplyPatchToolOutput {
     pub text: String,
     pub change_notice: Option<ToolChangeNotice>,
@@ -473,16 +489,12 @@ impl ToolOutput for ApplyPatchToolOutput {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        let mut items = vec![FunctionCallOutputContentItem::InputText {
-            text: self.text.clone(),
-        }];
-        if let Some(notice) = &self.change_notice {
-            let formatted = notice.format_notice();
-            if !formatted.is_empty() {
-                items.push(FunctionCallOutputContentItem::InputText { text: formatted });
-            }
-        }
-        function_tool_response(call_id, payload, items, Some(true))
+        text_response_with_notice(
+            call_id,
+            payload,
+            self.text.clone(),
+            self.change_notice.as_ref(),
+        )
     }
 
     fn post_tool_use_response(&self, _call_id: &str, _payload: &ToolPayload) -> Option<JsonValue> {
@@ -594,16 +606,12 @@ impl ToolOutput for ExecCommandToolOutput {
     }
 
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
-        let mut items = vec![FunctionCallOutputContentItem::InputText {
-            text: self.response_text(),
-        }];
-        if let Some(notice) = &self.change_notice {
-            let formatted = notice.format_notice();
-            if !formatted.is_empty() {
-                items.push(FunctionCallOutputContentItem::InputText { text: formatted });
-            }
-        }
-        function_tool_response(call_id, payload, items, Some(true))
+        text_response_with_notice(
+            call_id,
+            payload,
+            self.response_text(),
+            self.change_notice.as_ref(),
+        )
     }
 
     fn post_tool_use_id(&self, call_id: &str) -> String {
