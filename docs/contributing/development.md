@@ -159,10 +159,12 @@ access. Checks and tests default to `dev-small`. `just build-native` uses the
 `release` profile with LTO disabled by default to reduce peak build memory.
 Use `just build-native --profile release` to use the release profile's
 ThinLTO setting. `just package-native` and CI release packaging use that setting
-by default. CI runs native integration tests in `dev-small` and smoke-tests the
-full release archive through the installer on each platform. To cap local
-compile concurrency, optionally set
-`CARGO_BUILD_JOBS=2`; the native runner does not set a jobs limit.
+by default. Full CI runs native integration tests in `dev-small` when needed
+and smoke-tests the packaged archive on each platform. Changes confined to
+`mekugi-webui/app/` run the WebUI checks and browser build without compiling
+Rust or Go. Release and manual runs still use the full workflow. To cap local
+compile concurrency, optionally set `CARGO_BUILD_JOBS=2`; the native runner does
+not set a jobs limit.
 
 For an affected crate, pass Cargo selectors after `--`:
 
