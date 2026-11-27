@@ -11,6 +11,11 @@ All `SPEC.md` and `CONTRACT.md` files separate binding **Requirements** (or **Bo
 from **Current approach (replaceable)**. Internal helper libraries and app-wiring packages are
 documented by their code and tests rather than standalone specs.
 
+## Architecture decisions
+
+- [ADR 0001: Client interaction parity](adr/0001-client-interaction-parity.md)
+- [ADR 0002: Native evidence and validation](adr/0002-native-evidence-and-validation.md)
+
 ## Shared boundary contracts
 
 - [Native agent coordination](contracts/coordination.md): delegation, preloads, waits, progress,
