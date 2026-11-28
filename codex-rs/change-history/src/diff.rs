@@ -295,6 +295,20 @@ pub fn captured_diff_range(
     offset: usize,
     max_bytes: usize,
 ) -> Result<Option<(ComposedFileDiff, Option<usize>)>, ChangeHistoryError> {
+    captured_diff_range_by(store, record, files, offset, max_bytes, char::len_utf8)
+}
+
+/// Render a UTF-8 range of one captured file's patch in a single diff pass,
+/// charging each written character against `max_budget` via `char_cost`.
+/// The returned cursor is a raw UTF-8 byte offset in that patch.
+pub fn captured_diff_range_by(
+    store: &ChangeHistoryStore,
+    record: &ChangeRecord,
+    files: &[&FileEvidence],
+    offset: usize,
+    max_budget: usize,
+    char_cost: impl Fn(char) -> usize,
+) -> Result<Option<(ComposedFileDiff, Option<usize>)>, ChangeHistoryError> {
     let selected = ChangeRecord {
         schema_version: record.schema_version,
         id: record.id.clone(),
@@ -308,10 +322,11 @@ pub fn captured_diff_range(
     else {
         return Ok(None);
     };
-    let mut output = DiffRange {
+    let mut output = BudgetedDiffRange {
         text: String::new(),
         skip: offset,
-        max_bytes,
+        remaining: max_budget,
+        char_cost,
     };
     let diff = transition.text_diff();
     let stopped = write_transition_diff(&mut output, &transition, diff.as_ref()).is_err();
@@ -525,13 +540,14 @@ fn write_transition_diff<'a>(
     }
 }
 
-struct DiffRange {
+struct BudgetedDiffRange<F> {
     text: String,
     skip: usize,
-    max_bytes: usize,
+    remaining: usize,
+    char_cost: F,
 }
 
-impl fmt::Write for DiffRange {
+impl<F: Fn(char) -> usize> fmt::Write for BudgetedDiffRange<F> {
     fn write_str(&mut self, value: &str) -> fmt::Result {
         if self.skip >= value.len() {
             self.skip -= value.len();
@@ -539,11 +555,15 @@ impl fmt::Write for DiffRange {
         }
         let value = value.get(self.skip..).ok_or(fmt::Error)?;
         self.skip = 0;
-        let room = self.max_bytes - self.text.len();
-        if value.len() > room {
-            self.text
-                .push_str(&value[..value.floor_char_boundary(room)]);
-            return Err(fmt::Error);
+        let mut take = 0;
+        for (idx, ch) in value.char_indices() {
+            let cost = (self.char_cost)(ch);
+            if cost > self.remaining {
+                self.text.push_str(&value[..take]);
+                return Err(fmt::Error);
+            }
+            self.remaining -= cost;
+            take = idx + ch.len_utf8();
         }
         self.text.push_str(value);
         Ok(())

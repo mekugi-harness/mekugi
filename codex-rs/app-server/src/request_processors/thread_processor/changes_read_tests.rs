@@ -204,6 +204,51 @@ fn capture_pages_preserve_origin_paths_and_fill_page_budget_across_chunks() {
 }
 
 #[test]
+fn capture_pages_fallback_when_origin_paths_exceed_page_budget() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    // 20,000 files with ~220-byte paths -> >4.4 MiB JSON for origin.paths alone.
+    let prefix = "nested/".repeat(28);
+    let files: Vec<(String, String)> = (0..20_000)
+        .map(|i| (format!("{prefix}file_{i:05}.txt"), "x\n".into()))
+        .collect();
+    record(
+        &store,
+        workspace.path(),
+        "bulk-paths",
+        files
+            .iter()
+            .map(|(path, body)| (path.as_str(), body.clone()))
+            .collect(),
+    );
+    let params = ThreadChangesReadParams {
+        thread_id: "thread".into(),
+        include_external: None,
+        include_ephemeral: None,
+        caller_thread_id: None,
+        item_id: None,
+        per_capture: true,
+        limit: Some(100),
+        cursor: None,
+    };
+    let page = read_changes(dir.clone(), None, None, params.clone(), None)
+        .expect("oversized origin.paths should fall back instead of failing");
+    assert!(serde_json::to_vec(&page).expect("encode page").len() < CAPTURE_PAGE_BYTES);
+    assert_eq!(page.files.len(), 100);
+    assert_eq!(page.changes.len(), 1);
+    assert_eq!(page.changes[0].paths.len(), 100);
+    assert!(page.next_cursor.is_some());
+    let next = parse_cursor(page.next_cursor.as_deref().expect("cursor")).expect("valid cursor");
+    let page2 = read_changes(dir, None, None, params, Some(next)).expect("second page");
+    assert!(serde_json::to_vec(&page2).expect("encode page 2").len() < CAPTURE_PAGE_BYTES);
+    assert_eq!(page2.files.len(), 100);
+    assert_eq!(page2.changes.len(), 1);
+    assert_eq!(page2.changes[0].paths.len(), 100);
+    assert_ne!(page.changes[0].paths, page2.changes[0].paths);
+}
+
+#[test]
 fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() {
     let workspace = tempfile::tempdir().expect("temp workspace");
     let dir = workspace.path().join("history");

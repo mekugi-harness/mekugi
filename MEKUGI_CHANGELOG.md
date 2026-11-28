@@ -287,7 +287,10 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   and signed line totals from native history. Web Saved Diff pages by caller;
   terminal Details join captured effects to the original execution. Terminal
   attachment does not wait for Saved Diff. Paginated per-capture reads bound
-  each reply, may continue within a patch, and report line totals for the page.
+  each reply, pack multi-slice patches up to the page budget, preserve each
+  origin's full filtered path list when it fits (falling back to per-page paths
+  on oversized captures while clients merge origins across pages), and report
+  line totals for the page.
   Composed and caller-filtered pages keep their totals and continue at the
   next file when a reply would exceed the connector limit. An oversized
   individual patch keeps its metadata and shows a display-limit note.

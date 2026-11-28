@@ -58,10 +58,18 @@ func mergeDirectChangeOrigin(dst, src directChangeOrigin) directChangeOrigin {
 	dst.TurnID = cmp.Or(dst.TurnID, src.TurnID)
 	dst.ItemID = cmp.Or(dst.ItemID, src.ItemID)
 	dst.Workspace = cmp.Or(dst.Workspace, src.Workspace)
-	if len(src.Paths) > 0 {
-		paths := slices.Clone(dst.Paths)
+	if len(src.Paths) > 0 && !slices.Equal(dst.Paths, src.Paths) {
+		seen := make(map[string]struct{}, len(dst.Paths)+len(src.Paths))
+		paths := make([]string, 0, len(dst.Paths)+len(src.Paths))
+		for _, p := range dst.Paths {
+			if _, ok := seen[p]; !ok {
+				seen[p] = struct{}{}
+				paths = append(paths, p)
+			}
+		}
 		for _, p := range src.Paths {
-			if !slices.Contains(paths, p) {
+			if _, ok := seen[p]; !ok {
+				seen[p] = struct{}{}
 				paths = append(paths, p)
 			}
 		}

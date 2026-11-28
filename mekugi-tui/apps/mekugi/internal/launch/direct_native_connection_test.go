@@ -7,6 +7,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"maps"
@@ -913,6 +914,37 @@ func TestDirectNativeReadChangesMergesOriginPathsAcrossPages(t *testing.T) {
 	}
 	if len(resp.Files) != 3 || resp.Files[1].UnifiedDiff != "@@ -1 +1 @@\n-old\n+new\n" {
 		t.Fatalf("expected 3 files with reassembled big.go diff, got %+v", resp.Files)
+	}
+}
+
+func TestMergeDirectChangeOriginLinearScalingAndFastPath(t *testing.T) {
+	paths := make([]string, 5000)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("pkg/file_%05d.go", i)
+	}
+	merged := mergeDirectChangeOrigin(directChangeOrigin{}, directChangeOrigin{
+		ChangeID: "amber1",
+		Sequence: 1,
+		Paths:    paths,
+	})
+	// Repeated identical full-origin pages should hit the fast path without duplicating paths.
+	for range 50 {
+		merged = mergeDirectChangeOrigin(merged, directChangeOrigin{
+			ChangeID: "amber1",
+			Sequence: 1,
+			Paths:    paths,
+		})
+	}
+	if len(merged.Paths) != len(paths) {
+		t.Fatalf("expected %d paths, got %d", len(paths), len(merged.Paths))
+	}
+	// Merging a differing page preserves order and appends only new unique paths.
+	merged = mergeDirectChangeOrigin(merged, directChangeOrigin{
+		ChangeID: "amber1",
+		Paths:    []string{paths[0], "pkg/extra.go", "pkg/extra.go"},
+	})
+	if len(merged.Paths) != len(paths)+1 || merged.Paths[len(merged.Paths)-1] != "pkg/extra.go" {
+		t.Fatalf("unexpected merged paths tail: len=%d last=%q", len(merged.Paths), merged.Paths[len(merged.Paths)-1])
 	}
 }
 
