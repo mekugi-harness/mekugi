@@ -174,6 +174,9 @@ func TestDirectNativeWillRetryBannerClearsOnResponseProgress(t *testing.T) {
 		"willRetry": true,
 		"error":     map[string]any{"message": "Main reconnecting... 1/5"},
 	})
+	awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Status.State.Text == "Main reconnecting... 1/5"
+	})
 	send("error", map[string]any{
 		"threadId":  "thr-side",
 		"turnId":    "side-turn-1",
@@ -186,8 +189,12 @@ func TestDirectNativeWillRetryBannerClearsOnResponseProgress(t *testing.T) {
 		"itemId":   "side-msg-1",
 		"delta":    "Side recovered",
 	})
+	// Wait until One-off's delta is actually processed before asserting Main's banner survived.
 	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
-		return ev.Frame.View.Status.State.Text == "Main reconnecting... 1/5"
+		conn.mu.Lock()
+		defer conn.mu.Unlock()
+		rec := conn.itemsByID[directItemKey{"thr-side", "side-msg-1"}]
+		return rec != nil && rec.entry.Text == "Side recovered"
 	})
 	if ev.Frame.View.Status.State.Text != "Main reconnecting... 1/5" {
 		t.Fatalf("side progress cleared main retry banner: %q", ev.Frame.View.Status.State.Text)
