@@ -43,8 +43,8 @@ just test ./mekugi-tui/backends/codex/appserver \
 - **Static checks**:
   - `just docs-check`: checks Markdown links and anchors (also in pre-commit).
   - `just lint`: runs `golangci-lint` and `deadcode` before committing Go changes.
-  - `just check-generated`: checks the module reference and browser Session API
-    types. Run `just generate` to refresh both.
+  - `just check-generated`: checks the module reference (`docs/reference/modules.md`).
+    Run `just generate` to refresh it.
   - `just preview-native-ui`: runs Mekugi against a scripted local provider.
     See [Preview the terminal UI](docs/contributing/development.md#preview-the-terminal-ui).
 - **Opt-in focused checks** (never install missing tools):

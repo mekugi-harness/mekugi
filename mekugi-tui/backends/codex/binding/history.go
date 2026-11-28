@@ -19,7 +19,6 @@ type ThreadItem struct {
 	Question          string                         `json:"question"`
 	Answer            string                         `json:"answer"`
 	SourceAcquisition *observation.SourceAcquisition `json:"sourceAcquisition,omitzero"`
-	CompactionMethod  observation.CompactionMethod   `json:"compactionMethod,omitzero"`
 	DurationMS        *int64                         `json:"durationMs"`
 	CompletedAtMS     *int64                         `json:"completedAtMs,omitzero"`
 	Delivery          string                         `json:"delivery"`
@@ -52,7 +51,6 @@ type ThreadItem struct {
 	Changes           []FileChange    `json:"changes"`
 	Tool              string          `json:"tool"`
 	ReceiverThreadIDs []string        `json:"receiverThreadIds"`
-	TimeoutMS         *int64          `json:"timeoutMs"`
 	Server            string          `json:"server"`
 	Arguments         jsontext.Value  `json:"arguments"`
 	Result            jsontext.Value  `json:"result"`

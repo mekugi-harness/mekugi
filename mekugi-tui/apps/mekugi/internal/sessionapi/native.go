@@ -24,7 +24,6 @@ type NativeFrame struct {
 	View              sessionpresentation.View      `json:"view"`
 	Main              *activity.Publication         `json:"main"`
 	Agents            *activity.Publication         `json:"agents"`
-	Conversation      []entry                       `json:"conversation,omitzero"` // Remote selected-side entries use the ordinary browser projection.
 	Review            *changes.ReviewView           `json:"review"`
 	Family            *Family                       `json:"family"`
 	Live              []preview.Preview             `json:"live"`
@@ -36,7 +35,6 @@ type NativeFrame struct {
 	// unresolved demands and reacquire them through identity-addressed reads.
 	ReacquireOutput bool                 `json:"reacquireOutput,omitzero"`
 	FileLinks       map[string]bool      `json:"fileLinks"`
-	Switch          *NativeSwitch        `json:"switch"`
 	Facts           NativeSessionFacts   `json:"facts"`
 	Effects         []NativeEffect       `json:"effects"`
 	Activity        *NativeActivityFrame `json:"activity,omitempty"`
@@ -60,7 +58,6 @@ type NativeActivityFrame struct {
 }
 
 type NativeDetails struct {
-	Content  *ContentReference                   `json:"content,omitzero"`
 	Source   sessionpresentation.Thread          `json:"source"`
 	Selected string                              `json:"selected,omitempty"`
 	View     sessionpresentation.DetailView      `json:"view"`
@@ -68,12 +65,6 @@ type NativeDetails struct {
 	RunRange *sessionpresentation.RunOutputRange `json:"runRange,omitempty"`
 	File     *activity.DetailFile                `json:"file"`
 	Agent    bool                                `json:"agent"`
-}
-
-// NativeSwitch explicitly identifies a successful replacement. Other viewers
-// are never implicitly authorized to address the replacement thread.
-type NativeSwitch struct {
-	From, To, Origin string
 }
 
 type NativeEvent struct {
@@ -172,7 +163,6 @@ type NativeNotificationSettings struct {
 type NativeComposerInput struct {
 	Intent sessionpresentation.ComposerIntent
 	Draft  composer.Draft
-	Input  *InputRequest `json:"input,omitzero"`
 	// Consumed means the originating client has already taken its local draft.
 	Consumed bool
 	// Detached input never occupied the ordinary editor, so command completion
@@ -267,12 +257,6 @@ type NativeReceipt struct {
 type NativeOutputDemand struct {
 	Agent   bool                    `json:"agent"`
 	Demands []activity.OutputDemand `json:"demands"`
-}
-
-type NativeMutation struct {
-	Attachment string                      `json:"attachment"`
-	Version    sessionpresentation.Version `json:"version"`
-	Operation  NativeOperation             `json:"operation"`
 }
 
 // NativeRequest arrives on the existing serialized execution-owner loop.

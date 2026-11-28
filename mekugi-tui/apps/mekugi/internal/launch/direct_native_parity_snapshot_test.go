@@ -692,10 +692,10 @@ func TestUISnapshotNativeWorkingFooter(t *testing.T) {
 	f.server.mu.Lock()
 	f.server.overrides["thread/subtree/list"] = func(jsontext.Value) any {
 		return jsontext.Value(`{"data":[
-			{"id":"thr-main","agentPath":"/root","status":{"type":"active"}},
-			{"id":"thr-worker","agentPath":"/root/worker","status":{"type":"idle"},"agentStatus":{"completed":null},
+			{"id":"thr-main","status":{"type":"active"}},
+			{"id":"thr-worker","parentThreadId":"thr-main","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"thr-main","depth":1,"agent_path":"/root/worker"}}},"status":{"type":"idle"},"agentStatus":{"completed":null},
 			 "tokenUsage":{"total":{"inputTokens":300,"outputTokens":6},"estimatedCostUsd":0.18}},
-			{"id":"thr-interrupted","agentPath":"/root/interrupted","status":{"type":"idle"},"agentStatus":"interrupted"}
+			{"id":"thr-interrupted","parentThreadId":"thr-main","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"thr-main","depth":1,"agent_path":"/root/interrupted"}}},"status":{"type":"idle"},"agentStatus":"interrupted"}
 		]}`)
 	}
 	f.server.bgTerminals = []map[string]any{

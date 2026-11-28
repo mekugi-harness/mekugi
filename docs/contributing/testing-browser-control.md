@@ -17,5 +17,5 @@ command is a mise shim. `MEKUGI_TEST_AGENT_BROWSER` explicitly selects an
 executable instead. The fixture owns and closes a named browser session. It covers
 initialization, publication, mutation, native
 method denial, reconnection and token rotation; TLS deployment remains separate.
-`just check-generated` checks the browser wire types and module index.
-`just generate` refreshes both.
+`just check-generated` checks the module index; `just generate` refreshes it.
+Native browser protocol types are imported from `codex-rs/app-server-protocol/schema/typescript/`.

@@ -439,6 +439,36 @@ class AffectedPlanTests(unittest.TestCase):
             ["codex-rs/core/src/moved.rs", "codex-rs/protocol/src/moved.rs"],
         )
 
+    def test_protocol_schema_changes_trigger_go_contract_and_webui(self) -> None:
+        (self.repo / "codex-rs/app-server-protocol/Cargo.toml").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (self.repo / "codex-rs/app-server-protocol/Cargo.toml").write_text(
+            '[package]\nname = "codex-app-server-protocol"\n'
+        )
+        plan = AFFECTED.plan_affected(
+            [
+                "codex-rs/app-server-protocol/schema/json/ClientRequest.json",
+                "codex-rs/app-server-protocol/schema/typescript/ClientRequest.ts",
+            ],
+            self.repo,
+        )
+        self.assertTrue(plan.webui)
+        self.assertIn("./mekugi-tui/apps/mekugi/internal/launch", plan.go_packages)
+        self.assertIn("./mekugi-tui/backends/codex/binding", plan.go_packages)
+        self.assertIn("codex-app-server-protocol", plan.rust_packages)
+
+        exp_plan = AFFECTED.plan_affected(
+            [
+                "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst",
+            ],
+            self.repo,
+        )
+        self.assertFalse(exp_plan.webui)
+        self.assertIn("./mekugi-tui/apps/mekugi/internal/launch", exp_plan.go_packages)
+        self.assertIn("./mekugi-tui/backends/codex/binding", exp_plan.go_packages)
+        self.assertIn("codex-app-server-protocol", exp_plan.rust_packages)
+
 
 if __name__ == "__main__":
     unittest.main()

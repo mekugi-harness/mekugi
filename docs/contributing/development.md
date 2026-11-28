@@ -71,8 +71,8 @@ See [workspace ownership](../contracts/composition.md).
 
 The [module reference](../reference/modules.md) is generated from workspace
 descriptors, binding declarations and composition. `just generate` refreshes
-the reference and browser wire types. `just check-generated` checks both
-without rewriting them; CI runs the same check.
+the reference. `just check-generated` checks it without rewriting; CI runs the
+same check.
 
 Interpreter and query fixtures use Node.js/ripgrep; lint needs `golangci-lint`/`deadcode` and installs neither.
 Pass package paths and `go test` flags to focus tests. Use `@workspace` to

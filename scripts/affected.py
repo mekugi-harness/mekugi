@@ -278,6 +278,15 @@ def plan_affected(
                 rust_fallback = True
             else:
                 rust_packages.add(pkg)
+            if (
+                rel_path.startswith("codex-rs/app-server-protocol/schema/json/")
+                or rel_path
+                == "codex-rs/app-server-protocol/schema/precomputed/app-server-exports-experimental.json.zst"
+            ):
+                go_packages.add("./mekugi-tui/apps/mekugi/internal/launch")
+                go_packages.add("./mekugi-tui/backends/codex/binding")
+            if rel_path.startswith("codex-rs/app-server-protocol/schema/typescript/"):
+                webui = True
 
     resolved_go = ("@workspace",) if go_workspace else tuple(sorted(go_packages))
     if resolved_go and resolved_go != ("@workspace",):

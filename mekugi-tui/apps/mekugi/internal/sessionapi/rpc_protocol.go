@@ -20,8 +20,6 @@ const (
 	// RPCPublicationLimit bounds one server-to-client message, including its
 	// envelope. Relays must admit it so a large publication reaches its client.
 	RPCPublicationLimit = 64 << 20
-	// RPCReadSuperseded identifies a replaced read source, not a generic conflict.
-	RPCReadSuperseded = -32002
 )
 
 type RPCMessage struct {
@@ -52,39 +50,6 @@ type RPCInitialize struct {
 	Version    string `json:"version"`
 	Token      string `json:"token,omitempty"`
 	ServerTime int64  `json:"serverTime,omitzero"`
-}
-
-// Body uses the operation's existing input type. Subscription is selected by
-// the client before dispatch so early publications can be correlated safely.
-type RPCParams struct {
-	Thread       string              `json:"thread,omitempty"`
-	Startup      string              `json:"startup,omitempty"`
-	Subscription string              `json:"subscription,omitempty"`
-	Retain       *NativeRetainSource `json:"retain,omitzero"`
-	Body         jsontext.Value      `json:"body,omitempty"`
-}
-
-type NativeRetainSource struct {
-	Subscription   string `json:"subscription,omitempty"`
-	ReviewRevision uint64 `json:"reviewRevision,omitzero"`
-	FamilyRoot     string `json:"familyRoot,omitempty"`
-	FamilyRevision uint64 `json:"familyRevision,omitzero"`
-}
-
-type RPCSubscribed struct {
-	Subscription string `json:"subscription"`
-}
-
-type RPCEvent struct {
-	Delivery     string         `json:"delivery,omitzero"`
-	Subscription string         `json:"subscription"`
-	Kind         string         `json:"kind"`
-	Data         jsontext.Value `json:"data"`
-}
-
-type RPCClosed struct {
-	Subscription string    `json:"subscription"`
-	Error        *RPCError `json:"error,omitempty"`
 }
 
 // WriteMessage copies one message to conn and fails only after stall passes

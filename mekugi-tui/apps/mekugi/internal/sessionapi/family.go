@@ -11,7 +11,6 @@ import (
 // Threads includes attachable admitted cold targets, but never history-only roster rows.
 type Family struct {
 	Questions map[string][]prompt.CallView `json:"-"`
-	Prompts   []QuestionCall               `json:"-"`
 	Live      []preview.Preview            `json:"-"`
 	LiveScope preview.Scope                `json:"-"`
 	Root      string                       `json:"root"`
