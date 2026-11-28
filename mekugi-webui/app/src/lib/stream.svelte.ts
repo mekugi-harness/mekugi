@@ -855,14 +855,32 @@ function usageFields(usage: ThreadTokenUsage) {
   };
 }
 
+function threadAgentPath(thread: Thread): string | undefined {
+  const source = thread.source;
+  if (typeof source !== "object" || !source || !("subAgent" in source)) return undefined;
+  const sub = source.subAgent;
+  if (typeof sub !== "object" || !sub || !("thread_spawn" in sub)) return undefined;
+  return sub.thread_spawn.agent_path ?? undefined;
+}
+
 function threadToAgent(thread: Thread, depth: number): Agent {
-  const name = depth === 0 ? "/root" : thread.agentNickname || thread.id;
-  const label = depth === 0 ? "main" : thread.agentNickname || thread.name || thread.id;
+  const canonicalPath = depth === 0 ? "/root" : threadAgentPath(thread);
+  const name = canonicalPath || thread.agentNickname || thread.id;
+  const label =
+    depth === 0
+      ? "main"
+      : canonicalPath
+        ? canonicalPath.replace(/^\/root\//, "")
+        : thread.agentNickname || thread.name || thread.id;
   const usage = thread.tokenUsage ? usageFields(thread.tokenUsage) : undefined;
   return {
     name,
     label,
-    aliases: [name, thread.id],
+    aliases: [
+      name,
+      thread.id,
+      ...(thread.agentNickname && thread.agentNickname !== name ? [thread.agentNickname] : []),
+    ],
     thread: thread.id,
     role: thread.agentRole ?? undefined,
     depth,
@@ -933,9 +951,11 @@ export class Stream {
   reviewError = $state<string>();
   reviewLoading = $state(false);
   reviewOverview = $state.raw<{
+    fileCount: number;
     callers: SavedReview["callers"];
     counts: SavedReview["counts"];
   }>({
+    fileCount: 0,
     callers: [],
     counts: { Callers: {}, Net: null },
   });
@@ -1518,21 +1538,52 @@ export class Stream {
     this.reviewCursor = undefined;
     this.reviewError = undefined;
     try {
-      const response = await machine.request<ThreadChangesReadResponse>(
-        "thread/changes/read",
-        {
-          threadId: id,
-          callerThreadId: caller || null,
-          includeExternal: this.reviewIncludeExternal,
-          limit: changesPageSize,
-        },
-        { signal },
-      );
+      const [response, overviewResponse] = await Promise.all([
+        machine.request<ThreadChangesReadResponse>(
+          "thread/changes/read",
+          {
+            threadId: id,
+            callerThreadId: caller || null,
+            includeExternal: this.reviewIncludeExternal,
+            limit: changesPageSize,
+          },
+          { signal },
+        ),
+        caller
+          ? machine
+              .request<ThreadChangesReadResponse>(
+                "thread/changes/read",
+                {
+                  threadId: id,
+                  callerThreadId: null,
+                  includeExternal: this.reviewIncludeExternal,
+                  limit: 1,
+                },
+                { signal },
+              )
+              .catch(() => undefined)
+          : Promise.resolve(undefined),
+      ]);
       if (signal.aborted || revision !== this.#reviewRevision) return;
       const review = changesToReview(response, revision, caller, (thread) =>
         this.#callerName(thread),
       );
-      if (!caller) this.reviewOverview = { callers: review.callers, counts: review.counts };
+      if (!caller) {
+        this.reviewOverview = {
+          fileCount: review.fileCount,
+          callers: review.callers,
+          counts: review.counts,
+        };
+      } else if (overviewResponse) {
+        const overview = changesToReview(overviewResponse, revision, "", (thread) =>
+          this.#callerName(thread),
+        );
+        this.reviewOverview = {
+          fileCount: overview.fileCount,
+          callers: overview.callers,
+          counts: overview.counts,
+        };
+      }
       this.review = review;
       this.reviewCursor = response.nextCursor ?? undefined;
     } catch (error) {
@@ -2421,7 +2472,7 @@ export class Stream {
 
   label(name: string | undefined): string {
     if (!name || name === "/root") return "main";
-    return this.identities.get(name)?.label ?? name;
+    return (this.identities.get(name)?.label ?? name).replace(/^\/root\//, "");
   }
 
   agent(name: string | undefined): Agent | undefined {

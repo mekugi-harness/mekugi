@@ -1451,7 +1451,23 @@ test("one terminal change refreshes both warm family views with one read", async
 
 test("saved edits page, retain exact caller provenance, and discard stale pages", async () => {
   const root = { id: "t1", cwd: "/repo", status: { type: "idle" }, turns: [] };
-  const child = { ...root, id: "t2", parentThreadId: "t1", agentNickname: "worker" };
+  const child = {
+    ...root,
+    id: "t2",
+    parentThreadId: "t1",
+    agentNickname: "Pasteur",
+    source: {
+      subAgent: {
+        thread_spawn: {
+          parent_thread_id: "t1",
+          depth: 1,
+          agent_path: "/root/worker",
+          agent_nickname: "Pasteur",
+          agent_role: "worker",
+        },
+      },
+    },
+  };
   const edit = {
     changeId: "apple1",
     authorThreadId: "t2",
@@ -1494,8 +1510,10 @@ test("saved edits page, retain exact caller provenance, and discard stale pages"
   stream.connect(root.id, machine);
   await stream.refresh();
   assert.deepEqual(stream.review.files[0].origins, [
-    { Change: "apple1", Caller: "worker", Source: "Shell" },
+    { Change: "apple1", Caller: "/root/worker", Source: "Shell" },
   ]);
+  assert.equal(stream.label("t2"), "worker");
+  assert.equal(stream.label("/root/agent_a"), "agent_a");
   assert.deepEqual(stream.reviewOverview.callers[0].counts, { Added: 1, Removed: 1 });
   assert.deepEqual(stream.reviewOverview.counts.Callers, { t2: { Added: 1, Removed: 1 } });
   let pending = stream.moreChanges();

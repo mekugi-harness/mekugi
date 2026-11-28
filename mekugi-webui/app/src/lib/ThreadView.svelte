@@ -624,6 +624,7 @@
               review={stream.review}
               caller={stream.review?.caller ?? ""}
               callers={stream.reviewOverview.callers}
+              overview={stream.reviewOverview}
               callerLabel={(caller) => stream.label(caller)}
               oncaller={(caller) => stream.selectChangeCaller(caller)}
               includeExternal={stream.reviewIncludeExternal}
