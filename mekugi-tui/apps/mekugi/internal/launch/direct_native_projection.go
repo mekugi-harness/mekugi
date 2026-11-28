@@ -89,6 +89,22 @@ func (c *directNativeConnection) setActiveInputTurnLocked(threadID, turnID strin
 	c.busy = true
 }
 
+func directFinishedTurnStatus(status string, durationMS *int64) sessionpresentation.Label {
+	switch status {
+	case "completed":
+		label := sessionpresentation.Label{Text: "Completed"}
+		if durationMS != nil {
+			label.Completion, label.CompletionKnown = time.Duration(*durationMS)*time.Millisecond, true
+		}
+		return label
+	case "interrupted":
+		return sessionpresentation.Label{Text: "Interrupted"}
+	case "failed":
+		return sessionpresentation.Label{Text: "Failed", Alert: true}
+	}
+	return sessionpresentation.Label{}
+}
+
 func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 	switch msg.Method {
 	case "turn/started":
@@ -101,7 +117,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 		}
 		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
-			switch p.ThreadID {
+			switch cmp.Or(p.ThreadID, c.mainThread) {
 			case c.btwThread:
 				c.btwRunning = true
 				c.btwRetrying = false
@@ -173,7 +189,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 				(c.activeTurn == "" || p.Turn.ID == c.activeTurn) {
 				c.resetPredictionLocked(p.Turn.ID)
 			}
-			switch p.ThreadID {
+			switch threadID {
 			case c.btwThread:
 				c.btwRunning = false
 				c.btwRetrying = false
@@ -184,17 +200,17 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 					c.btw.Status = p.Turn.Error.Message
 				}
 			case c.sideThread:
-				if c.sideActiveTurn == p.Turn.ID {
+				if c.sideActiveTurn == "" || c.sideActiveTurn == p.Turn.ID {
 					c.sideActiveTurn = ""
+					c.sideTurnStatus = directFinishedTurnStatus(p.Turn.Status, p.Turn.DurationMS)
 				}
 				c.busy = c.activeTurn != "" || c.sideActiveTurn != ""
-			default:
-				if p.ThreadID == "" || p.ThreadID == c.mainThread {
-					if c.activeTurn == p.Turn.ID {
-						c.activeTurn = ""
-					}
-					c.busy = c.activeTurn != "" || c.sideActiveTurn != ""
+			case c.mainThread:
+				if c.activeTurn == "" || c.activeTurn == p.Turn.ID {
+					c.activeTurn = ""
+					c.mainTurnStatus = directFinishedTurnStatus(p.Turn.Status, p.Turn.DurationMS)
 				}
+				c.busy = c.activeTurn != "" || c.sideActiveTurn != ""
 			}
 			if threadID != c.btwThread {
 				diagnostic := c.projectTurnErrorLocked(threadID, p.Turn.ID, p.Turn.Error)

@@ -207,6 +207,8 @@ type directNativeConnection struct {
 	sideFirstTurn      string
 	activeTurnSince    time.Time
 	sideTurnSince      time.Time
+	mainTurnStatus     sessionpresentation.Label
+	sideTurnStatus     sessionpresentation.Label
 	sideReplaceTask    string
 	sideModel          string
 	sideEffort         string
@@ -492,6 +494,7 @@ func (c *directNativeConnection) applyThreadBootstrapLocked(response directThrea
 	if c.mainThread != threadID {
 		c.resetPredictionLocked("")
 		c.activeTurn = ""
+		c.mainTurnStatus = sessionpresentation.Label{}
 		c.busy = c.sideActiveTurn != ""
 		c.archived = false
 		c.title = name
@@ -545,8 +548,16 @@ func (c *directNativeConnection) applyThreadBootstrapLocked(response directThrea
 	}
 	c.threadCallers[threadID] = "/root"
 	c.resumeView = nil
-	if turns := response.Thread.Turns; len(turns) != 0 && turns[len(turns)-1].Status == "completed" {
-		c.resetPredictionLocked(turns[len(turns)-1].ID)
+	if turns := response.Thread.Turns; len(turns) != 0 {
+		last := turns[len(turns)-1]
+		if last.Status == "inProgress" {
+			c.setActiveInputTurnLocked(threadID, last.ID, last.StartedAt)
+		} else if c.activeTurn == "" {
+			c.mainTurnStatus = directFinishedTurnStatus(last.Status, last.DurationMS)
+			if last.Status == "completed" {
+				c.resetPredictionLocked(last.ID)
+			}
+		}
 	}
 }
 
@@ -692,13 +703,21 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		})
 	}
 
-	var composerStatus sessionpresentation.Label
+	composerStatus := c.mainTurnStatus
+	since := c.activeTurnSince
+	if input == c.sideThread && c.sideThread != "" {
+		composerStatus, since = c.sideTurnStatus, c.sideTurnSince
+	}
 	if c.activeTurnForLocked(input) != "" {
-		since := c.activeTurnSince
-		if input == c.sideThread {
-			since = c.sideTurnSince
-		}
 		composerStatus = sessionpresentation.Label{Text: "Working", Running: true, Started: since}
+	}
+	pending := conversation.PendingView{
+		CanSteer: c.activeTurnForLocked(input) != "" && len(queue.waiting) > 0,
+		Waiting:  c.pendingSteersLocked(input),
+		Queued:   slices.Clone(queue.pending),
+	}
+	if len(pending.Waiting) != 0 {
+		pending.Reason = conversation.Steering
 	}
 	view := sessionpresentation.View{
 		DisplayedWorkspace: c.workspace,
@@ -742,11 +761,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Items:         captionItems,
 			Limits:        directCaptionLimits(c.rateLimits),
 		},
-		Pending: conversation.PendingView{
-			CanSteer: c.activeTurnForLocked(input) != "" && len(queue.waiting) > 0,
-			Waiting:  c.pendingSteersLocked(input),
-			Queued:   slices.Clone(queue.pending),
-		},
+		Pending: pending,
 		Draft: conversation.DraftView{
 			Available:  c.mainThread != "" && c.resumeView == nil,
 			Prediction: c.prediction.text,
@@ -1058,8 +1073,10 @@ type directWireThread struct {
 }
 
 type directWireTurn struct {
-	ID     string             `json:"id"`
-	Status string             `json:"status"`
-	Items  []jsontext.Value   `json:"items"`
-	Error  *binding.TurnError `json:"error"`
+	ID         string             `json:"id"`
+	Status     string             `json:"status"`
+	Items      []jsontext.Value   `json:"items"`
+	Error      *binding.TurnError `json:"error"`
+	StartedAt  *int64             `json:"startedAt"`
+	DurationMS *int64             `json:"durationMs"`
 }
