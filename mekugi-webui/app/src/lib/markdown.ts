@@ -78,31 +78,36 @@ export function referenceContext(text: string): Env {
 
 export const block = (text: string, context?: Env, breaks = false) =>
   (breaks ? mdBreaks : md).render(text, context);
-export const inline = (text: string) => md.renderInline(text);
+export const inline = (text: string, context?: Env) => md.renderInline(text, context);
 export const literal = (text: string) => md.utils.escapeHtml(text);
 
 const plainBlockTokens = new Set(["paragraph_open", "inline", "paragraph_close", "code_block"]);
-const plainInlineTokens = new Set(["text", "softbreak"]);
+const plainInlineTokens = new Set(["text", "softbreak", "hardbreak"]);
+const backslashHardbreak = /(?:^|[^\\])(?:\\\\)*\\\r?\n/;
 
 // True when text contains Markdown syntax (fences, lists, headings, tables,
-// hard breaks, emphasis, links, or inline code) rather than an aligned plain-text mockup.
+// backslash hard breaks, emphasis, links, or inline code) rather than an
+// aligned or right-padded plain-text mockup.
 export function isMarkdownPreview(text: string): boolean {
   const tokens = md.parse(text, {});
+  const hasBackslashBreak = backslashHardbreak.test(text);
   for (const token of tokens) {
     if (!plainBlockTokens.has(token.type)) return true;
-    if (
-      token.type === "inline" &&
-      token.children?.some((child) => !plainInlineTokens.has(child.type))
-    )
-      return true;
+    if (token.type !== "inline" || !token.children) continue;
+    for (const child of token.children) {
+      if (!plainInlineTokens.has(child.type)) return true;
+      if (child.type === "hardbreak" && hasBackslashBreak) return true;
+    }
   }
   return false;
 }
 
 // True when text contains block-level Markdown (fences, lists, quotes,
-// headings, tables, or multiple paragraphs) that must not be flattened inline.
-export function hasBlockMarkdown(text: string): boolean {
-  const tokens = md.parse(text, {});
+// headings, tables, multiple paragraphs, or line breaks with visible block
+// output) that should render as block Markdown rather than inline.
+export function hasBlockMarkdown(text: string, context?: Env): boolean {
+  const tokens = md.parse(text, context ? { ...context } : {});
+  if (tokens.length === 0) return false;
   let paragraphs = 0;
   for (const token of tokens) {
     if (token.type === "paragraph_open") {
@@ -112,7 +117,7 @@ export function hasBlockMarkdown(text: string): boolean {
       return true;
     }
   }
-  return false;
+  return text.includes("\n");
 }
 
 // Classified labels already quote operands as Markdown code spans. Keep their

@@ -108,6 +108,7 @@ test("question and preview Markdown renders inline code, fences, and line breaks
   assert.doesNotMatch(preview, /<b>literal<\/b>/);
 
   assert.equal(isMarkdownPreview("Name       Size\nreport.md  12 KB"), false);
+  assert.equal(isMarkdownPreview("Name       Size   \nreport.md  12 KB  "), false);
   assert.equal(isMarkdownPreview("<b>Plain text, not HTML.</b>"), false);
   assert.equal(isMarkdownPreview("Line 1\\\nLine 2"), true);
   assert.equal(isMarkdownPreview("```ts\nconst x = 1;\n```"), true);
@@ -117,6 +118,12 @@ test("question and preview Markdown renders inline code, fences, and line breaks
 
   assert.equal(hasBlockMarkdown("Render `Prompt.svelte` with **Markdown**?"), false);
   assert.equal(hasBlockMarkdown("[ref]: https://example.com"), false);
+  assert.equal(hasBlockMarkdown("Option A\nLine 2"), true);
+  assert.equal(hasBlockMarkdown("See [docs]\n\n[docs]: https://example.com"), true);
   assert.equal(hasBlockMarkdown("Check this:\n```go\nfunc ok() {}\n```"), true);
   assert.equal(hasBlockMarkdown("First paragraph\n\nSecond paragraph"), true);
+  assert.match(
+    inline("See [docs]", referenceContext("[docs]: https://example.com")),
+    /href="https:\/\/example\.com"/,
+  );
 });

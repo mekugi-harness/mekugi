@@ -23,7 +23,7 @@
   } = $props();
   const html = $derived(
     inline
-      ? renderInline(text)
+      ? renderInline(text, context)
       : spans?.length
         ? markedBlock(text, spans)
         : block(text, context, breaks),

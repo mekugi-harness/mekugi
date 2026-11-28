@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 
@@ -201,9 +203,13 @@ func (p *Painter) Inline(line string) string {
 		}
 		if strings.HasPrefix(line[i:], "**") {
 			if bold {
-				bold = false
-				out.WriteString(Undim)
-			} else if !p.noUnclosedBold || hasClosingBold(line[i+2:]) {
+				if !p.noUnclosedBold || canCloseBold(line, i) {
+					bold = false
+					out.WriteString(Undim)
+				} else {
+					out.WriteString("**")
+				}
+			} else if !p.noUnclosedBold || (canOpenBold(line, i) && hasClosingBold(line, i+2)) {
 				bold = true
 				out.WriteString("\x1b[1m")
 			} else {
@@ -242,14 +248,44 @@ func (p *Painter) InlineComplete(line string) string {
 	return p.Inline(line)
 }
 
-func hasClosingBold(rest string) bool {
-	for i := 0; i < len(rest); {
-		if _, end, ok := markdownsyntax.CodeSpan(rest, i); ok {
+func canOpenBold(line string, pos int) bool {
+	if pos+2 >= len(line) {
+		return false
+	}
+	after, _ := utf8.DecodeRuneInString(line[pos+2:])
+	if unicode.IsSpace(after) || after == '/' {
+		return false
+	}
+	if pos == 0 {
+		return true
+	}
+	before, _ := utf8.DecodeLastRuneInString(line[:pos])
+	return !unicode.IsPunct(after) || unicode.IsSpace(before) || unicode.IsPunct(before)
+}
+
+func canCloseBold(line string, pos int) bool {
+	if pos == 0 {
+		return false
+	}
+	before, _ := utf8.DecodeLastRuneInString(line[:pos])
+	if unicode.IsSpace(before) {
+		return false
+	}
+	if pos+2 >= len(line) {
+		return true
+	}
+	after, _ := utf8.DecodeRuneInString(line[pos+2:])
+	return !unicode.IsPunct(before) || unicode.IsSpace(after) || unicode.IsPunct(after)
+}
+
+func hasClosingBold(line string, start int) bool {
+	for i := start; i < len(line); {
+		if _, end, ok := markdownsyntax.CodeSpan(line, i); ok {
 			i = end
 			continue
 		}
-		if strings.HasPrefix(rest[i:], "**") {
-			return i > 0
+		if strings.HasPrefix(line[i:], "**") && i > start && canCloseBold(line, i) {
+			return true
 		}
 		i++
 	}
