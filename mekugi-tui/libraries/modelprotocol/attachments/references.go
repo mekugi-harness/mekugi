@@ -10,9 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-// MaxDepth includes the explicitly selected attachment.
-const MaxDepth = 3
-
 // Reference is the parsed identity of one reference string. Paths and skills
 // are not authority: acquisition remains with the receiving source reader.
 type Reference struct {

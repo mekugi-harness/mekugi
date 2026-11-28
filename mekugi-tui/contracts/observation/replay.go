@@ -11,19 +11,12 @@ import (
 type Kind string
 
 const (
-	TurnStarted               Kind = "turn/started"
-	TurnCompleted             Kind = "turn/completed"
-	ItemStarted               Kind = "item/started"
-	ItemCompleted             Kind = "item/completed"
-	AgentDelta                Kind = "item/agentMessage/delta"
-	ReasoningDelta            Kind = "item/reasoning/summaryTextDelta"
-	ReasoningPartAdded        Kind = "item/reasoning/summaryPartAdded"
-	CommandDelta              Kind = "item/commandExecution/outputDelta"
-	ProviderStarted           Kind = "replay/providerStarted"
-	ProviderCompleted         Kind = "replay/providerCompleted"
-	CoordinationObserved      Kind = "agent/coordination"
-	ContextResetObserved      Kind = "thread/contextReset"
-	SourceAcquisitionObserved Kind = "thread/sourceAcquisition"
+	ItemStarted          Kind = "item/started"
+	AgentDelta           Kind = "item/agentMessage/delta"
+	ReasoningDelta       Kind = "item/reasoning/summaryTextDelta"
+	ReasoningPartAdded   Kind = "item/reasoning/summaryPartAdded"
+	CommandDelta         Kind = "item/commandExecution/outputDelta"
+	ContextResetObserved Kind = "thread/contextReset"
 )
 
 // Event is an immutable observation. Started is present on retained item
@@ -63,8 +56,7 @@ type Context struct {
 type CompactionMethod string
 
 const (
-	ContextReset   CompactionMethod = "reset"
-	ContextSummary CompactionMethod = "summary"
+	ContextReset CompactionMethod = "reset"
 )
 
 // Item contains the retained facts used by session presentation. Content and

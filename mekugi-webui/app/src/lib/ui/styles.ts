@@ -27,14 +27,6 @@ export const floating = "rounded-float border border-border bg-surface text-ink 
 export const chip =
   "inline-flex h-[30px] min-w-0 max-w-full items-center gap-1.5 rounded-control bg-raised px-2.5 text-small text-muted transition-colors hover:enabled:bg-active hover:enabled:text-ink aria-expanded:bg-active aria-expanded:text-ink disabled:opacity-45 max-sm:h-10 max-sm:text-body";
 
-export const menuRule = "mx-1.5 my-1 h-px bg-rule";
-
-// A segmented track whose selected segment is a raised pill; callers choose
-// whether the track fills its row.
-export const segments = "gap-0.5 rounded-control bg-raised p-0.5";
-export const segment =
-  "inline-flex min-h-7 min-w-0 items-center justify-center truncate rounded-[5px] px-2 text-small font-medium text-muted transition-colors hover:text-ink disabled:cursor-default aria-pressed:bg-surface aria-pressed:text-ink aria-pressed:shadow-xs dark:aria-pressed:bg-active aria-selected:bg-surface aria-selected:text-ink aria-selected:shadow-xs dark:aria-selected:bg-active max-sm:min-h-11";
-
 // A transcript row's action in the gutter to its right; callers place it and
 // choose when it shows, usually with revealed.
 export const rowAction =
@@ -52,9 +44,6 @@ export const codeBlock =
 // Keyboard shortcut badge used in quick-switcher and menu footers.
 export const kbd =
   "inline-flex h-5 min-w-5 items-center justify-center rounded-chip border border-border bg-raised px-1 font-mono text-tiny text-muted";
-
-// A flat placeholder at the size of what is loading.
-export const skeleton = "animate-pulse-subtle rounded-chip bg-active";
 
 // A disclosure's triangle, pointing right while closed. Summaries rotate it
 // inside an open group/disclosure; buttons as their aria-expanded says.

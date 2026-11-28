@@ -19,6 +19,12 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessionapi"
 )
 
+type rpcInitialize struct {
+	Version    string `json:"version"`
+	Token      string `json:"token,omitempty"`
+	ServerTime int64  `json:"serverTime,omitzero"`
+}
+
 func upstream(t *testing.T, handler http.Handler) (string, *httptest.Server) {
 	t.Helper()
 	directory, err := os.MkdirTemp("", "mekugi-connector-")
@@ -84,7 +90,7 @@ func dial(t *testing.T, base string, headers http.Header) *websocket.Conn {
 
 func initialize(t *testing.T, conn *websocket.Conn, token string) sessionapi.RPCMessage {
 	t.Helper()
-	params, err := json.Marshal(&sessionapi.RPCInitialize{Version: sessionapi.ProtocolVersion, Token: token})
+	params, err := json.Marshal(&rpcInitialize{Version: sessionapi.ProtocolVersion, Token: token})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,12 +148,12 @@ func rpcUpstream(t *testing.T, operation func(*websocket.Conn)) string {
 		conn.SetReadLimit(sessionapi.RPCMessageLimit)
 		_, data, err := conn.Read(t.Context())
 		var init sessionapi.RPCMessage
-		var params sessionapi.RPCInitialize
+		var params rpcInitialize
 		if err != nil || json.Unmarshal(data, &init) != nil || json.Unmarshal(init.Params, &params) != nil || init.Method != "initialize" || params.Token != "" {
 			t.Error("private initialization was not sanitized")
 			return
 		}
-		result, _ := json.Marshal(&sessionapi.RPCInitialize{Version: sessionapi.ProtocolVersion, ServerTime: time.Now().UnixMilli()})
+		result, _ := json.Marshal(&rpcInitialize{Version: sessionapi.ProtocolVersion, ServerTime: time.Now().UnixMilli()})
 		message := sessionapi.RPCMessage{JSONRPC: "2.0", ID: init.ID, Result: result}
 		if params.Version != sessionapi.ProtocolVersion {
 			message.Result = nil
@@ -467,7 +473,7 @@ func TestConnectorOriginAndEndpointAdmission(t *testing.T) {
 		{"query token", "GET", sessionapi.RPCPath + "?token=credential", sessionapi.RPCSubprotocol, nil, 400},
 		{"empty query", "GET", sessionapi.RPCPath + "?", sessionapi.RPCSubprotocol, nil, 400},
 		{"encoded path", "GET", "/api/%63ontrol", sessionapi.RPCSubprotocol, nil, 400},
-		{"native endpoint", "GET", sessionapi.NativeRPCPath, sessionapi.RPCSubprotocol, nil, 404},
+		{"native endpoint", "GET", "/api/native/control", sessionapi.RPCSubprotocol, nil, 404},
 		{"wrong method", "POST", sessionapi.RPCPath, sessionapi.RPCSubprotocol, nil, 404},
 		{"missing protocol", "GET", sessionapi.RPCPath, "", nil, 426},
 		{"incompatible protocol", "GET", sessionapi.RPCPath, "mekugi.control.v1", nil, 426},
@@ -539,7 +545,7 @@ func TestConnectorUsesServerVersionAdmission(t *testing.T) {
 	defer remote.Close()
 	for _, version := range []string{"", "incompatible"} {
 		conn := dial(t, remote.URL, nil)
-		params, _ := json.Marshal(&sessionapi.RPCInitialize{Version: version, Token: readToken(t, path)})
+		params, _ := json.Marshal(&rpcInitialize{Version: version, Token: readToken(t, path)})
 		message, _ := json.Marshal(&sessionapi.RPCMessage{JSONRPC: "2.0", ID: []byte("91"), Method: "initialize", Params: params})
 		var reply sessionapi.RPCMessage
 		if err := json.Unmarshal([]byte(exchange(t, conn, string(message))), &reply); err != nil || reply.Error == nil || reply.Error.Data.Status != 409 || string(reply.ID) != "91" {

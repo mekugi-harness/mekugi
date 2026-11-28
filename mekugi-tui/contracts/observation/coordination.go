@@ -68,11 +68,6 @@ type CoordinationWaitOutcome struct {
 	Target      CoordinationTarget `json:"target"`
 	Disposition string             `json:"disposition"`
 }
-type AgentCoordination struct {
-	ThreadID   string                 `json:"threadId"`
-	TurnID     string                 `json:"turnId"`
-	Projection CoordinationProjection `json:"projection"`
-}
 
 // ContextResetEvent is the native reset receipt, not a request or execution handle.
 type ContextResetEvent struct {

@@ -4,8 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
 )
 
 func TestOutputConsumersSplitCRLFAndOverwrite(t *testing.T) {
@@ -27,7 +25,8 @@ func TestOutputConsumersSplitCRLFAndOverwrite(t *testing.T) {
 
 func TestOutputConsumersKeepDistinctLineLimits(t *testing.T) {
 	var tail OutputTail
-	long := strings.Repeat("x", activitymodel.OutputLineBytes+4)
+	const retainedOutputLineBytes = 16 << 10
+	long := strings.Repeat("x", retainedOutputLineBytes+4)
 	for _, chunk := range []string{long[:OutputTailBytes+1], long[OutputTailBytes+1:], "\r", "\nend\n"} {
 		tail.Write(chunk)
 	}

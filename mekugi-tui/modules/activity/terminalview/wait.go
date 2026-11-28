@@ -8,11 +8,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
-
-// WaitTarget retains canonical identity for both live and restored wait notices.
-type WaitTarget = presentation.WaitTarget
 
 func (b Block) progressText(theme diffrender.Theme, style string) string {
 	var text strings.Builder

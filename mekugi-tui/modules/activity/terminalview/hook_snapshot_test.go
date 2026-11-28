@@ -8,6 +8,7 @@ import (
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/testsupport/uisnapshot"
 )
@@ -18,7 +19,7 @@ func TestUISnapshotHookRuns(t *testing.T) {
 		var rows []string
 		for _, status := range []string{"running", "completed", "failed", "blocked", "stopped", "unknown"} {
 			b := Block{Kind: "op", Verb: "Run", Label: "PreToolUse · `hooks.toml` · async", Running: status == "running",
-				Hook:    &HookDetails{HandlerType: "command", ExecutionMode: "async", Status: status},
+				Hook:    &presentation.HookDetails{HandlerType: "command", ExecutionMode: "async", Status: status},
 				Started: time.Unix(1000, 0), Duration: 120 * time.Millisecond}
 			if status == "completed" {
 				b.Tail = []string{"context: #!/bin/bash", "echo ready"}

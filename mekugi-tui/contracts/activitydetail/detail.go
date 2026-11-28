@@ -1,16 +1,6 @@
 // Package activitydetail defines renderer-neutral Activity identities and detail pages.
 package activitydetail
 
-type Operation struct {
-	Thread, Item string
-}
-
-type Request struct {
-	Operation
-	Path      string
-	Directory bool
-}
-
 type Page struct {
 	ID, Verb, Path, DisplayPath, Code, Language string
 }

@@ -29,7 +29,6 @@ import (
 	activity "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/terminalview"
 	changes "github.com/mekugi-harness/mekugi/mekugi-tui/modules/changehistory/presentation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/codexbinding"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/completion"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
 	conversation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
@@ -1964,7 +1963,12 @@ func TestDirectNativeSkillFileCompletionsAndSettingsPickers(t *testing.T) {
 	prompts := slices.Clone(srv.params["turn/start"])
 	srv.mu.Unlock()
 	var sent struct {
-		Input []codexbinding.UserContent `json:"input"`
+		Input []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"input"`
 	}
 	if len(prompts) != 1 || json.Unmarshal(prompts[0], &sent) != nil || len(sent.Input) != 2 ||
 		sent.Input[0].Text != "use $review-pr today" ||

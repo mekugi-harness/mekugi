@@ -80,7 +80,10 @@ func TestConnectorCLI(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer conn.CloseNow()
-		params, _ := json.Marshal(&sessionapi.RPCInitialize{Version: sessionapi.ProtocolVersion, Token: token})
+		params, _ := json.Marshal(&struct {
+			Version string `json:"version"`
+			Token   string `json:"token,omitempty"`
+		}{Version: sessionapi.ProtocolVersion, Token: token})
 		message, _ := json.Marshal(&sessionapi.RPCMessage{JSONRPC: "2.0", ID: []byte("1"), Method: "initialize", Params: params})
 		if err := conn.Write(ctx, websocket.MessageText, message); err != nil {
 			t.Fatal(err)

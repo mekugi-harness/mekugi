@@ -14,7 +14,6 @@ import (
 // clients use these envelopes; the admitted endpoint establishes authority.
 const (
 	RPCPath         = "/api/control"
-	NativeRPCPath   = "/api/native/control"
 	RPCSubprotocol  = "mekugi.control.v" + ProtocolVersion
 	RPCMessageLimit = InputBodyLimit + (64 << 10)
 	// RPCPublicationLimit bounds one server-to-client message, including its
@@ -42,14 +41,6 @@ func (e *RPCError) Error() string { return e.Message }
 type RPCErrorData struct {
 	Status  int    `json:"status"`
 	Outcome string `json:"outcome"`
-}
-
-// Token is consumed only by the remote connector's initialization exchange.
-// It is never forwarded to the session server or included in diagnostics.
-type RPCInitialize struct {
-	Version    string `json:"version"`
-	Token      string `json:"token,omitempty"`
-	ServerTime int64  `json:"serverTime,omitzero"`
 }
 
 // WriteMessage copies one message to conn and fails only after stall passes

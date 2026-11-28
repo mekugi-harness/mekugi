@@ -101,7 +101,7 @@ func TestUISnapshotOperationOutcomes(t *testing.T) {
 	sleep.Running = false
 	paint(sleep)
 	for _, status := range []string{"blocked", "stopped"} {
-		hook := Block{Value: presentation.Value{Content: presentationContent("op", "Run", "PreToolUse · `hooks.toml`"), Hook: &HookDetails{HandlerType: "command", Status: status}}}
+		hook := Block{Value: presentation.Value{Content: presentationContent("op", "Run", "PreToolUse · `hooks.toml`"), Hook: &presentation.HookDetails{HandlerType: "command", Status: status}}}
 		paint(hook)
 		if row := rows[len(rows)-1]; !strings.HasPrefix(row, theme.Danger()) {
 			t.Fatalf("%s hook tone = %q", status, row)
@@ -116,11 +116,11 @@ func TestUISnapshotWaitOutcomeTones(t *testing.T) {
 	p := Painter{Theme: diffrender.DarkTheme}
 	var rows []string
 	for _, block := range []Block{
-		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []WaitTarget{{Name: "/root/worker", Status: "completed"}}, WaitReason: "completed"}},
-		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []WaitTarget{{Name: "/root/worker", Status: "errored"}}}},
-		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []WaitTarget{{Name: "/root/worker"}}, WaitReason: "timeout"}},
-		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []WaitTarget{{Name: "/root/worker"}}, WaitReason: "delivery failed"}},
-		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []WaitTarget{{Name: "/root/worker", Status: "working"}}, WaitReason: "message received"}},
+		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []presentation.WaitTarget{{Name: "/root/worker", Status: "completed"}}, WaitReason: "completed"}},
+		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []presentation.WaitTarget{{Name: "/root/worker", Status: "errored"}}}},
+		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []presentation.WaitTarget{{Name: "/root/worker"}}, WaitReason: "timeout"}},
+		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []presentation.WaitTarget{{Name: "/root/worker"}}, WaitReason: "delivery failed"}},
+		{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []presentation.WaitTarget{{Name: "/root/worker", Status: "working"}}, WaitReason: "message received"}},
 	} {
 		rows = append(rows, p.Block(block, 72)...)
 	}
@@ -128,7 +128,7 @@ func TestUISnapshotWaitOutcomeTones(t *testing.T) {
 		t.Fatalf("aggregate reason = %q", got)
 	}
 	// Narrow rows hang under the text rather than the marker.
-	narrow := p.Block(Block{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []WaitTarget{{Name: "/root/worker", Status: "failed"}}}}, 24)
+	narrow := p.Block(Block{Value: presentation.Value{Content: feed.Content{Kind: "progress", Body: "Finished waiting for"}, WaitTargets: []presentation.WaitTarget{{Name: "/root/worker", Status: "failed"}}}}, 24)
 	for _, row := range narrow[1:] {
 		if !strings.HasPrefix(ansi.Strip(row), "  ") {
 			t.Fatalf("wrapped wait row is not hung: %q", narrow)

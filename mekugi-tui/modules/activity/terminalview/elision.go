@@ -20,8 +20,8 @@ type Elision struct {
 type ElisionForm uint8
 
 const (
-	// ElisionMore ends clipped rows: "… +N lines".
-	ElisionMore ElisionForm = iota
+	// Default form ends clipped rows: "… +N lines".
+	_ ElisionForm = iota
 	// ElisionSuffix follows text on its row: "+N lines".
 	ElisionSuffix
 	// ElisionEarlier precedes the rows shown: "… N earlier lines".

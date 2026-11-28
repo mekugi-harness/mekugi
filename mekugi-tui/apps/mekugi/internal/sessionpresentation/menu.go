@@ -44,12 +44,3 @@ type MenuAction struct {
 	Choice  completion.ChoiceID
 	Query   string
 }
-
-// MenuState identifies the current application menu; Conversation owns its choices.
-// Source: apps/mekugi/internal/router/composer_menu.go:12:16@0ce86dd5.
-type MenuState struct {
-	Setting   string
-	ID        uint64
-	Kind      MenuKind
-	Preferred completion.ChoiceID
-}

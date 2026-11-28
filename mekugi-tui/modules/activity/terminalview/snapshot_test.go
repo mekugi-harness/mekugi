@@ -191,13 +191,13 @@ func TestUISnapshotActivityBlocks(t *testing.T) {
 		},
 		{
 			name: "wait_targets", width: 32,
-			block: Block{Kind: "progress", Body: "Finished waiting", WaitTargets: []WaitTarget{
+			block: Block{Kind: "progress", Body: "Finished waiting", WaitTargets: []presentation.WaitTarget{
 				{Name: "/root/tests", Status: "completed"}, {Name: "/root/review", Status: "Still running"},
 			}},
 		},
 		{
 			name: "wait_completed", width: 80,
-			block: Block{Kind: "progress", Body: "Finished waiting for", WaitTargets: []WaitTarget{{Name: "/root/review", Status: "completed"}}, WaitReason: "completed"},
+			block: Block{Kind: "progress", Body: "Finished waiting for", WaitTargets: []presentation.WaitTarget{{Name: "/root/review", Status: "completed"}}, WaitReason: "completed"},
 		},
 		{
 			name: "shell_error_options", width: 80,
@@ -439,4 +439,3 @@ func TestTemporaryCapturedChangesRetainBatchAndOutput(t *testing.T) {
 		})
 	}
 }
-

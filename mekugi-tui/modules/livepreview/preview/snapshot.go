@@ -5,9 +5,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
 
-// MaxPreviews bounds a live source and the additional child window in Main.
-const MaxPreviews = 16
-
 // Preview state is attachment-local and never enters the replay store.
 type Preview struct {
 	ID          string

@@ -73,12 +73,6 @@ type Model[S Source, A AgentSource] struct {
 	LineCounts        map[string]diffmodel.Counts
 	NetCounts         *diffmodel.Counts
 }
-type Session[S Source, A AgentSource] struct {
-	Main, Children Model[S, A]
-	Commits        *CommitReader
-}
-
-const FeedLimit = 2000
 
 // ObservedStatus keeps detached roster publications consistent with feed models.
 func (facts AgentFacts) ObservedStatus(latestKind string) string {
@@ -98,11 +92,6 @@ func (facts AgentFacts) ObservedStatus(latestKind string) string {
 		return "answered"
 	}
 	return ""
-}
-
-type RosterRow[A AgentSource] struct {
-	Agent A
-	Depth int
 }
 
 // Identify moves stable entry and operation identity with flat group membership.

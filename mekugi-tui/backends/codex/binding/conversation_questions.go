@@ -22,7 +22,6 @@ func EncodeQuestionResponse(answers []QuestionAnswer) map[string]any {
 	return map[string]any{"answers": answers}
 }
 
-type QuestionOption = observation.QuestionOption
 type Question = observation.Question
 type QuestionRequest struct {
 	ThreadID  string     `json:"threadId"`
@@ -67,6 +66,3 @@ func DecodeResolvedRequest(params jsontext.Value) (ResolvedRequest, error) {
 	err := json.Unmarshal(params, &p)
 	return p, err
 }
-
-const QuestionReplyStart = "<question_answers>"
-const QuestionReplyEnd = "</question_answers>"
