@@ -32,9 +32,29 @@ type QuestionRequest struct {
 }
 
 func DecodeQuestionRequest(params jsontext.Value) (QuestionRequest, error) {
-	var p QuestionRequest
-	err := json.Unmarshal(params, &p)
-	return p, err
+	var wire struct {
+		ThreadID  string           `json:"threadId"`
+		TurnID    string           `json:"turnId"`
+		ItemID    string           `json:"itemId"`
+		Questions []jsontext.Value `json:"questions"`
+	}
+	if err := json.Unmarshal(params, &wire); err != nil {
+		return QuestionRequest{}, err
+	}
+	p := QuestionRequest{
+		ThreadID: wire.ThreadID,
+		TurnID:   wire.TurnID,
+		ItemID:   wire.ItemID,
+	}
+	if wire.Questions != nil {
+		p.Questions = make([]Question, len(wire.Questions))
+		for i, raw := range wire.Questions {
+			if err := p.Questions[i].UnmarshalJSON(raw); err != nil {
+				return QuestionRequest{}, err
+			}
+		}
+	}
+	return p, nil
 }
 
 type ResolvedRequest struct {
