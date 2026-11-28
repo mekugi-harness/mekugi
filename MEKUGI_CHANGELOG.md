@@ -292,6 +292,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   origin's full filtered path list when it fits (falling back to per-page paths
   on oversized captures while clients merge origins across pages), and report
   line totals for the page.
+  `receiptItemIds` returns per-capture file metadata and counts without patch
+  text for the requested command items in the selected thread.
   Composed and caller-filtered pages keep their totals and continue at the
   next file when a reply would exceed the connector limit. An oversized
   individual patch keeps its metadata and shows a display-limit note.

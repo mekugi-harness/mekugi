@@ -1707,6 +1707,76 @@ test("shell preview settlement distinguishes missing from failed and empty patch
   stream.close();
 });
 
+test("edit receipts follow visible transcript pages and publish before the final capture page", async () => {
+  const [older, recent, live] = ["older", "recent", "live"].map((id) => ({
+    id,
+    type: "commandExecution",
+    command: "make",
+    status: "completed",
+  }));
+  const turn = {
+    id: "turn",
+    status: "completed",
+    items: [
+      older,
+      ...Array.from({ length: 39 }, (_, i) => ({
+        id: `m${i}`,
+        type: "agentMessage",
+        text: "filler",
+      })),
+      recent,
+    ],
+  };
+  const threadId = "receipts";
+  const continuation = Promise.withResolvers();
+  const page = (itemId, path, sequence, nextCursor) => ({
+    nextCursor,
+    changes: [{ threadId, turnId: turn.id, itemId, changeId: path, sequence }],
+    files: [{ path, status: "A", changeIds: [path], scope: "workspace", additions: 2 }],
+  });
+  const machine = fakeMachine({
+    "thread/resume": () => resumedThread(threadId, { data: [turn] }),
+    "thread/subtree/list": () => ({ data: [] }),
+    "thread/changes/read": ({ receiptItemIds, cursor }) => {
+      if (!receiptItemIds) return { files: [], changes: [] };
+      assert.equal(receiptItemIds.length, 1);
+      const [itemId] = receiptItemIds;
+      if (cursor) return continuation.promise;
+      return page(itemId, `${itemId}.txt`, 2, itemId === recent.id ? "2:1" : undefined);
+    },
+  });
+  const stream = new Stream();
+  stream.connect(threadId, machine);
+  await stream.refresh();
+  const paths = (itemId) => {
+    const seed = stream.transcriptEntries.find((entry) => entry.itemId === itemId);
+    return (
+      seed &&
+      stream
+        .entry(seed.seq)
+        .values.filter((value) => value.effect)
+        .map((value) => value.path)
+    );
+  };
+  const requested = () =>
+    machine.requests.map(({ params }) => params?.receiptItemIds).filter(Boolean);
+  assert.deepEqual(requested(), [[recent.id], [recent.id]]);
+  assert.deepEqual(paths(recent.id), ["recent.txt"]);
+  continuation.resolve(page(recent.id, "first.txt", 1));
+  assert.equal(await stream.earlier(), true);
+  await new Promise(setImmediate);
+  assert.deepEqual(paths(recent.id), ["first.txt", "recent.txt"]);
+  assert.deepEqual(paths(older.id), ["older.txt"]);
+  machine.emitNotification({
+    method: "item/completed",
+    params: { threadId, turnId: turn.id, item: live },
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(paths(live.id), ["live.txt"]);
+  assert.deepEqual(requested(), [[recent.id], [recent.id], [older.id], [live.id]]);
+  stream.close();
+});
+
 test("itemToEntry maps commandExecution with bash lang and fileChange as per-file op rows", () => {
   const cmdEntry = itemToEntry(
     {

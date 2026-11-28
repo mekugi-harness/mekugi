@@ -732,6 +732,24 @@ function previewId(thread: string, turn: string, item: string): string {
 }
 
 const changesPageSize = 20;
+const receiptPageSize = 100;
+
+function capturedEditValue(file: ThreadChangeFileDiff): Value {
+  return {
+    kind: "op",
+    verb:
+      file.status === "A"
+        ? "Create"
+        : file.status === "D"
+          ? "Delete"
+          : file.status === "R"
+            ? "Move"
+            : "Edit",
+    path: file.movedFrom ? `${file.movedFrom} => ${file.path}` : file.path,
+    label: file.additions || file.deletions ? `+${file.additions} −${file.deletions}` : undefined,
+    effect: true,
+  };
+}
 
 function changeFileReview(file: ThreadChangeFileDiff): ReviewFile {
   const path = file.absolutePath ?? file.path;
@@ -979,6 +997,7 @@ export class Stream {
   #hooksByThread: HookCache;
   #hookSeq = 0;
   #reviewRevision = 0;
+  #editReceipts = new SvelteMap<string, Value[]>();
   #workspaces = new Map<string, string>();
   #processReads = new Map<string, symbol>();
   #stopNotifications?: () => void;
@@ -1009,7 +1028,10 @@ export class Stream {
   }
 
   entry(seq: number): Entry | undefined {
-    return this.#entries.get(seq);
+    const entry = this.#entries.get(seq);
+    if (!entry?.turnId || !entry.itemId || entry.running || !this.#id) return entry;
+    const effects = this.#editReceipts.get(previewId(this.#id, entry.turnId, entry.itemId));
+    return effects?.length ? { ...entry, values: [...(entry.values ?? []), ...effects] } : entry;
   }
 
   commandExecution(turnId: string, itemId: string) {
@@ -1108,7 +1130,9 @@ export class Stream {
     const cursor = this.#turnsBackwardsCursor;
     if (!id || this.loadingEarlier || this.hydrating) return false;
     if (this.#hiddenEntries) {
+      const previous = this.#hiddenEntries;
       this.#hiddenEntries = Math.max(0, this.#hiddenEntries - transcriptPageSize);
+      this.#loadRowReceipts(this.#hiddenEntries, previous);
       return true;
     }
     if (machine?.connection !== "open" || !cursor) return false;
@@ -1137,6 +1161,7 @@ export class Stream {
         0,
         this.main.order.length - retainedCount - transcriptPageSize,
       );
+      this.#loadRowReceipts(this.#hiddenEntries, this.main.order.length - retainedCount);
       return true;
     } catch {
       return false;
@@ -1275,6 +1300,9 @@ export class Stream {
         skipThreadId: loadedMainProcesses ? id : undefined,
       });
       void this.#loadChanges(id, machine, signal);
+      this.#loadRowReceipts(
+        Math.max(this.#hiddenEntries, this.main.order.length - transcriptPageSize),
+      );
     } catch (err) {
       if (signal.aborted) return;
       this.error = errorText(err);
@@ -1511,6 +1539,84 @@ export class Stream {
       if (!signal.aborted && revision === this.#reviewRevision) this.reviewError = errorText(error);
     } finally {
       if (!signal.aborted && revision === this.#reviewRevision) this.reviewLoading = false;
+    }
+  }
+
+  // Saved Diff composes files across commands. The transcript instead needs the
+  // original operation receipts, limited to this thread's newly shown command rows.
+  #loadRowReceipts(start: number, end?: number): void {
+    const id = this.#id;
+    const machine = this.#machine;
+    if (!id || machine?.connection !== "open") return;
+    const commands: { turnId: string; itemId: string }[] = [];
+    for (const seq of this.main.order.slice(start, end)) {
+      const { turnId, itemId, running } = this.main.entries[seq];
+      if (!turnId || !itemId || running || this.#editReceipts.has(previewId(id, turnId, itemId)))
+        continue;
+      const target = this.#deltaTargets.get(turnId)?.get(itemId);
+      if (target?.items[target.index]?.type === "commandExecution")
+        commands.push({ turnId, itemId });
+    }
+    if (commands.length) void this.#loadEditReceipts(id, machine, this.#requests.signal, commands);
+  }
+
+  async #loadEditReceipts(
+    id: string,
+    machine: Machine,
+    signal: AbortSignal,
+    commands: readonly { turnId: string; itemId: string }[],
+    replace = false,
+  ): Promise<void> {
+    const keys = new Set(commands.map(({ turnId, itemId }) => previewId(id, turnId, itemId)));
+    const receipts = new Map<string, { sequence: number; value: Value }[]>();
+    const published = new Map<string, Value[]>();
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    try {
+      do {
+        const page: ThreadChangesReadResponse = await machine.request(
+          "thread/changes/read",
+          {
+            threadId: id,
+            receiptItemIds: commands.map(({ itemId }) => itemId),
+            limit: receiptPageSize,
+            cursor,
+          },
+          { signal },
+        );
+        if (signal.aborted) return;
+        const origins = new Map(page.changes.map((origin) => [origin.changeId, origin]));
+        const updated = new Set<string>();
+        for (const file of page.files) {
+          if ((file.scope && file.scope !== "workspace") || file.changeIds?.length !== 1) continue;
+          const origin = origins.get(file.changeIds[0]);
+          if (origin?.threadId !== id || !origin.turnId || !origin.itemId) continue;
+          const key = previewId(id, origin.turnId, origin.itemId);
+          if (!keys.has(key)) continue;
+          let rows = receipts.get(key);
+          if (!rows) receipts.set(key, (rows = []));
+          rows.push({ sequence: origin.sequence, value: capturedEditValue(file) });
+          updated.add(key);
+        }
+        for (const key of updated) {
+          // A live completion's receipt wins over a concurrent hydration snapshot.
+          if (!replace && this.#editReceipts.get(key) !== published.get(key)) continue;
+          const rows = receipts.get(key)!;
+          rows.sort((a, b) => a.sequence - b.sequence);
+          const values = rows.map(({ value }) => value);
+          this.#editReceipts.set(key, values);
+          published.set(key, values);
+        }
+        cursor = page.nextCursor ?? undefined;
+        if (cursor && seenCursors.has(cursor)) return;
+        if (cursor) seenCursors.add(cursor);
+      } while (cursor);
+      for (const key of keys) {
+        if (!receipts.has(key) && (replace || !this.#editReceipts.has(key)))
+          this.#editReceipts.set(key, []);
+      }
+    } catch {
+      // Unavailable receipt data does not replace the command or the Saved Diff state.
     }
   }
 
@@ -2004,21 +2110,19 @@ export class Stream {
         }
         this.#upsertItem(notification.params.turnId, notification.params.item);
         this.#rebuildMain();
-        const latestActivity = itemToEntry(
-          notification.params.item,
-          0,
-          0,
-          notification.params.turnId,
-          "/root",
-          started,
-        );
+        if (!started && item.type === "commandExecution" && item.status !== "inProgress")
+          void this.#loadEditReceipts(
+            id,
+            machine,
+            this.#requests.signal,
+            [{ turnId, itemId: item.id }],
+            true,
+          );
         if (this.roster.agents.some((a) => a.thread === id || a.name === "/root")) {
           this.roster = {
             ...this.roster,
             agents: this.roster.agents.map((a) =>
-              a.thread === id || (!a.thread && a.name === "/root")
-                ? { ...a, activity: latestActivity }
-                : a,
+              a.thread === id || (!a.thread && a.name === "/root") ? { ...a, activity } : a,
             ),
           };
         }
