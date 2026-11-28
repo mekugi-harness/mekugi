@@ -253,13 +253,16 @@ func canOpenBold(line string, pos int) bool {
 		return false
 	}
 	after, _ := utf8.DecodeRuneInString(line[pos+2:])
-	if unicode.IsSpace(after) || after == '/' {
+	if unicode.IsSpace(after) {
 		return false
 	}
 	if pos == 0 {
 		return true
 	}
 	before, _ := utf8.DecodeLastRuneInString(line[:pos])
+	if before == '/' && after == '/' {
+		return false
+	}
 	return !unicode.IsPunct(after) || unicode.IsSpace(before) || unicode.IsPunct(before)
 }
 
@@ -275,6 +278,9 @@ func canCloseBold(line string, pos int) bool {
 		return true
 	}
 	after, _ := utf8.DecodeRuneInString(line[pos+2:])
+	if before == '/' && after == '/' {
+		return false
+	}
 	return !unicode.IsPunct(before) || unicode.IsSpace(after) || unicode.IsPunct(after)
 }
 
