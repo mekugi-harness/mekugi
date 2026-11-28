@@ -166,9 +166,11 @@ await tools.exec_command({cmd:"sleep 82",shell:"/bin/bash",login:false,yield_tim
 		},
 		afterPrompt: func(t *testing.T, _ io.Writer, _ func(string), _ func(func(string) bool), _ *vt.Emulator) {
 			run("wait", "--text", "Workspace notes")
-			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(row =>
-				row.textContent.includes('Read') && row.textContent.includes('cat notes.md') &&
-				!row.textContent.includes('native run line 160'))`)
+			run("wait", "--fn", `[...document.querySelectorAll('[data-entry]')].some(entry =>
+				!entry.textContent.includes('native run line 160') &&
+				[...entry.querySelectorAll('[data-ai-element="tool"]')].some(row =>
+					row.querySelector('[data-slot="trace-title"]')?.textContent.trim() === 'Read' &&
+					row.querySelector('code')?.textContent.trim() === 'notes.md'))`)
 			setBrowserViewport(t, run, 360, 800)
 			run("find", "role", "button", "click", "--name", "Session details", "--exact")
 			run("wait", "--fn", fmt.Sprintf(`(() => {
