@@ -249,6 +249,80 @@ fn capture_pages_fallback_when_origin_paths_exceed_page_budget() {
 }
 
 #[test]
+fn capture_pages_paginate_large_rename_with_long_source_path() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    let long_source = format!("{}original.txt", "nested_directory_segment/".repeat(100));
+    assert!(long_source.len() > 2000);
+    let big_line = format!("{}\n", "y".repeat(127));
+    let big = big_line.repeat(40_960);
+    store
+        .record_change(
+            ChangeMetadata {
+                thread_id: "thread".into(),
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                call_id: "large-rename".into(),
+                author: None,
+                source_kind: ChangeSourceKind::ApplyPatch,
+                workspace_root: workspace.path().to_path_buf(),
+                created_at: 0,
+                exit_code: Some(0),
+                summary: None,
+                claim_key: None,
+            },
+            vec![PendingFileChange {
+                rel_path: "a.txt".into(),
+                abs_path: workspace.path().join("a.txt"),
+                moved_from: Some(long_source.clone()),
+                before: FileSnapshot::Present(b"old\n".to_vec()),
+                after: FileSnapshot::Present(big.into_bytes()),
+                coverage: CoverageStatus::Complete,
+                scope: ChangeScope::Workspace,
+            }],
+        )
+        .expect("record large rename");
+    let mut params = ThreadChangesReadParams {
+        thread_id: "thread".into(),
+        include_external: None,
+        include_ephemeral: None,
+        caller_thread_id: None,
+        item_id: None,
+        per_capture: true,
+        limit: None,
+        cursor: None,
+    };
+    let expected =
+        read_changes(dir.clone(), None, None, params.clone(), None).expect("unpaged read");
+    params.limit = Some(100);
+
+    let mut cursor = None;
+    let mut pages = 0usize;
+    let mut combined_diff = String::new();
+    loop {
+        let page =
+            read_changes(dir.clone(), None, None, params.clone(), cursor).expect("rename page");
+        assert!(serde_json::to_vec(&page).expect("encode page").len() < CAPTURE_PAGE_BYTES);
+        assert_eq!(page.files.len(), 1);
+        assert_eq!(page.files[0].path, "a.txt");
+        assert_eq!(
+            page.files[0].moved_from.as_deref(),
+            Some(long_source.as_str())
+        );
+        combined_diff.push_str(&page.files[0].unified_diff);
+        pages += 1;
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(parse_cursor(&next).expect("valid continuation cursor"));
+        assert!(pages < 4);
+    }
+    assert_eq!(pages, 2);
+    assert_eq!(combined_diff, expected.files[0].unified_diff);
+}
+
+#[test]
 fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() {
     let workspace = tempfile::tempdir().expect("temp workspace");
     let dir = workspace.path().join("history");

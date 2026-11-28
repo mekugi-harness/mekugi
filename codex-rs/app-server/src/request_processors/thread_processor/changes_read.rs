@@ -17,6 +17,8 @@ use codex_change_history::ChangeAuthor;
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeRecord;
 use codex_change_history::ComposedFileDiff;
+use codex_change_history::CoverageStatus;
+use codex_change_history::FileEvidence;
 use codex_change_history::captured_diff_files;
 use codex_change_history::captured_diff_range_by;
 use codex_change_history::compose_diff;
@@ -428,6 +430,38 @@ fn json_encoded_len<T: serde::Serialize>(value: &T) -> Option<usize> {
     Some(usize::MAX - counter.0)
 }
 
+fn estimate_file_metadata_json_len(record: &ChangeRecord, files: &[&FileEvidence]) -> usize {
+    let first = files[0];
+    let coverage_notes = files
+        .iter()
+        .filter_map(|file| match &file.coverage {
+            CoverageStatus::Complete => None,
+            CoverageStatus::Partial { reason } => {
+                Some(format!("{}: partial ({reason})", record.id))
+            }
+            CoverageStatus::MissingBaseline { reason } => {
+                Some(format!("{}: missing baseline ({reason})", record.id))
+            }
+        })
+        .collect();
+    let probe = ThreadChangeFileDiff {
+        path: first.rel_path.clone(),
+        absolute_path: first.abs_path.display().to_string(),
+        change_ids: vec![record.id.to_string()],
+        moved_from: first.moved_from.clone(),
+        status: "R".to_string(),
+        unified_diff: String::new(),
+        additions: i64::MAX,
+        deletions: i64::MAX,
+        is_binary: false,
+        coverage_notes,
+        scope: first.scope.as_str().to_string(),
+    };
+    json_encoded_len(&probe)
+        .unwrap_or(usize::MAX)
+        .saturating_add(64)
+}
+
 fn read_capture_page(
     store: &ChangeHistoryStore,
     records: &[ChangeRecord],
@@ -462,9 +496,7 @@ fn read_capture_page(
             .last()
             .filter(|previous| previous.change_id == record.id.as_str())
             .is_none();
-        let file_meta_reserve = 1024usize
-            .saturating_add(files[0].rel_path.len().saturating_mul(6))
-            .saturating_add(files[0].abs_path.as_os_str().len().saturating_mul(6));
+        let file_meta_reserve = estimate_file_metadata_json_len(record, &files);
         let (origin, origin_is_full, origin_cost) = if need_origin {
             let full = wire_origin(record, origin_paths(record));
             let full_cost = json_encoded_len(&full).unwrap_or(usize::MAX);
