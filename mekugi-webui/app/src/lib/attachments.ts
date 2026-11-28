@@ -2,14 +2,25 @@ import type { Machine } from "./hub.svelte";
 import type { Attachment, ThreadStartResponse } from "./protocol";
 import type { SelectedSkill } from "./semantic.svelte";
 
-export type AttachmentPathTarget = { machine: Machine; thread?: string; workspace?: string };
+export type AttachmentPathTarget = {
+  machine: Machine;
+  thread?: string;
+  workspace?: string;
+  deferUnadmitted?: boolean;
+};
 
 export async function hostPathAttachment(
-  { machine, thread, workspace }: AttachmentPathTarget,
+  { machine, thread, workspace, deferUnadmitted }: AttachmentPathTarget,
   path: string,
   id: string,
   signal: AbortSignal,
 ): Promise<PendingAttachment> {
+  if (deferUnadmitted && !thread) {
+    signal.throwIfAborted();
+    if (!path || path.startsWith("data:") || path.includes("://"))
+      throw new Error("Choose an attachment path on the execution machine.");
+    return { id, path, deferred: true };
+  }
   const deadline = AbortSignal.timeout(10_000);
   try {
     const { mime } = await machine.resource<{ mime: string | null }>(
@@ -25,9 +36,48 @@ export async function hostPathAttachment(
   }
 }
 
+export type DeferredResolution =
+  | { ok: true; text: string; items: PendingAttachment[] }
+  | { ok: false; text: string; items: PendingAttachment[]; error: string };
+
+export async function resolveDeferredPathAttachments(
+  target: { machine: Machine; thread: string },
+  text: string,
+  items: PendingAttachment[],
+  signal: AbortSignal,
+): Promise<DeferredResolution> {
+  let nextText = text;
+  const nextItems = [...items];
+  for (let index = 0; index < nextItems.length; index++) {
+    const item = nextItems[index];
+    if (!("path" in item) || !item.deferred) continue;
+    let resolved: PendingAttachment;
+    try {
+      resolved = await hostPathAttachment(target, item.path, item.id, signal);
+    } catch (failure) {
+      if (signal.aborted) throw failure;
+      const message = failure instanceof Error ? failure.message : "Could not check that path.";
+      return { ok: false, text: nextText, items: nextItems, error: `${item.path}: ${message}` };
+    }
+    const oldLabel = item.placeholder;
+    if (oldLabel) {
+      const [at] = attachmentOffsets(nextText, oldLabel);
+      if (at !== undefined) {
+        const withoutOld = nextText.slice(0, at) + nextText.slice(at + oldLabel.length);
+        const newLabel = labelAttachment(resolved, withoutOld);
+        nextText = nextText.slice(0, at) + newLabel + nextText.slice(at + oldLabel.length);
+        nextItems[index] = { ...resolved, placeholder: newLabel };
+        continue;
+      }
+    }
+    nextItems[index] = { ...resolved, ...(oldLabel ? { placeholder: oldLabel } : {}) };
+  }
+  return { ok: true, text: nextText, items: nextItems };
+}
+
 export type PendingAttachment = { id: string; placeholder?: string } & (
   | { file: File; reference?: string; image?: true }
-  | { path: string; fileReference?: boolean }
+  | { path: string; fileReference?: boolean; deferred?: boolean }
 );
 export type InitialInput = {
   started: Pick<
@@ -38,6 +88,7 @@ export type InitialInput = {
   items: PendingAttachment[];
   attachments: Attachment[];
   skills?: SelectedSkill[];
+  draftError?: string;
   onstarted?: (turnId: string) => void;
 };
 export const uploadLimit = 32 * 1024 * 1024;
@@ -263,9 +314,11 @@ export function labelAttachment(item: PendingAttachment, text: string): string {
       ? item.file.type.startsWith("image/")
         ? "Image"
         : "File"
-      : item.fileReference
-        ? "File"
-        : "Image";
+      : item.deferred
+        ? "Path"
+        : item.fileReference
+          ? "File"
+          : "Image";
   let label = `[${kind} ${name}]`;
   for (let number = 2; text.includes(label); number++) label = `[${kind} ${name} ${number}]`;
   return label;

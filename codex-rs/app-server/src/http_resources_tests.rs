@@ -46,6 +46,14 @@ async fn test_processor_with_store(
     test: &TestCodex,
     thread_store: Arc<dyn ThreadStore>,
 ) -> Result<(ThreadRequestProcessor, mpsc::Receiver<OutgoingEnvelope>)> {
+    test_processor_with_state_db(test, thread_store, /*state_db*/ None).await
+}
+
+async fn test_processor_with_state_db(
+    test: &TestCodex,
+    thread_store: Arc<dyn ThreadStore>,
+    state_db: Option<codex_core::StateDbHandle>,
+) -> Result<(ThreadRequestProcessor, mpsc::Receiver<OutgoingEnvelope>)> {
     let config = Arc::new(test.config.clone());
     let auth =
         AuthManager::shared_from_config(config.as_ref(), /*enable_codex_api_key_env*/ false)
@@ -76,7 +84,7 @@ async fn test_processor_with_store(
         thread_state_manager,
         thread_watch_manager,
         Arc::new(ThreadListState::default()),
-        /*state_db*/ None,
+        state_db,
         /*log_db*/ None,
         skills_watcher,
         /*turn_cost_worker*/ None,
@@ -505,6 +513,142 @@ async fn handle_attachment_image_requires_admitted_workspace_when_thread_is_empt
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn open_confined_resource_file_reads_files_behind_search_only_directories() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestorePermissions(Vec<PathBuf>);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            for path in self.0.iter().rev() {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir()?;
+    let workspace = temp.path().join("workspace");
+    let shared = workspace.join("shared");
+    std::fs::create_dir_all(&shared)?;
+    let image_path = shared.join("diagram.png");
+    let text_path = shared.join("notes.txt");
+    std::fs::write(&image_path, TINY_PNG)?;
+    std::fs::write(&text_path, b"readable behind search-only dir")?;
+
+    let _guard = RestorePermissions(vec![workspace.clone(), shared.clone()]);
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o111))?;
+    std::fs::set_permissions(&workspace, std::fs::Permissions::from_mode(0o111))?;
+
+    // When running non-root, directory listing must fail while search-only traversal succeeds.
+    // SAFETY: `geteuid` has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        assert!(std::fs::read_dir(&shared).is_err());
+        assert!(std::fs::read_dir(&workspace).is_err());
+    }
+
+    assert_eq!(
+        read_workspace_image_file(
+            &workspace,
+            Path::new("shared/diagram.png"),
+            ImageFileRead::Preview,
+        )
+        .await
+        .expect("readable image behind search-only dirs should succeed"),
+        TINY_PNG
+    );
+
+    let (mut file, metadata) =
+        open_confined_resource_file(&workspace, Path::new("shared/notes.txt"))
+            .await
+            .expect("readable detail file behind search-only dirs should open");
+    assert!(metadata.is_file());
+    let mut text = String::new();
+    file.read_to_string(&mut text).await?;
+    assert_eq!(text, "readable behind search-only dir");
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn admit_attachment_workspace_uses_state_db_without_rollout_scan() -> Result<()> {
+    let server = wiremock::MockServer::start().await;
+    let test = test_codex().build_with_auto_env(&server).await?;
+
+    let db_home = tempfile::tempdir()?;
+    let state_db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(db_home.path())?,
+        ),
+        "test-provider".to_string(),
+    )
+    .await?;
+
+    let db_workspace_dir = tempfile::tempdir()?;
+    let db_workspace = db_workspace_dir.path().canonicalize()?;
+    std::fs::write(db_workspace.join("saved.png"), TINY_PNG)?;
+
+    let mut metadata = codex_state::ThreadMetadataBuilder::new(
+        ThreadId::new(),
+        db_home.path().join("saved-thread.jsonl"),
+        chrono::Utc::now(),
+        SessionSource::Cli,
+    )
+    .build("test-provider");
+    metadata.cwd = db_workspace.clone();
+    metadata.preview = Some("saved thread".to_string());
+    state_db.upsert_thread(&metadata).await?;
+
+    let store = Arc::new(InMemoryThreadStore::default());
+    let (processor, _outgoing_rx) =
+        test_processor_with_state_db(&test, store.clone(), Some(state_db)).await?;
+
+    let (status, bytes) = response_parts(
+        handle_attachment_image(
+            &processor,
+            attachment_request(
+                "",
+                db_workspace.to_string_lossy().as_ref(),
+                "saved.png",
+                /*probe*/ false,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, TINY_PNG);
+    assert_eq!(
+        store.calls().await.list_threads,
+        0,
+        "state_db lookup must not fall back to thread_store rollout listing"
+    );
+
+    let unadmitted = tempfile::tempdir()?;
+    let (status, _) = response_parts(
+        handle_attachment_image(
+            &processor,
+            attachment_request(
+                "",
+                unadmitted.path().to_string_lossy().as_ref(),
+                "saved.png",
+                /*probe*/ false,
+            ),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        store.calls().await.list_threads,
+        0,
+        "unadmitted workspace rejection must not trigger rollout listing when state_db is active"
+    );
 
     Ok(())
 }

@@ -6741,6 +6741,42 @@ impl ThreadRequestProcessor {
             }
         }
 
+        if let Some(state_db) = self.state_db.as_deref() {
+            let cwd_filters = std::slice::from_ref(&requested_lexical);
+            for archived_only in [false, true] {
+                let Ok(page) = state_db
+                    .list_threads(
+                        /*page_size*/ 1,
+                        codex_state::ThreadFilterOptions {
+                            included_thread_ids: None,
+                            archived_only,
+                            allowed_sources: &[],
+                            model_providers: None,
+                            cwd_filters: Some(cwd_filters),
+                            section: None,
+                            project_id: None,
+                            anchor: None,
+                            sort_key: codex_state::SortKey::UpdatedAt,
+                            sort_direction: codex_state::SortDirection::Desc,
+                            search_term: None,
+                        },
+                    )
+                    .await
+                else {
+                    continue;
+                };
+                for item in page.items {
+                    if checked_cwds.insert(item.cwd.clone())
+                        && let Some(workspace) =
+                            match_admitted_workspace(&item.cwd, &requested_lexical).await
+                    {
+                        return Some(workspace);
+                    }
+                }
+            }
+            return None;
+        }
+
         for archived in [false, true] {
             let mut cursor = None;
             let mut seen_cursors = HashSet::new();

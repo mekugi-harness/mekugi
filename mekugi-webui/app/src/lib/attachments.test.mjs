@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import {
   activeAttachments,
+  hostPathAttachment,
   labelAttachment,
   prepareAttachments,
+  resolveDeferredPathAttachments,
   submissionAttachments,
   textUploadFrames,
   textUploadSnapshot,
@@ -199,4 +201,98 @@ test("cancellation during reading prevents later files and pre-aborted paths are
     prepareAttachments([{ id: "path", path: "notes.txt" }], controller.signal, () => {}),
     { name: "AbortError" },
   );
+});
+
+test("new-workspace host paths defer probing until thread creation", async () => {
+  const calls = [];
+  const machine = {
+    async resource(kind, params) {
+      calls.push({ kind, params });
+      if (params.body.path === "diagram.png") return { mime: "image/png" };
+      if (params.body.path === "notes.md") return { mime: null };
+      throw new Error("The attachment file is unavailable.");
+    },
+  };
+  const signal = new AbortController().signal;
+
+  const deferredImage = await hostPathAttachment(
+    { machine, workspace: "/new/repo", deferUnadmitted: true },
+    "diagram.png",
+    "img-1",
+    signal,
+  );
+  const deferredFile = await hostPathAttachment(
+    { machine, workspace: "/new/repo", deferUnadmitted: true },
+    "notes.md",
+    "file-1",
+    signal,
+  );
+  assert.equal(calls.length, 0, "deferred new-workspace paths must not issue threadless probes");
+  assert.deepEqual(deferredImage, { id: "img-1", path: "diagram.png", deferred: true });
+  assert.deepEqual(deferredFile, { id: "file-1", path: "notes.md", deferred: true });
+
+  await assert.rejects(
+    hostPathAttachment(
+      { machine, workspace: "/new/repo", deferUnadmitted: true },
+      "https://example.com/a.png",
+      "bad-url",
+      signal,
+    ),
+    /execution machine/,
+  );
+
+  const imagePlaceholder = labelAttachment(deferredImage, "");
+  const filePlaceholder = labelAttachment(deferredFile, imagePlaceholder);
+  const draftText = `Check ${imagePlaceholder} and ${filePlaceholder}`;
+  const draftItems = [
+    { ...deferredImage, placeholder: imagePlaceholder },
+    { ...deferredFile, placeholder: filePlaceholder },
+  ];
+
+  const resolved = await resolveDeferredPathAttachments(
+    { machine, thread: "thr-1" },
+    draftText,
+    draftItems,
+    signal,
+  );
+  assert.equal(resolved.ok, true);
+  assert.equal(resolved.text, "Check [Image diagram.png] and @'notes.md'");
+  assert.deepEqual(resolved.items, [
+    { id: "img-1", path: "diagram.png", placeholder: "[Image diagram.png]" },
+    { id: "file-1", path: "notes.md", fileReference: true, placeholder: "@'notes.md'" },
+  ]);
+  assert.deepEqual(calls, [
+    {
+      kind: "attachment-image",
+      params: { thread: "thr-1", body: { path: "diagram.png", workspace: undefined, probe: true } },
+    },
+    {
+      kind: "attachment-image",
+      params: { thread: "thr-1", body: { path: "notes.md", workspace: undefined, probe: true } },
+    },
+  ]);
+
+  const missing = await hostPathAttachment(
+    { machine, workspace: "/new/repo", deferUnadmitted: true },
+    "../outside.png",
+    "bad-1",
+    signal,
+  );
+  const missingPlaceholder = labelAttachment(missing, "");
+  const failed = await resolveDeferredPathAttachments(
+    { machine, thread: "thr-1" },
+    `See ${imagePlaceholder} and ${missingPlaceholder}`,
+    [
+      { ...deferredImage, placeholder: imagePlaceholder },
+      { ...missing, placeholder: missingPlaceholder },
+    ],
+    signal,
+  );
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /\.\.\/outside\.png: The attachment file is unavailable\./);
+  assert.equal(failed.text, `See [Image diagram.png] and ${missingPlaceholder}`);
+  assert.deepEqual(failed.items, [
+    { id: "img-1", path: "diagram.png", placeholder: "[Image diagram.png]" },
+    { id: "bad-1", path: "../outside.png", deferred: true, placeholder: missingPlaceholder },
+  ]);
 });

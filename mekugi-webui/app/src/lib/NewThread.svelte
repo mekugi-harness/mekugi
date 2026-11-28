@@ -6,7 +6,10 @@
     activeAttachments,
     atomicAttachmentInput,
     prepareAttachments,
+    resolveDeferredPathAttachments,
     submissionAttachments,
+    uploadBytes,
+    uploadLimit,
     type InitialInput,
     type PendingAttachment,
   } from "./attachments";
@@ -46,6 +49,7 @@
   });
   let selectedWorkspace = $state<string>();
   const workspace = $derived(selectedWorkspace ?? workspaces[0] ?? "");
+  const workspaceAdmitted = $derived(workspaces.includes(workspace));
   let model = $state("");
   let effort = $state("");
   let text = $state("");
@@ -102,19 +106,89 @@
       if (!options) throw new Error(`Wait for ${target.label}'s workspaces and models.`);
       if (!text.trim() && !activeItems.length)
         throw new Error("Write a first message or attach something.");
+      const submitted = submissionAttachments(text, items);
+      const hasDeferred = submitted.some((item) => "path" in item && item.deferred);
+      const request: Start = {
+        workspace,
+        model,
+        effort: effort || undefined,
+      };
+      if (hasDeferred) {
+        if (uploadBytes(submitted) > uploadLimit)
+          throw new Error("Uploads exceed the 32 MiB limit. Remove files and try again.");
+        const draftText = text;
+        const draftItems = [...submitted];
+        pending.signal.throwIfAborted();
+        progress = "Starting the thread…";
+        const result = await hub.createSession(request, target, pending.signal);
+        if (disposed) return;
+        if ("error" in result) {
+          error = result.error;
+          return;
+        }
+        progress = "Checking attachments…";
+        const resolved = await resolveDeferredPathAttachments(
+          { machine: target, thread: result.response.thread.id },
+          draftText,
+          draftItems,
+          pending.signal,
+        );
+        if (disposed) return;
+        if (!resolved.ok) {
+          onopened(target.id, {
+            started: result.response,
+            text: resolved.text,
+            items: resolved.items,
+            attachments: [],
+            draftError: resolved.error,
+          });
+          select(target.id);
+          open(result.response.thread.id);
+          return;
+        }
+        try {
+          const attachments = await prepareAttachments(
+            submissionAttachments(resolved.text, resolved.items),
+            pending.signal,
+            (read, total) =>
+              (progress = total
+                ? `Reading attachments: ${Math.round((read / total) * 100)}%`
+                : "Preparing input…"),
+          );
+          if (disposed) return;
+          onopened(target.id, {
+            started: result.response,
+            text: resolved.text,
+            items: resolved.items,
+            attachments,
+          });
+        } catch (failure) {
+          if (disposed) return;
+          const draftError = pending.signal.aborted
+            ? "Cancelled. Edit or resend your draft in the new thread."
+            : failure instanceof Error
+              ? failure.message
+              : "Could not prepare attachments.";
+          onopened(target.id, {
+            started: result.response,
+            text: resolved.text,
+            items: resolved.items,
+            attachments: [],
+            draftError,
+          });
+        }
+        select(target.id);
+        open(result.response.thread.id);
+        return;
+      }
       const attachments = await prepareAttachments(
-        submissionAttachments(text, items),
+        submitted,
         pending.signal,
         (read, total) =>
           (progress = total
             ? `Reading attachments: ${Math.round((read / total) * 100)}%`
             : "Preparing input…"),
       );
-      const request: Start = {
-        workspace,
-        model,
-        effort: effort || undefined,
-      };
       const draft = { text, items: [...items], attachments };
       pending.signal.throwIfAborted();
       progress = "Starting the thread…";
@@ -182,7 +256,7 @@
         bind:text
         bind:pathing
         machine={machine.label}
-        previewTarget={{ machine, workspace }}
+        previewTarget={{ machine, workspace, deferUnadmitted: !workspaceAdmitted }}
         disabled={busy}
       />
       <label class="sr-only" for="new-text">First message</label>

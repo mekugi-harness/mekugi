@@ -704,19 +704,59 @@ fn openat_component(
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn directory_access_flags() -> libc::c_int {
+    libc::O_PATH
+}
+
+#[cfg(target_vendor = "apple")]
+fn directory_access_flags() -> libc::c_int {
+    libc::O_SEARCH
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
+fn directory_access_flags() -> libc::c_int {
+    libc::O_RDONLY
+}
+
 #[cfg(unix)]
 fn open_confined_unix(
     canonical_root: &Path,
     relative: &Path,
 ) -> std::io::Result<(tokio::fs::File, std::fs::Metadata)> {
+    use std::os::fd::FromRawFd;
     use std::os::fd::OwnedFd;
-    use std::os::unix::fs::OpenOptionsExt;
 
-    let root_file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(canonical_root)?;
-    let mut current = OwnedFd::from(root_file);
+    let dir_flags = directory_access_flags() | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    // SAFETY: `c"/"` is a static NUL-terminated path and `dir_flags` opens a directory descriptor.
+    let root_fd = unsafe { libc::open(c"/".as_ptr(), dir_flags) };
+    if root_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `root_fd` is a newly created file descriptor returned by `open`.
+    let mut current = unsafe { OwnedFd::from_raw_fd(root_fd) };
+
+    let step_flags = dir_flags | libc::O_NOFOLLOW;
+    let mut saw_root = false;
+    for component in canonical_root.components() {
+        match component {
+            std::path::Component::RootDir => saw_root = true,
+            std::path::Component::Normal(segment) => {
+                current = openat_component(&current, segment, step_flags)?;
+            }
+            std::path::Component::CurDir
+            | std::path::Component::ParentDir
+            | std::path::Component::Prefix(_) => {
+                return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+            }
+        }
+    }
+    if !saw_root {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
 
     let mut components = Vec::new();
     for component in relative.components() {
@@ -733,11 +773,7 @@ fn open_confined_unix(
 
     let final_fd = if let Some((last, parents)) = components.split_last() {
         for segment in parents {
-            current = openat_component(
-                &current,
-                segment,
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            )?;
+            current = openat_component(&current, segment, step_flags)?;
         }
         // A named pipe must not block open before we check the file type.
         openat_component(
