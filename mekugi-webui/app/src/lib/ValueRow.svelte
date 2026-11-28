@@ -128,7 +128,9 @@
 
   const hasOutput = $derived(!!value.tailLines || value.tail?.some((line) => line.trim()));
   const tailLines = $derived(value.tailLines ?? value.tail?.length ?? 0);
-  const outputDisclosure = $derived(hasOutput && (tailLines > 1 || !!value.tailOmitted));
+  const outputDisclosure = $derived(
+    value.kind !== "error" && hasOutput && (tailLines > 1 || !!value.tailOmitted),
+  );
   const code = $derived(value.code?.replace(/\n$/, ""));
   const multiline = $derived(
     (value.codeLines ?? 0) > 1 || (code !== undefined && code.includes("\n")),

@@ -1014,4 +1014,40 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   }).body;
   assert.match(subHtml, /data-ai-element="subagent"/);
   assert.match(subHtml, /Run tests/);
+
+  const execErr = itemToEntry(
+    {
+      id: "code-mode-error:call-1",
+      type: "functionCallOutput",
+      namespace: "functions",
+      name: "exec",
+      output: "SyntaxError: Unexpected token\n  at cell:1:12",
+    },
+    8,
+    1,
+    "t1",
+  );
+  assert.equal(execErr?.kind, "error");
+  const errHtml = render(EntryView, {
+    props: { entry: execErr, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(errHtml, /exec script failed/);
+  assert.match(errHtml, /SyntaxError: Unexpected token/);
+  assert.doesNotMatch(errHtml, /functionCallOutput/);
+
+  assert.equal(
+    itemToEntry(
+      {
+        id: "call-2",
+        type: "functionCallOutput",
+        namespace: "functions",
+        name: "other",
+        output: "ok",
+      },
+      9,
+      1,
+      "t1",
+    ),
+    undefined,
+  );
 });

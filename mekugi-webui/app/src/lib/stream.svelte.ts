@@ -167,7 +167,7 @@ export function itemToEntry(
   agent = "/root",
   live = false,
   threadId?: string,
-): Entry {
+): Entry | undefined {
   const base: Entry = {
     seq,
     position: seq,
@@ -237,6 +237,30 @@ export function itemToEntry(
         kind: "assistant",
         text: item.text,
       };
+    case "functionCallOutput": {
+      // Only the canonical exec diagnostic is a user-facing transcript item.
+      if (
+        item.namespace !== "functions" ||
+        item.name !== "exec" ||
+        !item.id.startsWith("code-mode-error:")
+      )
+        return;
+      const diagnostic = typeof item.output === "string" ? item.output.trimEnd() : "";
+      return {
+        ...base,
+        kind: "error",
+        outcome: "error",
+        values: [
+          {
+            kind: "error",
+            verb: "Error",
+            label: "exec script failed",
+            failed: true,
+            tail: diagnostic ? diagnostic.split("\n") : undefined,
+          },
+        ],
+      };
+    }
     case "plan":
       return {
         ...base,
@@ -660,17 +684,18 @@ export function buildFeed(
         emitHook(turnHooks[hookIdx++]);
       }
       const item = turn.items[i];
-      seq++;
-      entries[seq] = itemToEntry(
+      const entry = itemToEntry(
         item,
-        seq,
+        seq + 1,
         t + 1,
         turn.id,
         "/root",
         !!liveItemIds?.has(item.id),
         attachment,
       );
-      indexItem?.(turn, i, entries[seq]);
+      if (!entry) continue;
+      entries[++seq] = entry;
+      indexItem?.(turn, i, entry);
       order.push(seq);
     }
     while (hookIdx < turnHooks.length) emitHook(turnHooks[hookIdx++]);
@@ -1958,17 +1983,11 @@ export class Stream {
             }
           }
         }
+        const agent = this.roster.agents.find((a) => a.thread === targetId);
+        const activity = itemToEntry(item, 0, 0, turnId, agent?.name, started, targetId);
+        if (!activity) return;
         if (targetId !== id) {
-          const agent = this.roster.agents.find((a) => a.thread === targetId);
           if (agent) {
-            const activity = itemToEntry(
-              notification.params.item,
-              0,
-              0,
-              notification.params.turnId,
-              agent.name,
-              started,
-            );
             this.roster = {
               ...this.roster,
               agents: this.roster.agents.map((a) =>
@@ -2246,10 +2265,16 @@ export class Stream {
     const item = update(previous);
     if (item === previous) return;
     items[index] = item;
-    this.#entries.set(
+    const entry = itemToEntry(
+      item,
       seq,
-      itemToEntry(item, seq, 0, turnId, "/root", this.#liveItemIds.has(itemId), this.#id),
+      0,
+      turnId,
+      "/root",
+      this.#liveItemIds.has(itemId),
+      this.#id,
     );
+    if (entry) this.#entries.set(seq, entry);
   }
 
   async close(): Promise<void> {
