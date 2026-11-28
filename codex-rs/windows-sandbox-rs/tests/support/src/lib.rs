@@ -22,7 +22,7 @@ impl WindowsSandboxAccountTestGuard {
                 "Windows local application data directory is unavailable",
             )
         })?;
-        // Bazel uses per-test temporary directories, so the lock lives in the runner user's
+        // Tests can use separate temporary directories, so the lock lives in the user's
         // Windows known folder instead. It is separate from the production setup lock.
         let path = directory.join("codex-windows-sandbox-integration-test.lock");
         // Leave the file in place: deleting it would let processes lock different files at this path.

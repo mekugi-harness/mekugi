@@ -948,7 +948,7 @@ async fn mcp_tool_discovery_in_same_turn(tool_mode: ToolMode) -> Result<()> {
         .iter()
         .map(core_test_support::responses::ResponsesRequest::body_json)
         .collect::<Vec<_>>();
-    // Cargo and Bazel can serialize embedded JSON in different key orders.
+    // JSON serialization order can vary with enabled features.
     // Normalize each output text before snapshot truncation and hashing.
     for body in &mut bodies {
         for item in body["input"].as_array_mut().expect("request input") {
@@ -1797,7 +1797,7 @@ async fn astra_omits_disabled_executor_and_plugin_skills_from_model_context(
         }
         // Normalize opaque skill locators before snapshot truncation and hashing.
         body["input"] = serde_json::from_str(&input.replace(&skill_files, "<SKILLS_ROOT>/"))?;
-        // Cargo and Bazel can serialize the JSON inside the tool output in different key orders.
+        // JSON inside tool output can have different key orders depending on features.
         for item in body["input"].as_array_mut().expect("request input") {
             if item["type"] == "function_call_output" && item["call_id"] == "list-skills" {
                 let mut output: serde_json::Value =
@@ -2232,7 +2232,7 @@ async fn skill_read_recovers_omitted_installation_and_reads_selected_environment
     )?;
     assert_eq!(recovered["contents"], executor_contents);
     assert_eq!(recovered["resource"], "skill://executor-04/deploy/SKILL.md");
-    // Canonicalize JSON only in snapshot copies (Cargo/Bazel differ in map ordering).
+    // Canonicalize unordered JSON objects only in snapshot copies.
     // Pretty printing keeps installation fields visible rather than hashing one long line.
     let mut bodies = requests
         .iter()

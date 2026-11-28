@@ -137,7 +137,7 @@ class NativeBuild:
             self.environment.pop("LIBPATH", None)
         paths = [str(self.tools / "bin")]
         if not self.windows:
-            # GLib generators use /usr/bin/env python3 even when Meson runs under Bazel.
+            # GLib generators use /usr/bin/env python3 even with an explicit Meson interpreter.
             paths.append(str(Path(sys.executable).parent))
         if windows_inputs is None:
             paths.extend(str(p.parent) for p in self.toolchain.values())
@@ -298,7 +298,7 @@ class NativeBuild:
             self.environment["OBJCFLAGS"] = self.environment["CFLAGS"]
             languages["objc"] = "CFLAGS"
         # Environment CFLAGS are also linked for Autotools compatibility. Use
-        # Meson's phase-specific options to preserve Bazel's toolchain contract.
+        # Meson's phase-specific options to preserve the declared toolchain flags.
         meson_flags = []
         for language, variable in languages.items():
             meson_flags += [

@@ -19,7 +19,8 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   includes `codex-code-mode-host` and, on Linux, `bwrap`. Upstream clients and
   SDKs remain in the source tree but are not shipped or maintained as part of
   Mekugi. The [Cargo workspace](codex-rs/Cargo.toml) and lockfile cover the
-  native build; the fork uses Mekugi's release process, not upstream release CI.
+  native build. Mekugi removes the upstream Bazel build, test and release
+  infrastructure and uses Cargo with Mekugi's release process.
 - `codex-arg0` dispatches the native Rust `mcat`, `mchanges`, `mfinspect`,
   `msymbol`, and `mrun` CLIs (`codex-mekugi-tools`) through stock PATH symlinks
   and exports

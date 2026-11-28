@@ -9,8 +9,7 @@ name = "codex-voice-host"
 path = "src/main.rs"
 
 # These tests need a correctly linked helper and a matching prepared runtime.
-# Bazel supplies declared runtime inputs and runs this target automatically.
-# Cargo runs it explicitly with --test installed_client.
+# Run it explicitly with --test installed_client.
 [[test]]
 name = "installed_client"
 test = false

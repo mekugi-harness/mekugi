@@ -787,7 +787,7 @@ fn assert_no_local_persistence_artifacts(codex_home: &Path) -> Result<()> {
     );
     let mut entries = codex_home_entries(codex_home)?;
     // Host startup may leave sandbox migration markers or Windows sandbox logs,
-    // and Bazel test runs may initialize shell snapshot storage. None is thread
+    // and concurrent test runs may initialize shell snapshot storage. None is thread
     // persistence.
     entries.remove(".sandbox_migration");
     #[cfg(windows)]

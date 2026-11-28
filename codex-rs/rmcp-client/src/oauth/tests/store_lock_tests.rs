@@ -472,7 +472,7 @@ where
 
 #[test]
 fn aggregate_store_readers_share_access_while_writers_remain_exclusive() -> Result<()> {
-    // Isolate process-global metrics from other libtest cases, including under Bazel.
+    // Isolate process-global metrics from other libtest cases.
     if std::env::var_os("CODEX_AUTH_STORAGE_TEST_CHILD").is_none() {
         let output = Command::new(std::env::current_exe()?)
             .args([

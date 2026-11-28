@@ -4468,7 +4468,6 @@ name = "codex-utils-cargo-bin"
 version = "0.172.0"
 dependencies = [
  "assert_cmd",
- "runfiles",
  "thiserror 2.0.21",
 ]
 
@@ -11754,11 +11753,6 @@ dependencies = [
  "serde_json",
  "syn 3.0.3",
 ]
-
-[[package]]
-name = "runfiles"
-version = "0.1.0"
-source = "git+https://github.com/dzbarsky/rules_rust?rev=b56cbaa8465e74127f1ea216f813cd377295ad81#b56cbaa8465e74127f1ea216f813cd377295ad81"
 
 [[package]]
 name = "rust-embed"

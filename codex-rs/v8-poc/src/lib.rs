@@ -1,10 +1,4 @@
-//! Bazel-wired proof-of-concept crate reserved for future V8 experiments.
-
-/// Returns the Bazel label for this proof-of-concept crate.
-#[must_use]
-pub fn bazel_target() -> &'static str {
-    "//codex-rs/v8-poc:v8-poc"
-}
+//! Proof-of-concept crate for V8 experiments.
 
 /// Returns the embedded V8 version.
 #[must_use]
@@ -27,8 +21,6 @@ pub fn linked_v8_has_sandbox() -> bool {
 mod tests {
     use pretty_assertions::assert_eq;
     use std::sync::Once;
-
-    use super::bazel_target;
 
     fn uses_inline_typed_array_storage(length: usize, max_inline_size: usize) -> bool {
         max_inline_size != 0 && length <= max_inline_size
@@ -62,11 +54,6 @@ mod tests {
         let source = v8::String::new(scope, expression).expect("expression should be valid UTF-8");
         let script = v8::Script::compile(scope, source, None).expect("expression should compile");
         script.run(scope).expect("expression should evaluate")
-    }
-
-    #[test]
-    fn exposes_expected_bazel_target() {
-        assert_eq!(bazel_target(), "//codex-rs/v8-poc:v8-poc");
     }
 
     #[test]

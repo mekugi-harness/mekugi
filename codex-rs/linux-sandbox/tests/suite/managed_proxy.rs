@@ -836,7 +836,7 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         format!("http://127.0.0.1:{proxy_port}"),
     );
 
-    // Bubblewrap re-executes the canonical binary, outside its Bazel runfiles alias.
+    // Bubblewrap re-executes the canonical binary, even when invoked via a symlink.
     let sandbox_helper = cargo_bin("codex-linux-sandbox")
         .expect("sandbox helper should exist")
         .canonicalize()
