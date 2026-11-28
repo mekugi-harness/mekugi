@@ -345,6 +345,15 @@ const ONE_TIME_CHOICES = [
   { id: 1, label: "Deny", decision: "decline" as const, deny: true },
 ];
 
+const KNOWN_SERVER_REQUEST_METHODS = new Set<string>([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "shellGuard/requestApproval",
+  "item/tool/requestUserInput",
+  // Local-only secret prompts are intentionally ignored by remote web clients.
+  "shellGuard/requestSecret",
+]);
+
 export function serverRequestToPrompt(
   req: ServerRequest,
   threadId: string,
@@ -565,6 +574,14 @@ export class ThreadControl {
   }
 
   #onServerRequest(req: ServerRequest): void {
+    if (!KNOWN_SERVER_REQUEST_METHODS.has(req.method)) {
+      this.#machine?.respondError(
+        req.id,
+        -32601,
+        `unsupported web client server request: ${req.method}`,
+      );
+      return;
+    }
     if (!this.#id) return;
     const mapped = serverRequestToPrompt(req, this.#id);
     if (!mapped) return;

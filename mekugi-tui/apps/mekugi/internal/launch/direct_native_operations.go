@@ -164,7 +164,8 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 	if threadID == "" {
 		return errors.New("no active thread")
 	}
-	input := codexbinding.Input(in.Draft)
+	draft := in.Draft.Trimmed()
+	input := codexbinding.Input(draft)
 	if in.Intent.Operation == sessionpresentation.QueueComposer && busy {
 		return c.wire.Call(ctx, "thread/queue/add", map[string]any{
 			"threadId":            threadID,
@@ -174,7 +175,7 @@ func (c *directNativeConnection) handleComposer(ctx context.Context, in sessiona
 	}
 	if busy {
 		err := c.steerInput(ctx, directSteerTurnID{thread: threadID, turn: turnID},
-			&directSteer{clientID: rand.Text(), draft: in.Draft.Clone()}, input, nil)
+			&directSteer{clientID: rand.Text(), draft: draft}, input, nil)
 		if refusal, ok := errors.AsType[*nativeAppServerRPCError](err); ok {
 			switch refusal.Code {
 			case -32600, -32602:

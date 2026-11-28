@@ -238,6 +238,8 @@ type directNativeConnection struct {
 	feedbackText       string
 	feedbackAlert      bool
 	feedbackRev        uint64
+	retryNotice        directRetryNotice
+	btwRetrying        bool
 
 	items       map[string][]*directItemRecord
 	itemsByID   map[directItemKey]*directItemRecord
@@ -860,7 +862,16 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	}
 }
 
+type directRetryNotice struct {
+	threadID string
+	turnID   string
+	text     string
+}
+
 func (c *directNativeConnection) statusTextLocked() string {
+	if c.retryNotice.text != "" {
+		return c.retryNotice.text
+	}
 	if c.busy {
 		return "Working"
 	}
@@ -932,8 +943,11 @@ func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
 		agent := &rows[i].Agent
 		if agent.Thread == c.mainThread && c.activeTurn != "" {
 			agent.Responding = true
-			agent.Status = "responding"
 		}
+		if c.hasPendingRequestForThreadLocked(agent.Thread) {
+			agent.Waiting = true
+		}
+		agent.Status = agent.ObservedStatus(agent.LatestKind)
 		agent.Skills = slices.Clone(c.threadSkills[agent.Thread])
 		if u, ok := c.threadUsage[agent.Thread]; ok {
 			agent.InputTokens = u.InputTokens

@@ -104,6 +104,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			switch p.ThreadID {
 			case c.btwThread:
 				c.btwRunning = true
+				c.btwRetrying = false
 			case c.sideThread:
 				c.setActiveInputTurnLocked(c.sideThread, p.Turn.ID, p.Turn.StartedAt)
 			default:
@@ -111,6 +112,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 					c.setActiveInputTurnLocked(c.mainThread, p.Turn.ID, p.Turn.StartedAt)
 				}
 			}
+			c.clearRetryNoticeLocked(cmp.Or(p.ThreadID, c.mainThread), "")
 			c.publishLocked()
 			c.mu.Unlock()
 		}
@@ -122,10 +124,26 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			Error     *binding.TurnError `json:"error"`
 			WillRetry bool               `json:"willRetry"`
 		}
-		if json.Unmarshal(msg.Params, &p) == nil && !p.WillRetry {
+		if json.Unmarshal(msg.Params, &p) == nil {
 			c.mu.Lock()
-			if p.ThreadID != c.btwThread && c.projectTurnErrorLocked(p.ThreadID, p.TurnID, p.Error) != "" {
-				c.publishLocked()
+			threadID := cmp.Or(p.ThreadID, c.mainThread)
+			if p.WillRetry {
+				if diagnostic := directTurnErrorText(p.Error); diagnostic != "" {
+					if p.ThreadID != "" && p.ThreadID == c.btwThread {
+						c.btw.Status, c.btw.Alert = diagnostic, false
+						c.btwRetrying = true
+						c.publishLocked()
+					} else if threadID == c.mainThread || threadID == c.sideThread {
+						c.retryNotice = directRetryNotice{threadID: threadID, turnID: p.TurnID, text: diagnostic}
+						c.publishLocked()
+					}
+				}
+			} else {
+				cleared := c.clearRetryNoticeLocked(threadID, p.TurnID)
+				projected := p.ThreadID != c.btwThread && c.projectTurnErrorLocked(p.ThreadID, p.TurnID, p.Error) != ""
+				if cleared || projected {
+					c.publishLocked()
+				}
 			}
 			c.mu.Unlock()
 		}
@@ -155,6 +173,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			switch p.ThreadID {
 			case c.btwThread:
 				c.btwRunning = false
+				c.btwRetrying = false
 				c.btw.Status, c.btw.Alert = p.Turn.Status, p.Turn.Status == "failed"
 				if p.Turn.Status == "completed" && len(c.btw.Answer) != 0 {
 					c.btwCompletedAnswer = c.btw.Answer[len(c.btw.Answer)-1].Text
@@ -180,6 +199,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 					c.setFeedbackLocked(diagnostic, true)
 				}
 			}
+			c.clearRetryNoticeLocked(threadID, p.Turn.ID)
 			c.removeNativePreviewsLocked(func(edit preview.Preview) bool {
 				return edit.Turn == p.Turn.ID && (p.ThreadID == "" || edit.Thread == p.ThreadID)
 			})
@@ -205,6 +225,9 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 				threadID = c.mainThread
 			}
 			itemType := c.upsertWireItemLocked(threadID, p.TurnID, p.Item, complete)
+			if directItemIsResponseProgress(p.Item, complete) {
+				c.clearRetryNoticeLocked(threadID, p.TurnID)
+			}
 			mainID := c.mainThread
 			displayed := cmp.Or(c.displayedThread, mainID)
 			c.publishLocked()
@@ -232,11 +255,16 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			c.mu.Lock()
 			if p.ThreadID != "" && p.ThreadID == c.btwThread {
 				c.btw.Append(p.ItemID, p.Delta, false)
+				if c.btwRetrying && c.btwRunning && !c.btw.Alert {
+					c.btw.Status = "Running"
+					c.btwRetrying = false
+				}
 			} else {
 				threadID := p.ThreadID
 				if threadID == "" {
 					threadID = c.mainThread
 				}
+				c.clearRetryNoticeLocked(threadID, p.TurnID)
 				msgKind := "final"
 				if threadID == c.mainThread {
 					msgKind = "text"
@@ -249,6 +277,19 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 				rec.entry.Revision++
 			}
 			c.publishLocked()
+			c.mu.Unlock()
+		}
+
+	case "item/reasoning/summaryPartAdded":
+		var p struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+		}
+		if json.Unmarshal(msg.Params, &p) == nil {
+			c.mu.Lock()
+			if c.clearRetryNoticeLocked(cmp.Or(p.ThreadID, c.mainThread), p.TurnID) {
+				c.publishLocked()
+			}
 			c.mu.Unlock()
 		}
 
@@ -265,6 +306,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			if threadID == "" {
 				threadID = c.mainThread
 			}
+			c.clearRetryNoticeLocked(threadID, p.TurnID)
 			rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "reasoning", "reasoning")
 			rec.entry.Text += p.Delta
 			rec.entry.Live = true
@@ -850,13 +892,68 @@ func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns
 
 // projectTurnErrorLocked shares one row for the live notification, completion,
 // and the retained native turn. The full diagnostic stays in its detail value.
-func (c *directNativeConnection) projectTurnErrorLocked(threadID, turnID string, failure *binding.TurnError) string {
-	if failure == nil || failure.Message == "" || threadID == "" || turnID == "" {
+func directTurnErrorText(failure *binding.TurnError) string {
+	if failure == nil || failure.Message == "" {
 		return ""
 	}
 	diagnostic := failure.Message
 	if failure.AdditionalDetails != "" {
 		diagnostic += " · " + failure.AdditionalDetails
+	}
+	return diagnostic
+}
+
+func (c *directNativeConnection) clearRetryNoticeLocked(threadID, turnID string) bool {
+	if c.retryNotice.text == "" {
+		return false
+	}
+	if threadID != "" && c.retryNotice.threadID != threadID {
+		return false
+	}
+	if turnID != "" && c.retryNotice.turnID != "" && c.retryNotice.turnID != turnID {
+		return false
+	}
+	c.retryNotice = directRetryNotice{}
+	return true
+}
+
+func directItemIsResponseProgress(raw jsontext.Value, complete bool) bool {
+	var item struct {
+		Type   string `json:"type"`
+		Source string `json:"source"`
+	}
+	if json.Unmarshal(raw, &item) != nil {
+		return false
+	}
+	if complete {
+		return item.Type == "agentMessage" || item.Type == "reasoning"
+	}
+	switch item.Type {
+	case "agentMessage", "reasoning", "webSearch", "fileChange", "imageView", "imageGeneration",
+		"mcpToolCall", "collabAgentToolCall", "dynamicToolCall":
+		return true
+	case "commandExecution":
+		return item.Source != "userShell"
+	}
+	return false
+}
+
+func (c *directNativeConnection) hasPendingRequestForThreadLocked(threadID string) bool {
+	if threadID == "" {
+		return false
+	}
+	for _, req := range c.requests {
+		if req != nil && req.threadID == threadID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *directNativeConnection) projectTurnErrorLocked(threadID, turnID string, failure *binding.TurnError) string {
+	diagnostic := directTurnErrorText(failure)
+	if diagnostic == "" || threadID == "" || turnID == "" {
+		return ""
 	}
 	rec := c.ensureItemLocked(threadID, turnID, "native:turn-error:"+threadID+":"+turnID, "error", "error")
 	if rec.entry.Completed.IsZero() {
@@ -1486,31 +1583,36 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 			depth = 0
 		}
 		var statusObj struct {
-			Type string `json:"type"`
+			Type        string   `json:"type"`
+			ActiveFlags []string `json:"activeFlags"`
 		}
 		_ = json.Unmarshal(th.Status, &statusObj)
 		agentState := (binding.ThreadInfo{AgentStatus: th.AgentStatus}).AgentState()
+		paused := agentState == "paused"
+		waiting := agentState == "waiting" ||
+			(statusObj.Type == "active" &&
+				(slices.Contains(statusObj.ActiveFlags, "waitingOnApproval") ||
+					slices.Contains(statusObj.ActiveFlags, "waitingOnUserInput")))
 		responding := agentState == "running" || agentState == "" && statusObj.Type == "active"
 		final := agentState == "completed" && th.ID != rootThread
-		status := ""
-		switch {
-		case responding:
-			status = "responding"
-		case final:
-			status = "answered"
-		case agentState == "errored" || agentState == "" && statusObj.Type == "systemError":
-			status = "error"
+		latestKind := ""
+		if agentState == "errored" || agentState == "" && statusObj.Type == "systemError" {
+			latestKind = "error"
+		}
+		facts := activity.AgentFacts{
+			Name:       name,
+			Role:       th.AgentRole,
+			Thread:     th.ID,
+			Responding: responding,
+			Waiting:    waiting,
+			Paused:     paused,
+			Final:      final,
 		}
 		roster = append(roster, activity.AgentRow{
 			Agent: activity.Agent{
-				Status: status,
-				AgentFacts: activity.AgentFacts{
-					Name:       name,
-					Role:       th.AgentRole,
-					Thread:     th.ID,
-					Responding: responding,
-					Final:      final,
-				},
+				Status:     facts.ObservedStatus(latestKind),
+				LatestKind: latestKind,
+				AgentFacts: facts,
 			},
 			Depth: depth,
 		})
