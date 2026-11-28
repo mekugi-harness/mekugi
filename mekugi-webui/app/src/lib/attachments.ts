@@ -51,6 +51,7 @@ export async function resolveDeferredPathAttachments(
   for (let index = 0; index < nextItems.length; index++) {
     const item = nextItems[index];
     if (!("path" in item) || !item.deferred) continue;
+    if (item.placeholder && !attachmentOffsets(nextText, item.placeholder).length) continue;
     let resolved: PendingAttachment;
     try {
       resolved = await hostPathAttachment(target, item.path, item.id, signal);

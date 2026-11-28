@@ -295,4 +295,18 @@ test("new-workspace host paths defer probing until thread creation", async () =>
     { id: "img-1", path: "diagram.png", placeholder: "[Image diagram.png]" },
     { id: "bad-1", path: "../outside.png", deferred: true, placeholder: missingPlaceholder },
   ]);
+
+  calls.length = 0;
+  const resent = await resolveDeferredPathAttachments(
+    { machine, thread: "thr-1" },
+    "Review this",
+    [{ id: "bad-1", path: "../outside.png", deferred: true, placeholder: missingPlaceholder }],
+    signal,
+  );
+  assert.equal(resent.ok, true);
+  assert.equal(calls.length, 0, "deleted placeholder must not trigger a probe on resend");
+  assert.equal(resent.text, "Review this");
+  assert.deepEqual(resent.items, [
+    { id: "bad-1", path: "../outside.png", deferred: true, placeholder: missingPlaceholder },
+  ]);
 });

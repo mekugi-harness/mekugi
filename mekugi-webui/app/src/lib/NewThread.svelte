@@ -127,12 +127,32 @@
           return;
         }
         progress = "Checking attachments…";
-        const resolved = await resolveDeferredPathAttachments(
-          { machine: target, thread: result.response.thread.id },
-          draftText,
-          draftItems,
-          pending.signal,
-        );
+        let resolved: Awaited<ReturnType<typeof resolveDeferredPathAttachments>>;
+        try {
+          resolved = await resolveDeferredPathAttachments(
+            { machine: target, thread: result.response.thread.id },
+            draftText,
+            draftItems,
+            pending.signal,
+          );
+        } catch (failure) {
+          if (disposed) return;
+          const draftError = pending.signal.aborted
+            ? "Cancelled. Edit or resend your draft in the new thread."
+            : failure instanceof Error
+              ? failure.message
+              : "Could not check attachments.";
+          onopened(target.id, {
+            started: result.response,
+            text: draftText,
+            items: draftItems,
+            attachments: [],
+            draftError,
+          });
+          select(target.id);
+          open(result.response.thread.id);
+          return;
+        }
         if (disposed) return;
         if (!resolved.ok) {
           onopened(target.id, {
