@@ -19,7 +19,6 @@ type ThreadItem struct {
 	Question          string                         `json:"question"`
 	Answer            string                         `json:"answer"`
 	SourceAcquisition *observation.SourceAcquisition `json:"sourceAcquisition,omitzero"`
-	CompactionMethod  observation.CompactionMethod   `json:"compactionMethod,omitzero"`
 	DurationMS        *int64                         `json:"durationMs"`
 	CompletedAtMS     *int64                         `json:"completedAtMs,omitzero"`
 	Delivery          string                         `json:"delivery"`
@@ -52,7 +51,6 @@ type ThreadItem struct {
 	Changes           []FileChange    `json:"changes"`
 	Tool              string          `json:"tool"`
 	ReceiverThreadIDs []string        `json:"receiverThreadIds"`
-	TimeoutMS         *int64          `json:"timeoutMs"`
 	Server            string          `json:"server"`
 	Arguments         jsontext.Value  `json:"arguments"`
 	Result            jsontext.Value  `json:"result"`
@@ -134,18 +132,20 @@ func (t ThreadInfo) Details() observation.SessionDetails {
 		SessionMetrics: observation.SessionMetrics{ContextTokens: t.ContextTokens, ContextWindow: t.ContextWindow, Compactions: t.CompletedCompactions}}
 }
 
+type threadSourceWire struct {
+	SubAgent struct {
+		Spawn struct {
+			Path string `json:"agent_path"`
+		} `json:"thread_spawn"`
+	} `json:"subAgent"`
+}
+
 // AgentPath reads native spawn metadata rather than a presentation alias.
 func (t ThreadInfo) AgentPath() string {
 	if t.ParentThreadID == "" {
 		return "/root"
 	}
-	var source struct {
-		SubAgent struct {
-			Spawn struct {
-				Path string `json:"agent_path"`
-			} `json:"thread_spawn"`
-		} `json:"subAgent"`
-	}
+	var source threadSourceWire
 	if json.Unmarshal(t.Source, &source) != nil {
 		return ""
 	}

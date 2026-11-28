@@ -167,8 +167,14 @@ func (m *mockNativeAppServer) handleCall(method string, params jsontext.Value) a
 	case "thread/subtree/list":
 		return map[string]any{
 			"data": []map[string]any{
-				{"id": "thr-main", "agentPath": "/root", "agentRole": "root", "status": map[string]any{"type": "idle"}},
-				{"id": "thr-worker", "agentPath": "/root/worker", "agentRole": "explorer", "status": map[string]any{"type": "active"}},
+				{"id": "thr-main", "agentRole": "root", "status": map[string]any{"type": "idle"}},
+				{
+					"id": "thr-worker", "parentThreadId": "thr-main", "agentRole": "explorer",
+					"source": map[string]any{"subAgent": map[string]any{"thread_spawn": map[string]any{
+						"parent_thread_id": "thr-main", "depth": 1, "agent_path": "/root/worker",
+					}}},
+					"status": map[string]any{"type": "active"},
+				},
 			},
 		}
 	case "thread/changes/read":

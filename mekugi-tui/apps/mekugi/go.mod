@@ -18,7 +18,6 @@ require (
 	github.com/dlclark/regexp2/v2 v2.8.0 // indirect
 	github.com/gofrs/flock v0.13.1 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
-	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-pointer v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.30 // indirect
@@ -50,6 +49,7 @@ require (
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/creack/pty v1.1.24
+	github.com/klauspost/compress v1.20.1
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 )

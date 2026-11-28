@@ -71,13 +71,18 @@ func TestDirectNativeRosterObservedStatusWaitingAndPaused(t *testing.T) {
 	server := startMockNativeAppServer(t, socket)
 	server.mu.Lock()
 	server.overrides["thread/subtree/list"] = func(jsontext.Value) any {
+		childSource := func(path string) map[string]any {
+			return map[string]any{"subAgent": map[string]any{"thread_spawn": map[string]any{
+				"parent_thread_id": "thr-main", "depth": 1, "agent_path": path,
+			}}}
+		}
 		return map[string]any{"data": []any{
-			map[string]any{"id": "thr-main", "agentPath": "/root", "status": map[string]any{"type": "active", "activeFlags": []string{"waitingOnApproval"}}},
-			map[string]any{"id": "thr-input", "agentPath": "/root/input", "status": map[string]any{"type": "active", "activeFlags": []string{"waitingOnUserInput"}}},
-			map[string]any{"id": "thr-paused", "agentPath": "/root/paused", "agentStatus": "interrupted", "status": map[string]any{"type": "idle"}},
-			map[string]any{"id": "thr-run", "agentPath": "/root/run", "agentStatus": "running", "status": map[string]any{"type": "active"}},
-			map[string]any{"id": "thr-done", "agentPath": "/root/done", "agentStatus": "completed", "status": map[string]any{"type": "idle"}},
-			map[string]any{"id": "thr-err", "agentPath": "/root/err", "agentStatus": "errored", "status": map[string]any{"type": "systemError"}},
+			map[string]any{"id": "thr-main", "status": map[string]any{"type": "active", "activeFlags": []string{"waitingOnApproval"}}},
+			map[string]any{"id": "thr-input", "parentThreadId": "thr-main", "source": childSource("/root/input"), "status": map[string]any{"type": "active", "activeFlags": []string{"waitingOnUserInput"}}},
+			map[string]any{"id": "thr-paused", "parentThreadId": "thr-main", "source": childSource("/root/paused"), "agentStatus": "interrupted", "status": map[string]any{"type": "idle"}},
+			map[string]any{"id": "thr-run", "parentThreadId": "thr-main", "source": childSource("/root/run"), "agentStatus": "running", "status": map[string]any{"type": "active"}},
+			map[string]any{"id": "thr-done", "parentThreadId": "thr-main", "source": childSource("/root/done"), "agentStatus": "completed", "status": map[string]any{"type": "idle"}},
+			map[string]any{"id": "thr-err", "parentThreadId": "thr-main", "source": childSource("/root/err"), "agentStatus": "errored", "status": map[string]any{"type": "systemError"}},
 		}}
 	}
 	server.mu.Unlock()

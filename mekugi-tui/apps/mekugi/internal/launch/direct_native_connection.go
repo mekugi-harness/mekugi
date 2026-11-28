@@ -1043,14 +1043,16 @@ type directWireThread struct {
 	GitInfo   struct {
 		Branch string `json:"branch"`
 	} `json:"gitInfo"`
-	AgentPath    string           `json:"agentPath"`
-	AgentRole    string           `json:"agentRole"`
-	AgentStatus  jsontext.Value   `json:"agentStatus"`
-	ThreadSource string           `json:"threadSource"`
-	Status       jsontext.Value   `json:"status"`
-	Turns        []directWireTurn `json:"turns"`
-	TokenUsage   *directWireUsage `json:"tokenUsage"`
-	Extra        struct {
+	ParentThreadID string           `json:"parentThreadId"`
+	Source         jsontext.Value   `json:"source"`
+	AgentNickname  string           `json:"agentNickname"`
+	AgentRole      string           `json:"agentRole"`
+	AgentStatus    jsontext.Value   `json:"agentStatus"`
+	ThreadSource   string           `json:"threadSource"`
+	Status         jsontext.Value   `json:"status"`
+	Turns          []directWireTurn `json:"turns"`
+	TokenUsage     *directWireUsage `json:"tokenUsage"`
+	Extra          struct {
 		Skills []string `json:"skills"`
 	} `json:"extra"`
 }

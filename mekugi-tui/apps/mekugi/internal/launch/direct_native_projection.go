@@ -1577,11 +1577,16 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 		}
 		c.observeThreadSkillsLocked(th.ID, th.Extra.Skills)
 		threads = append(threads, th.ID)
-		name := th.AgentPath
-		if name == "" {
-			if th.ID == rootThread {
-				name = "/root"
-			} else {
+		var name string
+		if th.ID == rootThread {
+			name = "/root"
+		} else {
+			parentID := cmp.Or(th.ParentThreadID, rootThread)
+			name = (binding.ThreadInfo{ParentThreadID: parentID, Source: th.Source}).AgentPath()
+			if name == "" && th.AgentNickname != "" {
+				name = "/root/" + th.AgentNickname
+			}
+			if name == "" {
 				name = fmt.Sprintf("/root/agent-%d", i)
 			}
 		}

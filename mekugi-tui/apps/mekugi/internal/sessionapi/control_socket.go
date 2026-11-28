@@ -1,3 +1,5 @@
+// Package sessionapi defines wire protocol constants, local TUI publication types,
+// and peer-checked local Unix socket transport for the connector and TUI client.
 package sessionapi
 
 import (
