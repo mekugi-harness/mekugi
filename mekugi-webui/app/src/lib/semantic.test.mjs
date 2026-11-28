@@ -715,7 +715,7 @@ test("shellGuard/requestApproval preserves argument boundaries with shell quotin
   assert.equal(prompt.approval.subject, "rm -rf '/tmp/a b' 'it'\\''s' ''");
 });
 
-test("one-time approvals never offer session-wide grants and reply with accept/decline only", () => {
+test("approval without a native session decision remains one-time", () => {
   const machine = fakeMachine({ "thread/queue/list": () => ({ data: [], nextCursor: null }) });
   const control = new ThreadControl();
   control.connect("t1", machine);
@@ -745,6 +745,67 @@ test("one-time approvals never offer session-wide grants and reply with accept/d
   const err = control.decideApproval(approval, 0);
   assert.equal(err, undefined);
   assert.deepEqual(machine.responses, [{ id: 10, result: { decision: "accept" } }]);
+  assert.equal(control.prompts.approvals.length, 0);
+  control.release();
+});
+
+test("WebUI offers and sends session approval only for supported requests", () => {
+  const machine = fakeMachine({ "thread/queue/list": () => ({ data: [], nextCursor: null }) });
+  const control = new ThreadControl();
+  control.connect("t1", machine);
+
+  const base = { threadId: "t1", turnId: "turn1", itemId: "item1", startedAtMs: 1000 };
+  const cases = [
+    [
+      "item/commandExecution/requestApproval",
+      { kind: "command", availableDecisions: ["acceptForSession"] },
+      true,
+    ],
+    [
+      "item/commandExecution/requestApproval",
+      { kind: "humanCommand", availableDecisions: ["acceptForSession"] },
+      false,
+    ],
+    [
+      "item/commandExecution/requestApproval",
+      {
+        kind: "command",
+        availableDecisions: ["acceptForSession"],
+        networkApprovalContext: { host: "example.com", protocol: "https" },
+      },
+      false,
+    ],
+    ["item/fileChange/requestApproval", { grantRoot: null, reason: null }, true],
+    ["item/fileChange/requestApproval", { grantRoot: "/workspace" }, false],
+    [
+      "shellGuard/requestApproval",
+      { kind: "remoteWrite", executable: "git", argv: ["push"] },
+      true,
+    ],
+    ["shellGuard/requestApproval", { kind: "sudo", executable: "sudo", argv: ["id"] }, false],
+  ];
+  for (const [index, [method, fields, canRemember]] of cases.entries()) {
+    const id = index + 1;
+    machine.emitServerRequest({ id, method, params: { ...base, ...fields } });
+    const approval = control.prompts.approvals[0];
+    if (!canRemember) {
+      assert.deepEqual(
+        approval.choices.map(({ decision }) => decision),
+        ["accept", "decline"],
+      );
+      assert.equal(control.decideApproval(approval, 0), undefined);
+      continue;
+    }
+    const remember = approval.choices.find(({ label }) => label === "Allow for session");
+    assert.equal(control.decideApproval(approval, remember.id), undefined);
+    assert.deepEqual(machine.responses.at(-1), {
+      id,
+      result:
+        method === "shellGuard/requestApproval"
+          ? { decision: "acceptForSession", reason: null }
+          : { decision: "acceptForSession" },
+    });
+  }
   assert.equal(control.prompts.approvals.length, 0);
   control.release();
 });

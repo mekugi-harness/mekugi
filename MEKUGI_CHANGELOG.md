@@ -338,6 +338,12 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   password, GPG passphrase, and `is_secret` user input) while leaving active
   turns running when the connector disconnects or restarts.
 
+- Remote-human connections can use session approval for eligible commands
+  and file changes. Guarded VCS approvals remember exact arguments,
+  executable, and working directory for the same thread and attachment.
+  Remote policy amendments, session grants for network access or additional
+  permissions, and private secret responses remain unavailable.
+
 ## Upstream imports
 
 | Release | Fork commit |
