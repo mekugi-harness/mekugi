@@ -788,6 +788,11 @@ func newNativeParitySnapshot(t *testing.T) *nativeParitySnapshot {
 	t.Helper()
 	socket := filepath.Join(shortTempDir(t), "native.sock")
 	server := startMockNativeAppServer(t, socket)
+	server.mu.Lock()
+	server.overrides["thread/changes/read"] = func(jsontext.Value) any {
+		return jsontext.Value(`{"workspace":"/tmp/ws","changes":[],"files":[]}`)
+	}
+	server.mu.Unlock()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
 	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "", "")

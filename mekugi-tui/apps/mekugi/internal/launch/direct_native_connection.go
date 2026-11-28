@@ -816,7 +816,9 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 	var family *sessionapi.Family
 	if c.family != nil {
 		cp := *c.family
-		cp.Agents = &activity.Publication{Roster: c.rosterLocked()}
+		cp.Agents = &activity.Publication{
+			Roster: agentsPub.Roster, LineCounts: agentsPub.LineCounts, NetCounts: agentsPub.NetCounts,
+		}
 		cp.Status = sessionpresentation.Label{Text: c.statusTextLocked(), Running: c.busy}
 		family = &cp
 	}
@@ -934,6 +936,9 @@ func (c *directNativeConnection) publicationForThreadLocked(threadID string) *ac
 		Entries: entries,
 		LastSeq: lastSeq,
 		Roster:  c.rosterLocked(),
+	}
+	if c.review != nil && c.reviewThread == threadID {
+		pub.LineCounts, pub.NetCounts = c.review.Counts.Callers, c.review.Counts.Net
 	}
 	return pub
 }

@@ -609,6 +609,9 @@ func TestUISnapshotDirectNativeProjection(t *testing.T) {
 			]}
 		}`)
 	}
+	srv.overrides["thread/changes/read"] = func(jsontext.Value) any {
+		return jsontext.Value(`{"threadId":"thr-main","workspace":"/workspace/demo","changes":[],"files":[]}`)
+	}
 	srv.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
