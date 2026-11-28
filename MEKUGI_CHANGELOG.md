@@ -316,8 +316,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - A named turn interrupt can stop only that turn, even if it finishes and its
   replacement starts before the interrupt reaches the runtime. JSON-RPC error
   data identifies a stale interrupt target or an unloaded process-list thread.
-- Command display metadata identifies the authored shell script, its segments
-  and resolved effective working directory for live and saved commands.
+- Command display metadata identifies the authored shell script, step subjects
+  such as skill names and read targets, and resolved effective working directory
+  for live and saved commands.
   Batch status and output still belong to the whole invocation, not to
   individual segments.
 - Thread input-history reads and appends let the terminal save and recover

@@ -735,9 +735,13 @@ func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 			"summary":["Inspecting the parser\n\nCompare valid and invalid inputs."],"content":[]}
 	}`)
 	for _, item := range []string{
+		`{"id":"batch","type":"commandExecution","command":"date; pwd","status":"completed",
+			"display":{"script":"date; pwd","segments":["date","pwd"],"stepKinds":["run","run"]}}`,
 		`{"id":"read","type":"commandExecution","command":"cat fixture.txt && rg invalid .","status":"completed","exitCode":0,
-			"display":{"script":"cat fixture.txt && rg invalid .","segments":["cat fixture.txt","rg invalid ."],"stepKinds":["read","search"]},
+			"display":{"script":"cat fixture.txt && rg invalid .","segments":["cat fixture.txt","rg invalid ."],"stepKinds":["read","search"],"stepSubjects":["fixture.txt","invalid ."]},
 			"aggregatedOutput":"one\nprogress 10%\rprogress 100%\n"}`,
+		`{"id":"skill","type":"commandExecution","command":"skills-mgr get demo/references/check.md","status":"completed","exitCode":0,
+			"display":{"script":"skills-mgr get demo/references/check.md","segments":[],"stepKinds":["skill"],"stepSubjects":["demo/references/check.md"]}}`,
 		`{"id":"image-1","type":"imageView","path":"/tmp/ws/one.png"}`,
 		`{"id":"image-2","type":"imageView","path":"/tmp/ws/two.png"}`,
 		`{"id":"image-3","type":"imageView","path":"/tmp/ws/three.png"}`,
@@ -749,7 +753,7 @@ func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 		f.notify("item/completed", `{"threadId":"thr-main","turnId":"turn-1","item":`+item+`}`)
 	}
 	ev := f.await(func(ev sessionapi.NativeEvent) bool {
-		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 9
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 11
 	})
 	const width = 76
 	rows := append(f.rows(ev, width, 24), "plain after transcript")

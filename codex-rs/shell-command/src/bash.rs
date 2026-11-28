@@ -100,6 +100,41 @@ pub fn parse_shell_script_into_commands(script: &str) -> Option<Vec<Vec<String>>
     try_parse_word_only_commands_sequence(&tree, script)
 }
 
+/// Source words of one simple command, also allowing a displayed home-relative path.
+/// These are not runtime arguments and must not be used for approval decisions.
+pub fn display_command_words(script: &str) -> Option<Vec<String>> {
+    let tree = try_parse_shell(script)?;
+    let root = tree.root_node();
+    let command = root.named_child(0)?;
+    if root.has_error() || root.named_child_count() != 1 || command.kind() != "command" {
+        return None;
+    }
+    let mut pending = vec![command];
+    while let Some(node) = pending.pop() {
+        match node.kind() {
+            "word" | "number"
+                if !is_literal_word_or_number(node, script)
+                    && !node.utf8_text(script.as_bytes()).is_ok_and(|word| {
+                        node.child_count() == 0
+                            && word.strip_prefix("~/").is_some_and(|path| {
+                                !path.contains([
+                                    '{', '}', '*', '?', '[', ']', '\\', '~', '^', '#', '$', '`',
+                                ])
+                            })
+                    }) =>
+            {
+                return None;
+            }
+            "word" | "number" | "string" | "raw_string" => {}
+            "command" | "command_name" | "concatenation" => {
+                pending.extend(node.named_children(&mut node.walk()));
+            }
+            _ => return None,
+        }
+    }
+    parse_plain_command_from_node(command, script)
+}
+
 pub fn extract_bash_command(command: &[String]) -> Option<(&str, &str)> {
     let [shell, flag, script] = command else {
         return None;

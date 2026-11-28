@@ -7184,7 +7184,7 @@ fn stored_thread_item_to_api_item(
             }
         }
         if let Some(display) = display {
-            display.restore_step_kinds();
+            display.restore_step_display();
         }
     }
     Ok(ThreadItem {

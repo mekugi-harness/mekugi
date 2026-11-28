@@ -1112,10 +1112,11 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 	case "commandExecution":
 		command := decodeJSONString(fields["command"])
 		var display *struct {
-			Script       string   `json:"script"`
-			Segments     []string `json:"segments"`
-			StepKinds    []string `json:"stepKinds"`
-			EffectiveCwd string   `json:"effectiveCwd"`
+			Script       string    `json:"script"`
+			Segments     []string  `json:"segments"`
+			StepKinds    []string  `json:"stepKinds"`
+			StepSubjects []*string `json:"stepSubjects"`
+			EffectiveCwd string    `json:"effectiveCwd"`
 		}
 		if raw := fields["display"]; len(raw) > 0 {
 			_ = json.Unmarshal(raw, &display)
@@ -1197,22 +1198,34 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			}
 		}
 		rec.entry.Values = nil
+		if display != nil && len(display.StepSubjects) > 0 && len(segments) < 2 && display.StepSubjects[0] != nil {
+			val.Label, val.DetailCode, val.Code = activity.SourceCode(*display.StepSubjects[0]), command, ""
+			val.Fenced = false
+		}
 		if len(segments) == 1 {
-			val.Code = segments[0]
-			if val.Code != command {
-				val.DetailCode = command
+			if val.Label == "" {
+				val.Code = segments[0]
+				if val.Code != command {
+					val.DetailCode = command
+				}
+				val.Fenced = strings.Contains(val.Code, "\n")
 			}
-			val.Fenced = strings.Contains(val.Code, "\n")
 		} else if len(segments) > 1 {
 			for i, source := range segments {
 				verb := "Run"
 				if i < len(kinds) {
 					verb = directCommandVerb(kinds[i])
 				}
-				rec.entry.Values = append(rec.entry.Values, activity.Value{
+				step := activity.Value{
 					Content: activityfeed.Content{Kind: "op", Verb: verb, Code: source, Lang: "bash", Fenced: strings.Contains(source, "\n")},
-					Workdir: val.Workdir, ShowWorkdir: i == 0 && val.ShowWorkdir, Operation: i + 2, Requested: true,
-				})
+					Workdir: val.Workdir, ShowWorkdir: i == 0 && val.ShowWorkdir, Operation: i + 2,
+					Running: running, Requested: val.Requested,
+				}
+				if display != nil && i < len(display.StepSubjects) && display.StepSubjects[i] != nil {
+					step.Label, step.DetailCode, step.Code = activity.SourceCode(*display.StepSubjects[i]), source, ""
+					step.Fenced = false
+				}
+				rec.entry.Values = append(rec.entry.Values, step)
 			}
 			val.BatchExit, val.Operation, val.Label, val.DetailCode, val.Code = true, 1, "combined output", command, ""
 			val.ShowWorkdir = false

@@ -821,7 +821,7 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
     props: { entry: runningCmd, at: "", stamp: "", owner: "/root", workspace: "/repo" },
   }).body;
   assert.match(runningHtml, /sleep 1/);
-  assert.match(runningHtml, />running</);
+  assert.match(runningHtml, />Running</);
   assert.doesNotMatch(runningHtml, /text-negative/);
   assert.doesNotMatch(runningHtml, /exit /);
 
@@ -829,12 +829,13 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
     {
       id: "batch",
       type: "commandExecution",
-      command: "/bin/bash -lc 'cd sub && cat a && cat b'",
+      command: "/bin/bash -lc 'cd sub && cat a && skills-mgr get demo/references/check.md && date'",
       display: {
-        script: "cd sub && cat a && cat b",
+        script: "cd sub && cat a && skills-mgr get demo/references/check.md && date",
         effectiveCwd: "/repo/sub",
-        segments: ["cat a", "cat b"],
-        stepKinds: ["stage", "commit"],
+        segments: ["cat a", "skills-mgr get demo/references/check.md", "date"],
+        stepKinds: ["read", "skill", "run"],
+        stepSubjects: ["a", "demo/references/check.md", null],
       },
       cwd: "/repo",
       status: "failed",
@@ -852,18 +853,19 @@ test("itemToEntry outputs render cleanly through EntryView and ValueRow", () => 
   );
   assert.deepEqual(
     batch.values.map((v) => v.code),
-    ["cat a", "cat b"],
+    ["a", "demo/references/check.md", "date"],
   );
   assert.ok(batch.values.every((v) => v.workdir === "/repo/sub"));
   assert.ok(batch.values.every((value) => !value.tail && value.exitCode == null));
   assert.deepEqual(
     batch.values.map((value) => value.verb),
-    ["Stage", "Commit"],
+    ["Read", "Skill", "Ran"],
   );
   const batchHtml = render(EntryView, {
     props: { entry: batch, at: "", stamp: "", owner: "/root", workspace: "/repo" },
   }).body;
-  assert.match(batchHtml, />Stage<[\s\S]*>Commit</);
+  assert.match(batchHtml, />Read<[\s\S]*>Skill<[\s\S]*>Ran</);
+  assert.doesNotMatch(batchHtml, /cat a|skills-mgr get/);
   assert.doesNotMatch(batchHtml, /last 5 of 6 lines|exit -1/);
 
   // Completed fileChange renders per-file op rows and Source disclosure through EntryView.

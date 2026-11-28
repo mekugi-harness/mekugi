@@ -223,7 +223,8 @@
   });
   // A Run label quotes its command as inline code.
   const commandLabel = (html: string) => (node: HTMLElement) => {
-    if (html && verb === "Run") highlightWithin(node, "code", () => "bash", true);
+    if (html && (verb === "Run" || verb === "Ran" || verb === "Running"))
+      highlightWithin(node, "code", () => "bash", true);
   };
   const verbInk: Record<string, string> = {
     run: "text-kind-run",

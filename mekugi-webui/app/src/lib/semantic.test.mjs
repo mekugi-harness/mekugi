@@ -1726,7 +1726,7 @@ test("itemToEntry maps commandExecution with bash lang and fileChange as per-fil
   );
   assert.equal(cmdEntry.kind, "tool");
   assert.equal(cmdEntry.values?.[0]?.kind, "op");
-  assert.equal(cmdEntry.values?.[0]?.verb, "Run");
+  assert.equal(cmdEntry.values?.[0]?.verb, "Ran");
   assert.equal(cmdEntry.values?.[0]?.lang, "bash");
   assert.equal(cmdEntry.values?.[0]?.code, "git diff --stat");
 
