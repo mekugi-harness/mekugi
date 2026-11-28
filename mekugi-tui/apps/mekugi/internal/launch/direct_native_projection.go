@@ -1264,17 +1264,31 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		exited := status != "" && !running
 		vals := make([]activity.Value, 0, len(changeList))
 		for _, ch := range changeList {
-			verb, label := ch.Kind.operation(ch.Path)
+			verb, path := ch.Kind.operation(ch.Path)
+			label := activity.SourceCode(path)
+			diff := ch.reviewFile()
+			if status == "completed" {
+				added, removed := diff.LineCounts()
+				label += fmt.Sprintf(" +%d -%d", added, removed)
+			}
+			editOutcome := ""
+			switch status {
+			case "inProgress":
+				editOutcome = "pending"
+			case "failed", "declined":
+				editOutcome = status
+			}
 			vals = append(vals, activity.Value{
-				Path:   ch.Path,
-				Effect: true,
+				Path:        ch.Path,
+				Effect:      true,
+				EditOutcome: editOutcome,
 				Content: activityfeed.Content{
 					Kind:   "op",
 					Verb:   verb,
-					Label:  "`" + label + "`",
-					Code:   ch.Diff,
+					Label:  label,
+					Code:   diff.Diff,
 					Lang:   "diff",
-					Fenced: ch.Diff != "",
+					Fenced: diff.Diff != "",
 				},
 				Running: running,
 				Exited:  exited,
@@ -1557,16 +1571,7 @@ func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, it
 	}
 	files := make([]diffmodel.ReviewFile, 0, len(updates))
 	for _, update := range updates {
-		file := diffmodel.ReviewFile{BeforePath: update.Path, AfterPath: cmp.Or(update.Kind.MovePath, update.Path), Diff: update.Diff}
-		switch update.Kind.Type {
-		case "add":
-			file.BeforePath = ""
-			file.Diff = nativePreviewWholeFileDiff(file.Diff, '+')
-		case "delete":
-			file.AfterPath = ""
-			file.Diff = nativePreviewWholeFileDiff(file.Diff, '-')
-		}
-		files = append(files, file)
+		files = append(files, update.reviewFile())
 	}
 	edit := preview.Preview{
 		ID: id, Workspace: c.workspace, Caller: cmp.Or(c.threadCallers[threadID], "/root"),
@@ -1578,6 +1583,23 @@ func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, it
 		c.live = append(c.live, edit)
 	}
 	c.liveDirty = true
+}
+
+func (change nativeFileChange) reviewFile() diffmodel.ReviewFile {
+	file := diffmodel.ReviewFile{
+		BeforePath: change.Path,
+		AfterPath:  cmp.Or(change.Kind.MovePath, change.Path),
+		Diff:       change.Diff,
+	}
+	switch change.Kind.Type {
+	case "add":
+		file.BeforePath = ""
+		file.Diff = nativePreviewWholeFileDiff(file.Diff, '+')
+	case "delete":
+		file.AfterPath = ""
+		file.Diff = nativePreviewWholeFileDiff(file.Diff, '-')
+	}
+	return file
 }
 
 // Native adds and deletes carry raw file content, not a unified patch.

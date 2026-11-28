@@ -905,7 +905,7 @@ func (p *Painter) groupSource(block Block) []string {
 // editRow lays out a file row with its counts in the group's shared column.
 // Zero counts are omitted.
 func (p *Painter) editRow(block Block, width, lead int) (string, bool) {
-	if !slices.Contains([]string{"Create", "Edit", "Delete"}, block.Verb) {
+	if !slices.Contains([]string{"Create", "Edit", "Delete", "Move"}, block.Verb) {
 		return "", false
 	}
 	path, added, removed, tail, ok := EditStat(block.Label)

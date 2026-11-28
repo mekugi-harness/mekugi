@@ -794,9 +794,9 @@ func TestUISnapshotNativeFileChangeDetails(t *testing.T) {
 	f := newNativeParitySnapshot(t)
 	f.notify("item/completed", `{
 		"threadId":"thr-main","turnId":"turn-1","item":{"type":"fileChange","id":"edits","status":"completed","changes":[
-			{"path":"added.go","kind":{"type":"add"},"diff":"+new"},
+			{"path":"added.go","kind":{"type":"add"},"diff":"new\n"},
 			{"path":"parser.go","kind":{"type":"update"},"diff":"@@ -1 +1 @@\n-before\n+after"},
-			{"path":"old.go","kind":{"type":"delete"},"diff":"-old"}
+			{"path":"old.go","kind":{"type":"delete"},"diff":"old\n"}
 		]}
 	}`)
 	published := f.await(func(ev sessionapi.NativeEvent) bool {
