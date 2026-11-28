@@ -196,7 +196,7 @@ _test-env +command:
         -u MEKUGI_UPDATE_UI_SNAPSHOTS -u MEKUGI_USER_BASH_ENV -u MEKUGI_VCS_GUARD_HOOK \
         TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" PATH="$clean_path" "$@"
 
-# Rust maintenance excludes upstream clients, SDKs and Bazel packaging.
+# Rust maintenance excludes upstream clients and SDKs.
 fmt:
     python3 scripts/format.py
 

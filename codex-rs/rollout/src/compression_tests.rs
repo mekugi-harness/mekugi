@@ -769,7 +769,7 @@ async fn worker_preserves_alternate_group_through_materialization() -> anyhow::R
         .collect::<Result<Vec<_>, _>>()?;
     #[cfg(target_os = "linux")]
     let groups = {
-        // Unmapped supplementary groups appear as the overflow GID in Bazel's
+        // Unmapped supplementary groups appear as the overflow GID in a
         // user namespace, but chown cannot use them.
         let gid_map = fs::read_to_string("/proc/self/gid_map")?;
         let mapped_groups = gid_map

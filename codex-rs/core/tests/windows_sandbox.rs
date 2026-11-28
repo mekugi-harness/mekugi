@@ -110,8 +110,8 @@ impl TestCodexHome {
 fn codex_home_for_windows_sandbox_test(name: &str) -> anyhow::Result<TestCodexHome> {
     // Only tests that use the elevated accounts also take the shared account guard.
     if let Some(test_tmpdir) = std::env::var_os("TEST_TMPDIR") {
-        // The elevated backend provisions machine-local sandbox users. Bazel
-        // retries run in the same Windows VM, so keep CODEX_HOME stable within
+        // The elevated backend provisions machine-local sandbox users. In a runner
+        // that retries tests, keep CODEX_HOME stable within
         // the test temp root and let setup reconcile its persisted ACL state.
         let codex_home = PathBuf::from(test_tmpdir).join(name);
         std::fs::create_dir_all(&codex_home)
@@ -143,7 +143,7 @@ fn stage_windows_sandbox_helpers() -> anyhow::Result<()> {
         let destination = resources_dir.join(file_name);
         if let Err(err) = codex_utils_cargo_bin::copy_executable(&helper, &destination) {
             // A sandbox helper can briefly remain alive after the sandboxed
-            // command exits. Bazel may retry the test while that process still
+            // command exits. A retry can run while that process still
             // has the staged executable open, so keep the already-staged copy.
             if err.kind() == std::io::ErrorKind::PermissionDenied && destination.exists() {
                 continue;

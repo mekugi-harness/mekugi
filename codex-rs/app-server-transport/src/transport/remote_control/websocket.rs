@@ -1923,7 +1923,7 @@ mod tests {
     use tokio_tungstenite::WebSocketStream;
     use tokio_tungstenite::accept_async;
 
-    // State initialization can delay the first local connection on loaded Bazel workers.
+    // State initialization can delay the first local connection on loaded CI workers.
     pub(super) const TEST_HTTP_ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
     pub(super) const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
     pub(super) const TEST_REMOTE_CONTROL_SERVER_TOKEN: &str = "Remote Control Token";

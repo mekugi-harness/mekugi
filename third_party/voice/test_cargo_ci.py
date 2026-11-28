@@ -23,7 +23,7 @@ def write_files(root, contents):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-        path.chmod(0o444)  # Bazel materializes these inputs read-only.
+        path.chmod(0o444)
         records.append({"path": name, "sha256": digest(path)})
     return records
 

@@ -135,7 +135,7 @@ async fn frozen_cloud_skills_with_named_executor_request_history() -> Result<()>
         .iter()
         .map(core_test_support::responses::ResponsesRequest::body_json)
         .collect::<Vec<_>>();
-    // Cargo and Bazel can serialize embedded JSON in different key orders.
+    // JSON serialization order can vary with enabled features.
     // Preserve every output value while normalizing before truncation and hashing.
     for body in &mut bodies {
         for item in body["input"].as_array_mut().expect("request input") {

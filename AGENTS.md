@@ -50,7 +50,7 @@ Documentation may not refer back to this instruction file.
 ## Native runtime
 
 - Ship `mekugi-app-server`, `codex-code-mode-host`, and Linux `bwrap`. Keep upstream clients,
-  SDKs, Bazel packaging and upstream release automation outside routine fork changes.
+  SDKs and upstream release automation outside routine fork changes.
 - Keep runtime behavior in its native owner rather than recreating it in Go. Coordinate wire
   changes with Mekugi's Go consumers; compiling the Rust producer alone does not validate them.
 - `codex-rs/app-server` owns JSON-RPC admission and thread operations;
@@ -140,7 +140,7 @@ differences that upstream now supplies.
   `inspect_params: true` when only part of a method's request is experimental.
 - Regenerate native schema fixtures with `just write-app-server-schema` here; include
   `--experimental` when experimental exports change. Test `codex-app-server-protocol` and
-  affected Go consumers. Do not restore SDK or Bazel generation steps.
+  affected Go consumers. Do not restore SDK generation steps.
 
 ## Native validation and generation
 
@@ -171,8 +171,8 @@ configured target directory and incremental setting, including in worktrees. Do 
 - After changing `ConfigToml` or nested config types, run `just write-config-schema` here and
   include `codex-rs/core/config.schema.json`. Hook event schema changes use
   `just write-hooks-schema`. App-server schema generation is described above.
-- Rust dependency changes include the corresponding Cargo lockfile update. There is no
-  Mekugi Bazel-lock regeneration step. Packaging checks must retain the companion code-mode
+- Rust dependency changes include the corresponding Cargo lockfile update.
+  Packaging checks must retain the companion code-mode
   executable and Linux `bwrap`; stripping `bwrap` after its integrity hash is compiled breaks it.
 - Prefer behavior-level integration tests for agent/session changes:
   `codex-rs/core/tests/suite/` with `core/tests/common/{test_codex,responses}.rs` helpers, and

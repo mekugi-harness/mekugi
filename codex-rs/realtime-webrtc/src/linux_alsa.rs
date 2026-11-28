@@ -1,7 +1,7 @@
 //! Locate system ALSA plugins for the statically linked Linux voice helper.
 //!
-//! Bazel's ALSA defaults to /usr/lib/alsa-lib. Distribution plugins may instead
-//! live in a multiarch or lib64 directory. Only fixed system paths are admitted;
+//! Distribution plugins may live in a multiarch or lib64 directory. Only
+//! fixed system paths are admitted;
 //! caller-provided plugin directories and loader search paths remain excluded.
 
 use std::path::Path;

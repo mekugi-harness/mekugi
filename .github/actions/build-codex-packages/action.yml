@@ -10,9 +10,6 @@ inputs:
   build-mode:
     description: Use release optimizations (release) or disable them for faster smoke coverage (debug).
     required: true
-  build-system:
-    description: Build package binaries with Cargo or Bazel.
-    default: cargo
 
 # Resolve package sources relative to the action so it works in both repository layouts.
 runs:
@@ -26,7 +23,6 @@ runs:
         BASE_BINARIES: "codex codex-app-server codex-code-mode-host codex-exec-server"
         WINDOWS_ONLY_BINARIES: "codex-command-runner codex-windows-sandbox-setup codex-windows-sandbox-service"
         BUILD_MODE: ${{ inputs.build-mode }}
-        BUILD_SYSTEM: ${{ inputs.build-system }}
         PACKAGE_ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -37,10 +33,6 @@ runs:
           needed_binaries+=" $WINDOWS_ONLY_BINARIES"
         fi
         echo "NEEDED_BINARIES=$needed_binaries" >> "$GITHUB_ENV"
-        case "$BUILD_SYSTEM" in
-          cargo|bazel) ;;
-          *) echo "Unsupported build system: $BUILD_SYSTEM" >&2; exit 1 ;;
-        esac
         case "$BUILD_MODE" in
           release|debug) ;;
           *) echo "Unsupported build mode: $BUILD_MODE" >&2; exit 1 ;;
@@ -66,18 +58,10 @@ runs:
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils make pkg-config libcap-dev
 
     - name: Build Cargo package binaries
-      if: inputs.build-system == 'cargo'
       uses: ./.github/actions/build-cargo-package-binaries
       with:
         target: ${{ inputs.target }}
         binaries: ${{ env.NEEDED_BINARIES }}
-        build-mode: ${{ inputs.build-mode }}
-
-    - name: Build Bazel package binaries
-      if: inputs.build-system == 'bazel'
-      uses: ./.github/actions/build-bazel-package-binaries
-      with:
-        target: ${{ inputs.target }}
         build-mode: ${{ inputs.build-mode }}
 
     - name: Normalize Windows PDB filenames

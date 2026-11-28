@@ -79,7 +79,7 @@ def stage(sdk: Path, runtime: Path, output: Path, target: str, commit: str) -> N
                 if payload and not alias.exists():
                     shutil.copy2(payload, alias)
     except BaseException:
-        # Windows cannot delete read-only files copied from Bazel.
+        # Windows cannot delete read-only staged files.
         if os.name == "nt":
             for copied in output.rglob("*"):
                 copied.chmod(copied.stat().st_mode | stat.S_IWRITE)

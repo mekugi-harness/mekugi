@@ -56,21 +56,9 @@ fn install_startup_libraries(runtime: &Path) -> Result<()> {
     )) {
         return Ok(());
     }
-    let source = if codex_utils_cargo_bin::runfiles_available() {
-        let resource = format!(
-            "../../third_party/voice/native_link_{}_{}/runtime.json",
-            std::env::consts::OS,
-            std::env::consts::ARCH
-        );
-        codex_utils_cargo_bin::find_resource!(resource)?
-            .parent()
-            .context("runtime parent")?
-            .to_owned()
-    } else {
-        std::env::var_os("CODEX_TEST_VOICE_RUNTIME")
-            .map(PathBuf::from)
-            .context("prepared runtime required for installed helper tests")?
-    };
+    let source = std::env::var_os("CODEX_TEST_VOICE_RUNTIME")
+        .map(PathBuf::from)
+        .context("prepared runtime required for installed helper tests")?;
     let libraries = if cfg!(windows) { "bin" } else { "lib" };
     let destination = runtime.join(libraries);
     fs::create_dir_all(&destination)?;

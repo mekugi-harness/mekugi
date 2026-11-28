@@ -41,7 +41,7 @@ async fn sandbox_starts_with_multiple_denied_files(rules: DeniedFileRules) {
         DeniedFileRules::GlobsWithProtectedRg | DeniedFileRules::GlobsWithoutRg
     );
     let temp = if use_controlled_rg_path {
-        // Bazel can mount the default temp directory noexec.
+        // The default temp directory may be mounted noexec.
         tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
             .or_else(|_| tempfile::tempdir())
     } else {

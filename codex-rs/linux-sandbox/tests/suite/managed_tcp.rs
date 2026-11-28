@@ -1,7 +1,6 @@
 //! Exercise native name resolution and ordinary TCP through the two-stage Linux launcher.
 
 use super::*;
-use codex_utils_cargo_bin::runfiles;
 use pretty_assertions::assert_eq;
 use socks5_protocol::CommandRequest;
 use socks5_protocol::sync::FromIO;
@@ -71,23 +70,6 @@ async fn managed_tcp_native_client_uses_attributed_socks_and_preserves_restricti
     }
     let mut env = create_env_from_core_vars();
     strip_proxy_env(&mut env);
-    // Keep distro bwrap private to this child. Other tests exercise bundled discovery.
-    // Stage outside the runfiles cwd, which the production launcher rejects for executables.
-    let _bwrap_dir = if cfg!(target_arch = "x86_64") && option_env!("BAZEL_PACKAGE").is_some() {
-        let bin = tempfile::tempdir().unwrap();
-        let files = runfiles::Runfiles::create().expect("managed TCP test runfiles");
-        let bwrap = runfiles::rlocation!(
-            files,
-            "managed_tcp_test_bubblewrap_noble_amd64/usr/bin/bwrap"
-        )
-        .expect("Ubuntu bubblewrap test fixture");
-        codex_utils_cargo_bin::copy_executable(&bwrap, &bin.path().join("bwrap")).unwrap();
-        let path = env.get("PATH").map(String::as_str).unwrap_or_default();
-        env.insert("PATH".into(), format!("{path}:{}", bin.path().display()));
-        Some(bin)
-    } else {
-        None
-    };
     if let Some(reason) = managed_proxy_skip_reason_with_env(env.clone()).await {
         eprintln!("skipping managed TCP sandbox test: {reason}");
         return;
