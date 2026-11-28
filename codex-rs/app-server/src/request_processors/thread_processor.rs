@@ -6715,6 +6715,111 @@ impl ThreadRequestProcessor {
 
         Ok((items, next_cursor))
     }
+
+    /// Resolves `requested` to a canonical directory only when it matches the workspace of a
+    /// live or persisted thread, avoiding filesystem probes against arbitrary caller paths.
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn admit_attachment_workspace(&self, requested: &Path) -> Option<PathBuf> {
+        let requested_lexical = normalize_lexical_absolute_path(requested)?;
+        let mut checked_cwds = HashSet::new();
+
+        for thread_id in self.thread_manager.list_thread_ids().await {
+            if let Ok(thread) = self.thread_manager.get_thread(thread_id).await
+                && thread
+                    .thread_extension_data()
+                    .get::<SampleThread>()
+                    .is_none()
+            {
+                let snapshot = thread.config_snapshot().await;
+                let cwd = snapshot.cwd().to_path_buf();
+                if checked_cwds.insert(cwd.clone())
+                    && let Some(workspace) =
+                        match_admitted_workspace(&cwd, &requested_lexical).await
+                {
+                    return Some(workspace);
+                }
+            }
+        }
+
+        for archived in [false, true] {
+            let mut cursor = None;
+            let mut seen_cursors = HashSet::new();
+            loop {
+                let Ok(page) = self
+                    .thread_store
+                    .list_threads(StoreListThreadsParams {
+                        page_size: THREAD_LIST_MAX_LIMIT,
+                        included_thread_ids: None,
+                        cursor: cursor.clone(),
+                        sort_key: StoreThreadSortKey::UpdatedAt,
+                        sort_direction: StoreSortDirection::Desc,
+                        allowed_sources: Vec::new(),
+                        model_providers: None,
+                        cwd_filters: Some(vec![requested_lexical.clone()]),
+                        archived,
+                        section: None,
+                        project_id: None,
+                        search_term: None,
+                        use_state_db_only: false,
+                        relation_filter: None,
+                    })
+                    .await
+                else {
+                    break;
+                };
+                for item in page.items {
+                    if checked_cwds.insert(item.cwd.clone())
+                        && let Some(workspace) =
+                            match_admitted_workspace(&item.cwd, &requested_lexical).await
+                    {
+                        return Some(workspace);
+                    }
+                }
+                let Some(next_cursor) = page.next_cursor else {
+                    break;
+                };
+                if !seen_cursors.insert(next_cursor.clone()) {
+                    break;
+                }
+                cursor = Some(next_cursor);
+            }
+        }
+
+        None
+    }
+}
+
+fn normalize_lexical_absolute_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::Normal(segment) => normalized.push(segment),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => return None,
+        }
+    }
+    Some(normalized)
+}
+
+#[tracing::instrument(skip_all)]
+async fn match_admitted_workspace(known: &Path, requested_lexical: &Path) -> Option<PathBuf> {
+    let known_lexical = normalize_lexical_absolute_path(known)?;
+    let canonical = tokio::fs::canonicalize(known).await.ok()?;
+    if !tokio::fs::metadata(&canonical)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir())
+    {
+        return None;
+    }
+    if known_lexical == requested_lexical || canonical == requested_lexical {
+        return Some(canonical);
+    }
+    None
 }
 
 fn parse_thread_list_ids<C: FromIterator<ThreadId>>(
