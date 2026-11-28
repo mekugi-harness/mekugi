@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/pathdisplay"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
 )
 
@@ -81,6 +80,30 @@ func optionWindow(options []prompt.Option, selected, top, budget int, showDesc b
 	return start, end
 }
 
+func restoreInlineStyle(s, attr, fg string) string {
+	var pairs []string
+	if attr != "" || fg != "" {
+		pairs = append(pairs, terminalui.Reset, terminalui.Reset+attr+fg)
+	}
+	if attr != "" {
+		pairs = append(pairs, terminalui.Undim, terminalui.Undim+attr)
+	}
+	if fg != "" {
+		pairs = append(pairs, "\x1b[39m", "\x1b[39m"+fg, "\x1b[24;39m", "\x1b[24;39m"+fg)
+	}
+	if len(pairs) == 0 {
+		return s
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
+}
+
+func truncateStyled(line string, width int) string {
+	if ansi.StringWidth(line) <= width {
+		return line
+	}
+	return ansi.Truncate(line, width, "…") + terminalui.Reset
+}
+
 // Questions docks the open question as a panel: an accent heading with its
 // position, the question, numbered options with a pointer on the selected
 // one, and dim keys. Hidden questions collapse to one reminder row.
@@ -89,6 +112,9 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 	if d.Count == 0 || height < 1 {
 		return nil
 	}
+	prevCopy := p.CopySource
+	p.CopySource = false
+	defer func() { p.CopySource = prevCopy }()
 	accent, dim, reset := p.Theme.Accent(), terminalui.Dim, terminalui.Reset
 	if d.Call == nil {
 		questions := fmt.Sprintf("%d question", d.Count)
@@ -118,7 +144,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 	title := fmt.Sprintf("Question %d of %d", position+1, total)
 	detail := ""
 	if question.Header != question.Text {
-		detail = promptText(question.Header)
+		detail = restoreInlineStyle(p.InlineComplete(promptText(question.Header)), dim, "")
 	}
 	rows := []string{terminalui.PanelHeading(accent, title, detail, dim+state+reset, inner)}
 	if height >= 10 && (preview == "" || height >= 14) {
@@ -165,7 +191,10 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		}
 		foot = promptWrap(accent+fmt.Sprintf("Submit with %d unanswered?", d.Gaps)+reset+dim+hint+reset, inner)
 	}
-	text := promptWrap(textsanitize.Safe(question.Text, false), max(1, inner-2))
+	text := p.MarkdownComplete(question.Text, max(1, inner-2), false)
+	if len(text) == 0 && question.Text != "" {
+		text = []string{""}
+	}
 	for i, line := range text {
 		text[i] = "  " + line
 	}
@@ -218,7 +247,10 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 	var optionRows []string
 	for i := start; i < end; i++ {
 		o := options[i]
-		label := promptText(o.Label)
+		label := p.InlineComplete(promptText(o.Label))
+		if i == question.Selected {
+			label = restoreInlineStyle(label, "\x1b[1m", accent)
+		}
 		prefixLen := 2 + len(fmt.Sprintf("%d. ", i+1))
 		if o.Recommended {
 			label = ansi.Truncate(label, max(1, optionWidth-prefixLen-len(" [Recommended]")), "…")
@@ -227,14 +259,15 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		if o.Recommended {
 			line += " " + accent + "[Recommended]" + reset
 		}
-		optionRows = append(optionRows, ansi.Truncate(line, optionWidth, "…"))
-		if desc := promptText(o.Description); desc != "" {
+		optionRows = append(optionRows, truncateStyled(line, optionWidth))
+		if rawDesc := promptText(o.Description); rawDesc != "" {
+			desc := restoreInlineStyle(p.InlineComplete(rawDesc), dim, "")
 			if showDesc && optionWidth > prefixLen {
 				indent := strings.Repeat(" ", prefixLen)
 				optionRows = append(optionRows, indent+dim+ansi.Truncate(desc, optionWidth-prefixLen, "…")+reset)
 			} else if !showDesc && i == question.Selected {
 				if lineWidth := ansi.StringWidth(line); optionWidth-lineWidth-2 >= 16 {
-					optionRows[len(optionRows)-1] = ansi.Truncate(line+"  "+dim+desc+reset, optionWidth, "…")
+					optionRows[len(optionRows)-1] = truncateStyled(line+"  "+dim+desc+reset, optionWidth)
 				}
 			}
 		}
@@ -252,7 +285,10 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		if wide {
 			previewWidth, previewRoom = inner-optionWidth-3, room
 		}
-		lines := promptWrap(textsanitize.Safe(preview, false), previewWidth)
+		lines := p.MarkdownComplete(preview, max(1, previewWidth), false)
+		if len(lines) == 0 {
+			lines = []string{""}
+		}
 		visible := max(1, previewRoom-1)
 		layout.previewMax = max(0, len(lines)-visible)
 		layout.previewTop = min(layout.previewTop, layout.previewMax)

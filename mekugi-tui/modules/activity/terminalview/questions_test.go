@@ -95,3 +95,53 @@ func TestUISnapshotQuestionMarkdown(t *testing.T) {
 		uisnapshot.AssertTerminal(t, fmt.Sprintf("testdata/snapshots/question_markdown_%d.txt", theme), append(rows, "plain after answer"), 42)
 	}
 }
+
+func TestQuestionBlockRendersQuestionAndOptionMarkdown(t *testing.T) {
+	p := Painter{Theme: diffrender.DarkTheme}
+	rows := p.Block(Block{
+		Kind:  "op",
+		Verb:  "Asked",
+		Label: "1 question · waiting",
+		Questions: []Question{{
+			Text:    "Render `Prompt.svelte` with **Markdown**?",
+			Options: "Use `Markdown` · Keep `<pre>`",
+			State:   "waiting",
+		}},
+	}, 80)
+	plain := ansi.Strip(strings.Join(rows, "\n"))
+	for _, forbidden := range []string{"`Prompt.svelte`", "**Markdown**", "`Markdown`", "`<pre>`"} {
+		if strings.Contains(plain, forbidden) {
+			t.Fatalf("rendered raw markdown %q in:\n%s", forbidden, plain)
+		}
+	}
+	for _, want := range []string{"Prompt.svelte", "Markdown", "<pre>"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing rendered text %q in:\n%s", want, plain)
+		}
+	}
+}
+
+func TestUISnapshotQuestionTextAndOptionsMarkdown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		theme diffrender.Theme
+	}{
+		{"dark", diffrender.DarkTheme},
+		{"light", diffrender.LightTheme},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Painter{Theme: tc.theme}
+			rows := p.Block(Block{
+				Kind:  "op",
+				Verb:  "Asked",
+				Label: "1 question · waiting",
+				Questions: []Question{{
+					Text:    "Render `Prompt.svelte` with **Markdown**?",
+					Options: "Use `Markdown` · Include **/*.go",
+					State:   "waiting",
+				}},
+			}, 60)
+			uisnapshot.AssertTerminal(t, "testdata/snapshots/question_text_markdown_"+tc.name+".txt", append(rows, "plain after question"), 60)
+		})
+	}
+}

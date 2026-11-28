@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 
@@ -33,6 +35,7 @@ type Painter struct {
 	ActionLink func(target string) bool
 	// DeferFileLinks keeps local candidates private until visible-row admission.
 	DeferFileLinks bool
+	noUnclosedBold bool
 }
 
 const (
@@ -168,8 +171,12 @@ func Hang(lead, label string, width int) []string {
 // Inline renders the supported Markdown inline subset.
 func (p *Painter) Inline(line string) string {
 	line = textsanitize.Safe(line, false)
+	var opens, closes map[int]bool
+	if p.noUnclosedBold && strings.Contains(line, "**") {
+		opens, closes = matchBoldDelimiters(line)
+	}
 	var out strings.Builder
-	bold := false
+	boldDepth := 0
 	for i := 0; i < len(line); {
 		if line[i] == '[' {
 			if label, target, end, ok := markdownLink(line[i:]); ok {
@@ -199,11 +206,26 @@ func (p *Painter) Inline(line string) string {
 			continue
 		}
 		if strings.HasPrefix(line[i:], "**") {
-			bold = !bold
-			if bold {
-				out.WriteString("\x1b[1m")
+			if !p.noUnclosedBold {
+				if boldDepth == 0 {
+					boldDepth = 1
+					out.WriteString("\x1b[1m")
+				} else {
+					boldDepth = 0
+					out.WriteString(Undim)
+				}
+			} else if opens[i] {
+				boldDepth++
+				if boldDepth == 1 {
+					out.WriteString("\x1b[1m")
+				}
+			} else if closes[i] && boldDepth > 0 {
+				boldDepth--
+				if boldDepth == 0 {
+					out.WriteString(Undim)
+				}
 			} else {
-				out.WriteString(Undim)
+				out.WriteString("**")
 			}
 			i += 2
 			continue
@@ -223,10 +245,93 @@ func (p *Painter) Inline(line string) string {
 		out.WriteByte(line[i])
 		i++
 	}
-	if bold {
+	if boldDepth > 0 {
 		out.WriteString(Undim)
 	}
 	return out.String()
+}
+
+// InlineComplete paints complete inline Markdown without opening bold on an
+// unmatched ** delimiter (such as a glob like **/*.go).
+func (p *Painter) InlineComplete(line string) string {
+	prev := p.noUnclosedBold
+	p.noUnclosedBold = true
+	defer func() { p.noUnclosedBold = prev }()
+	return p.Inline(line)
+}
+
+func canOpenBold(line string, pos int) bool {
+	if pos+2 >= len(line) {
+		return false
+	}
+	after, _ := utf8.DecodeRuneInString(line[pos+2:])
+	if unicode.IsSpace(after) {
+		return false
+	}
+	if pos == 0 {
+		return true
+	}
+	before, _ := utf8.DecodeLastRuneInString(line[:pos])
+	if before == '/' && after == '/' {
+		return false
+	}
+	return !unicode.IsPunct(after) || unicode.IsSpace(before) || unicode.IsPunct(before)
+}
+
+func canCloseBold(line string, pos int) bool {
+	if pos == 0 {
+		return false
+	}
+	before, _ := utf8.DecodeLastRuneInString(line[:pos])
+	if unicode.IsSpace(before) {
+		return false
+	}
+	if pos+2 >= len(line) {
+		return true
+	}
+	after, _ := utf8.DecodeRuneInString(line[pos+2:])
+	if before == '/' && after == '/' {
+		return false
+	}
+	return !unicode.IsPunct(before) || unicode.IsSpace(after) || unicode.IsPunct(after)
+}
+
+// matchBoldDelimiters pairs flanking ** delimiters innermost-first (LIFO)
+// outside code spans so unmatched glob prefixes like **/*.go never borrow a
+// closing ** from a later **bold** span.
+func matchBoldDelimiters(line string) (opens, closes map[int]bool) {
+	var stack []int
+	for i := 0; i < len(line); {
+		if line[i] == '[' {
+			if _, _, end, ok := markdownLink(line[i:]); ok {
+				i += end
+				continue
+			}
+		}
+		if _, end, ok := markdownsyntax.CodeSpan(line, i); ok {
+			i = end
+			continue
+		}
+		if !strings.HasPrefix(line[i:], "**") {
+			i++
+			continue
+		}
+		open, close := canOpenBold(line, i), canCloseBold(line, i)
+		if close && len(stack) > 0 && i > stack[len(stack)-1]+2 {
+			opener := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if opens == nil {
+				opens = make(map[int]bool)
+				closes = make(map[int]bool)
+			}
+			opens[opener] = true
+			closes[i] = true
+		} else if open {
+			stack = append(stack, i)
+		}
+		i += 2
+	}
+	return opens, closes
 }
 
 func (p *Painter) linkAllowed(target string) bool {
@@ -320,6 +425,15 @@ func markdownLink(s string) (label, target string, end int, ok bool) {
 		return "", "", 0, false
 	}
 	return s[1:close], target, end, true
+}
+
+// MarkdownComplete paints complete authored Markdown without opening bold on an
+// unmatched ** delimiter (such as a glob like **/*.go).
+func (p *Painter) MarkdownComplete(text string, width int, subdued bool) []string {
+	prev := p.noUnclosedBold
+	p.noUnclosedBold = true
+	defer func() { p.noUnclosedBold = prev }()
+	return p.Markdown(text, width, subdued)
 }
 
 // Markdown paints authored text. Subdued presentation preserves paragraph

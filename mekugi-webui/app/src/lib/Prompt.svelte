@@ -2,6 +2,8 @@
   import Alert from "./ui/Alert.svelte";
   import Attachments from "./Attachments.svelte";
   import Code from "./Code.svelte";
+  import Markdown from "./Markdown.svelte";
+  import { isMarkdownPreview } from "./markdown";
   import { onDestroy, tick, untrack } from "svelte";
   import type { Approval, QuestionCall } from "./protocol";
   import { streams } from "./stream.svelte";
@@ -234,10 +236,14 @@
               ? question.options?.[previewIndex]?.preview
               : undefined}
           <fieldset class="mb-4 min-w-0" disabled={questionDisabled}>
-            <legend class="font-semibold">{question.header || "Question"}</legend>
-            {#if question.text && question.text.trim() !== question.header?.trim()}<p class={text}>
-                {question.text}
-              </p>{/if}
+            <legend class="font-semibold"
+              ><Markdown text={question.header || "Question"} inline /></legend
+            >
+            {#if question.text && question.text.trim() !== question.header?.trim()}<div
+                class="my-2"
+              >
+                <Markdown text={question.text} breaks />
+              </div>{/if}
             <div class="question-layout">
               <div>
                 {#each question.options ?? [] as option_, index}
@@ -260,9 +266,11 @@
                     />
                     <span
                       ><span class="flex flex-wrap items-center gap-2"
-                        >{option_.label}{#if option_.recommended}<Tag>Recommended</Tag>{/if}</span
+                        ><Markdown text={option_.label} inline />{#if option_.recommended}<Tag
+                            >Recommended</Tag
+                          >{/if}</span
                       >{#if option_.description}<small class="block text-small text-muted"
-                          >{option_.description}</small
+                          ><Markdown text={option_.description} inline /></small
                         >{/if}</span
                     >
                   </label>
@@ -289,12 +297,24 @@
               </div>
               {#if preview}<section class="question-preview min-w-0" aria-label="Option preview">
                   <h3 class="mb-2 text-small text-muted">Preview</h3>
-                  <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
-                  <pre
-                    tabindex="0"
-                    role="region"
-                    aria-label="Preview text"
-                    class="max-h-64 overflow-auto rounded-control border border-rule bg-surface p-3 text-code whitespace-pre-wrap wrap-anywhere">{preview}</pre>
+                  {#if isMarkdownPreview(preview)}
+                    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
+                    <div
+                      tabindex="0"
+                      role="region"
+                      aria-label="Preview text"
+                      class="max-h-64 overflow-auto rounded-control border border-rule bg-surface p-3 wrap-anywhere"
+                    >
+                      <Markdown text={preview} breaks />
+                    </div>
+                  {:else}
+                    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
+                    <pre
+                      tabindex="0"
+                      role="region"
+                      aria-label="Preview text"
+                      class="max-h-64 overflow-auto rounded-control border border-rule bg-surface p-3 text-code whitespace-pre-wrap wrap-anywhere">{preview}</pre>
+                  {/if}
                 </section>{/if}
             </div>
             {#if typeof draft.choice === "number" && draft.choice < (question.options?.length ?? 0)}

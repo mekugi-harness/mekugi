@@ -104,6 +104,29 @@ func TestMarkdownMermaid(t *testing.T) {
 	}
 }
 
+func TestInlinePreservesUnmatchedBoldDelimiters(t *testing.T) {
+	p := terminalui.Painter{}
+	if got := ansi.Strip(p.InlineComplete("Include **/*.go")); got != "Include **/*.go" {
+		t.Fatalf("unmatched glob corrupted: %q", got)
+	}
+	if got := ansi.Strip(p.InlineComplete("**bold** and **/*.go")); got != "bold and **/*.go" {
+		t.Fatalf("mixed bold and glob corrupted: %q", got)
+	}
+	if got := p.InlineComplete("Use **`code`** here"); !strings.Contains(got, "\x1b[1m") || strings.Contains(ansi.Strip(got), "**") {
+		t.Fatalf("bold code span not rendered: %q", got)
+	}
+	if got := p.InlineComplete("See **/tmp/report** now"); !strings.Contains(got, "\x1b[1m") || ansi.Strip(got) != "See /tmp/report now" {
+		t.Fatalf("bold absolute path not rendered: %q", got)
+	}
+	if got := p.InlineComplete("Scan **/*.go for **TODOs**"); !strings.Contains(got, "\x1b[1mTODOs") || ansi.Strip(got) != "Scan **/*.go for TODOs" {
+		t.Fatalf("glob before bold corrupted: %q", got)
+	}
+	block := strings.Join(plainLines(p.MarkdownComplete("Match **/*.go or **/*.ts\n> Quote src/**/*.go or pkg/**/*.ts", 80, false)), "\n")
+	if !strings.Contains(block, "Match **/*.go or **/*.ts") || !strings.Contains(block, "Quote src/**/*.go or pkg/**/*.ts") {
+		t.Fatalf("MarkdownComplete corrupted globs: %q", block)
+	}
+}
+
 func plainLines(lines []string) []string {
 	plain := make([]string, len(lines))
 	for i, line := range lines {

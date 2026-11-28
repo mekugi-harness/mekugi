@@ -529,6 +529,33 @@
       @apply font-medium text-muted;
     }
   }
+  .prose-inline {
+    & strong {
+      @apply font-semibold;
+    }
+    & code {
+      @apply rounded-chip border border-rule bg-raised px-1.5 py-px text-code;
+      box-decoration-break: clone;
+    }
+    & .file-link {
+      @apply font-mono text-code;
+    }
+    & a {
+      @apply text-accent underline decoration-accent/40 underline-offset-3 transition-colors hover:decoration-accent;
+    }
+  }
+  [data-prompt] :is(.prose, .prose-inline) code,
+  [data-prompt] .prose pre {
+    @apply bg-surface;
+  }
+  [data-prompt] .question-preview :is(.prose, .prose-inline) code,
+  [data-prompt] .question-preview .prose pre {
+    @apply bg-raised;
+  }
+  [data-prompt] .prose pre code,
+  [data-prompt] .question-preview .prose pre code {
+    @apply border-0 bg-transparent p-0;
+  }
 }
 
 /* Menus keep their final geometry throughout motion. Native popovers retain

@@ -1,0 +1,4 @@
+"\x1b[38;2;86;212;221mAsked\x1b[m  \x1b[2m1 question\x1b[m · \x1b[38;2;86;212;221mwaiting\x1b[m                                 "
+"  Render \x1b[38;2;86;212;221mPrompt.svelte\x1b[m with \x1b[1mMarkdown\x1b[m?                       "
+"  \x1b[2mUse \x1b[38;2;86;212;221mMarkdown\x1b[39m · Include **/*.go\x1b[m                            "
+"plain after question                                        "

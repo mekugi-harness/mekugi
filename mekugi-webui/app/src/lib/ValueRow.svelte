@@ -11,7 +11,8 @@
   import { duration } from "./format";
   import { breakable, highlightWithin } from "./highlight";
   import { annotates, failed, family } from "./kinds";
-  import { toolLabel } from "./markdown";
+  import Markdown from "./Markdown.svelte";
+  import { hasBlockMarkdown, referenceContext, toolLabel } from "./markdown";
   import Path from "./Path.svelte";
   import type { Value } from "./protocol";
   import { streams } from "./stream.svelte";
@@ -430,8 +431,28 @@
       {#if value.questions?.length}
         <ul class="mt-1 text-code leading-5">
           {#each value.questions as q, i (i)}
+            {@const questionText = q.text ?? ""}
+            {@const questionContext = referenceContext(questionText)}
+            {@const blockQuestion = hasBlockMarkdown(questionText)}
+            {@const blockAnswer = q.answer ? hasBlockMarkdown(q.answer, questionContext) : false}
             <li>
-              {q.text}{#if q.answer}<span class="ml-2 text-muted">{q.answer}</span>{/if}
+              {#if blockQuestion}
+                <Markdown text={questionText} breaks />
+              {:else}
+                <Markdown text={questionText} inline />
+              {/if}{#if q.answer}{#if blockAnswer}
+                  <div class="mt-1 text-muted">
+                    <Markdown text={q.answer} context={questionContext} breaks />
+                  </div>
+                {:else if blockQuestion}
+                  <div class="mt-1 text-muted">
+                    <Markdown text={q.answer} context={questionContext} inline />
+                  </div>
+                {:else}
+                  <span class="ml-2 text-muted"
+                    ><Markdown text={q.answer} context={questionContext} inline /></span
+                  >
+                {/if}{/if}
             </li>
           {/each}
         </ul>

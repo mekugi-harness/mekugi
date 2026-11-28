@@ -6,7 +6,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/textsanitize"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/presentation"
 )
 
@@ -52,8 +51,13 @@ func (p *Painter) questionRows(block Block, width int) []string {
 		if i > 0 {
 			rows = append(rows, "")
 		}
-		text := textsanitize.Safe(q.Text, false)
-		qLines := terminalui.Wrap(text, inner, false)
+		prevCopy := p.CopySource
+		p.CopySource = false
+		qLines := p.MarkdownComplete(q.Text, inner, false)
+		p.CopySource = prevCopy
+		if len(qLines) == 0 && q.Text != "" {
+			qLines = []string{""}
+		}
 		if showPerQuestionState && q.State != "" {
 			badge := p.QuestionState(q.State)
 			if len(qLines) > 0 && ansi.StringWidth(qLines[len(qLines)-1])+3+ansi.StringWidth(badge) <= inner {
@@ -74,7 +78,14 @@ func (p *Painter) questionRows(block Block, width int) []string {
 				rows = append(rows, prefix+row)
 			}
 		case q.Options != "":
-			rows = append(rows, liveActivityIndent(terminalui.Wrap(terminalui.Dim+textsanitize.Safe(q.Options, false)+terminalui.Undim, inner, false), "  ")...)
+			p.CopySource = false
+			inlineOptions := p.InlineComplete(q.Options)
+			p.CopySource = prevCopy
+			options := strings.NewReplacer(
+				terminalui.Reset, terminalui.Reset+terminalui.Dim,
+				terminalui.Undim, terminalui.Undim+terminalui.Dim,
+			).Replace(inlineOptions)
+			rows = append(rows, liveActivityIndent(terminalui.Wrap(terminalui.Dim+options+terminalui.Reset, inner, false), "  ")...)
 		}
 	}
 	for i, row := range rows {
