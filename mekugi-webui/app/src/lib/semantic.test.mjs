@@ -58,12 +58,14 @@ function fakeMachine(handlers = {}) {
   const openListeners = new Set();
   const requests = [];
   const responses = [];
+  const errorResponses = [];
   return {
     id: "m1",
     label: "Test Box",
     connection: "open",
     requests,
     responses,
+    errorResponses,
     onNotification(fn) {
       notificationListeners.add(fn);
       return () => notificationListeners.delete(fn);
@@ -89,6 +91,9 @@ function fakeMachine(handlers = {}) {
     },
     respond(id, result) {
       responses.push({ id, result });
+    },
+    respondError(id, code, message) {
+      errorResponses.push({ id, code, message });
     },
     emitNotification(n) {
       for (const fn of notificationListeners) fn(n);
@@ -857,6 +862,62 @@ test("secret user-input prompts are blocked from remote answering and shellGuard
   );
   assert.match(err, /locally/);
   assert.equal(machine.responses.length, 0);
+  machine.emitServerRequest({
+    id: 13,
+    method: "shellGuard/requestSecret",
+    params: { threadId: "t1", turnId: "turn1", startedAtMs: 1000 },
+  });
+  assert.equal(machine.errorResponses.length, 0);
+  control.release();
+});
+
+test("unrecognized server requests return JSON-RPC -32601 while thread-mismatched prompts are ignored", () => {
+  const machine = fakeMachine({ "thread/queue/list": () => ({ data: [], nextCursor: null }) });
+  const control = new ThreadControl();
+  control.connect("t1", machine);
+
+  // Known prompt method for a different thread must be ignored, not rejected.
+  machine.emitServerRequest({
+    id: 21,
+    method: "item/commandExecution/requestApproval",
+    params: {
+      threadId: "other-thread",
+      turnId: "turn1",
+      itemId: "item1",
+      command: "ls",
+    },
+  });
+  assert.equal(control.prompts.approvals.length, 0);
+  assert.equal(machine.errorResponses.length, 0);
+
+  // Terminal-handled permission prompts must be ignored, not auto-denied.
+  machine.emitServerRequest({
+    id: 215,
+    method: "item/permissions/requestApproval",
+    params: {
+      threadId: "t1",
+      turnId: "turn1",
+      itemId: "item1",
+    },
+  });
+  assert.equal(control.prompts.approvals.length, 0);
+  assert.equal(machine.errorResponses.length, 0);
+
+  // Unrecognized server request method must be rejected with -32601.
+  machine.emitServerRequest({
+    id: 22,
+    method: "unknown/unsupportedMethod",
+    params: { threadId: "t1" },
+  });
+  assert.equal(control.prompts.approvals.length, 0);
+  assert.equal(control.prompts.questions.length, 0);
+  assert.deepEqual(machine.errorResponses, [
+    {
+      id: 22,
+      code: -32601,
+      message: "unsupported web client server request: unknown/unsupportedMethod",
+    },
+  ]);
   control.release();
 });
 
