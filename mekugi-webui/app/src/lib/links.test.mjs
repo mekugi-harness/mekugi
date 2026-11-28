@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { detailRange, parseDetailLink } from "./detail-link.ts";
-import { block, inline, referenceContext } from "./markdown.ts";
+import {
+  block,
+  hasBlockMarkdown,
+  inline,
+  isMarkdownPreview,
+  referenceContext,
+} from "./markdown.ts";
 
 test("automatic and Markdown web links navigate safely", () => {
   const html = block(
@@ -100,4 +106,15 @@ test("question and preview Markdown renders inline code, fences, and line breaks
   assert.match(preview, /<pre><code class="language-ts">const x = 1;\n<\/code><\/pre>/);
   assert.match(preview, /&lt;b&gt;literal&lt;\/b&gt;/);
   assert.doesNotMatch(preview, /<b>literal<\/b>/);
+
+  assert.equal(isMarkdownPreview("Name       Size\nreport.md  12 KB"), false);
+  assert.equal(isMarkdownPreview("<b>Plain text, not HTML.</b>"), false);
+  assert.equal(isMarkdownPreview("```ts\nconst x = 1;\n```"), true);
+  assert.equal(isMarkdownPreview("Use `Prompt.svelte`"), true);
+  assert.equal(isMarkdownPreview("**Keep unchanged fixtures.**"), true);
+  assert.equal(isMarkdownPreview("Release plan\n\n1. Canary\n2. Expand"), true);
+
+  assert.equal(hasBlockMarkdown("Render `Prompt.svelte` with **Markdown**?"), false);
+  assert.equal(hasBlockMarkdown("Check this:\n```go\nfunc ok() {}\n```"), true);
+  assert.equal(hasBlockMarkdown("First paragraph\n\nSecond paragraph"), true);
 });

@@ -104,6 +104,19 @@ func TestMarkdownMermaid(t *testing.T) {
 	}
 }
 
+func TestInlinePreservesUnmatchedBoldDelimiters(t *testing.T) {
+	p := terminalui.Painter{}
+	if got := ansi.Strip(p.InlineComplete("Include **/*.go")); got != "Include **/*.go" {
+		t.Fatalf("unmatched glob corrupted: %q", got)
+	}
+	if got := ansi.Strip(p.InlineComplete("**bold** and **/*.go")); got != "bold and **/*.go" {
+		t.Fatalf("mixed bold and glob corrupted: %q", got)
+	}
+	if got := p.InlineComplete("Use **`code`** here"); !strings.Contains(got, "\x1b[1m") || strings.Contains(ansi.Strip(got), "**") {
+		t.Fatalf("bold code span not rendered: %q", got)
+	}
+}
+
 func plainLines(lines []string) []string {
 	plain := make([]string, len(lines))
 	for i, line := range lines {

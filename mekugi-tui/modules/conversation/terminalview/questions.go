@@ -112,8 +112,9 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 	if d.Count == 0 || height < 1 {
 		return nil
 	}
-	md := *p
-	md.CopySource = false
+	prevCopy := p.CopySource
+	p.CopySource = false
+	defer func() { p.CopySource = prevCopy }()
 	accent, dim, reset := p.Theme.Accent(), terminalui.Dim, terminalui.Reset
 	if d.Call == nil {
 		questions := fmt.Sprintf("%d question", d.Count)
@@ -143,7 +144,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 	title := fmt.Sprintf("Question %d of %d", position+1, total)
 	detail := ""
 	if question.Header != question.Text {
-		detail = restoreInlineStyle(md.Inline(promptText(question.Header)), dim, "")
+		detail = restoreInlineStyle(p.InlineComplete(promptText(question.Header)), dim, "")
 	}
 	rows := []string{terminalui.PanelHeading(accent, title, detail, dim+state+reset, inner)}
 	if height >= 10 && (preview == "" || height >= 14) {
@@ -190,7 +191,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		}
 		foot = promptWrap(accent+fmt.Sprintf("Submit with %d unanswered?", d.Gaps)+reset+dim+hint+reset, inner)
 	}
-	text := md.Markdown(question.Text, max(1, inner-2), false)
+	text := p.Markdown(question.Text, max(1, inner-2), false)
 	if len(text) == 0 && question.Text != "" {
 		text = []string{""}
 	}
@@ -246,7 +247,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 	var optionRows []string
 	for i := start; i < end; i++ {
 		o := options[i]
-		label := md.Inline(promptText(o.Label))
+		label := p.InlineComplete(promptText(o.Label))
 		if i == question.Selected {
 			label = restoreInlineStyle(label, "\x1b[1m", accent)
 		}
@@ -260,7 +261,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		}
 		optionRows = append(optionRows, truncateStyled(line, optionWidth))
 		if rawDesc := promptText(o.Description); rawDesc != "" {
-			desc := restoreInlineStyle(md.Inline(rawDesc), dim, "")
+			desc := restoreInlineStyle(p.InlineComplete(rawDesc), dim, "")
 			if showDesc && optionWidth > prefixLen {
 				indent := strings.Repeat(" ", prefixLen)
 				optionRows = append(optionRows, indent+dim+ansi.Truncate(desc, optionWidth-prefixLen, "…")+reset)
@@ -284,7 +285,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		if wide {
 			previewWidth, previewRoom = inner-optionWidth-3, room
 		}
-		lines := md.Markdown(preview, max(1, previewWidth), false)
+		lines := p.Markdown(preview, max(1, previewWidth), false)
 		if len(lines) == 0 {
 			lines = []string{""}
 		}

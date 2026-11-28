@@ -3,6 +3,7 @@
   import Attachments from "./Attachments.svelte";
   import Code from "./Code.svelte";
   import Markdown from "./Markdown.svelte";
+  import { isMarkdownPreview } from "./markdown";
   import { onDestroy, tick, untrack } from "svelte";
   import type { Approval, QuestionCall } from "./protocol";
   import { streams } from "./stream.svelte";
@@ -296,15 +297,24 @@
               </div>
               {#if preview}<section class="question-preview min-w-0" aria-label="Option preview">
                   <h3 class="mb-2 text-small text-muted">Preview</h3>
-                  <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
-                  <div
-                    tabindex="0"
-                    role="region"
-                    aria-label="Preview text"
-                    class="max-h-64 overflow-auto rounded-control border border-rule bg-surface p-3 wrap-anywhere"
-                  >
-                    <Markdown text={preview} breaks />
-                  </div>
+                  {#if isMarkdownPreview(preview)}
+                    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
+                    <div
+                      tabindex="0"
+                      role="region"
+                      aria-label="Preview text"
+                      class="max-h-64 overflow-auto rounded-control border border-rule bg-surface p-3 wrap-anywhere"
+                    >
+                      <Markdown text={preview} breaks />
+                    </div>
+                  {:else}
+                    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard scrolling.) -->
+                    <pre
+                      tabindex="0"
+                      role="region"
+                      aria-label="Preview text"
+                      class="max-h-64 overflow-auto rounded-control border border-rule bg-surface p-3 text-code whitespace-pre-wrap wrap-anywhere">{preview}</pre>
+                  {/if}
                 </section>{/if}
             </div>
             {#if typeof draft.choice === "number" && draft.choice < (question.options?.length ?? 0)}

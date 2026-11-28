@@ -167,6 +167,16 @@ func Hang(lead, label string, width int) []string {
 
 // Inline renders the supported Markdown inline subset.
 func (p *Painter) Inline(line string) string {
+	return p.inline(line, true)
+}
+
+// InlineComplete paints complete inline Markdown without opening bold on an
+// unmatched ** delimiter (such as a glob like **/*.go).
+func (p *Painter) InlineComplete(line string) string {
+	return p.inline(line, false)
+}
+
+func (p *Painter) inline(line string, allowUnclosedBold bool) string {
 	line = textsanitize.Safe(line, false)
 	var out strings.Builder
 	bold := false
@@ -199,11 +209,14 @@ func (p *Painter) Inline(line string) string {
 			continue
 		}
 		if strings.HasPrefix(line[i:], "**") {
-			bold = !bold
 			if bold {
+				bold = false
+				out.WriteString(Undim)
+			} else if allowUnclosedBold || hasClosingBold(line[i+2:]) {
+				bold = true
 				out.WriteString("\x1b[1m")
 			} else {
-				out.WriteString(Undim)
+				out.WriteString("**")
 			}
 			i += 2
 			continue
@@ -227,6 +240,20 @@ func (p *Painter) Inline(line string) string {
 		out.WriteString(Undim)
 	}
 	return out.String()
+}
+
+func hasClosingBold(rest string) bool {
+	for i := 0; i < len(rest); {
+		if _, end, ok := markdownsyntax.CodeSpan(rest, i); ok {
+			i = end
+			continue
+		}
+		if strings.HasPrefix(rest[i:], "**") {
+			return i > 0
+		}
+		i++
+	}
+	return false
 }
 
 func (p *Painter) linkAllowed(target string) bool {

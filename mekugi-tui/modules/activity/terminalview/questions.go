@@ -51,9 +51,10 @@ func (p *Painter) questionRows(block Block, width int) []string {
 		if i > 0 {
 			rows = append(rows, "")
 		}
-		questionPainter := p.Painter
-		questionPainter.CopySource = false
-		qLines := questionPainter.Markdown(q.Text, inner, false)
+		prevCopy := p.CopySource
+		p.CopySource = false
+		qLines := p.Markdown(q.Text, inner, false)
+		p.CopySource = prevCopy
 		if len(qLines) == 0 && q.Text != "" {
 			qLines = []string{""}
 		}
@@ -77,10 +78,13 @@ func (p *Painter) questionRows(block Block, width int) []string {
 				rows = append(rows, prefix+row)
 			}
 		case q.Options != "":
+			p.CopySource = false
+			inlineOptions := p.InlineComplete(q.Options)
+			p.CopySource = prevCopy
 			options := strings.NewReplacer(
 				terminalui.Reset, terminalui.Reset+terminalui.Dim,
 				terminalui.Undim, terminalui.Undim+terminalui.Dim,
-			).Replace(questionPainter.Inline(q.Options))
+			).Replace(inlineOptions)
 			rows = append(rows, liveActivityIndent(terminalui.Wrap(terminalui.Dim+options+terminalui.Reset, inner, false), "  ")...)
 		}
 	}

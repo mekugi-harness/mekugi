@@ -120,3 +120,28 @@ func TestQuestionBlockRendersQuestionAndOptionMarkdown(t *testing.T) {
 		}
 	}
 }
+
+func TestUISnapshotQuestionTextAndOptionsMarkdown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		theme diffrender.Theme
+	}{
+		{"dark", diffrender.DarkTheme},
+		{"light", diffrender.LightTheme},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Painter{Theme: tc.theme}
+			rows := p.Block(Block{
+				Kind:  "op",
+				Verb:  "Asked",
+				Label: "1 question · waiting",
+				Questions: []Question{{
+					Text:    "Render `Prompt.svelte` with **Markdown**?",
+					Options: "Use `Markdown` · Include **/*.go",
+					State:   "waiting",
+				}},
+			}, 60)
+			uisnapshot.AssertTerminal(t, "testdata/snapshots/question_text_markdown_"+tc.name+".txt", append(rows, "plain after question"), 60)
+		})
+	}
+}

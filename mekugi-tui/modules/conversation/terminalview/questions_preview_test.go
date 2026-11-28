@@ -206,7 +206,7 @@ func TestQuestionMarkdownInQuestionNotesAndPreview(t *testing.T) {
 					Preview:     "Preview `inline`:\n\n```go\nfunc ok() bool { return true }\n```",
 				},
 				{
-					Label:       "Keep `<pre>`",
+					Label:       "Include **/*.go",
 					Description: "Leave `raw` text as-is",
 				},
 			},
@@ -217,7 +217,11 @@ func TestQuestionMarkdownInQuestionNotesAndPreview(t *testing.T) {
 	m.Open(&c)
 	for _, width := range []int{56, 96} {
 		var layout terminalview.QuestionLayout
-		rows := terminalview.Questions(m.View("main"), &terminalui.Painter{CopySource: true}, &layout, "", false, width, 16)
+		painter := &terminalui.Painter{CopySource: true}
+		rows := terminalview.Questions(m.View("main"), painter, &layout, "", false, width, 16)
+		if !painter.CopySource {
+			t.Fatalf("width=%d did not restore painter.CopySource", width)
+		}
 		for _, row := range rows {
 			if ansi.StringWidth(row) > width {
 				t.Fatalf("width=%d exceeded: %q", width, row)
@@ -237,6 +241,14 @@ func TestQuestionMarkdownInQuestionNotesAndPreview(t *testing.T) {
 				t.Fatalf("width=%d missing rendered text %q in:\n%s", width, expected, plain)
 			}
 		}
+		if width >= 80 && !strings.Contains(plain, "Include **/*.go") {
+			t.Fatalf("width=%d missing glob option in:\n%s", width, plain)
+		}
+	}
+	m.Current().Selected = 1
+	narrowGlob := ansi.Strip(strings.Join(terminalview.Questions(m.View("main"), &terminalui.Painter{}, new(terminalview.QuestionLayout), "", false, 56, 16), "\n"))
+	if !strings.Contains(narrowGlob, "Include **/*.go") {
+		t.Fatalf("narrow selected glob corrupted:\n%s", narrowGlob)
 	}
 }
 

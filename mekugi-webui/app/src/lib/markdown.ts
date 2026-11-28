@@ -81,6 +81,37 @@ export const block = (text: string, context?: Env, breaks = false) =>
 export const inline = (text: string) => md.renderInline(text);
 export const literal = (text: string) => md.utils.escapeHtml(text);
 
+const plainBlockTokens = new Set(["paragraph_open", "inline", "paragraph_close", "code_block"]);
+const plainInlineTokens = new Set(["text", "softbreak", "hardbreak"]);
+
+// True when text contains Markdown syntax (fences, lists, headings, tables,
+// emphasis, links, or inline code) rather than an aligned plain-text mockup.
+export function isMarkdownPreview(text: string): boolean {
+  const tokens = md.parse(text, {});
+  for (const token of tokens) {
+    if (!plainBlockTokens.has(token.type)) return true;
+    if (token.type === "inline" && token.children?.some((child) => !plainInlineTokens.has(child.type)))
+      return true;
+  }
+  return false;
+}
+
+// True when text contains block-level Markdown (fences, lists, quotes,
+// headings, tables, or multiple paragraphs) that must not be flattened inline.
+export function hasBlockMarkdown(text: string): boolean {
+  const tokens = md.parse(text, {});
+  let paragraphs = 0;
+  for (const token of tokens) {
+    if (token.type === "paragraph_open") {
+      paragraphs++;
+      if (paragraphs > 1) return true;
+    } else if (token.type !== "inline" && token.type !== "paragraph_close") {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Classified labels already quote operands as Markdown code spans. Keep their
 // boundaries rather than splitting punctuation inside commands or search patterns.
 export function toolLabel(text: string, verb: string): string {
