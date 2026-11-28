@@ -103,7 +103,9 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
   unattributed `shellN`) for interactive `!` commands with shared `claim_key`
   deduplication, while classifying Git worktree restores on Linux (`git restore`,
   `git checkout --`, `git reset --hard`, `git clean`) under
-  `ChangeSourceKind::VcsDiagnostic` (`MEKUGI-827`). Downgrade note:
+  `ChangeSourceKind::VcsDiagnostic` (`MEKUGI-827`). When an older session is
+  reopened, worktree-only setup and cleanup no longer count as authored edits;
+  captures that also contain unrelated writes stay visible. Downgrade note:
   older runtimes deserialize `ChangeSourceKind` strictly and will reject a
   session's `change-history/index.json` once a `user_shell` entry is recorded.
 - Subprocess regression tests are in a separate

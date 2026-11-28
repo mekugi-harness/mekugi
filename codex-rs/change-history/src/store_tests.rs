@@ -1083,17 +1083,44 @@ fn retained_worktree_diagnostic_classifier_preserves_mixed_and_delegate_edits() 
     assert!(
         make(
             ChangeSourceKind::ShellWrite,
-            Some("git -C /repo worktree remove --force .worktrees/task && git branch -D task")
+            Some("git -C '/Client Project' worktree remove --force .worktrees/task && git branch -D task")
         )
         .is_retained_vcs_diagnostic()
     );
     assert!(
         !make(
             ChangeSourceKind::ShellWrite,
-            Some("git worktree add .worktrees/task -b task && echo hi > real.txt")
+            Some("git -C '/Client Project' worktree add .worktrees/task -b task && echo hi > real.txt")
         )
         .is_retained_vcs_diagnostic()
     );
+    for script in [
+        "git -C '/Research & Development; (QA)|<draft>' worktree add .worktrees/task",
+        r#"git -C "/Research && Notes; \"Draft\"" worktree remove .worktrees/task"#,
+        "git worktree add --detach '.worktrees/QA task'",
+        r"git worktree add --detach .worktrees/QA\ task",
+        r"git -C ~/Research\ \&\ Development\ \[QA\] worktree prune",
+        "cd ~/repo\ngit worktree prune # remove stale entries",
+    ] {
+        assert!(
+            make(ChangeSourceKind::ShellWrite, Some(script)).is_retained_vcs_diagnostic(),
+            "{script}"
+        );
+    }
+    for script in [
+        "git -C '/Research & Development' worktree add .worktrees/task; touch keep.txt",
+        r"git worktree add --detach .worktrees/QA\ task && touch keep.txt",
+        "git worktree add --detach .worktrees/QA*",
+        "git worktree add .worktrees/task | git status",
+        "git worktree add .worktrees/task &",
+        "git worktree add .worktrees/task || git status",
+        "git -C \"$(touch keep.txt)\" worktree add .worktrees/task",
+    ] {
+        assert!(
+            !make(ChangeSourceKind::ShellWrite, Some(script)).is_retained_vcs_diagnostic(),
+            "{script}"
+        );
+    }
     assert!(
         !make(
             ChangeSourceKind::ShellWrite,

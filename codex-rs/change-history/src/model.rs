@@ -359,49 +359,28 @@ impl ChangeRecord {
 }
 
 fn is_pure_git_worktree_script(script: &str) -> bool {
-    let trimmed = script.trim();
-    if trimmed.is_empty() {
+    let Some(commands) = codex_shell_command::bash::parse_sequential_shell_commands(script) else {
         return false;
-    }
-    // Reject shell redirections, pipes, subshells, or substitutions so mixed
-    // commands that also write files are never hidden.
-    if trimmed.contains(['>', '<', '|', '`', '(', ')', '{', '}']) || trimmed.contains("$(") {
-        return false;
-    }
+    };
     let mut saw_worktree_mutation = false;
-    for segment in trimmed.split([';', '\n']) {
-        for clause in segment.split("&&") {
-            let clause = clause.trim();
-            if clause.is_empty() {
-                continue;
-            }
-            if clause.contains('&') {
-                return false;
-            }
-            let tokens: Vec<&str> = clause.split_whitespace().collect();
-            if tokens.is_empty() {
-                continue;
-            }
-            if is_git_worktree_mutation(&tokens) {
-                saw_worktree_mutation = true;
-            } else if is_benign_worktree_companion(&tokens) {
-                continue;
-            } else {
-                return false;
-            }
+    for tokens in commands {
+        if is_git_worktree_mutation(&tokens) {
+            saw_worktree_mutation = true;
+        } else if !is_benign_worktree_companion(&tokens) {
+            return false;
         }
     }
     saw_worktree_mutation
 }
 
-fn git_subcommand<'a>(tokens: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
+fn git_subcommand(tokens: &[String]) -> Option<(&str, &[String])> {
     let mut idx = 0;
     if *tokens.get(idx)? != "git" {
         return None;
     }
     idx += 1;
     while idx < tokens.len() {
-        let tok = tokens[idx];
+        let tok = tokens[idx].as_str();
         if matches!(
             tok,
             "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
@@ -418,7 +397,7 @@ fn git_subcommand<'a>(tokens: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])>
     None
 }
 
-fn is_git_worktree_mutation(tokens: &[&str]) -> bool {
+fn is_git_worktree_mutation(tokens: &[String]) -> bool {
     let Some((sub, rest)) = git_subcommand(tokens) else {
         return false;
     };
@@ -427,14 +406,17 @@ fn is_git_worktree_mutation(tokens: &[&str]) -> bool {
     }
     rest.first().is_some_and(|op| {
         matches!(
-            *op,
+            op.as_str(),
             "add" | "remove" | "move" | "repair" | "prune" | "lock" | "unlock"
         )
     })
 }
 
-fn is_benign_worktree_companion(tokens: &[&str]) -> bool {
-    if matches!(tokens[0], "cd" | "pwd" | "true") {
+fn is_benign_worktree_companion(tokens: &[String]) -> bool {
+    if matches!(
+        tokens.first().map(String::as_str),
+        Some("cd" | "pwd" | "true")
+    ) {
         return true;
     }
     let Some((sub, _)) = git_subcommand(tokens) else {
