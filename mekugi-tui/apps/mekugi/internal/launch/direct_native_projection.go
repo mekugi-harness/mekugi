@@ -1030,6 +1030,15 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		} else {
 			kind = "final"
 		}
+	case "agentMail":
+		switch decodeJSONString(fields["kind"]) {
+		case "message":
+			kind = "reply"
+		case "reply":
+			kind = "final"
+		default:
+			return itemType
+		}
 	case "reasoning":
 		kind = "reasoning"
 	case "plan":
@@ -1091,6 +1100,27 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			rec.entry.Text = text
 		}
 		refreshProjectedValues(rec)
+	case "agentMail":
+		sender := decodeJSONString(fields["sender"])
+		rec.entry.Agent = sender
+		rec.entry.Delivered = true
+		rec.entry.Text = decodeJSONString(fields["text"])
+		valueKind := "message"
+		if kind == "final" {
+			valueKind = "final"
+		}
+		rec.entry.Values = []activity.Value{{
+			Content: activityfeed.Content{
+				Kind: valueKind,
+				Body: textsanitize.MarkdownSource(rec.entry.Text),
+			},
+			From:         sender,
+			To:           decodeJSONString(fields["recipient"]),
+			Owner:        sender,
+			ReplySummary: textsanitize.MarkdownSource(decodeJSONString(fields["summary"])),
+			ReplyDetails: textsanitize.MarkdownSource(decodeJSONString(fields["details"])),
+		}}
+		activity.Identify(rec.entry.Values, rec.entry.Seq)
 	case "plan":
 		rec.entry.Text = decodeJSONString(fields["text"])
 		rec.entry.Values = []activity.Value{{
