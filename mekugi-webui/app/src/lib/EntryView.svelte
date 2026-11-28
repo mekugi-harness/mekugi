@@ -290,7 +290,7 @@
                     {index}
                   />{/each}
               </div>{/if}
-            <Markdown text={entry.text ?? ""} spans={entry.spans} />
+            <Markdown text={entry.text ?? ""} spans={entry.spans} userMessage />
           </Bubble.Content>
         </Bubble.Root>
       </Message.Content>

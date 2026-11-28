@@ -506,6 +506,35 @@ test("user messages compose Message with right alignment and retain marked conte
   assert.match(html, /12:34/);
 });
 
+test("user messages keep unquoted text after an explicit quote, with or without attachments", () => {
+  const quoteText = "> Quoted first line\n> Quoted second line\nWhere did it come from?";
+  for (const withImage of [false, true]) {
+    const content = [{ type: "text", text: quoteText, text_elements: [] }];
+    if (withImage) content.push({ type: "localImage", path: "/workspace/shot.png" });
+    const entry = itemToEntry({ id: "user", type: "userMessage", content }, 1, 1, "t1");
+    const html = render(EntryView, {
+      props: { entry, at: "", stamp: "", owner: "/root" },
+    }).body;
+    assert.match(
+      html,
+      /<blockquote>\s*<p>Quoted first line\nQuoted second line<\/p>\s*<\/blockquote>/,
+    );
+    assert.match(html, /<\/blockquote>\s*<p>Where did it come from\?/);
+    if (withImage) assert.match(html, /<span[^>]+text-marker-image[^>]*>\[Image 1\]<\/span>/);
+  }
+
+  const entry = itemToEntry(
+    { id: "reply", type: "agentMessage", text: quoteText, phase: null },
+    2,
+    1,
+    "t1",
+  );
+  const html = render(EntryView, {
+    props: { entry, at: "", stamp: "", owner: "/root" },
+  }).body;
+  assert.match(html, /Quoted second line\nWhere did it come from\?<\/p>\s*<\/blockquote>/);
+});
+
 test("reasoning streams visibly and folds only after completion", () => {
   const html = view([{ label: "A thought", body: "Reasoning body.", live: true }], "reasoning");
   assert.match(html, /data-ai-element="reasoning"/);
