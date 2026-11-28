@@ -75,4 +75,3 @@ type Notification struct {
 	Error     *TurnError `json:"error"`
 	WillRetry bool       `json:"willRetry"`
 }
-
