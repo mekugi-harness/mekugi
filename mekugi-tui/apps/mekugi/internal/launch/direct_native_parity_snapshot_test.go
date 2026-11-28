@@ -723,6 +723,32 @@ func TestUISnapshotNativeWorkingFooter(t *testing.T) {
 	f.assert("working-footer", ev, 112, 16)
 }
 
+func TestUISnapshotNativeReasoningLive(t *testing.T) {
+	f := newNativeParitySnapshot(t)
+	f.notify("item/started", `{"threadId":"thr-main","turnId":"turn-1","item":{"type":"reasoning","id":"thinking"}}`)
+	empty := f.await(func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 1
+	})
+	f.assert("reasoning-empty", empty, 76, 12)
+	f.notify("item/reasoning/summaryTextDelta", `{
+		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":0,
+		"delta":"Inspecting the parser\n\nCompare valid and invalid inputs."
+	}`)
+	f.notify("item/reasoning/summaryTextDelta", `{
+		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":1,
+		"delta":"**Checking results**\n\nStream the second section."
+	}`)
+	f.notify("item/started", `{
+		"threadId":"thr-main","turnId":"turn-1","item":{"id":"batch","type":"commandExecution",
+			"command":"date; pwd","status":"inProgress",
+			"display":{"script":"date; pwd","segments":["date","pwd"],"stepKinds":["run","run"]}}
+	}`)
+	live := f.await(func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.Main != nil && len(ev.Frame.Main.Entries) == 2
+	})
+	f.assert("reasoning-and-commands-live", live, 76, 16)
+}
+
 func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 	f := newNativeParitySnapshot(t)
 	f.notify("item/started", `{"threadId":"thr-main","turnId":"turn-1","item":{"type":"reasoning","id":"thinking"}}`)
@@ -730,9 +756,13 @@ func TestUISnapshotNativeReasoningAndCommands(t *testing.T) {
 		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":0,
 		"delta":"Inspecting the parser\n\nCompare valid and invalid inputs."
 	}`)
+	f.notify("item/reasoning/summaryTextDelta", `{
+		"threadId":"thr-main","turnId":"turn-1","itemId":"thinking","summaryIndex":1,
+		"delta":"**Checking results**\n\nStream the second section."
+	}`)
 	f.notify("item/completed", `{
 		"threadId":"thr-main","turnId":"turn-1","item":{"id":"thinking","type":"reasoning",
-			"summary":["Inspecting the parser\n\nCompare valid and invalid inputs."],"content":[]}
+			"summary":["Inspecting the parser\n\nCompare valid and invalid inputs.","**Checking results**\n\nStream the second section."],"content":[]}
 	}`)
 	for _, item := range []string{
 		`{"id":"batch","type":"commandExecution","command":"date; pwd","status":"completed",

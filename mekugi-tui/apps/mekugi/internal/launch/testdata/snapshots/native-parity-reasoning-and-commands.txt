@@ -1,4 +1,4 @@
-"\x1b[2m• Inspecting the parser\x1b[m                                                     "
+"\x1b[2m• Checking results\x1b[m                                                          "
 "\x1b[2m├ \x1b[22;1mRan\x1b[m     \x1b[34mdate\x1b[m                                                              "
 "\x1b[2m│ \x1b[m        \x1b[34mpwd\x1b[m                                                               "
 "\x1b[2m├ \x1b[34;22;1mRead\x1b[m    \x1b[1mfixture.txt\x1b[m                                                       "

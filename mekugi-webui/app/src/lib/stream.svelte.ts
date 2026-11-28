@@ -245,19 +245,15 @@ export function itemToEntry(
       };
     case "reasoning": {
       const sections = (item.summary ?? []).map((part) => part.trim()).filter(Boolean);
-      const values: Value[] = sections.length
-        ? sections.map((body, index) => {
-            const heading = body.match(/^\*\*([^\n*]+)\*\*/)?.[1]?.trim();
-            return {
-              kind: "reasoning",
-              label: heading || undefined,
-              body,
-              live: live && index === sections.length - 1,
-            };
-          })
-        : live
-          ? [{ kind: "reasoning", body: "", live: true }]
-          : [];
+      const values: Value[] = sections.map((body, index) => {
+        const heading = body.match(/^\*\*([^\n*]+)\*\*/)?.[1]?.trim();
+        return {
+          kind: "reasoning",
+          label: heading || undefined,
+          body,
+          live: live && index === sections.length - 1,
+        };
+      });
       return {
         ...base,
         kind: "reasoning",

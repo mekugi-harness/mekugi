@@ -506,13 +506,12 @@ test("user messages compose Message with right alignment and retain marked conte
   assert.match(html, /12:34/);
 });
 
-test("reasoning composes Trace disclosure without a control for empty thoughts", () => {
+test("reasoning streams visibly and folds only after completion", () => {
   const html = view([{ label: "A thought", body: "Reasoning body.", live: true }], "reasoning");
   assert.match(html, /data-ai-element="reasoning"/);
-  assert.match(html, /data-slot="trace-collapsible-trigger"/);
-  assert.match(html, /aria-expanded="false"/);
-  assert.match(html, /data-slot="trace-collapsible-content"[^>]*hidden/);
+  assert.doesNotMatch(html, /Thinking|data-slot="trace-collapsible-trigger"/);
   assert.match(html, /Reasoning body/);
+  assert.match(view([], "reasoning"), /<article hidden/);
   const empty = view([{ label: "A thought", body: "**A thought**" }], "reasoning");
   assert.match(empty, /data-slot="trace-line"/);
   assert.doesNotMatch(empty, /data-slot="trace-collapsible-trigger"/);
@@ -747,10 +746,11 @@ test("Transcript respects Thoughts modes and filters hidden completed thought se
 
     preferences.setThoughts("collapsed");
     const collapsedHtml = render(Transcript, {
-      props: { entries: [completedThought] },
+      props: { entries: [completedThought, mixedThought] },
     }).body;
     assert.match(collapsedHtml, /Done reasoning/);
     assert.match(collapsedHtml, /aria-expanded="false"/);
+    assert.match(collapsedHtml.split("</button>").at(-1), /Live section/);
 
     preferences.setThoughts("expanded");
     const expandedHtml = render(Transcript, {

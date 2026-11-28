@@ -312,27 +312,30 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			c.mu.Unlock()
 		}
 
-	case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
+	case "item/reasoning/summaryTextDelta":
 		var p struct {
-			ThreadID string `json:"threadId"`
-			TurnID   string `json:"turnId"`
-			ItemID   string `json:"itemId"`
-			Delta    string `json:"delta"`
+			ThreadID     string `json:"threadId"`
+			TurnID       string `json:"turnId"`
+			ItemID       string `json:"itemId"`
+			Delta        string `json:"delta"`
+			SummaryIndex int    `json:"summaryIndex"`
 		}
-		if json.Unmarshal(msg.Params, &p) == nil && p.Delta != "" {
+		if json.Unmarshal(msg.Params, &p) == nil && p.Delta != "" && p.SummaryIndex >= 0 {
 			c.mu.Lock()
-			threadID := p.ThreadID
-			if threadID == "" {
-				threadID = c.mainThread
-			}
-			c.clearRetryNoticeLocked(threadID, p.TurnID)
+			threadID := cmp.Or(p.ThreadID, c.mainThread)
 			rec := c.ensureItemLocked(threadID, p.TurnID, p.ItemID, "reasoning", "reasoning")
-			rec.entry.Text += p.Delta
-			rec.entry.Live = true
-			rec.entry.Running = true
-			refreshProjectedValues(rec)
-			rec.entry.Revision++
-			c.publishLocked()
+			if !rec.entry.ItemComplete {
+				c.clearRetryNoticeLocked(threadID, p.TurnID)
+				for len(rec.reasoningSummary) <= p.SummaryIndex {
+					rec.reasoningSummary = append(rec.reasoningSummary, "")
+				}
+				rec.reasoningSummary[p.SummaryIndex] += p.Delta
+				rec.entry.Live = true
+				rec.entry.Running = true
+				refreshProjectedValues(rec)
+				rec.entry.Revision++
+				c.publishLocked()
+			}
 			c.mu.Unlock()
 		}
 
@@ -1098,17 +1101,15 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		}}
 		activity.Identify(rec.entry.Values, rec.entry.Seq)
 	case "reasoning":
-		var summary, content []string
+		var summary []string
 		_ = json.Unmarshal(fields["summary"], &summary)
-		_ = json.Unmarshal(fields["content"], &content)
-		joined := strings.Join(summary, "\n")
-		if joined == "" {
-			joined = strings.Join(content, "\n")
-		}
-		if joined != "" {
-			rec.entry.Text = joined
+		if len(summary) != 0 {
+			rec.reasoningSummary = summary
 		}
 		refreshProjectedValues(rec)
+		if complete {
+			rec.reasoningSummary = nil
+		}
 	case "commandExecution":
 		command := decodeJSONString(fields["command"])
 		var display *struct {
@@ -1380,11 +1381,18 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 }
 
 func refreshProjectedValues(rec *directItemRecord) {
-	content := activity.ItemContent{Facts: rec.entry.Facts}
+	var details *activity.ItemDetails
 	if rec.entry.Kind == "reasoning" {
-		content.Details = &activity.ItemDetails{ReasoningLive: rec.entry.Live}
+		rec.entry.Text = strings.Join(rec.reasoningSummary, "\n\n")
+		if strings.TrimSpace(rec.entry.Text) == "" {
+			rec.entry.Values = nil
+			return
+		}
+		details = &activity.ItemDetails{ReasoningLive: rec.entry.Live}
 	}
-	rec.entry.Values = content.Values()
+	rec.entry.Values = (activity.ItemContent{
+		Facts: rec.entry.Facts, Details: details, ReasoningParts: rec.reasoningSummary,
+	}).Values()
 }
 
 func extractUserMessageText(raw jsontext.Value) string {

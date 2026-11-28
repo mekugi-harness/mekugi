@@ -60,13 +60,14 @@ type directPendingServerRequest struct {
 type directItemKey struct{ thread, item string }
 
 type directItemRecord struct {
-	id       string
-	threadID string
-	turnID   string
-	itemType string
-	seq      uint64
-	entry    activity.Entry
-	output   string
+	id               string
+	threadID         string
+	turnID           string
+	itemType         string
+	seq              uint64
+	entry            activity.Entry
+	output           string
+	reasoningSummary []string
 }
 
 type directThreadUsage struct {
