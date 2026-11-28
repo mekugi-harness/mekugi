@@ -1,4 +1,4 @@
-package binding_test
+package binding
 
 import (
 	"encoding/json/jsontext"
@@ -11,7 +11,6 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/binding"
 )
 
 type schemaDoc struct {
@@ -95,9 +94,9 @@ func loadSchemaRegistry(t *testing.T) *schemaRegistry {
 	return reg
 }
 
-func (r *schemaRegistry) propertiesOf(t *testing.T, names ...string) map[string]bool {
+func (r *schemaRegistry) propertySchemasOfDocs(t *testing.T, docs []schemaDoc) map[string][]schemaDoc {
 	t.Helper()
-	props := make(map[string]bool)
+	props := make(map[string][]schemaDoc)
 	visited := make(map[string]bool)
 
 	var collect func(doc schemaDoc)
@@ -120,8 +119,16 @@ func (r *schemaRegistry) propertiesOf(t *testing.T, names ...string) map[string]
 				}
 			}
 		}
-		for k := range doc.Properties {
-			props[k] = true
+		for k, rawProp := range doc.Properties {
+			if len(rawProp) > 0 && rawProp[0] == '{' {
+				var sub schemaDoc
+				if err := json.Unmarshal(rawProp, &sub); err != nil {
+					t.Fatalf("parse property %q subschema: %v", k, err)
+				}
+				props[k] = append(props[k], sub)
+			} else {
+				props[k] = append(props[k], schemaDoc{})
+			}
 		}
 		for _, sub := range doc.AllOf {
 			collectRaw(sub)
@@ -134,20 +141,32 @@ func (r *schemaRegistry) propertiesOf(t *testing.T, names ...string) map[string]
 		}
 	}
 
-	for _, name := range names {
-		docs := r.defs[name]
-		if len(docs) == 0 {
-			t.Fatalf("schema definition %q not found in Rust-generated JSON schemas", name)
-		}
-		for _, doc := range docs {
-			collect(doc)
-		}
+	for _, doc := range docs {
+		collect(doc)
 	}
 	return props
 }
 
-func jsonFieldNames(typ reflect.Type) []string {
-	var names []string
+func (r *schemaRegistry) docsForNames(t *testing.T, names ...string) []schemaDoc {
+	t.Helper()
+	var docs []schemaDoc
+	for _, name := range names {
+		found := r.defs[name]
+		if len(found) == 0 {
+			t.Fatalf("schema definition %q not found in Rust-generated JSON schemas", name)
+		}
+		docs = append(docs, found...)
+	}
+	return docs
+}
+
+type jsonFieldSpec struct {
+	name string
+	typ  reflect.Type
+}
+
+func jsonFields(typ reflect.Type) []jsonFieldSpec {
+	var fields []jsonFieldSpec
 	for field := range typ.Fields() {
 		if !field.IsExported() {
 			continue
@@ -164,51 +183,79 @@ func jsonFieldNames(typ reflect.Type) []string {
 					t = t.Elem()
 				}
 				if t.Kind() == reflect.Struct {
-					names = append(names, jsonFieldNames(t)...)
+					fields = append(fields, jsonFields(t)...)
 					continue
 				}
 			}
 			name = field.Name
 		}
-		names = append(names, name)
+		fields = append(fields, jsonFieldSpec{name: name, typ: field.Type})
 	}
-	return names
+	return fields
+}
+
+func (r *schemaRegistry) verifyStruct(t *testing.T, path string, typ reflect.Type, docs []schemaDoc, recursive bool) {
+	t.Helper()
+	allowed := r.propertySchemasOfDocs(t, docs)
+	fields := jsonFields(typ)
+	if len(fields) == 0 {
+		t.Fatalf("%s has no JSON fields", path)
+	}
+	for _, field := range fields {
+		propDocs, ok := allowed[field.name]
+		if !ok {
+			t.Errorf("%s JSON field %q not found in Rust schema", path, field.name)
+			continue
+		}
+		if !recursive {
+			continue
+		}
+		ft := field.typ
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Struct && ft != reflect.TypeFor[jsontext.Value]() {
+			r.verifyStruct(t, path+"."+field.name, ft, propDocs, true)
+		}
+	}
 }
 
 func TestBindingWireStructsMatchRustJSONSchema(t *testing.T) {
 	reg := loadSchemaRegistry(t)
 
 	cases := []struct {
-		name    string
-		typ     reflect.Type
-		schemas []string
+		name      string
+		typ       reflect.Type
+		schemas   []string
+		recursive bool
 	}{
-		{name: "TokenUsage", typ: reflect.TypeFor[binding.TokenUsage](), schemas: []string{"TokenUsageBreakdown"}},
-		{name: "Turn", typ: reflect.TypeFor[binding.Turn](), schemas: []string{"Turn"}},
-		{name: "TurnError", typ: reflect.TypeFor[binding.TurnError](), schemas: []string{"TurnError"}},
-		{name: "HistoryTurn", typ: reflect.TypeFor[binding.HistoryTurn](), schemas: []string{"Turn"}},
-		{name: "ThreadInfo", typ: reflect.TypeFor[binding.ThreadInfo](), schemas: []string{"Thread"}},
-		{name: "ThreadItem", typ: reflect.TypeFor[binding.ThreadItem](), schemas: []string{"ThreadItem"}},
-		{name: "FileChange", typ: reflect.TypeFor[binding.FileChange](), schemas: []string{"FileUpdateChange"}},
-		{name: "CommandAction", typ: reflect.TypeFor[binding.CommandAction](), schemas: []string{"CommandAction"}},
-		{name: "WebSearchAction", typ: reflect.TypeFor[binding.WebSearchAction](), schemas: []string{"WebSearchAction"}},
-		{name: "InputByteRange", typ: reflect.TypeFor[binding.InputByteRange](), schemas: []string{"ByteRange"}},
-		{name: "InputTextElement", typ: reflect.TypeFor[binding.InputTextElement](), schemas: []string{"TextElement"}},
-		{name: "QuestionRequest", typ: reflect.TypeFor[binding.QuestionRequest](), schemas: []string{"ToolRequestUserInputParams"}},
-		{name: "ResolvedRequest", typ: reflect.TypeFor[binding.ResolvedRequest](), schemas: []string{"ServerRequestResolvedNotification"}},
-		{name: "ShellGuardApprovalParams", typ: reflect.TypeFor[binding.ShellGuardApprovalParams](), schemas: []string{"ShellGuardRequestApprovalParams"}},
-		{name: "ShellGuardApprovalResponse", typ: reflect.TypeFor[binding.ShellGuardApprovalResponse](), schemas: []string{"ShellGuardRequestApprovalResponse"}},
-		{name: "ShellGuardSecretParams", typ: reflect.TypeFor[binding.ShellGuardSecretParams](), schemas: []string{"ShellGuardRequestSecretParams"}},
-		{name: "ShellGuardSecretResponse", typ: reflect.TypeFor[binding.ShellGuardSecretResponse](), schemas: []string{"ShellGuardRequestSecretResponse"}},
-		{name: "SkillCatalog", typ: reflect.TypeFor[binding.SkillCatalog](), schemas: []string{"SkillsListResponse"}},
+		{name: "TokenUsage", typ: reflect.TypeFor[TokenUsage](), schemas: []string{"TokenUsageBreakdown"}},
+		{name: "Turn", typ: reflect.TypeFor[Turn](), schemas: []string{"Turn"}},
+		{name: "TurnError", typ: reflect.TypeFor[TurnError](), schemas: []string{"TurnError"}},
+		{name: "HistoryTurn", typ: reflect.TypeFor[HistoryTurn](), schemas: []string{"Turn"}},
+		{name: "ThreadInfo", typ: reflect.TypeFor[ThreadInfo](), schemas: []string{"Thread"}},
+		{name: "threadSourceWire", typ: reflect.TypeFor[threadSourceWire](), schemas: []string{"SessionSource"}, recursive: true},
+		{name: "ThreadItem", typ: reflect.TypeFor[ThreadItem](), schemas: []string{"ThreadItem"}},
+		{name: "FileChange", typ: reflect.TypeFor[FileChange](), schemas: []string{"FileUpdateChange"}},
+		{name: "CommandAction", typ: reflect.TypeFor[CommandAction](), schemas: []string{"CommandAction"}},
+		{name: "WebSearchAction", typ: reflect.TypeFor[WebSearchAction](), schemas: []string{"WebSearchAction"}},
+		{name: "InputByteRange", typ: reflect.TypeFor[InputByteRange](), schemas: []string{"ByteRange"}},
+		{name: "InputTextElement", typ: reflect.TypeFor[InputTextElement](), schemas: []string{"TextElement"}},
+		{name: "QuestionRequest", typ: reflect.TypeFor[QuestionRequest](), schemas: []string{"ToolRequestUserInputParams"}},
+		{name: "ResolvedRequest", typ: reflect.TypeFor[ResolvedRequest](), schemas: []string{"ServerRequestResolvedNotification"}},
+		{name: "ShellGuardApprovalParams", typ: reflect.TypeFor[ShellGuardApprovalParams](), schemas: []string{"ShellGuardRequestApprovalParams"}},
+		{name: "ShellGuardApprovalResponse", typ: reflect.TypeFor[ShellGuardApprovalResponse](), schemas: []string{"ShellGuardRequestApprovalResponse"}},
+		{name: "ShellGuardSecretParams", typ: reflect.TypeFor[ShellGuardSecretParams](), schemas: []string{"ShellGuardRequestSecretParams"}},
+		{name: "ShellGuardSecretResponse", typ: reflect.TypeFor[ShellGuardSecretResponse](), schemas: []string{"ShellGuardRequestSecretResponse"}},
+		{name: "SkillCatalog", typ: reflect.TypeFor[SkillCatalog](), schemas: []string{"SkillsListResponse"}},
 		{
 			name:    "ApprovalRequest",
-			typ:     reflect.TypeFor[binding.ApprovalRequest](),
+			typ:     reflect.TypeFor[ApprovalRequest](),
 			schemas: []string{"CommandExecutionRequestApprovalParams", "FileChangeRequestApprovalParams", "PermissionsRequestApprovalParams"},
 		},
 		{
 			name: "Notification",
-			typ:  reflect.TypeFor[binding.Notification](),
+			typ:  reflect.TypeFor[Notification](),
 			schemas: []string{
 				"ErrorNotification",
 				"ThreadStartedNotification",
@@ -230,16 +277,8 @@ func TestBindingWireStructsMatchRustJSONSchema(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			allowed := reg.propertiesOf(t, tc.schemas...)
-			fields := jsonFieldNames(tc.typ)
-			if len(fields) == 0 {
-				t.Fatalf("%s has no JSON fields", tc.name)
-			}
-			for _, field := range fields {
-				if !allowed[field] {
-					t.Errorf("%s JSON field %q not found in Rust schema %v", tc.name, field, tc.schemas)
-				}
-			}
+			docs := reg.docsForNames(t, tc.schemas...)
+			reg.verifyStruct(t, tc.name, tc.typ, docs, tc.recursive)
 		})
 	}
 }

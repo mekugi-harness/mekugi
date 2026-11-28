@@ -132,18 +132,20 @@ func (t ThreadInfo) Details() observation.SessionDetails {
 		SessionMetrics: observation.SessionMetrics{ContextTokens: t.ContextTokens, ContextWindow: t.ContextWindow, Compactions: t.CompletedCompactions}}
 }
 
+type threadSourceWire struct {
+	SubAgent struct {
+		Spawn struct {
+			Path string `json:"agent_path"`
+		} `json:"thread_spawn"`
+	} `json:"subAgent"`
+}
+
 // AgentPath reads native spawn metadata rather than a presentation alias.
 func (t ThreadInfo) AgentPath() string {
 	if t.ParentThreadID == "" {
 		return "/root"
 	}
-	var source struct {
-		SubAgent struct {
-			Spawn struct {
-				Path string `json:"agent_path"`
-			} `json:"thread_spawn"`
-		} `json:"subAgent"`
-	}
+	var source threadSourceWire
 	if json.Unmarshal(t.Source, &source) != nil {
 		return ""
 	}

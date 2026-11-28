@@ -274,14 +274,14 @@ func TestGoNativeProtocolMethodsMatchRustSchema(t *testing.T) {
 	checkedServerNotifs := make(map[string]bool)
 	checkedServerReqs := make(map[string]bool)
 
-	notificationHandlers := map[string]bool{
-		"handleNotification":     true,
-		"runHeadless":            true,
-		"observeHeadlessCapture": true,
+	notificationHandlers := map[string]int{
+		"handleNotification":     0,
+		"runHeadlessHost":        0,
+		"observeHeadlessCapture": 0,
 	}
-	serverRequestHandlers := map[string]bool{
-		"handleServerRequest":      true,
-		"decodeDirectApprovalView": true,
+	serverRequestHandlers := map[string]int{
+		"handleServerRequest":      0,
+		"decodeDirectApprovalView": 0,
 	}
 
 	for _, entry := range entries {
@@ -370,8 +370,8 @@ func TestGoNativeProtocolMethodsMatchRustSchema(t *testing.T) {
 					if !isMethodSwitch {
 						return true
 					}
-					isNotif := notificationHandlers[fnName]
-					isReq := serverRequestHandlers[fnName]
+					_, isNotif := notificationHandlers[fnName]
+					_, isReq := serverRequestHandlers[fnName]
 					if !isNotif && !isReq {
 						return true
 					}
@@ -386,12 +386,14 @@ func TestGoNativeProtocolMethodsMatchRustSchema(t *testing.T) {
 								continue
 							}
 							if isNotif {
+								notificationHandlers[fnName]++
 								checkedServerNotifs[method] = true
 								if !schemas.serverNotifications[method] {
 									t.Errorf("%s:%d (%s) handles unknown ServerNotification method %q", name, fset.Position(expr.Pos()).Line, fnName, method)
 								}
 							}
 							if isReq {
+								serverRequestHandlers[fnName]++
 								checkedServerReqs[method] = true
 								if !schemas.serverRequests[method] {
 									t.Errorf("%s:%d (%s) handles unknown ServerRequest method %q", name, fset.Position(expr.Pos()).Line, fnName, method)
@@ -416,6 +418,16 @@ func TestGoNativeProtocolMethodsMatchRustSchema(t *testing.T) {
 	}
 	if len(checkedServerReqs) == 0 {
 		t.Fatal("expected to verify at least one ServerRequest handler")
+	}
+	for fnName, count := range notificationHandlers {
+		if count == 0 {
+			t.Errorf("notification handler %q matched 0 method cases (renamed or removed?)", fnName)
+		}
+	}
+	for fnName, count := range serverRequestHandlers {
+		if count == 0 {
+			t.Errorf("server request handler %q matched 0 method cases (renamed or removed?)", fnName)
+		}
 	}
 
 	sortedCalls := make([]string, 0, len(checkedCalls))
