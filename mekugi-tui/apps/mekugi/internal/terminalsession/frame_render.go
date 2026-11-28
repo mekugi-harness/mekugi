@@ -167,6 +167,9 @@ func (in FrameInput) skillsCaller() string {
 
 func (in FrameInput) displayedSkills() []string {
 	v := in.Main.session
+	if v.Side != nil && v.Displayed.ID == v.SideThread.ID {
+		return v.Side.Skills
+	}
 	if caller := in.skillsCaller(); v.Displayed.ID != v.Main.ID || caller != "/root" {
 		for _, row := range in.Agents.Roster() {
 			if row.Agent.Name == caller {

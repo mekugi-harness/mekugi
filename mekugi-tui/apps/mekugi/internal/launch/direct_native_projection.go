@@ -888,6 +888,7 @@ func (c *directNativeConnection) ensureItemLocked(threadID, turnID, itemID, item
 }
 
 func (c *directNativeConnection) hydrateThreadTurnsLocked(threadID string, turns []directWireTurn) {
+	delete(c.threadSkillReads, threadID)
 	preservedSeq := make(map[string]uint64, len(c.items[threadID]))
 	for _, rec := range c.items[threadID] {
 		if rec.id != "" {
@@ -1161,6 +1162,14 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		if exitCode != nil {
 			val.ExitCode = *exitCode
 		}
+		if complete && status == "completed" && exitCode != nil && *exitCode == 0 {
+			if names := activity.SkillReadNames(command); len(names) != 0 {
+				if c.threadSkillReads == nil {
+					c.threadSkillReads = make(map[string]activity.SkillSet)
+				}
+				c.threadSkillReads[threadID] = c.threadSkillReads[threadID].With(names...)
+			}
+		}
 		if status == "declined" {
 			val.Approval = "Denied"
 		}
@@ -1350,6 +1359,9 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 		}}
 		activity.Identify(rec.entry.Values, rec.entry.Seq)
 	case "contextCompaction":
+		if complete {
+			delete(c.threadSkillReads, threadID)
+		}
 		rec.entry.ContextBoundary = true
 		rec.entry.Text = "Context compacted"
 		refreshProjectedValues(rec)
@@ -1638,6 +1650,10 @@ func (c *directNativeConnection) observeThreadSkillsLocked(threadID string, name
 		c.threadSkills = make(map[string]activity.SkillSet)
 	}
 	c.threadSkills[threadID] = c.threadSkills[threadID].With(names...)
+}
+
+func (c *directNativeConnection) loadedSkillsLocked(threadID string) activity.SkillSet {
+	return slices.Clone(c.threadSkills[threadID]).With(c.threadSkillReads[threadID]...)
 }
 
 func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread string) {

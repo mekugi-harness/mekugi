@@ -236,6 +236,7 @@ type directNativeConnection struct {
 	archived           bool
 	threadUsage        map[string]directThreadUsage
 	threadSkills       map[string]activity.SkillSet
+	threadSkillReads   map[string]activity.SkillSet
 	rateLimits         [2]*sessionpresentation.CaptionLimit
 	prediction         directPrediction
 	feedbackText       string
@@ -724,7 +725,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		DisplayedWorkspace: c.workspace,
 		Info: sessionpresentation.MainInfo{
 			Workspace:      c.workspace,
-			Skills:         slices.Clone(c.threadSkills[c.mainThread]),
+			Skills:         c.loadedSkillsLocked(c.mainThread),
 			Title:          c.title,
 			BackendVersion: c.wire.UserAgent(),
 			Caller:         mainCaller,
@@ -779,7 +780,9 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 		view.Status.SetFeedback(sessionpresentation.Label{Text: c.feedbackText, Alert: c.feedbackAlert}, c.feedbackRev)
 	}
 	if c.sideThread != "" {
-		view.Side = &sessionpresentation.SideToken{ID: 1, Key: c.sideThread, Label: "One-off"}
+		view.Side = &sessionpresentation.SideToken{
+			ID: 1, Key: c.sideThread, Label: "One-off", Skills: c.loadedSkillsLocked(c.sideThread),
+		}
 	}
 	if c.btwThread != "" {
 		view.BTW = &conversation.SideView{
@@ -971,7 +974,7 @@ func (c *directNativeConnection) rosterLocked() []activity.AgentRow {
 			agent.Waiting = true
 		}
 		agent.Status = agent.ObservedStatus(agent.LatestKind)
-		agent.Skills = slices.Clone(c.threadSkills[agent.Thread])
+		agent.Skills = c.loadedSkillsLocked(agent.Thread)
 		if u, ok := c.threadUsage[agent.Thread]; ok {
 			agent.InputTokens = u.InputTokens
 			agent.OutputTokens = u.OutputTokens
