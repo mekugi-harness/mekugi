@@ -4,11 +4,7 @@ package sessionpresentation
 import (
 	"time"
 
-	"github.com/mekugi-harness/mekugi/mekugi-tui/apps/mekugi/internal/sessioncontrol"
-
 	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/presentation"
-	conversationmodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/presentation"
-	noticepresentation "github.com/mekugi-harness/mekugi/mekugi-tui/modules/notifications/presentation"
 )
 
 // MainState retains presentation facts, never operation authority. Completion
@@ -22,7 +18,7 @@ type MainState struct {
 type Animation uint8
 
 const (
-	Static Animation = iota
+	_ Animation = iota
 	Pulse
 	Working
 )
@@ -70,27 +66,6 @@ func (s *MainStatus) SetFeedback(value Label, revision uint64) {
 	if value.Alert {
 		s.Details[1] = value
 	}
-}
-
-// MainInputs borrows current owner state only for publication. Nothing here is
-// retained, and the resulting view contains no owner pointers or capabilities.
-type MainInputs struct {
-	Info                   MainInfo
-	DisplayedWorkspace     string
-	Menu                   *MenuView
-	RecordedTurn           string // Playback selection, used only without live control.
-	Retry                  string
-	ToolInput              func(string) string // Borrowed live Activity generation owner.
-	WaitTiming             func(thread, turn string) WaitTiming
-	Feedback               *noticepresentation.Model
-	Conversation           *conversationmodel.Session
-	ClientEditors          bool // Editor contents remain client-owned, outside this view's retained publication.
-	Restoring, SideRunning bool
-	BTWRunning             bool
-	Paused                 bool // Borrowed native lifecycle observation, not host-turn completion.
-	SideThreads            []string
-	SideInterrupt          sessioncontrol.InterruptTarget
-	Processes              int
 }
 
 type Caption struct {

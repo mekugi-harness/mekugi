@@ -34,11 +34,6 @@ func (m *Model) Expire(now time.Time) bool {
 	return true
 }
 
-// Progress belongs to one transcript, shared by every view attached to it. It
-// keeps the row each progress notice occupies, so a retried claim from any
-// view names the existing row instead of adding another.
-type Progress struct{}
-
 // DesktopPolicy consumes normalized settings. A nil event list allows every
 // eligible event; an empty nonnil list allows none. The renderer owns readiness,
 // focus observation, generic message text, output capability and signal encoding.

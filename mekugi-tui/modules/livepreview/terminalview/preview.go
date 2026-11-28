@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	PreviewFrameDelay = 33 * time.Millisecond
 	// Revealed rows fade in; rows revealed together cascade within a bound.
 	// A fade starts partly visible, so a coarsely sampled frame, as over mosh
 	// or a slow link, still shows readable text rather than a blank row.
@@ -27,12 +26,6 @@ const (
 	liveDiffPreviewFadeFloor = .4
 	liveDiffPreviewStagger   = 16 * time.Millisecond
 	PreviewMaxStagger        = 96 * time.Millisecond
-	// Keep consecutive target units visually distinct: the next unit starts
-	// after the preceding unit's last row has finished fading in.
-	PreviewUnitDelay = liveDiffPreviewFade + PreviewMaxStagger
-	// A finished call keeps distinct unit reveals only this long before its
-	// remaining input is shown at once.
-	PreviewFinishDrain = time.Second
 	// While following additions, each deletion run shows this many rows
 	// nearest the tip; a marker row counts the rest.
 	liveDiffPreviewKeptDeletions = 3

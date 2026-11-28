@@ -145,7 +145,7 @@ func TestPipelinedObservationRetainsInitializationAdmission(t *testing.T) {
 			if admission == "version" {
 				version = "incompatible"
 			}
-			params, err := json.Marshal(sessionapi.RPCInitialize{Version: version, Token: token})
+			params, err := json.Marshal(rpcInitialize{Version: version, Token: token})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -181,7 +181,7 @@ func TestPipelinedObservationRetainsInitializationAdmission(t *testing.T) {
 				}
 				return
 			}
-			var initialized sessionapi.RPCInitialize
+			var initialized rpcInitialize
 			if first.Error != nil || json.Unmarshal(first.Result, &initialized) != nil || initialized.ServerTime == 0 {
 				t.Fatal("initialization omitted confirmed clock")
 			}

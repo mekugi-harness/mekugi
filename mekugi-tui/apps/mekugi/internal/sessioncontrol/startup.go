@@ -1,10 +1,5 @@
 package sessioncontrol
 
-import "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
-
-// ContextReset aliases the retained context-reset observation payload.
-type ContextReset = observation.ContextResetEvent
-
 // ThreadFamily carries private invocation inputs only to native admission.
 type ThreadFamily struct {
 	TrackingCommand       string            `json:"trackingCommand,omitempty"`

@@ -86,10 +86,6 @@ type DisplayIntent struct {
 var ErrStaleIntent = errors.New("The action's original session or target is unavailable.")
 var ErrReplayIntent = errors.New("Replay is read-only.")
 
-// Service owns entry keys and attachment identity. The application owns stores.
-type Service struct {
-}
-
 // Source: apps/mekugi/internal/router/native_shell.go:265:283@db279442
 type Model struct {
 	Status MainState

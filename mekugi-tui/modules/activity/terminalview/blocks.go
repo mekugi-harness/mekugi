@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
 	activitymodel "github.com/mekugi-harness/mekugi/mekugi-tui/modules/activity/feed"
@@ -32,13 +31,6 @@ type Annotation struct {
 	BodyRows                                               int // Bounds a framed answer, frame included.
 	Flash, Collapsed, Hovered, Expanded, Compact           bool
 }
-
-// Completed reasoning and successful output stay open until their agent's
-// next standalone event, then collapses once events pause for
-// OutputDebounce. Eligible outputs share the latest deadline across agents
-// and late completions, so a quick run of commands collapses together rather than
-// one row at a time. Restored history starts settled.
-const OutputDebounce = 5 * time.Second
 
 // compactSingleLine reports a settled successful operation that default view
 // renders as one dense line without multi-line source, change lists, or output tails.

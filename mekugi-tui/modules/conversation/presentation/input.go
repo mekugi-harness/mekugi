@@ -64,7 +64,7 @@ func ShellDraftMode(text string, promptOpen bool) bool {
 type WaitingReason uint8
 
 const (
-	Waiting WaitingReason = iota
+	_ WaitingReason = iota
 	Steering
 	ShellRunning
 	SendingAfterInterrupt

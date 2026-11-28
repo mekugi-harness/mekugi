@@ -1,9 +1,6 @@
 package prompt
 
-import (
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/composer"
-)
+import "github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 
 type Reply struct {
 	ID          string
@@ -22,16 +19,4 @@ type Message struct {
 	ClientID            string
 	HasReplies          bool
 	Replies             []Reply
-}
-
-type CallChange struct {
-	Call       *Call
-	Discarded  []composer.Draft
-	Superseded bool
-}
-
-type MessageChanges struct {
-	Added    *Call
-	Changed  []CallChange
-	Suppress bool
 }

@@ -6,14 +6,6 @@ import (
 	json "encoding/json/v2"
 )
 
-type ApprovalDecision struct {
-	Label                  string
-	Response               map[string]any
-	Approve, Session, Deny bool
-	// Lasting decisions outlast this request, for the session or in policy.
-	Lasting bool
-	Outcome string
-}
 type ApprovalRequest struct {
 	Kind           string `json:"kind"`
 	ThreadID       string `json:"threadId"`
@@ -30,10 +22,6 @@ type ApprovalRequest struct {
 	Amendment          []string         `json:"proposedExecpolicyAmendment"`
 	Permissions        jsontext.Value   `json:"permissions"`
 	AvailableDecisions []jsontext.Value `json:"availableDecisions"`
-}
-
-type ApprovalReview struct {
-	Thread, Turn, Item, Status string
 }
 
 func DecodeApprovalRequest(params jsontext.Value) (ApprovalRequest, error) {

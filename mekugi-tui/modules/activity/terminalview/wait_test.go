@@ -16,7 +16,7 @@ import (
 )
 
 func TestUISnapshotWaitProgressMutedTargets(t *testing.T) {
-	block := activityui.Block{Kind: "progress", Body: "Finished waiting for", WaitTargets: []activityui.WaitTarget{
+	block := activityui.Block{Kind: "progress", Body: "Finished waiting for", WaitTargets: []activitymodel.WaitTarget{
 		{Name: "/root/agent1", Status: "Still running"}, {Name: "/root/agent6", Status: "completed"},
 	}}
 	if block.ProgressText() != "Finished waiting for agent1: Still running, agent6: completed" {
@@ -37,7 +37,7 @@ func TestUISnapshotWaitProgressMutedTargets(t *testing.T) {
 }
 
 func TestWaitProgressSanitizesHostText(t *testing.T) {
-	b := activityui.Block{Kind: "progress", Body: "Waiting", WaitTargets: []activityui.WaitTarget{{Name: "/root/agent\x1b[31m", Status: "done\x1b[2J"}}}
+	b := activityui.Block{Kind: "progress", Body: "Waiting", WaitTargets: []activitymodel.WaitTarget{{Name: "/root/agent\x1b[31m", Status: "done\x1b[2J"}}}
 	p := activityui.Painter{}
 	rows := strings.Join(p.Block(b, 120), "\n")
 	if strings.Contains(rows, "\x1b[31m") || strings.Contains(rows, "\x1b[2J") || ansi.Strip(rows) != "↔ Waiting agent: done" {
@@ -46,7 +46,7 @@ func TestWaitProgressSanitizesHostText(t *testing.T) {
 }
 
 func TestCompletedWaitReasonNotRepeated(t *testing.T) {
-	block := activityui.Block{Kind: "progress", Body: "Finished waiting for", WaitTargets: []activityui.WaitTarget{{Name: "/root/review", Status: "completed"}}, WaitReason: "completed"}
+	block := activityui.Block{Kind: "progress", Body: "Finished waiting for", WaitTargets: []activitymodel.WaitTarget{{Name: "/root/review", Status: "completed"}}, WaitReason: "completed"}
 	want := "Finished waiting for review: completed"
 	if got := block.ProgressText(); got != want {
 		t.Fatalf("plain progress=%q", got)
@@ -56,9 +56,9 @@ func TestCompletedWaitReasonNotRepeated(t *testing.T) {
 func TestUISnapshotAgentDisplayNames(t *testing.T) {
 	var p activityui.Painter
 	rows := []string{p.Agent("agent:main"), p.Agent("agent:main/worker/reviewer")}
-	rows = append(rows, p.Block(activityui.Block{Kind: "progress", Body: "Waiting for", WaitTargets: []activityui.WaitTarget{{Name: "agent:main/worker/reviewer"}}}, 80)...)
+	rows = append(rows, p.Block(activityui.Block{Kind: "progress", Body: "Waiting for", WaitTargets: []activitymodel.WaitTarget{{Name: "agent:main/worker/reviewer"}}}, 80)...)
 	canonical := []string{p.Agent("/root"), p.Agent("/root/worker/reviewer")}
-	canonical = append(canonical, p.Block(activityui.Block{Kind: "progress", Body: "Waiting for", WaitTargets: []activityui.WaitTarget{{Name: "/root/worker/reviewer"}}}, 80)...)
+	canonical = append(canonical, p.Block(activityui.Block{Kind: "progress", Body: "Waiting for", WaitTargets: []activitymodel.WaitTarget{{Name: "/root/worker/reviewer"}}}, 80)...)
 	if strings.Join(rows, "\n") != strings.Join(canonical, "\n") {
 		t.Fatalf("coordination address changed terminal labels or colours: %q != %q", rows, canonical)
 	}
@@ -68,7 +68,7 @@ func TestUISnapshotAgentDisplayNames(t *testing.T) {
 func TestUISnapshotWaitTargetDisclosure(t *testing.T) {
 	block := activityui.Block{Kind: "progress", Body: "Waiting for"}
 	for _, name := range []string{"one", "two", "three", "four", "five"} {
-		block.WaitTargets = append(block.WaitTargets, activityui.WaitTarget{Name: "/root/" + name})
+		block.WaitTargets = append(block.WaitTargets, activitymodel.WaitTarget{Name: "/root/" + name})
 	}
 	var view activityui.View
 	if !view.ClickTarget(&block, activityui.Snippet{}, 80) {
@@ -84,7 +84,7 @@ func TestUISnapshotWaitTargetDisclosure(t *testing.T) {
 			t.Fatalf("wait preview did not collapse: %s", text)
 		}
 		rows = append(rows, "plain after wait")
-		rows = append(rows, view.Painter.Block(activityui.Block{Kind: "progress", Body: "Waiting for", WaitTargets: []activityui.WaitTarget{{Name: "all"}}}, width)...)
+		rows = append(rows, view.Painter.Block(activityui.Block{Kind: "progress", Body: "Waiting for", WaitTargets: []activitymodel.WaitTarget{{Name: "all"}}}, width)...)
 		uisnapshot.AssertTerminal(t, fmt.Sprintf("testdata/snapshots/wait_disclosure_%d.txt", width), rows, width)
 	}
 }
@@ -101,7 +101,7 @@ func TestUISnapshotWaitingBreathing(t *testing.T) {
 				}
 				p.Colors = terminalui.Colors{Foreground: fg, Background: bg, HasForeground: true, HasBackground: true}
 			}
-			wait := activityui.Block{Kind: "progress", Body: "Waiting for", WaitTimeout: "10m0s", Live: true, WaitTargets: []activityui.WaitTarget{{Name: "/root/agent1"}, {Name: "/root/agent6"}}}
+			wait := activityui.Block{Kind: "progress", Body: "Waiting for", WaitTimeout: "10m0s", Live: true, WaitTargets: []activitymodel.WaitTarget{{Name: "/root/agent1"}, {Name: "/root/agent6"}}}
 			reasoning := activityui.Block{Kind: "summary", Body: "Checking results", Live: true}
 			var rows []string
 			for _, phase := range []time.Duration{0, time.Second} {
@@ -118,7 +118,7 @@ func TestUISnapshotWaitingBreathing(t *testing.T) {
 
 func TestUISnapshotWaitTimeoutMuted(t *testing.T) {
 	p := activityui.Painter{Clock: func() time.Time { return time.Unix(0, 0) }}
-	block := activityui.Block{Kind: "progress", Body: "Waiting for", Live: true, WaitTargets: []activityui.WaitTarget{{Name: "/root/worker"}}, WaitTimeout: "10s"}
+	block := activityui.Block{Kind: "progress", Body: "Waiting for", Live: true, WaitTargets: []activitymodel.WaitTarget{{Name: "/root/worker"}}, WaitTimeout: "10s"}
 	rows := append(p.Block(block, 100), "plain after wait")
 	uisnapshot.AssertTerminal(t, "testdata/snapshots/wait_timeout.txt", rows, 100)
 }
@@ -129,7 +129,7 @@ func TestUISnapshotWaitingRosterMatchesTranscript(t *testing.T) {
 	var rows []string
 	for _, timeout := range []string{"", "10s"} {
 		block := activityui.Block{Kind: "progress", Body: "Waiting for", Live: true,
-			WaitTargets: []activityui.WaitTarget{{Name: "/root/backend-extraction/backend-extraction-review"}}, WaitTimeout: timeout}
+			WaitTargets: []activitymodel.WaitTarget{{Name: "/root/backend-extraction/backend-extraction-review"}}, WaitTimeout: timeout}
 		agent := activitymodel.Agent{Status: "waiting", Waiting: true, Wait: &block.Value}
 		got := v.AgentState(agent, 120, now)
 		if want := v.Painter.Summary([]activityui.Block{block}, 120); got != want {

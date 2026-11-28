@@ -23,7 +23,7 @@ type StatusField struct {
 type PanelActionKind uint8
 
 const (
-	PanelNoAction PanelActionKind = iota
+	_ PanelActionKind = iota
 	PanelClose
 	PanelRefresh
 	PanelFeatures
@@ -33,12 +33,4 @@ type PanelAction struct {
 	Version Version
 	Panel   uint64
 	Kind    PanelActionKind
-}
-
-// PanelState retains structured presentation, independently of account requests
-// and refresh timing. Publication detaches these values with the session view.
-// Source: apps/mekugi/internal/router/app_server_status.go:25:45,124:127@0ce86dd5.
-type PanelState struct {
-	PanelView
-	Body, Tokens, Account []StatusField
 }
