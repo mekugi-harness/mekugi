@@ -118,6 +118,9 @@ func TestInlinePreservesUnmatchedBoldDelimiters(t *testing.T) {
 	if got := p.InlineComplete("See **/tmp/report** now"); !strings.Contains(got, "\x1b[1m") || ansi.Strip(got) != "See /tmp/report now" {
 		t.Fatalf("bold absolute path not rendered: %q", got)
 	}
+	if got := p.InlineComplete("Scan **/*.go for **TODOs**"); !strings.Contains(got, "\x1b[1mTODOs") || ansi.Strip(got) != "Scan **/*.go for TODOs" {
+		t.Fatalf("glob before bold corrupted: %q", got)
+	}
 	block := strings.Join(plainLines(p.MarkdownComplete("Match **/*.go or **/*.ts\n> Quote src/**/*.go or pkg/**/*.ts", 80, false)), "\n")
 	if !strings.Contains(block, "Match **/*.go or **/*.ts") || !strings.Contains(block, "Quote src/**/*.go or pkg/**/*.ts") {
 		t.Fatalf("MarkdownComplete corrupted globs: %q", block)

@@ -171,8 +171,12 @@ func Hang(lead, label string, width int) []string {
 // Inline renders the supported Markdown inline subset.
 func (p *Painter) Inline(line string) string {
 	line = textsanitize.Safe(line, false)
+	var opens, closes map[int]bool
+	if p.noUnclosedBold && strings.Contains(line, "**") {
+		opens, closes = matchBoldDelimiters(line)
+	}
 	var out strings.Builder
-	bold := false
+	boldDepth := 0
 	for i := 0; i < len(line); {
 		if line[i] == '[' {
 			if label, target, end, ok := markdownLink(line[i:]); ok {
@@ -202,16 +206,24 @@ func (p *Painter) Inline(line string) string {
 			continue
 		}
 		if strings.HasPrefix(line[i:], "**") {
-			if bold {
-				if !p.noUnclosedBold || canCloseBold(line, i) {
-					bold = false
-					out.WriteString(Undim)
+			if !p.noUnclosedBold {
+				if boldDepth == 0 {
+					boldDepth = 1
+					out.WriteString("\x1b[1m")
 				} else {
-					out.WriteString("**")
+					boldDepth = 0
+					out.WriteString(Undim)
 				}
-			} else if !p.noUnclosedBold || (canOpenBold(line, i) && hasClosingBold(line, i+2)) {
-				bold = true
-				out.WriteString("\x1b[1m")
+			} else if opens[i] {
+				boldDepth++
+				if boldDepth == 1 {
+					out.WriteString("\x1b[1m")
+				}
+			} else if closes[i] && boldDepth > 0 {
+				boldDepth--
+				if boldDepth == 0 {
+					out.WriteString(Undim)
+				}
 			} else {
 				out.WriteString("**")
 			}
@@ -233,7 +245,7 @@ func (p *Painter) Inline(line string) string {
 		out.WriteByte(line[i])
 		i++
 	}
-	if bold {
+	if boldDepth > 0 {
 		out.WriteString(Undim)
 	}
 	return out.String()
@@ -284,18 +296,42 @@ func canCloseBold(line string, pos int) bool {
 	return !unicode.IsPunct(before) || unicode.IsSpace(after) || unicode.IsPunct(after)
 }
 
-func hasClosingBold(line string, start int) bool {
-	for i := start; i < len(line); {
+// matchBoldDelimiters pairs flanking ** delimiters innermost-first (LIFO)
+// outside code spans so unmatched glob prefixes like **/*.go never borrow a
+// closing ** from a later **bold** span.
+func matchBoldDelimiters(line string) (opens, closes map[int]bool) {
+	var stack []int
+	for i := 0; i < len(line); {
+		if line[i] == '[' {
+			if _, _, end, ok := markdownLink(line[i:]); ok {
+				i += end
+				continue
+			}
+		}
 		if _, end, ok := markdownsyntax.CodeSpan(line, i); ok {
 			i = end
 			continue
 		}
-		if strings.HasPrefix(line[i:], "**") && i > start && canCloseBold(line, i) {
-			return true
+		if !strings.HasPrefix(line[i:], "**") {
+			i++
+			continue
 		}
-		i++
+		open, close := canOpenBold(line, i), canCloseBold(line, i)
+		if close && len(stack) > 0 && i > stack[len(stack)-1]+2 {
+			opener := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if opens == nil {
+				opens = make(map[int]bool)
+				closes = make(map[int]bool)
+			}
+			opens[opener] = true
+			closes[i] = true
+		} else if open {
+			stack = append(stack, i)
+		}
+		i += 2
 	}
-	return false
+	return opens, closes
 }
 
 func (p *Painter) linkAllowed(target string) bool {
