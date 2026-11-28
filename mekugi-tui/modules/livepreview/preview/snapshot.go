@@ -20,8 +20,7 @@ type Preview struct {
 	Evaluated   bool `json:",omitzero"`
 	Complete    bool `json:",omitzero"`
 	DiffText    bool `json:",omitzero"`
-	// UnlocatedDiff marks provisional update hunks without real file
-	// coordinates. Whole-file additions and deletions still have a known start.
+	// UnlocatedDiff permits provisional update hunks without file coordinates.
 	UnlocatedDiff bool `json:",omitzero"`
 	Status        string
 	Footer        string `json:",omitempty"`

@@ -171,7 +171,8 @@ func liveDiffPreviewRows(review diffmodel.ReviewFile, workspace string, unlocate
 		path := pathdisplay.ForWorkspace(workspace, review.BeforePath)
 		return []PreviewRow{{Kind: ' ', Text: "# " + path + " deleted\n"}}, nil
 	}
-	if unlocatedDiff && review.BeforePath != "" {
+	hunks, err := review.Hunks()
+	if unlocatedDiff && review.BeforePath != "" && (err != nil || len(hunks) == 0) {
 		// Streaming apply_patch anchors and shell edit ranges are not file
 		// positions. Keep the proposed source rows without numbering them.
 		var rows []PreviewRow
@@ -182,7 +183,6 @@ func liveDiffPreviewRows(review diffmodel.ReviewFile, workspace string, unlocate
 		}
 		return rows, nil
 	}
-	hunks, err := review.Hunks()
 	if err != nil {
 		return nil, err
 	}

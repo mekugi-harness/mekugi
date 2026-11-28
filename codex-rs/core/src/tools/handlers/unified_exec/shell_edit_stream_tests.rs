@@ -1,13 +1,19 @@
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::FileChange;
 use pretty_assertions::assert_eq;
 
 use super::CodeModeEditProjector;
+use super::ExecCommandArgumentDiffConsumer;
 use super::JsonCmdExtractor;
 use super::ShellEditProjector;
+use crate::session::step_context::StepContext;
+use crate::session::tests::make_session_and_context;
+use crate::tools::handlers::live_diff::ArgumentPreview;
+use crate::tools::registry::ToolArgumentDiffConsumer;
 
 fn project_chunks(
     cwd: &str,
@@ -129,6 +135,43 @@ fn trailing_workdir_rebases_already_streamed_relative_paths() {
         Some(&FileChange::Add {
             content: "hello\n".to_string(),
         })
+    );
+}
+
+#[tokio::test]
+async fn completed_shell_edit_waits_for_late_executor_before_reading_baseline() {
+    let (_session, turn) = make_session_and_context().await;
+    let step = StepContext::for_test(Arc::new(turn));
+    let mut consumer = ExecCommandArgumentDiffConsumer::default();
+    let provisional = consumer.consume_diff(
+        &step,
+        "edit".to_string(),
+        r#"{"cmd":"cat <<'EOF' > /repo/out.txt\nhello\nEOF\n""#,
+    );
+    let path = Path::new("/repo/out.txt");
+    let [ArgumentPreview::Patch(preview)] = provisional.as_slice() else {
+        panic!("expected a provisional patch before the location arrived");
+    };
+    assert_eq!(preview.changes[path].source, None);
+
+    let _ = consumer.consume_diff(&step, "edit".to_string(), r#","workdir":"/repo""#);
+    assert_eq!(
+        consumer.projector.as_ref().unwrap().snapshot_entries()[path].source,
+        None
+    );
+
+    let mut resolved = consumer.consume_diff(
+        &step,
+        "edit".to_string(),
+        r#","environment_id":"secondary"}"#,
+    );
+    resolved.extend(consumer.finish().expect("finish preview"));
+    let Some(ArgumentPreview::Patch(preview)) = resolved.last() else {
+        panic!("expected an updated patch for the selected executor");
+    };
+    assert_eq!(
+        preview.changes[path].source,
+        Some((Some("secondary".to_string()), path.to_path_buf()))
     );
 }
 
@@ -264,6 +307,7 @@ fn python_write_text_with_replace_targets_destination_path() {
 fn python_cross_file_replace_disables_context_for_existing_and_new_destinations() {
     let mut projector = ShellEditProjector::new(Path::new("/repo"));
     projector.set_workdir(Path::new("/repo"));
+    projector.resolve_location();
     projector.push(
         "python3 - <<'PY'\nfrom pathlib import Path\n\
          dst = Path('dst')\ndst.write_text(dst.read_text().replace('a', 'b'))\n",
@@ -400,6 +444,31 @@ fn json_cmd_extractor_streams_across_chunk_boundaries() {
     }
     assert_eq!(workdir.as_deref(), Some("/repo/sub"));
     assert_eq!(cmd, "cat <<'EOF' > f.txt\nhi \"there\" A\nEOF");
+}
+
+#[test]
+fn code_mode_keeps_baseline_provisional_until_the_nested_call_resolves() {
+    let mut projector = CodeModeEditProjector::default();
+    let cwd = Path::new("/repo");
+    let path = Path::new("/repo/out.txt");
+    let call = "edit".to_string();
+    let provisional = projector
+        .consume_diff(
+            cwd,
+            call.clone(),
+            r#"await tools.exec_command({ cmd: "cat > /repo/out.txt <<'EOF'\nhello\nEOF\n", workdir: "/repo""#,
+        )
+        .expect("editable preview before the call closes");
+    assert_eq!(provisional.changes[path].source, None);
+
+    let resolved = projector
+        .consume_diff(cwd, call, r#", environment_id: "secondary" });"#)
+        .or_else(|| projector.finish())
+        .expect("editable preview for the selected executor");
+    assert_eq!(
+        resolved.changes[path].source,
+        Some((Some("secondary".to_string()), path.to_path_buf()))
+    );
 }
 
 #[test]

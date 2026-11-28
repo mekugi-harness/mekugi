@@ -98,10 +98,10 @@ impl ToolArgumentDiffConsumer for ExecCommandArgumentDiffConsumer {
         if let Some(dir) = workdir {
             projector.set_workdir(Path::new(&dir));
         }
-        projector
-            .environment_id
-            .clone_from(&self.json.environment_id);
-        if self.json.depth == 0 {
+        if self.json.state == JsonState::Complete {
+            projector
+                .environment_id
+                .clone_from(&self.json.environment_id);
             projector.resolve_location();
         }
         if !cmd_chunk.is_empty() {
@@ -1159,6 +1159,7 @@ enum JsonState {
     InTargetString(TargetField),
     SkipValue,
     InSkipString,
+    Complete,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1188,7 +1189,7 @@ impl JsonCmdExtractor {
                     }
                     '}' => {
                         self.depth = self.depth.saturating_sub(1);
-                        self.state = JsonState::Start;
+                        self.state = JsonState::Complete;
                     }
                     _ => {}
                 },
@@ -1269,7 +1270,7 @@ impl JsonCmdExtractor {
                     '}' | ']' => {
                         self.depth = self.depth.saturating_sub(1);
                         if self.depth == 0 {
-                            self.state = JsonState::Start;
+                            self.state = JsonState::Complete;
                         }
                     }
                     ',' if self.depth == 1 => {
@@ -1277,6 +1278,7 @@ impl JsonCmdExtractor {
                     }
                     _ => {}
                 },
+                JsonState::Complete => {}
             }
         }
         (cmd_out, completed_workdir)
@@ -1397,14 +1399,18 @@ impl ShellEditProjector {
 
     pub(crate) fn set_workdir(&mut self, dir: &Path) {
         self.workdir = dir.to_path_buf();
-        self.resolve_location();
+        self.mark_location_dirty();
     }
 
     fn resolve_location(&mut self) {
         if !self.location_resolved {
             self.location_resolved = true;
-            self.dirty |= !self.files.is_empty() || matches!(self.mode, ShellMode::Heredoc { .. });
+            self.mark_location_dirty();
         }
+    }
+
+    fn mark_location_dirty(&mut self) {
+        self.dirty |= !self.files.is_empty() || matches!(self.mode, ShellMode::Heredoc { .. });
     }
 
     pub(crate) fn push(&mut self, chunk: &str) {
@@ -1540,7 +1546,8 @@ impl ShellEditProjector {
     }
 
     fn project_edit(&self, path: &Path, kind: EditKind) -> ProjectedEdit {
-        let source = (!self.ambiguous_location && (self.location_resolved || path.is_absolute()))
+        // A later environment argument can change the baseline even for absolute paths.
+        let source = (!self.ambiguous_location && self.location_resolved)
             .then(|| (self.environment_id.clone(), self.workdir.join(path)));
         ProjectedEdit { source, kind }
     }

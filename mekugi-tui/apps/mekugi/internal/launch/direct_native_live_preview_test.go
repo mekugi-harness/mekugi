@@ -38,17 +38,38 @@ func TestDirectNativeLivePreviewFollowsDisplayedThread(t *testing.T) {
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	paint := func(ev sessionapi.NativeEvent) string {
 		t.Helper()
-		renderer.update(ev.Frame, conversation.DraftView{}, conversation.PromptDraftView{}, now)
+		publishedAt := now
 		now = now.Add(time.Second)
-		rendered, err := renderer.render(ctx, io.Discard, now, "0.172.0")
-		if err != nil {
-			t.Fatal(err)
+		for hydrated := false; ; hydrated = true {
+			renderer.update(ev.Frame, conversation.DraftView{}, conversation.PromptDraftView{}, publishedAt)
+			rendered, err := renderer.render(ctx, io.Discard, now, "0.172.0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rendered.Demands) == 0 {
+				dock := terminal.Shell.Layout.Live
+				return ansi.Strip(strings.Join(rendered.Rows[dock.Y:dock.Y+dock.H], "\n"))
+			}
+			if hydrated {
+				t.Fatalf("output demands remained after hydration: %v", rendered.Demands)
+			}
+			// The attached transcript must finish hydrating before the renderer paints the dock.
+			agent := ev.Frame.View.Displayed.ID != ev.Frame.View.Main.ID
+			if _, err := conn.Send(ctx, ev.Target(), sessionapi.NativeOperation{
+				Output: &sessionapi.NativeOutputDemand{Agent: agent, Demands: rendered.Demands},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ev = awaitDirectEvent(t, conn, func(next sessionapi.NativeEvent) bool {
+				output := next.Frame.MainOutput
+				if agent {
+					output = next.Frame.AgentOutput
+				}
+				return next.Frame.View.Displayed.ID == ev.Frame.View.Displayed.ID &&
+					next.Frame.View.Version.Revision > ev.Frame.View.Version.Revision &&
+					len(output) > 0 && output[0].Demand == rendered.Demands[0]
+			})
 		}
-		if len(rendered.Demands) != 0 {
-			t.Fatalf("unexpected output demands: %v", rendered.Demands)
-		}
-		dock := terminal.Shell.Layout.Live
-		return ansi.Strip(strings.Join(rendered.Rows[dock.Y:dock.Y+dock.H], "\n"))
 	}
 	startEdit := func(thread, path, text string) sessionapi.NativeEvent {
 		t.Helper()
@@ -94,6 +115,7 @@ func TestDirectNativeLivePreviewFollowsDisplayedThread(t *testing.T) {
 	})
 	for _, tc := range []struct {
 		name, kind, diff string
+		numbered         bool
 		want             []string
 	}{
 		{
@@ -107,7 +129,12 @@ func TestDirectNativeLivePreviewFollowsDisplayedThread(t *testing.T) {
 			want: []string{"+2 -2", "+++ new text", "+other new"},
 		},
 		{
-			name: "whole file addition", kind: "add",
+			name: "resolved preview", kind: "update", numbered: true,
+			diff: "@@ -137 +137 @@\n-old\n+new\n",
+			want: []string{"+1 -1", "137│+new"},
+		},
+		{
+			name: "whole file addition", kind: "add", numbered: true,
 			diff: "first new line\nsecond new line",
 			want: []string{"+2 -0", "1│+first new line", "2│+second new line"},
 		},
@@ -134,7 +161,7 @@ func TestDirectNativeLivePreviewFollowsDisplayedThread(t *testing.T) {
 				t.Fatalf("%s: expected %q in live diff:\n%s", tc.name, want, shown)
 			}
 		}
-		if tc.kind == "update" && strings.Contains(shown, "│+") {
+		if !tc.numbered && strings.Contains(shown, "│+") {
 			t.Fatalf("%s: live diff invented source coordinates:\n%s", tc.name, shown)
 		}
 	}
