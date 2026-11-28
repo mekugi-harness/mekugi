@@ -53,6 +53,8 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
+      - name: Test native cache policy
+        run: python3 -m unittest discover -s .github/scripts -p test_native_cache.py
       - name: Check whether only the browser app changed
         id: scope
         env:
@@ -76,7 +78,7 @@ jobs:
           BEFORE: ${{ github.event.before }}
           FORCED: ${{ github.event.forced }}
         run: bash .github/scripts/reuse-pr-validation.sh
-      - name: Approve native archives from the verified PR run
+      - name: Approve native artifacts from the verified PR run
         id: approve_archive
         if: steps.pr.outputs.run_id != ''
         continue-on-error: true
@@ -115,7 +117,7 @@ jobs:
       contents: read
     runs-on: ${{ matrix.runner }}
     container:
-      image: ghcr.io/mekugi-harness/mekugi-ci:latest
+      image: &native_linux_image ghcr.io/mekugi-harness/mekugi-ci:latest
       options: --privileged
     strategy:
       fail-fast: false
@@ -128,6 +130,9 @@ jobs:
             runner: ubuntu-24.04-arm
     env:
       CGO_ENABLED: '1'
+      PLATFORM: ${{ matrix.platform }}
+      RUNNER_LABEL: ${{ matrix.runner }}
+      NATIVE_BUILD_IMAGE: *native_linux_image
       GIT_CONFIG_COUNT: '1'
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: '*'
@@ -181,109 +186,35 @@ jobs:
               exit 1
             fi
           done
-      - name: Resolve native runtime archive key
+      - &native_key
+        name: Resolve native archive and test keys
         id: native_key
-        env:
-          PLATFORM: ${{ matrix.platform }}
-          PROFILE: ${{ env.NATIVE_PACKAGE_PROFILE }}
-          RUNNER_LABEL: ${{ matrix.runner }}
-          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'runtime/build.py') }}
-        run: |
-          native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
-          # PR archives are smoke-tested on each runner. Reuse them across image
-          # revisions of the same OS and architecture, but keep release keys exact.
-          image="$RUNNER_LABEL"
-          if [[ "$PROFILE" != dev-small ]]; then
-            image="$image-${ImageVersion:-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT}"
-          fi
-          key="$(printf '%s\n' "$PLATFORM" "$PROFILE" "$image" "$native_tree" "$RECIPE_HASH" | shasum -a 256 | cut -d' ' -f1)"
-          echo "name=mekugi_${PLATFORM}-$key" >> "$GITHUB_OUTPUT"
-      - name: Cache packaged native runtime
+        run: python3 .github/scripts/native-keys.py
+      - &native_cache
+        name: Cache packaged native runtime
         id: native_cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/artifacts/mekugi-native_${{ matrix.platform }}.tar.gz
-          key: native-bundle-v3-${{ steps.native_key.outputs.name }}
-      - name: Restore packaged native runtime from main
-        id: native_artifact
-        if: steps.native_cache.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: ${{ steps.native_key.outputs.name }}
-          PLATFORM: ${{ matrix.platform }}
-        run: |
-          # Artifact retention is independent of the compiler cache's LRU eviction.
-          list_runs() {
-            gh api --paginate --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
-              -f name="$1" -F per_page=100 --jq '.artifacts[] | select(.expired == false) | .workflow_run.id'
-          }
-          source_type() {
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1" | jq -r --arg repo "$GITHUB_REPOSITORY" '
-              select(.path == ".github/workflows/release.yml" and .conclusion == "success" and
-                .head_repository.full_name == $repo) |
-              if .event == "push" and .head_branch == "main" then "main"
-              elif .event == "pull_request" and .run_attempt == 1 then "pr"
-              else empty end
-            '
-          }
-          approved_on_main() {
-            local approvals approval type
-            if ! approvals="$(list_runs "native-approved-run-$1")"; then
-              echo "::warning::Could not list native archive approvals for run $1."
-              return 1
-            fi
-            for approval in $approvals; do
-              if ! type="$(source_type "$approval")"; then
-                echo "::warning::Could not verify native archive approval from run $approval."
-                continue
-              fi
-              [[ "$type" == main ]] && return 0
-            done
-            return 1
-          }
-          if ! candidates="$(list_runs "$ARTIFACT_NAME")"; then
-            echo "::warning::Could not list matching native archives; building locally."
-            exit 0
-          fi
-          while IFS= read -r run_id; do
-            [[ -n "$run_id" ]] || continue
-            if ! type="$(source_type "$run_id")"; then
-              echo "::warning::Could not verify native archive source run $run_id."
-              continue
-            fi
-            if [[ "$type" != main ]] && { [[ "$type" != pr ]] || ! approved_on_main "$run_id"; }; then
-              continue
-            fi
-            download="$RUNNER_TEMP/native-artifact"
-            archive="$download/mekugi-native_${PLATFORM}.tar.gz"
-            if ! gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir "$download" ||
-               [[ ! -s "$archive" ]]; then
-              echo "::warning::Could not restore native archive from run $run_id; building locally."
-              exit 0
-            fi
-            mkdir -p "$RUNNER_TEMP/artifacts"
-            mv "$archive" "$RUNNER_TEMP/artifacts/"
-            echo "restored=true" >> "$GITHUB_OUTPUT"
-            break
-          done <<< "$candidates"
-      - name: Decide native test and package steps
+          path: ${{ runner.temp }}/artifacts/mekugi-native_${{ env.PLATFORM }}.tar.gz
+          key: native-bundle-v4-${{ steps.native_key.outputs.archive }}
+      - &native_test_cache
+        name: Cache passing native test receipt
+        id: native_test_cache
+        if: env.NATIVE_PACKAGE_PROFILE == 'dev-small'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/native-tests-passed
+          key: ${{ steps.native_key.outputs.tests }}
+      - &native_plan
+        name: Restore native artifacts and plan native work
         id: native_plan
         env:
-          CACHE_HIT: ${{ steps.native_cache.outputs.cache-hit }}
-          ARTIFACT_RESTORED: ${{ steps.native_artifact.outputs.restored }}
-          IS_RELEASE_OR_DISPATCH: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
-        run: |
-          if [[ "$CACHE_HIT" == "true" || "$ARTIFACT_RESTORED" == "true" ]]; then
-            echo "package=false" >> "$GITHUB_OUTPUT"
-            if [[ "$IS_RELEASE_OR_DISPATCH" == "true" ]]; then
-              echo "test=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "test=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "package=true" >> "$GITHUB_OUTPUT"
-            echo "test=true" >> "$GITHUB_OUTPUT"
-          fi
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE_NAME: ${{ steps.native_key.outputs.archive }}
+          ARCHIVE_CACHE_HIT: ${{ steps.native_cache.outputs.cache-hit }}
+          TEST_CACHE_HIT: ${{ steps.native_test_cache.outputs.cache-hit }}
+          TEST_RECEIPT: ${{ steps.native_key.outputs.tests }}
+        run: bash .github/scripts/plan-native.sh
       - name: Enable unprivileged user namespaces
         run: |
           # Match upstream Codex CI on the disposable Ubuntu runners.
@@ -296,27 +227,28 @@ jobs:
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
           version: v0.19.0
-      - name: Test native runtime
+      - &native_test
+        name: Test native runtime
         if: steps.native_plan.outputs.test == 'true'
-        env: &native_env
-          CARGO_BUILD_JOBS: ${{ runner.os == 'Linux' && '4' || '2' }}
-          CARGO_INCREMENTAL: '0'
-          # Use system Git for V8's nested Git dependencies instead of Cargo's libgit2 transport.
-          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=mold'
-          PLATFORM: ${{ matrix.platform }}
-          RUSTC_WRAPPER: sccache
-          # Allow rustup to install a newer toolchain if a PR bumps rust-toolchain.toml.
-          RUSTUP_AUTO_INSTALL: '1'
         run: |
           # App-server integration fixtures use debug-only startup options.
-          TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" python3 runtime/build.py test
-      - name: Package native runtime
+          TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" bash .github/scripts/native-cargo.sh test
+          printf '%s\n' "${{ steps.native_key.outputs.tests }}" > "$RUNNER_TEMP/native-tests-passed"
+      - &native_receipt
+        name: Upload native test receipt
+        if: env.NATIVE_PACKAGE_PROFILE == 'dev-small' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        continue-on-error: true
+        with:
+          name: ${{ steps.native_key.outputs.tests }}
+          path: ${{ runner.temp }}/native-tests-passed
+          if-no-files-found: error
+      - &native_package
+        name: Package native runtime
         if: steps.native_plan.outputs.package == 'true'
-        env: *native_env
         run: |
-          python3 runtime/build.py package --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
+          bash .github/scripts/native-cargo.sh package --profile "$NATIVE_PACKAGE_PROFILE" \
+            --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
       - name: Build and package
         env:
           PLATFORM: ${{ matrix.platform }}
@@ -410,7 +342,7 @@ jobs:
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.native_key.outputs.name || format('mekugi_{0}', matrix.platform) }}
+          name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.native_key.outputs.archive || format('mekugi_{0}', matrix.platform) }}
           path: ${{ runner.temp }}/artifacts/*.tar.gz
           if-no-files-found: error
           compression-level: 0
@@ -418,7 +350,7 @@ jobs:
         id: validated_tree
         if: matrix.platform == 'linux_amd64' && github.event_name == 'pull_request'
         run: |
-          # Only record receipts for runs that execute the full suite.
+          # An exact-tree receipt requires full-matrix PR validation.
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           tree="$(git rev-parse 'HEAD^{tree}')"
           printf '%s\n' "$tree" > "$RUNNER_TEMP/validated-tree"
@@ -440,11 +372,11 @@ jobs:
     permissions:
       actions: read
       contents: read
-    runs-on: macos-15
+    runs-on: &native_mac_runner macos-15
     env:
       CGO_ENABLED: '1'
       PLATFORM: darwin_arm64
-      RUNNER_LABEL: macos-15
+      RUNNER_LABEL: *native_mac_runner
       BUILD_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
       NATIVE_PACKAGE_PROFILE: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch') && 'release' || 'dev-small' }}
       SCCACHE_GHA_ENABLED: 'true'
@@ -499,103 +431,10 @@ jobs:
               exit 1
             fi
           done
-      - name: Resolve native runtime archive key
-        id: native_key
-        env:
-          PROFILE: ${{ env.NATIVE_PACKAGE_PROFILE }}
-          RECIPE_HASH: ${{ hashFiles('.github/workflows/release.yml', 'runtime/build.py') }}
-        run: |
-          native_tree="$(git ls-tree HEAD -- .cargo codex-rs scripts third_party patches LICENSE NOTICE)"
-          image="$RUNNER_LABEL"
-          if [[ "$PROFILE" != dev-small ]]; then
-            image="$image-${ImageVersion:-$GITHUB_RUN_ID}"
-          fi
-          key="$(printf '%s\n' "$PLATFORM" "$PROFILE" "$image" "$native_tree" "$RECIPE_HASH" | shasum -a 256 | cut -d' ' -f1)"
-          echo "name=mekugi_${PLATFORM}-$key" >> "$GITHUB_OUTPUT"
-      - name: Cache packaged native runtime
-        id: native_cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/artifacts/mekugi-native_darwin_arm64.tar.gz
-          key: native-bundle-v3-${{ steps.native_key.outputs.name }}
-      - name: Restore packaged native runtime from main
-        id: native_artifact
-        if: steps.native_cache.outputs.cache-hit != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: ${{ steps.native_key.outputs.name }}
-        run: |
-          list_runs() {
-            gh api --paginate --method GET "repos/$GITHUB_REPOSITORY/actions/artifacts" \
-              -f name="$1" -F per_page=100 --jq '.artifacts[] | select(.expired == false) | .workflow_run.id'
-          }
-          source_type() {
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1" | jq -r --arg repo "$GITHUB_REPOSITORY" '
-              select(.path == ".github/workflows/release.yml" and .conclusion == "success" and
-                .head_repository.full_name == $repo) |
-              if .event == "push" and .head_branch == "main" then "main"
-              elif .event == "pull_request" and .run_attempt == 1 then "pr"
-              else empty end
-            '
-          }
-          approved_on_main() {
-            local approvals approval type
-            if ! approvals="$(list_runs "native-approved-run-$1")"; then
-              echo "::warning::Could not list native archive approvals for run $1."
-              return 1
-            fi
-            for approval in $approvals; do
-              if ! type="$(source_type "$approval")"; then
-                echo "::warning::Could not verify native archive approval from run $approval."
-                continue
-              fi
-              [[ "$type" == main ]] && return 0
-            done
-            return 1
-          }
-          if ! candidates="$(list_runs "$ARTIFACT_NAME")"; then
-            echo "::warning::Could not list matching native archives; building locally."
-            exit 0
-          fi
-          while IFS= read -r run_id; do
-            [[ -n "$run_id" ]] || continue
-            if ! type="$(source_type "$run_id")"; then
-              echo "::warning::Could not verify native archive source run $run_id."
-              continue
-            fi
-            if [[ "$type" != main ]] && { [[ "$type" != pr ]] || ! approved_on_main "$run_id"; }; then
-              continue
-            fi
-            download="$RUNNER_TEMP/native-artifact"
-            archive="$download/mekugi-native_${PLATFORM}.tar.gz"
-            if ! gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$ARTIFACT_NAME" --dir "$download" ||
-               [[ ! -s "$archive" ]]; then
-              echo "::warning::Could not restore native archive from run $run_id; building locally."
-              exit 0
-            fi
-            mkdir -p "$RUNNER_TEMP/artifacts"
-            mv "$archive" "$RUNNER_TEMP/artifacts/"
-            echo "restored=true" >> "$GITHUB_OUTPUT"
-            break
-          done <<< "$candidates"
-      - name: Decide native test and package steps
-        id: native_plan
-        env:
-          CACHE_HIT: ${{ steps.native_cache.outputs.cache-hit }}
-          ARTIFACT_RESTORED: ${{ steps.native_artifact.outputs.restored }}
-          IS_RELEASE_OR_DISPATCH: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
-        run: |
-          if [[ "$CACHE_HIT" == "true" || "$ARTIFACT_RESTORED" == "true" ]]; then
-            echo "package=false" >> "$GITHUB_OUTPUT"
-            if [[ "$IS_RELEASE_OR_DISPATCH" == "true" ]]; then
-              echo "test=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "test=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "package=true" >> "$GITHUB_OUTPUT"
-            echo "test=true" >> "$GITHUB_OUTPUT"
-          fi
+      - *native_key
+      - *native_cache
+      - *native_test_cache
+      - *native_plan
       - name: Export sccache GHA cache env
         if: steps.native_plan.outputs.test == 'true' || steps.native_plan.outputs.package == 'true'
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
@@ -620,20 +459,9 @@ jobs:
         with:
           path: codex-rs/target/v8-artifacts
           key: v8-artifacts-v1-darwin_arm64-${{ hashFiles('third_party/v8/rusty_v8_*_release_manifests.sha256') }}
-      - name: Test native runtime
-        if: steps.native_plan.outputs.test == 'true'
-        env: &darwin_native_env
-          CARGO_BUILD_JOBS: '2'
-          CARGO_INCREMENTAL: '0'
-          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
-          RUSTC_WRAPPER: sccache
-        run: |
-          TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)" python3 runtime/build.py test
-      - name: Package native runtime
-        if: steps.native_plan.outputs.package == 'true'
-        env: *darwin_native_env
-        run: |
-          python3 runtime/build.py package --profile "$NATIVE_PACKAGE_PROFILE" --archive "$RUNNER_TEMP/artifacts/mekugi-native_${PLATFORM}.tar.gz"
+      - *native_test
+      - *native_receipt
+      - *native_package
       - name: Build and package
         run: |
           test "$(go env GOOS)_$(go env GOARCH)" = "$PLATFORM"
@@ -686,7 +514,7 @@ jobs:
             -run '^TestDirectNativeRealAppServerIntegration$' -count=1 -v
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.native_key.outputs.name || 'mekugi_darwin_arm64' }}
+          name: ${{ (github.event_name == 'pull_request' || github.event_name == 'push' && github.ref == 'refs/heads/main') && steps.native_key.outputs.archive || 'mekugi_darwin_arm64' }}
           path: ${{ runner.temp }}/artifacts/*.tar.gz
           if-no-files-found: error
           compression-level: 0

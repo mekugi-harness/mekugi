@@ -7,7 +7,9 @@ validated_run() {
   [[ "$FORCED" == false && "$(git rev-parse 'HEAD^1')" == "$BEFORE" ]] || return 1
   # Do not reuse results from a PR that changed how this workflow validates the tree.
   git diff --quiet "$BEFORE" "$GITHUB_SHA" -- \
-    .github/workflows/release.yml .github/scripts/reuse-pr-validation.sh || return 1
+    .github/workflows/release.yml .github/scripts/reuse-pr-validation.sh \
+    .github/scripts/native-keys.py .github/scripts/plan-native.sh \
+    .github/scripts/native-cargo.sh runtime/build.py || return 1
   tree="$(git rev-parse "$GITHUB_SHA^{tree}")" || return 1
   pr="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" | jq -r \
     --arg sha "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" '
