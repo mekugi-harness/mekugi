@@ -639,24 +639,17 @@ async fn handle_attachment_image(
         };
         workspace
     };
-    if request.probe {
-        match read_workspace_image_file(&workspace, Path::new(&request.path), ImageFileRead::Probe)
-            .await
-        {
-            Ok(bytes) => json_response(&serde_json::json!({ "mime": detect_raster_mime(&bytes) })),
-            Err(response) => response,
-        }
+    let mode = if request.probe {
+        ImageFileRead::Probe
     } else {
-        match read_workspace_image_file(
-            &workspace,
-            Path::new(&request.path),
-            ImageFileRead::Preview,
-        )
-        .await
-        {
-            Ok(bytes) => raster_image_response(bytes),
-            Err(response) => response,
+        ImageFileRead::Preview
+    };
+    match read_workspace_image_file(&workspace, Path::new(&request.path), mode).await {
+        Ok(bytes) if request.probe => {
+            json_response(&serde_json::json!({ "mime": detect_raster_mime(&bytes) }))
         }
+        Ok(bytes) => raster_image_response(bytes),
+        Err(response) => response,
     }
 }
 

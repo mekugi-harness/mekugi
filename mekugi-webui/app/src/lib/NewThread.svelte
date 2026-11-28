@@ -113,11 +113,30 @@
         model,
         effort: effort || undefined,
       };
+      const openStarted = (
+        started: InitialInput["started"],
+        draft: Omit<InitialInput, "started">,
+      ) => {
+        onopened(target.id, { started, ...draft });
+        select(target.id);
+        open(started.thread.id);
+      };
+      const draftFailureMessage = (failure: unknown, fallback: string) =>
+        pending.signal.aborted
+          ? "Cancelled. Edit or resend your draft in the new thread."
+          : failure instanceof Error
+            ? failure.message
+            : fallback;
+      const updateReadProgress = (read: number, total: number) => {
+        progress = total
+          ? `Reading attachments: ${Math.round((read / total) * 100)}%`
+          : "Preparing input…";
+      };
       if (hasDeferred) {
         if (uploadBytes(submitted) > uploadLimit)
           throw new Error("Uploads exceed the 32 MiB limit. Remove files and try again.");
-        const draftText = text;
-        const draftItems = [...submitted];
+        let draftText = text;
+        let draftItems = [...submitted];
         pending.signal.throwIfAborted();
         progress = "Starting the thread…";
         const result = await hub.createSession(request, target, pending.signal);
@@ -126,89 +145,47 @@
           error = result.error;
           return;
         }
-        progress = "Checking attachments…";
-        let resolved: Awaited<ReturnType<typeof resolveDeferredPathAttachments>>;
+        let failureFallback = "Could not check attachments.";
         try {
-          resolved = await resolveDeferredPathAttachments(
+          progress = "Checking attachments…";
+          const resolved = await resolveDeferredPathAttachments(
             { machine: target, thread: result.response.thread.id },
             draftText,
             draftItems,
             pending.signal,
           );
+          if (disposed) return;
+          draftText = resolved.text;
+          draftItems = resolved.items;
+          if (!resolved.ok) {
+            openStarted(result.response, {
+              text: draftText,
+              items: draftItems,
+              attachments: [],
+              draftError: resolved.error,
+            });
+            return;
+          }
+          failureFallback = "Could not prepare attachments.";
+          const attachments = await prepareAttachments(
+            submissionAttachments(draftText, draftItems),
+            pending.signal,
+            updateReadProgress,
+          );
+          if (disposed) return;
+          openStarted(result.response, { text: draftText, items: draftItems, attachments });
         } catch (failure) {
           if (disposed) return;
-          const draftError = pending.signal.aborted
-            ? "Cancelled. Edit or resend your draft in the new thread."
-            : failure instanceof Error
-              ? failure.message
-              : "Could not check attachments.";
-          onopened(target.id, {
-            started: result.response,
+          openStarted(result.response, {
             text: draftText,
             items: draftItems,
             attachments: [],
-            draftError,
-          });
-          select(target.id);
-          open(result.response.thread.id);
-          return;
-        }
-        if (disposed) return;
-        if (!resolved.ok) {
-          onopened(target.id, {
-            started: result.response,
-            text: resolved.text,
-            items: resolved.items,
-            attachments: [],
-            draftError: resolved.error,
-          });
-          select(target.id);
-          open(result.response.thread.id);
-          return;
-        }
-        try {
-          const attachments = await prepareAttachments(
-            submissionAttachments(resolved.text, resolved.items),
-            pending.signal,
-            (read, total) =>
-              (progress = total
-                ? `Reading attachments: ${Math.round((read / total) * 100)}%`
-                : "Preparing input…"),
-          );
-          if (disposed) return;
-          onopened(target.id, {
-            started: result.response,
-            text: resolved.text,
-            items: resolved.items,
-            attachments,
-          });
-        } catch (failure) {
-          if (disposed) return;
-          const draftError = pending.signal.aborted
-            ? "Cancelled. Edit or resend your draft in the new thread."
-            : failure instanceof Error
-              ? failure.message
-              : "Could not prepare attachments.";
-          onopened(target.id, {
-            started: result.response,
-            text: resolved.text,
-            items: resolved.items,
-            attachments: [],
-            draftError,
+            draftError: draftFailureMessage(failure, failureFallback),
           });
         }
-        select(target.id);
-        open(result.response.thread.id);
         return;
       }
-      const attachments = await prepareAttachments(
-        submitted,
-        pending.signal,
-        (read, total) =>
-          (progress = total
-            ? `Reading attachments: ${Math.round((read / total) * 100)}%`
-            : "Preparing input…"),
-      );
+      const attachments = await prepareAttachments(submitted, pending.signal, updateReadProgress);
       const draft = { text, items: [...items], attachments };
       pending.signal.throwIfAborted();
       progress = "Starting the thread…";
@@ -218,9 +195,7 @@
         error = result.error;
         return;
       }
-      onopened(target.id, { started: result.response, ...draft });
-      select(target.id);
-      open(result.response.thread.id);
+      openStarted(result.response, draft);
     } catch (failure) {
       if (!disposed)
         error = pending.signal.aborted

@@ -51,7 +51,9 @@ export async function resolveDeferredPathAttachments(
   for (let index = 0; index < nextItems.length; index++) {
     const item = nextItems[index];
     if (!("path" in item) || !item.deferred) continue;
-    if (item.placeholder && !attachmentOffsets(nextText, item.placeholder).length) continue;
+    const oldLabel = item.placeholder;
+    const at = oldLabel ? attachmentOffsets(nextText, oldLabel)[0] : undefined;
+    if (oldLabel && at === undefined) continue;
     let resolved: PendingAttachment;
     try {
       resolved = await hostPathAttachment(target, item.path, item.id, signal);
@@ -60,18 +62,14 @@ export async function resolveDeferredPathAttachments(
       const message = failure instanceof Error ? failure.message : "Could not check that path.";
       return { ok: false, text: nextText, items: nextItems, error: `${item.path}: ${message}` };
     }
-    const oldLabel = item.placeholder;
-    if (oldLabel) {
-      const [at] = attachmentOffsets(nextText, oldLabel);
-      if (at !== undefined) {
-        const withoutOld = nextText.slice(0, at) + nextText.slice(at + oldLabel.length);
-        const newLabel = labelAttachment(resolved, withoutOld);
-        nextText = nextText.slice(0, at) + newLabel + nextText.slice(at + oldLabel.length);
-        nextItems[index] = { ...resolved, placeholder: newLabel };
-        continue;
-      }
+    if (oldLabel && at !== undefined) {
+      const withoutOld = nextText.slice(0, at) + nextText.slice(at + oldLabel.length);
+      const newLabel = labelAttachment(resolved, withoutOld);
+      nextText = nextText.slice(0, at) + newLabel + nextText.slice(at + oldLabel.length);
+      nextItems[index] = { ...resolved, placeholder: newLabel };
+    } else {
+      nextItems[index] = resolved;
     }
-    nextItems[index] = { ...resolved, ...(oldLabel ? { placeholder: oldLabel } : {}) };
   }
   return { ok: true, text: nextText, items: nextItems };
 }
