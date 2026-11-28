@@ -119,6 +119,91 @@ fn capture_pages_bound_encoded_payload_and_resume_inside_a_patch() {
 }
 
 #[test]
+fn capture_pages_preserve_origin_paths_and_fill_page_budget_across_chunks() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    // ~5 MiB ASCII file spans multiple 512 KiB slices and exceeds one 4 MiB page.
+    let big_line = format!("{}\n", "x".repeat(127));
+    let big = big_line.repeat(40_960);
+    record(
+        &store,
+        workspace.path(),
+        "multi-chunk",
+        vec![
+            ("a.txt", "before\n".into()),
+            ("big.txt", big),
+            ("z.txt", "after\n".into()),
+        ],
+    );
+    let mut params = ThreadChangesReadParams {
+        thread_id: "thread".into(),
+        include_external: None,
+        include_ephemeral: None,
+        caller_thread_id: None,
+        item_id: None,
+        per_capture: true,
+        limit: None,
+        cursor: None,
+    };
+    let expected =
+        read_changes(dir.clone(), None, None, params.clone(), None).expect("unpaged read");
+    params.limit = Some(100);
+
+    let mut cursor = None;
+    let mut pages = 0usize;
+    let mut total_additions = 0i64;
+    let mut total_deletions = 0i64;
+    let mut actual: Vec<(String, String)> = Vec::new();
+    loop {
+        let page =
+            read_changes(dir.clone(), None, None, params.clone(), cursor).expect("capture page");
+        assert!(serde_json::to_vec(&page).expect("encode page").len() < CAPTURE_PAGE_BYTES);
+        assert_eq!(page.changes.len(), 1);
+        assert_eq!(
+            page.changes[0].paths,
+            vec!["a.txt", "big.txt", "z.txt"],
+            "page {pages} must preserve complete origin.paths"
+        );
+        if pages == 0 {
+            assert_eq!(page.files.len(), 2);
+            assert_eq!(page.files[0].path, "a.txt");
+            assert_eq!(page.files[1].path, "big.txt");
+            assert!(
+                page.files[1].unified_diff.len() >= 3 * CAPTURE_PATCH_BYTES,
+                "first page should pack multiple 512 KiB slices within the 4 MiB page budget"
+            );
+        }
+        total_additions += page.total_additions;
+        total_deletions += page.total_deletions;
+        for file in page.files {
+            if let Some(last) = actual.last_mut().filter(|last| last.0 == file.path) {
+                last.1.push_str(&file.unified_diff);
+            } else {
+                actual.push((file.path, file.unified_diff));
+            }
+        }
+        pages += 1;
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(parse_cursor(&next).expect("valid continuation cursor"));
+        assert!(pages < 4, "5 MiB capture should complete within 2 pages");
+    }
+    assert_eq!(pages, 2);
+    assert_eq!(total_additions, expected.total_additions);
+    assert_eq!(total_deletions, expected.total_deletions);
+    assert_eq!(
+        actual,
+        expected
+            .files
+            .into_iter()
+            .map(|file| (file.path, file.unified_diff))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() {
     let workspace = tempfile::tempdir().expect("temp workspace");
     let dir = workspace.path().join("history");

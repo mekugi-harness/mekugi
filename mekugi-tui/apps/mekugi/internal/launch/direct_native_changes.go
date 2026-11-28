@@ -32,14 +32,42 @@ type nativeCapturedFile struct {
 }
 
 type directChangeOrigin struct {
-	ChangeID       string  `json:"changeId"`
-	Sequence       uint64  `json:"sequence"`
-	ThreadID       string  `json:"threadId"`
-	AuthorThreadID *string `json:"authorThreadId"`
-	SourceLabel    string  `json:"sourceLabel"`
-	TurnID         string  `json:"turnId"`
-	ItemID         string  `json:"itemId"`
-	Workspace      string  `json:"workspace"`
+	ChangeID       string   `json:"changeId"`
+	Sequence       uint64   `json:"sequence"`
+	ThreadID       string   `json:"threadId"`
+	AuthorThreadID *string  `json:"authorThreadId"`
+	SourceLabel    string   `json:"sourceLabel"`
+	TurnID         string   `json:"turnId"`
+	ItemID         string   `json:"itemId"`
+	Workspace      string   `json:"workspace"`
+	Paths          []string `json:"paths"`
+}
+
+func mergeDirectChangeOrigin(dst, src directChangeOrigin) directChangeOrigin {
+	if dst.ChangeID == "" {
+		dst.ChangeID = src.ChangeID
+	}
+	if dst.Sequence == 0 {
+		dst.Sequence = src.Sequence
+	}
+	dst.ThreadID = cmp.Or(dst.ThreadID, src.ThreadID)
+	if dst.AuthorThreadID == nil {
+		dst.AuthorThreadID = src.AuthorThreadID
+	}
+	dst.SourceLabel = cmp.Or(dst.SourceLabel, src.SourceLabel)
+	dst.TurnID = cmp.Or(dst.TurnID, src.TurnID)
+	dst.ItemID = cmp.Or(dst.ItemID, src.ItemID)
+	dst.Workspace = cmp.Or(dst.Workspace, src.Workspace)
+	if len(src.Paths) > 0 {
+		paths := slices.Clone(dst.Paths)
+		for _, p := range src.Paths {
+			if !slices.Contains(paths, p) {
+				paths = append(paths, p)
+			}
+		}
+		dst.Paths = paths
+	}
+	return dst
 }
 
 type directThreadChangesResponse struct {
@@ -98,6 +126,7 @@ func (c *directNativeConnection) readChanges(ctx context.Context, threadID strin
 	var cursor string
 	var patchBytes int
 	seen := make(map[string]bool)
+	originIndex := make(map[string]int)
 	for {
 		params := map[string]any{
 			"threadId":         threadID,
@@ -115,7 +144,14 @@ func (c *directNativeConnection) readChanges(ctx context.Context, threadID strin
 		}
 		response.Workspace = cmp.Or(response.Workspace, page.Workspace)
 		response.Incomplete = response.Incomplete || page.Incomplete
-		response.Changes = append(response.Changes, page.Changes...)
+		for _, origin := range page.Changes {
+			if idx, exists := originIndex[origin.ChangeID]; exists {
+				response.Changes[idx] = mergeDirectChangeOrigin(response.Changes[idx], origin)
+			} else {
+				originIndex[origin.ChangeID] = len(response.Changes)
+				response.Changes = append(response.Changes, mergeDirectChangeOrigin(directChangeOrigin{}, origin))
+			}
+		}
 		for _, file := range page.Files {
 			patchBytes += len(file.UnifiedDiff)
 			if patchBytes > diffrender.MaxSourceBytes {
@@ -170,7 +206,11 @@ func (c *directNativeConnection) refreshChanges(threadID string, rev uint64) {
 
 	origins := make(map[string]directChangeOrigin, len(resp.Changes))
 	for _, origin := range resp.Changes {
-		origins[origin.ChangeID] = origin
+		if prev, exists := origins[origin.ChangeID]; exists {
+			origins[origin.ChangeID] = mergeDirectChangeOrigin(prev, origin)
+		} else {
+			origins[origin.ChangeID] = origin
+		}
 	}
 	captures := make([]changes.Chunk, 0, len(resp.Files))
 	receipts := make(map[nativeEditItem][]nativeCapturedFile)

@@ -853,6 +853,69 @@ func TestDirectNativeResumeDoesNotWaitForSavedDiff(t *testing.T) {
 	}
 }
 
+func TestDirectNativeReadChangesMergesOriginPathsAcrossPages(t *testing.T) {
+	socket := filepath.Join(shortTempDir(t), "app-server.sock")
+	mock := startMockNativeAppServer(t, socket)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	mock.overrides["thread/resume"] = func(jsontext.Value) any {
+		return map[string]any{"thread": map[string]any{"id": "thr-main", "cwd": "/tmp/ws"}}
+	}
+	mock.overrides["thread/changes/read"] = func(raw jsontext.Value) any {
+		var params struct {
+			Cursor string `json:"cursor"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return mockRPCError("invalid params")
+		}
+		switch params.Cursor {
+		case "":
+			return map[string]any{
+				"nextCursor": "1:1:524288",
+				"changes": []map[string]any{{
+					"changeId": "amber1", "sequence": 1, "threadId": "thr-main",
+					"itemId": "cmd-1", "paths": []string{"a.go", "big.go"},
+				}},
+				"files": []map[string]any{
+					{"path": "a.go", "absolutePath": "/tmp/ws/a.go", "changeIds": []string{"amber1"}, "status": "M", "unifiedDiff": "@@ -1 +1 @@\n-a\n+a2\n"},
+					{"path": "big.go", "absolutePath": "/tmp/ws/big.go", "changeIds": []string{"amber1"}, "status": "M", "unifiedDiff": "@@ -1 +1 @@\n-old\n"},
+				},
+			}
+		case "1:1:524288":
+			return map[string]any{
+				"changes": []map[string]any{{
+					"changeId": "amber1", "sequence": 1, "threadId": "thr-main",
+					"itemId": "cmd-1", "paths": []string{"big.go", "z.go"},
+				}},
+				"files": []map[string]any{
+					{"path": "big.go", "absolutePath": "/tmp/ws/big.go", "changeIds": []string{"amber1"}, "status": "M", "unifiedDiff": "+new\n"},
+					{"path": "z.go", "absolutePath": "/tmp/ws/z.go", "changeIds": []string{"amber1"}, "status": "A", "unifiedDiff": "@@ -0,0 +1 @@\n+z\n"},
+				},
+			}
+		default:
+			return mockRPCError("unexpected cursor")
+		}
+	}
+	conn, err := openDirectNativeConnection(ctx, socket, "/tmp/ws", nil, nil, "thr-main", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	resp, err := conn.readChanges(ctx, "thr-main")
+	if err != nil {
+		t.Fatalf("readChanges failed: %v", err)
+	}
+	if len(resp.Changes) != 1 {
+		t.Fatalf("expected 1 merged origin, got %d: %+v", len(resp.Changes), resp.Changes)
+	}
+	if want := []string{"a.go", "big.go", "z.go"}; !slices.Equal(resp.Changes[0].Paths, want) {
+		t.Fatalf("origin.Paths = %v, want %v", resp.Changes[0].Paths, want)
+	}
+	if len(resp.Files) != 3 || resp.Files[1].UnifiedDiff != "@@ -1 +1 @@\n-old\n+new\n" {
+		t.Fatalf("expected 3 files with reassembled big.go diff, got %+v", resp.Files)
+	}
+}
+
 func TestDirectNativeNewClearsActiveTurnBeforeRewind(t *testing.T) {
 	conn := &directNativeConnection{
 		mainThread:    "thr-a",
