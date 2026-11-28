@@ -2,22 +2,32 @@
   import { getContext } from "svelte";
   import { detailLinks, parseDetailLink, type DetailLink } from "./detail-link";
   import { highlightWithin } from "./highlight";
-  import { block, markedBlock } from "./markdown";
+  import { block, inline as renderInline, markedBlock } from "./markdown";
 
   // Rendered Markdown from recorded messages, styled by the prose component
   // class since no template declares its elements.
   let {
     text,
     quiet = false,
+    inline = false,
+    breaks = false,
     spans,
     context,
   }: {
     text: string;
     quiet?: boolean;
+    inline?: boolean;
+    breaks?: boolean;
     spans?: import("./protocol").Entry["spans"];
     context?: import("markdown-it").Env;
   } = $props();
-  const html = $derived(spans?.length ? markedBlock(text, spans) : block(text, context));
+  const html = $derived(
+    inline
+      ? renderInline(text)
+      : spans?.length
+        ? markedBlock(text, spans)
+        : block(text, context, breaks),
+  );
   const openDetails = getContext<((link: DetailLink) => void) | undefined>(detailLinks);
   let linkError = $state<string>();
   // Fenced code names its language as a language-NAME class.
@@ -50,7 +60,14 @@
   };
 </script>
 
-<div class={["prose", quiet && "text-muted"]} {@attach fences(html)} {@attach links}>
-  {@html html}
-</div>
-{#if linkError}<p class="mt-2 text-small text-negative" role="alert">{linkError}</p>{/if}
+{#if inline}
+  <span class={["prose-inline", quiet && "text-muted"]} {@attach links}>
+    {@html html}
+  </span>
+  {#if linkError}<span class="ml-2 text-small text-negative" role="alert">{linkError}</span>{/if}
+{:else}
+  <div class={["prose", quiet && "text-muted"]} {@attach fences(html)} {@attach links}>
+    {@html html}
+  </div>
+  {#if linkError}<p class="mt-2 text-small text-negative" role="alert">{linkError}</p>{/if}
+{/if}

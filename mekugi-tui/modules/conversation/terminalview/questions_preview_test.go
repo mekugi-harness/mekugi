@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffrender"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/terminalui"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/prompt"
 	"github.com/mekugi-harness/mekugi/mekugi-tui/modules/conversation/terminalview"
@@ -186,6 +187,94 @@ func TestUISnapshotQuestionPreviews(t *testing.T) {
 			if m.Current().Choices[1].Label != "Staged" || m.Current().Done {
 				t.Fatal("recommendation changed label or submitted")
 			}
+		})
+	}
+}
+
+func TestQuestionMarkdownInQuestionNotesAndPreview(t *testing.T) {
+	c := prompt.Call{
+		ID: "md", Thread: "main",
+		Questions: []prompt.Question{{
+			ID:       "q1",
+			Header:   "Choose `mode`",
+			Question: "Update `Prompt.svelte` with `Markdown`?",
+			Selected: 0,
+			Choices: []prompt.Option{
+				{
+					Label:       "Use `Markdown` component",
+					Description: "Render `code` spans and **bold** notes",
+					Preview:     "Preview `inline`:\n\n```go\nfunc ok() bool { return true }\n```",
+				},
+				{
+					Label:       "Keep `<pre>`",
+					Description: "Leave `raw` text as-is",
+				},
+			},
+		}},
+	}
+	var m prompt.Questions
+	m.Calls = append(m.Calls, &c)
+	m.Open(&c)
+	for _, width := range []int{56, 96} {
+		var layout terminalview.QuestionLayout
+		rows := terminalview.Questions(m.View("main"), &terminalui.Painter{CopySource: true}, &layout, "", false, width, 16)
+		for _, row := range rows {
+			if ansi.StringWidth(row) > width {
+				t.Fatalf("width=%d exceeded: %q", width, row)
+			}
+			if _, spans := terminalui.ExtractCopy(row); len(spans) > 0 {
+				t.Fatalf("width=%d leaked copy markers into docked question: %q", width, row)
+			}
+		}
+		plain := ansi.Strip(strings.Join(rows, "\n"))
+		for _, forbidden := range []string{"`Prompt.svelte`", "`Markdown`", "`code`", "**bold**", "```go", "```", "`inline`"} {
+			if strings.Contains(plain, forbidden) {
+				t.Fatalf("width=%d rendered raw markdown %q in:\n%s", width, forbidden, plain)
+			}
+		}
+		for _, expected := range []string{"Prompt.svelte", "Markdown", "code", "bold", "func ok() bool"} {
+			if !strings.Contains(plain, expected) {
+				t.Fatalf("width=%d missing rendered text %q in:\n%s", width, expected, plain)
+			}
+		}
+	}
+}
+
+func TestUISnapshotQuestionDockMarkdown(t *testing.T) {
+	c := prompt.Call{
+		ID: "md-snap", Thread: "main",
+		Questions: []prompt.Question{{
+			ID:       "q1",
+			Header:   "Choose `mode`",
+			Question: "Update `Prompt.svelte` with `Markdown`?",
+			Selected: 0,
+			Choices: []prompt.Option{
+				{
+					Label:       "Use `Markdown`",
+					Recommended: true,
+					Description: "Render `code` and **bold** notes",
+					Preview:     "Preview `inline`:\n\n```go\nfunc ok() bool { return true }\n```",
+				},
+				{
+					Label:       "Keep `<pre>`",
+					Description: "Leave `raw` text as-is",
+				},
+			},
+		}},
+	}
+	var m prompt.Questions
+	m.Calls = append(m.Calls, &c)
+	m.Open(&c)
+	for _, tc := range []struct {
+		name  string
+		theme diffrender.Theme
+	}{
+		{"dark", diffrender.DarkTheme},
+		{"light", diffrender.LightTheme},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := terminalview.Questions(m.View("main"), &terminalui.Painter{Theme: tc.theme}, new(terminalview.QuestionLayout), "", false, 96, 16)
+			uisnapshot.AssertTerminal(t, "testdata/snapshots/question-markdown-"+tc.name+"-ansi.txt", append(rows, "plain after dock"), 96)
 		})
 	}
 }

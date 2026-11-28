@@ -11,6 +11,7 @@
   import { duration } from "./format";
   import { breakable, highlightWithin } from "./highlight";
   import { annotates, failed, family } from "./kinds";
+  import Markdown from "./Markdown.svelte";
   import { toolLabel } from "./markdown";
   import Path from "./Path.svelte";
   import type { Value } from "./protocol";
@@ -431,7 +432,9 @@
         <ul class="mt-1 text-code leading-5">
           {#each value.questions as q, i (i)}
             <li>
-              {q.text}{#if q.answer}<span class="ml-2 text-muted">{q.answer}</span>{/if}
+              <Markdown text={q.text ?? ""} inline />{#if q.answer}<span class="ml-2 text-muted"
+                  ><Markdown text={q.answer} inline /></span
+                >{/if}
             </li>
           {/each}
         </ul>

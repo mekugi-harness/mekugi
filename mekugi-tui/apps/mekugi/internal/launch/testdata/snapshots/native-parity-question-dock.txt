@@ -13,7 +13,7 @@
 "       \x1b[2mUpdate only the affected fixtures.\x1b[m                                 "
 "    \x1b[2moption 2/3\x1b[m                                                            "
 "  \x1b[2m── Preview 1–1/1 ─────────────────────────────────────────────────────\x1b[m  "
-"  **Keep unchanged fixtures.**                                            "
+"  \x1b[1mKeep unchanged fixtures.\x1b[m                                                "
 "                                                                          "
 "  \x1b[2m1–3 choose · type answer · tab note · ctrl+] skip · esc hide ·\x1b[m          "
 "  \x1b[2malt+shift+↑/↓ preview\x1b[m                                                   "

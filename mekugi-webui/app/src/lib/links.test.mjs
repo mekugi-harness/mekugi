@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { detailRange, parseDetailLink } from "./detail-link.ts";
-import { block, referenceContext } from "./markdown.ts";
+import { block, inline, referenceContext } from "./markdown.ts";
 
 test("automatic and Markdown web links navigate safely", () => {
   const html = block(
@@ -84,4 +84,20 @@ test("reply sections retain original-document reference links", () => {
   assert.match(html, /href="https:\/\/example.com\/evidence"[^>]*>evidence<\/a>/);
   assert.doesNotMatch(html, /Done|<h2>/);
   assert.doesNotMatch(block(details), /<a /);
+});
+
+test("question and preview Markdown renders inline code, fences, and line breaks safely", () => {
+  assert.equal(
+    inline("Render `Prompt.svelte` with **Markdown**"),
+    "Render <code>Prompt.svelte</code> with <strong>Markdown</strong>",
+  );
+  const preview = block(
+    "Line 1 with `inline`\nLine 2\n\n```ts\nconst x = 1;\n```\n\n<b>literal</b>",
+    undefined,
+    true,
+  );
+  assert.match(preview, /Line 1 with <code>inline<\/code><br>\nLine 2/);
+  assert.match(preview, /<pre><code class="language-ts">const x = 1;\n<\/code><\/pre>/);
+  assert.match(preview, /&lt;b&gt;literal&lt;\/b&gt;/);
+  assert.doesNotMatch(preview, /<b>literal<\/b>/);
 });

@@ -2,7 +2,6 @@ import MarkdownIt, { type Env } from "markdown-it";
 
 // Recorded text is untrusted. Local links use the machine's shared file
 // interaction instead of navigating the browser filesystem.
-const md = new MarkdownIt({ html: false, linkify: true, breaks: false });
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -11,55 +10,64 @@ const runPrefix = "mekugi:run/";
 const local = (href: string) =>
   !/^[#?]/.test(href) &&
   (!/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith("/") || href.startsWith("file:"));
-const validateLink = md.validateLink.bind(md);
-md.validateLink = (href) => href.startsWith("file:") || validateLink(href);
-const defaultLinkOpen =
-  md.renderer.rules.link_open ??
-  ((tokens, i, options, _env, self) => self.renderToken(tokens, i, options));
 
-md.renderer.rules.link_open = (tokens, i, options, env, self) => {
-  const href = String(tokens[i].attrGet("href") ?? "");
-  if (href.startsWith(runPrefix)) {
-    tokens[i].attrSet("href", "#activity-details");
-    tokens[i].attrSet("class", "file-link");
-    tokens[i].attrSet("data-run-link", href);
-    tokens[i].attrSet("title", href);
-    return defaultLinkOpen(tokens, i, options, env, self);
-  }
-  if (!web.test(href)) {
-    tokens[i].attrs = [];
-    tokens[i].tag = local(href) ? "a" : "span";
-    if (local(href)) {
+function createMarkdown(breaks: boolean) {
+  const instance = new MarkdownIt({ html: false, linkify: true, breaks });
+  const validateLink = instance.validateLink.bind(instance);
+  instance.validateLink = (href) => href.startsWith("file:") || validateLink(href);
+  const defaultLinkOpen =
+    instance.renderer.rules.link_open ??
+    ((tokens, i, options, _env, self) => self.renderToken(tokens, i, options));
+
+  instance.renderer.rules.link_open = (tokens, i, options, env, self) => {
+    const href = String(tokens[i].attrGet("href") ?? "");
+    if (href.startsWith(runPrefix)) {
       tokens[i].attrSet("href", "#activity-details");
-      let path = href;
-      if (!href.startsWith("file:")) {
-        try {
-          path = decodeURIComponent(href);
-        } catch {
-          /* Preserve a literal malformed escape. */
-        }
-      }
-      tokens[i].attrSet("data-file-link", path);
+      tokens[i].attrSet("class", "file-link");
+      tokens[i].attrSet("data-run-link", href);
+      tokens[i].attrSet("title", href);
+      return defaultLinkOpen(tokens, i, options, env, self);
     }
-    tokens[i].attrSet("class", "file-link");
-    tokens[i].attrSet("title", href);
-    const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
-    if (close) close.tag = tokens[i].tag;
-    return self.renderToken(tokens, i, options);
-  }
-  tokens[i].attrSet("target", "_blank");
-  tokens[i].attrSet("rel", "noopener noreferrer");
-  return defaultLinkOpen(tokens, i, options, env, self);
-};
+    if (!web.test(href)) {
+      tokens[i].attrs = [];
+      tokens[i].tag = local(href) ? "a" : "span";
+      if (local(href)) {
+        tokens[i].attrSet("href", "#activity-details");
+        let path = href;
+        if (!href.startsWith("file:")) {
+          try {
+            path = decodeURIComponent(href);
+          } catch {
+            /* Preserve a literal malformed escape. */
+          }
+        }
+        tokens[i].attrSet("data-file-link", path);
+      }
+      tokens[i].attrSet("class", "file-link");
+      tokens[i].attrSet("title", href);
+      const close = tokens.slice(i + 1).find((t) => t.type === "link_close");
+      if (close) close.tag = tokens[i].tag;
+      return self.renderToken(tokens, i, options);
+    }
+    tokens[i].attrSet("target", "_blank");
+    tokens[i].attrSet("rel", "noopener noreferrer");
+    return defaultLinkOpen(tokens, i, options, env, self);
+  };
 
-// Images become links, so opening a recording never fetches from the hosts it names.
-md.renderer.rules.image = (tokens, i) => {
-  const src = String(tokens[i].attrGet("src") ?? "");
-  const alt = md.utils.escapeHtml(tokens[i].content || src);
-  return web.test(src)
-    ? `<a href="${md.utils.escapeHtml(src)}" target="_blank" rel="noopener noreferrer">Image: ${alt}</a>`
-    : `<span class="file-link" title="${md.utils.escapeHtml(src)}">Image: ${alt}</span>`;
-};
+  // Images become links, so opening a recording never fetches from the hosts it names.
+  instance.renderer.rules.image = (tokens, i) => {
+    const src = String(tokens[i].attrGet("src") ?? "");
+    const alt = instance.utils.escapeHtml(tokens[i].content || src);
+    return web.test(src)
+      ? `<a href="${instance.utils.escapeHtml(src)}" target="_blank" rel="noopener noreferrer">Image: ${alt}</a>`
+      : `<span class="file-link" title="${instance.utils.escapeHtml(src)}">Image: ${alt}</span>`;
+  };
+
+  return instance;
+}
+
+const md = createMarkdown(false);
+const mdBreaks = createMarkdown(true);
 
 // Sections share their original document's link definitions.
 export function referenceContext(text: string): Env {
@@ -68,7 +76,8 @@ export function referenceContext(text: string): Env {
   return context;
 }
 
-export const block = (text: string, context?: Env) => md.render(text, context);
+export const block = (text: string, context?: Env, breaks = false) =>
+  (breaks ? mdBreaks : md).render(text, context);
 export const inline = (text: string) => md.renderInline(text);
 export const literal = (text: string) => md.utils.escapeHtml(text);
 
