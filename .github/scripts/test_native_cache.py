@@ -55,6 +55,7 @@ class NativeCacheTest(unittest.TestCase):
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "NATIVE_BUILD_IMAGE": "ci-image",
+            "NATIVE_TEST_IMAGE": "sha256:image-one",
             "NATIVE_PACKAGE_PROFILE": "dev-small",
             "PATH": os.pathsep.join((str(self.root), os.environ["PATH"])),
             "PLATFORM": "linux_amd64",
@@ -96,6 +97,8 @@ class NativeCacheTest(unittest.TestCase):
         for path in (
             "mekugi-tui/main.go",
             "codex-rs/app-server/tests/suite.rs",
+            "codex-rs/.config/nextest.toml",
+            "codex-rs/app-server/src/bin/exec_server.rs",
             "codex-rs/core/src/lib_tests.rs",
             "codex-rs/app-server-subprocess-tests/src/lib.rs",
             ".github/workflows/release.yml",
@@ -136,6 +139,19 @@ class NativeCacheTest(unittest.TestCase):
         self.assertEqual(
             dev, self.keys(ImageVersion="new-image", GITHUB_RUN_ATTEMPT="2")
         )
+
+        changed_image = self.keys(NATIVE_TEST_IMAGE="sha256:image-two")
+        self.assertEqual(dev["archive"], changed_image["archive"])
+        self.assertNotEqual(dev["tests"], changed_image["tests"])
+        unresolved_image = self.keys(NATIVE_TEST_IMAGE="")
+        retry = self.keys(NATIVE_TEST_IMAGE="", GITHUB_RUN_ATTEMPT="2")
+        self.assertEqual(unresolved_image["archive"], retry["archive"])
+        self.assertNotEqual(unresolved_image["tests"], retry["tests"])
+
+        darwin = self.keys(PLATFORM="darwin_arm64", ImageVersion="macos-one")
+        changed_darwin = self.keys(PLATFORM="darwin_arm64", ImageVersion="macos-two")
+        self.assertEqual(darwin["archive"], changed_darwin["archive"])
+        self.assertNotEqual(darwin["tests"], changed_darwin["tests"])
 
         release = self.keys(NATIVE_PACKAGE_PROFILE="release")
         self.assertNotEqual(dev["archive"], release["archive"])

@@ -8,6 +8,6 @@
 
 Native archive reuse and native test reuse are independent. Test-only changes
 rerun the suite without invalidating the package. Passing native test receipts
-are keyed by platform and test inputs. Besides exact Actions cache hits, the
-workflow can reuse artifacts from successful main runs or PR runs verified by
-main. Release tags and manual runs always run native tests.
+are keyed by platform, image, and test inputs. Besides exact Actions cache
+hits, the workflow can reuse artifacts from successful main runs or PR runs
+verified by main. Release tags and manual runs always run native tests.

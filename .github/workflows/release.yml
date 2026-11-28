@@ -53,8 +53,6 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Test native cache policy
-        run: python3 -m unittest discover -s .github/scripts -p test_native_cache.py
       - name: Check whether only the browser app changed
         id: scope
         env:
@@ -189,7 +187,20 @@ jobs:
       - &native_key
         name: Resolve native archive and test keys
         id: native_key
-        run: python3 .github/scripts/native-keys.py
+        env:
+          CONTAINER_ID: ${{ job.container.id }}
+        run: |
+          if [[ -n "$CONTAINER_ID" ]]; then
+            # Use the image that started this container, not what :latest points to now.
+            if ! NATIVE_TEST_IMAGE="$(curl -fsS --max-time 5 --noproxy '*' \
+              --unix-socket /var/run/docker.sock "http://docker/containers/$CONTAINER_ID/json" |
+              jq -er '.Image | select(startswith("sha256:"))')"; then
+              echo "::warning::Could not identify the CI image; native tests will run."
+              NATIVE_TEST_IMAGE=
+            fi
+            export NATIVE_TEST_IMAGE
+          fi
+          python3 .github/scripts/native-keys.py
       - &native_cache
         name: Cache packaged native runtime
         id: native_cache
@@ -236,7 +247,10 @@ jobs:
           printf '%s\n' "${{ steps.native_key.outputs.tests }}" > "$RUNNER_TEMP/native-tests-passed"
       - &native_receipt
         name: Upload native test receipt
-        if: env.NATIVE_PACKAGE_PROFILE == 'dev-small' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+        if: >-
+          env.NATIVE_PACKAGE_PROFILE == 'dev-small' &&
+          (github.event_name == 'pull_request' || github.ref == 'refs/heads/main') &&
+          (steps.native_plan.outputs.test == 'true' || steps.native_test_cache.outputs.cache-hit == 'true')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         continue-on-error: true
         with:

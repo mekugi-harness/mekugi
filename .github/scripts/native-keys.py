@@ -8,6 +8,11 @@ import subprocess
 
 
 def package_input(path: bytes) -> bool:
+    if path in (
+        b"codex-rs/.config/nextest.toml",
+        b"codex-rs/app-server/src/bin/exec_server.rs",
+    ):
+        return False
     if path.startswith(b"codex-rs/"):
         # Cargo still reads workspace manifests during a production build.
         if path.endswith(b"/Cargo.toml"):
@@ -27,8 +32,8 @@ def package_input(path: bytes) -> bool:
     )
 
 
-def fingerprint(runner: bytes, tree: list[bytes]) -> str:
-    digest = hashlib.sha256(runner)
+def fingerprint(runner: list[str], tree: list[bytes]) -> str:
+    digest = hashlib.sha256(("\0".join(runner) + "\0").encode())
     for entry in tree:
         digest.update(entry + b"\0")
     return digest.hexdigest()
@@ -43,7 +48,18 @@ def tree_entries(*paths: str) -> list[bytes]:
 def main():
     platform = os.environ["PLATFORM"]
     profile = os.environ["NATIVE_PACKAGE_PROFILE"]
-    image = [os.environ["RUNNER_LABEL"], os.environ.get("NATIVE_BUILD_IMAGE", "")]
+    is_linux = platform.startswith("linux_")
+    runner = [
+        platform,
+        profile,
+        os.environ["RUNNER_LABEL"],
+        os.environ.get("NATIVE_BUILD_IMAGE", ""),
+    ]
+    attempt = f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    host_image = os.environ.get("ImageVersion") or attempt
+    test_image = (
+        (os.environ.get("NATIVE_TEST_IMAGE") or attempt) if is_linux else host_image
+    )
     roots = [
         ".cargo",
         "codex-rs",
@@ -54,16 +70,14 @@ def main():
         "NOTICE",
         ".github/scripts/native-cargo.sh",
     ]
-    if platform.startswith("linux_"):
-        roots.extend((".github/ci-image", ".github/workflows/ci-image.yml"))
-    # PRs and main smoke-test the archive on each runner. Release keys stay
-    # exact to the runner image, or to this attempt if its version is unknown.
-    if profile != "dev-small":
-        image.append(
-            os.environ.get("ImageVersion")
-            or (f"{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}")
-        )
-    runner = "\0".join([platform, profile, *image]).encode() + b"\0"
+    if is_linux:
+        roots.append(".github/ci-image")
+    # PRs and main smoke-test the archive on each runner, so package reuse
+    # may span image revisions. Keep release archive keys exact to the image.
+    package_runner = (
+        runner if profile == "dev-small" else [*runner, host_image, test_image]
+    )
+    test_runner = [*runner, test_image]
 
     tree = tree_entries(*roots)
     package_tree = [entry for entry in tree if package_input(entry.split(b"\t", 1)[1])]
@@ -75,11 +89,11 @@ def main():
     )
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         print(
-            f"archive=mekugi_{platform}-{fingerprint(runner, package_tree)}",
+            f"archive=mekugi_{platform}-{fingerprint(package_runner, package_tree)}",
             file=output,
         )
         print(
-            f"tests=native-tests-{platform}-{fingerprint(runner, tree + test_policy)}",
+            f"tests=native-tests-{platform}-{fingerprint(test_runner, tree + test_policy)}",
             file=output,
         )
 
