@@ -309,6 +309,7 @@
       if (viewport.scrollHeight <= viewport.clientHeight) void maybeEarlier(viewport);
     });
     observer.observe(content);
+    observer.observe(viewport);
     return () => observer.disconnect();
   });
 
