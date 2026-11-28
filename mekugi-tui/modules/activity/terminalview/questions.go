@@ -53,7 +53,7 @@ func (p *Painter) questionRows(block Block, width int) []string {
 		}
 		prevCopy := p.CopySource
 		p.CopySource = false
-		qLines := p.Markdown(q.Text, inner, false)
+		qLines := p.MarkdownComplete(q.Text, inner, false)
 		p.CopySource = prevCopy
 		if len(qLines) == 0 && q.Text != "" {
 			qLines = []string{""}

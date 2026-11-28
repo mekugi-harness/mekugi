@@ -109,12 +109,14 @@ test("question and preview Markdown renders inline code, fences, and line breaks
 
   assert.equal(isMarkdownPreview("Name       Size\nreport.md  12 KB"), false);
   assert.equal(isMarkdownPreview("<b>Plain text, not HTML.</b>"), false);
+  assert.equal(isMarkdownPreview("Line 1\\\nLine 2"), true);
   assert.equal(isMarkdownPreview("```ts\nconst x = 1;\n```"), true);
   assert.equal(isMarkdownPreview("Use `Prompt.svelte`"), true);
   assert.equal(isMarkdownPreview("**Keep unchanged fixtures.**"), true);
   assert.equal(isMarkdownPreview("Release plan\n\n1. Canary\n2. Expand"), true);
 
   assert.equal(hasBlockMarkdown("Render `Prompt.svelte` with **Markdown**?"), false);
+  assert.equal(hasBlockMarkdown("[ref]: https://example.com"), false);
   assert.equal(hasBlockMarkdown("Check this:\n```go\nfunc ok() {}\n```"), true);
   assert.equal(hasBlockMarkdown("First paragraph\n\nSecond paragraph"), true);
 });

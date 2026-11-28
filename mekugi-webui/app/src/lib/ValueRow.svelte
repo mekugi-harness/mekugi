@@ -439,8 +439,10 @@
                 <Markdown text={questionText} breaks />
               {:else}
                 <Markdown text={questionText} inline />
-              {/if}{#if q.answer}{#if blockQuestion || blockAnswer}
+              {/if}{#if q.answer}{#if blockAnswer}
                   <div class="mt-1 text-muted"><Markdown text={q.answer} breaks /></div>
+                {:else if blockQuestion}
+                  <div class="mt-1 text-muted"><Markdown text={q.answer} inline /></div>
                 {:else}
                   <span class="ml-2 text-muted"><Markdown text={q.answer} inline /></span>
                 {/if}{/if}

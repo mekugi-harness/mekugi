@@ -191,7 +191,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		}
 		foot = promptWrap(accent+fmt.Sprintf("Submit with %d unanswered?", d.Gaps)+reset+dim+hint+reset, inner)
 	}
-	text := p.Markdown(question.Text, max(1, inner-2), false)
+	text := p.MarkdownComplete(question.Text, max(1, inner-2), false)
 	if len(text) == 0 && question.Text != "" {
 		text = []string{""}
 	}
@@ -285,7 +285,7 @@ func Questions(d prompt.QuestionDockView, p *terminalui.Painter, layout *Questio
 		if wide {
 			previewWidth, previewRoom = inner-optionWidth-3, room
 		}
-		lines := p.Markdown(preview, max(1, previewWidth), false)
+		lines := p.MarkdownComplete(preview, max(1, previewWidth), false)
 		if len(lines) == 0 {
 			lines = []string{""}
 		}

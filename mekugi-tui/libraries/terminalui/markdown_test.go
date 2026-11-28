@@ -115,6 +115,10 @@ func TestInlinePreservesUnmatchedBoldDelimiters(t *testing.T) {
 	if got := p.InlineComplete("Use **`code`** here"); !strings.Contains(got, "\x1b[1m") || strings.Contains(ansi.Strip(got), "**") {
 		t.Fatalf("bold code span not rendered: %q", got)
 	}
+	block := strings.Join(plainLines(p.MarkdownComplete("Match **/*.go\n> Quote **/*.ts", 60, false)), "\n")
+	if !strings.Contains(block, "Match **/*.go") || !strings.Contains(block, "Quote **/*.ts") {
+		t.Fatalf("MarkdownComplete corrupted unmatched globs: %q", block)
+	}
 }
 
 func plainLines(lines []string) []string {

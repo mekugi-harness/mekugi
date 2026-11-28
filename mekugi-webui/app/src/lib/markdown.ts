@@ -82,15 +82,18 @@ export const inline = (text: string) => md.renderInline(text);
 export const literal = (text: string) => md.utils.escapeHtml(text);
 
 const plainBlockTokens = new Set(["paragraph_open", "inline", "paragraph_close", "code_block"]);
-const plainInlineTokens = new Set(["text", "softbreak", "hardbreak"]);
+const plainInlineTokens = new Set(["text", "softbreak"]);
 
 // True when text contains Markdown syntax (fences, lists, headings, tables,
-// emphasis, links, or inline code) rather than an aligned plain-text mockup.
+// hard breaks, emphasis, links, or inline code) rather than an aligned plain-text mockup.
 export function isMarkdownPreview(text: string): boolean {
   const tokens = md.parse(text, {});
   for (const token of tokens) {
     if (!plainBlockTokens.has(token.type)) return true;
-    if (token.type === "inline" && token.children?.some((child) => !plainInlineTokens.has(child.type)))
+    if (
+      token.type === "inline" &&
+      token.children?.some((child) => !plainInlineTokens.has(child.type))
+    )
       return true;
   }
   return false;

@@ -33,6 +33,7 @@ type Painter struct {
 	ActionLink func(target string) bool
 	// DeferFileLinks keeps local candidates private until visible-row admission.
 	DeferFileLinks bool
+	noUnclosedBold bool
 }
 
 const (
@@ -167,16 +168,6 @@ func Hang(lead, label string, width int) []string {
 
 // Inline renders the supported Markdown inline subset.
 func (p *Painter) Inline(line string) string {
-	return p.inline(line, true)
-}
-
-// InlineComplete paints complete inline Markdown without opening bold on an
-// unmatched ** delimiter (such as a glob like **/*.go).
-func (p *Painter) InlineComplete(line string) string {
-	return p.inline(line, false)
-}
-
-func (p *Painter) inline(line string, allowUnclosedBold bool) string {
 	line = textsanitize.Safe(line, false)
 	var out strings.Builder
 	bold := false
@@ -212,7 +203,7 @@ func (p *Painter) inline(line string, allowUnclosedBold bool) string {
 			if bold {
 				bold = false
 				out.WriteString(Undim)
-			} else if allowUnclosedBold || hasClosingBold(line[i+2:]) {
+			} else if !p.noUnclosedBold || hasClosingBold(line[i+2:]) {
 				bold = true
 				out.WriteString("\x1b[1m")
 			} else {
@@ -240,6 +231,15 @@ func (p *Painter) inline(line string, allowUnclosedBold bool) string {
 		out.WriteString(Undim)
 	}
 	return out.String()
+}
+
+// InlineComplete paints complete inline Markdown without opening bold on an
+// unmatched ** delimiter (such as a glob like **/*.go).
+func (p *Painter) InlineComplete(line string) string {
+	prev := p.noUnclosedBold
+	p.noUnclosedBold = true
+	defer func() { p.noUnclosedBold = prev }()
+	return p.Inline(line)
 }
 
 func hasClosingBold(rest string) bool {
@@ -347,6 +347,15 @@ func markdownLink(s string) (label, target string, end int, ok bool) {
 		return "", "", 0, false
 	}
 	return s[1:close], target, end, true
+}
+
+// MarkdownComplete paints complete authored Markdown without opening bold on an
+// unmatched ** delimiter (such as a glob like **/*.go).
+func (p *Painter) MarkdownComplete(text string, width int, subdued bool) []string {
+	prev := p.noUnclosedBold
+	p.noUnclosedBold = true
+	defer func() { p.noUnclosedBold = prev }()
+	return p.Markdown(text, width, subdued)
 }
 
 // Markdown paints authored text. Subdued presentation preserves paragraph
