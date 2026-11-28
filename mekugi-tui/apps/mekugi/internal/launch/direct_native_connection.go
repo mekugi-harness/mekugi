@@ -743,7 +743,7 @@ func (c *directNativeConnection) buildEventLocked() sessionapi.NativeEvent {
 			Session:   composerStatus,
 			Composer:  composerStatus,
 			Processes: len(c.processes),
-			Animating: c.busy,
+			Animating: c.busy || len(c.processes) > 0,
 		},
 		Caption: sessionpresentation.Caption{
 			Model:         captionModel,
