@@ -302,8 +302,13 @@
         >
       {/each}
     {:else if value.path}
-      <span class="font-mono text-code"><Path path={displayPath!} title={value.path} /></span>
-      {#if value.label}<span class="ml-2 text-muted">{@html label}</span>{/if}
+      <div class="flex min-w-0 items-baseline gap-2">
+        <span class="min-w-0 font-mono text-code"
+          ><Path path={displayPath!} title={value.path} /></span
+        >
+        {#if value.label}<span class="shrink-0 whitespace-nowrap text-muted">{@html label}</span
+          >{/if}
+      </div>
     {:else if headline !== undefined}
       <code
         ><Code
@@ -374,6 +379,9 @@
 
   {#if fold ? scriptOpen : value.codeLines || (code && value.fenced && headline === undefined)}
     <div class={extra}>
+      {#if value.foldSource && value.path}
+        <p class="mt-1 font-mono text-code wrap-anywhere text-muted">{value.path}</p>
+      {/if}
       {#if fold?.json}
         <pre class="{scroll} whitespace-pre-wrap wrap-anywhere"><Code
             code={json ?? ""}
