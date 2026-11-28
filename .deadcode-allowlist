@@ -1,2 +1,4 @@
 # Production reachability only. Test-inclusive reachability has no exceptions.
 # Add explicit symbols only when externally invoked outside Go workspace packages.
+# Invoked via encoding/json/v2 reflection when DecodeQuestionRequest decodes []Question.
+github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation.Question.UnmarshalJSON
