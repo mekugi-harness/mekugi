@@ -119,6 +119,210 @@ fn capture_pages_bound_encoded_payload_and_resume_inside_a_patch() {
 }
 
 #[test]
+fn capture_pages_preserve_origin_paths_and_fill_page_budget_across_chunks() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    // ~5 MiB ASCII file spans multiple 512 KiB slices and exceeds one 4 MiB page.
+    let big_line = format!("{}\n", "x".repeat(127));
+    let big = big_line.repeat(40_960);
+    record(
+        &store,
+        workspace.path(),
+        "multi-chunk",
+        vec![
+            ("a.txt", "before\n".into()),
+            ("big.txt", big),
+            ("z.txt", "after\n".into()),
+        ],
+    );
+    let mut params = ThreadChangesReadParams {
+        thread_id: "thread".into(),
+        include_external: None,
+        include_ephemeral: None,
+        caller_thread_id: None,
+        item_id: None,
+        per_capture: true,
+        limit: None,
+        cursor: None,
+    };
+    let expected =
+        read_changes(dir.clone(), None, None, params.clone(), None).expect("unpaged read");
+    params.limit = Some(100);
+
+    let mut cursor = None;
+    let mut pages = 0usize;
+    let mut total_additions = 0i64;
+    let mut total_deletions = 0i64;
+    let mut actual: Vec<(String, String)> = Vec::new();
+    loop {
+        let page =
+            read_changes(dir.clone(), None, None, params.clone(), cursor).expect("capture page");
+        assert!(serde_json::to_vec(&page).expect("encode page").len() < CAPTURE_PAGE_BYTES);
+        assert_eq!(page.changes.len(), 1);
+        assert_eq!(
+            page.changes[0].paths,
+            vec!["a.txt", "big.txt", "z.txt"],
+            "page {pages} must preserve complete origin.paths"
+        );
+        if pages == 0 {
+            assert_eq!(page.files.len(), 2);
+            assert_eq!(page.files[0].path, "a.txt");
+            assert_eq!(page.files[1].path, "big.txt");
+            assert!(
+                page.files[1].unified_diff.len() >= 3 * CAPTURE_PATCH_BYTES,
+                "first page should pack multiple 512 KiB slices within the 4 MiB page budget"
+            );
+        }
+        total_additions += page.total_additions;
+        total_deletions += page.total_deletions;
+        for file in page.files {
+            if let Some(last) = actual.last_mut().filter(|last| last.0 == file.path) {
+                last.1.push_str(&file.unified_diff);
+            } else {
+                actual.push((file.path, file.unified_diff));
+            }
+        }
+        pages += 1;
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(parse_cursor(&next).expect("valid continuation cursor"));
+        assert!(pages < 4, "5 MiB capture should complete within 2 pages");
+    }
+    assert_eq!(pages, 2);
+    assert_eq!(total_additions, expected.total_additions);
+    assert_eq!(total_deletions, expected.total_deletions);
+    assert_eq!(
+        actual,
+        expected
+            .files
+            .into_iter()
+            .map(|file| (file.path, file.unified_diff))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn capture_pages_fallback_when_origin_paths_exceed_page_budget() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    // 20,000 files with ~220-byte paths -> >4.4 MiB JSON for origin.paths alone.
+    let prefix = "nested/".repeat(28);
+    let files: Vec<(String, String)> = (0..20_000)
+        .map(|i| (format!("{prefix}file_{i:05}.txt"), "x\n".into()))
+        .collect();
+    record(
+        &store,
+        workspace.path(),
+        "bulk-paths",
+        files
+            .iter()
+            .map(|(path, body)| (path.as_str(), body.clone()))
+            .collect(),
+    );
+    let params = ThreadChangesReadParams {
+        thread_id: "thread".into(),
+        include_external: None,
+        include_ephemeral: None,
+        caller_thread_id: None,
+        item_id: None,
+        per_capture: true,
+        limit: Some(100),
+        cursor: None,
+    };
+    let page = read_changes(dir.clone(), None, None, params.clone(), None)
+        .expect("oversized origin.paths should fall back instead of failing");
+    assert!(serde_json::to_vec(&page).expect("encode page").len() < CAPTURE_PAGE_BYTES);
+    assert_eq!(page.files.len(), 100);
+    assert_eq!(page.changes.len(), 1);
+    assert_eq!(page.changes[0].paths.len(), 100);
+    assert!(page.next_cursor.is_some());
+    let next = parse_cursor(page.next_cursor.as_deref().expect("cursor")).expect("valid cursor");
+    let page2 = read_changes(dir, None, None, params, Some(next)).expect("second page");
+    assert!(serde_json::to_vec(&page2).expect("encode page 2").len() < CAPTURE_PAGE_BYTES);
+    assert_eq!(page2.files.len(), 100);
+    assert_eq!(page2.changes.len(), 1);
+    assert_eq!(page2.changes[0].paths.len(), 100);
+    assert_ne!(page.changes[0].paths, page2.changes[0].paths);
+}
+
+#[test]
+fn capture_pages_paginate_large_rename_with_long_source_path() {
+    let workspace = tempfile::tempdir().expect("temp workspace");
+    let dir = workspace.path().join("history");
+    let store = ChangeHistoryStore::open(dir.clone()).expect("open history");
+    let long_source = format!("{}original.txt", "nested_directory_segment/".repeat(100));
+    assert!(long_source.len() > 2000);
+    let big_line = format!("{}\n", "y".repeat(127));
+    let big = big_line.repeat(40_960);
+    store
+        .record_change(
+            ChangeMetadata {
+                thread_id: "thread".into(),
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                call_id: "large-rename".into(),
+                author: None,
+                source_kind: ChangeSourceKind::ApplyPatch,
+                workspace_root: workspace.path().to_path_buf(),
+                created_at: 0,
+                exit_code: Some(0),
+                summary: None,
+                claim_key: None,
+            },
+            vec![PendingFileChange {
+                rel_path: "a.txt".into(),
+                abs_path: workspace.path().join("a.txt"),
+                moved_from: Some(long_source.clone()),
+                before: FileSnapshot::Present(b"old\n".to_vec()),
+                after: FileSnapshot::Present(big.into_bytes()),
+                coverage: CoverageStatus::Complete,
+                scope: ChangeScope::Workspace,
+            }],
+        )
+        .expect("record large rename");
+    let mut params = ThreadChangesReadParams {
+        thread_id: "thread".into(),
+        include_external: None,
+        include_ephemeral: None,
+        caller_thread_id: None,
+        item_id: None,
+        per_capture: true,
+        limit: None,
+        cursor: None,
+    };
+    let expected =
+        read_changes(dir.clone(), None, None, params.clone(), None).expect("unpaged read");
+    params.limit = Some(100);
+
+    let mut cursor = None;
+    let mut pages = 0usize;
+    let mut combined_diff = String::new();
+    loop {
+        let page =
+            read_changes(dir.clone(), None, None, params.clone(), cursor).expect("rename page");
+        assert!(serde_json::to_vec(&page).expect("encode page").len() < CAPTURE_PAGE_BYTES);
+        assert_eq!(page.files.len(), 1);
+        assert_eq!(page.files[0].path, "a.txt");
+        assert_eq!(
+            page.files[0].moved_from.as_deref(),
+            Some(long_source.as_str())
+        );
+        combined_diff.push_str(&page.files[0].unified_diff);
+        pages += 1;
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(parse_cursor(&next).expect("valid continuation cursor"));
+        assert!(pages < 4);
+    }
+    assert_eq!(pages, 2);
+    assert_eq!(combined_diff, expected.files[0].unified_diff);
+}
+
+#[test]
 fn composed_review_pages_keep_totals_and_provenance_under_the_connector_limit() {
     let workspace = tempfile::tempdir().expect("temp workspace");
     let dir = workspace.path().join("history");

@@ -2790,6 +2790,9 @@ pub struct ThreadChangeOrigin {
     pub source_label: String,
     #[ts(type = "number")]
     pub created_at: i64,
+    // In paginated `perCapture` reads, carries the capture's complete filtered path list when it
+    // fits within the page byte budget, or page-local paths on oversized captures; multi-page
+    // clients should merge and deduplicate `paths` by `change_id`.
     pub paths: Vec<String>,
     pub incomplete: bool,
 }

@@ -17,8 +17,10 @@ use codex_change_history::ChangeAuthor;
 use codex_change_history::ChangeHistoryStore;
 use codex_change_history::ChangeRecord;
 use codex_change_history::ComposedFileDiff;
+use codex_change_history::CoverageStatus;
+use codex_change_history::FileEvidence;
 use codex_change_history::captured_diff_files;
-use codex_change_history::captured_diff_range;
+use codex_change_history::captured_diff_range_by;
 use codex_change_history::compose_diff;
 use codex_change_history::compose_file_stats;
 use codex_protocol::ThreadId;
@@ -258,14 +260,9 @@ fn read_changes(
         let author = author_thread(&record);
         let show = all_origins || page_ids.contains(&record.id);
         if show {
-            response.changes.push(wire_origin(
-                &record,
-                record
-                    .files
-                    .iter()
-                    .map(|file| file.rel_path.clone())
-                    .collect(),
-            ));
+            response
+                .changes
+                .push(wire_origin(&record, origin_paths(&record)));
         }
         if caller_index && let Some(author) = author {
             callers.entry(author).or_default().push(record);
@@ -399,6 +396,72 @@ fn wire_origin(record: &ChangeRecord, paths: Vec<String>) -> ThreadChangeOrigin 
     }
 }
 
+fn origin_paths(record: &ChangeRecord) -> Vec<String> {
+    let mut seen = HashSet::new();
+    record
+        .files
+        .iter()
+        .filter_map(|file| {
+            seen.insert(file.rel_path.as_str())
+                .then(|| file.rel_path.clone())
+        })
+        .collect()
+}
+
+fn format_capture_cursor(sequence: u64, index: usize, patch_offset: usize) -> String {
+    if patch_offset == 0 {
+        format!("{sequence}:{index}")
+    } else {
+        format!("{sequence}:{index}:{patch_offset}")
+    }
+}
+
+fn json_escaped_char_len(ch: char) -> usize {
+    match ch {
+        '"' | '\\' | '\x08' | '\x0c' | '\n' | '\r' | '\t' => 2,
+        ch if (ch as u32) < 0x20 => 6,
+        ch => ch.len_utf8(),
+    }
+}
+
+fn json_encoded_len<T: serde::Serialize>(value: &T) -> Option<usize> {
+    let mut counter = JsonBudget(usize::MAX);
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(usize::MAX - counter.0)
+}
+
+fn estimate_file_metadata_json_len(record: &ChangeRecord, files: &[&FileEvidence]) -> usize {
+    let first = files[0];
+    let coverage_notes = files
+        .iter()
+        .filter_map(|file| match &file.coverage {
+            CoverageStatus::Complete => None,
+            CoverageStatus::Partial { reason } => {
+                Some(format!("{}: partial ({reason})", record.id))
+            }
+            CoverageStatus::MissingBaseline { reason } => {
+                Some(format!("{}: missing baseline ({reason})", record.id))
+            }
+        })
+        .collect();
+    let probe = ThreadChangeFileDiff {
+        path: first.rel_path.clone(),
+        absolute_path: first.abs_path.display().to_string(),
+        change_ids: vec![record.id.to_string()],
+        moved_from: first.moved_from.clone(),
+        status: "R".to_string(),
+        unified_diff: String::new(),
+        additions: i64::MAX,
+        deletions: i64::MAX,
+        is_binary: false,
+        coverage_notes,
+        scope: first.scope.as_str().to_string(),
+    };
+    json_encoded_len(&probe)
+        .unwrap_or(usize::MAX)
+        .saturating_add(64)
+}
+
 fn read_capture_page(
     store: &ChangeHistoryStore,
     records: &[ChangeRecord],
@@ -421,30 +484,96 @@ fn read_capture_page(
     let mut budget = JsonBudget(CAPTURE_PAGE_BYTES - 1024);
     serde_json::to_writer(&mut budget, &*response)
         .map_err(|_| invalid_request("captured edit metadata exceeds the response limit"))?;
+    let mut last_origin_is_full = false;
     for (index, (record, files)) in captured_files.into_iter().enumerate().skip(offset) {
+        let start = if index == offset { patch_offset } else { 0 };
         if response.files.len() == limit {
-            response.next_cursor = Some(format!("{sequence}:{index}"));
+            response.next_cursor = Some(format_capture_cursor(sequence, index, start));
             break;
         }
-        let start = if index == offset { patch_offset } else { 0 };
-        let Some((diff, next_patch)) =
-            captured_diff_range(store, record, &files, start, CAPTURE_PATCH_BYTES).map_err(
-                |error| internal_error(format!("could not read captured edits: {error}")),
-            )?
-        else {
-            return Err(invalid_request("invalid captured edit cursor"));
-        };
-        let file = wire_file(diff);
-        let origin = response
+        let need_origin = response
             .changes
             .last()
             .filter(|previous| previous.change_id == record.id.as_str())
-            .is_none()
-            .then(|| wire_origin(record, vec![file.path.clone()]));
+            .is_none();
+        let file_meta_reserve = estimate_file_metadata_json_len(record, &files);
+        let (origin, origin_is_full, origin_cost) = if need_origin {
+            let full = wire_origin(record, origin_paths(record));
+            let full_cost = json_encoded_len(&full).unwrap_or(usize::MAX);
+            if full_cost
+                .saturating_add(file_meta_reserve)
+                .saturating_add(64)
+                <= budget.0
+            {
+                (Some(full), true, full_cost)
+            } else if response.files.is_empty() {
+                // If a capture's complete path list alone exceeds the page budget on a fresh
+                // page, fall back to per-page paths so Saved Diff can still paginate and
+                // clients can merge origin.paths across pages.
+                let minimal = wire_origin(record, vec![files[0].rel_path.clone()]);
+                let minimal_cost = json_encoded_len(&minimal).unwrap_or(usize::MAX);
+                (Some(minimal), false, minimal_cost)
+            } else {
+                response.next_cursor = Some(format_capture_cursor(sequence, index, start));
+                break;
+            }
+        } else {
+            let path_cost = if last_origin_is_full {
+                0
+            } else {
+                json_encoded_len(&files[0].rel_path).unwrap_or(usize::MAX) + 2
+            };
+            (None, last_origin_is_full, path_cost)
+        };
+        let Some(available_diff_budget) = budget
+            .0
+            .checked_sub(origin_cost.saturating_add(file_meta_reserve))
+        else {
+            if response.files.is_empty() {
+                return Err(invalid_request(
+                    "captured edit metadata exceeds the response limit",
+                ));
+            }
+            response.next_cursor = Some(format_capture_cursor(sequence, index, start));
+            break;
+        };
+        if available_diff_budget < 64 && !response.files.is_empty() {
+            response.next_cursor = Some(format_capture_cursor(sequence, index, start));
+            break;
+        }
+        let Some((diff, next_patch)) = captured_diff_range_by(
+            store,
+            record,
+            &files,
+            start,
+            available_diff_budget,
+            json_escaped_char_len,
+        )
+        .map_err(|error| internal_error(format!("could not read captured edits: {error}")))?
+        else {
+            return Err(invalid_request("invalid captured edit cursor"));
+        };
+        if next_patch.is_some()
+            && diff.unified_diff.len() < CAPTURE_PATCH_BYTES
+            && !response.files.is_empty()
+        {
+            // Avoid splitting a small or escape-heavy file at the tail of a non-empty page
+            // when it cannot fit even one slice; start it cleanly on the next page instead.
+            response.next_cursor = Some(format_capture_cursor(sequence, index, start));
+            break;
+        }
+        if next_patch.is_some() && diff.unified_diff.is_empty() {
+            return Err(invalid_request(
+                "captured edit metadata exceeds the response limit",
+            ));
+        }
+        let file = wire_file(diff);
+        let mut next_budget = budget;
         // Reserve punctuation as well as the encoded file and its origin.
         let encoded = match origin.as_ref() {
-            Some(origin) => serde_json::to_writer(&mut budget, &(&file, origin)),
-            None => serde_json::to_writer(&mut budget, &(&file, &file.path)),
+            Some(origin) => serde_json::to_writer(&mut next_budget, &(&file, origin)),
+            None if origin_is_full => serde_json::to_writer(&mut next_budget, &(&file, "")),
+            None => serde_json::to_writer(&mut next_budget, &(&file, &file.path)),
         };
         if encoded.is_err() {
             if response.files.is_empty() {
@@ -452,12 +581,17 @@ fn read_capture_page(
                     "captured edit metadata exceeds the response limit",
                 ));
             }
-            response.next_cursor = Some(format!("{sequence}:{index}"));
+            response.next_cursor = Some(format_capture_cursor(sequence, index, start));
             break;
         }
+        budget = next_budget;
         if let Some(origin) = origin {
             response.changes.push(origin);
-        } else if let Some(previous) = response.changes.last_mut() {
+            last_origin_is_full = origin_is_full;
+        } else if !last_origin_is_full
+            && let Some(previous) = response.changes.last_mut()
+            && !previous.paths.iter().any(|path| path == &file.path)
+        {
             previous.paths.push(file.path.clone());
         }
         response.incomplete |= !file.coverage_notes.is_empty();
@@ -467,7 +601,7 @@ fn read_capture_page(
         }
         response.files.push(file);
         if let Some(next) = next_patch {
-            response.next_cursor = Some(format!("{sequence}:{index}:{next}"));
+            response.next_cursor = Some(format_capture_cursor(sequence, index, next));
             break;
         }
     }
