@@ -6,7 +6,10 @@
     activeAttachments,
     atomicAttachmentInput,
     prepareAttachments,
+    resolveDeferredPathAttachments,
     submissionAttachments,
+    uploadBytes,
+    uploadLimit,
     type InitialInput,
     type PendingAttachment,
   } from "./attachments";
@@ -46,6 +49,7 @@
   });
   let selectedWorkspace = $state<string>();
   const workspace = $derived(selectedWorkspace ?? workspaces[0] ?? "");
+  const workspaceAdmitted = $derived(workspaces.includes(workspace));
   let model = $state("");
   let effort = $state("");
   let text = $state("");
@@ -102,19 +106,86 @@
       if (!options) throw new Error(`Wait for ${target.label}'s workspaces and models.`);
       if (!text.trim() && !activeItems.length)
         throw new Error("Write a first message or attach something.");
-      const attachments = await prepareAttachments(
-        submissionAttachments(text, items),
-        pending.signal,
-        (read, total) =>
-          (progress = total
-            ? `Reading attachments: ${Math.round((read / total) * 100)}%`
-            : "Preparing input…"),
-      );
+      const submitted = submissionAttachments(text, items);
+      const hasDeferred = submitted.some((item) => "path" in item && item.deferred);
       const request: Start = {
         workspace,
         model,
         effort: effort || undefined,
       };
+      const openStarted = (
+        started: InitialInput["started"],
+        draft: Omit<InitialInput, "started">,
+      ) => {
+        onopened(target.id, { started, ...draft });
+        select(target.id);
+        open(started.thread.id);
+      };
+      const draftFailureMessage = (failure: unknown, fallback: string) =>
+        pending.signal.aborted
+          ? "Cancelled. Edit or resend your draft in the new thread."
+          : failure instanceof Error
+            ? failure.message
+            : fallback;
+      const updateReadProgress = (read: number, total: number) => {
+        progress = total
+          ? `Reading attachments: ${Math.round((read / total) * 100)}%`
+          : "Preparing input…";
+      };
+      if (hasDeferred) {
+        if (uploadBytes(submitted) > uploadLimit)
+          throw new Error("Uploads exceed the 32 MiB limit. Remove files and try again.");
+        let draftText = text;
+        let draftItems = [...submitted];
+        pending.signal.throwIfAborted();
+        progress = "Starting the thread…";
+        const result = await hub.createSession(request, target, pending.signal);
+        if (disposed) return;
+        if ("error" in result) {
+          error = result.error;
+          return;
+        }
+        let failureFallback = "Could not check attachments.";
+        try {
+          progress = "Checking attachments…";
+          const resolved = await resolveDeferredPathAttachments(
+            { machine: target, thread: result.response.thread.id },
+            draftText,
+            draftItems,
+            pending.signal,
+          );
+          if (disposed) return;
+          draftText = resolved.text;
+          draftItems = resolved.items;
+          if (!resolved.ok) {
+            openStarted(result.response, {
+              text: draftText,
+              items: draftItems,
+              attachments: [],
+              draftError: resolved.error,
+            });
+            return;
+          }
+          failureFallback = "Could not prepare attachments.";
+          const attachments = await prepareAttachments(
+            submissionAttachments(draftText, draftItems),
+            pending.signal,
+            updateReadProgress,
+          );
+          if (disposed) return;
+          openStarted(result.response, { text: draftText, items: draftItems, attachments });
+        } catch (failure) {
+          if (disposed) return;
+          openStarted(result.response, {
+            text: draftText,
+            items: draftItems,
+            attachments: [],
+            draftError: draftFailureMessage(failure, failureFallback),
+          });
+        }
+        return;
+      }
+      const attachments = await prepareAttachments(submitted, pending.signal, updateReadProgress);
       const draft = { text, items: [...items], attachments };
       pending.signal.throwIfAborted();
       progress = "Starting the thread…";
@@ -124,9 +195,7 @@
         error = result.error;
         return;
       }
-      onopened(target.id, { started: result.response, ...draft });
-      select(target.id);
-      open(result.response.thread.id);
+      openStarted(result.response, draft);
     } catch (failure) {
       if (!disposed)
         error = pending.signal.aborted
@@ -182,7 +251,7 @@
         bind:text
         bind:pathing
         machine={machine.label}
-        previewTarget={{ machine, workspace }}
+        previewTarget={{ machine, workspace, deferUnadmitted: !workspaceAdmitted }}
         disabled={busy}
       />
       <label class="sr-only" for="new-text">First message</label>

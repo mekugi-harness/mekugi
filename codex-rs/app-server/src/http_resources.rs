@@ -280,14 +280,11 @@ async fn handle_file(
         );
     };
     let workspace = Path::new(response.thread.cwd.as_str());
-    let Some(path) = resolve_detail_file(workspace, &path).await else {
+    let Some((file, metadata)) = open_confined_resource_file(workspace, &path).await else {
         return error_response(
             StatusCode::NOT_FOUND,
             "The requested file is not available in this workspace.",
         );
-    };
-    let Ok((file, metadata)) = open_resource_file(&path).await else {
-        return error_response(StatusCode::NOT_FOUND, "The requested file is unavailable.");
     };
     if !metadata.is_file() {
         return error_response(StatusCode::NOT_FOUND, "The requested file is unavailable.");
@@ -326,15 +323,33 @@ async fn handle_file(
 }
 
 #[tracing::instrument(skip_all)]
-async fn resolve_detail_file(workspace: &Path, path: &Path) -> Option<PathBuf> {
+async fn canonicalize_workspace_dir(workspace: &Path) -> Option<PathBuf> {
     if !workspace.is_absolute() {
         return None;
     }
     let root = tokio::fs::canonicalize(workspace).await.ok()?;
-    let path = tokio::fs::canonicalize(root.join(path)).await.ok()?;
-    path.starts_with(&root).then_some(path)
+    tokio::fs::metadata(&root)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir())
+        .then_some(root)
 }
 
+#[tracing::instrument(skip_all)]
+async fn resolve_workspace_path(workspace: &Path, candidate: &Path) -> Option<(PathBuf, PathBuf)> {
+    let root = canonicalize_workspace_dir(workspace).await?;
+    let target = tokio::fs::canonicalize(root.join(candidate)).await.ok()?;
+    target.starts_with(&root).then_some((root, target))
+}
+
+#[cfg(test)]
+#[tracing::instrument(skip_all)]
+async fn resolve_detail_file(workspace: &Path, path: &Path) -> Option<PathBuf> {
+    resolve_workspace_path(workspace, path)
+        .await
+        .map(|(_, target)| target)
+}
+
+#[tracing::instrument(skip_all)]
 async fn handle_content(
     thread_processor: &ThreadRequestProcessor,
     params: ResourceParams,
@@ -418,6 +433,7 @@ fn image_identity(source: &str) -> String {
     out
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_image(
     thread_processor: &ThreadRequestProcessor,
     params: ResourceParams,
@@ -455,7 +471,7 @@ async fn handle_image(
             "This attached image is no longer available.",
         );
     };
-    read_image_source(&workspace, &source).await
+    read_published_image_source(&workspace, &source).await
 }
 
 fn extract_item_image_sources(payload: &ThreadItemPayload) -> Vec<String> {
@@ -562,6 +578,7 @@ fn find_published_image_source(
     None
 }
 
+#[tracing::instrument(skip_all)]
 async fn handle_attachment_image(
     thread_processor: &ThreadRequestProcessor,
     params: ResourceParams,
@@ -604,30 +621,45 @@ async fn handle_attachment_image(
                 );
             }
         };
-        PathBuf::from(response.thread.cwd.as_str())
+        let Some(workspace) =
+            canonicalize_workspace_dir(Path::new(response.thread.cwd.as_str())).await
+        else {
+            return attachment_unavailable_response();
+        };
+        workspace
     } else {
-        let path = PathBuf::from(&request.workspace);
-        if !path.is_absolute() || !tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_dir()) {
+        let Some(workspace) = thread_processor
+            .admit_attachment_workspace(Path::new(&request.workspace))
+            .await
+        else {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "Choose an existing absolute workspace directory.",
+                "Choose an admitted workspace directory.",
             );
-        }
-        path
+        };
+        workspace
     };
-    if request.probe {
-        match read_image_file(&workspace, &request.path, ImageFileRead::Probe).await {
-            Ok(bytes) => json_response(&serde_json::json!({ "mime": detect_raster_mime(&bytes) })),
-            Err(response) => response,
-        }
+    let mode = if request.probe {
+        ImageFileRead::Probe
     } else {
-        read_image_source(&workspace, &request.path).await
+        ImageFileRead::Preview
+    };
+    match read_workspace_image_file(&workspace, Path::new(&request.path), mode).await {
+        Ok(bytes) if request.probe => {
+            json_response(&serde_json::json!({ "mime": detect_raster_mime(&bytes) }))
+        }
+        Ok(bytes) => raster_image_response(bytes),
+        Err(response) => response,
     }
 }
 
 enum ImageFileRead {
     Probe,
     Preview,
+}
+
+fn attachment_unavailable_response() -> Response {
+    error_response(StatusCode::NOT_FOUND, "The attachment file is unavailable.")
 }
 
 #[tracing::instrument(skip_all)]
@@ -642,12 +674,174 @@ async fn open_resource_file(path: &Path) -> std::io::Result<(tokio::fs::File, st
     Ok((file, metadata))
 }
 
+#[cfg(unix)]
+fn openat_component(
+    dir: &std::os::fd::OwnedFd,
+    segment: &std::ffi::OsStr,
+    flags: libc::c_int,
+) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = CString::new(segment.as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    // SAFETY: `dir` is a valid open directory descriptor and `name` is NUL-terminated.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a newly created file descriptor returned by `openat`.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn directory_access_flags() -> libc::c_int {
+    libc::O_PATH
+}
+
+#[cfg(target_vendor = "apple")]
+fn directory_access_flags() -> libc::c_int {
+    libc::O_SEARCH
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
+fn directory_access_flags() -> libc::c_int {
+    libc::O_RDONLY
+}
+
+#[cfg(unix)]
+fn open_confined_unix(
+    canonical_root: &Path,
+    relative: &Path,
+) -> std::io::Result<(tokio::fs::File, std::fs::Metadata)> {
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+
+    let dir_flags = directory_access_flags() | libc::O_DIRECTORY | libc::O_CLOEXEC;
+    // SAFETY: `c"/"` is a static NUL-terminated path and `dir_flags` opens a directory descriptor.
+    let root_fd = unsafe { libc::open(c"/".as_ptr(), dir_flags) };
+    if root_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `root_fd` is a newly created file descriptor returned by `open`.
+    let mut current = unsafe { OwnedFd::from_raw_fd(root_fd) };
+
+    let step_flags = dir_flags | libc::O_NOFOLLOW;
+    let mut saw_root = false;
+    for component in canonical_root.components() {
+        match component {
+            std::path::Component::RootDir => saw_root = true,
+            std::path::Component::Normal(segment) => {
+                current = openat_component(&current, segment, step_flags)?;
+            }
+            std::path::Component::CurDir
+            | std::path::Component::ParentDir
+            | std::path::Component::Prefix(_) => {
+                return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+            }
+        }
+    }
+    if !saw_root {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
+
+    let mut components = Vec::new();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(segment) => components.push(segment),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+            }
+        }
+    }
+
+    let final_fd = if let Some((last, parents)) = components.split_last() {
+        for segment in parents {
+            current = openat_component(&current, segment, step_flags)?;
+        }
+        // A named pipe must not block open before we check the file type.
+        openat_component(
+            &current,
+            last,
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )?
+    } else {
+        current
+    };
+
+    let file = std::fs::File::from(final_fd);
+    let metadata = file.metadata()?;
+    Ok((tokio::fs::File::from_std(file), metadata))
+}
+
 #[tracing::instrument(skip_all)]
-async fn read_image_file(
+async fn open_confined_resource_file(
     workspace: &Path,
-    source: &str,
+    candidate: &Path,
+) -> Option<(tokio::fs::File, std::fs::Metadata)> {
+    let (root, target) = resolve_workspace_path(workspace, candidate).await?;
+    #[cfg(unix)]
+    {
+        let relative = target.strip_prefix(&root).ok()?.to_path_buf();
+        tokio::task::spawn_blocking(move || open_confined_unix(&root, &relative))
+            .await
+            .ok()?
+            .ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        open_resource_file(&target).await.ok()
+    }
+}
+
+#[tracing::instrument(skip_all)]
+async fn read_image_bytes(
+    file: tokio::fs::File,
+    metadata: std::fs::Metadata,
     mode: ImageFileRead,
 ) -> Result<Vec<u8>, Response> {
+    if matches!(mode, ImageFileRead::Probe) && metadata.is_dir() {
+        return Ok(Vec::new());
+    }
+    if !metadata.is_file() {
+        return Err(attachment_unavailable_response());
+    }
+    let limit = match mode {
+        ImageFileRead::Probe => 12,
+        ImageFileRead::Preview => UPLOAD_LIMIT + 1,
+    };
+    let mut bytes = Vec::new();
+    file.take(limit as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| attachment_unavailable_response())?;
+    Ok(bytes)
+}
+
+#[tracing::instrument(skip_all)]
+async fn read_workspace_image_file(
+    workspace: &Path,
+    candidate: &Path,
+    mode: ImageFileRead,
+) -> Result<Vec<u8>, Response> {
+    let (file, metadata) = open_confined_resource_file(workspace, candidate)
+        .await
+        .ok_or_else(attachment_unavailable_response)?;
+    read_image_bytes(file, metadata, mode).await
+}
+
+#[tracing::instrument(skip_all)]
+async fn read_published_image_file(workspace: &Path, source: &str) -> Result<Vec<u8>, Response> {
     let candidate = Path::new(source);
     let resolved = if candidate.is_absolute() {
         candidate.to_path_buf()
@@ -660,30 +854,14 @@ async fn read_image_file(
         }
         workspace.join(candidate)
     };
-    let unavailable =
-        || error_response(StatusCode::NOT_FOUND, "The attachment file is unavailable.");
     let (file, metadata) = open_resource_file(&resolved)
         .await
-        .map_err(|_| unavailable())?;
-    if matches!(mode, ImageFileRead::Probe) && metadata.is_dir() {
-        return Ok(Vec::new());
-    }
-    if !metadata.is_file() {
-        return Err(unavailable());
-    }
-    let limit = match mode {
-        ImageFileRead::Probe => 12,
-        ImageFileRead::Preview => UPLOAD_LIMIT + 1,
-    };
-    let mut bytes = Vec::new();
-    file.take(limit as u64)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|_| unavailable())?;
-    Ok(bytes)
+        .map_err(|_| attachment_unavailable_response())?;
+    read_image_bytes(file, metadata, ImageFileRead::Preview).await
 }
 
-async fn read_image_source(workspace: &Path, source: &str) -> Response {
+#[tracing::instrument(skip_all)]
+async fn read_published_image_source(workspace: &Path, source: &str) -> Response {
     let data = if let Some(rest) = source.strip_prefix("data:") {
         let Some((header, encoded)) = rest.split_once(',') else {
             return error_response(
@@ -714,11 +892,15 @@ async fn read_image_source(workspace: &Path, source: &str) -> Response {
                 "Remote image URLs are not loaded automatically.",
             );
         }
-        match read_image_file(workspace, source, ImageFileRead::Preview).await {
+        match read_published_image_file(workspace, source).await {
             Ok(bytes) => bytes,
             Err(response) => return response,
         }
     };
+    raster_image_response(data)
+}
+
+fn raster_image_response(data: Vec<u8>) -> Response {
     if data.len() > UPLOAD_LIMIT {
         return error_response(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -751,183 +933,5 @@ fn detect_raster_mime(data: &[u8]) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn resolves_workspace_file_links_without_following_links_outside_the_workspace() {
-        let temp = tempfile::tempdir().expect("create temp directory");
-        let root = temp.path().join("workspace");
-        let outside = temp.path().join("outside.txt");
-        let linked = root.join("file.txt");
-        std::fs::create_dir(&root).expect("create workspace");
-        std::fs::write(&linked, "inside").expect("create workspace file");
-        std::fs::write(&outside, "outside").expect("create separate file");
-        std::os::unix::fs::symlink(&outside, root.join("escape.txt")).expect("link separate file");
-
-        let canonical = linked.canonicalize().expect("resolve test file");
-        assert_eq!(
-            resolve_detail_file(&root, Path::new("file.txt")).await,
-            Some(canonical.clone())
-        );
-        assert_eq!(resolve_detail_file(&root, &linked).await, Some(canonical));
-        assert_eq!(
-            resolve_detail_file(&root, Path::new("../outside.txt")).await,
-            None
-        );
-        assert_eq!(
-            resolve_detail_file(&root, Path::new("escape.txt")).await,
-            None
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn attachment_probe_distinguishes_directories_from_named_pipes() {
-        let temp = tempfile::tempdir().expect("create temp directory");
-        let path = temp.path().join("pipe");
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .expect("create named pipe")
-                .success()
-        );
-        assert!(
-            read_image_file(temp.path(), ".", ImageFileRead::Probe)
-                .await
-                .expect("directories are not images")
-                .is_empty()
-        );
-        let error = read_image_file(temp.path(), "pipe", ImageFileRead::Probe)
-            .await
-            .expect_err("named pipes cannot be read as image attachments");
-        assert_eq!(error.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn detects_supported_raster_images_only() {
-        assert_eq!(
-            detect_raster_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
-            Some("image/png")
-        );
-        assert_eq!(
-            detect_raster_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
-            Some("image/jpeg")
-        );
-        assert_eq!(detect_raster_mime(b"GIF89a..."), Some("image/gif"));
-        assert_eq!(detect_raster_mime(b"RIFF0000WEBP"), Some("image/webp"));
-        assert_eq!(detect_raster_mime(b"<svg></svg>"), None);
-        assert_eq!(detect_raster_mime(b"plain text"), None);
-    }
-
-    #[test]
-    fn finds_published_user_and_generated_and_tool_images() {
-        use codex_app_server_protocol::ImageGenerationItem;
-        use codex_app_server_protocol::McpToolCallResult;
-        use codex_app_server_protocol::McpToolCallStatus;
-        use codex_app_server_protocol::ThreadItem;
-        use codex_app_server_protocol::Turn;
-        use codex_app_server_protocol::TurnStatus;
-
-        let user_url = "data:image/png;base64,iVBORw0KGgo=".to_string();
-        let gen_b64 = "iVBORw0KGgoAAAANSUhEUg==".to_string();
-        let gen_url = format!("data:image/png;base64,{gen_b64}");
-        let mcp_url = "data:image/jpeg;base64,/9j/4AAQ".to_string();
-
-        let turn = Turn {
-            id: "turn-1".to_string(),
-            root_turn_id: None,
-            items: vec![
-                ThreadItem::untimed(ThreadItemPayload::UserMessage {
-                    id: "user-1".to_string(),
-                    client_id: None,
-                    content: vec![UserInput::Image {
-                        image: ImageReference::Inline {
-                            url: user_url.clone(),
-                        },
-                        detail: None,
-                    }],
-                }),
-                ThreadItem::untimed(ThreadItemPayload::ImageGeneration(ImageGenerationItem {
-                    id: "gen-1".to_string(),
-                    status: "completed".to_string(),
-                    revised_prompt: None,
-                    image: GeneratedImageRef::Inline { result: gen_b64 },
-                    transparent_background: None,
-                    failure: None,
-                    saved_path: None,
-                    input_images: Vec::new(),
-                    imagegen_request_id: None,
-                    generation_id: None,
-                })),
-                ThreadItem::untimed(ThreadItemPayload::McpToolCall {
-                    id: "mcp-1".to_string(),
-                    server: "srv".to_string(),
-                    environment_id: None,
-                    tool: "render".to_string(),
-                    status: McpToolCallStatus::Completed,
-                    arguments: serde_json::json!({}),
-                    app_context: None,
-                    mcp_app_resource_uri: None,
-                    mcp_app_ui: None,
-                    plugin_id: None,
-                    read_only_hint: None,
-                    result: Some(Box::new(McpToolCallResult {
-                        content: vec![serde_json::json!({
-                            "type": "image",
-                            "mimeType": "image/jpeg",
-                            "data": "/9j/4AAQ"
-                        })],
-                        structured_content: None,
-                        meta: None,
-                    })),
-                    error: None,
-                    duration_ms: None,
-                }),
-            ],
-            items_view: Default::default(),
-            status: TurnStatus::Completed,
-            error: None,
-            started_at: None,
-            completed_at: None,
-            duration_ms: None,
-        };
-
-        assert_eq!(
-            find_published_image_source(
-                std::slice::from_ref(&turn),
-                &ImageBody {
-                    item_id: Some("user-1".to_string()),
-                    index: Some(0),
-                    image: image_identity(&user_url),
-                }
-            ),
-            Some(user_url)
-        );
-        assert_eq!(
-            find_published_image_source(
-                std::slice::from_ref(&turn),
-                &ImageBody {
-                    item_id: Some("gen-1".to_string()),
-                    index: Some(0),
-                    image: image_identity(&gen_url),
-                }
-            ),
-            Some(gen_url)
-        );
-        assert_eq!(
-            find_published_image_source(
-                std::slice::from_ref(&turn),
-                &ImageBody {
-                    item_id: Some("mcp-1".to_string()),
-                    index: Some(0),
-                    image: image_identity(&mcp_url),
-                }
-            ),
-            Some(mcp_url)
-        );
-    }
-}
+#[path = "http_resources_tests.rs"]
+mod tests;

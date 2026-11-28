@@ -324,7 +324,11 @@ git log --first-parent --oneline rust-v0.169.0..HEAD
 - The private Unix control socket serves a restricted remote-human WebSocket
   endpoint (`/api/control`, negotiating `mekugi.control.v9` with
   `ConnectionOrigin::RemoteHuman`) alongside authenticated HTTP resource
-  endpoints (`GET /api/version`, `POST /api/resources/{content,image,attachment-image}`).
+  endpoints (`GET /api/version`, `POST /api/resources/{content,file,image,attachment-image}`).
+  `POST /api/resources/attachment-image` confines reads and probes to canonical
+  admitted workspaces (either the target thread's workspace or an existing thread
+  workspace when no thread ID is supplied) and returns uniform errors for
+  non-workspace or unreadable paths.
   Remote-human connections enforce authority at `mekugi-app-server`, blocking
   native startup / host process RPCs and private secret prompts (`sudo`
   password, GPG passphrase, and `is_secret` user input) while leaving active

@@ -10,6 +10,7 @@
     labelAttachment,
     prepareAttachments,
     referenceLabel,
+    resolveDeferredPathAttachments,
     submissionAttachments,
     type InitialInput,
     type PendingAttachment,
@@ -143,6 +144,10 @@
       items = [...first.items];
       editor.text = first.text;
       editor.skills = first.skills ?? [];
+      if (first.draftError) {
+        error = first.draftError;
+        return;
+      }
       void send(false, first.attachments, false, first.onstarted);
     });
   });
@@ -502,7 +507,7 @@
     onStarted?: InitialInput["onstarted"],
   ) {
     if (controller || fileRequest || tray?.checkingPath()) return;
-    const bodyText = text;
+    let bodyText = text;
     const itemCount = prepared?.length ?? activeItems.length;
     if (!bodyText.trim() && !itemCount) return;
     const pending = new AbortController();
@@ -511,7 +516,7 @@
     progress = "Sending…";
     error = undefined;
     const origin = editor;
-    const draftItems = [...items];
+    let draftItems = [...items];
     let openingDialog = false;
     const finishInDialog = () => {
       openingDialog = true;
@@ -545,6 +550,28 @@
       return attachments;
     };
     try {
+      if (!prepared && draftItems.some((item) => "path" in item && item.deferred)) {
+        progress = "Checking attachments…";
+        const resolved = await resolveDeferredPathAttachments(
+          { machine, thread },
+          bodyText,
+          draftItems,
+          pending.signal,
+        );
+        pending.signal.throwIfAborted();
+        if (editor !== origin) return;
+        origin.text = resolved.text;
+        origin.items = [...resolved.items];
+        text = resolved.text;
+        items = [...resolved.items];
+        if (!resolved.ok) {
+          error = resolved.error;
+          return;
+        }
+        bodyText = resolved.text;
+        draftItems = [...resolved.items];
+        progress = "Sending…";
+      }
       let recovered = false;
       const result = await semantic.sendInput(
         bodyText,

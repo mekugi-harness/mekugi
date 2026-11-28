@@ -164,7 +164,7 @@
             {#if "file" in item && item.reference === undefined && imageAttachment(item)}
               <AttachmentPreview file={item.file} />
             {:else}
-              {#if "path" in item && !item.fileReference && previewTarget}
+              {#if "path" in item && !item.fileReference && !item.deferred && previewTarget}
                 <AttachmentPreview path={item.path} target={previewTarget} />
               {/if}
               <Icon name={"file" in item ? "attach" : "folder"} size={14} />
