@@ -26,29 +26,6 @@ const (
 	SourceAcquisitionObserved Kind = "thread/sourceAcquisition"
 )
 
-// ResponseProgress identifies provider response activity; callers retain turn admission.
-// Background tool completions and non-model items do not prove a retrying request recovered.
-func (e Event) ResponseProgress() bool {
-	switch e.Kind {
-	case AgentDelta, ReasoningDelta, ReasoningPartAdded:
-		return true
-	case ItemStarted:
-		switch e.Item.Type {
-		case "agentMessage", "reasoning", "webSearch", "fileChange", "imageView", "imageGeneration",
-			"mcpToolCall", "collabAgentToolCall", "dynamicToolCall":
-			return true
-		case "commandExecution":
-			return !e.Item.UserShell
-		}
-	case ItemCompleted:
-		switch e.Item.Type {
-		case "agentMessage", "reasoning":
-			return true
-		}
-	}
-	return false
-}
-
 // Event is an immutable observation. Started is present on retained item
 // completions; synthetic starts and deltas are the replay consumer's policy.
 type Event struct {

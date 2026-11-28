@@ -1,13 +1,9 @@
 package binding
 
 import (
-	"cmp"
 	"encoding/json/jsontext"
-	json "encoding/json/v2"
-	"time"
 
 	"github.com/mekugi-harness/mekugi/mekugi-tui/backends/codex/appserver"
-	"github.com/mekugi-harness/mekugi/mekugi-tui/contracts/observation"
 )
 
 // Source: apps/mekugi/internal/router/app_server_events.go:67:122@1bcbdd5a.
@@ -29,32 +25,6 @@ type TurnError struct {
 	Message           string         `json:"message"`
 	AdditionalDetails string         `json:"additionalDetails"`
 	CodexErrorInfo    jsontext.Value `json:"codexErrorInfo"`
-}
-
-// Recoverable identifies transient host failures without interpreting prose.
-func (e *TurnError) Recoverable() bool {
-	var code string
-	if e.CodexErrorInfo.Kind() == '"' {
-		_ = json.Unmarshal(e.CodexErrorInfo, &code)
-	} else if e.CodexErrorInfo.Kind() == '{' {
-		var variants map[string]struct {
-			HTTPStatusCode *int `json:"httpStatusCode"`
-		}
-		if json.Unmarshal(e.CodexErrorInfo, &variants) != nil || len(variants) != 1 {
-			return false
-		}
-		for name, details := range variants {
-			if status := details.HTTPStatusCode; status != nil && *status >= 400 && *status < 500 && *status != 408 {
-				return false
-			}
-			code = name
-		}
-	}
-	switch code {
-	case "serverOverloaded", "internalServerError", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts":
-		return true
-	}
-	return false
 }
 
 // ResponseCompleted is the native completion observation, not context usage.
@@ -106,31 +76,3 @@ type Notification struct {
 	WillRetry bool       `json:"willRetry"`
 }
 
-func (p Notification) Observation(method string, at time.Time) observation.Event {
-	e := observation.Event{At: at, Kind: observation.Kind(method), ThreadID: p.ThreadID, TurnID: p.TurnID,
-		ItemID: cmp.Or(p.ItemID, p.Item.ID), Delta: p.Delta, Item: p.Item.Observation(),
-		ThreadStatus: p.Status.Type, ProcessID: p.ProcessID, Stdin: p.Stdin,
-		TurnStatus: p.Turn.Status, Context: observation.Context{Window: p.TokenUsage.ModelContextWindow},
-	}
-	if p.Thread.ID != "" {
-		e.Thread = p.Thread.Observation()
-	}
-	if p.TokenUsage.Last != nil {
-		e.Context.Tokens, e.Context.Known = p.TokenUsage.Last.TotalTokens, true
-	}
-	if method == "turn/started" || method == "turn/completed" {
-		e.TurnID = p.Turn.ID
-	}
-	if method == "error" && p.Error != nil {
-		diagnostic := p.Error.Message
-		if p.Error.AdditionalDetails != "" {
-			diagnostic += " · " + p.Error.AdditionalDetails
-		}
-		if p.WillRetry {
-			e.Retry = diagnostic
-		} else {
-			e.Diagnostic = diagnostic
-		}
-	}
-	return e
-}

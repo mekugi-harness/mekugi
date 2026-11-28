@@ -99,11 +99,6 @@ export function endpointURL(endpoint: string): string {
   return url.href.replace(/\/+$/, "");
 }
 
-export type ReadFailure = { kind: "failed"; text: string };
-export function readFailure(error: unknown): ReadFailure {
-  return { kind: "failed", text: errorText(error) };
-}
-
 function remoteError(error: RPCErrorPayload, initialize = false): TransportError {
   const status = error.data?.status;
   if (status === 401)
@@ -482,13 +477,8 @@ export class Connector {
   #disposed = false;
   #shared?: Channel;
   #bulk?: Channel;
-  #info?: InitializeResponse;
   #notifications = new Set<NotificationListener>();
   #serverRequests = new Set<ServerRequestListener>();
-
-  get info(): InitializeResponse | undefined {
-    return this.#info;
-  }
 
   constructor(endpoint: string, token: string) {
     this.endpoint = endpointURL(endpoint);
@@ -575,7 +565,6 @@ export class Connector {
           const channel = this.#channel();
           const info = await waitFor(channel.ready, signal);
           if (signal.aborted) continue;
-          this.#info = info;
           attempt = 0;
           state("open");
           onOpen?.(info);

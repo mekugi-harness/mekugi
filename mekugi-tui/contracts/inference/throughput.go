@@ -9,13 +9,6 @@ type OutputThroughput struct {
 	MeasuredRequests uint64 `json:"measured_requests"`
 }
 
-func (t OutputThroughput) Rate() (float64, bool) {
-	if t.DurationNanos == 0 || t.MeasuredRequests == 0 {
-		return 0, false
-	}
-	return float64(t.OutputTokens) * 1e9 / float64(t.DurationNanos), true
-}
-
 func (t *OutputThroughput) Add(next OutputThroughput) {
 	t.OutputTokens += next.OutputTokens
 	t.DurationNanos += next.DurationNanos

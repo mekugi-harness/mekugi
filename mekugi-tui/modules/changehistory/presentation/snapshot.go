@@ -10,14 +10,6 @@ import (
 	"github.com/mekugi-harness/mekugi/mekugi-tui/libraries/diffmodel"
 )
 
-func authoredReview(file diffmodel.ReviewFile) bool {
-	return file.Origin == "" && file.OriginNote != "observed during command window"
-}
-
-func gitDiagnosticReview(file diffmodel.ReviewFile) bool {
-	return file.Origin == "git" || strings.HasPrefix(file.Origin, "git ")
-}
-
 type Counts struct {
 	Callers map[string]diffmodel.Counts
 	Net     *diffmodel.Counts

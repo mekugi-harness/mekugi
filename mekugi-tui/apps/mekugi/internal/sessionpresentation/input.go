@@ -59,11 +59,6 @@ const (
 	SteerWaiting
 )
 
-// ClientLocal identifies operations that acquire resources or edit on the native renderer.
-func (o ComposerOperation) ClientLocal() bool {
-	return o == CancelComposer || o == AcceptPrediction || o == EditExternally || o == AttachClipboard
-}
-
 type ComposerIntent struct {
 	Thread    string
 	Version   Version

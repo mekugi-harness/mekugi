@@ -1,6 +1,3 @@
-import { buttonVariants } from "./button/variants";
-import { cn } from "../utils";
-
 // Class recipes shared by the UI kit and by elements that only look like a
 // control. Each recipe owns the properties it sets; callers add layout
 // (margins, flex placement) but never restyle what a recipe sets, since two
@@ -19,10 +16,6 @@ export const buttonVariant = {
   quiet: "ghost",
   "quiet-danger": "quiet-danger",
 } as const;
-
-export function button(variant: Variant = "default", shape: Shape = "text", size: Size = "md") {
-  return cn(buttonVariants({ variant: buttonVariant[variant], shape, size }));
-}
 
 export const input =
   "min-h-9 w-full min-w-0 rounded-control border border-control bg-surface px-2.5 py-[7px] text-ink transition-colors focus-visible:border-accent aria-invalid:border-negative max-sm:min-h-11 max-sm:text-base";

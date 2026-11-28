@@ -126,31 +126,6 @@ pub fn run_mchanges_main() -> i32 {
     emit_output("mchanges", mchanges::execute(&args))
 }
 
-/// Run `mcat` in-process and capture stdout, stderr, and exit code.
-pub fn run_mcat(args: &[String]) -> ToolOutput {
-    mcat::execute(args)
-}
-
-/// Run `mfinspect` in-process and capture stdout, stderr, and exit code.
-pub fn run_mfinspect(args: &[String]) -> ToolOutput {
-    mfinspect::execute(args)
-}
-
-/// Run `msymbol` in-process and capture stdout, stderr, and exit code.
-pub fn run_msymbol(args: &[String]) -> ToolOutput {
-    msymbol::execute(args, /*dedicated_process*/ false)
-}
-
-/// Run `mrun` in-process and capture stdout, stderr, and exit code.
-pub fn run_mrun(args: &[String]) -> ToolOutput {
-    mrun::execute(args)
-}
-
-/// Run `mchanges` in-process and capture stdout, stderr, and exit code.
-pub fn run_mchanges(args: &[String]) -> ToolOutput {
-    mchanges::execute(args)
-}
-
 #[cfg(all(test, unix))]
 mod cli_arg_tests {
     use super::parse_os_args;

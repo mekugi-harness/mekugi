@@ -2,9 +2,21 @@ package diffmodel
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
 )
+
+func reviewLines(content string) []string {
+	if content == "" {
+		return nil
+	}
+	lines := strings.SplitAfter(content, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
 
 func RenderReviewFile(beforePath, afterPath, before, after string) ReviewFile {
 	a, b := reviewLines(before), reviewLines(after)

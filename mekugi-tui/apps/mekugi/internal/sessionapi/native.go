@@ -183,14 +183,10 @@ type NativeComposerInput struct {
 // NativeAnswers is one final answer admission. Secret text exists only in this
 // authenticated local request, never in a publication or retained prompt editor.
 type NativeAnswers struct {
-	public     *Answer
 	Call       string
 	Answers    []NativeQuestionAnswer
 	Incomplete bool
 }
-
-// PublicAnswer returns the public route value for resolution by the pending prompt owner.
-func (a NativeAnswers) PublicAnswer() *Answer { return a.public }
 
 type NativeQuestionAnswer struct {
 	prompt.AnswerInput
