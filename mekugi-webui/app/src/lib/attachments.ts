@@ -286,21 +286,6 @@ export function uploadBytes(items: PendingAttachment[]): number {
   return items.reduce((size, item) => size + ("file" in item ? item.file.size : 0), 0);
 }
 
-// Retain reference bytes while editing, including after deletion for browser
-// undo. Only explicitly captured, uniquely present markers bind on submission.
-export function inlineReferences(text: string, items: PendingAttachment[]) {
-  const references = items.flatMap((item) => {
-    const label = referenceLabel(item);
-    const start = label ? text.indexOf(label) : -1;
-    return label && start >= 0 && text.indexOf(label, start + 1) < 0
-      ? [{ start, end: start + label.length, item }]
-      : [];
-  });
-  // ES2022 has no toSorted; this array belongs to this projection.
-  // oxlint-disable-next-line unicorn/no-array-sort
-  return references.sort((a, b) => a.start - b.start);
-}
-
 export function submissionAttachments(
   text: string,
   items: PendingAttachment[],

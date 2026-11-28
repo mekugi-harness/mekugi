@@ -113,7 +113,7 @@ func (c *directNativeConnection) saveTerminalPreferences(ctx context.Context, ta
 		err = persistence.EnsurePrivateDirectory(filepath.Dir(path))
 	}
 	if err == nil {
-		err = persistence.AtomicFile(path, ".panes-*.tmp", record, nil)
+		err = persistence.AtomicFile(path, ".panes-*.tmp", record)
 	}
 	if err != nil {
 		return fmt.Errorf("save terminal preferences: %w", err)

@@ -129,15 +129,6 @@ func (t ThreadInfo) AgentState() string {
 	return state
 }
 
-func (t ThreadInfo) IsLoaded() bool {
-	switch t.AgentState() {
-	case "", "shutdown", "not_found":
-		return false
-	default:
-		return true
-	}
-}
-
 func (t ThreadInfo) Details() observation.SessionDetails {
 	return observation.SessionDetails{Model: t.Model, ReasoningEffort: t.ReasoningEffort, ServiceTier: t.ServiceTier,
 		SessionMetrics: observation.SessionMetrics{ContextTokens: t.ContextTokens, ContextWindow: t.ContextWindow, Compactions: t.CompletedCompactions}}

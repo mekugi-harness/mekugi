@@ -10,7 +10,7 @@ use codex_change_history::PendingFileChange;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
-use crate::run_mchanges;
+use super::execute as run_mchanges;
 
 fn args(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()

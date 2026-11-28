@@ -57,15 +57,6 @@ type Publication struct {
 	NetCounts   *diffmodel.Counts
 }
 
-// GenerationSummary projects request-scoped tool generation for roster consumers.
-func (facts AgentFacts) GenerationSummary() []Entry {
-	if facts.Generating == "" {
-		return nil
-	}
-	// There is no feed event, but this summary belongs to the current work.
-	return []Entry{{Agent: facts.Name, Kind: "progress", Observed: facts.WorkSince, Live: true, Values: []Value{{Kind: "progress", Body: facts.Generating, Live: true}}}}
-}
-
 // CloneValues detaches mutable slices and pointer-valued facts, including flat
 // original membership, so replacing an observation cannot rewrite a publication.
 func CloneValues(values []Value) []Value {

@@ -169,7 +169,7 @@ func (c *Connector) publishToken() error {
 		return errors.New("cannot generate connector token")
 	}
 	token := hex.EncodeToString(random[:])
-	if err := persistence.AtomicFile(c.tokenFile, ".token-*", []byte(token+"\n"), nil); err != nil {
+	if err := persistence.AtomicFile(c.tokenFile, ".token-*", []byte(token+"\n")); err != nil {
 		return errors.New("cannot publish connector token")
 	}
 	c.token = token

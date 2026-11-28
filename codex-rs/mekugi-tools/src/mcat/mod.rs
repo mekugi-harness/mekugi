@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+#[cfg(test)]
 use crate::ToolOutput;
 use crate::common::MAX_SAFE_INT;
 use crate::common::format_io_error;
@@ -715,6 +716,7 @@ pub fn execute_to_writers(
     exit_code
 }
 
+#[cfg(test)]
 pub fn execute(args: &[String]) -> ToolOutput {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();

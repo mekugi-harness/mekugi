@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import {
   activeAttachments,
-  inlineReferences,
   labelAttachment,
   prepareAttachments,
   submissionAttachments,
@@ -77,10 +76,6 @@ test("inline references follow moved markers, retain deleted bytes for undo and 
     { id: "file", path: "notes.md" },
   ];
   const text = "Why [Selected message] now?";
-  assert.deepEqual(
-    inlineReferences(text, items).map(({ start, end }) => [start, end]),
-    [[4, 22]],
-  );
   assert.deepEqual(submissionAttachments("Why now?", items), [items[1]]);
   assert.deepEqual(activeAttachments("Why now?", items), [items[1]]);
   assert.deepEqual(activeAttachments(text, items), items);

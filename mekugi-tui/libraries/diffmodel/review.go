@@ -85,34 +85,6 @@ func (file ReviewFile) UnifiedDiff() string {
 	return file.Diff
 }
 
-// UnifiedDiffWithPaths substitutes display headers without changing retained
-// identities or source rows. The caller supplies its own path-display policy.
-func (file ReviewFile) UnifiedDiffWithPaths(beforePath, afterPath string) string {
-	before, after := file.BeforePath, file.AfterPath
-	file.BeforePath = beforePath
-	file.AfterPath = afterPath
-	operation := fmt.Sprintf("%s %q -> %q\n", file.Action(), before, after)
-	if rest, ok := strings.CutPrefix(file.Diff, operation); ok {
-		file.Diff = fmt.Sprintf("%s %q -> %q\n", file.Action(), file.BeforePath, file.AfterPath) + rest
-	}
-	oldHeader := fmt.Sprintf("--- %s\n+++ %s\n", reviewPath(before), reviewPath(after))
-	newHeader := fmt.Sprintf("--- %s\n+++ %s\n", reviewPath(file.BeforePath), reviewPath(file.AfterPath))
-	// Headers occur at the start or immediately after the operation, never in hunks.
-	first, rest, _ := strings.Cut(file.Diff, "\n")
-	if file.Binary {
-		oldBinary := fmt.Sprintf("Binary files %s and %s differ (", reviewPath(before), reviewPath(after))
-		if tail, ok := strings.CutPrefix(rest, oldBinary); ok {
-			file.Diff = first + "\n" + fmt.Sprintf("Binary files %s and %s differ (", reviewPath(file.BeforePath), reviewPath(file.AfterPath)) + tail
-		}
-	}
-	if tail, ok := strings.CutPrefix(rest, oldHeader); ok {
-		file.Diff = first + "\n" + newHeader + tail
-	} else if tail, ok := strings.CutPrefix(file.Diff, oldHeader); ok {
-		file.Diff = newHeader + tail
-	}
-	return file.UnifiedDiff()
-}
-
 // LineCounts counts added and removed source rows in a captured review projection.
 // File headers, context, and missing-final-newline markers are not source changes.
 // Incomplete captures return -1 for both counts.
@@ -178,17 +150,6 @@ func reviewRange(start, end int) string {
 		return fmt.Sprintf("%d,0", start)
 	}
 	return fmt.Sprintf("%d,%d", start+1, end-start)
-}
-
-func reviewLines(content string) []string {
-	if content == "" {
-		return nil
-	}
-	lines := strings.SplitAfter(content, "\n")
-	if lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	return lines
 }
 
 func writeReviewLines(output *strings.Builder, prefix byte, lines []string) {

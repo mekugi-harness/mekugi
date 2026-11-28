@@ -19,25 +19,6 @@ export function duration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-// Recorded offsets on the playback clock: 03:07 or 1:02:07. Offsets within a
-// span of an hour or more always carry the hour, so they keep one width.
-export function offset(ms: number, span = ms): string {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const mm = String(Math.floor((seconds % 3600) / 60)).padStart(2, "0");
-  const ss = String(seconds % 60).padStart(2, "0");
-  return hours > 0 || span >= 3_600_000 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
-}
-
-export function clock(unixMs: number): string {
-  return new Date(unixMs).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}
-
 const pad = (n: number) => String(n).padStart(2, "0");
 
 export function date(unixMs: number): string {
@@ -68,10 +49,6 @@ export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KiB`;
   return `${(n / 1024 / 1024).toFixed(1)} MiB`;
-}
-
-export function speed(x: number): string {
-  return `${Number.isInteger(x) ? x.toFixed(1) : String(x)}×`;
 }
 
 export function basename(path: string): string {
