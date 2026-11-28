@@ -348,9 +348,11 @@ const ONE_TIME_CHOICES = [
 const KNOWN_SERVER_REQUEST_METHODS = new Set<string>([
   "item/commandExecution/requestApproval",
   "item/fileChange/requestApproval",
+  // Local terminal handles permission and secret prompts; remote web clients
+  // must ignore them rather than replying with an error that denies them.
+  "item/permissions/requestApproval",
   "shellGuard/requestApproval",
   "item/tool/requestUserInput",
-  // Local-only secret prompts are intentionally ignored by remote web clients.
   "shellGuard/requestSecret",
 ]);
 

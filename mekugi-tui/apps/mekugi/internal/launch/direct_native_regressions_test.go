@@ -74,7 +74,7 @@ func TestDirectNativeRosterObservedStatusWaitingAndPaused(t *testing.T) {
 		return map[string]any{"data": []any{
 			map[string]any{"id": "thr-main", "agentPath": "/root", "status": map[string]any{"type": "active", "activeFlags": []string{"waitingOnApproval"}}},
 			map[string]any{"id": "thr-input", "agentPath": "/root/input", "status": map[string]any{"type": "active", "activeFlags": []string{"waitingOnUserInput"}}},
-			map[string]any{"id": "thr-paused", "agentPath": "/root/paused", "agentStatus": "paused", "status": map[string]any{"type": "idle"}},
+			map[string]any{"id": "thr-paused", "agentPath": "/root/paused", "agentStatus": "interrupted", "status": map[string]any{"type": "idle"}},
 			map[string]any{"id": "thr-run", "agentPath": "/root/run", "agentStatus": "running", "status": map[string]any{"type": "active"}},
 			map[string]any{"id": "thr-done", "agentPath": "/root/done", "agentStatus": "completed", "status": map[string]any{"type": "idle"}},
 			map[string]any{"id": "thr-err", "agentPath": "/root/err", "agentStatus": "errored", "status": map[string]any{"type": "systemError"}},
@@ -162,4 +162,34 @@ func TestDirectNativeWillRetryBannerClearsOnResponseProgress(t *testing.T) {
 	awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
 		return ev.Frame.View.Status.State.Text == "Working"
 	})
+
+	// Independent Main + One-off retries do not clobber each other.
+	conn.mu.Lock()
+	conn.sideThread = "thr-side"
+	conn.sideActiveTurn = "side-turn-1"
+	conn.mu.Unlock()
+	send("error", map[string]any{
+		"threadId":  "thr-main",
+		"turnId":    "turn-1",
+		"willRetry": true,
+		"error":     map[string]any{"message": "Main reconnecting... 1/5"},
+	})
+	send("error", map[string]any{
+		"threadId":  "thr-side",
+		"turnId":    "side-turn-1",
+		"willRetry": true,
+		"error":     map[string]any{"message": "Side reconnecting... 1/5"},
+	})
+	send("item/agentMessage/delta", map[string]any{
+		"threadId": "thr-side",
+		"turnId":   "side-turn-1",
+		"itemId":   "side-msg-1",
+		"delta":    "Side recovered",
+	})
+	ev = awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+		return ev.Frame.View.Status.State.Text == "Main reconnecting... 1/5"
+	})
+	if ev.Frame.View.Status.State.Text != "Main reconnecting... 1/5" {
+		t.Fatalf("side progress cleared main retry banner: %q", ev.Frame.View.Status.State.Text)
+	}
 }

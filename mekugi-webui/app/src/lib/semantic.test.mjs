@@ -890,6 +890,19 @@ test("unrecognized server requests return JSON-RPC -32601 while thread-mismatche
   assert.equal(control.prompts.approvals.length, 0);
   assert.equal(machine.errorResponses.length, 0);
 
+  // Terminal-handled permission prompts must be ignored, not auto-denied.
+  machine.emitServerRequest({
+    id: 215,
+    method: "item/permissions/requestApproval",
+    params: {
+      threadId: "t1",
+      turnId: "turn1",
+      itemId: "item1",
+    },
+  });
+  assert.equal(control.prompts.approvals.length, 0);
+  assert.equal(machine.errorResponses.length, 0);
+
   // Unrecognized server request method must be rejected with -32601.
   machine.emitServerRequest({
     id: 22,

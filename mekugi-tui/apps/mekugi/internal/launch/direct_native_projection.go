@@ -134,7 +134,10 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 						c.btwRetrying = true
 						c.publishLocked()
 					} else if threadID == c.mainThread || threadID == c.sideThread {
-						c.retryNotice = directRetryNotice{threadID: threadID, turnID: p.TurnID, text: diagnostic}
+						if c.retryNotices == nil {
+							c.retryNotices = make(map[string]directRetryNotice)
+						}
+						c.retryNotices[threadID] = directRetryNotice{threadID: threadID, turnID: p.TurnID, text: diagnostic}
 						c.publishLocked()
 					}
 				}
@@ -904,16 +907,21 @@ func directTurnErrorText(failure *binding.TurnError) string {
 }
 
 func (c *directNativeConnection) clearRetryNoticeLocked(threadID, turnID string) bool {
-	if c.retryNotice.text == "" {
+	if len(c.retryNotices) == 0 {
 		return false
 	}
-	if threadID != "" && c.retryNotice.threadID != threadID {
+	if threadID == "" {
+		clear(c.retryNotices)
+		return true
+	}
+	notice, ok := c.retryNotices[threadID]
+	if !ok || notice.text == "" {
 		return false
 	}
-	if turnID != "" && c.retryNotice.turnID != "" && c.retryNotice.turnID != turnID {
+	if turnID != "" && notice.turnID != "" && notice.turnID != turnID {
 		return false
 	}
-	c.retryNotice = directRetryNotice{}
+	delete(c.retryNotices, threadID)
 	return true
 }
 
@@ -1588,11 +1596,10 @@ func (c *directNativeConnection) refreshSubtree(ctx context.Context, rootThread 
 		}
 		_ = json.Unmarshal(th.Status, &statusObj)
 		agentState := (binding.ThreadInfo{AgentStatus: th.AgentStatus}).AgentState()
-		paused := agentState == "paused"
-		waiting := agentState == "waiting" ||
-			(statusObj.Type == "active" &&
-				(slices.Contains(statusObj.ActiveFlags, "waitingOnApproval") ||
-					slices.Contains(statusObj.ActiveFlags, "waitingOnUserInput")))
+		paused := agentState == "interrupted"
+		waiting := statusObj.Type == "active" &&
+			(slices.Contains(statusObj.ActiveFlags, "waitingOnApproval") ||
+				slices.Contains(statusObj.ActiveFlags, "waitingOnUserInput"))
 		responding := agentState == "running" || agentState == "" && statusObj.Type == "active"
 		final := agentState == "completed" && th.ID != rootThread
 		latestKind := ""

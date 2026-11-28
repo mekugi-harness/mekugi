@@ -238,7 +238,7 @@ type directNativeConnection struct {
 	feedbackText       string
 	feedbackAlert      bool
 	feedbackRev        uint64
-	retryNotice        directRetryNotice
+	retryNotices       map[string]directRetryNotice
 	btwRetrying        bool
 
 	items       map[string][]*directItemRecord
@@ -869,8 +869,10 @@ type directRetryNotice struct {
 }
 
 func (c *directNativeConnection) statusTextLocked() string {
-	if c.retryNotice.text != "" {
-		return c.retryNotice.text
+	for _, id := range []string{cmp.Or(c.displayedThread, c.mainThread), c.mainThread, c.sideThread} {
+		if notice, ok := c.retryNotices[id]; ok && notice.text != "" {
+			return notice.text
+		}
 	}
 	if c.busy {
 		return "Working"
