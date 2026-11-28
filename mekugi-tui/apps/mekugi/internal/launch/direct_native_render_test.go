@@ -570,7 +570,7 @@ awaitProcess:
 	}
 	conn.handleNotification(patch)
 	ev = drain()
-	if len(ev.Frame.Live) != 1 || len(ev.Frame.Live[0].Files) != 1 || ev.Frame.Live[0].Files[0].Diff != "@@ -0 +1 @@\n+new" {
+	if len(ev.Frame.Live) != 1 || len(ev.Frame.Live[0].Files) != 1 || ev.Frame.Live[0].Files[0].Diff != "@@ -0,0 +1,1 @@\n+new\n" {
 		t.Fatalf("expected Frame.Live from patchUpdated, got %+v", ev.Frame.Live)
 	}
 	conn.handleNotification(appserver.Message{

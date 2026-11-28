@@ -492,7 +492,7 @@ func (c *directNativeConnection) handleNotification(msg appserver.Message) {
 			item := c.itemsByID[directItemKey{threadID, p.ItemID}]
 			if (!trackedTurn || c.activeTurnForLocked(threadID) == p.TurnID) &&
 				(item == nil || item.entry.Completed.IsZero()) {
-				c.setNativeFilePreviewLocked(threadID, p.TurnID, p.ItemID, p.Changes)
+				c.setNativeFilePreviewLocked(threadID, p.TurnID, p.ItemID, p.Changes, true)
 				c.publishLocked()
 			}
 			c.mu.Unlock()
@@ -1258,9 +1258,9 @@ func (c *directNativeConnection) upsertWireItemLocked(threadID, turnID string, r
 			rec.entry.Completed = time.Now()
 		}
 		if running && len(changeList) > 0 {
-			c.setNativeFilePreviewLocked(threadID, rec.turnID, rec.id, changeList)
+			c.setNativeFilePreviewLocked(threadID, rec.turnID, rec.id, changeList, false)
 		} else if exited {
-			c.setNativeFilePreviewLocked(threadID, rec.turnID, rec.id, nil)
+			c.setNativeFilePreviewLocked(threadID, rec.turnID, rec.id, nil, false)
 		}
 	case "mcpToolCall", "dynamicToolCall":
 		tool := decodeJSONString(fields["tool"])
@@ -1511,7 +1511,7 @@ func (c *directNativeConnection) removeNativePreviewsLocked(match func(preview.P
 	}
 }
 
-func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, itemID string, updates []nativeFileChange) {
+func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, itemID string, updates []nativeFileChange, unlocatedDiff bool) {
 	id := "filechange:" + itemID
 	match := func(p preview.Preview) bool { return p.Thread == threadID && p.Turn == turnID && p.ID == id }
 	if len(updates) == 0 {
@@ -1524,20 +1524,16 @@ func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, it
 		switch update.Kind.Type {
 		case "add":
 			file.BeforePath = ""
-			if file.Diff != "" {
-				file.Diff = "@@ -0 +1 @@\n+" + strings.ReplaceAll(strings.TrimSuffix(file.Diff, "\n"), "\n", "\n+")
-			}
+			file.Diff = nativePreviewWholeFileDiff(file.Diff, '+')
 		case "delete":
 			file.AfterPath = ""
-			if file.Diff != "" {
-				file.Diff = "@@ -1 +0 @@\n-" + strings.ReplaceAll(strings.TrimSuffix(file.Diff, "\n"), "\n", "\n-")
-			}
+			file.Diff = nativePreviewWholeFileDiff(file.Diff, '-')
 		}
 		files = append(files, file)
 	}
 	edit := preview.Preview{
 		ID: id, Workspace: c.workspace, Caller: cmp.Or(c.threadCallers[threadID], "/root"),
-		Turn: turnID, Thread: threadID, Files: files, DiffText: true, Status: "Editing",
+		Turn: turnID, Thread: threadID, Files: files, DiffText: true, UnlocatedDiff: unlocatedDiff, Status: "Editing",
 	}
 	if index := slices.IndexFunc(c.live, match); index >= 0 {
 		c.live[index] = edit
@@ -1545,6 +1541,34 @@ func (c *directNativeConnection) setNativeFilePreviewLocked(threadID, turnID, it
 		c.live = append(c.live, edit)
 	}
 	c.liveDirty = true
+}
+
+// Native adds and deletes carry raw file content, not a unified patch.
+func nativePreviewWholeFileDiff(content string, kind byte) string {
+	if content == "" {
+		return ""
+	}
+	rows := strings.Count(content, "\n")
+	terminated := strings.HasSuffix(content, "\n")
+	if !terminated {
+		rows++
+	}
+	var diff strings.Builder
+	if kind == '+' {
+		fmt.Fprintf(&diff, "@@ -0,0 +1,%d @@\n", rows)
+	} else {
+		fmt.Fprintf(&diff, "@@ -1,%d +0,0 @@\n", rows)
+	}
+	for line := range strings.SplitAfterSeq(content, "\n") {
+		if line != "" {
+			diff.WriteByte(kind)
+			diff.WriteString(line)
+		}
+	}
+	if !terminated {
+		diff.WriteString("\n\\ No newline at end of file\n")
+	}
+	return diff.String()
 }
 
 func (c *directNativeConnection) observeThreadSkillsLocked(threadID string, names []string) {

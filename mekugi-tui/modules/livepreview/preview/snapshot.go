@@ -20,9 +20,12 @@ type Preview struct {
 	Evaluated   bool `json:",omitzero"`
 	Complete    bool `json:",omitzero"`
 	DiffText    bool `json:",omitzero"`
-	Status      string
-	Footer      string `json:",omitempty"`
-	Tool        string `json:",omitempty"` // The evidenced editing tool, not its host executor.
+	// UnlocatedDiff marks provisional update hunks without real file
+	// coordinates. Whole-file additions and deletions still have a known start.
+	UnlocatedDiff bool `json:",omitzero"`
+	Status        string
+	Footer        string `json:",omitempty"`
+	Tool          string `json:",omitempty"` // The evidenced editing tool, not its host executor.
 
 	SourceAnchor activitydetail.SourceAnchor `json:"-"` // Consumed by source binding, not a live-card renderer.
 }

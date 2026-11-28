@@ -67,7 +67,7 @@ func TestDirectNativeLivePreviewFollowsDisplayedThread(t *testing.T) {
 		})
 		return awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
 			for _, edit := range ev.Frame.Live {
-				if edit.Thread == thread {
+				if edit.Thread == thread && len(edit.Files) == 1 && strings.Contains(edit.Files[0].Diff, text) {
 					return true
 				}
 			}
@@ -86,8 +86,61 @@ func TestDirectNativeLivePreviewFollowsDisplayedThread(t *testing.T) {
 		})
 	}
 
+	server.send(t, map[string]any{
+		"jsonrpc": "2.0", "method": "turn/started",
+		"params": map[string]any{
+			"threadId": "thr-main", "turn": map[string]any{"id": "turn-thr-main", "status": "inProgress"},
+		},
+	})
+	for _, tc := range []struct {
+		name, kind, diff string
+		want             []string
+	}{
+		{
+			name: "shell replacements", kind: "update",
+			diff: "@@ -1,1 +1,1 @@\n-first old\n+first new\n@@ -1,1 +1,1 @@\n-second old\n+second new\n",
+			want: []string{"+2 -2", "+first new", "+second new"},
+		},
+		{
+			name: "apply_patch anchors", kind: "update",
+			diff: "@@\n--- old text\n+++ new text\n@@ func example\n-other old\n+other new\n",
+			want: []string{"+2 -2", "+++ new text", "+other new"},
+		},
+		{
+			name: "whole file addition", kind: "add",
+			diff: "first new line\nsecond new line",
+			want: []string{"+2 -0", "1│+first new line", "2│+second new line"},
+		},
+	} {
+		server.send(t, map[string]any{
+			"jsonrpc": "2.0", "method": "item/fileChange/patchUpdated",
+			"params": map[string]any{
+				"threadId": "thr-main", "turnId": "turn-thr-main", "itemId": "edit-thr-main",
+				"changes": []map[string]any{{
+					"path": "main.go", "kind": map[string]string{"type": tc.kind}, "diff": tc.diff,
+				}},
+			},
+		})
+		event := awaitDirectEvent(t, conn, func(ev sessionapi.NativeEvent) bool {
+			if len(ev.Frame.Live) != 1 || len(ev.Frame.Live[0].Files) != 1 {
+				return false
+			}
+			file := ev.Frame.Live[0].Files[0]
+			return file.Diff == tc.diff || tc.kind == "add" && file.BeforePath == ""
+		})
+		shown := paint(event)
+		for _, want := range tc.want {
+			if !strings.Contains(shown, want) {
+				t.Fatalf("%s: expected %q in live diff:\n%s", tc.name, want, shown)
+			}
+		}
+		if tc.kind == "update" && strings.Contains(shown, "│+") {
+			t.Fatalf("%s: live diff invented source coordinates:\n%s", tc.name, shown)
+		}
+	}
+
 	main := startEdit("thr-main", "main.go", "main preview hunk")
-	if shown := paint(main); !strings.Contains(shown, "main preview hunk") {
+	if shown := paint(main); !strings.Contains(shown, "1│+main preview hunk") {
 		t.Fatalf("Main live diff did not survive resync:\n%s", shown)
 	}
 	worker := display(main, "thr-worker", "/root/worker")
