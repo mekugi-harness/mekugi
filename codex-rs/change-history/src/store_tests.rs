@@ -1056,3 +1056,56 @@ fn unattributed_author_allocates_shell_stream_and_ephemeral_only_index_flag() {
     assert!(entries[0].is_unattributed());
     assert!(entries[0].ephemeral_only);
 }
+
+#[test]
+fn retained_worktree_diagnostic_classifier_preserves_mixed_and_delegate_edits() {
+    let dir = TempDir::new().expect("temp");
+    let ws = dir.path().join("ws");
+    fs::create_dir_all(&ws).expect("ws");
+    let make = |source_kind, summary: Option<&str>| crate::ChangeRecord {
+        schema_version: 1,
+        id: crate::ChangeId::new("amber", 1).expect("id"),
+        sequence: 1,
+        recorded_at_ms: Some(0),
+        metadata: crate::ChangeMetadata {
+            summary: summary.map(str::to_string),
+            ..test_metadata(&ws, "t1", "c1", source_kind)
+        },
+        files: vec![],
+    };
+    assert!(
+        make(
+            ChangeSourceKind::ShellWrite,
+            Some("git worktree add .worktrees/task -b task")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    assert!(
+        make(
+            ChangeSourceKind::ShellWrite,
+            Some("git -C /repo worktree remove --force .worktrees/task && git branch -D task")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    assert!(
+        !make(
+            ChangeSourceKind::ShellWrite,
+            Some("git worktree add .worktrees/task -b task && echo hi > real.txt")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    assert!(
+        !make(
+            ChangeSourceKind::ShellWrite,
+            Some(r#"python3 -c 'open(".worktrees/task/a.rs", "w").write("ok")'"#)
+        )
+        .is_retained_vcs_diagnostic()
+    );
+    assert!(
+        !make(
+            ChangeSourceKind::ApplyPatch,
+            Some("git worktree add .worktrees/task -b task")
+        )
+        .is_retained_vcs_diagnostic()
+    );
+}

@@ -197,6 +197,9 @@ fn read_changes(
     }
     let mut records = store.load_records(&ids).map_err(read_error)?;
     records.retain_mut(|record| {
+        if record.is_retained_vcs_diagnostic() {
+            return false;
+        }
         record.files.retain(|file| match file.scope {
             codex_change_history::ChangeScope::Workspace => true,
             codex_change_history::ChangeScope::External => include_external,
